@@ -2,8 +2,11 @@
 import 'reflect-metadata';
 import { Text, render } from 'ink';
 import React from 'react';
-import { setupContainer } from './di/container.js';
+import { container, setupContainer } from './di/container.js';
+import { Service } from './di/tokens.js';
 import { parseArgs, resolveRoute, type Route } from './router.js';
+import { HomeScreen, SessionList } from './views/HomeScreen.js';
+import type { IpcClient } from '@bossanova/shared';
 
 // --- Stub views (replaced in subsequent tasks) ---
 
@@ -42,18 +45,25 @@ function StubView({ label }: { label: string }) {
 
 // --- App component ---
 
-export function App({ route }: { route: Route }) {
+export function App({ route, client }: { route: Route; client: IpcClient }) {
   switch (route.view) {
     case 'help':
       return <HelpView />;
     case 'error':
       return <ErrorView message={route.message} />;
     case 'home':
-      return <StubView label="home" />;
+      return (
+        <HomeScreen
+          client={client}
+          onNewSession={() => {/* TODO: navigate to new session */}}
+          onAddRepo={() => {/* TODO: navigate to add repo */}}
+          onAttach={() => {/* TODO: navigate to attach */}}
+        />
+      );
     case 'new':
       return <StubView label={`new session${route.plan ? `: ${route.plan}` : ''}`} />;
     case 'ls':
-      return <StubView label="session list" />;
+      return <SessionList client={client} />;
     case 'attach':
       return <StubView label={`attach ${route.sessionId}`} />;
     case 'session-action':
@@ -74,4 +84,6 @@ const route = resolveRoute(parsed);
 
 setupContainer();
 
-render(<App route={route} />);
+const client = container.resolve<IpcClient>(Service.IpcClient);
+
+render(<App route={route} client={client} />);

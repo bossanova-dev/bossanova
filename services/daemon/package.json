@@ -1,0 +1,21 @@
+{
+  "name": "@bossanova/daemon",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "biome check src/",
+    "format": "prettier --write 'src/**/*.ts'"
+  },
+  "dependencies": {
+    "@bossanova/shared": "workspace:*",
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "tsx": "^4.19.0"
+  }
+}

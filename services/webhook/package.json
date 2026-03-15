@@ -1,0 +1,22 @@
+{
+  "name": "@bossanova/webhook",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "lint": "biome check src/",
+    "format": "prettier --write 'src/**/*.ts'",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@bossanova/shared": "workspace:*",
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { JsonRpcRequest, JsonRpcResponse } from '@bossanova/shared';
 import { RpcErrorCode } from '@bossanova/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ClaudeSupervisor } from '~/claude/supervisor';
 import { AttemptStore } from '~/db/attempts';
 import { DatabaseService } from '~/db/database';
 import { RepoStore } from '~/db/repos';
@@ -52,7 +53,7 @@ describe('IpcServer', () => {
     const repos = new RepoStore(db);
     const sessions = new SessionStore(db);
     const attempts = new AttemptStore(db);
-    const dispatcher = new Dispatcher(repos, sessions, attempts, noopLogger);
+    const dispatcher = new Dispatcher(repos, sessions, attempts, noopLogger, new ClaudeSupervisor());
 
     socketPath = path.join(os.tmpdir(), `bossd-test-${process.pid}-${Date.now()}.sock`);
     const config = { dbPath: ':memory:', socketPath, logLevel: 'info' as const };

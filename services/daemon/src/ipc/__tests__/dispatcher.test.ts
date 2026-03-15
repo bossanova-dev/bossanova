@@ -5,6 +5,7 @@ import path from 'node:path';
 import { RpcErrorCode } from '@bossanova/shared';
 import type { JsonRpcRequest, Repo } from '@bossanova/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ClaudeSupervisor } from '~/claude/supervisor';
 import { AttemptStore } from '~/db/attempts';
 import { DatabaseService } from '~/db/database';
 import { RepoStore } from '~/db/repos';
@@ -52,7 +53,7 @@ describe('Dispatcher', () => {
     repos = new RepoStore(db);
     sessions = new SessionStore(db);
     attempts = new AttemptStore(db);
-    dispatcher = new Dispatcher(repos, sessions, attempts, noopLogger);
+    dispatcher = new Dispatcher(repos, sessions, attempts, noopLogger, new ClaudeSupervisor());
   });
 
   afterEach(() => {
@@ -130,7 +131,7 @@ describe('Dispatcher', () => {
     };
     expect(session.title).toBe('Fix bug');
     expect(session.repoId).toBe(repo.id);
-    expect(session.state).toBe('starting_claude');
+    expect(session.state).toBe('implementing_plan');
     expect(session.worktreePath).toBeTruthy();
     expect(session.branchName).toMatch(/^boss\/fix-bug-/);
   });

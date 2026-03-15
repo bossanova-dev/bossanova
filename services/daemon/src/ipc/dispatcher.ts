@@ -18,11 +18,21 @@ import type {
   SessionGetResult,
   SessionListParams,
   SessionListResult,
+  SessionLogsParams,
+  SessionLogsResult,
+  SessionPauseParams,
+  SessionPauseResult,
   SessionRemoveParams,
   SessionRemoveResult,
+  SessionResumeParams,
+  SessionResumeResult,
+  SessionStopParams,
+  SessionStopResult,
 } from '@bossanova/shared';
 import { RpcErrorCode } from '@bossanova/shared';
 import { inject, injectable } from 'tsyringe';
+import { readLog } from '~/claude/logger';
+import type { ClaudeSupervisor } from '~/claude/supervisor';
 import type { AttemptStore } from '~/db/attempts';
 import type { RepoStore } from '~/db/repos';
 import type { SessionStore } from '~/db/sessions';
@@ -42,6 +52,7 @@ export class Dispatcher {
     @inject(Service.SessionStore) private sessions: SessionStore,
     @inject(Service.AttemptStore) private attempts: AttemptStore,
     @inject(Service.Logger) private logger: Logger,
+    @inject(Service.ClaudeSupervisor) private supervisor: ClaudeSupervisor,
   ) {
     this.registerHandlers();
   }
@@ -98,6 +109,12 @@ export class Dispatcher {
     this.handlers['session.get'] = (params) => this.handleSessionGet(params as SessionGetParams);
     this.handlers['session.remove'] = (params) =>
       this.handleSessionRemove(params as SessionRemoveParams);
+    this.handlers['session.stop'] = (params) => this.handleSessionStop(params as SessionStopParams);
+    this.handlers['session.pause'] = (params) =>
+      this.handleSessionPause(params as SessionPauseParams);
+    this.handlers['session.resume'] = (params) =>
+      this.handleSessionResume(params as SessionResumeParams);
+    this.handlers['session.logs'] = (params) => this.handleSessionLogs(params as SessionLogsParams);
     this.handlers['session.attempts'] = (params) =>
       this.handleSessionAttempts(params as SessionAttemptsParams);
   }
@@ -156,7 +173,7 @@ export class Dispatcher {
   }
 
   private async handleSessionCreate(params: SessionCreateParams): Promise<SessionCreateResult> {
-    return startSession(this.repos, this.sessions, params);
+    return startSession(this.repos, this.sessions, params, this.supervisor);
   }
 
   private handleSessionGet(params: SessionGetParams): SessionGetResult {
@@ -168,8 +185,51 @@ export class Dispatcher {
   }
 
   private async handleSessionRemove(params: SessionRemoveParams): Promise<SessionRemoveResult> {
-    const removed = await removeSession(this.repos, this.sessions, params.sessionId);
+    const removed = await removeSession(this.repos, this.sessions, params.sessionId, this.supervisor);
     return { removed };
+  }
+
+  private handleSessionStop(params: SessionStopParams): SessionStopResult {
+    try {
+      this.supervisor.stop(params.sessionId);
+      this.sessions.update(params.sessionId, { state: 'blocked', blockedReason: 'Stopped by user' });
+      return { stopped: true };
+    } catch {
+      return { stopped: false };
+    }
+  }
+
+  private handleSessionPause(params: SessionPauseParams): SessionPauseResult {
+    try {
+      this.supervisor.pause(params.sessionId);
+      return { paused: true };
+    } catch {
+      return { paused: false };
+    }
+  }
+
+  private async handleSessionResume(params: SessionResumeParams): Promise<SessionResumeResult> {
+    const session = this.sessions.get(params.sessionId);
+    if (!session?.worktreePath) return { resumed: false };
+
+    try {
+      await this.supervisor.resume(params.sessionId, session.worktreePath, session.plan);
+      this.sessions.update(params.sessionId, { state: 'implementing_plan' });
+      return { resumed: true };
+    } catch {
+      return { resumed: false };
+    }
+  }
+
+  private handleSessionLogs(params: SessionLogsParams): SessionLogsResult {
+    const content = readLog(params.sessionId);
+    if (!content) return { lines: [] };
+
+    const allLines = content.split('\n').filter(Boolean);
+    if (params.tail && params.tail > 0) {
+      return { lines: allLines.slice(-params.tail) };
+    }
+    return { lines: allLines };
   }
 
   // --- Attempts ---

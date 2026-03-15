@@ -7,6 +7,8 @@ import { Service } from './di/tokens.js';
 import { parseArgs, resolveRoute, type Route } from './router.js';
 import { HomeScreen, SessionList } from './views/HomeScreen.js';
 import { NewSession } from './views/NewSession.js';
+import { AddRepo } from './views/AddRepo.js';
+import { RepoList, RepoRemove } from './views/RepoList.js';
 import type { IpcClient } from '@bossanova/shared';
 
 // --- Stub views (replaced in subsequent tasks) ---
@@ -77,11 +79,17 @@ export function App({ route, client }: { route: Route; client: IpcClient }) {
     case 'session-action':
       return <StubView label={`${route.action} ${route.sessionId}`} />;
     case 'repo-add':
-      return <StubView label="repo add" />;
+      return (
+        <AddRepo
+          client={client}
+          onDone={() => {/* TODO: return to home */}}
+          onCancel={() => process.exit(0)}
+        />
+      );
     case 'repo-ls':
-      return <StubView label="repo list" />;
+      return <RepoList client={client} />;
     case 'repo-remove':
-      return <StubView label={`repo remove ${route.repoId}`} />;
+      return <RepoRemove client={client} repoId={route.repoId} />;
   }
 }
 

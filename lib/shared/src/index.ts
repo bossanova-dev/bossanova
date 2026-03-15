@@ -60,6 +60,8 @@ export {
   type SessionAttemptsResult,
 } from './rpc.js';
 
+export { createIpcClient, DaemonNotRunningError, type IpcClient } from './ipc-client.js';
+
 export type {
   WebhookEvent,
   WebhookPullRequestEvent,

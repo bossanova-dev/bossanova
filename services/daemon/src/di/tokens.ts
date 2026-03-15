@@ -7,4 +7,6 @@ export const Service = {
   AttemptStore: Symbol.for('Service.AttemptStore'),
   Config: Symbol.for('Service.Config'),
   Logger: Symbol.for('Service.Logger'),
+  Dispatcher: Symbol.for('Service.Dispatcher'),
+  IpcServer: Symbol.for('Service.IpcServer'),
 } as const;

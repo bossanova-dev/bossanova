@@ -1,3 +1,7 @@
+import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { RpcErrorCode } from '@bossanova/shared';
 import type { JsonRpcRequest, Repo } from '@bossanova/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -21,6 +25,9 @@ function rpc(method: string, params: unknown = {}, id: number | string = 1): Jso
 }
 
 describe('Dispatcher', () => {
+  let tmpDir: string;
+  let repoPath: string;
+  let worktreeBaseDir: string;
   let db: DatabaseService;
   let repos: RepoStore;
   let sessions: SessionStore;
@@ -28,6 +35,19 @@ describe('Dispatcher', () => {
   let dispatcher: Dispatcher;
 
   beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-dispatch-test-'));
+    repoPath = path.join(tmpDir, 'repo');
+    worktreeBaseDir = path.join(tmpDir, 'worktrees');
+
+    // Create a real git repo for session.create tests
+    fs.mkdirSync(repoPath);
+    execSync('git init', { cwd: repoPath });
+    execSync('git config user.email "test@test.com"', { cwd: repoPath });
+    execSync('git config user.name "Test"', { cwd: repoPath });
+    fs.writeFileSync(path.join(repoPath, 'README.md'), '# Test');
+    execSync('git add . && git commit -m "init"', { cwd: repoPath });
+    fs.mkdirSync(worktreeBaseDir, { recursive: true });
+
     db = createTestDb();
     repos = new RepoStore(db);
     sessions = new SessionStore(db);
@@ -36,7 +56,13 @@ describe('Dispatcher', () => {
   });
 
   afterEach(() => {
+    try {
+      execSync('git worktree prune', { cwd: repoPath });
+    } catch {
+      // Repo might already be gone
+    }
     db.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('returns method not found for unknown method', async () => {
@@ -77,12 +103,12 @@ describe('Dispatcher', () => {
     expect(res.result).toEqual([]);
   });
 
-  it('session.create creates a session for existing repo', async () => {
+  it('session.create creates a session with worktree for existing repo', async () => {
     const repo = repos.register({
       displayName: 'Test',
-      localPath: '/test/repo',
+      localPath: repoPath,
       originUrl: 'git@github.com:user/test.git',
-      worktreeBaseDir: '/tmp/wt',
+      worktreeBaseDir,
     });
 
     const res = await dispatcher.dispatch(
@@ -94,9 +120,19 @@ describe('Dispatcher', () => {
     );
 
     expect(res.error).toBeUndefined();
-    const session = res.result as { id: string; title: string; repoId: string };
+    const session = res.result as {
+      id: string;
+      title: string;
+      repoId: string;
+      state: string;
+      worktreePath: string;
+      branchName: string;
+    };
     expect(session.title).toBe('Fix bug');
     expect(session.repoId).toBe(repo.id);
+    expect(session.state).toBe('starting_claude');
+    expect(session.worktreePath).toBeTruthy();
+    expect(session.branchName).toMatch(/^boss\/fix-bug-/);
   });
 
   it('session.create returns error for unknown repo', async () => {
@@ -138,24 +174,29 @@ describe('Dispatcher', () => {
     expect(res.error?.message).toContain('Session not found');
   });
 
-  it('session.remove removes existing session', async () => {
+  it('session.remove removes existing session and cleans up worktree', async () => {
     const repo = repos.register({
       displayName: 'Test',
-      localPath: '/test/remove',
+      localPath: repoPath,
       originUrl: 'git@github.com:user/test.git',
-      worktreeBaseDir: '/tmp/wt',
+      worktreeBaseDir,
     });
 
-    const session = sessions.create({
-      repoId: repo.id,
-      title: 'To remove',
-      plan: 'plan',
-      baseBranch: 'main',
-    });
+    // Create session via lifecycle (creates worktree)
+    const createRes = await dispatcher.dispatch(
+      rpc('session.create', {
+        repoId: repo.id,
+        title: 'To remove',
+        plan: 'plan',
+      }),
+    );
+    const created = createRes.result as { id: string; worktreePath: string };
+    expect(fs.existsSync(created.worktreePath)).toBe(true);
 
-    const res = await dispatcher.dispatch(rpc('session.remove', { sessionId: session.id }));
+    const res = await dispatcher.dispatch(rpc('session.remove', { sessionId: created.id }));
     expect(res.result).toEqual({ removed: true });
-    expect(sessions.get(session.id)).toBeNull();
+    expect(sessions.get(created.id)).toBeNull();
+    expect(fs.existsSync(created.worktreePath)).toBe(false);
   });
 
   it('session.remove returns removed: false for unknown session', async () => {

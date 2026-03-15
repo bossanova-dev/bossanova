@@ -29,6 +29,7 @@ import type { SessionStore } from '~/db/sessions';
 import type { Logger } from '~/di/container';
 import { Service } from '~/di/tokens';
 import { resolveContext } from '~/ipc/handlers/context';
+import { removeSession, startSession } from '~/session/lifecycle';
 
 type Handler = (params: unknown) => unknown | Promise<unknown>;
 
@@ -154,17 +155,8 @@ export class Dispatcher {
     return this.sessions.list(params.repoId);
   }
 
-  private handleSessionCreate(params: SessionCreateParams): SessionCreateResult {
-    const repo = this.repos.get(params.repoId);
-    if (!repo) {
-      throw new Error(`Repo not found: ${params.repoId}`);
-    }
-    return this.sessions.create({
-      repoId: params.repoId,
-      title: params.title,
-      plan: params.plan,
-      baseBranch: repo.defaultBaseBranch,
-    });
+  private async handleSessionCreate(params: SessionCreateParams): Promise<SessionCreateResult> {
+    return startSession(this.repos, this.sessions, params);
   }
 
   private handleSessionGet(params: SessionGetParams): SessionGetResult {
@@ -175,11 +167,9 @@ export class Dispatcher {
     return session;
   }
 
-  private handleSessionRemove(params: SessionRemoveParams): SessionRemoveResult {
-    const existing = this.sessions.get(params.sessionId);
-    if (!existing) return { removed: false };
-    this.sessions.delete(params.sessionId);
-    return { removed: true };
+  private async handleSessionRemove(params: SessionRemoveParams): Promise<SessionRemoveResult> {
+    const removed = await removeSession(this.repos, this.sessions, params.sessionId);
+    return { removed };
   }
 
   // --- Attempts ---

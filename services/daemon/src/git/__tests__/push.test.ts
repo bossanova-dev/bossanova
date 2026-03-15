@@ -49,7 +49,7 @@ describe('pushBranch', () => {
     expect(sha).toMatch(/^[0-9a-f]{40}$/);
 
     // Verify the branch exists on the remote
-    const remoteBranches = execSync(`git branch -r`, { cwd: clonePath, encoding: 'utf8' });
+    const remoteBranches = execSync('git branch -r', { cwd: clonePath, encoding: 'utf8' });
     expect(remoteBranches).toContain(`origin/${branchName}`);
   });
 

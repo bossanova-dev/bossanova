@@ -1,6 +1,6 @@
+import type { IpcClient, Repo } from '@bossanova/shared';
 import { Box, Text, useApp, useInput } from 'ink';
 import React, { useEffect, useState } from 'react';
-import type { IpcClient, Repo } from '@bossanova/shared';
 
 // --- Column widths ---
 

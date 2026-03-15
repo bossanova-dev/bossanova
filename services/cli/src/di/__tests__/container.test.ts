@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { container } from 'tsyringe';
-import { setupContainer, type CliConfig, type Logger } from '../container.js';
-import { Service } from '../tokens.js';
 import type { IpcClient } from '@bossanova/shared';
+import { container } from 'tsyringe';
+import { afterEach, describe, expect, it } from 'vitest';
+import { type CliConfig, type Logger, setupContainer } from '../container.js';
+import { Service } from '../tokens.js';
 
 describe('CLI DI Container', () => {
   afterEach(() => {

@@ -1,8 +1,8 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { IpcClient, Session } from '@bossanova/shared';
 import { render } from 'ink-testing-library';
 import React from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HomeScreen, SessionList } from '../HomeScreen.js';
-import type { IpcClient, Session } from '@bossanova/shared';
 
 function mockClient(sessions: Session[] = []): IpcClient {
   return {
@@ -126,13 +126,9 @@ describe('HomeScreen', () => {
 
 describe('SessionList (non-interactive)', () => {
   it('renders sessions and exits', async () => {
-    const sessions = [
-      makeSession({ id: 'sess-001', title: 'Fix login bug' }),
-    ];
+    const sessions = [makeSession({ id: 'sess-001', title: 'Fix login bug' })];
     const client = mockClient(sessions);
-    const { lastFrame } = render(
-      <SessionList client={client} />,
-    );
+    const { lastFrame } = render(<SessionList client={client} />);
     await vi.waitFor(() => {
       expect(lastFrame()).toContain('Fix login');
     });
@@ -140,9 +136,7 @@ describe('SessionList (non-interactive)', () => {
 
   it('shows empty message when no sessions', async () => {
     const client = mockClient([]);
-    const { lastFrame } = render(
-      <SessionList client={client} />,
-    );
+    const { lastFrame } = render(<SessionList client={client} />);
     await vi.waitFor(() => {
       expect(lastFrame()).toContain('No sessions');
     });

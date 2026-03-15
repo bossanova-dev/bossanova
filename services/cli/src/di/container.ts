@@ -1,6 +1,6 @@
 import 'reflect-metadata';
+import { type IpcClient, createIpcClient } from '@bossanova/shared';
 import { container } from 'tsyringe';
-import { createIpcClient, type IpcClient } from '@bossanova/shared';
 import { Service } from './tokens.js';
 
 export interface CliConfig {

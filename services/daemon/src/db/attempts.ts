@@ -17,9 +17,7 @@ function rowToAttempt(row: AttemptRow): Attempt {
 
 @injectable()
 export class AttemptStore {
-  constructor(
-    @inject(Service.Database) private database: DatabaseService,
-  ) {}
+  constructor(@inject(Service.Database) private database: DatabaseService) {}
 
   record(sessionId: string, trigger: Attempt['trigger']): Attempt {
     const db = this.database.getDb();
@@ -35,31 +33,26 @@ export class AttemptStore {
     return this.get(id)!;
   }
 
-  complete(
-    attemptId: string,
-    result: 'success' | 'failure',
-    error?: string | null,
-  ): void {
+  complete(attemptId: string, result: 'success' | 'failure', error?: string | null): void {
     const db = this.database.getDb();
-    db.prepare(
-      'UPDATE attempts SET completed_at = ?, result = ?, error = ? WHERE id = ?',
-    ).run(new Date().toISOString(), result, error ?? null, attemptId);
+    db.prepare('UPDATE attempts SET completed_at = ?, result = ?, error = ? WHERE id = ?').run(
+      new Date().toISOString(),
+      result,
+      error ?? null,
+      attemptId,
+    );
   }
 
   get(id: string): Attempt | null {
     const db = this.database.getDb();
-    const row = db
-      .prepare('SELECT * FROM attempts WHERE id = ?')
-      .get(id) as AttemptRow | undefined;
+    const row = db.prepare('SELECT * FROM attempts WHERE id = ?').get(id) as AttemptRow | undefined;
     return row ? rowToAttempt(row) : null;
   }
 
   listBySession(sessionId: string): Attempt[] {
     const db = this.database.getDb();
     const rows = db
-      .prepare(
-        'SELECT * FROM attempts WHERE session_id = ? ORDER BY started_at DESC',
-      )
+      .prepare('SELECT * FROM attempts WHERE session_id = ? ORDER BY started_at DESC')
       .all(sessionId) as AttemptRow[];
     return rows.map(rowToAttempt);
   }

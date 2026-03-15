@@ -1,5 +1,11 @@
 import 'reflect-metadata';
 import { container } from 'tsyringe';
+import { AttemptStore } from '~/db/attempts';
+import { DatabaseService } from '~/db/database';
+import { RepoStore } from '~/db/repos';
+import { SessionStore } from '~/db/sessions';
+import { Dispatcher } from '~/ipc/dispatcher';
+import { IpcServer } from '~/ipc/server';
 import { Service } from './tokens.js';
 
 export interface DaemonConfig {
@@ -34,8 +40,13 @@ export function setupContainer(config: Partial<DaemonConfig> = {}): typeof conta
   container.register(Service.Config, { useValue: resolved });
   container.register(Service.Logger, { useValue: consoleLogger });
 
-  // Database, stores registered lazily via @injectable() + @inject() decorators
-  // tsyringe resolves them from the container when first requested
+  // Register classes so tsyringe resolves them with @inject() decorators
+  container.register(Service.Database, { useClass: DatabaseService });
+  container.register(Service.RepoStore, { useClass: RepoStore });
+  container.register(Service.SessionStore, { useClass: SessionStore });
+  container.register(Service.AttemptStore, { useClass: AttemptStore });
+  container.register(Service.Dispatcher, { useClass: Dispatcher });
+  container.register(Service.IpcServer, { useClass: IpcServer });
 
   return container;
 }

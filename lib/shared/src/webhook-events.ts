@@ -1,14 +1,8 @@
 // --- GitHub Webhook Events (subset relevant to Bossanova) ---
 
 export interface WebhookPullRequestEvent {
-  type: "pull_request";
-  action:
-    | "opened"
-    | "closed"
-    | "reopened"
-    | "synchronize"
-    | "edited"
-    | "review_requested";
+  type: 'pull_request';
+  action: 'opened' | 'closed' | 'reopened' | 'synchronize' | 'edited' | 'review_requested';
   repoFullName: string;
   prNumber: number;
   prUrl: string;
@@ -18,46 +12,46 @@ export interface WebhookPullRequestEvent {
 }
 
 export interface WebhookCheckRunEvent {
-  type: "check_run";
-  action: "completed" | "created" | "rerequested";
+  type: 'check_run';
+  action: 'completed' | 'created' | 'rerequested';
   repoFullName: string;
   checkName: string;
   conclusion:
-    | "success"
-    | "failure"
-    | "neutral"
-    | "cancelled"
-    | "timed_out"
-    | "action_required"
-    | "skipped"
+    | 'success'
+    | 'failure'
+    | 'neutral'
+    | 'cancelled'
+    | 'timed_out'
+    | 'action_required'
+    | 'skipped'
     | null;
   headSha: string;
   prNumbers: number[];
 }
 
 export interface WebhookCheckSuiteEvent {
-  type: "check_suite";
-  action: "completed" | "requested" | "rerequested";
+  type: 'check_suite';
+  action: 'completed' | 'requested' | 'rerequested';
   repoFullName: string;
   conclusion:
-    | "success"
-    | "failure"
-    | "neutral"
-    | "cancelled"
-    | "timed_out"
-    | "action_required"
-    | "skipped"
+    | 'success'
+    | 'failure'
+    | 'neutral'
+    | 'cancelled'
+    | 'timed_out'
+    | 'action_required'
+    | 'skipped'
     | null;
   headSha: string;
   prNumbers: number[];
 }
 
 export interface WebhookPullRequestReviewEvent {
-  type: "pull_request_review";
-  action: "submitted" | "edited" | "dismissed";
+  type: 'pull_request_review';
+  action: 'submitted' | 'edited' | 'dismissed';
   repoFullName: string;
   prNumber: number;
-  state: "approved" | "changes_requested" | "commented" | "dismissed";
+  state: 'approved' | 'changes_requested' | 'commented' | 'dismissed';
   body: string | null;
 }
 
@@ -70,7 +64,7 @@ export type WebhookEvent =
 // --- Daemon Events (simplified events sent to daemon) ---
 
 export interface DaemonCheckFailedEvent {
-  type: "check_failed";
+  type: 'check_failed';
   sessionId: string;
   payload: {
     checkName: string;
@@ -80,7 +74,7 @@ export interface DaemonCheckFailedEvent {
 }
 
 export interface DaemonPrUpdatedEvent {
-  type: "pr_updated";
+  type: 'pr_updated';
   sessionId: string;
   payload: {
     action: string;
@@ -90,7 +84,7 @@ export interface DaemonPrUpdatedEvent {
 }
 
 export interface DaemonConflictDetectedEvent {
-  type: "conflict_detected";
+  type: 'conflict_detected';
   sessionId: string;
   payload: {
     prNumber: number;
@@ -99,11 +93,11 @@ export interface DaemonConflictDetectedEvent {
 }
 
 export interface DaemonReviewSubmittedEvent {
-  type: "review_submitted";
+  type: 'review_submitted';
   sessionId: string;
   payload: {
     prNumber: number;
-    state: "approved" | "changes_requested" | "commented" | "dismissed";
+    state: 'approved' | 'changes_requested' | 'commented' | 'dismissed';
     body: string | null;
   };
 }
@@ -114,4 +108,4 @@ export type DaemonEvent =
   | DaemonConflictDetectedEvent
   | DaemonReviewSubmittedEvent;
 
-export type DaemonEventType = DaemonEvent["type"];
+export type DaemonEventType = DaemonEvent['type'];

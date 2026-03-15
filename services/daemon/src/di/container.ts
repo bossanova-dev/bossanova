@@ -40,13 +40,13 @@ export function setupContainer(config: Partial<DaemonConfig> = {}): typeof conta
   container.register(Service.Config, { useValue: resolved });
   container.register(Service.Logger, { useValue: consoleLogger });
 
-  // Register classes so tsyringe resolves them with @inject() decorators
-  container.register(Service.Database, { useClass: DatabaseService });
-  container.register(Service.RepoStore, { useClass: RepoStore });
-  container.register(Service.SessionStore, { useClass: SessionStore });
-  container.register(Service.AttemptStore, { useClass: AttemptStore });
-  container.register(Service.Dispatcher, { useClass: Dispatcher });
-  container.register(Service.IpcServer, { useClass: IpcServer });
+  // Register as singletons so all consumers share the same instance
+  container.registerSingleton(Service.Database, DatabaseService);
+  container.registerSingleton(Service.RepoStore, RepoStore);
+  container.registerSingleton(Service.SessionStore, SessionStore);
+  container.registerSingleton(Service.AttemptStore, AttemptStore);
+  container.registerSingleton(Service.Dispatcher, Dispatcher);
+  container.registerSingleton(Service.IpcServer, IpcServer);
 
   return container;
 }

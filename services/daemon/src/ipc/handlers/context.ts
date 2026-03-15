@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import type { ContextResolveResult } from '@bossanova/shared';
 import type { RepoStore } from '~/db/repos';
 import type { SessionStore } from '~/db/sessions';
@@ -46,7 +47,6 @@ export function resolveContext(
   let mainRepoPath = gitRoot;
   if (isWorktree) {
     // Resolve the absolute path of the common dir, then find its repo root
-    const { resolve } = require('node:path') as typeof import('node:path');
     const absCommonDir = resolve(gitRoot, commonDir);
     // Common dir is the .git dir of the main repo — its parent is the repo root
     mainRepoPath = resolve(absCommonDir, '..');

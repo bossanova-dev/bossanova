@@ -28,11 +28,7 @@ export class ClaudeSupervisor {
   }
 
   /** Start a new Claude session in a worktree. */
-  async start(
-    sessionId: string,
-    worktreePath: string,
-    plan: string,
-  ): Promise<void> {
+  async start(sessionId: string, worktreePath: string, plan: string): Promise<void> {
     if (this.sessions.has(sessionId)) {
       throw new Error(`Session ${sessionId} is already running`);
     }
@@ -72,11 +68,7 @@ export class ClaudeSupervisor {
   }
 
   /** Resume a paused session with the same plan. */
-  async resume(
-    sessionId: string,
-    worktreePath: string,
-    plan: string,
-  ): Promise<void> {
+  async resume(sessionId: string, worktreePath: string, plan: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session || session.status !== 'paused') {
       throw new Error(`Session ${sessionId} is not paused`);
@@ -113,10 +105,7 @@ export class ClaudeSupervisor {
     this.sessions.delete(sessionId);
   }
 
-  private async consumeMessages(
-    sessionId: string,
-    supervised: SupervisedSession,
-  ): Promise<void> {
+  private async consumeMessages(sessionId: string, supervised: SupervisedSession): Promise<void> {
     try {
       for await (const message of supervised.handle.messages) {
         // Capture the Claude SDK session ID from the init message

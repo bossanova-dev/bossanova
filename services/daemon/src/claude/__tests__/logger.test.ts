@@ -104,7 +104,12 @@ describe('session logger', () => {
         num_turns: 3,
         stop_reason: 'end_turn',
         total_cost_usd: 0.05,
-        usage: { input_tokens: 200, output_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        usage: {
+          input_tokens: 200,
+          output_tokens: 100,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
         modelUsage: {},
         permission_denials: [],
       } as unknown as SDKMessage;

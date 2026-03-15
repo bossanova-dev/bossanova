@@ -185,14 +185,22 @@ export class Dispatcher {
   }
 
   private async handleSessionRemove(params: SessionRemoveParams): Promise<SessionRemoveResult> {
-    const removed = await removeSession(this.repos, this.sessions, params.sessionId, this.supervisor);
+    const removed = await removeSession(
+      this.repos,
+      this.sessions,
+      params.sessionId,
+      this.supervisor,
+    );
     return { removed };
   }
 
   private handleSessionStop(params: SessionStopParams): SessionStopResult {
     try {
       this.supervisor.stop(params.sessionId);
-      this.sessions.update(params.sessionId, { state: 'blocked', blockedReason: 'Stopped by user' });
+      this.sessions.update(params.sessionId, {
+        state: 'blocked',
+        blockedReason: 'Stopped by user',
+      });
       return { stopped: true };
     } catch {
       return { stopped: false };

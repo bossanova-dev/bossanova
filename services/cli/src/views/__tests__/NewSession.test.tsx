@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import type { ContextResolveResult, IpcClient, Repo, Session } from '@bossanova/shared';
 import { render } from 'ink-testing-library';
 import React from 'react';
+import { describe, expect, it, vi } from 'vitest';
 import { NewSession } from '../NewSession.js';
-import type { IpcClient, Repo, ContextResolveResult, Session } from '@bossanova/shared';
 
 function makeRepo(overrides: Partial<Repo> = {}): Repo {
   return {
@@ -67,11 +67,7 @@ describe('NewSession', () => {
   it('shows repo picker when not inside a repo', async () => {
     const client = mockClient([makeRepo()], { type: 'none' });
     const { lastFrame } = render(
-      <NewSession
-        client={client}
-        onDone={() => {}}
-        onCancel={() => {}}
-      />,
+      <NewSession client={client} onDone={() => {}} onCancel={() => {}} />,
     );
     await vi.waitFor(() => {
       expect(lastFrame()).toContain('Select a repository');
@@ -83,11 +79,7 @@ describe('NewSession', () => {
     const context: ContextResolveResult = { type: 'repo', repoId: 'repo-001' };
     const client = mockClient([repo], context);
     const { lastFrame } = render(
-      <NewSession
-        client={client}
-        onDone={() => {}}
-        onCancel={() => {}}
-      />,
+      <NewSession client={client} onDone={() => {}} onCancel={() => {}} />,
     );
     // Should skip to mode selection
     await vi.waitFor(() => {
@@ -98,11 +90,7 @@ describe('NewSession', () => {
   it('shows error when no repos registered', async () => {
     const client = mockClient([], { type: 'none' });
     const { lastFrame } = render(
-      <NewSession
-        client={client}
-        onDone={() => {}}
-        onCancel={() => {}}
-      />,
+      <NewSession client={client} onDone={() => {}} onCancel={() => {}} />,
     );
     await vi.waitFor(() => {
       expect(lastFrame()).toContain('No repositories registered');
@@ -113,11 +101,7 @@ describe('NewSession', () => {
     const context: ContextResolveResult = { type: 'repo', repoId: 'repo-001' };
     const client = mockClient([makeRepo()], context);
     const { lastFrame } = render(
-      <NewSession
-        client={client}
-        onDone={() => {}}
-        onCancel={() => {}}
-      />,
+      <NewSession client={client} onDone={() => {}} onCancel={() => {}} />,
     );
     await vi.waitFor(() => {
       const frame = lastFrame();

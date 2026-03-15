@@ -1,7 +1,7 @@
+import type { ContextResolveResult, IpcClient, Repo } from '@bossanova/shared';
 import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import React, { useEffect, useState } from 'react';
-import type { IpcClient, Repo, ContextResolveResult } from '@bossanova/shared';
 
 type Step = 'path' | 'confirm' | 'setup-script' | 'registering' | 'done' | 'error';
 
@@ -102,7 +102,9 @@ export function AddRepo({ client, onDone, onCancel }: AddRepoProps) {
             }}
           />
         </Box>
-        <Text dimColor>{'\n'}Enter the path to a Git repository, then press Enter. Esc to cancel.</Text>
+        <Text dimColor>
+          {'\n'}Enter the path to a Git repository, then press Enter. Esc to cancel.
+        </Text>
       </Box>
     );
   }
@@ -111,9 +113,9 @@ export function AddRepo({ client, onDone, onCancel }: AddRepoProps) {
     return (
       <Box flexDirection="column">
         <Text bold>Detected repository:</Text>
-        <Text>  Name:    {detectedInfo?.name}</Text>
-        <Text>  Origin:  {detectedInfo?.originUrl}</Text>
-        <Text>  Path:    {path}</Text>
+        <Text> Name: {detectedInfo?.name}</Text>
+        <Text> Origin: {detectedInfo?.originUrl}</Text>
+        <Text> Path: {path}</Text>
         <Box marginTop={1}>
           <Text dimColor>Press Enter to continue, Esc to cancel.</Text>
         </Box>

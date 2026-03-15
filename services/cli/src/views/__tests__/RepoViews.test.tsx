@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import type { ContextResolveResult, IpcClient, Repo } from '@bossanova/shared';
 import { render } from 'ink-testing-library';
 import React from 'react';
+import { describe, expect, it, vi } from 'vitest';
 import { AddRepo } from '../AddRepo.js';
 import { RepoList, RepoRemove } from '../RepoList.js';
-import type { IpcClient, Repo, ContextResolveResult } from '@bossanova/shared';
 
 function makeRepo(overrides: Partial<Repo> = {}): Repo {
   return {
@@ -44,9 +44,7 @@ function mockClient(
 describe('AddRepo', () => {
   it('shows path input on start', () => {
     const client = mockClient();
-    const { lastFrame } = render(
-      <AddRepo client={client} onDone={() => {}} onCancel={() => {}} />,
-    );
+    const { lastFrame } = render(<AddRepo client={client} onDone={() => {}} onCancel={() => {}} />);
     expect(lastFrame()).toContain('Add a repository');
   });
 });
@@ -78,18 +76,14 @@ describe('RepoList', () => {
 describe('RepoRemove', () => {
   it('shows confirmation prompt', () => {
     const client = mockClient();
-    const { lastFrame } = render(
-      <RepoRemove client={client} repoId="repo-001" />,
-    );
+    const { lastFrame } = render(<RepoRemove client={client} repoId="repo-001" />);
     expect(lastFrame()).toContain('Remove repository');
     expect(lastFrame()).toContain('repo-001');
   });
 
   it('removes on y input', async () => {
     const client = mockClient();
-    const { lastFrame, stdin } = render(
-      <RepoRemove client={client} repoId="repo-001" />,
-    );
+    const { lastFrame, stdin } = render(<RepoRemove client={client} repoId="repo-001" />);
     stdin.write('y');
     await vi.waitFor(() => {
       expect(lastFrame()).toContain('removed');

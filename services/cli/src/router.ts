@@ -64,7 +64,8 @@ export function resolveRoute(parsed: ParsedArgs): Route {
     case 'ls':
       return { view: 'ls' };
     case 'attach':
-      if (!parsed.positional[0]) return { view: 'error', message: 'Usage: boss attach <session-id>' };
+      if (!parsed.positional[0])
+        return { view: 'error', message: 'Usage: boss attach <session-id>' };
       return { view: 'attach', sessionId: parsed.positional[0] };
     case 'stop':
     case 'pause':
@@ -73,7 +74,8 @@ export function resolveRoute(parsed: ParsedArgs): Route {
     case 'retry':
     case 'close':
     case 'rm':
-      if (!parsed.positional[0]) return { view: 'error', message: `Usage: boss ${parsed.command} <session-id>` };
+      if (!parsed.positional[0])
+        return { view: 'error', message: `Usage: boss ${parsed.command} <session-id>` };
       return { view: 'session-action', action: parsed.command, sessionId: parsed.positional[0] };
     case 'repo':
       switch (parsed.subcommand) {
@@ -82,7 +84,8 @@ export function resolveRoute(parsed: ParsedArgs): Route {
         case 'ls':
           return { view: 'repo-ls' };
         case 'remove':
-          if (!parsed.positional[0]) return { view: 'error', message: 'Usage: boss repo remove <repo-id>' };
+          if (!parsed.positional[0])
+            return { view: 'error', message: 'Usage: boss repo remove <repo-id>' };
           return { view: 'repo-remove', repoId: parsed.positional[0] };
         default:
           return { view: 'error', message: 'Usage: boss repo <add|ls|remove>' };

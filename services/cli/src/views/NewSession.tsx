@@ -1,7 +1,7 @@
+import type { ContextResolveResult, IpcClient, Repo } from '@bossanova/shared';
 import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
 import React, { useEffect, useState } from 'react';
-import type { IpcClient, Repo, ContextResolveResult } from '@bossanova/shared';
 
 // --- Step types ---
 
@@ -22,12 +22,7 @@ export interface NewSessionProps {
   onCancel: () => void;
 }
 
-export function NewSession({
-  client,
-  initialPlan,
-  onDone,
-  onCancel,
-}: NewSessionProps) {
+export function NewSession({ client, initialPlan, onDone, onCancel }: NewSessionProps) {
   const { exit } = useApp();
   const [step, setStep] = useState<Step>('repo');
   const [error, setError] = useState<string | null>(null);
@@ -141,7 +136,7 @@ export function NewSession({
           (async () => {
             try {
               const session = await client.call('session.create', {
-                repoId: selectedRepo!.id,
+                repoId: selectedRepo?.id ?? '',
                 title: title || plan.slice(0, 60),
                 plan,
                 ...(selectedPr ? { prNumber: selectedPr.number } : {}),
@@ -171,11 +166,7 @@ export function NewSession({
   }
 
   if (step === 'done') {
-    return (
-      <Text color="green">
-        Session created: {createdSessionId}
-      </Text>
-    );
+    return <Text color="green">Session created: {createdSessionId}</Text>;
   }
 
   if (step === 'repo') {
@@ -258,9 +249,9 @@ export function NewSession({
     return (
       <Box flexDirection="column">
         <Text bold>Confirm new session:</Text>
-        <Text>  Repo:   {selectedRepo?.displayName}</Text>
-        <Text>  Mode:   {selectedPr ? `Existing PR #${selectedPr.number}` : 'New PR'}</Text>
-        <Text>  Plan:   {plan}</Text>
+        <Text> Repo: {selectedRepo?.displayName}</Text>
+        <Text> Mode: {selectedPr ? `Existing PR #${selectedPr.number}` : 'New PR'}</Text>
+        <Text> Plan: {plan}</Text>
         <Box marginTop={1}>
           <Text dimColor>Press Enter to create, Esc to cancel.</Text>
         </Box>

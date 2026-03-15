@@ -1,22 +1,22 @@
 #!/usr/bin/env node
 import 'reflect-metadata';
+import type { IpcClient } from '@bossanova/shared';
 import { Text, render } from 'ink';
 import React from 'react';
 import { container, setupContainer } from './di/container.js';
 import { Service } from './di/tokens.js';
-import { parseArgs, resolveRoute, type Route } from './router.js';
+import { type Route, parseArgs, resolveRoute } from './router.js';
+import { AddRepo } from './views/AddRepo.js';
 import { HomeScreen, SessionList } from './views/HomeScreen.js';
 import { NewSession } from './views/NewSession.js';
-import { AddRepo } from './views/AddRepo.js';
 import { RepoList, RepoRemove } from './views/RepoList.js';
-import type { IpcClient } from '@bossanova/shared';
 
 // --- Stub views (replaced in subsequent tasks) ---
 
 function HelpView() {
   return (
     <Text>
-{`boss — Bossanova CLI
+      {`boss — Bossanova CLI
 
 Usage:
   boss                    Interactive home screen
@@ -58,9 +58,15 @@ export function App({ route, client }: { route: Route; client: IpcClient }) {
       return (
         <HomeScreen
           client={client}
-          onNewSession={() => {/* TODO: navigate to new session */}}
-          onAddRepo={() => {/* TODO: navigate to add repo */}}
-          onAttach={() => {/* TODO: navigate to attach */}}
+          onNewSession={() => {
+            /* TODO: navigate to new session */
+          }}
+          onAddRepo={() => {
+            /* TODO: navigate to add repo */
+          }}
+          onAttach={() => {
+            /* TODO: navigate to attach */
+          }}
         />
       );
     case 'new':
@@ -68,7 +74,9 @@ export function App({ route, client }: { route: Route; client: IpcClient }) {
         <NewSession
           client={client}
           initialPlan={route.plan}
-          onDone={() => {/* TODO: attach to session */}}
+          onDone={() => {
+            /* TODO: attach to session */
+          }}
           onCancel={() => process.exit(0)}
         />
       );
@@ -82,7 +90,9 @@ export function App({ route, client }: { route: Route; client: IpcClient }) {
       return (
         <AddRepo
           client={client}
-          onDone={() => {/* TODO: return to home */}}
+          onDone={() => {
+            /* TODO: return to home */
+          }}
           onCancel={() => process.exit(0)}
         />
       );

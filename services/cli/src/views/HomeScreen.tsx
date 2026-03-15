@@ -1,6 +1,6 @@
+import type { DaemonNotRunningError, IpcClient, Session } from '@bossanova/shared';
 import { Box, Text, useApp, useInput } from 'ink';
 import React, { useCallback, useEffect, useState } from 'react';
-import type { IpcClient, Session, DaemonNotRunningError } from '@bossanova/shared';
 
 // --- State color mapping ---
 
@@ -63,13 +63,7 @@ function pad(str: string, width: number): string {
 
 // --- SessionRow component ---
 
-function SessionRow({
-  session,
-  selected,
-}: {
-  session: Session;
-  selected: boolean;
-}) {
+function SessionRow({ session, selected }: { session: Session; selected: boolean }) {
   const color = stateColor(session.state);
   const prefix = selected ? '▸ ' : '  ';
   return (
@@ -115,9 +109,18 @@ function ActionBar() {
   return (
     <Box marginTop={1}>
       <Text dimColor>
-        <Text bold color="cyan">n</Text> New Session{'  '}
-        <Text bold color="cyan">r</Text> Add Repo{'  '}
-        <Text bold color="cyan">q</Text> Quit
+        <Text bold color="cyan">
+          n
+        </Text>{' '}
+        New Session{'  '}
+        <Text bold color="cyan">
+          r
+        </Text>{' '}
+        Add Repo{'  '}
+        <Text bold color="cyan">
+          q
+        </Text>{' '}
+        Quit
       </Text>
     </Box>
   );
@@ -133,13 +136,7 @@ export interface HomeScreenProps {
   onAttach: (sessionId: string) => void;
 }
 
-export function HomeScreen({
-  client,
-  repoId,
-  onNewSession,
-  onAddRepo,
-  onAttach,
-}: HomeScreenProps) {
+export function HomeScreen({ client, repoId, onNewSession, onAddRepo, onAttach }: HomeScreenProps) {
   const { exit } = useApp();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -217,13 +214,11 @@ export function HomeScreen({
 
   return (
     <Box flexDirection="column">
-      <Text bold>
-        boss{repoId ? ` (repo: ${repoId})` : ''}
-      </Text>
+      <Text bold>boss{repoId ? ` (repo: ${repoId})` : ''}</Text>
       <Box marginTop={1} flexDirection="column">
         <Header />
         {sessions.length === 0 ? (
-          <Text dimColor>  No sessions. Press n to create one.</Text>
+          <Text dimColor> No sessions. Press n to create one.</Text>
         ) : (
           sessions.map((s, i) => (
             <SessionRow key={s.id} session={s} selected={i === selectedIndex} />
@@ -261,7 +256,7 @@ export function SessionList({ client, repoId }: SessionListProps) {
         }
       }
     })();
-  }, [client, repoId, exit]);
+  }, [client, repoId]);
 
   // Exit after render when data is ready
   useEffect(() => {

@@ -33,7 +33,12 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
         result: `Done: ${prompt}`,
         stop_reason: 'end_turn',
         total_cost_usd: 0.01,
-        usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
         modelUsage: {},
         permission_denials: [],
       };
@@ -60,9 +65,7 @@ describe('ClaudeSupervisor', () => {
     const supervisor = new ClaudeSupervisor();
     await supervisor.start('s2', '/tmp/wt', 'Plan A');
 
-    await expect(supervisor.start('s2', '/tmp/wt', 'Plan B')).rejects.toThrow(
-      'already running',
-    );
+    await expect(supervisor.start('s2', '/tmp/wt', 'Plan B')).rejects.toThrow('already running');
   });
 
   it('forwards messages to the callback', async () => {

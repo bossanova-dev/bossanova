@@ -63,18 +63,13 @@ export async function fetchLatest(cwd: string): Promise<void> {
 }
 
 /** Check if the current branch has merge conflicts with a base branch. */
-export async function hasConflictsWithBase(
-  cwd: string,
-  baseBranch: string,
-): Promise<boolean> {
+export async function hasConflictsWithBase(cwd: string, baseBranch: string): Promise<boolean> {
   try {
     // Try a merge-tree check (dry run)
     const { stdout: headSha } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd });
-    const { stdout: baseSha } = await execFileAsync(
-      'git',
-      ['rev-parse', `origin/${baseBranch}`],
-      { cwd },
-    );
+    const { stdout: baseSha } = await execFileAsync('git', ['rev-parse', `origin/${baseBranch}`], {
+      cwd,
+    });
     const { stdout: mergeBaseSha } = await execFileAsync(
       'git',
       ['merge-base', headSha.trim(), baseSha.trim()],

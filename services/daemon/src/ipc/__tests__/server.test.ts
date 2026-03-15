@@ -53,7 +53,13 @@ describe('IpcServer', () => {
     const repos = new RepoStore(db);
     const sessions = new SessionStore(db);
     const attempts = new AttemptStore(db);
-    const dispatcher = new Dispatcher(repos, sessions, attempts, noopLogger, new ClaudeSupervisor());
+    const dispatcher = new Dispatcher(
+      repos,
+      sessions,
+      attempts,
+      noopLogger,
+      new ClaudeSupervisor(),
+    );
 
     socketPath = path.join(os.tmpdir(), `bossd-test-${process.pid}-${Date.now()}.sock`);
     const config = { dbPath: ':memory:', socketPath, logLevel: 'info' as const };

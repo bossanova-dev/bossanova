@@ -34,7 +34,12 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
         result: `Implemented: ${prompt}`,
         stop_reason: 'end_turn',
         total_cost_usd: 0.01,
-        usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
         modelUsage: {},
         permission_denials: [],
       };

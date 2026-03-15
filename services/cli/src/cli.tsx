@@ -7,6 +7,7 @@ import { container, setupContainer } from './di/container.js';
 import { Service } from './di/tokens.js';
 import { type Route, parseArgs, resolveRoute } from './router.js';
 import { AddRepo } from './views/AddRepo.js';
+import { AttachView } from './views/AttachView.js';
 import { HomeScreen, SessionList } from './views/HomeScreen.js';
 import { NewSession } from './views/NewSession.js';
 import { RepoList, RepoRemove } from './views/RepoList.js';
@@ -83,7 +84,7 @@ export function App({ route, client }: { route: Route; client: IpcClient }) {
     case 'ls':
       return <SessionList client={client} />;
     case 'attach':
-      return <StubView label={`attach ${route.sessionId}`} />;
+      return <AttachView client={client} sessionId={route.sessionId} />;
     case 'session-action':
       return <StubView label={`${route.action} ${route.sessionId}`} />;
     case 'repo-add':

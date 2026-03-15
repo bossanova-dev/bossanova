@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { container } from 'tsyringe';
+import { ClaudeSupervisor } from '~/claude/supervisor';
 import { AttemptStore } from '~/db/attempts';
 import { DatabaseService } from '~/db/database';
 import { RepoStore } from '~/db/repos';
@@ -45,6 +46,7 @@ export function setupContainer(config: Partial<DaemonConfig> = {}): typeof conta
   container.registerSingleton(Service.RepoStore, RepoStore);
   container.registerSingleton(Service.SessionStore, SessionStore);
   container.registerSingleton(Service.AttemptStore, AttemptStore);
+  container.register(Service.ClaudeSupervisor, { useValue: new ClaudeSupervisor() });
   container.registerSingleton(Service.Dispatcher, Dispatcher);
   container.registerSingleton(Service.IpcServer, IpcServer);
 

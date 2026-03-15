@@ -9,4 +9,5 @@ export const Service = {
   Logger: Symbol.for('Service.Logger'),
   Dispatcher: Symbol.for('Service.Dispatcher'),
   IpcServer: Symbol.for('Service.IpcServer'),
+  ClaudeSupervisor: Symbol.for('Service.ClaudeSupervisor'),
 } as const;

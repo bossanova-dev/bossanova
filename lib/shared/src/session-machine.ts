@@ -1,43 +1,42 @@
-import { assign, setup } from "xstate";
+import { assign, setup } from 'xstate';
 
 // --- State Enum ---
 
 export const SessionState = {
-  CreatingWorktree: "creating_worktree",
-  StartingClaude: "starting_claude",
-  PushingBranch: "pushing_branch",
-  OpeningDraftPr: "opening_draft_pr",
-  ImplementingPlan: "implementing_plan",
-  AwaitingChecks: "awaiting_checks",
-  FixingChecks: "fixing_checks",
-  GreenDraft: "green_draft",
-  ReadyForReview: "ready_for_review",
-  Blocked: "blocked",
-  Merged: "merged",
-  Closed: "closed",
+  CreatingWorktree: 'creating_worktree',
+  StartingClaude: 'starting_claude',
+  PushingBranch: 'pushing_branch',
+  OpeningDraftPr: 'opening_draft_pr',
+  ImplementingPlan: 'implementing_plan',
+  AwaitingChecks: 'awaiting_checks',
+  FixingChecks: 'fixing_checks',
+  GreenDraft: 'green_draft',
+  ReadyForReview: 'ready_for_review',
+  Blocked: 'blocked',
+  Merged: 'merged',
+  Closed: 'closed',
 } as const;
 
-export type SessionStateValue =
-  (typeof SessionState)[keyof typeof SessionState];
+export type SessionStateValue = (typeof SessionState)[keyof typeof SessionState];
 
 // --- Event Types ---
 
 export type SessionEvent =
-  | { type: "WORKTREE_CREATED"; worktreePath: string; branchName: string }
-  | { type: "CLAUDE_STARTED"; claudeSessionId: string }
-  | { type: "PLAN_COMPLETE" }
-  | { type: "BRANCH_PUSHED"; sha: string }
-  | { type: "PR_OPENED"; prNumber: number; prUrl: string }
-  | { type: "CHECKS_PASSED" }
-  | { type: "CHECKS_FAILED" }
-  | { type: "CONFLICT_DETECTED" }
-  | { type: "REVIEW_SUBMITTED" }
-  | { type: "FIX_COMPLETE" }
-  | { type: "FIX_FAILED"; reason: string }
-  | { type: "BLOCK"; reason: string }
-  | { type: "UNBLOCK" }
-  | { type: "PR_MERGED" }
-  | { type: "PR_CLOSED" };
+  | { type: 'WORKTREE_CREATED'; worktreePath: string; branchName: string }
+  | { type: 'CLAUDE_STARTED'; claudeSessionId: string }
+  | { type: 'PLAN_COMPLETE' }
+  | { type: 'BRANCH_PUSHED'; sha: string }
+  | { type: 'PR_OPENED'; prNumber: number; prUrl: string }
+  | { type: 'CHECKS_PASSED' }
+  | { type: 'CHECKS_FAILED' }
+  | { type: 'CONFLICT_DETECTED' }
+  | { type: 'REVIEW_SUBMITTED' }
+  | { type: 'FIX_COMPLETE' }
+  | { type: 'FIX_FAILED'; reason: string }
+  | { type: 'BLOCK'; reason: string }
+  | { type: 'UNBLOCK' }
+  | { type: 'PR_MERGED' }
+  | { type: 'PR_CLOSED' };
 
 // --- Context Type ---
 
@@ -54,7 +53,7 @@ export interface SessionContext {
   attemptCount: number;
   maxAttempts: number;
   blockedReason: string | null;
-  lastCheckState: "pending" | "passed" | "failed" | null;
+  lastCheckState: 'pending' | 'passed' | 'failed' | null;
 }
 
 // --- Input Type ---
@@ -76,25 +75,24 @@ export const sessionMachine = setup({
     input: {} as SessionMachineInput,
   },
   guards: {
-    hasReachedMaxAttempts: ({ context }) =>
-      context.attemptCount >= context.maxAttempts,
+    hasReachedMaxAttempts: ({ context }) => context.attemptCount + 1 >= context.maxAttempts,
   },
   actions: {
     incrementAttemptCount: assign({
       attemptCount: ({ context }) => context.attemptCount + 1,
     }),
     setChecksPassed: assign({
-      lastCheckState: () => "passed" as const,
+      lastCheckState: () => 'passed' as const,
     }),
     setChecksFailed: assign({
-      lastCheckState: () => "failed" as const,
+      lastCheckState: () => 'failed' as const,
     }),
     clearBlockedReason: assign({
       blockedReason: () => null,
     }),
   },
 }).createMachine({
-  id: "session",
+  id: 'session',
   initial: SessionState.CreatingWorktree,
   context: ({ input }) => ({
     repoId: input.repoId,
@@ -197,31 +195,31 @@ export const sessionMachine = setup({
       on: {
         CHECKS_PASSED: {
           target: SessionState.GreenDraft,
-          actions: "setChecksPassed",
+          actions: 'setChecksPassed',
         },
         CHECKS_FAILED: [
           {
-            guard: "hasReachedMaxAttempts",
+            guard: 'hasReachedMaxAttempts',
             target: SessionState.Blocked,
             actions: [
-              "setChecksFailed",
+              'setChecksFailed',
               assign({
-                blockedReason: () => "Max fix attempts reached",
+                blockedReason: () => 'Max fix attempts reached',
               }),
             ],
           },
           {
             target: SessionState.FixingChecks,
-            actions: ["setChecksFailed", "incrementAttemptCount"],
+            actions: ['setChecksFailed', 'incrementAttemptCount'],
           },
         ],
         CONFLICT_DETECTED: {
           target: SessionState.FixingChecks,
-          actions: "incrementAttemptCount",
+          actions: 'incrementAttemptCount',
         },
         REVIEW_SUBMITTED: {
           target: SessionState.FixingChecks,
-          actions: "incrementAttemptCount",
+          actions: 'incrementAttemptCount',
         },
         PR_MERGED: { target: SessionState.Merged },
         PR_CLOSED: { target: SessionState.Closed },
@@ -241,7 +239,7 @@ export const sessionMachine = setup({
         },
         FIX_FAILED: [
           {
-            guard: "hasReachedMaxAttempts",
+            guard: 'hasReachedMaxAttempts',
             target: SessionState.Blocked,
             actions: assign({
               blockedReason: ({ event }) => event.reason,
@@ -264,15 +262,15 @@ export const sessionMachine = setup({
       on: {
         CHECKS_FAILED: {
           target: SessionState.FixingChecks,
-          actions: ["setChecksFailed", "incrementAttemptCount"],
+          actions: ['setChecksFailed', 'incrementAttemptCount'],
         },
         REVIEW_SUBMITTED: {
           target: SessionState.FixingChecks,
-          actions: "incrementAttemptCount",
+          actions: 'incrementAttemptCount',
         },
         CONFLICT_DETECTED: {
           target: SessionState.FixingChecks,
-          actions: "incrementAttemptCount",
+          actions: 'incrementAttemptCount',
         },
         PR_MERGED: { target: SessionState.Merged },
         PR_CLOSED: { target: SessionState.Closed },
@@ -283,15 +281,15 @@ export const sessionMachine = setup({
       on: {
         CHECKS_FAILED: {
           target: SessionState.FixingChecks,
-          actions: ["setChecksFailed", "incrementAttemptCount"],
+          actions: ['setChecksFailed', 'incrementAttemptCount'],
         },
         REVIEW_SUBMITTED: {
           target: SessionState.FixingChecks,
-          actions: "incrementAttemptCount",
+          actions: 'incrementAttemptCount',
         },
         CONFLICT_DETECTED: {
           target: SessionState.FixingChecks,
-          actions: "incrementAttemptCount",
+          actions: 'incrementAttemptCount',
         },
         PR_MERGED: { target: SessionState.Merged },
         PR_CLOSED: { target: SessionState.Closed },
@@ -302,13 +300,13 @@ export const sessionMachine = setup({
       on: {
         UNBLOCK: {
           target: SessionState.AwaitingChecks,
-          actions: "clearBlockedReason",
+          actions: 'clearBlockedReason',
         },
         PR_CLOSED: { target: SessionState.Closed },
       },
     },
 
-    [SessionState.Merged]: { type: "final" },
-    [SessionState.Closed]: { type: "final" },
+    [SessionState.Merged]: { type: 'final' },
+    [SessionState.Closed]: { type: 'final' },
   },
 });

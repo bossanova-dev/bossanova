@@ -18,14 +18,18 @@ This plan covers the full build from monorepo scaffolding through automated fix 
 | Formatting | Prettier + Biome | Consistent with madverts/core pattern |
 | Testing | Vitest | Modern, fast, TypeScript-native |
 | SQLite | better-sqlite3 | Node.js compatible (no bun:sqlite) |
+| SQLite migrations | Yes — versioned migrations | Schema evolves over time; `schema_version` table tracks current version |
+| State machine | XState v5 | Production-grade state machine with `setup().createMachine()` pattern; follows madverts/core |
+| Dependency injection | tsyringe | Lightweight DI with decorators; follows madverts/core services/flows pattern |
 | CLI framework | Ink v6 | React-based terminal UI |
 | Claude integration | @anthropic-ai/claude-agent-sdk | Official SDK |
 | Cloud services | Cloudflare Workers + Hono | 2 separate Workers (webhook + orchestrator) |
-| Transport | WebSocket + app-layer E2E encryption | Daemon opens persistent WSS to orchestrator |
-| Encryption | libsodium (tweetnacl-js) | App-layer E2E so bossanova.dev can't read traffic |
+| Transport | WebSocket + TLS (v1) | Daemon opens persistent WSS to orchestrator |
+| Encryption | E2E deferred to v2 (iOS) | v1 uses TLS only; app-layer E2E encryption added when a second peer (iOS app) exists |
 | Multiplexing | Frame-based over WebSocket | Channel 0=control, 1=PTY, 2=chat |
 | Scheduled sessions | Deferred to future phase | Focus on webhook-triggered automation first |
 | QUIC/WebRTC | Deferred to future phase | WebSocket is production-ready; QUIC/WebRTC for iOS P2P later |
+| Worktree setup script | Per-repo configurable | Repos can define a setup script (e.g. `pnpm install`) run after worktree creation |
 
 ## Monorepo Structure
 
@@ -68,6 +72,7 @@ Follows the madverts/core pattern: root workspace delegates `make format/lint/te
 - [ ] Create root `package.json` with pnpm workspace declarations for all 5 packages
   - Files: `package.json`, `pnpm-workspace.yaml`
   - Pattern: Follow madverts/core — `"private": true`, `"type": "module"`, devDependencies: `typescript`, `vitest`, `@biomejs/biome`, `prettier`
+  - Key shared deps: `xstate@^5`, `tsyringe@^4`, `reflect-metadata`
 - [ ] Create root `tsconfig.json` with base compiler options
   - Files: `tsconfig.json`
   - ES2022 target, ESNext module, bundler moduleResolution, strict, noEmit, `jsx: "react-jsx"`
@@ -103,21 +108,27 @@ Human reviews: Monorepo structure, naming conventions, Makefile targets, biome/p
 
 ### Tasks
 
-- [ ] Define session state enum and state machine transitions
-  - Files: `lib/shared/src/session-states.ts`
-  - `SessionState` enum: `creating_worktree`, `starting_claude`, `pushing_branch`, `opening_draft_pr`, `implementing_plan`, `awaiting_checks`, `fixing_checks`, `green_draft`, `ready_for_review`, `blocked`, `merged`, `closed`
-  - `VALID_TRANSITIONS: Record<SessionState, SessionState[]>` — allowed state transitions
-  - `isTerminalState(state): boolean`
+- [ ] Define session state machine using XState v5
+  - Files: `lib/shared/src/session-machine.ts`
+  - Use `setup().createMachine()` pattern (same as madverts/core welcome-web)
+  - States enum: `creating_worktree`, `starting_claude`, `pushing_branch`, `opening_draft_pr`, `implementing_plan`, `awaiting_checks`, `fixing_checks`, `green_draft`, `ready_for_review`, `blocked`, `merged`, `closed`
+  - Events enum: `WORKTREE_CREATED`, `CLAUDE_STARTED`, `BRANCH_PUSHED`, `PR_OPENED`, `PLAN_COMPLETE`, `CHECKS_PASSED`, `CHECKS_FAILED`, `CONFLICT_DETECTED`, `REVIEW_SUBMITTED`, `FIX_COMPLETE`, `FIX_FAILED`, `BLOCK`, `UNBLOCK`, `PR_MERGED`, `PR_CLOSED`
+  - Context type: session metadata (repoId, title, plan, worktreePath, branchName, prNumber, attemptCount, blockedReason, etc.)
+  - Guards: `hasReachedMaxAttempts`, `isPlanComplete`, `areChecksGreen`
+  - Actions: `incrementAttemptCount`, `setBlockedReason`, `clearBlockedReason`, `updatePrInfo`
+  - Actors (via `fromCallback`): `createWorktree`, `startClaude`, `pushBranch`, `openDraftPr`, `pollChecks`, `fixChecks`, `resolveConflict`, `handleReview` — these are defined as string references in `setup()` and provided at runtime by the daemon
+  - Export the machine definition, state enum, event types, and context type
 - [ ] Define core domain types (Repo, Session) and database row types
   - Files: `lib/shared/src/types.ts`, `lib/shared/src/db-schema.ts`
-  - `Repo` interface: id, displayName, localPath, originUrl, defaultBaseBranch, worktreeBaseDir, timestamps
+  - `Repo` interface: id, displayName, localPath, originUrl, defaultBaseBranch, worktreeBaseDir, setupScript (optional — run after worktree creation), timestamps
   - `Session` interface: id, repoId, title, plan, worktreePath, branchName, baseBranch, state, claudeSessionId, prNumber, prUrl, lastCheckState, automationEnabled, attemptCount, blockedReason, timestamps
   - SQL `CREATE TABLE` statements as string constants for `repos`, `sessions`, `attempts`, `schema_version`
   - `RepoRow`, `SessionRow`, `AttemptRow` TypeScript interfaces matching SQL columns
+  - Include migration SQL arrays: `MIGRATIONS: string[]` — each entry is a SQL migration, indexed by version number
 - [ ] Define JSON-RPC schema for CLI-daemon IPC
   - Files: `lib/shared/src/rpc.ts`
   - JSON-RPC 2.0 envelope: `{ jsonrpc: "2.0", method, params, id }`
-  - Methods: `context.resolve`, `repo.register`, `repo.list`, `repo.remove`, `session.list`, `session.create`, `session.get`, `session.attach`, `session.stop`, `session.pause`, `session.resume`, `session.retry`, `session.close`, `session.remove`
+  - Methods: `context.resolve`, `repo.register`, `repo.list`, `repo.remove`, `repo.listPrs` (fetch open PRs from GitHub for a repo), `session.list`, `session.create` (accepts optional `prNumber` for existing PR), `session.get`, `session.attach`, `session.stop`, `session.pause`, `session.resume`, `session.retry`, `session.close`, `session.remove`
   - Typed request params and response types for each method
 - [ ] Define webhook event types and daemon event types
   - Files: `lib/shared/src/webhook-events.ts`
@@ -133,9 +144,12 @@ Human reviews: Monorepo structure, naming conventions, Makefile targets, biome/p
 ### Post-Flight Checks
 
 - [ ] `make build` in `lib/shared/` — TypeScript compiles without errors
-- [ ] All 12 session states present in enum; transition map covers the full lifecycle including fix loop (`awaiting_checks` <-> `fixing_checks`)
+- [ ] XState machine has all 12 states; transitions cover the full lifecycle including fix loop (`awaiting_checks` <-> `fixing_checks`)
+- [ ] Machine can be instantiated with `createActor(sessionMachine)` and stepped through valid transitions
+- [ ] Invalid events in wrong states are ignored (XState default behavior)
 - [ ] Session interface fields align with SessionRow columns
 - [ ] Every CLI command from the spec has a corresponding RPC method
+- [ ] Migration array includes initial schema as version 1
 - [ ] `make format && make lint` passes
 
 ### [HANDOFF] Review Flight Leg 2
@@ -144,37 +158,47 @@ Human reviews: Type definitions, state machine transitions, RPC method signature
 
 ---
 
-## Flight Leg 3: Daemon Core — SQLite and Session CRUD
+## Flight Leg 3: Daemon Core — DI Container, SQLite, and Session CRUD
 
 ### Tasks
 
-- [ ] Implement SQLite database module with schema initialization
+- [ ] Set up tsyringe DI container for daemon
+  - Files: `services/daemon/src/di/tokens.ts`, `services/daemon/src/di/container.ts`
+  - Pattern: Follow madverts/core services/flows — Symbol-based tokens, `setupContainer()` function
+  - Tokens: `Service.Database`, `Service.RepoStore`, `Service.SessionStore`, `Service.AttemptStore`, `Service.Config`, `Service.Logger`
+  - Singletons: Database, Config, Logger
+  - Transients: RepoStore, SessionStore, AttemptStore
+  - All services use `@injectable()` and `@inject(Service.X)` decorators
+- [ ] Implement SQLite database module with versioned migrations
   - Files: `services/daemon/src/db/database.ts`
-  - Use `better-sqlite3` (synchronous API)
-  - `initDatabase(dbPath: string): Database` — creates DB, runs schema SQL from `@bossanova/shared`, enables WAL mode, foreign keys
+  - Use `better-sqlite3` (synchronous API), registered as `@injectable()` singleton
+  - `DatabaseService.initialize(dbPath)` — creates DB, runs migrations from `MIGRATIONS` array in `@bossanova/shared`, enables WAL mode, foreign keys
+  - Migration runner: reads `schema_version` table, applies any migrations with version > current, updates version
   - Default DB path: `~/Library/Application Support/bossanova/bossd.db`
-- [ ] Implement repository CRUD operations
+- [ ] Implement repository CRUD as injectable service
   - Files: `services/daemon/src/db/repos.ts`
-  - `registerRepo(db, params): Repo`, `listRepos(db): Repo[]`, `getRepo(db, id): Repo | null`, `removeRepo(db, id): void`, `findRepoByPath(db, path): Repo | null`
+  - `@injectable() class RepoStore` with `@inject(Service.Database)` in constructor
+  - Methods: `register(params): Repo`, `list(): Repo[]`, `get(id): Repo | null`, `remove(id): void`, `findByPath(path): Repo | null`
   - Use prepared statements for performance
-- [ ] Implement session CRUD operations with state machine enforcement
+- [ ] Implement session CRUD as injectable service (state changes driven by XState)
   - Files: `services/daemon/src/db/sessions.ts`
-  - `createSession(db, params): Session`, `listSessions(db, repoId?): Session[]`, `getSession(db, id): Session | null`, `updateSessionState(db, id, newState, extra?): void`, `deleteSession(db, id): void`
-  - `updateSessionState` validates transitions against `VALID_TRANSITIONS` — throws on invalid transition
-- [ ] Implement attempt tracking
-  - Files: `services/daemon/src/db/attempts.ts`
-  - `recordAttempt(db, sessionId, trigger): Attempt`, `completeAttempt(db, attemptId, result, error?): void`, `getAttempts(db, sessionId): Attempt[]`
+  - `@injectable() class SessionStore`
+  - Methods: `create(params): Session`, `list(repoId?): Session[]`, `get(id): Session | null`, `update(id, fields): void`, `delete(id): void`
+  - State changes are NOT validated here — XState machine is the authority on valid transitions. The store persists whatever state the machine resolves to.
+  - Attempt tracking: `recordAttempt(sessionId, trigger): Attempt`, `completeAttempt(attemptId, result, error?): void`, `getAttempts(sessionId): Attempt[]`
 - [ ] Write unit tests for all database operations
   - Files: `services/daemon/src/db/__tests__/database.test.ts`, `repos.test.ts`, `sessions.test.ts`
   - Use in-memory SQLite (`:memory:`) for tests
-  - Test CRUD for repos and sessions, state transition validation (valid passes, invalid throws), schema initialization
+  - Test CRUD for repos and sessions, migration runner, DI container resolution
+  - Test XState machine separately: valid transitions succeed, invalid events are ignored
 
 ### Post-Flight Checks
 
 - [ ] `make test` in `services/daemon/` — all tests pass
+- [ ] DI container resolves all registered services without errors
 - [ ] In-memory test creates all tables, schema_version = 1
-- [ ] Create repo → create session → list by repo → update state → delete — all work
-- [ ] Attempting `merged -> creating_worktree` throws error
+- [ ] Create repo → create session → list by repo → update → delete — all work
+- [ ] Migration runner applies new migrations and skips already-applied ones
 - [ ] `make format && make lint` passes
 
 ### [HANDOFF] Review Flight Leg 3
@@ -187,16 +211,16 @@ Human reviews: Database implementation, prepared statements, state machine enfor
 
 ### Tasks
 
-- [ ] Implement Unix socket JSON-RPC server
+- [ ] Implement Unix socket JSON-RPC server as injectable service
   - Files: `services/daemon/src/ipc/server.ts`
+  - `@injectable() class IpcServer` with `@inject(Service.Dispatcher)` in constructor
   - Use Node.js `net.createServer` with Unix domain socket
   - Socket path: `~/Library/Application Support/bossanova/bossd.sock`
   - Newline-delimited JSON-RPC 2.0 messages
-  - `startIpcServer(db: Database): { close: () => void }`
-- [ ] Implement RPC method dispatcher
+- [ ] Implement RPC method dispatcher as injectable service
   - Files: `services/daemon/src/ipc/dispatcher.ts`
-  - Map method names to handler functions
-  - Handlers receive `(db, params)`, return result
+  - `@injectable() class Dispatcher` with injected stores (`@inject(Service.RepoStore)`, `@inject(Service.SessionStore)`, etc.)
+  - Map method names to handler methods
   - JSON-RPC error responses for invalid method, invalid params, internal errors
 - [ ] Implement context resolution logic
   - Files: `services/daemon/src/ipc/handlers/context.ts`
@@ -227,40 +251,68 @@ Human reviews: IPC protocol, error handling, context resolution, socket lifecycl
 
 ---
 
-## Flight Leg 5: CLI Basics — Ink Rendering and Daemon Connection
+## Flight Leg 5: CLI Basics — Ink Rendering, DI, and Daemon Connection
 
 ### Tasks
 
+- [ ] Set up tsyringe DI container for CLI
+  - Files: `services/cli/src/di/tokens.ts`, `services/cli/src/di/container.ts`
+  - Tokens: `Service.IpcClient`, `Service.Config`, `Service.Logger`
+  - Follow same pattern as daemon DI — `setupContainer()` function
+  - IpcClient registered as singleton
 - [ ] Set up CLI entry point with argument parsing
   - Files: `services/cli/src/cli.tsx`
   - Hashbang `#!/usr/bin/env node`, parse `process.argv`
-  - Commands: `boss` (default), `boss new [plan]`, `boss ls`, `boss attach <id>`, `boss stop/pause/resume/logs/retry/close/rm <id>`, `boss repo add/ls/remove`
+  - Commands: `boss` (default — interactive), `boss new [plan]`, `boss ls`, `boss attach <id>`, `boss stop/pause/resume/logs/retry/close/rm <id>`, `boss repo add/ls/remove`
   - Route to appropriate Ink component
-- [ ] Implement session list view
-  - Files: `services/cli/src/views/SessionList.tsx`
-  - Table: ID (short), Title, State (color-coded), Branch, PR#, Last Updated
+  - Initialize DI container before rendering
+- [ ] Implement interactive home screen (the `boss` default command)
+  - Files: `services/cli/src/views/HomeScreen.tsx`
+  - The main TUI hub. Shows:
+    1. **Session list** — live-updating table (polls daemon every 2s), arrow keys to navigate, Enter to attach
+    2. **Action bar** at bottom with keyboard shortcuts: `n` = New Session, `r` = Add Repository, `q` = Quit
+  - Table columns: ID (short), Title, State (color-coded), Branch, PR#, Last Updated
   - Colors: green=`green_draft`/`ready_for_review`/`merged`, yellow=`implementing_plan`/`awaiting_checks`, red=`blocked`/`fixing_checks`, gray=`closed`
-  - Context-aware: inside a repo → show that repo's sessions; otherwise → all
-- [ ] Implement `boss new` flow
+  - Context-aware: inside a repo → show that repo's sessions; otherwise → show all across repos
+  - `boss ls` is the non-interactive (one-shot print) variant
+- [ ] Implement guided "New Session" flow
   - Files: `services/cli/src/views/NewSession.tsx`
-  - Accept plan as argument or prompt via Ink `<TextInput>`
-  - Resolve context, select repo, call `client.sessionCreate(repoId, plan)`
-- [ ] Implement `boss repo` subcommands
-  - Files: `services/cli/src/views/RepoList.tsx`, `services/cli/src/views/RepoAdd.tsx`
-  - `boss repo ls` — table of repos (ID, Name, Path, Branch)
-  - `boss repo add <path>` — register, display result
-  - `boss repo remove <id>` — remove, confirm
+  - Triggered by `n` from home screen or `boss new` command
+  - Step-by-step wizard:
+    1. **Select repo** — if inside a registered repo, auto-select; if inside unregistered repo, offer to register; otherwise show repo picker
+    2. **Choose mode** — "New PR" (create fresh branch) or "Existing PR" (pick from open PRs via `gh pr list`)
+    3. If existing PR: show selectable list of open PRs fetched from GitHub
+    4. **Enter plan/task** — free-text input describing what Claude should do
+    5. **Confirm** — summary of repo, branch, plan; Enter to start
+  - Calls `client.sessionCreate(repoId, { plan, prNumber? })`
+- [ ] Implement guided "Add Repository" flow
+  - Files: `services/cli/src/views/AddRepo.tsx`
+  - Triggered by `r` from home screen or `boss repo add` command
+  - Step-by-step wizard:
+    1. **Enter path** — defaults to cwd if inside a Git repo, otherwise prompt for path
+    2. **Confirm repo** — show detected repo name, origin URL, default branch
+    3. **Setup script** — prompt: "Enter a setup script to run in new worktrees (e.g. `pnpm install`), or leave blank to skip"
+    4. **Confirm** — summary; Enter to register
+  - Calls `client.repoRegister(path, { setupScript? })`
+- [ ] Implement `boss repo ls` and `boss repo remove`
+  - Files: `services/cli/src/views/RepoList.tsx`
+  - `boss repo ls` — table of repos (ID, Name, Path, Default Branch, Setup Script)
+  - `boss repo remove <id>` — confirm and remove
 - [ ] Connect CLI to daemon via IPC client
   - Files: `services/cli/src/client.ts`
   - Import `createIpcClient` from `@bossanova/shared`
   - Handle "daemon not running" with helpful message
-  - Singleton `client` instance
+  - Registered as singleton in DI container
 
 ### Post-Flight Checks
 
 - [ ] `boss` with no daemon shows "bossd is not running" message
-- [ ] With daemon running: `boss repo add .` registers repo, `boss repo ls` shows it
-- [ ] `boss ls` shows empty session list (formatted table)
+- [ ] `boss` with daemon running shows interactive home screen (session list + action bar)
+- [ ] Arrow keys navigate sessions, `q` quits
+- [ ] `n` opens new session wizard: repo selection → mode (new/existing PR) → plan input → confirm
+- [ ] `r` opens add repository wizard: path → confirm details → setup script prompt → registered
+- [ ] `boss ls` prints session list non-interactively and exits
+- [ ] `boss repo ls` shows registered repos with setup script column
 - [ ] `boss new "test plan"` creates session record (stub — no Git/Claude work yet)
 - [ ] `make format && make lint` passes
 
@@ -274,12 +326,14 @@ Human reviews: CLI UX, Ink components, argument parsing, IPC integration
 
 ### Tasks
 
-- [ ] Implement worktree creation
+- [ ] Implement worktree creation with setup script support
   - Files: `services/daemon/src/git/worktree.ts`
   - `createWorktree(repoPath, session): Promise<string>` — returns worktree path
   - Path: `~/Library/Application Support/bossanova/worktrees/<repo-id>/<session-id>/`
   - Branch: `boss/<slug>-<short-id>` (slug from title, kebab-case, max 30 chars)
   - Runs: `git worktree add <path> -b <branch>` from repo root
+  - After creation: if repo has `setupScript` configured, execute it in the new worktree (e.g. `pnpm install`, `make setup`)
+  - Setup script is configured per-repo via `boss repo add --setup "pnpm install"` or `boss repo setup <repo> "pnpm install"`
 - [ ] Implement worktree cleanup
   - Files: `services/daemon/src/git/worktree.ts` (same file)
   - `removeWorktree(repoPath, worktreePath): Promise<void>`
@@ -466,12 +520,12 @@ Human reviews: Webhook security, event parsing, Workers config
   - Receive events, dispatch to fix loop
   - Reconnect on disconnect with exponential backoff
   - Heartbeat every 30s
-- [ ] Implement app-layer E2E encryption
+- [ ] Design crypto abstraction layer for future E2E encryption
   - Files: `lib/shared/src/crypto.ts`
-  - Use `tweetnacl` (libsodium-compatible) for encryption
-  - `generateKeyPair()`, `encrypt(plaintext, recipientPublicKey, senderSecretKey)`, `decrypt(ciphertext, senderPublicKey, recipientSecretKey)`
-  - Wrap in frame encode/decode so orchestrator sees only ciphertext
-  - Key exchange during daemon registration
+  - Define `TransportEncryption` interface: `encrypt(plaintext): Buffer`, `decrypt(ciphertext): Buffer`
+  - v1 implementation: `PlaintextTransport` (no-op passthrough) — TLS provides transport security
+  - Future v2: `E2ETransport` using tweetnacl with device keypairs, activated when iOS peer connects
+  - The frame protocol supports encrypted payloads on channels 1+2 (PTY, chat) while channel 0 (control) stays plaintext for routing
 
 ### Post-Flight Checks
 
@@ -479,7 +533,6 @@ Human reviews: Webhook security, event parsing, Workers config
 - [ ] Daemon connects to orchestrator via WebSocket, registration succeeds
 - [ ] Mock event sent to orchestrator → forwarded to daemon over WebSocket
 - [ ] Daemon reconnects after orchestrator restart
-- [ ] Encrypted payload: orchestrator logs show ciphertext, daemon decrypts correctly
 - [ ] `make format && make lint` passes
 
 ### [HANDOFF] Review Flight Leg 10
@@ -588,6 +641,13 @@ Each flight leg produces independent commits. To roll back:
 ## Notes
 
 - **Ink + Node.js only:** CLI must use Node.js (Ink has yoga-layout issues with Bun). All services use Node.js with pnpm for consistency.
+- **XState v5 for state machine:** The session lifecycle is modeled as an XState v5 machine using the `setup().createMachine()` pattern. The daemon creates an actor per session and persists the state to SQLite on each transition. This replaces the manual `VALID_TRANSITIONS` map — XState handles transition validation natively.
+- **tsyringe for DI:** Both daemon and CLI use tsyringe with Symbol-based tokens, following the madverts/core services/flows pattern. This enables clean testability (mock injected services in tests) and separation of concerns.
+- **SQLite migrations:** The `schema_version` table tracks the current schema version. The `MIGRATIONS` array in `@bossanova/shared` contains versioned SQL strings. On startup, the daemon applies any migrations with version > current. This supports schema evolution without data loss.
+- **Worktree setup scripts:** Repos can configure a setup script (e.g. `pnpm install`, `make setup`) that runs automatically after worktree creation. This ensures new worktrees have dependencies installed before Claude starts working.
+- **Interactive `boss` command:** Running `boss` with no arguments launches an interactive Ink TUI with keyboard navigation (arrow keys + Enter). `boss ls` is the non-interactive variant for scripting.
+- **Attempt tracking purpose:** Each fix cycle (check failure, conflict, review feedback) is recorded as an "attempt" with trigger, timestamp, and result. This enforces the max retry limit (5 attempts → blocked), powers the `boss logs` command, and provides debugging history.
+- **E2E encryption deferred to v2:** v1 uses TLS (WSS) for transport security. App-layer E2E encryption will be added when a second peer (iOS app) is introduced — the orchestrator needs to route but not read PTY/chat traffic. The `TransportEncryption` interface is designed now so the encryption layer can be swapped in without changing the frame protocol.
 - **QUIC deferred:** The spec's QUIC vision (multiplexed streams) is deferred. v1 uses WebSocket with frame-based multiplexing. The abstraction layer in `lib/shared/src/ws-protocol.ts` is designed so QUIC/WebTransport can be swapped in later without changing consumer code.
 - **Scheduled sessions deferred:** Cron-based session creation (tech debt cleanup) is a future flight leg.
 - **iOS app deferred:** Future phase. The WebSocket + E2E encryption architecture supports it. WebRTC for direct P2P can be added later.
@@ -599,8 +659,10 @@ Each flight leg produces independent commits. To roll back:
 | File | Why It's Critical |
 |------|-------------------|
 | `lib/shared/src/types.ts` | Core domain types every service depends on |
-| `lib/shared/src/session-states.ts` | State machine that governs all session behavior |
+| `lib/shared/src/session-machine.ts` | XState v5 state machine governing all session behavior |
+| `lib/shared/src/db-schema.ts` | SQLite schema + versioned migrations array |
 | `lib/shared/src/rpc.ts` | CLI-daemon contract |
+| `services/daemon/src/di/container.ts` | DI container wiring all daemon services together |
 | `lib/shared/src/ws-protocol.ts` | Transport abstraction (WebSocket now, QUIC later) |
 | `services/daemon/src/session/lifecycle.ts` | Central orchestration wiring everything together |
 | `services/daemon/src/claude/session.ts` | Agent SDK integration — prompt design determines effectiveness |

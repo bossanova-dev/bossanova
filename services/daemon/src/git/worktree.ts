@@ -53,3 +53,13 @@ export async function createWorktree(params: CreateWorktreeParams): Promise<Crea
 
   return { worktreePath, branchName };
 }
+
+/**
+ * Remove a git worktree and prune the reference.
+ * Runs `git worktree remove <path> --force` from the repo root.
+ */
+export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
+  await execFileAsync('git', ['worktree', 'remove', worktreePath, '--force'], {
+    cwd: repoPath,
+  });
+}

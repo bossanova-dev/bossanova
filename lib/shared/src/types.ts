@@ -1,4 +1,4 @@
-import type { SessionStateValue } from "./session-machine.js";
+import type { SessionStateValue } from './session-machine.js';
 
 // --- Repo ---
 
@@ -28,7 +28,7 @@ export interface Session {
   claudeSessionId: string | null;
   prNumber: number | null;
   prUrl: string | null;
-  lastCheckState: "pending" | "passed" | "failed" | null;
+  lastCheckState: 'pending' | 'passed' | 'failed' | null;
   automationEnabled: boolean;
   attemptCount: number;
   blockedReason: string | null;
@@ -41,9 +41,9 @@ export interface Session {
 export interface Attempt {
   id: string;
   sessionId: string;
-  trigger: "check_failed" | "conflict" | "review_feedback" | "manual";
+  trigger: 'check_failed' | 'conflict' | 'review_feedback' | 'manual';
   startedAt: string;
   completedAt: string | null;
-  result: "success" | "failure" | null;
+  result: 'success' | 'failure' | null;
   error: string | null;
 }

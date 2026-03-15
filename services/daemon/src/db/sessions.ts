@@ -1,7 +1,7 @@
 import type { Session, SessionRow } from '@bossanova/shared';
 import { inject, injectable } from 'tsyringe';
-import { Service } from '../di/tokens.js';
-import type { DatabaseService } from './database.js';
+import type { DatabaseService } from '~/db/database';
+import { Service } from '~/di/tokens';
 
 function rowToSession(row: SessionRow): Session {
   return {

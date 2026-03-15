@@ -1,7 +1,7 @@
 import type { Repo, RepoRow } from '@bossanova/shared';
 import { inject, injectable } from 'tsyringe';
-import { Service } from '../di/tokens.js';
-import type { DatabaseService } from './database.js';
+import type { DatabaseService } from '~/db/database';
+import { Service } from '~/di/tokens';
 
 function rowToRepo(row: RepoRow): Repo {
   return {

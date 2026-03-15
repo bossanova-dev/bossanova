@@ -1,8 +1,8 @@
 import { MIGRATIONS } from '@bossanova/shared';
 import Database from 'better-sqlite3';
 import { inject, injectable } from 'tsyringe';
-import type { DaemonConfig, Logger } from '../di/container.js';
-import { Service } from '../di/tokens.js';
+import type { DaemonConfig, Logger } from '~/di/container';
+import { Service } from '~/di/tokens';
 
 @injectable()
 export class DatabaseService {

@@ -51,20 +51,15 @@ export class DatabaseService {
       )
     `);
 
-    const currentVersion =
-      db.prepare('SELECT MAX(version) as version FROM schema_version').get() as
-        | { version: number | null }
-        | undefined;
+    const currentVersion = db
+      .prepare('SELECT MAX(version) as version FROM schema_version')
+      .get() as { version: number | null } | undefined;
     const current = currentVersion?.version ?? 0;
 
-    const applyMigration = db.transaction(
-      (version: number, sql: string) => {
-        db.exec(sql);
-        db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(
-          version,
-        );
-      },
-    );
+    const applyMigration = db.transaction((version: number, sql: string) => {
+      db.exec(sql);
+      db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(version);
+    });
 
     for (let i = current; i < MIGRATIONS.length; i++) {
       const version = i + 1;
@@ -73,9 +68,7 @@ export class DatabaseService {
     }
 
     if (current < MIGRATIONS.length) {
-      this.logger.info(
-        `Migrations complete (${current} → ${MIGRATIONS.length})`,
-      );
+      this.logger.info(`Migrations complete (${current} → ${MIGRATIONS.length})`);
     }
   }
 }

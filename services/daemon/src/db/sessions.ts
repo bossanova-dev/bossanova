@@ -47,9 +47,7 @@ export interface UpdateSessionFields {
 
 @injectable()
 export class SessionStore {
-  constructor(
-    @inject(Service.Database) private database: DatabaseService,
-  ) {}
+  constructor(@inject(Service.Database) private database: DatabaseService) {}
 
   create(params: CreateSessionParams): Session {
     const db = this.database.getDb();
@@ -69,9 +67,7 @@ export class SessionStore {
     const db = this.database.getDb();
     if (repoId) {
       const rows = db
-        .prepare(
-          'SELECT * FROM sessions WHERE repo_id = ? ORDER BY created_at DESC',
-        )
+        .prepare('SELECT * FROM sessions WHERE repo_id = ? ORDER BY created_at DESC')
         .all(repoId) as SessionRow[];
       return rows.map(rowToSession);
     }
@@ -83,9 +79,7 @@ export class SessionStore {
 
   get(id: string): Session | null {
     const db = this.database.getDb();
-    const row = db
-      .prepare('SELECT * FROM sessions WHERE id = ?')
-      .get(id) as SessionRow | undefined;
+    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
     return row ? rowToSession(row) : null;
   }
 
@@ -112,9 +106,7 @@ export class SessionStore {
     values.push(new Date().toISOString());
     values.push(id);
 
-    db.prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE id = ?`).run(
-      ...values,
-    );
+    db.prepare(`UPDATE sessions SET ${sets.join(', ')} WHERE id = ?`).run(...values);
   }
 
   delete(id: string): void {

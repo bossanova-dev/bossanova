@@ -28,9 +28,7 @@ export interface RegisterRepoParams {
 
 @injectable()
 export class RepoStore {
-  constructor(
-    @inject(Service.Database) private database: DatabaseService,
-  ) {}
+  constructor(@inject(Service.Database) private database: DatabaseService) {}
 
   register(params: RegisterRepoParams): Repo {
     const db = this.database.getDb();
@@ -58,25 +56,21 @@ export class RepoStore {
 
   list(): Repo[] {
     const db = this.database.getDb();
-    const rows = db
-      .prepare('SELECT * FROM repos ORDER BY created_at DESC')
-      .all() as RepoRow[];
+    const rows = db.prepare('SELECT * FROM repos ORDER BY created_at DESC').all() as RepoRow[];
     return rows.map(rowToRepo);
   }
 
   get(id: string): Repo | null {
     const db = this.database.getDb();
-    const row = db
-      .prepare('SELECT * FROM repos WHERE id = ?')
-      .get(id) as RepoRow | undefined;
+    const row = db.prepare('SELECT * FROM repos WHERE id = ?').get(id) as RepoRow | undefined;
     return row ? rowToRepo(row) : null;
   }
 
   findByPath(localPath: string): Repo | null {
     const db = this.database.getDb();
-    const row = db
-      .prepare('SELECT * FROM repos WHERE local_path = ?')
-      .get(localPath) as RepoRow | undefined;
+    const row = db.prepare('SELECT * FROM repos WHERE local_path = ?').get(localPath) as
+      | RepoRow
+      | undefined;
     return row ? rowToRepo(row) : null;
   }
 

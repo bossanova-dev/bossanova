@@ -28,9 +28,7 @@ const consoleLogger: Logger = {
   error: (msg, ...args) => console.error(`[error] ${msg}`, ...args),
 };
 
-export function setupContainer(
-  config: Partial<DaemonConfig> = {},
-): typeof container {
+export function setupContainer(config: Partial<DaemonConfig> = {}): typeof container {
   const resolved: DaemonConfig = { ...defaultConfig, ...config };
 
   container.register(Service.Config, { useValue: resolved });

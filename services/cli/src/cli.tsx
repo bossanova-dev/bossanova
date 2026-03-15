@@ -6,6 +6,7 @@ import { container, setupContainer } from './di/container.js';
 import { Service } from './di/tokens.js';
 import { parseArgs, resolveRoute, type Route } from './router.js';
 import { HomeScreen, SessionList } from './views/HomeScreen.js';
+import { NewSession } from './views/NewSession.js';
 import type { IpcClient } from '@bossanova/shared';
 
 // --- Stub views (replaced in subsequent tasks) ---
@@ -61,7 +62,14 @@ export function App({ route, client }: { route: Route; client: IpcClient }) {
         />
       );
     case 'new':
-      return <StubView label={`new session${route.plan ? `: ${route.plan}` : ''}`} />;
+      return (
+        <NewSession
+          client={client}
+          initialPlan={route.plan}
+          onDone={() => {/* TODO: attach to session */}}
+          onCancel={() => process.exit(0)}
+        />
+      );
     case 'ls':
       return <SessionList client={client} />;
     case 'attach':

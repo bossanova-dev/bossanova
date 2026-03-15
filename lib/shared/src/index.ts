@@ -7,7 +7,7 @@ export {
   type SessionMachineInput,
 } from './session-machine.js';
 
-export { type Repo, type Session, type Attempt } from './types.js';
+export type { Repo, Session, Attempt } from './types.js';
 
 export {
   type RepoRow,
@@ -60,18 +60,18 @@ export {
   type SessionAttemptsResult,
 } from './rpc.js';
 
-export {
-  type WebhookEvent,
-  type WebhookPullRequestEvent,
-  type WebhookCheckRunEvent,
-  type WebhookCheckSuiteEvent,
-  type WebhookPullRequestReviewEvent,
-  type DaemonEvent,
-  type DaemonEventType,
-  type DaemonCheckFailedEvent,
-  type DaemonPrUpdatedEvent,
-  type DaemonConflictDetectedEvent,
-  type DaemonReviewSubmittedEvent,
+export type {
+  WebhookEvent,
+  WebhookPullRequestEvent,
+  WebhookCheckRunEvent,
+  WebhookCheckSuiteEvent,
+  WebhookPullRequestReviewEvent,
+  DaemonEvent,
+  DaemonEventType,
+  DaemonCheckFailedEvent,
+  DaemonPrUpdatedEvent,
+  DaemonConflictDetectedEvent,
+  DaemonReviewSubmittedEvent,
 } from './webhook-events.js';
 
 export {

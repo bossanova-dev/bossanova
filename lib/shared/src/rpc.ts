@@ -1,16 +1,16 @@
-import type { Attempt, Repo, Session } from "./types.js";
+import type { Attempt, Repo, Session } from './types.js';
 
 // --- JSON-RPC 2.0 Envelope ---
 
 export interface JsonRpcRequest<P = unknown> {
-  jsonrpc: "2.0";
+  jsonrpc: '2.0';
   method: string;
   params?: P;
   id: string | number;
 }
 
 export interface JsonRpcResponse<R = unknown> {
-  jsonrpc: "2.0";
+  jsonrpc: '2.0';
   id: string | number;
   result?: R;
   error?: JsonRpcError;
@@ -38,10 +38,10 @@ export interface ContextResolveParams {
 }
 
 export type ContextResolveResult =
-  | { type: "session"; sessionId: string; repoId: string }
-  | { type: "repo"; repoId: string }
-  | { type: "unregistered_repo"; localPath: string; originUrl: string }
-  | { type: "none" };
+  | { type: 'session'; sessionId: string; repoId: string }
+  | { type: 'repo'; repoId: string }
+  | { type: 'unregistered_repo'; localPath: string; originUrl: string }
+  | { type: 'none' };
 
 // --- Repo Methods ---
 
@@ -52,8 +52,7 @@ export interface RepoRegisterParams {
 
 export type RepoRegisterResult = Repo;
 
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface RepoListParams {}
+export type RepoListParams = Record<string, never>;
 
 export type RepoListResult = Repo[];
 
@@ -176,38 +175,38 @@ export type SessionAttemptsResult = Attempt[];
 // --- RPC Method Map ---
 
 export interface RpcMethods {
-  "context.resolve": {
+  'context.resolve': {
     params: ContextResolveParams;
     result: ContextResolveResult;
   };
-  "repo.register": { params: RepoRegisterParams; result: RepoRegisterResult };
-  "repo.list": { params: RepoListParams; result: RepoListResult };
-  "repo.remove": { params: RepoRemoveParams; result: RepoRemoveResult };
-  "repo.listPrs": { params: RepoListPrsParams; result: RepoListPrsResult };
-  "session.list": { params: SessionListParams; result: SessionListResult };
-  "session.create": {
+  'repo.register': { params: RepoRegisterParams; result: RepoRegisterResult };
+  'repo.list': { params: RepoListParams; result: RepoListResult };
+  'repo.remove': { params: RepoRemoveParams; result: RepoRemoveResult };
+  'repo.listPrs': { params: RepoListPrsParams; result: RepoListPrsResult };
+  'session.list': { params: SessionListParams; result: SessionListResult };
+  'session.create': {
     params: SessionCreateParams;
     result: SessionCreateResult;
   };
-  "session.get": { params: SessionGetParams; result: SessionGetResult };
-  "session.attach": {
+  'session.get': { params: SessionGetParams; result: SessionGetResult };
+  'session.attach': {
     params: SessionAttachParams;
     result: SessionAttachResult;
   };
-  "session.stop": { params: SessionStopParams; result: SessionStopResult };
-  "session.pause": { params: SessionPauseParams; result: SessionPauseResult };
-  "session.resume": {
+  'session.stop': { params: SessionStopParams; result: SessionStopResult };
+  'session.pause': { params: SessionPauseParams; result: SessionPauseResult };
+  'session.resume': {
     params: SessionResumeParams;
     result: SessionResumeResult;
   };
-  "session.retry": { params: SessionRetryParams; result: SessionRetryResult };
-  "session.close": { params: SessionCloseParams; result: SessionCloseResult };
-  "session.remove": {
+  'session.retry': { params: SessionRetryParams; result: SessionRetryResult };
+  'session.close': { params: SessionCloseParams; result: SessionCloseResult };
+  'session.remove': {
     params: SessionRemoveParams;
     result: SessionRemoveResult;
   };
-  "session.logs": { params: SessionLogsParams; result: SessionLogsResult };
-  "session.attempts": {
+  'session.logs': { params: SessionLogsParams; result: SessionLogsResult };
+  'session.attempts': {
     params: SessionAttemptsParams;
     result: SessionAttemptsResult;
   };

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildBranchName, createWorktree } from '~/git/worktree';
+import { buildBranchName, createWorktree, removeWorktree } from '~/git/worktree';
 
 describe('buildBranchName', () => {
   it('creates a kebab-case branch name', () => {
@@ -115,5 +115,56 @@ describe('createWorktree', () => {
         setupScript: null,
       }),
     ).rejects.toThrow();
+  });
+});
+
+describe('removeWorktree', () => {
+  let tmpDir: string;
+  let repoPath: string;
+  let worktreeBaseDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boss-wt-rm-test-'));
+    repoPath = path.join(tmpDir, 'repo');
+    worktreeBaseDir = path.join(tmpDir, 'worktrees');
+
+    fs.mkdirSync(repoPath);
+    execSync('git init', { cwd: repoPath });
+    execSync('git config user.email "test@test.com"', { cwd: repoPath });
+    execSync('git config user.name "Test"', { cwd: repoPath });
+    fs.writeFileSync(path.join(repoPath, 'README.md'), '# Test');
+    execSync('git add . && git commit -m "init"', { cwd: repoPath });
+    fs.mkdirSync(worktreeBaseDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try {
+      execSync('git worktree prune', { cwd: repoPath });
+    } catch {
+      // Repo might already be gone
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('removes an existing worktree', async () => {
+    const result = await createWorktree({
+      repoPath,
+      worktreeBaseDir,
+      sessionId: 'rm-test-12345678',
+      title: 'Remove me',
+      setupScript: null,
+    });
+
+    expect(fs.existsSync(result.worktreePath)).toBe(true);
+
+    await removeWorktree(repoPath, result.worktreePath);
+
+    expect(fs.existsSync(result.worktreePath)).toBe(false);
+    const worktrees = execSync('git worktree list', { cwd: repoPath, encoding: 'utf8' });
+    expect(worktrees).not.toContain('rm-test-12345678');
+  });
+
+  it('rejects when worktree path is invalid', async () => {
+    await expect(removeWorktree(repoPath, '/nonexistent/worktree')).rejects.toThrow();
   });
 });

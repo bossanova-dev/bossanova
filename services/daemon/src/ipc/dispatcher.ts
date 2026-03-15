@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import type {
   ContextResolveParams,
   ContextResolveResult,
@@ -109,8 +110,6 @@ export class Dispatcher {
   // --- Repos ---
 
   private handleRepoRegister(params: RepoRegisterParams): RepoRegisterResult {
-    const { execSync } = require('node:child_process') as typeof import('node:child_process');
-
     // Resolve git info from local path
     const localPath = execSync('git rev-parse --show-toplevel', {
       cwd: params.localPath,

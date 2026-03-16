@@ -28,6 +28,7 @@ type App struct {
 	newSession NewSessionModel
 	repoAdd    RepoAddModel
 	repoList   RepoListModel
+	attach     AttachModel
 	width      int
 	height     int
 	quitting   bool
@@ -58,6 +59,11 @@ func (a *App) SetInitialView(v View) {
 	}
 }
 
+// SetAttachSession sets the session ID to attach to. Must be called after SetInitialView(ViewAttach).
+func (a *App) SetAttachSession(sessionID string) {
+	a.attach = NewAttachModel(a.client, a.ctx, sessionID)
+}
+
 func (a App) Init() tea.Cmd {
 	switch a.activeView {
 	case ViewNewSession:
@@ -66,6 +72,8 @@ func (a App) Init() tea.Cmd {
 		return a.repoAdd.Init()
 	case ViewRepoList:
 		return a.repoList.Init()
+	case ViewAttach:
+		return a.attach.Init()
 	default:
 		return a.home.Init()
 	}
@@ -73,7 +81,8 @@ func (a App) Init() tea.Cmd {
 
 // switchViewMsg requests the app to switch to a different view.
 type switchViewMsg struct {
-	view View
+	view      View
+	sessionID string // used for ViewAttach
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -103,6 +112,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewRepoList:
 			a.repoList = NewRepoListModel(a.client, a.ctx)
 			return a, a.repoList.Init()
+		case ViewAttach:
+			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID)
+			return a, a.attach.Init()
 		case ViewHome:
 			a.home = NewHomeModel(a.client, a.ctx)
 			return a, a.home.Init()
@@ -136,6 +148,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.switchToHome()
 		}
 		return a, cmd
+	case ViewAttach:
+		updated, cmd := a.attach.Update(msg)
+		a.attach = updated.(AttachModel)
+		if a.attach.Detached() {
+			return a, a.switchToHome()
+		}
+		return a, cmd
 	}
 
 	return a, nil
@@ -162,6 +181,8 @@ func (a App) View() tea.View {
 		v = a.repoAdd.View()
 	case ViewRepoList:
 		v = a.repoList.View()
+	case ViewAttach:
+		v = a.attach.View()
 	default:
 		v = tea.NewView("Unknown view")
 	}

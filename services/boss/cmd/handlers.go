@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"strings"
+	"text/tabwriter"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/views"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // newClient creates a daemon client using the default socket path.
@@ -30,9 +34,67 @@ func runTUI(_ *cobra.Command) error {
 	return err
 }
 
-func runLS(_ *cobra.Command) error {
-	fmt.Println("boss ls: list sessions (not yet implemented)")
-	return nil
+func runLS(cmd *cobra.Command) error {
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+
+	repoID, _ := cmd.Flags().GetString("repo")
+	archived, _ := cmd.Flags().GetBool("archived")
+	stateStrs, _ := cmd.Flags().GetStringSlice("state")
+
+	// Parse state filters.
+	var states []pb.SessionState
+	for _, s := range stateStrs {
+		key := "SESSION_STATE_" + strings.ToUpper(s)
+		if val, ok := pb.SessionState_value[key]; ok {
+			states = append(states, pb.SessionState(val))
+		} else {
+			return fmt.Errorf("unknown state: %s", s)
+		}
+	}
+
+	req := &pb.ListSessionsRequest{
+		IncludeArchived: archived,
+		States:          states,
+	}
+	if repoID != "" {
+		req.RepoId = &repoID
+	}
+
+	ctx := context.Background()
+	sessions, err := c.ListSessions(ctx, req)
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		fmt.Println("No sessions found.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tTITLE\tSTATE\tBRANCH\tPR\tCI")
+	for _, sess := range sessions {
+		id := sess.Id
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		title := sess.Title
+		if len(title) > 30 {
+			title = title[:27] + "..."
+		}
+		state := views.StateLabel(sess.State)
+		branch := sess.BranchName
+		pr := "-"
+		if sess.PrNumber != nil {
+			pr = fmt.Sprintf("#%d", *sess.PrNumber)
+		}
+		ci := views.ChecksLabel(sess.LastCheckState)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, title, state, branch, pr, ci)
+	}
+	return w.Flush()
 }
 
 func runNew(_ *cobra.Command) error {

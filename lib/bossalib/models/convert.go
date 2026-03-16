@@ -274,4 +274,3 @@ func int32PtrToIntPtr(v *int32) *int {
 	i := int(*v)
 	return &i
 }
-

@@ -69,6 +69,13 @@ func run() error {
 	ghProvider := github.New(log.Logger)
 	lifecycle := session.NewLifecycle(sessions, repos, worktrees, claudeRunner, ghProvider, log.Logger)
 
+	// --- Fix Loop + Dispatcher + Poller ---
+
+	fixLoop := session.NewFixLoop(sessions, attempts, repos, ghProvider, claudeRunner, worktrees, log.Logger)
+	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, log.Logger)
+	dispatcher.SetFixLoop(fixLoop)
+	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, log.Logger)
+
 	// --- Server ---
 
 	socketPath, err := server.DefaultSocketPath()
@@ -76,7 +83,13 @@ func run() error {
 		return fmt.Errorf("socket path: %w", err)
 	}
 
-	srv := server.New(repos, sessions, attempts, lifecycle, claudeRunner, worktrees)
+	srv := server.New(repos, sessions, attempts, lifecycle, claudeRunner, worktrees, ghProvider)
+
+	// Start poller and dispatcher.
+	pollerCtx, pollerCancel := context.WithCancel(context.Background())
+	defer pollerCancel()
+	events := poller.Run(pollerCtx)
+	go dispatcher.Run(pollerCtx, events)
 
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)
@@ -97,6 +110,9 @@ func run() error {
 		// Server exited unexpectedly.
 		return fmt.Errorf("server: %w", err)
 	}
+
+	// Stop poller and dispatcher.
+	pollerCancel()
 
 	// Graceful shutdown with 5-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

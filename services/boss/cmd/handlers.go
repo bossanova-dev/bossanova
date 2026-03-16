@@ -102,8 +102,15 @@ func runLS(cmd *cobra.Command) error {
 }
 
 func runNew(_ *cobra.Command) error {
-	fmt.Println("boss new: create session (not yet implemented)")
-	return nil
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	app := views.NewApp(c)
+	app.SetInitialView(views.ViewNewSession)
+	p := tea.NewProgram(app)
+	_, err = p.Run()
+	return err
 }
 
 func runAttach(_ *cobra.Command, _ string) error {

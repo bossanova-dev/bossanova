@@ -74,20 +74,29 @@ func (s *SQLiteDaemonStore) ListByUser(ctx context.Context, userID string) ([]*D
 	}
 	defer func() { _ = rows.Close() }()
 
+	// Collect all daemons first, then close rows before fetching repos.
+	// SQLite with MaxOpenConns(1) deadlocks if we query repos while iterating.
 	var daemons []*Daemon
 	for rows.Next() {
 		d, err := scanDaemonRows(rows)
 		if err != nil {
 			return nil, err
 		}
+		daemons = append(daemons, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+
+	for _, d := range daemons {
 		repos, err := s.getRepos(ctx, d.ID)
 		if err != nil {
 			return nil, err
 		}
 		d.RepoIDs = repos
-		daemons = append(daemons, d)
 	}
-	return daemons, rows.Err()
+	return daemons, nil
 }
 
 func (s *SQLiteDaemonStore) Update(ctx context.Context, id string, params UpdateDaemonParams) (*Daemon, error) {

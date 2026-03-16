@@ -1,10 +1,19 @@
-.PHONY: generate build test lint clean split format
+.PHONY: generate build test lint clean split format build-all
 
 # Binaries output to bin/
 BIN_DIR := bin
 
 # All Go modules in the workspace
 MODULES := lib/bossalib services/boss services/bossd services/bosso
+
+# Version info injected via ldflags
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+LDFLAGS := -s -w \
+	-X github.com/recurser/bossalib/buildinfo.Version=$(VERSION) \
+	-X github.com/recurser/bossalib/buildinfo.Commit=$(COMMIT) \
+	-X github.com/recurser/bossalib/buildinfo.Date=$(DATE)
 
 ## generate: Run buf generate to produce Go code from proto definitions
 generate:
@@ -15,13 +24,13 @@ generate:
 build: $(BIN_DIR)/boss $(BIN_DIR)/bossd $(BIN_DIR)/bosso
 
 $(BIN_DIR)/boss:
-	go build -o $(BIN_DIR)/boss ./services/boss/cmd
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 
 $(BIN_DIR)/bossd:
-	go build -o $(BIN_DIR)/bossd ./services/bossd/cmd
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 
 $(BIN_DIR)/bosso:
-	go build -o $(BIN_DIR)/bosso ./services/bosso/cmd
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
 
 ## test: Run tests across all modules
 test:
@@ -44,6 +53,25 @@ format:
 		(cd $$mod && gofmt -w .); \
 	done
 	pnpm run format:docs
+
+## build-all: Cross-platform builds for distribution
+PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64
+# Only boss and bossd are distributed (bosso is deployed to Fly.io directly)
+DIST_BINS := boss bossd
+
+build-all:
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%%/*}; \
+		arch=$${platform##*/}; \
+		for bin in $(DIST_BINS); do \
+			echo "==> Building $$bin ($$os/$$arch)"; \
+			GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' \
+				-o $(BIN_DIR)/$$bin-$$os-$$arch ./services/$$bin/cmd; \
+		done; \
+	done
+	@echo "==> Building bosso (linux/amd64 only)"
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' \
+		-o $(BIN_DIR)/bosso-linux-amd64 ./services/bosso/cmd
 
 ## clean: Remove build artifacts and generated code
 clean:

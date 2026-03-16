@@ -19,6 +19,7 @@ import (
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/upstream"
 	"github.com/recurser/bossd/internal/vcs/github"
 	"github.com/recurser/bossd/migrations"
 )
@@ -85,6 +86,29 @@ func run() error {
 
 	srv := server.New(repos, sessions, attempts, lifecycle, claudeRunner, worktrees, ghProvider)
 
+	// --- Upstream (optional, cloud mode) ---
+
+	var upstreamMgr *upstream.Manager
+	if cfg := upstream.ConfigFromEnv(); cfg != nil {
+		upstreamMgr = upstream.NewManager(*cfg, log.Logger)
+
+		// Gather repo IDs for registration.
+		allRepos, err := repos.List(context.Background())
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to list repos for upstream registration")
+		}
+		var repoIDs []string
+		for _, r := range allRepos {
+			repoIDs = append(repoIDs, r.ID)
+		}
+
+		if err := upstreamMgr.Connect(context.Background(), repoIDs); err != nil {
+			// Non-fatal: daemon works in local mode without orchestrator.
+			log.Warn().Err(err).Msg("upstream connection failed, running in local-only mode")
+			upstreamMgr = nil
+		}
+	}
+
 	// Start poller and dispatcher.
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
@@ -109,6 +133,11 @@ func run() error {
 	case err := <-errCh:
 		// Server exited unexpectedly.
 		return fmt.Errorf("server: %w", err)
+	}
+
+	// Stop upstream heartbeat.
+	if upstreamMgr != nil {
+		upstreamMgr.Stop()
 	}
 
 	// Stop poller and dispatcher.

@@ -16,8 +16,12 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// newClient creates a daemon client using the default socket path.
-func newClient() (client.BossClient, error) {
+// newClient creates either a local or remote client depending on the --remote flag.
+func newClient(cmd *cobra.Command) (client.BossClient, error) {
+	remote, _ := cmd.Root().Flags().GetString("remote")
+	if remote != "" {
+		return newRemoteClient(remote)
+	}
 	socketPath, err := client.DefaultSocketPath()
 	if err != nil {
 		return nil, fmt.Errorf("socket path: %w", err)
@@ -25,8 +29,21 @@ func newClient() (client.BossClient, error) {
 	return client.NewLocal(socketPath), nil
 }
 
-func runTUI(_ *cobra.Command) error {
-	c, err := newClient()
+// newRemoteClient creates a RemoteClient with a JWT from the keychain.
+func newRemoteClient(baseURL string) (client.BossClient, error) {
+	mgr, err := newAuthManager()
+	if err != nil {
+		return nil, fmt.Errorf("auth: %w (run 'boss login' first)", err)
+	}
+	token, err := mgr.AccessToken(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("access token: %w (run 'boss login' first)", err)
+	}
+	return client.NewRemote(baseURL, token), nil
+}
+
+func runTUI(cmd *cobra.Command) error {
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -37,7 +54,7 @@ func runTUI(_ *cobra.Command) error {
 }
 
 func runLS(cmd *cobra.Command) error {
-	c, err := newClient()
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -103,8 +120,8 @@ func runLS(cmd *cobra.Command) error {
 	return w.Flush()
 }
 
-func runNew(_ *cobra.Command) error {
-	c, err := newClient()
+func runNew(cmd *cobra.Command) error {
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -115,8 +132,8 @@ func runNew(_ *cobra.Command) error {
 	return err
 }
 
-func runAttach(_ *cobra.Command, sessionID string) error {
-	c, err := newClient()
+func runAttach(cmd *cobra.Command, sessionID string) error {
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -128,8 +145,8 @@ func runAttach(_ *cobra.Command, sessionID string) error {
 	return err
 }
 
-func runRepoAdd(_ *cobra.Command) error {
-	c, err := newClient()
+func runRepoAdd(cmd *cobra.Command) error {
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -141,7 +158,7 @@ func runRepoAdd(_ *cobra.Command) error {
 }
 
 func runRepoLS(cmd *cobra.Command) error {
-	c, err := newClient()
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -177,8 +194,8 @@ func runRepoLS(cmd *cobra.Command) error {
 	return w.Flush()
 }
 
-func runRepoRemove(_ *cobra.Command, id string) error {
-	c, err := newClient()
+func runRepoRemove(cmd *cobra.Command, id string) error {
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -190,8 +207,8 @@ func runRepoRemove(_ *cobra.Command, id string) error {
 	return nil
 }
 
-func runArchive(_ *cobra.Command, sessionID string) error {
-	c, err := newClient()
+func runArchive(cmd *cobra.Command, sessionID string) error {
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -204,8 +221,8 @@ func runArchive(_ *cobra.Command, sessionID string) error {
 	return nil
 }
 
-func runResurrect(_ *cobra.Command, sessionID string) error {
-	c, err := newClient()
+func runResurrect(cmd *cobra.Command, sessionID string) error {
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}
@@ -219,7 +236,7 @@ func runResurrect(_ *cobra.Command, sessionID string) error {
 }
 
 func runTrashEmpty(cmd *cobra.Command) error {
-	c, err := newClient()
+	c, err := newClient(cmd)
 	if err != nil {
 		return err
 	}

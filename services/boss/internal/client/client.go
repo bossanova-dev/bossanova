@@ -23,8 +23,8 @@ type AttachStream interface {
 
 // AttachEvent is a unified attach event for both local and remote streams.
 type AttachEvent struct {
-	OutputLine  *pb.OutputLine
-	StateChange *pb.StateChange
+	OutputLine   *pb.OutputLine
+	StateChange  *pb.StateChange
 	SessionEnded *pb.SessionEnded
 }
 

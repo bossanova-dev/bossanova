@@ -153,7 +153,7 @@ func TestManager_AccessToken_ExpiredWithRefresh(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "new-access-token",
 			"refresh_token": "new-refresh-token",
 			"id_token":      "",
@@ -338,7 +338,7 @@ func TestRefreshAccessToken_Success(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "fresh-access",
 			"refresh_token": "fresh-refresh",
 			"expires_in":    7200,
@@ -367,7 +367,7 @@ func TestRefreshAccessToken_Success(t *testing.T) {
 func TestRefreshAccessToken_KeepsOldRefreshIfNotReissued(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "fresh-access",
 			// No refresh_token in response — keep old.
 			"expires_in": 7200,
@@ -391,7 +391,7 @@ func TestRefreshAccessToken_ErrorResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(400)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":             "invalid_grant",
 			"error_description": "refresh token is expired",
 		})
@@ -453,7 +453,7 @@ func TestLogin_PKCEFlow(t *testing.T) {
 			}).SignedString(key)
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"access_token":  "pkce-access-token",
 				"refresh_token": "pkce-refresh-token",
 				"id_token":      idToken,
@@ -486,7 +486,7 @@ func TestLogin_PKCEFlow(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil
 	}
 	defer func() { openBrowserFn = origOpenBrowser }()

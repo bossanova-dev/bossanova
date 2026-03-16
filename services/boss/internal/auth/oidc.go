@@ -75,7 +75,7 @@ func Login(ctx context.Context, cfg Config) (*Tokens, error) {
 		if errMsg := r.URL.Query().Get("error"); errMsg != "" {
 			desc := r.URL.Query().Get("error_description")
 			errCh <- fmt.Errorf("authorization error: %s — %s", errMsg, desc)
-			fmt.Fprintf(w, "<html><body><h1>Login failed</h1><p>%s</p><p>You can close this tab.</p></body></html>", desc)
+			_, _ = fmt.Fprintf(w, "<html><body><h1>Login failed</h1><p>%s</p><p>You can close this tab.</p></body></html>", desc)
 			return
 		}
 
@@ -92,7 +92,7 @@ func Login(ctx context.Context, cfg Config) (*Tokens, error) {
 			return
 		}
 
-		fmt.Fprint(w, "<html><body><h1>Login successful!</h1><p>You can close this tab and return to the terminal.</p></body></html>")
+		_, _ = fmt.Fprint(w, "<html><body><h1>Login successful!</h1><p>You can close this tab and return to the terminal.</p></body></html>")
 		codeCh <- code
 	})
 
@@ -148,7 +148,7 @@ func RefreshAccessToken(ctx context.Context, cfg Config, refreshToken string) (*
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -214,7 +214,7 @@ func exchangeCode(ctx context.Context, cfg Config, code, verifier, redirectURI s
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

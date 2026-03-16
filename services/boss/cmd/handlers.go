@@ -31,7 +31,7 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 
 	// Auto-start daemon if not running.
 	if err := daemon.EnsureRunning(socketPath); err != nil {
-		return nil, fmt.Errorf("daemon: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually.", err)
+		return nil, fmt.Errorf("daemon: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
 	}
 
 	return client.NewLocal(socketPath), nil

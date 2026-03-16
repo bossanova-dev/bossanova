@@ -218,14 +218,14 @@ func GetStatus() (*Status, error) {
 			parts := strings.Split(line, "=")
 			if len(parts) == 2 {
 				pidStr := strings.TrimSpace(strings.Trim(parts[1], "\";"))
-				fmt.Sscanf(pidStr, "%d", &st.PID)
+				_, _ = fmt.Sscanf(pidStr, "%d", &st.PID)
 			}
 		}
 		// Also try tab-separated format from `launchctl list | grep`.
 		if strings.Contains(line, Label) {
 			parts := strings.Fields(line)
 			if len(parts) >= 1 {
-				fmt.Sscanf(parts[0], "%d", &st.PID)
+				_, _ = fmt.Sscanf(parts[0], "%d", &st.PID)
 			}
 		}
 	}

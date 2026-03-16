@@ -44,7 +44,7 @@ func (m *mockHandler) Heartbeat(ctx context.Context, req *connect.Request[pb.Hea
 	return connect.NewResponse(&pb.HeartbeatResponse{}), nil
 }
 
-func setupTest(t *testing.T, handler *mockHandler) (*Manager, *httptest.Server) {
+func setupTest(t *testing.T, handler *mockHandler) *Manager {
 	t.Helper()
 
 	mux := http.NewServeMux()
@@ -63,7 +63,7 @@ func setupTest(t *testing.T, handler *mockHandler) (*Manager, *httptest.Server) 
 	logger := zerolog.Nop()
 	mgr := newManagerWithClient(cfg, bossanovav1connect.NewOrchestratorServiceClient(srv.Client(), srv.URL), logger)
 
-	return mgr, srv
+	return mgr
 }
 
 func TestConnectRegisters(t *testing.T) {
@@ -78,7 +78,7 @@ func TestConnectRegisters(t *testing.T) {
 		}), nil
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	err := mgr.Connect(context.Background(), []string{"repo-1", "repo-2"})
 	if err != nil {
@@ -113,7 +113,7 @@ func TestConnectFailsOnRegistrationError(t *testing.T) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, nil)
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	err := mgr.Connect(context.Background(), nil)
 	if err == nil {
@@ -126,7 +126,7 @@ func TestConnectFailsOnRegistrationError(t *testing.T) {
 
 func TestStopTerminatesHeartbeat(t *testing.T) {
 	handler := &mockHandler{}
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	err := mgr.Connect(context.Background(), nil)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestHeartbeatSendsRequests(t *testing.T) {
 		return connect.NewResponse(&pb.HeartbeatResponse{}), nil
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	err := mgr.Connect(context.Background(), nil)
 	if err != nil {
@@ -176,7 +176,7 @@ func TestHeartbeatUsesSessionToken(t *testing.T) {
 		return connect.NewResponse(&pb.HeartbeatResponse{}), nil
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	err := mgr.Connect(context.Background(), nil)
 	if err != nil {
@@ -205,7 +205,7 @@ func TestRegisterSendsJWTAuth(t *testing.T) {
 		}), nil
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	err := mgr.Connect(context.Background(), nil)
 	if err != nil {
@@ -230,7 +230,7 @@ func TestReconnectOnHeartbeatFailure(t *testing.T) {
 		return connect.NewResponse(&pb.HeartbeatResponse{}), nil
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	err := mgr.Connect(context.Background(), nil)
 	if err != nil {
@@ -245,10 +245,7 @@ func TestReconnectOnHeartbeatFailure(t *testing.T) {
 
 	// Manager should detect failure and mark disconnected.
 	// The heartbeatLoop handles reconnect, but we test the mechanics here.
-	if mgr.IsConnected() {
-		// Still connected because we haven't run the loop logic.
-		// Let's manually trigger what the loop does: mark disconnected after 3 failures.
-	}
+	// Note: mgr.IsConnected() may still be true since we haven't run the loop logic.
 
 	// Verify heartbeat was called 3 times.
 	if handler.heartbeatCalls.Load() != 3 {
@@ -303,7 +300,7 @@ func TestReconnectWithBackoff(t *testing.T) {
 		}), nil
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	// Manually trigger reconnect (normally called from heartbeatLoop).
 	done := make(chan error, 1)
@@ -338,7 +335,7 @@ func TestReconnectStopsOnShutdown(t *testing.T) {
 		return nil, connect.NewError(connect.CodeUnavailable, nil)
 	}
 
-	mgr, _ := setupTest(t, handler)
+	mgr := setupTest(t, handler)
 
 	done := make(chan error, 1)
 	go func() {

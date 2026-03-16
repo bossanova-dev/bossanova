@@ -236,8 +236,31 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 }
 
 func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.AttachSessionRequest], stream *connect.ServerStream[pb.AttachSessionResponse]) error {
-	// Stub: real implementation streams Claude output (Leg 4b).
-	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not yet implemented"))
+	if req.Msg.Id == "" {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	// Verify the session exists.
+	session, err := s.sessions.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
+	}
+
+	// Send initial state to let the client know the session is valid.
+	if err := stream.Send(&pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_StateChange{
+			StateChange: &pb.StateChange{
+				PreviousState: pb.SessionState(session.State),
+				NewState:      pb.SessionState(session.State),
+			},
+		},
+	}); err != nil {
+		return err
+	}
+
+	// Stub: real streaming (tail log, watch state changes) in Leg 6.
+	// For now, stream closes immediately after the initial state message.
+	return nil
 }
 
 func (s *Server) StopSession(ctx context.Context, req *connect.Request[pb.StopSessionRequest]) (*connect.Response[pb.StopSessionResponse], error) {

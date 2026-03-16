@@ -3,7 +3,10 @@ package claude
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +103,71 @@ func TestHistory(t *testing.T) {
 		if line.Text != expected {
 			t.Errorf("line %d: got %q, want %q", i, line.Text, expected)
 		}
+	}
+}
+
+func TestLogFileWritten(t *testing.T) {
+	logDir := t.TempDir()
+	r := NewRunner(
+		zerolog.Nop(),
+		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c",
+				`cat > /dev/null; echo "hello"; echo "world"`)
+		}),
+		WithLogDir(logDir),
+	)
+
+	ctx := context.Background()
+	workDir := t.TempDir()
+
+	sid, err := r.Start(ctx, workDir, "test", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for process to finish.
+	time.Sleep(200 * time.Millisecond)
+
+	// Check log file exists at logDir/<sessionID>.log.
+	logPath := filepath.Join(logDir, sid+".log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content != "hello\nworld" {
+		t.Errorf("log content: got %q, want %q", content, "hello\nworld")
+	}
+}
+
+func TestDefaultLogPath(t *testing.T) {
+	r := NewRunner(zerolog.Nop(),
+		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", `cat > /dev/null; echo "ok"`)
+		}),
+	)
+
+	ctx := context.Background()
+	workDir := t.TempDir()
+
+	_, err := r.Start(ctx, workDir, "test", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for process to finish.
+	time.Sleep(200 * time.Millisecond)
+
+	// Default log path should be workDir/.boss/claude.log.
+	logPath := filepath.Join(workDir, ".boss", "claude.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read default log file: %v", err)
+	}
+
+	if !strings.Contains(string(data), "ok") {
+		t.Errorf("expected log to contain 'ok', got %q", string(data))
 	}
 }
 

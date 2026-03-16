@@ -19,6 +19,7 @@ import (
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/vcs/github"
 	"github.com/recurser/bossd/migrations"
 )
 
@@ -65,7 +66,8 @@ func run() error {
 
 	worktrees := gitpkg.NewManager(log.Logger)
 	claudeRunner := claude.NewRunner(log.Logger)
-	lifecycle := session.NewLifecycle(sessions, repos, worktrees, claudeRunner, log.Logger)
+	ghProvider := github.New(log.Logger)
+	lifecycle := session.NewLifecycle(sessions, repos, worktrees, claudeRunner, ghProvider, log.Logger)
 
 	// --- Server ---
 

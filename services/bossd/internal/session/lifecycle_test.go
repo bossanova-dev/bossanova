@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -79,6 +80,12 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	}
 	if params.ClaudeSessionID != nil {
 		s.ClaudeSessionID = *params.ClaudeSessionID
+	}
+	if params.PRNumber != nil {
+		s.PRNumber = *params.PRNumber
+	}
+	if params.PRURL != nil {
+		s.PRURL = *params.PRURL
 	}
 	return s, nil
 }
@@ -247,6 +254,48 @@ func (m *mockClaudeRunner) History(_ string) []claude.OutputLine {
 	return nil
 }
 
+// --- Mock VCS Provider ---
+
+type mockVCSProvider struct {
+	createPRCalls []vcs.CreatePROpts
+	nextPRInfo    *vcs.PRInfo
+}
+
+func newMockVCSProvider() *mockVCSProvider {
+	return &mockVCSProvider{
+		nextPRInfo: &vcs.PRInfo{Number: 42, URL: "https://github.com/owner/repo/pull/42"},
+	}
+}
+
+func (m *mockVCSProvider) CreateDraftPR(_ context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
+	m.createPRCalls = append(m.createPRCalls, opts)
+	return m.nextPRInfo, nil
+}
+
+func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	return &vcs.PRStatus{State: vcs.PRStateOpen}, nil
+}
+
+func (m *mockVCSProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
+	return nil, nil
+}
+
+func (m *mockVCSProvider) GetFailedCheckLogs(_ context.Context, _ string, _ string) (string, error) {
+	return "", nil
+}
+
+func (m *mockVCSProvider) MarkReadyForReview(_ context.Context, _ string, _ int) error {
+	return nil
+}
+
+func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {
+	return nil, nil
+}
+
+func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
+
 // --- Tests ---
 
 func TestStartSession(t *testing.T) {
@@ -273,7 +322,7 @@ func TestStartSession(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, logger)
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -338,7 +387,7 @@ func TestStopSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, logger)
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -374,7 +423,7 @@ func TestArchiveSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, logger)
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ArchiveSession: %v", err)
@@ -437,7 +486,7 @@ func TestResurrectSession(t *testing.T) {
 	oldClaudeID := "claude-old"
 	sess.ClaudeSessionID = &oldClaudeID
 
-	lc := NewLifecycle(sessions, repos, wt, cr, logger)
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
@@ -480,7 +529,7 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 		// ArchivedAt is nil — not archived.
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, logger)
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	err := lc.ResurrectSession(ctx, "sess-1")
 	if err == nil {
@@ -506,7 +555,7 @@ func TestStopSessionNoClaudeProcess(t *testing.T) {
 		// No ClaudeSessionID.
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, logger)
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -520,5 +569,103 @@ func TestStopSessionNoClaudeProcess(t *testing.T) {
 	// State should still be Closed.
 	if sessions.sessions["sess-1"].State != machine.Closed {
 		t.Errorf("state = %v, want Closed", sessions.sessions["sess-1"].State)
+	}
+}
+
+func TestSubmitPR(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Test Session",
+		Plan:         "Do something",
+		WorktreePath: "/tmp/worktrees/boss/test-session",
+		BranchName:   "boss/test-session",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+
+	if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
+		t.Fatalf("SubmitPR: %v", err)
+	}
+
+	// Verify branch was pushed.
+	if len(wt.pushed) != 1 || wt.pushed[0] != "boss/test-session" {
+		t.Errorf("expected push of boss/test-session, got %v", wt.pushed)
+	}
+
+	// Verify draft PR was created.
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("expected 1 createPR call, got %d", len(vp.createPRCalls))
+	}
+	call := vp.createPRCalls[0]
+	if call.RepoPath != "owner/repo" {
+		t.Errorf("PR repo = %q, want owner/repo", call.RepoPath)
+	}
+	if call.HeadBranch != "boss/test-session" {
+		t.Errorf("PR head = %q, want boss/test-session", call.HeadBranch)
+	}
+	if call.BaseBranch != "main" {
+		t.Errorf("PR base = %q, want main", call.BaseBranch)
+	}
+	if call.Title != "Test Session" {
+		t.Errorf("PR title = %q, want 'Test Session'", call.Title)
+	}
+	if !call.Draft {
+		t.Error("expected draft PR")
+	}
+
+	// Verify session was updated with PR info and state.
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.AwaitingChecks {
+		t.Errorf("state = %v, want AwaitingChecks", sess.State)
+	}
+	if sess.PRNumber == nil || *sess.PRNumber != 42 {
+		t.Errorf("PR number = %v, want 42", sess.PRNumber)
+	}
+	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Errorf("PR URL = %v, want https://github.com/owner/repo/pull/42", sess.PRURL)
+	}
+}
+
+func TestSubmitPRWrongState(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.CreatingWorktree, // wrong state for SubmitPR
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+
+	err := lc.SubmitPR(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("expected error for wrong state")
 	}
 }

@@ -164,6 +164,7 @@ type mockWorktreeManager struct {
 	created     []gitpkg.CreateOpts
 	archived    []string
 	resurrected []gitpkg.ResurrectOpts
+	pushed      []string
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -181,6 +182,11 @@ func (m *mockWorktreeManager) Archive(_ context.Context, path string) error {
 
 func (m *mockWorktreeManager) Resurrect(_ context.Context, opts gitpkg.ResurrectOpts) error {
 	m.resurrected = append(m.resurrected, opts)
+	return nil
+}
+
+func (m *mockWorktreeManager) Push(_ context.Context, _ string, branch string) error {
+	m.pushed = append(m.pushed, branch)
 	return nil
 }
 

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/views"
@@ -188,17 +190,87 @@ func runRepoRemove(_ *cobra.Command, id string) error {
 	return nil
 }
 
-func runArchive(_ *cobra.Command, _ string) error {
-	fmt.Println("boss archive: archive session (not yet implemented)")
+func runArchive(_ *cobra.Command, sessionID string) error {
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	sess, err := c.ArchiveSession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("archive session: %w", err)
+	}
+	fmt.Printf("Session %s archived (%s).\n", sess.Id, sess.Title)
 	return nil
 }
 
-func runResurrect(_ *cobra.Command, _ string) error {
-	fmt.Println("boss resurrect: resurrect session (not yet implemented)")
+func runResurrect(_ *cobra.Command, sessionID string) error {
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	sess, err := c.ResurrectSession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("resurrect session: %w", err)
+	}
+	fmt.Printf("Session %s resurrected (%s).\n", sess.Id, sess.Title)
 	return nil
 }
 
-func runTrashEmpty(_ *cobra.Command) error {
-	fmt.Println("boss trash empty: empty trash (not yet implemented)")
+func runTrashEmpty(cmd *cobra.Command) error {
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+
+	req := &pb.EmptyTrashRequest{}
+
+	olderThan, _ := cmd.Flags().GetString("older-than")
+	if olderThan != "" {
+		d, err := parseDuration(olderThan)
+		if err != nil {
+			return fmt.Errorf("invalid --older-than: %w", err)
+		}
+		cutoff := time.Now().Add(-d)
+		ts := timestamppb.New(cutoff)
+		req.OlderThan = ts
+	}
+
+	ctx := context.Background()
+	count, err := c.EmptyTrash(ctx, req)
+	if err != nil {
+		return fmt.Errorf("empty trash: %w", err)
+	}
+	if count == 0 {
+		fmt.Println("No archived sessions to delete.")
+	} else {
+		fmt.Printf("Deleted %d archived session(s).\n", count)
+	}
 	return nil
+}
+
+// parseDuration parses a human-friendly duration like "30d", "2w", "1h".
+func parseDuration(s string) (time.Duration, error) {
+	if len(s) < 2 {
+		return 0, fmt.Errorf("invalid duration: %s", s)
+	}
+
+	unit := s[len(s)-1]
+	numStr := s[:len(s)-1]
+	var n int
+	if _, err := fmt.Sscanf(numStr, "%d", &n); err != nil {
+		return 0, fmt.Errorf("invalid duration number: %s", numStr)
+	}
+
+	switch unit {
+	case 'h':
+		return time.Duration(n) * time.Hour, nil
+	case 'd':
+		return time.Duration(n) * 24 * time.Hour, nil
+	case 'w':
+		return time.Duration(n) * 7 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("unknown duration unit: %c (use h, d, or w)", unit)
+	}
 }

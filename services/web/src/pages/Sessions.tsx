@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router'
 import { create } from '@bufbuild/protobuf'
 import { useApi } from '../ApiContext.ts'
 import { ProxyListSessionsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb.ts'
@@ -76,7 +77,11 @@ export default function Sessions() {
           <tbody>
             {sessions.map((s) => (
               <tr key={s.id}>
-                <td style={td}>{s.title || s.id}</td>
+                <td style={td}>
+                  <Link to={`/sessions/${s.id}`} style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                    {s.title || s.id}
+                  </Link>
+                </td>
                 <td style={td}><code>{s.branchName}</code></td>
                 <td style={td}>{stateLabel[s.state] ?? 'Unknown'}</td>
                 <td style={td}>

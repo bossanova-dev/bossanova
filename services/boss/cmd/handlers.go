@@ -113,9 +113,17 @@ func runNew(_ *cobra.Command) error {
 	return err
 }
 
-func runAttach(_ *cobra.Command, _ string) error {
-	fmt.Println("boss attach: attach to session (not yet implemented)")
-	return nil
+func runAttach(_ *cobra.Command, sessionID string) error {
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	app := views.NewApp(c)
+	app.SetInitialView(views.ViewAttach)
+	app.SetAttachSession(sessionID)
+	p := tea.NewProgram(app)
+	_, err = p.Run()
+	return err
 }
 
 func runRepoAdd(_ *cobra.Command) error {

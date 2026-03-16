@@ -78,6 +78,14 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.cursor++
 			}
 			return h, nil
+		case "enter":
+			if len(h.sessions) > 0 {
+				sess := h.sessions[h.cursor]
+				return h, func() tea.Msg {
+					return switchViewMsg{view: ViewAttach, sessionID: sess.Id}
+				}
+			}
+			return h, nil
 		}
 	}
 

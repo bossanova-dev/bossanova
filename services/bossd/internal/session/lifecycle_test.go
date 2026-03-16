@@ -87,6 +87,15 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.PRURL != nil {
 		s.PRURL = *params.PRURL
 	}
+	if params.LastCheckState != nil {
+		s.LastCheckState = machine.CheckState(*params.LastCheckState)
+	}
+	if params.AttemptCount != nil {
+		s.AttemptCount = *params.AttemptCount
+	}
+	if params.BlockedReason != nil {
+		s.BlockedReason = *params.BlockedReason
+	}
 	return s, nil
 }
 
@@ -257,13 +266,17 @@ func (m *mockClaudeRunner) History(_ string) []claude.OutputLine {
 // --- Mock VCS Provider ---
 
 type mockVCSProvider struct {
-	createPRCalls []vcs.CreatePROpts
-	nextPRInfo    *vcs.PRInfo
+	createPRCalls    []vcs.CreatePROpts
+	markReadyCalls   []int
+	nextPRInfo       *vcs.PRInfo
+	nextPRStatus     *vcs.PRStatus
+	nextCheckResults []vcs.CheckResult
 }
 
 func newMockVCSProvider() *mockVCSProvider {
 	return &mockVCSProvider{
-		nextPRInfo: &vcs.PRInfo{Number: 42, URL: "https://github.com/owner/repo/pull/42"},
+		nextPRInfo:   &vcs.PRInfo{Number: 42, URL: "https://github.com/owner/repo/pull/42"},
+		nextPRStatus: &vcs.PRStatus{State: vcs.PRStateOpen},
 	}
 }
 
@@ -273,18 +286,22 @@ func (m *mockVCSProvider) CreateDraftPR(_ context.Context, opts vcs.CreatePROpts
 }
 
 func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+	if m.nextPRStatus != nil {
+		return m.nextPRStatus, nil
+	}
 	return &vcs.PRStatus{State: vcs.PRStateOpen}, nil
 }
 
 func (m *mockVCSProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
-	return nil, nil
+	return m.nextCheckResults, nil
 }
 
 func (m *mockVCSProvider) GetFailedCheckLogs(_ context.Context, _ string, _ string) (string, error) {
 	return "", nil
 }
 
-func (m *mockVCSProvider) MarkReadyForReview(_ context.Context, _ string, _ int) error {
+func (m *mockVCSProvider) MarkReadyForReview(_ context.Context, _ string, prID int) error {
+	m.markReadyCalls = append(m.markReadyCalls, prID)
 	return nil
 }
 

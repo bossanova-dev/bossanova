@@ -39,7 +39,19 @@ describe('GitHub client', () => {
       expect(result).toEqual({ number: 42, url: 'https://github.com/owner/repo/pull/42' });
       expect(mockExecFile).toHaveBeenCalledWith(
         'gh',
-        ['pr', 'create', '--draft', '--title', 'My PR', '--body', 'Body text', '--base', 'main', '--json', 'number,url'],
+        [
+          'pr',
+          'create',
+          '--draft',
+          '--title',
+          'My PR',
+          '--body',
+          'Body text',
+          '--base',
+          'main',
+          '--json',
+          'number,url',
+        ],
         { cwd: '/tmp/wt' },
       );
     });

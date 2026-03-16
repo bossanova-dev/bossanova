@@ -17,10 +17,7 @@ export interface PollResult {
  * Check the PR status for a single session.
  * Returns null if the session doesn't have a PR or worktree.
  */
-export async function pollSession(
-  session: Session,
-  repos: RepoStore,
-): Promise<PollResult | null> {
+export async function pollSession(session: Session, repos: RepoStore): Promise<PollResult | null> {
   if (!session.prNumber || !session.worktreePath) return null;
 
   const repo = repos.get(session.repoId);
@@ -113,10 +110,7 @@ export function processPollResult(
  * process ready-for-review transitions.
  * Returns the number of sessions polled.
  */
-export async function pollAllSessions(
-  sessions: SessionStore,
-  repos: RepoStore,
-): Promise<number> {
+export async function pollAllSessions(sessions: SessionStore, repos: RepoStore): Promise<number> {
   const allSessions = sessions.list();
   const pollable = allSessions.filter(
     (s) =>

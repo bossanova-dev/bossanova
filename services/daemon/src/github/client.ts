@@ -40,7 +40,19 @@ export async function createDraftPr(
 ): Promise<PrInfo> {
   const { stdout } = await execFileAsync(
     'gh',
-    ['pr', 'create', '--draft', '--title', title, '--body', body, '--base', baseBranch, '--json', 'number,url'],
+    [
+      'pr',
+      'create',
+      '--draft',
+      '--title',
+      title,
+      '--body',
+      body,
+      '--base',
+      baseBranch,
+      '--json',
+      'number,url',
+    ],
     { cwd: worktreePath },
   );
 
@@ -54,13 +66,7 @@ export async function createDraftPr(
 export async function getPrStatus(worktreePath: string, prNumber: number): Promise<PrStatus> {
   const { stdout } = await execFileAsync(
     'gh',
-    [
-      'pr',
-      'view',
-      String(prNumber),
-      '--json',
-      'state,mergeable,title,headRefName,baseRefName',
-    ],
+    ['pr', 'view', String(prNumber), '--json', 'state,mergeable,title,headRefName,baseRefName'],
     { cwd: worktreePath },
   );
 
@@ -74,7 +80,8 @@ export async function getPrStatus(worktreePath: string, prNumber: number): Promi
 
   return {
     state: raw.state.toLowerCase() as PrStatus['state'],
-    mergeable: raw.mergeable === 'MERGEABLE' ? true : raw.mergeable === 'CONFLICTING' ? false : null,
+    mergeable:
+      raw.mergeable === 'MERGEABLE' ? true : raw.mergeable === 'CONFLICTING' ? false : null,
     title: raw.title,
     headBranch: raw.headRefName,
     baseBranch: raw.baseRefName,
@@ -141,14 +148,19 @@ export async function closePr(worktreePath: string, prNumber: number): Promise<v
  * Get the failed check run logs for a PR.
  * Used by the fix loop to provide Claude with failure context.
  */
-export async function getFailedCheckLogs(
-  worktreePath: string,
-  prNumber: number,
-): Promise<string> {
+export async function getFailedCheckLogs(worktreePath: string, prNumber: number): Promise<string> {
   try {
     const { stdout } = await execFileAsync(
       'gh',
-      ['pr', 'checks', String(prNumber), '--json', 'name,state,conclusion,link', '--jq', '.[] | select(.conclusion == "FAILURE")'],
+      [
+        'pr',
+        'checks',
+        String(prNumber),
+        '--json',
+        'name,state,conclusion,link',
+        '--jq',
+        '.[] | select(.conclusion == "FAILURE")',
+      ],
       { cwd: worktreePath },
     );
     return stdout.trim();

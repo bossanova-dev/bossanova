@@ -15,6 +15,9 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
+// Compile-time interface check.
+var _ vcs.Provider = (*Provider)(nil)
+
 // Provider implements vcs.Provider by shelling out to the gh CLI.
 type Provider struct {
 	logger zerolog.Logger
@@ -130,6 +133,119 @@ func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID in
 	}
 
 	return results, nil
+}
+
+// GetFailedCheckLogs returns the log output for a specific failed check run.
+func (p *Provider) GetFailedCheckLogs(ctx context.Context, repoPath string, checkID string) (string, error) {
+	// checkID is "workflow/job" — we use gh run view to get logs.
+	// gh doesn't have a direct "get check logs" command, so we use the API.
+	out, err := p.runGH(ctx,
+		"api", fmt.Sprintf("repos/%s/actions/jobs/%s/logs", repoPath, checkID),
+	)
+	if err != nil {
+		return "", fmt.Errorf("get check logs: %w", err)
+	}
+	return out, nil
+}
+
+// MarkReadyForReview transitions a draft PR to ready for review.
+func (p *Provider) MarkReadyForReview(ctx context.Context, repoPath string, prID int) error {
+	_, err := p.runGH(ctx,
+		"pr", "ready", strconv.Itoa(prID),
+		"--repo", repoPath,
+	)
+	if err != nil {
+		return fmt.Errorf("mark ready for review: %w", err)
+	}
+
+	p.logger.Info().
+		Int("number", prID).
+		Msg("marked PR ready for review")
+
+	return nil
+}
+
+// GetReviewComments returns review comments on a pull request.
+func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error) {
+	out, err := p.runGH(ctx,
+		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews", repoPath, prID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get reviews: %w", err)
+	}
+
+	var raw []struct {
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Body  string `json:"body"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parse reviews: %w", err)
+	}
+
+	comments := make([]vcs.ReviewComment, len(raw))
+	for i, r := range raw {
+		comments[i] = vcs.ReviewComment{
+			Author: r.User.Login,
+			Body:   r.Body,
+			State:  parseReviewState(r.State),
+		}
+	}
+
+	return comments, nil
+}
+
+// ListOpenPRs returns all open pull requests for a repository.
+func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	out, err := p.runGH(ctx,
+		"pr", "list",
+		"--repo", repoPath,
+		"--state", "open",
+		"--json", "number,title,headRefName,state",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list open PRs: %w", err)
+	}
+
+	var raw []struct {
+		Number      int    `json:"number"`
+		Title       string `json:"title"`
+		HeadRefName string `json:"headRefName"`
+		State       string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parse PRs: %w", err)
+	}
+
+	prs := make([]vcs.PRSummary, len(raw))
+	for i, r := range raw {
+		prs[i] = vcs.PRSummary{
+			Number:     r.Number,
+			Title:      r.Title,
+			HeadBranch: r.HeadRefName,
+			State:      parsePRState(r.State),
+		}
+	}
+
+	return prs, nil
+}
+
+// parseReviewState converts a GitHub API review state string to vcs.ReviewState.
+func parseReviewState(s string) vcs.ReviewState {
+	switch strings.ToUpper(s) {
+	case "APPROVED":
+		return vcs.ReviewStateApproved
+	case "CHANGES_REQUESTED":
+		return vcs.ReviewStateChangesRequested
+	case "COMMENTED":
+		return vcs.ReviewStateCommented
+	case "DISMISSED":
+		return vcs.ReviewStateDismissed
+	default:
+		return vcs.ReviewStateCommented
+	}
 }
 
 // runGH executes a gh CLI command and returns stdout.

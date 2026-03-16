@@ -19,6 +19,7 @@ type Dispatcher struct {
 	sessions db.SessionStore
 	repos    db.RepoStore
 	provider vcs.Provider
+	fixLoop  *FixLoop
 	logger   zerolog.Logger
 	mu       sync.Mutex // guards concurrent session transitions
 }
@@ -36,6 +37,13 @@ func NewDispatcher(
 		provider: provider,
 		logger:   logger,
 	}
+}
+
+// SetFixLoop sets the fix loop handler for automated fix attempts.
+// This is set after construction to break the circular dependency
+// between Dispatcher and FixLoop.
+func (d *Dispatcher) SetFixLoop(fl *FixLoop) {
+	d.fixLoop = fl
 }
 
 // Run consumes events from the channel and dispatches them until the
@@ -81,6 +89,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 		return d.handleChecksFailed(ctx, sm, sess, event)
 	case vcs.ConflictDetected:
 		return d.handleConflictDetected(ctx, sm, sess)
+	case vcs.ReviewSubmitted:
+		return d.handleReviewSubmitted(ctx, sm, sess, event)
 	case vcs.PRMerged:
 		return d.handlePRMerged(ctx, sm, sess)
 	case vcs.PRClosed:
@@ -168,6 +178,15 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 		Int("failedChecks", len(event.FailedChecks)).
 		Msg("checks failed")
 
+	// Kick off the fix loop if we transitioned to FixingChecks.
+	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
+		go func() {
+			if err := d.fixLoop.HandleCheckFailure(ctx, sess.ID, event.FailedChecks); err != nil {
+				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: check failure handler failed")
+			}
+		}()
+	}
+
 	return nil
 }
 
@@ -197,6 +216,55 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 		Str("session", sess.ID).
 		Str("newState", sm.State().String()).
 		Msg("conflict detected")
+
+	// Kick off the fix loop if we transitioned to FixingChecks.
+	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
+		go func() {
+			if err := d.fixLoop.HandleConflict(ctx, sess.ID); err != nil {
+				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: conflict handler failed")
+			}
+		}()
+	}
+
+	return nil
+}
+
+func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ReviewSubmitted) error {
+	if err := sm.FireCtx(ctx, machine.ReviewSubmitted); err != nil {
+		return fmt.Errorf("fire review_submitted: %w", err)
+	}
+
+	newState := int(sm.State())
+	attemptCount := sm.Context().AttemptCount
+	update := db.UpdateSessionParams{
+		State:        &newState,
+		AttemptCount: &attemptCount,
+	}
+
+	if sm.State() == machine.Blocked {
+		reason := sm.Context().BlockedReason
+		reasonPtr := &reason
+		update.BlockedReason = &reasonPtr
+	}
+
+	if _, err := d.sessions.Update(ctx, sess.ID, update); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+
+	d.logger.Info().
+		Str("session", sess.ID).
+		Str("newState", sm.State().String()).
+		Int("comments", len(event.Comments)).
+		Msg("review submitted")
+
+	// Kick off the fix loop if we transitioned to FixingChecks.
+	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
+		go func() {
+			if err := d.fixLoop.HandleReviewFeedback(ctx, sess.ID, event.Comments); err != nil {
+				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: review handler failed")
+			}
+		}()
+	}
 
 	return nil
 }

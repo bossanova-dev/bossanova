@@ -1,5 +1,9 @@
 import { Auth0Provider } from '@auth0/auth0-react'
 import { BrowserRouter, Route, Routes } from 'react-router'
+import { ApiProvider } from './ApiContext.ts'
+import Layout from './Layout.tsx'
+import Sessions from './pages/Sessions.tsx'
+import Daemons from './pages/Daemons.tsx'
 
 const domain = import.meta.env.VITE_AUTH0_DOMAIN as string
 const clientId = import.meta.env.VITE_AUTH0_CLIENT_ID as string
@@ -15,11 +19,16 @@ function App() {
         audience,
       }}
     >
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<div><h1>Bossanova</h1><p>Loading...</p></div>} />
-        </Routes>
-      </BrowserRouter>
+      <ApiProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route element={<Layout />}>
+              <Route index element={<Sessions />} />
+              <Route path="daemons" element={<Daemons />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </ApiProvider>
     </Auth0Provider>
   )
 }

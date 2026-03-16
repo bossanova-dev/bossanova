@@ -48,6 +48,8 @@ type CreateSessionParams struct {
 // UpdateSessionParams holds the fields that can be updated on a session.
 type UpdateSessionParams struct {
 	State             *int
+	WorktreePath      *string
+	BranchName        *string
 	ClaudeSessionID   **string
 	PRNumber          **int
 	PRURL             **string

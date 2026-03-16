@@ -1,0 +1,102 @@
+// Package models defines the core domain types for Bossanova.
+// These are the Go-native types used throughout the application.
+// Proto conversion functions bridge these with the generated protobuf types.
+package models
+
+import (
+	"time"
+
+	"github.com/recurser/bossalib/machine"
+)
+
+// Repo represents a registered Git repository.
+type Repo struct {
+	ID               string
+	DisplayName      string
+	LocalPath        string
+	OriginURL        string
+	DefaultBaseBranch string
+	WorktreeBaseDir  string
+	SetupScript      *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// Session represents a Claude coding session.
+type Session struct {
+	ID                string
+	RepoID            string
+	Title             string
+	Plan              string
+	WorktreePath      string
+	BranchName        string
+	BaseBranch        string
+	State             machine.State
+	ClaudeSessionID   *string
+	PRNumber          *int
+	PRURL             *string
+	LastCheckState    machine.CheckState
+	AutomationEnabled bool
+	AttemptCount      int
+	BlockedReason     *string
+	ArchivedAt        *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// Attempt represents a fix attempt within a session.
+type Attempt struct {
+	ID        string
+	SessionID string
+	Trigger   AttemptTrigger
+	Result    AttemptResult
+	Error     *string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// AttemptTrigger represents what triggered a fix attempt.
+type AttemptTrigger int
+
+const (
+	AttemptTriggerUnspecified    AttemptTrigger = iota
+	AttemptTriggerCheckFailure
+	AttemptTriggerConflict
+	AttemptTriggerReviewFeedback
+)
+
+// AttemptResult represents the outcome of a fix attempt.
+type AttemptResult int
+
+const (
+	AttemptResultUnspecified AttemptResult = iota
+	AttemptResultSuccess
+	AttemptResultFailed
+	AttemptResultIncomplete
+)
+
+func (t AttemptTrigger) String() string {
+	switch t {
+	case AttemptTriggerCheckFailure:
+		return "check_failure"
+	case AttemptTriggerConflict:
+		return "conflict"
+	case AttemptTriggerReviewFeedback:
+		return "review_feedback"
+	default:
+		return "unspecified"
+	}
+}
+
+func (r AttemptResult) String() string {
+	switch r {
+	case AttemptResultSuccess:
+		return "success"
+	case AttemptResultFailed:
+		return "failed"
+	case AttemptResultIncomplete:
+		return "incomplete"
+	default:
+		return "unspecified"
+	}
+}

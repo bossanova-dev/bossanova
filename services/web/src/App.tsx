@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes } from 'react-router'
 import { ApiProvider } from './ApiContext.ts'
 import Layout from './Layout.tsx'
 import Sessions from './pages/Sessions.tsx'
+import SessionDetail from './pages/SessionDetail.tsx'
 import Daemons from './pages/Daemons.tsx'
 
 const domain = import.meta.env.VITE_AUTH0_DOMAIN as string
@@ -24,6 +25,7 @@ function App() {
           <Routes>
             <Route element={<Layout />}>
               <Route index element={<Sessions />} />
+              <Route path="sessions/:id" element={<SessionDetail />} />
               <Route path="daemons" element={<Daemons />} />
             </Route>
           </Routes>

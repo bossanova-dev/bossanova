@@ -1,0 +1,64 @@
+name: bossd (test)
+
+concurrency:
+  group:              bossd-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches-ignore:
+      - 'main'
+    paths:
+      - .github/workflows/test-bossd.yml
+      - services/bossd/**
+      - lib/bossalib/**
+      - proto/**
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    outputs:
+      status: ${{ steps.changes.conclusion }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dorny/paths-filter@v3
+      id: changes
+      with:
+        filters: |
+          bossd:
+            - .github/workflows/test-bossd.yml
+            - services/bossd/**
+            - lib/bossalib/**
+            - proto/**
+
+    - name: Check service changed
+      if:  steps.changes.outputs.bossd == 'true'
+      run: echo "Service has changed - running CI"
+
+  bossd:
+    runs-on: ubuntu-latest
+
+    needs: check
+    if:    needs.check.outputs.status == 'success'
+
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.25"
+
+    - name: Lint
+      run: make lint-bossd
+
+    - name: Test
+      run: make test-bossd
+
+    - name: Build
+      run: make build-bossd

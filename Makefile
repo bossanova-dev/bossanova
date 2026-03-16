@@ -1,4 +1,7 @@
-.PHONY: generate build test lint clean split format build-all
+.PHONY: generate build test lint clean split format build-all \
+	test-bossalib test-boss test-bossd test-bosso \
+	lint-bossalib lint-boss lint-bossd lint-bosso lint-proto \
+	build-boss build-bossd build-bosso
 
 # Binaries output to bin/
 BIN_DIR := bin
@@ -39,6 +42,19 @@ test:
 		(cd $$mod && go test ./...); \
 	done
 
+## Per-module test targets
+test-bossalib:
+	cd lib/bossalib && go test ./...
+
+test-boss:
+	cd services/boss && go test ./...
+
+test-bossd:
+	cd services/bossd && go test ./...
+
+test-bosso:
+	cd services/bosso && go test ./...
+
 ## lint: Run golangci-lint and buf lint
 lint:
 	buf lint
@@ -46,6 +62,29 @@ lint:
 		echo "==> Linting $$mod"; \
 		(cd $$mod && golangci-lint run ./...); \
 	done
+
+## Per-module lint targets
+lint-proto:
+	buf lint
+
+lint-bossalib:
+	cd lib/bossalib && golangci-lint run ./...
+
+lint-boss:
+	cd services/boss && golangci-lint run ./...
+
+lint-bossd:
+	cd services/bossd && golangci-lint run ./...
+
+lint-bosso:
+	cd services/bosso && golangci-lint run ./...
+
+## Per-module build targets
+build-boss: $(BIN_DIR)/boss
+
+build-bossd: $(BIN_DIR)/bossd
+
+build-bosso: $(BIN_DIR)/bosso
 
 ## format: Format Go code and markdown
 format:

@@ -1,0 +1,64 @@
+name: bosso (test)
+
+concurrency:
+  group:              bosso-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches-ignore:
+      - 'main'
+    paths:
+      - .github/workflows/test-bosso.yml
+      - services/bosso/**
+      - lib/bossalib/**
+      - proto/**
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    outputs:
+      status: ${{ steps.changes.conclusion }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dorny/paths-filter@v3
+      id: changes
+      with:
+        filters: |
+          bosso:
+            - .github/workflows/test-bosso.yml
+            - services/bosso/**
+            - lib/bossalib/**
+            - proto/**
+
+    - name: Check service changed
+      if:  steps.changes.outputs.bosso == 'true'
+      run: echo "Service has changed - running CI"
+
+  bosso:
+    runs-on: ubuntu-latest
+
+    needs: check
+    if:    needs.check.outputs.status == 'success'
+
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.25"
+
+    - name: Lint
+      run: make lint-bosso
+
+    - name: Test
+      run: make test-bosso
+
+    - name: Build
+      run: make build-bosso

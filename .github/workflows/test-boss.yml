@@ -1,0 +1,64 @@
+name: boss (test)
+
+concurrency:
+  group:              boss-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches-ignore:
+      - 'main'
+    paths:
+      - .github/workflows/test-boss.yml
+      - services/boss/**
+      - lib/bossalib/**
+      - proto/**
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    outputs:
+      status: ${{ steps.changes.conclusion }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dorny/paths-filter@v3
+      id: changes
+      with:
+        filters: |
+          boss:
+            - .github/workflows/test-boss.yml
+            - services/boss/**
+            - lib/bossalib/**
+            - proto/**
+
+    - name: Check service changed
+      if:  steps.changes.outputs.boss == 'true'
+      run: echo "Service has changed - running CI"
+
+  boss:
+    runs-on: ubuntu-latest
+
+    needs: check
+    if:    needs.check.outputs.status == 'success'
+
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.25"
+
+    - name: Lint
+      run: make lint-boss
+
+    - name: Test
+      run: make test-boss
+
+    - name: Build
+      run: make build-boss

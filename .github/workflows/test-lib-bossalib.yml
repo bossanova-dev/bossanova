@@ -1,0 +1,59 @@
+name: lib/bossalib (test)
+
+concurrency:
+  group:              lib-bossalib-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches-ignore:
+      - 'main'
+    paths:
+      - .github/workflows/test-lib-bossalib.yml
+      - lib/bossalib/**
+      - proto/**
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    outputs:
+      status: ${{ steps.changes.conclusion }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dorny/paths-filter@v3
+      id: changes
+      with:
+        filters: |
+          bossalib:
+            - .github/workflows/test-lib-bossalib.yml
+            - lib/bossalib/**
+            - proto/**
+
+    - name: Check library changed
+      if:  steps.changes.outputs.bossalib == 'true'
+      run: echo "Library has changed - running CI"
+
+  bossalib:
+    runs-on: ubuntu-latest
+
+    needs: check
+    if:    needs.check.outputs.status == 'success'
+
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.25"
+
+    - name: Lint
+      run: make lint-bossalib
+
+    - name: Test
+      run: make test-bossalib

@@ -20,6 +20,7 @@ import (
 	"github.com/recurser/bosso/internal/db"
 	"github.com/recurser/bosso/internal/relay"
 	"github.com/recurser/bosso/internal/server"
+	"github.com/recurser/bosso/internal/webhook"
 	"github.com/recurser/bosso/migrations"
 )
 
@@ -72,6 +73,7 @@ func run() error {
 	daemons := db.NewDaemonStore(database)
 	sessions := db.NewSessionRegistryStore(database)
 	audit := db.NewAuditStore(database)
+	webhookConfigs := db.NewWebhookConfigStore(database)
 
 	// --- Auth ---
 
@@ -84,11 +86,21 @@ func run() error {
 	// --- Server ---
 
 	pool := relay.NewPool()
-	srv := server.New(users, daemons, sessions, audit, pool)
+	srv := server.New(users, daemons, sessions, audit, webhookConfigs, pool)
+
+	// Webhook parser registry.
+	parserRegistry := webhook.NewRegistry()
+	parserRegistry.Register(&webhook.GitHubParser{})
+
+	webhookHandler := webhook.NewHandler(
+		webhookConfigs, daemons, pool, parserRegistry,
+		log.Logger.With().Str("component", "webhook").Logger(),
+	)
 
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(srv)
 	mux.Handle(path, handler)
+	mux.Handle("POST /webhooks/{provider}", webhookHandler)
 
 	httpServer := &http.Server{
 		Addr:    addr,

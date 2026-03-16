@@ -55,6 +55,7 @@ type testEnv struct {
 	daemons  db.DaemonStore
 	sessions db.SessionRegistryStore
 	audit    db.AuditStore
+	webhooks db.WebhookConfigStore
 	pool     *relay.Pool
 	key      *rsa.PrivateKey
 	kid      string
@@ -71,6 +72,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	daemons := db.NewDaemonStore(database)
 	sessions := db.NewSessionRegistryStore(database)
 	audit := db.NewAuditStore(database)
+	webhooks := db.NewWebhookConfigStore(database)
 
 	// Generate RSA key for signing test JWTs.
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -109,7 +111,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 	authMiddleware := auth.NewMiddleware(jwtValidator, users, daemons)
 
 	pool := relay.NewPool()
-	srv := New(users, daemons, sessions, audit, pool)
+	srv := New(users, daemons, sessions, audit, webhooks, pool)
 
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(srv)
@@ -129,6 +131,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 		daemons:  daemons,
 		sessions: sessions,
 		audit:    audit,
+		webhooks: webhooks,
 		pool:     pool,
 		key:      key,
 		kid:      kid,

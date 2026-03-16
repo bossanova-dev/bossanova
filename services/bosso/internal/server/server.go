@@ -23,18 +23,20 @@ type Server struct {
 	daemons  db.DaemonStore
 	sessions db.SessionRegistryStore
 	audit    db.AuditStore
+	webhooks db.WebhookConfigStore
 	pool     *relay.Pool
 
 	bossanovav1connect.UnimplementedOrchestratorServiceHandler
 }
 
 // New creates a new orchestrator server.
-func New(users db.UserStore, daemons db.DaemonStore, sessions db.SessionRegistryStore, audit db.AuditStore, pool *relay.Pool) *Server {
+func New(users db.UserStore, daemons db.DaemonStore, sessions db.SessionRegistryStore, audit db.AuditStore, webhooks db.WebhookConfigStore, pool *relay.Pool) *Server {
 	return &Server{
 		users:    users,
 		daemons:  daemons,
 		sessions: sessions,
 		audit:    audit,
+		webhooks: webhooks,
 		pool:     pool,
 	}
 }

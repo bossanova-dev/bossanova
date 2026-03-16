@@ -54,6 +54,7 @@
 Flight Leg 4: Daemon IPC — ConnectRPC over Unix Socket
 
 Tasks to create (via /pre-flight-checks):
+
 - ConnectRPC server in services/bossd/internal/server/ — Unix socket
 - Implement all DaemonService RPCs wired to stores
 - Context resolution: detect worktree → repo → unregistered git repo → none
@@ -65,5 +66,6 @@ Tasks to create (via /pre-flight-checks):
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-16-1700-bossanova-go-rewrite"` to see available tasks
 2. Review files: `services/bossd/internal/db/store.go`, `lib/bossalib/migrate/migrate.go`, `proto/bossanova/v1/daemon.proto`

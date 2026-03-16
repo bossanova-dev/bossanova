@@ -54,6 +54,7 @@
 Flight Leg 2: State Machine + Domain Types + VCS Interfaces
 
 Tasks to create (via /pre-flight-checks):
+
 - Implement state machine in lib/bossalib/machine/ (qmuntal/stateless)
 - Define domain types in lib/bossalib/models/
 - Define VCS interfaces in lib/bossalib/vcs/

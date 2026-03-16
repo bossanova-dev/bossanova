@@ -49,6 +49,7 @@
 Flight Leg 3: Daemon Core — SQLite + CRUD
 
 Tasks to create (via /pre-flight-checks):
+
 - SQLite module in services/bossd/internal/db/ (modernc.org/sqlite, WAL mode, FKs)
 - Initial migration services/bossd/migrations/20260316170000_initial_schema.sql
 - Shared migration runner in lib/bossalib/migrate/ using goose + go:embed

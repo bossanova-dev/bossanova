@@ -57,10 +57,10 @@ type CreateResult struct {
 
 // ResurrectOpts holds the parameters for resurrecting an archived worktree.
 type ResurrectOpts struct {
-	RepoPath        string  // Path to the main repository.
-	WorktreePath    string  // Target path for the worktree directory.
-	BranchName      string  // Existing branch to check out.
-	SetupScript     *string // Optional setup script to run after creation.
+	RepoPath     string  // Path to the main repository.
+	WorktreePath string  // Target path for the worktree directory.
+	BranchName   string  // Existing branch to check out.
+	SetupScript  *string // Optional setup script to run after creation.
 }
 
 // Manager is the default WorktreeManager implementation backed by real git commands.

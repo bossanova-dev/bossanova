@@ -109,7 +109,7 @@ func Login(ctx context.Context, cfg Config) (*Tokens, error) {
 	}()
 
 	// Open browser.
-	if err := openBrowser(authURL); err != nil {
+	if err := openBrowserFn(authURL); err != nil {
 		// Don't fail — print URL for manual copy.
 		fmt.Printf("Could not open browser. Please visit:\n%s\n", authURL)
 	}
@@ -262,8 +262,10 @@ func randomString(n int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// openBrowser opens a URL in the default browser.
-func openBrowser(url string) error {
+// openBrowserFn opens a URL in the default browser. Variable for testing.
+var openBrowserFn = openBrowserDefault
+
+func openBrowserDefault(url string) error {
 	switch runtime.GOOS {
 	case "darwin":
 		return exec.Command("open", url).Start()

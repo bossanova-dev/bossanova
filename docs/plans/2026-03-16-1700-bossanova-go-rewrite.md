@@ -1,16 +1,33 @@
-# Bossanova Go Rewrite — Full Implementation Plan
+# Bossanova Go Rewrite — Updated Implementation Plan
 
 **Flight ID:** fp-2026-03-16-1700-bossanova-go-rewrite
 
 ## Context
 
-Bossanova is a CLI-first orchestrator for managing multiple Claude Code sessions mapped to GitHub PRs. The existing TypeScript implementation (flight legs 1-8) serves as the reference spec. This plan rewrites the entire system in Go for:
+Rewriting Bossanova from TypeScript to Go. This update incorporates feedback on:
 
-- **Stability**: Static binaries, goroutines, no GC pressure for long-running daemon
-- **Multi-daemon**: Sessions can transfer between machines (work PC → home PC → phone)
-- **Real streaming**: ConnectRPC server-streaming for live Claude output to remote CLIs
-- **Distribution**: Single binary per component, no Node.js runtime dependency
-- **Open source model**: Daemon + CLI are open source; orchestrator + webhook + web are a paid hosted tier
+- VCS-agnostic abstractions (GitHub now, GitLab later)
+- Multi-module monorepo with splitsh/lite for open-source splitting
+- Worktree archive/resurrect instead of hard delete
+- Timestamp-based migrations (goose default)
+- Terraform infrastructure
+- Client-side SPA on CF Pages (not templ+htmx)
+- Idiomatic Go testing (interface-based DI, table-driven tests)
+- 5-minute setup script timeout
+
+## Key Changes from Previous Plan
+
+| Area | Before | After |
+| ---- | ------ | ----- |
+| Project layout | Single go.mod | Multi-module: go.work + per-service go.mod |
+| Open source split | `internal/` boundaries only | splitsh/lite mirrors services/boss, services/bossd, lib/bossalib to separate repos |
+| VCS types | GitHub-specific types in daemon | VCS-agnostic interfaces in bossalib/vcs, GitHub impl in bossd |
+| Migration naming | `001_initial_schema.sql` | `20260316170000_initial_schema.sql` (goose default timestamp format) |
+| Worktree cleanup | `git worktree remove --force` | Archive (remove dir, keep branch) + resurrect + empty trash |
+| Web UI | templ + htmx server-rendered | React SPA on CF Pages, ConnectRPC web client, Auth0 PKCE |
+| Infrastructure | Manual Fly.io deploy | Terraform modules for Fly.io, Auth0, Cloudflare, R2 |
+| Setup timeout | 120s | 5 minutes (300s) |
+| DI pattern | Constructor injection | Same — but emphasize interface boundaries at every package edge for testability |
 
 ## Architecture
 
@@ -21,7 +38,7 @@ LOCAL (open source)                    CLOUD (paid tier)
 │ boss    │◄────────────────►bossd  │   (Go on Fly.io)     │
 │ (CLI)   │   ConnectRPC    │    │  │   SQLite + Litestream│
 └─────────┘                 │    │  │   Auth + Webhook     │
-                            │    │  │   Web UI             │
+                            │    │  │   Web UI (CF Pages)  │
 ┌─────────┐   ConnectRPC    │    │  └──────────┬───────────┘
 │ boss    │◄────────via orchestrator────────────┘
 │ (remote)│  (authenticated)│    │
@@ -32,78 +49,234 @@ LOCAL (open source)                    CLOUD (paid tier)
 
 **Local mode (free)**: `boss` ↔ `bossd` via Unix socket. No auth, no internet needed. Polling-based CI checks via `gh` CLI. Fully functional single-machine workflow.
 
-**Cloud mode (paid)**: Daemon connects to orchestrator. Auth via OIDC (Auth0/Cognito). Multi-daemon session transfer, real-time webhooks, remote CLI, web UI for mobile.
+**Cloud mode (paid)**: Daemon connects to orchestrator. Auth via OIDC (Auth0). Multi-daemon session transfer, real-time webhooks, remote CLI, web SPA for mobile.
 
-## Key Decisions
+## Updated Key Decisions
 
 | Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Language | Go everywhere | Single language, static binaries, excellent process mgmt |
-| CLI framework | Bubbletea v2 + Lipgloss + Bubbles | Best TUI ecosystem, Elm architecture |
-| RPC | ConnectRPC + Protobuf | gRPC-compatible, works in browsers, streaming |
-| State machine | qmuntal/stateless | Guards, actions, fluent API, closest to XState |
-| Daemon DB | SQLite via modernc.org/sqlite | Pure Go, no CGO, cross-compilation |
-| Orchestrator DB | SQLite + Litestream | Same stack as daemon, S3/R2 backup, ~$0.50/mo |
-| Migrations | pressly/goose | Works with SQLite everywhere, embeddable via go:embed |
-| Auth | OIDC (Auth0 or Cognito) | PKCE flow for CLI, JWT validation server-side |
-| DI | Constructor injection (no framework) | Go idiom, explicit, testable |
-| Logging | zerolog | Structured JSON, fast, zero-allocation |
-| Web UI | templ + htmx | Go-native templates, minimal JS, mobile-friendly |
+| -------- | ------ | --------- |
+| Language | Go everywhere (backend), React (web SPA) | Go for services, React for CF Pages SPA |
+| CLI framework | Bubbletea v2 + Lipgloss + Bubbles | Best TUI ecosystem |
+| RPC | ConnectRPC + Protobuf | JSON transport works in browsers natively, no gRPC-web proxy needed |
+| State machine | qmuntal/stateless | Guards, actions, fluent API |
+| SQLite | modernc.org/sqlite | Pure Go, no CGO |
+| Migrations | pressly/goose (timestamp mode) | Embedded via go:embed, YYYYMMDDHHMMSS format |
+| Auth | Auth0 OIDC | PKCE for CLI + SPA, JWT validation server-side, free 25K MAU |
+| DI | Constructor injection + interfaces | Every package boundary defined by interface for mock injection |
+| Logging | zerolog | Structured JSON, zero-allocation |
+| Web UI | React SPA on CF Pages | ConnectRPC web client, server-streaming for live output, Auth0 SPA SDK |
+| Infrastructure | Terraform | Modules for Fly.io, Auth0, Cloudflare (Pages + R2), GitHub App |
+| Monorepo tooling | go.work + splitsh/lite | Multi-module local dev, automated read-only mirrors for OSS |
 
 ## Project Structure
 
 ```
 bossanova/
-├── go.mod
-├── go.sum
-├── Makefile
-├── buf.yaml                       # Buf config
-├── buf.gen.yaml                   # Protobuf codegen
-├── proto/
+├── go.work                        # Local dev workspace (NOT committed to split repos)
+├── Makefile                       # Root: generate, build, test, lint, split
+├── buf.yaml / buf.gen.yaml        # Protobuf codegen config
+│
+├── proto/                         # MIT — split to github.com/recurser/bossanova-proto
 │   └── bossanova/v1/
-│       ├── models.proto           # Shared message types
-│       ├── daemon.proto           # Daemon service (local IPC)
-│       └── orchestrator.proto     # Orchestrator service (cloud)
-├── cmd/
-│   ├── boss/main.go               # CLI binary
-│   ├── bossd/main.go              # Daemon binary
-│   └── bosso/main.go              # Orchestrator binary
-├── internal/
-│   ├── machine/                   # Session state machine
-│   ├── models/                    # Domain types (Go structs)
-│   ├── daemon/
-│   │   ├── db/                    # SQLite + stores
-│   │   ├── git/                   # Worktree, push, utils
-│   │   ├── claude/                # Claude subprocess mgmt
-│   │   ├── github/                # gh CLI wrapper, polling
-│   │   ├── session/               # Lifecycle, PR, completion, fix loop
-│   │   ├── server/                # ConnectRPC server (Unix socket)
-│   │   └── upstream/              # Optional orchestrator connection
-│   ├── cli/
-│   │   ├── views/                 # Bubbletea views
-│   │   ├── auth/                  # OIDC client (cloud mode only)
-│   │   └── client/                # ConnectRPC client (local or remote)
-│   ├── orchestrator/
-│   │   ├── db/                    # SQLite + stores (server-side registry)
-│   │   ├── auth/                  # JWT middleware
-│   │   ├── registry/              # Daemon registry + presence
-│   │   ├── relay/                 # Stream relay (daemon → CLI)
-│   │   ├── webhook/               # GitHub webhook handler
-│   │   └── web/                   # Web UI handlers + templ templates
-│   └── migrate/                   # Shared migration runner (goose)
-├── migrations/
-│   ├── daemon/                    # Daemon SQLite migrations (go:embed)
-│   │   ├── 001_initial_schema.sql
-│   │   ├── 002_add_daemon_id.sql
-│   │   └── ...
-│   └── orchestrator/              # Orchestrator SQLite migrations (go:embed)
-│       ├── 001_initial_schema.sql
-│       └── ...
-├── web/
-│   ├── templates/                 # templ components
-│   └── static/                    # CSS, minimal JS
+│       ├── models.proto           # Domain types + VCS-agnostic event types
+│       ├── daemon.proto           # DaemonService RPCs
+│       └── orchestrator.proto     # OrchestratorService RPCs
+│
+├── lib/
+│   └── bossalib/                  # MIT — split to github.com/recurser/bossalib
+│       ├── go.mod                 # module github.com/recurser/bossalib
+│       ├── machine/               # Session state machine
+│       │   ├── machine.go
+│       │   └── machine_test.go
+│       ├── models/                # Domain types (Repo, Session, Attempt)
+│       │   └── models.go
+│       ├── vcs/                   # VCS-agnostic interfaces
+│       │   ├── provider.go        # Provider interface
+│       │   ├── types.go           # CheckResult, ReviewComment, PRStatus, etc.
+│       │   └── events.go          # Standard VCS events (check_passed, review_submitted, etc.)
+│       ├── migrate/               # Shared goose migration runner
+│       │   └── migrate.go
+│       └── gen/                   # Generated proto Go code
+│
+├── services/
+│   ├── boss/                      # MIT — split to github.com/recurser/boss
+│   │   ├── go.mod                 # module github.com/recurser/boss
+│   │   ├── cmd/main.go
+│   │   └── internal/
+│   │       ├── views/             # Bubbletea views (home, new, attach, repo)
+│   │       ├── auth/              # OIDC client (cloud mode)
+│   │       └── client/            # ConnectRPC client (local + remote)
+│   │
+│   ├── bossd/                     # MIT — split to github.com/recurser/bossd
+│   │   ├── go.mod                 # module github.com/recurser/bossd
+│   │   ├── cmd/main.go
+│   │   ├── migrations/            # Daemon SQLite migrations (go:embed)
+│   │   │   └── 20260316170000_initial_schema.sql
+│   │   └── internal/
+│   │       ├── db/                # SQLite init + stores (RepoStore, SessionStore, AttemptStore)
+│   │       ├── git/               # Worktree manager (create, archive, resurrect, empty trash)
+│   │       ├── claude/            # Claude subprocess (start, stop, resume, ring buffer)
+│   │       ├── vcs/               # VCS provider implementations
+│   │       │   └── github/        # GitHub provider (gh CLI wrapper)
+│   │       ├── session/           # Lifecycle, PR automation, fix loop, event dispatcher
+│   │       ├── server/            # ConnectRPC server (Unix socket)
+│   │       └── upstream/          # Optional orchestrator connection
+│   │
+│   ├── bosso/                     # Proprietary — NOT split, stays in monorepo only
+│   │   ├── go.mod
+│   │   ├── cmd/main.go
+│   │   ├── migrations/
+│   │   │   └── 20260316170000_initial_schema.sql
+│   │   └── internal/
+│   │       ├── db/                # SQLite + stores
+│   │       ├── auth/              # JWT middleware (connectrpc/authn-go)
+│   │       ├── registry/          # Daemon registry + heartbeat
+│   │       ├── relay/             # Stream relay (daemon → CLI/web)
+│   │       └── webhook/           # VCS webhook handlers (GitHub, GitLab)
+│   │
+│   └── web/                       # Proprietary — deployed to CF Pages
+│       ├── package.json           # React + @connectrpc/connect-web + @auth0/auth0-react
+│       ├── tsconfig.json
+│       ├── vite.config.ts
+│       ├── src/
+│       │   ├── App.tsx
+│       │   ├── auth/              # Auth0 PKCE provider
+│       │   ├── api/               # Generated ConnectRPC TypeScript client
+│       │   └── views/             # Session list, session detail (streaming), daemon list
+│       └── wrangler.toml          # CF Pages deployment config
+│
+├── infra/                         # Terraform
+│   ├── main.tf
+│   ├── variables.tf
+│   ├── outputs.tf
+│   ├── modules/
+│   │   ├── fly/                   # Fly.io app, machine, volume, secrets
+│   │   ├── auth0/                 # Auth0 tenant, SPA app, API, connections
+│   │   ├── cloudflare/            # CF Pages project, DNS records, R2 bucket
+│   │   └── github/                # GitHub App (webhook secret, permissions)
+│   └── environments/
+│       ├── staging/
+│       │   ├── main.tf
+│       │   └── terraform.tfvars
+│       └── production/
+│           ├── main.tf
+│           └── terraform.tfvars
+│
 └── docs/
 ```
+
+## VCS Abstraction Layer
+
+Defined in `lib/bossalib/vcs/` — all VCS interactions go through these interfaces:
+
+```go
+// provider.go — interface that GitHub, GitLab, etc. implement
+type Provider interface {
+    CreateDraftPR(ctx context.Context, opts CreatePROpts) (*PRInfo, error)
+    GetPRStatus(ctx context.Context, repoPath string, prID int) (*PRStatus, error)
+    GetCheckResults(ctx context.Context, repoPath string, prID int) ([]CheckResult, error)
+    GetFailedCheckLogs(ctx context.Context, repoPath string, checkID string) (string, error)
+    MarkReadyForReview(ctx context.Context, repoPath string, prID int) error
+    GetReviewComments(ctx context.Context, repoPath string, prID int) ([]ReviewComment, error)
+    ListOpenPRs(ctx context.Context, repoPath string) ([]PRSummary, error)
+}
+
+// types.go — standard types used across all providers
+type PRStatus struct {
+    State      PRState  // open, closed, merged
+    Mergeable  *bool
+    Title      string
+    HeadBranch string
+    BaseBranch string
+}
+
+type CheckResult struct {
+    ID         string
+    Name       string
+    Status     CheckStatus     // completed, in_progress, queued
+    Conclusion *CheckConclusion // success, failure, neutral, cancelled, skipped, timed_out
+}
+
+type ChecksOverall string // pending, passed, failed
+
+type ReviewComment struct {
+    Author string
+    Body   string
+    State  ReviewState // approved, changes_requested, commented, dismissed
+    Path   *string     // file path for inline comments
+    Line   *int        // line for inline comments
+}
+
+// events.go — standard VCS events (from polling or webhooks)
+type Event interface{ vcsEvent() }
+
+type ChecksPassed struct { PRID int }
+type ChecksFailed  struct { PRID int; FailedChecks []CheckResult }
+type ConflictDetected struct { PRID int }
+type ReviewSubmitted struct { PRID int; Comments []ReviewComment }
+type PRMerged struct { PRID int }
+type PRClosed struct { PRID int }
+```
+
+Proto `models.proto` includes these as protobuf messages too, so they flow through ConnectRPC.
+
+## Worktree Archive / Resurrect
+
+Instead of hard-deleting worktrees, sessions can be archived:
+
+- **Archive** (`boss archive <id>`): `git worktree remove`, keep branch alive, set `archived_at` timestamp in DB. Session state preserved. `boss ls` hides archived by default.
+- **Resurrect** (`boss resurrect <id>`): `git worktree add <path> <branch>`, run setup script (5m timeout), clear `archived_at`. Session resumes from saved state.
+- **Empty trash** (`boss trash empty`): For all archived sessions — delete remote branches, purge worktree refs, delete DB records. Optional `--older-than 30d` flag.
+- **List archived** (`boss ls --archived`): Shows archived sessions.
+
+DB change: `sessions` table gets `archived_at TEXT` column (nullable ISO 8601).
+
+## Idiomatic Go Testing Pattern
+
+Every package boundary is defined by an interface. Consumers depend on the interface, implementations are injected via constructors:
+
+```go
+// Package boundary: define interface
+type SessionStore interface {
+    Create(ctx context.Context, params CreateSessionParams) (*models.Session, error)
+    Get(ctx context.Context, id string) (*models.Session, error)
+    List(ctx context.Context, opts ListOpts) ([]*models.Session, error)
+    Update(ctx context.Context, id string, fields UpdateFields) error
+    Delete(ctx context.Context, id string) error
+}
+
+// Constructor injection
+func NewSessionLifecycle(
+    store SessionStore,        // interface
+    worktrees WorktreeManager, // interface
+    claude ClaudeRunner,       // interface
+    vcs vcs.Provider,          // interface
+    machine *machine.Machine,
+    logger zerolog.Logger,
+) *SessionLifecycle { ... }
+
+// Tests use mock structs or generated mocks
+type mockSessionStore struct {
+    createFn func(ctx context.Context, params CreateSessionParams) (*models.Session, error)
+    // ...
+}
+```
+
+Table-driven tests everywhere. In-memory SQLite for store tests.
+
+## Web SPA Architecture (CF Pages)
+
+The web UI is a **fully client-side React SPA** deployed to Cloudflare Pages:
+
+1. **Auth**: Auth0 SPA SDK (`@auth0/auth0-react`) handles OIDC PKCE flow in browser
+2. **API**: ConnectRPC web client (`@connectrpc/connect-web`) with JSON transport — no gRPC proxy needed
+3. **Streaming**: Server-streaming RPC for live Claude output (Connect protocol supports this natively via Fetch API)
+4. **CORS**: Orchestrator Go backend uses `rs/cors` middleware to allow CF Pages origin
+5. **Deploy**: `wrangler pages deploy` or CF Pages git integration
+
+The SPA talks directly to the orchestrator on Fly.io. No server-rendering needed.
+
+**Limitation**: Client streaming and bidirectional streaming don't work from browsers (Fetch API limitation). We only need server streaming (Claude output → browser), which works fine.
 
 ## Migration Strategy
 
@@ -116,7 +289,8 @@ Both `bossd` and `bosso` use SQLite with the same migration tooling:
 - All migrations are additive (add columns/tables, never drop)
 - Rollback: goose supports `down` migrations for development
 - Version tracking: `goose_db_version` table
-- Shared `internal/migrate/` package provides `RunMigrations(db, embedFS)` used by both
+- Shared `lib/bossalib/migrate/` package provides `RunMigrations(db, embedFS)` used by both
+- Timestamp-based naming: `YYYYMMDDHHMMSS_description.sql` (goose default)
 
 ### Daemon (local upgrade)
 
@@ -139,28 +313,26 @@ The orchestrator SQLite file lives on a Fly.io persistent volume. Litestream con
 
 ## Flight Legs
 
-### Leg 1: Go Scaffold + Protobuf
+### Leg 1: Multi-Module Scaffold + Protobuf
 
 #### Tasks
 
-- [ ] Initialize Go module, Makefile, .gitignore
-- [ ] Define protobuf messages in `proto/bossanova/v1/models.proto`:
-  - Repo, Session, Attempt, SessionState enum, CheckState enum
-  - Matches existing TS types exactly
-- [ ] Define daemon service in `proto/bossanova/v1/daemon.proto`:
-  - All 14 RPC methods from existing `rpc.ts`
-  - `AttachSession` as server-streaming RPC (real-time Claude output)
-  - `InteractiveSession` as bidirectional streaming (future)
-- [ ] Define orchestrator service in `proto/bossanova/v1/orchestrator.proto`:
-  - Same methods as daemon (proxied), plus: `RegisterDaemon`, `TransferSession`, `ListDaemons`
-  - Auth-aware: requests include JWT
-- [ ] Configure buf.yaml + buf.gen.yaml for Go code generation
-- [ ] Create `cmd/boss/main.go`, `cmd/bossd/main.go`, `cmd/bosso/main.go` stubs
-- [ ] Makefile targets: `make generate` (buf), `make build` (all binaries), `make test`, `make lint` (golangci-lint)
+- [ ] Create multi-module structure: go.work, per-service go.mod files for bossalib, boss, bossd, bosso
+- [ ] Define protobuf in `proto/bossanova/v1/models.proto`:
+  - Domain types: Repo, Session, Attempt, SessionState enum, CheckState enum
+  - VCS-agnostic types: PRStatus, CheckResult, ReviewComment, VCSEvent oneof
+  - Matches existing TS types
+- [ ] Define `daemon.proto`: 17 RPC methods (14 from TS + archive/resurrect/emptyTrash)
+  - `AttachSession` as server-streaming RPC
+- [ ] Define `orchestrator.proto`: proxied methods + RegisterDaemon, TransferSession, ListDaemons
+- [ ] Configure buf.yaml + buf.gen.yaml → generates into `lib/bossalib/gen/`
+- [ ] Create cmd stubs: `services/boss/cmd/main.go`, `services/bossd/cmd/main.go`, `services/bosso/cmd/main.go`
+- [ ] Root Makefile: `make generate`, `make build`, `make test`, `make lint`, `make split` (splitsh/lite)
+- [ ] golangci-lint config (`.golangci.yml`)
 
 #### Post-Flight Checks
 
-- [ ] `make generate` produces Go code in `internal/gen/`
+- [ ] `make generate` produces Go code in `lib/bossalib/gen/`
 - [ ] `make build` produces three binaries
 - [ ] `make lint` passes
 
@@ -170,33 +342,31 @@ Human reviews: Go module setup, protobuf definitions, Makefile targets, buf conf
 
 ---
 
-### Leg 2: State Machine + Domain Types
+### Leg 2: State Machine + Domain Types + VCS Interfaces
 
 #### Tasks
 
-- [ ] Implement session state machine in `internal/machine/`
-  - 11 states, 14 event triggers (match existing TS machine exactly)
+- [ ] Implement state machine in `lib/bossalib/machine/`
+  - 12 states (existing 11 + `closed`), 15 event triggers (match TS exactly)
   - Guards: `hasReachedMaxAttempts`
   - Actions: `incrementAttemptCount`, `setCheckState`, `clearBlockedReason`
-  - Use `qmuntal/stateless` with typed context
-- [ ] Define domain types in `internal/models/`
-  - `Repo`, `Session`, `Attempt` structs with JSON + DB tags
+  - `qmuntal/stateless` with typed context
+- [ ] Define domain types in `lib/bossalib/models/`
+  - `Repo`, `Session` (with `ArchivedAt *time.Time`), `Attempt` structs
   - Config types: `DaemonConfig`, `OrchestratorConfig`
-  - Conversion functions: proto message ↔ domain model
-- [ ] Unit tests for state machine
-  - Valid transitions succeed
-  - Invalid events return error
-  - Guard blocks transition after max attempts
-  - All 11 states reachable
+  - Proto ↔ model conversion functions
+- [ ] Define VCS interfaces in `lib/bossalib/vcs/`
+  - `Provider` interface, standard types (PRStatus, CheckResult, ReviewComment, etc.)
+  - Standard event types (ChecksPassed, ChecksFailed, ConflictDetected, ReviewSubmitted, PRMerged, PRClosed)
+- [ ] Unit tests: state machine full lifecycle, all 12 states reachable, guard behavior
 
 #### Post-Flight Checks
 
-- [ ] `make test` passes, state machine tests cover full lifecycle
-- [ ] State transitions match existing TS implementation
+- [ ] `make test` passes. State transitions match TS implementation.
 
 #### [HANDOFF] Review Flight Leg 2
 
-Human reviews: State machine transitions, domain types, proto conversion functions
+Human reviews: State machine transitions, domain types, VCS interfaces, proto conversion functions
 
 ---
 
@@ -204,37 +374,24 @@ Human reviews: State machine transitions, domain types, proto conversion functio
 
 #### Tasks
 
-- [ ] Implement SQLite database module in `internal/daemon/db/`
-  - `modernc.org/sqlite` (pure Go, no CGO)
-  - WAL mode, foreign keys enabled
-  - Connection pool via `database/sql`
-- [ ] Create initial daemon migration `migrations/daemon/001_initial_schema.sql`
-  - `repos`, `sessions`, `attempts` tables
-  - Match existing TS schema from `db-schema.ts`
-- [ ] Implement shared migration runner in `internal/migrate/`
-  - Uses `pressly/goose` with `go:embed` for migration files
-  - `RunMigrations(db *sql.DB, fs embed.FS)` — reusable by both daemon and orchestrator
-  - Logs applied migrations
-- [ ] Implement stores: `RepoStore`, `SessionStore`, `AttemptStore`
-  - Constructor injection: `NewRepoStore(db *sql.DB) *RepoStore`
-  - Methods match existing TS stores
-  - Prepared statements for hot paths
-- [ ] Unit tests with in-memory SQLite
-  - CRUD for all stores
-  - Migration runner applies and tracks versions
-  - FK cascades work (delete repo → deletes sessions)
+- [ ] SQLite module in `services/bossd/internal/db/` — modernc.org/sqlite, WAL mode, FKs
+- [ ] Initial migration `services/bossd/migrations/20260316170000_initial_schema.sql`
+  - `repos`, `sessions` (with `archived_at`), `attempts` tables — match TS schema
+- [ ] Shared migration runner in `lib/bossalib/migrate/` using goose + go:embed
+- [ ] Store interfaces + implementations: `RepoStore`, `SessionStore`, `AttemptStore`
+  - All stores accept `*sql.DB` via constructor
+  - SessionStore: `ListActive` (excludes archived), `ListArchived`, `Archive`, `Resurrect`
+- [ ] Unit tests with in-memory SQLite — CRUD, FK cascades, migration runner
 
 #### Post-Flight Checks
 
-- [ ] Tests pass with in-memory SQLite
-- [ ] Migration 001 creates all tables
-- [ ] `bossd` starts, creates `~/Library/Application Support/bossanova/bossd.db`
+- [ ] Tests pass. `bossd` creates DB at `~/Library/Application Support/bossanova/bossd.db`.
 
 #### Critical Files
 
-- `internal/daemon/db/db.go` — database initialization
-- `internal/migrate/migrate.go` — shared migration runner
-- `migrations/daemon/001_initial_schema.sql` — initial schema
+- `services/bossd/internal/db/db.go` — database initialization
+- `lib/bossalib/migrate/migrate.go` — shared migration runner
+- `services/bossd/migrations/20260316170000_initial_schema.sql` — initial schema
 
 #### [HANDOFF] Review Flight Leg 3
 
@@ -246,32 +403,16 @@ Human reviews: SQLite setup, migration runner, store implementations, test cover
 
 #### Tasks
 
-- [ ] Implement ConnectRPC server in `internal/daemon/server/`
-  - Listens on Unix socket: `~/Library/Application Support/bossanova/bossd.sock`
-  - Implements generated `DaemonServiceHandler` interface
-  - All 14 RPC methods wired to stores
-- [ ] Implement context resolution handler
-  - `ContextResolve(cwd)`: detect worktree → registered repo → unregistered git repo → none
-  - Shell out to `git rev-parse` for detection
-- [ ] Implement `AttachSession` as server-streaming RPC
-  - Reads Claude output log file, streams new lines
-  - Uses `fsnotify` or polling for real-time tailing
-- [ ] Daemon entry point (`cmd/bossd/main.go`)
-  - Parse config (flags + env vars + config file)
-  - Initialize DB, run migrations, create stores
-  - Start ConnectRPC server on Unix socket
-  - Graceful shutdown on SIGTERM/SIGINT (cleanup socket file)
-- [ ] Implement ConnectRPC client in `internal/cli/client/`
-  - `NewLocalClient(socketPath)` — connects via Unix socket
-  - `NewRemoteClient(url, token)` — connects via HTTPS (orchestrator, future)
-  - Both implement same `BossClient` interface
+- [ ] ConnectRPC server in `services/bossd/internal/server/` — Unix socket
+- [ ] Implement all DaemonService RPCs wired to stores
+- [ ] Context resolution: detect worktree → repo → unregistered git repo → none
+- [ ] `AttachSession` server-streaming RPC (tail log file + fsnotify)
+- [ ] Daemon entry point: config, DB, migrations, stores, server, graceful shutdown
+- [ ] ConnectRPC client in `services/boss/internal/client/` — `BossClient` interface, local + remote impls
 
 #### Post-Flight Checks
 
-- [ ] `bossd` starts, creates socket, logs startup
-- [ ] `boss repo ls` returns `[]` (IPC round-trip works)
-- [ ] `boss repo add . && boss repo ls` returns the registered repo
-- [ ] SIGTERM cleans up socket file
+- [ ] `bossd` starts, `boss repo ls` returns `[]` via IPC, SIGTERM cleans up socket.
 
 #### [HANDOFF] Review Flight Leg 4
 
@@ -283,35 +424,16 @@ Human reviews: ConnectRPC setup, Unix socket lifecycle, context resolution, clie
 
 #### Tasks
 
-- [ ] Implement argument parser in `cmd/boss/main.go`
-  - Commands: `boss` (interactive), `boss new`, `boss ls`, `boss attach <id>`, `boss stop/pause/resume/logs/retry/close/rm <id>`, `boss repo add/ls/remove`, `boss login` (cloud only), `boss daemon install/uninstall/status`
-  - Use `spf13/cobra` for arg parsing
-- [ ] Implement home screen view (`internal/cli/views/home.go`)
-  - Bubbletea model: session table, action bar, polling (every 2s)
-  - Arrow keys navigate, Enter attaches, `n` new session, `r` add repo, `q` quit
-  - State colors: green/yellow/red/gray/cyan (match existing TS)
-  - Context-aware: inside registered repo → filter sessions
-- [ ] Implement new session wizard (`internal/cli/views/new_session.go`)
-  - Step 1: select repo (auto-detect if inside one)
-  - Step 2: new PR or existing PR (list via `gh pr list`)
-  - Step 3: enter plan/task (text input)
-  - Step 4: confirm and create
-- [ ] Implement attach view (`internal/cli/views/attach.go`)
-  - Server-streaming RPC: receives `SessionEvent` messages
-  - Renders Claude output with formatting
-  - Session header: title, state, branch, PR link
-  - Ctrl+C/Ctrl+D to detach (does not stop session)
-- [ ] Implement repo management views
-  - Add repo wizard, repo list table, repo remove confirmation
-- [ ] `boss ls` non-interactive mode (print and exit)
+- [ ] Cobra arg parser: all commands including `boss archive/resurrect/trash`
+- [ ] Home screen (Bubbletea): session table, action bar, 2s polling, keyboard nav
+- [ ] New session wizard: repo select → new/existing PR → plan input → confirm
+- [ ] Attach view: server-streaming, Claude output, session header, Ctrl+C detach
+- [ ] Repo management views, `boss ls` non-interactive mode
+- [ ] Archive/resurrect/trash commands
 
 #### Post-Flight Checks
 
-- [ ] `boss` shows interactive home screen (daemon must be running)
-- [ ] `boss` without daemon shows "bossd is not running — run `bossd` or `boss daemon install`"
-- [ ] `boss new "test"` creates session via IPC
-- [ ] `boss ls` prints session table and exits
-- [ ] `boss repo add .` registers current repo
+- [ ] Full interactive TUI works. `boss` without daemon shows helpful error.
 
 #### [HANDOFF] Review Flight Leg 5
 
@@ -323,34 +445,18 @@ Human reviews: CLI UX, Bubbletea views, cobra commands, IPC integration
 
 #### Tasks
 
-- [ ] Implement worktree manager in `internal/daemon/git/`
-  - `CreateWorktree(repoPath, session) → worktreePath`
-  - Path: `~/Library/Application Support/bossanova/worktrees/<repo-id>/<session-id>/`
-  - Branch: `boss/<slug>-<short-id>`
-  - Runs repo's setup script in worktree (with 120s timeout)
-  - `RemoveWorktree(repoPath, worktreePath)` — `git worktree remove --force`
-- [ ] Implement Claude subprocess manager in `internal/daemon/claude/`
-  - `StartClaude(worktreePath, plan, sessionId) → *ClaudeProcess`
-  - Spawns: `claude --print --output-format stream-json --dangerously-skip-permissions --cwd <path> -p <plan>`
-  - Reads stdout via goroutine, writes to log file + in-memory ring buffer
-  - `StopClaude(sessionId)` — sends SIGTERM
-  - `ResumeClaude(sessionId, prompt)` — spawns with `--resume <id>`
-  - Tracks process state: running, paused, completed, errored
-- [ ] Implement session output logger in `internal/daemon/claude/`
-  - Write Claude JSON events to `~/Library/Application Support/bossanova/logs/<session-id>.jsonl`
-  - Ring buffer (last 1000 events) for fast attach streaming
-  - `boss logs <session>` reads from file
-- [ ] Wire into session lifecycle (`internal/daemon/session/lifecycle.go`)
-  - `StartSession`: create DB record → create worktree → start Claude → update state
-  - `RemoveSession`: stop Claude → remove worktree → delete DB record
-  - State transitions driven by state machine
+- [ ] `WorktreeManager` interface in bossd: Create, Remove, Archive, Resurrect, EmptyTrash
+  - Create: `git worktree add`, run setup script (5m timeout)
+  - Archive: `git worktree remove`, keep branch, update DB
+  - Resurrect: `git worktree add <path> <existing-branch>`, run setup script
+  - EmptyTrash: delete remote branches, purge DB records
+- [ ] Claude subprocess manager: Start, Stop, Resume via `claude` CLI
+  - Stdout → log file + in-memory ring buffer (1000 events)
+- [ ] Wire into session lifecycle: StartSession, RemoveSession, ArchiveSession
 
 #### Post-Flight Checks
 
-- [ ] `boss new "create a README"` → worktree created, Claude spawns, output logged
-- [ ] `boss attach <id>` → live Claude output streams
-- [ ] `boss stop <id>` → Claude terminated
-- [ ] `boss rm <id>` → worktree cleaned up
+- [ ] `boss new "create a README"` → worktree + Claude. `boss archive/resurrect` works.
 
 #### [HANDOFF] Review Flight Leg 6
 
@@ -358,36 +464,21 @@ Human reviews: Worktree paths, Claude subprocess management, output logging, lif
 
 ---
 
-### Leg 7: GitHub PR + Fix Loop
+### Leg 7: VCS Provider (GitHub) + PR + Fix Loop
 
 #### Tasks
 
-- [ ] Implement GitHub client in `internal/daemon/github/`
-  - Wraps `gh` CLI: `createDraftPr`, `getPrStatus`, `getPrChecks`, `markReadyForReview`, `getFailedCheckLogs`
-  - Parse JSON output from `gh` commands
-- [ ] Implement PR lifecycle (`internal/daemon/session/pr.go`)
-  - After Claude completes: push branch → create draft PR → `awaiting_checks`
-  - Poll every 60s for sessions in `awaiting_checks`/`green_draft`/`ready_for_review`
-  - Checks passed + plan complete → `markReadyForReview`
-  - PR merged → cleanup worktree, transition to `merged`
-- [ ] Implement fix loop (`internal/daemon/session/fixloop.go`)
-  - Check failure handler: fetch logs, prompt Claude to fix, push
-  - Conflict handler: `git fetch` + `git merge`, prompt Claude if conflicts
-  - Review handler: fetch review comments, prompt Claude with feedback
-  - Concurrency guard: mutex per session (no concurrent fixes)
-  - Max 5 attempts → `blocked`
-- [ ] Implement event dispatcher
-  - Routes events (from polling or future webhooks) to correct handler
-  - Session lock prevents duplicate fix attempts
+- [ ] GitHub provider implementing `vcs.Provider` interface — wraps `gh` CLI
+- [ ] PR lifecycle: push → draft PR → awaiting_checks → poll 60s → ready_for_review → merged
+- [ ] Fix loop: check failure handler, conflict handler, review handler
+  - Mutex per session, max 5 attempts → blocked
+- [ ] Event dispatcher: routes VCS events to correct handler
 
 #### Post-Flight Checks
 
-- [ ] `boss new "add hello world"` → draft PR on GitHub
-- [ ] Checks fail → Claude prompted to fix → push → re-check (up to 5x)
-- [ ] All checks pass → PR marked ready for review
-- [ ] `make test` passes
+- [ ] Full PR lifecycle works. Fix loop retries up to 5x. `make test` passes.
 
-**At this point the open-source product is complete and fully functional.**
+**Open-source product is complete and fully functional at this point.**
 
 #### [HANDOFF] Review Flight Leg 7
 
@@ -395,56 +486,28 @@ Human reviews: GitHub CLI integration, PR lifecycle, fix loop, polling, concurre
 
 ---
 
-### Leg 8: Auth + Orchestrator Core (Paid Tier)
+### Leg 8: Auth + Orchestrator Core + Terraform
 
 #### Tasks
 
-- [ ] Implement OIDC auth client in `internal/cli/auth/`
-  - `boss login` → opens browser → PKCE flow → JWT stored in OS keychain (`go-keyring`)
-  - `boss logout` → removes stored token
-  - Token refresh on expiry
-  - Auth0 recommended (native PKCE + device flow, free 25K MAU)
-- [ ] Implement orchestrator entry point (`cmd/bosso/main.go`)
-  - ConnectRPC server on HTTPS (port 8080)
-  - SQLite database on persistent Fly.io volume
-  - Litestream configured for S3/R2 replication
-  - JWT middleware validates tokens on every request
-  - Graceful shutdown
-- [ ] Create orchestrator schema (`migrations/orchestrator/001_initial_schema.sql`)
-  - `users` (id, email, provider_sub, created_at)
-  - `daemons` (id, user_id, machine_name, last_seen, repos JSON)
-  - `sessions` (global registry: id, user_id, daemon_id, repo, state, pr_url)
-  - `audit_log` (user_id, action, details, timestamp)
-- [ ] Implement orchestrator migration runner
-  - Same shared `internal/migrate/` package as daemon, different embed.FS
-  - `bosso migrate` CLI command for manual runs
-  - Auto-migrate on startup
-- [ ] Implement daemon registry in `internal/orchestrator/registry/`
-  - Track online daemons with heartbeat (stale after 90s)
-  - `RegisterDaemon`, `ListDaemons`, `GetDaemon` methods
-- [ ] Fly.io deployment config
-  - `fly.toml` with release_command: `bosso migrate`, persistent volume mount
-  - Dockerfile: multi-stage Go build + Litestream sidecar
-  - Litestream config: replicate to S3/R2 bucket
+- [ ] OIDC auth client (`boss login/logout`) — Auth0 PKCE, JWT in OS keychain
+- [ ] Orchestrator entry point: ConnectRPC on HTTPS, SQLite + Litestream, JWT middleware
+- [ ] Orchestrator schema: users, daemons, sessions (registry), audit_log
+- [ ] Daemon registry: heartbeat tracking, RegisterDaemon, ListDaemons
+- [ ] Terraform modules:
+  - `infra/modules/fly/` — Fly.io app, machine config, persistent volume, secrets
+  - `infra/modules/auth0/` — tenant, SPA application, API audience, connections
+  - `infra/modules/cloudflare/` — R2 bucket for Litestream, DNS records
+  - `infra/modules/github/` — GitHub App with webhook secret
+  - Staging + production environments
 
 #### Post-Flight Checks
 
-- [ ] `boss login` completes OAuth flow, stores JWT
-- [ ] `bosso` starts, creates SQLite on volume, runs migrations
-- [ ] Litestream replicates DB to S3/R2
-- [ ] Daemon registers with orchestrator on startup
-- [ ] Authenticated requests succeed, unauthenticated return 401
-
-#### Critical Files
-
-- `migrations/orchestrator/001_initial_schema.sql`
-- `internal/orchestrator/auth/middleware.go`
-- `internal/orchestrator/registry/registry.go`
-- `fly.toml`, `Dockerfile`, `litestream.yml`
+- [ ] `boss login` works. `bosso` starts + migrates. Terraform applies cleanly.
 
 #### [HANDOFF] Review Flight Leg 8
 
-Human reviews: Auth flow, orchestrator setup, deployment config, migration runner
+Human reviews: Auth flow, orchestrator setup, Terraform modules, deployment config
 
 ---
 
@@ -452,35 +515,14 @@ Human reviews: Auth flow, orchestrator setup, deployment config, migration runne
 
 #### Tasks
 
-- [ ] Implement daemon → orchestrator connection in `internal/daemon/upstream/`
-  - Persistent ConnectRPC connection (reconnect with exponential backoff)
-  - Registration: sends daemon ID, machine name, repo list
-  - Heartbeat every 30s
-  - Receives events (webhooks, session transfers) via server-streaming RPC
-  - Optional: daemon works fine without this connection
-- [ ] Implement remote CLI mode in `internal/cli/client/`
-  - `boss --remote` or auto-detect: if no local daemon, try orchestrator
-  - `NewRemoteClient(orchestratorURL, jwt)` — same `BossClient` interface
-  - All commands work remotely (list, attach, new, stop, etc.)
-  - Orchestrator proxies requests to the target daemon
-- [ ] Implement stream relay in `internal/orchestrator/relay/`
-  - CLI calls `AttachSession` on orchestrator
-  - Orchestrator forwards to daemon's `AttachSession` stream
-  - Real-time: Claude output → daemon → orchestrator → CLI (no buffering)
-  - Handles disconnect/reconnect gracefully
-- [ ] Implement session transfer
-  - `boss transfer <session> --to <daemon-id>`
-  - Daemon A: commit + push, stop Claude, release session
-  - Orchestrator: update session registry, assign to Daemon B
-  - Daemon B: fetch branch, create worktree, setup, start Claude with context
-  - CLI: auto-reconnects to new daemon's stream
+- [ ] Daemon → orchestrator upstream connection (reconnect with backoff, heartbeat 30s)
+- [ ] Remote CLI: `boss --remote` or auto-detect, same BossClient interface
+- [ ] Stream relay: orchestrator proxies AttachSession stream (daemon → CLI)
+- [ ] Session transfer: commit+push on A, registry update, fetch+worktree on B
 
 #### Post-Flight Checks
 
-- [ ] Daemon registers with orchestrator, shows in `boss daemons` (remote)
-- [ ] `boss ls` from remote machine shows sessions on home daemon
-- [ ] `boss attach <session>` from remote streams Claude output in real-time
-- [ ] `boss transfer <session> --to <other-daemon>` moves session between machines
+- [ ] Remote `boss ls` and `boss attach` work. Session transfer between daemons.
 
 #### [HANDOFF] Review Flight Leg 9
 
@@ -488,27 +530,18 @@ Human reviews: Upstream connection, remote CLI, stream relay, session transfer
 
 ---
 
-### Leg 10: Webhook Receiver
+### Leg 10: Webhook Receiver (VCS-agnostic)
 
 #### Tasks
 
-- [ ] Implement GitHub webhook handler in `internal/orchestrator/webhook/`
-  - `POST /webhook/github` route on orchestrator
-  - HMAC-SHA256 signature verification
-  - Parse: `pull_request`, `check_run`, `check_suite` events
-  - Map to daemon events, route to correct daemon via registry
-- [ ] Replace polling with webhook events (when cloud mode active)
-  - Daemon receives events via upstream connection
-  - Falls back to polling when not connected to orchestrator
-- [ ] Webhook setup instructions
-  - GitHub App or per-repo webhook configuration
-  - Secret management via orchestrator config
+- [ ] Webhook handler in orchestrator: HMAC verification, parse GitHub events
+- [ ] Map to standard VCS events, route to daemon via registry
+- [ ] Extensible: webhook parser interface for future GitLab support
+- [ ] Falls back to polling when not connected to orchestrator
 
 #### Post-Flight Checks
 
-- [ ] Mock webhook → event routed to correct daemon
-- [ ] Valid signature → 200; invalid → 401
-- [ ] Daemon receives event, triggers fix loop
+- [ ] Mock webhook → event routed to daemon. Invalid signature → 401.
 
 #### [HANDOFF] Review Flight Leg 10
 
@@ -516,127 +549,95 @@ Human reviews: Webhook security, event routing, polling fallback
 
 ---
 
-### Leg 11: Web UI
+### Leg 11: Web SPA (CF Pages)
 
 #### Tasks
 
-- [ ] Implement web handlers in `internal/orchestrator/web/`
-  - Server-rendered HTML via `templ` + `htmx` for interactivity
-  - Auth: redirect to OIDC login if no session cookie
-  - Routes: `/ui/sessions`, `/ui/sessions/:id`, `/ui/daemons`
-- [ ] Session list page
-  - Table: title, state (color-coded), repo, branch, PR link, daemon, last updated
-  - Auto-refresh via htmx polling (every 5s)
-  - Click to view session detail
-- [ ] Session detail page
-  - Status header, Claude output stream (SSE via htmx)
-  - Actions: stop, pause, resume, transfer
-  - PR link, check status, attempt history
-- [ ] Daemon list page
-  - Online daemons, machine names, repos, session counts
-- [ ] Mobile-friendly layout
-  - Responsive CSS (Pico CSS or similar minimal framework)
-  - Touch-friendly action buttons
+- [ ] React SPA: Vite + React + @connectrpc/connect-web + @auth0/auth0-react
+- [ ] Auth0 PKCE flow in browser → JWT → ConnectRPC interceptor
+- [ ] Session list page (polling), session detail (server-streaming Claude output)
+- [ ] Daemon list page, session actions (stop, pause, resume, transfer)
+- [ ] CORS middleware on orchestrator (`rs/cors`)
+- [ ] CF Pages deployment via wrangler or git integration
+- [ ] Terraform: add `infra/modules/cloudflare/` CF Pages project
 
 #### Post-Flight Checks
 
-- [ ] `/ui/sessions` renders session list in browser
-- [ ] Live Claude output streams on session detail page
-- [ ] Works on mobile browser (phone on train use case)
+- [ ] SPA loads on CF Pages, authenticates, streams Claude output from orchestrator.
 
 #### [HANDOFF] Review Flight Leg 11
 
-Human reviews: Web UI, templ templates, htmx interactivity, mobile layout
+Human reviews: React SPA, ConnectRPC web client, Auth0 integration, CF Pages deployment
 
 ---
 
-### Leg 12: Polish + Distribution
+### Leg 12: Polish + Distribution + splitsh/lite
 
 #### Tasks
 
-- [ ] macOS LaunchAgent for `bossd`
-  - `boss daemon install` → copies plist, `launchctl load`
-  - `boss daemon uninstall` → unload + remove plist
-  - `boss daemon status` → check if running
-- [ ] Cross-platform builds
-  - `Makefile` targets for darwin/amd64, darwin/arm64, linux/amd64
-  - GitHub Actions CI: build + test + release
-  - Homebrew formula for `boss` + `bossd`
-- [ ] Error handling polish
-  - Friendly messages: daemon not running, auth expired, network errors
-  - Structured logging with session IDs throughout
-- [ ] E2E integration tests
-  - Full lifecycle with mock git repo and mocked Claude
-  - Session transfer test with two daemon instances
-  - Migration upgrade test (v1 → v2 schema)
+- [ ] macOS LaunchAgent: `boss daemon install/uninstall/status`
+- [ ] Cross-platform builds (darwin/amd64, darwin/arm64, linux/amd64)
+- [ ] GitHub Actions CI: build + test + release + splitsh/lite mirrors
+- [ ] splitsh/lite config: mirror boss, bossd, bossalib, proto to separate repos
+- [ ] Homebrew formula for boss + bossd
+- [ ] E2E integration tests (mock git repo + mock Claude)
+- [ ] Error handling polish, structured logging
 
 #### Post-Flight Checks
 
-- [ ] `boss daemon install` installs plist, `launchctl list | grep bossanova` shows daemon
-- [ ] Cross-compiled binaries build for all targets
-- [ ] E2E tests pass
-- [ ] `make format && make lint && make test` passes
+- [ ] `make split` mirrors to public repos. Homebrew install works. E2E passes.
 
 #### [HANDOFF] Final Review
 
-Human reviews: Distribution, LaunchAgent, error handling, E2E tests
+Human reviews: Distribution, splitsh/lite, CI/CD, E2E tests, LaunchAgent
 
 ---
 
-## Open Source Boundary
+## Open Source Boundary (via splitsh/lite)
 
-| Component | License | Distribution |
-|-----------|---------|-------------|
-| `boss` (CLI) | MIT | Homebrew, GitHub Releases |
-| `bossd` (daemon) | MIT | Homebrew, GitHub Releases |
-| `bosso` (orchestrator) | Proprietary | Hosted SaaS on Fly.io |
-| `proto/` definitions | MIT | Shared (enables community tooling) |
-| `internal/orchestrator/` | Proprietary | Not distributed |
-
-The proto definitions are open so anyone can build alternative orchestrators or integrations.
-
-## Existing TypeScript Code
-
-The TS implementation in flight legs 1-8 serves as the **reference spec** for the Go rewrite:
-- State machine states/transitions → `internal/machine/`
-- Domain types → `internal/models/` + `proto/bossanova/v1/models.proto`
-- RPC methods → `proto/bossanova/v1/daemon.proto`
-- SQLite schema → `migrations/daemon/001_initial_schema.sql`
-- Session lifecycle → `internal/daemon/session/`
-- CLI views → `internal/cli/views/`
-
-The TS code remains in the repo as reference until the Go rewrite reaches parity (end of Leg 7).
+| Monorepo Path | Split Repo | License |
+| ------------- | ---------- | ------- |
+| `proto/` | github.com/recurser/bossanova-proto | MIT |
+| `lib/bossalib/` | github.com/recurser/bossalib | MIT |
+| `services/boss/` | github.com/recurser/boss | MIT |
+| `services/bossd/` | github.com/recurser/bossd | MIT |
+| `services/bosso/` | _(not split)_ | Proprietary |
+| `services/web/` | _(not split)_ | Proprietary |
+| `infra/` | _(not split)_ | Proprietary |
 
 ## Cost Summary (1,000 users, paid tier)
 
 | Component | Monthly Cost |
-|-----------|-------------|
+| --------- | ------------ |
 | Fly.io VM (orchestrator, 2x shared-cpu-1x) | ~$4 |
 | Fly.io persistent volume (1GB) | ~$0.15 |
 | Litestream → S3/R2 backup | ~$0.50 |
 | Auth0 (25K MAU free tier) | $0 |
+| Cloudflare Pages (free tier) | $0 |
 | Domain + DNS | ~$1 |
 | **Total** | **~$6/mo** |
 
 ## Critical Files
 
 | File | Why It's Critical |
-|------|-------------------|
+| ---- | ----------------- |
 | `proto/bossanova/v1/models.proto` | Shared message types every component depends on |
-| `proto/bossanova/v1/daemon.proto` | CLI-daemon contract (all 14 RPC methods) |
-| `internal/machine/machine.go` | State machine governing all session behavior |
-| `internal/models/models.go` | Go domain types with DB + JSON tags |
-| `internal/daemon/db/db.go` | SQLite initialization, WAL mode, connection pool |
-| `internal/migrate/migrate.go` | Shared migration runner used by daemon + orchestrator |
-| `internal/daemon/session/lifecycle.go` | Central orchestration wiring everything together |
-| `internal/daemon/claude/process.go` | Claude subprocess management — process lifecycle |
-| `internal/daemon/session/fixloop.go` | Automated repair cycle that makes Bossanova autonomous |
-| `internal/daemon/server/server.go` | ConnectRPC server on Unix socket |
-| `internal/orchestrator/registry/registry.go` | Daemon registry + presence tracking |
+| `proto/bossanova/v1/daemon.proto` | CLI-daemon contract (17 RPC methods) |
+| `lib/bossalib/machine/machine.go` | State machine governing all session behavior |
+| `lib/bossalib/models/models.go` | Go domain types |
+| `lib/bossalib/vcs/provider.go` | VCS-agnostic interface for GitHub/GitLab |
+| `lib/bossalib/migrate/migrate.go` | Shared migration runner used by daemon + orchestrator |
+| `services/bossd/internal/db/db.go` | SQLite initialization, WAL mode, connection pool |
+| `services/bossd/internal/session/lifecycle.go` | Central orchestration wiring everything together |
+| `services/bossd/internal/claude/process.go` | Claude subprocess management — process lifecycle |
+| `services/bossd/internal/session/fixloop.go` | Automated repair cycle that makes Bossanova autonomous |
+| `services/bossd/internal/server/server.go` | ConnectRPC server on Unix socket |
+| `services/bosso/internal/registry/registry.go` | Daemon registry + presence tracking |
 
 ## Rollback Plan
 
 Each flight leg produces independent commits. To roll back:
+
 - `git revert` commits from the specific flight leg
 - No external state mutations until Flight Leg 7+ (GitHub PRs)
 - Database schema changes are additive only
@@ -648,8 +649,9 @@ Each flight leg produces independent commits. To roll back:
 - **qmuntal/stateless for state machine:** Provides typed states/triggers, guard clauses, and entry/exit actions. Closest Go equivalent to XState's declarative machine definition.
 - **Pure Go SQLite (modernc.org/sqlite):** No CGO dependency means easy cross-compilation for all platforms. Performance is comparable to C SQLite for our workload (< 100 concurrent sessions).
 - **Constructor injection:** Go doesn't need DI frameworks. Pass dependencies as constructor arguments: `NewSessionStore(db *sql.DB, logger zerolog.Logger)`. Interfaces for testing.
-- **go:embed migrations:** Migration SQL files are embedded in the binary at compile time. No external files needed at runtime. Both daemon and orchestrator use the same `internal/migrate/` package with different embed.FS instances.
+- **go:embed migrations:** Migration SQL files are embedded in the binary at compile time. No external files needed at runtime. Both daemon and orchestrator use the same `lib/bossalib/migrate/` package with different embed.FS instances.
 - **Litestream for orchestrator:** Continuously replicates SQLite WAL to S3/R2. On Fly.io restart, restore from replica. Cost: ~$0.50/mo for S3 storage. No need for Postgres or managed databases.
 - **OIDC auth deferred to Leg 8:** Local mode (Legs 1-7) needs no auth. Cloud mode adds OIDC via Auth0 (free 25K MAU). PKCE flow for CLI, JWT validation server-side.
 - **Session transfer:** The key multi-daemon feature. Daemon A pushes all changes, orchestrator updates registry, Daemon B pulls and continues. Context preserved via Claude's `--resume` flag.
 - **Webhook fallback:** Local mode polls via `gh` CLI (every 60s). Cloud mode receives GitHub webhooks in real-time. Daemon gracefully falls back to polling when disconnected from orchestrator.
+- **splitsh/lite:** Automated read-only mirrors of monorepo subtrees to separate Git repos. Runs in CI via `make split`. Users install from split repos; development happens in monorepo.

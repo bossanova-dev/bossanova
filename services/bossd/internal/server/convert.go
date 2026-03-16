@@ -5,7 +5,6 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -62,32 +61,6 @@ func sessionToProto(s *models.Session) *pb.Session {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
 	}
 	return p
-}
-
-// attemptToProto converts a domain Attempt to its protobuf representation.
-func attemptToProto(a *models.Attempt) *pb.Attempt {
-	p := &pb.Attempt{
-		Id:        a.ID,
-		SessionId: a.SessionID,
-		Trigger:   pb.AttemptTrigger(a.Trigger),
-		Result:    pb.AttemptResult(a.Result),
-		CreatedAt: timestamppb.New(a.CreatedAt),
-		UpdatedAt: timestamppb.New(a.UpdatedAt),
-	}
-	if a.Error != nil {
-		p.Error = a.Error
-	}
-	return p
-}
-
-// stateToProto converts a machine.State to a protobuf SessionState.
-func stateToProto(s machine.State) pb.SessionState {
-	return pb.SessionState(s)
-}
-
-// checkStateToProto converts a machine.CheckState to a protobuf ChecksOverall.
-func checkStateToProto(c machine.CheckState) pb.ChecksOverall {
-	return pb.ChecksOverall(c)
 }
 
 // protoToTimestamp converts an optional protobuf Timestamp to *time.Time.

@@ -1,9 +1,9 @@
 import { createContext, useContext, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
-import { createApi } from './api.ts'
+import { createApi } from './api'
 import type { Client } from '@connectrpc/connect'
-import type { OrchestratorService } from './gen/bossanova/v1/orchestrator_pb.ts'
+import type { OrchestratorService } from './gen/bossanova/v1/orchestrator_pb'
 
 type Api = Client<typeof OrchestratorService>
 

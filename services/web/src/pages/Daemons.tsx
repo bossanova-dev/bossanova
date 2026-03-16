@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { create } from '@bufbuild/protobuf'
-import { useApi } from '../ApiContext.ts'
-import { ListDaemonsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb.ts'
-import type { DaemonInfo } from '../gen/bossanova/v1/orchestrator_pb.ts'
+import { useApi } from '../ApiContext'
+import { ListDaemonsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb'
+import type { DaemonInfo } from '../gen/bossanova/v1/orchestrator_pb'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 
 const POLL_INTERVAL = 10000

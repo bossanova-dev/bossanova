@@ -1,10 +1,10 @@
 import { Auth0Provider } from '@auth0/auth0-react'
 import { BrowserRouter, Route, Routes } from 'react-router'
-import { ApiProvider } from './ApiContext.ts'
-import Layout from './Layout.tsx'
-import Sessions from './pages/Sessions.tsx'
-import SessionDetail from './pages/SessionDetail.tsx'
-import Daemons from './pages/Daemons.tsx'
+import { ApiProvider } from './ApiContext'
+import Layout from './Layout'
+import Sessions from './pages/Sessions'
+import SessionDetail from './pages/SessionDetail'
+import Daemons from './pages/Daemons'
 
 const domain = import.meta.env.VITE_AUTH0_DOMAIN as string
 const clientId = import.meta.env.VITE_AUTH0_CLIENT_ID as string

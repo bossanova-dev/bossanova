@@ -40,6 +40,15 @@ type SessionEntry struct {
 	UpdatedAt time.Time
 }
 
+// WebhookConfig maps a repo origin URL to an HMAC secret for webhook verification.
+type WebhookConfig struct {
+	ID            string
+	RepoOriginURL string
+	Provider      string
+	Secret        string
+	CreatedAt     time.Time
+}
+
 // AuditEntry is an append-only audit log record.
 type AuditEntry struct {
 	ID        string
@@ -147,4 +156,20 @@ type AuditListOpts struct {
 	UserID *string
 	Action *string
 	Limit  int
+}
+
+// CreateWebhookConfigParams holds parameters for creating a webhook config.
+type CreateWebhookConfigParams struct {
+	RepoOriginURL string
+	Provider      string
+	Secret        string
+}
+
+// WebhookConfigStore defines the interface for webhook config persistence.
+type WebhookConfigStore interface {
+	Create(ctx context.Context, params CreateWebhookConfigParams) (*WebhookConfig, error)
+	Get(ctx context.Context, id string) (*WebhookConfig, error)
+	GetByRepo(ctx context.Context, repoOriginURL, provider string) (*WebhookConfig, error)
+	List(ctx context.Context) ([]*WebhookConfig, error)
+	Delete(ctx context.Context, id string) error
 }

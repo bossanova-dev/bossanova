@@ -25,6 +25,7 @@ type App struct {
 	ctx        context.Context
 	activeView View
 	home       HomeModel
+	newSession NewSessionModel
 	width      int
 	height     int
 	quitting   bool
@@ -42,8 +43,26 @@ func NewApp(c *client.Client) App {
 	}
 }
 
+// SetInitialView overrides the default initial view before running the program.
+func (a *App) SetInitialView(v View) {
+	a.activeView = v
+	if v == ViewNewSession {
+		a.newSession = NewNewSessionModel(a.client, a.ctx)
+	}
+}
+
 func (a App) Init() tea.Cmd {
-	return a.home.Init()
+	switch a.activeView {
+	case ViewNewSession:
+		return a.newSession.Init()
+	default:
+		return a.home.Init()
+	}
+}
+
+// switchViewMsg requests the app to switch to a different view.
+type switchViewMsg struct {
+	view View
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -60,12 +79,33 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.quitting = true
 			return a, tea.Quit
 		}
+
+	case switchViewMsg:
+		a.activeView = msg.view
+		switch msg.view {
+		case ViewNewSession:
+			a.newSession = NewNewSessionModel(a.client, a.ctx)
+			return a, a.newSession.Init()
+		case ViewHome:
+			a.home = NewHomeModel(a.client, a.ctx)
+			return a, a.home.Init()
+		}
+		return a, nil
 	}
 
 	switch a.activeView {
 	case ViewHome:
 		updated, cmd := a.home.Update(msg)
 		a.home = updated.(HomeModel)
+		return a, cmd
+	case ViewNewSession:
+		updated, cmd := a.newSession.Update(msg)
+		a.newSession = updated.(NewSessionModel)
+		if a.newSession.Cancelled() || a.newSession.Done() {
+			a.activeView = ViewHome
+			a.home = NewHomeModel(a.client, a.ctx)
+			return a, a.home.Init()
+		}
 		return a, cmd
 	}
 
@@ -81,6 +121,8 @@ func (a App) View() tea.View {
 	switch a.activeView {
 	case ViewHome:
 		v = a.home.View()
+	case ViewNewSession:
+		v = a.newSession.View()
 	default:
 		v = tea.NewView("Unknown view")
 	}

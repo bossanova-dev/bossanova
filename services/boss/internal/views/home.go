@@ -64,6 +64,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q":
 			return h, tea.Quit
+		case "n":
+			return h, func() tea.Msg { return switchViewMsg{view: ViewNewSession} }
 		case "up", "k":
 			if h.cursor > 0 {
 				h.cursor--

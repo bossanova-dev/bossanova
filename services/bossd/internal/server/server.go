@@ -88,19 +88,60 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // --- Repo Management ---
 
 func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.RegisterRepoRequest]) (*connect.Response[pb.RegisterRepoResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not yet implemented"))
+	msg := req.Msg
+	if msg.LocalPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local_path is required"))
+	}
+
+	var setupScript *string
+	if msg.SetupScript != nil {
+		setupScript = msg.SetupScript
+	}
+
+	repo, err := s.repos.Create(ctx, db.CreateRepoParams{
+		DisplayName:       msg.DisplayName,
+		LocalPath:         msg.LocalPath,
+		OriginURL:         "", // Detected from git repo in Leg 6
+		DefaultBaseBranch: msg.DefaultBaseBranch,
+		WorktreeBaseDir:   msg.WorktreeBaseDir,
+		SetupScript:       setupScript,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create repo: %w", err))
+	}
+
+	return connect.NewResponse(&pb.RegisterRepoResponse{Repo: repoToProto(repo)}), nil
 }
 
 func (s *Server) ListRepos(ctx context.Context, req *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not yet implemented"))
+	repos, err := s.repos.List(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
+	}
+
+	pbRepos := make([]*pb.Repo, len(repos))
+	for i, r := range repos {
+		pbRepos[i] = repoToProto(r)
+	}
+
+	return connect.NewResponse(&pb.ListReposResponse{Repos: pbRepos}), nil
 }
 
 func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveRepoRequest]) (*connect.Response[pb.RemoveRepoResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not yet implemented"))
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	if err := s.repos.Delete(ctx, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove repo: %w", err))
+	}
+
+	return connect.NewResponse(&pb.RemoveRepoResponse{}), nil
 }
 
 func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not yet implemented"))
+	// Stub: real implementation requires VCS provider (Leg 7).
+	return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
 }
 
 // --- Session Lifecycle ---

@@ -224,6 +224,8 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
 	if err := s.lifecycle.StartSession(ctx, sess.ID); err != nil {
+		// Clean up the orphaned session record on failure.
+		_ = s.sessions.Delete(ctx, sess.ID)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
 	}
 

@@ -46,6 +46,7 @@
 Leg 7 (VCS Provider + PR + Fix Loop) is now **complete**. The open-source product is fully functional at this point per the planning doc.
 
 The next leg in the planning doc is **Leg 8: Auth + Orchestrator Core + Terraform**, which starts the cloud/multi-tenant features:
+
 - OIDC auth client (boss login/logout)
 - Orchestrator entry point with JWT middleware
 - Orchestrator schema: users, daemons, sessions, audit_log

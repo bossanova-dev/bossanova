@@ -42,16 +42,28 @@ func (s *SQLiteSessionStore) Get(ctx context.Context, id string) (*models.Sessio
 }
 
 func (s *SQLiteSessionStore) List(ctx context.Context, repoID string) ([]*models.Session, error) {
+	if repoID == "" {
+		query := sessionSelectSQL + " ORDER BY s.created_at DESC"
+		return s.querySessionList(ctx, query)
+	}
 	query := sessionSelectSQL + " WHERE s.repo_id = ? ORDER BY s.created_at DESC"
 	return s.querySessionList(ctx, query, repoID)
 }
 
 func (s *SQLiteSessionStore) ListActive(ctx context.Context, repoID string) ([]*models.Session, error) {
+	if repoID == "" {
+		query := sessionSelectSQL + " WHERE s.archived_at IS NULL ORDER BY s.created_at DESC"
+		return s.querySessionList(ctx, query)
+	}
 	query := sessionSelectSQL + " WHERE s.repo_id = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC"
 	return s.querySessionList(ctx, query, repoID)
 }
 
 func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
+	if repoID == "" {
+		query := sessionSelectSQL + " WHERE s.archived_at IS NOT NULL ORDER BY s.created_at DESC"
+		return s.querySessionList(ctx, query)
+	}
 	query := sessionSelectSQL + " WHERE s.repo_id = ? AND s.archived_at IS NOT NULL ORDER BY s.created_at DESC"
 	return s.querySessionList(ctx, query, repoID)
 }

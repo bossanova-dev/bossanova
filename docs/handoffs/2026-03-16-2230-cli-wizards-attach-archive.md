@@ -46,21 +46,21 @@
 
 Flight Leg 5 is now complete. All CLI features implemented:
 
-| Feature | Status | Command / Key |
-|---------|--------|---------------|
-| Home screen | Done | `boss` (default) |
-| Session table + polling | Done | 2s auto-refresh |
-| Non-interactive list | Done | `boss ls` with --repo/--archived/--state |
-| New session wizard | Done | `boss new` or 'n' key |
-| Attach to session | Done | `boss attach <id>` or enter key |
-| Repo add wizard | Done | `boss repo add` |
-| Repo list (TUI) | Done | 'r' key from home |
-| Repo list (non-interactive) | Done | `boss repo ls` |
-| Repo remove (non-interactive) | Done | `boss repo remove <id>` |
-| Repo remove (TUI) | Done | 'd' key in repo list |
-| Archive session | Done | `boss archive <id>` |
-| Resurrect session | Done | `boss resurrect <id>` |
-| Empty trash | Done | `boss trash empty [--older-than 30d]` |
+| Feature                       | Status | Command / Key                            |
+| ----------------------------- | ------ | ---------------------------------------- |
+| Home screen                   | Done   | `boss` (default)                         |
+| Session table + polling       | Done   | 2s auto-refresh                          |
+| Non-interactive list          | Done   | `boss ls` with --repo/--archived/--state |
+| New session wizard            | Done   | `boss new` or 'n' key                    |
+| Attach to session             | Done   | `boss attach <id>` or enter key          |
+| Repo add wizard               | Done   | `boss repo add`                          |
+| Repo list (TUI)               | Done   | 'r' key from home                        |
+| Repo list (non-interactive)   | Done   | `boss repo ls`                           |
+| Repo remove (non-interactive) | Done   | `boss repo remove <id>`                  |
+| Repo remove (TUI)             | Done   | 'd' key in repo list                     |
+| Archive session               | Done   | `boss archive <id>`                      |
+| Resurrect session             | Done   | `boss resurrect <id>`                    |
+| Empty trash                   | Done   | `boss trash empty [--older-than 30d]`    |
 
 ### Next Steps (Flight Leg 6: Git Worktree + Claude Process)
 

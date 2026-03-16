@@ -110,9 +110,7 @@ func run() error {
 	// CORS middleware for SPA on CF Pages.
 	var origins []string
 	if corsOrigins != "" {
-		for _, o := range splitAndTrim(corsOrigins, ",") {
-			origins = append(origins, o)
-		}
+		origins = append(origins, splitAndTrim(corsOrigins, ",")...)
 	}
 	corsMiddleware := cors.New(cors.Options{
 		AllowedOrigins:   origins,

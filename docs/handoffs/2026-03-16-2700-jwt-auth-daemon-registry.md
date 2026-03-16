@@ -16,7 +16,7 @@
 
 - `services/bosso/internal/auth/auth.go:1-51` — Info type (UserID/DaemonID), InfoFromContext via authn.GetInfo, IsUser/IsDaemon helpers.
 - `services/bosso/internal/auth/jwt.go:1-165` — OIDC JWT validator with JWKS caching (1hr TTL), RSA key parsing, issuer/audience/expiry validation. Uses golang-jwt/jwt/v5.
-- `services/bosso/internal/auth/middleware.go:1-65` — connectrpc.com/authn middleware: tries OIDC JWT first (looks up user by sub), falls back to session token (looks up daemon by GetByToken). Returns *Info via authn mechanism.
+- `services/bosso/internal/auth/middleware.go:1-65` — connectrpc.com/authn middleware: tries OIDC JWT first (looks up user by sub), falls back to session token (looks up daemon by GetByToken). Returns \*Info via authn mechanism.
 - `services/bosso/internal/server/server.go:1-164` — OrchestratorServiceHandler implementing RegisterDaemon (user auth, generates 32-byte hex token, stores daemon, audit log), Heartbeat (daemon auth, daemon_id match check, updates heartbeat/sessions/online), ListDaemons (both auth types, lists by user_id). Proto conversion helper daemonToProto.
 - `services/bosso/internal/server/server_test.go:1-339` — 10 integration tests with mock JWKS server + real RSA JWTs: RegisterDaemon (success, no auth, invalid token, audit log), Heartbeat (success, mismatched id), ListDaemons (user auth, daemon auth, no auth), expired JWT.
 - `services/bosso/cmd/main.go:1-130` — Full orchestrator entry point: zerolog console writer, env config (BOSSO_ADDR, BOSSO_OIDC_ISSUER, BOSSO_OIDC_AUDIENCE), SQLite open + goose migrations, store init, JWT validator + authn middleware wrapping mux, ConnectRPC handler, graceful shutdown on SIGINT/SIGTERM.

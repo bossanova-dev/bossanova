@@ -8,6 +8,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -53,7 +54,7 @@ func NewPoller(
 // channel to prevent blocking.
 func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 	ch := make(chan SessionEvent, 64)
-	go func() {
+	safego.Go(p.logger, func() {
 		defer close(ch)
 
 		ticker := time.NewTicker(p.interval)
@@ -70,7 +71,7 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 				p.poll(ctx, ch)
 			}
 		}
-	}()
+	})
 	return ch
 }
 

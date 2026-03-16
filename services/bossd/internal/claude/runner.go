@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/safego"
 )
 
 // DefaultRingBufferSize is the number of output lines kept in memory per session.
@@ -185,17 +187,17 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	}
 
 	// Write plan to stdin, then close.
-	go func() {
+	safego.Go(r.logger, func() {
 		defer func() { _ = stdin.Close() }()
 		_, _ = io.WriteString(stdin, plan)
-	}()
+	})
 
 	// Stream stdout and stderr into ring buffer + log file.
-	go r.captureOutput(p, stdout)
-	go r.captureOutput(p, stderr)
+	safego.Go(r.logger, func() { r.captureOutput(p, stdout) })
+	safego.Go(r.logger, func() { r.captureOutput(p, stderr) })
 
 	// Wait for process exit.
-	go func() {
+	safego.Go(r.logger, func() {
 		p.exitErr = cmd.Wait()
 		_ = p.logFile.Close()
 		p.subs.close()
@@ -204,7 +206,7 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 			Str("session", sessionID).
 			Err(p.exitErr).
 			Msg("claude process exited")
-	}()
+	})
 
 	return sessionID, nil
 }
@@ -393,7 +395,7 @@ func (s *subscribers) add(ctx context.Context) <-chan OutputLine {
 	go func() {
 		<-ctx.Done()
 		s.remove(ch)
-	}()
+	}() // no safego: trivial cleanup, cannot panic
 
 	return ch
 }

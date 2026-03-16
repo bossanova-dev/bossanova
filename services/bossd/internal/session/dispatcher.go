@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -180,11 +181,11 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
-		go func() {
+		safego.Go(d.logger, func() {
 			if err := d.fixLoop.HandleCheckFailure(ctx, sess.ID, event.FailedChecks); err != nil {
 				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: check failure handler failed")
 			}
-		}()
+		})
 	}
 
 	return nil
@@ -219,11 +220,11 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
-		go func() {
+		safego.Go(d.logger, func() {
 			if err := d.fixLoop.HandleConflict(ctx, sess.ID); err != nil {
 				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: conflict handler failed")
 			}
-		}()
+		})
 	}
 
 	return nil
@@ -259,11 +260,11 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
-		go func() {
+		safego.Go(d.logger, func() {
 			if err := d.fixLoop.HandleReviewFeedback(ctx, sess.ID, event.Comments); err != nil {
 				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: review handler failed")
 			}
-		}()
+		})
 	}
 
 	return nil

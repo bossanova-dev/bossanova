@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -123,14 +124,14 @@ func run() error {
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
 	events := poller.Run(pollerCtx)
-	go dispatcher.Run(pollerCtx, events)
+	safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
 
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)
-	go func() {
+	safego.Go(log.Logger, func() {
 		log.Info().Str("socket", socketPath).Msg("starting server")
 		errCh <- srv.ListenAndServe(socketPath)
-	}()
+	})
 
 	// --- Signal handling ---
 

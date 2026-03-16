@@ -108,6 +108,7 @@ type DaemonStore interface {
 	Get(ctx context.Context, id string) (*Daemon, error)
 	GetByToken(ctx context.Context, token string) (*Daemon, error)
 	ListByUser(ctx context.Context, userID string) ([]*Daemon, error)
+	ListByRepoID(ctx context.Context, repoID string) ([]*Daemon, error)
 	Update(ctx context.Context, id string, params UpdateDaemonParams) (*Daemon, error)
 	UpdateRepos(ctx context.Context, daemonID string, repoIDs []string) error
 	Delete(ctx context.Context, id string) error

@@ -99,6 +99,41 @@ func (s *SQLiteDaemonStore) ListByUser(ctx context.Context, userID string) ([]*D
 	return daemons, nil
 }
 
+func (s *SQLiteDaemonStore) ListByRepoID(ctx context.Context, repoID string) ([]*Daemon, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT d.id, d.user_id, d.hostname, d.endpoint, d.session_token, d.active_sessions, d.last_heartbeat, d.online, d.created_at, d.updated_at
+		 FROM daemons d
+		 INNER JOIN daemon_repos dr ON dr.daemon_id = d.id
+		 WHERE dr.repo_id = ?
+		 ORDER BY d.created_at DESC`, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("list daemons by repo: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var daemons []*Daemon
+	for rows.Next() {
+		d, err := scanDaemonRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		daemons = append(daemons, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+
+	for _, d := range daemons {
+		repos, err := s.getRepos(ctx, d.ID)
+		if err != nil {
+			return nil, err
+		}
+		d.RepoIDs = repos
+	}
+	return daemons, nil
+}
+
 func (s *SQLiteDaemonStore) Update(ctx context.Context, id string, params UpdateDaemonParams) (*Daemon, error) {
 	now := timeNow()
 	sets := []string{"updated_at = ?"}

@@ -2,6 +2,8 @@ version: "2"
 
 run:
   timeout: 5m
+  exclude-dirs:
+    - gen
 
 linters:
   enable:
@@ -18,7 +20,3 @@ formatters:
   enable:
     - gofmt
     - goimports
-
-issues:
-  exclude-dirs:
-    - gen

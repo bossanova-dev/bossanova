@@ -19,9 +19,8 @@ jobs:
 
       - uses: bufbuild/buf-setup-action@v1
 
-      - uses: golangci/golangci-lint-action@v8
-        with:
-          install-mode: binary
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin
 
       - name: Lint
         run: make lint

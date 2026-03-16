@@ -13,8 +13,10 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
@@ -37,6 +39,7 @@ type Server struct {
 	sessions  db.SessionStore
 	attempts  db.AttemptStore
 	lifecycle *session.Lifecycle
+	claude    claude.ClaudeRunner
 	listener  net.Listener
 	srv       *http.Server
 
@@ -44,12 +47,13 @@ type Server struct {
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
-func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle) *Server {
+func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner) *Server {
 	return &Server{
 		repos:     repos,
 		sessions:  sessions,
 		attempts:  attempts,
 		lifecycle: lifecycle,
+		claude:    cr,
 	}
 }
 
@@ -262,7 +266,7 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 	}
 
 	// Verify the session exists.
-	session, err := s.sessions.Get(ctx, req.Msg.Id)
+	sess, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 	}
@@ -271,17 +275,76 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 	if err := stream.Send(&pb.AttachSessionResponse{
 		Event: &pb.AttachSessionResponse_StateChange{
 			StateChange: &pb.StateChange{
-				PreviousState: pb.SessionState(session.State),
-				NewState:      pb.SessionState(session.State),
+				PreviousState: pb.SessionState(sess.State),
+				NewState:      pb.SessionState(sess.State),
 			},
 		},
 	}); err != nil {
 		return err
 	}
 
-	// Stub: real streaming (tail log, watch state changes) in Leg 6.
-	// For now, stream closes immediately after the initial state message.
-	return nil
+	// If no Claude process is running, send ended and return.
+	if sess.ClaudeSessionID == nil || !s.claude.IsRunning(*sess.ClaudeSessionID) {
+		return stream.Send(&pb.AttachSessionResponse{
+			Event: &pb.AttachSessionResponse_SessionEnded{
+				SessionEnded: &pb.SessionEnded{
+					FinalState: pb.SessionState(sess.State),
+				},
+			},
+		})
+	}
+
+	claudeSessionID := *sess.ClaudeSessionID
+
+	// Send existing ring buffer contents as initial burst.
+	history := s.claude.History(claudeSessionID)
+	for _, line := range history {
+		if err := stream.Send(&pb.AttachSessionResponse{
+			Event: &pb.AttachSessionResponse_OutputLine{
+				OutputLine: &pb.OutputLine{
+					Text:      line.Text,
+					Timestamp: timestamppb.New(line.Timestamp),
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	// Subscribe to new output lines.
+	ch, err := s.claude.Subscribe(ctx, claudeSessionID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe: %w", err))
+	}
+
+	// Stream new lines until process exits or client disconnects.
+	for line := range ch {
+		if err := stream.Send(&pb.AttachSessionResponse{
+			Event: &pb.AttachSessionResponse_OutputLine{
+				OutputLine: &pb.OutputLine{
+					Text:      line.Text,
+					Timestamp: timestamppb.New(line.Timestamp),
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	// Process exited — send session ended.
+	// Re-fetch session to get latest state.
+	sess, err = s.sessions.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+	}
+
+	return stream.Send(&pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_SessionEnded{
+			SessionEnded: &pb.SessionEnded{
+				FinalState: pb.SessionState(sess.State),
+			},
+		},
+	})
 }
 
 func (s *Server) StopSession(ctx context.Context, req *connect.Request[pb.StopSessionRequest]) (*connect.Response[pb.StopSessionResponse], error) {

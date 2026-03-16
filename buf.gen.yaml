@@ -6,7 +6,7 @@ plugins:
   - local: protoc-gen-connect-go
     out: lib/bossalib/gen
     opt: paths=source_relative
-  - local: protoc-gen-es
+  - local: services/web/node_modules/.bin/protoc-gen-es
     out: services/web/src/gen
     opt: target=ts
     include_imports: true

@@ -26,6 +26,11 @@ service OrchestratorService {
   rpc ProxyStopSession(ProxyStopSessionRequest) returns (ProxyStopSessionResponse);
   rpc ProxyPauseSession(ProxyPauseSessionRequest) returns (ProxyPauseSessionResponse);
   rpc ProxyResumeSession(ProxyResumeSessionRequest) returns (ProxyResumeSessionResponse);
+
+  // Webhook configuration management
+  rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse);
+  rpc ListWebhookConfigs(ListWebhookConfigsRequest) returns (ListWebhookConfigsResponse);
+  rpc DeleteWebhookConfig(DeleteWebhookConfigRequest) returns (DeleteWebhookConfigResponse);
 }
 
 // --- Daemon Registry ---
@@ -147,3 +152,39 @@ message ProxyResumeSessionRequest {
 message ProxyResumeSessionResponse {
   Session session = 1;
 }
+
+// --- Webhook Configuration ---
+
+message WebhookConfig {
+  string id = 1;
+  // The repository origin URL this webhook is for (e.g. "https://github.com/owner/repo").
+  string repo_origin_url = 2;
+  // VCS provider type: "github", "gitlab", etc.
+  string provider = 3;
+  // HMAC secret for signature verification.
+  string secret = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message CreateWebhookConfigRequest {
+  string repo_origin_url = 1;
+  string provider = 2;
+  // If empty, a random secret will be generated.
+  string secret = 3;
+}
+
+message CreateWebhookConfigResponse {
+  WebhookConfig config = 1;
+}
+
+message ListWebhookConfigsRequest {}
+
+message ListWebhookConfigsResponse {
+  repeated WebhookConfig configs = 1;
+}
+
+message DeleteWebhookConfigRequest {
+  string id = 1;
+}
+
+message DeleteWebhookConfigResponse {}

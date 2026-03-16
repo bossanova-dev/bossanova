@@ -34,6 +34,9 @@ service DaemonService {
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
   rpc ResurrectSession(ResurrectSessionRequest) returns (ResurrectSessionResponse);
   rpc EmptyTrash(EmptyTrashRequest) returns (EmptyTrashResponse);
+
+  // VCS event delivery (orchestrator → daemon via webhook routing)
+  rpc DeliverVCSEvent(DeliverVCSEventRequest) returns (DeliverVCSEventResponse);
 }
 
 // --- Context Resolution ---
@@ -225,3 +228,14 @@ message EmptyTrashResponse {
   // Number of archived sessions permanently deleted.
   int32 deleted_count = 1;
 }
+
+// --- VCS Event Delivery ---
+
+message DeliverVCSEventRequest {
+  // The repo this event pertains to (origin URL for matching).
+  string repo_origin_url = 1;
+  // The parsed VCS event.
+  VCSEvent event = 2;
+}
+
+message DeliverVCSEventResponse {}

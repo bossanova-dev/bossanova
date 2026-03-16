@@ -35,6 +35,9 @@ type WorktreeManager interface {
 	// stale worktree refs.
 	EmptyTrash(ctx context.Context, repoPath string, branches []string) error
 
+	// Push pushes the given branch to the "origin" remote.
+	Push(ctx context.Context, worktreePath, branch string) error
+
 	// DetectOriginURL returns the "origin" remote URL for the repo at the
 	// given path, or empty string if none is configured.
 	DetectOriginURL(ctx context.Context, repoPath string) (string, error)
@@ -210,6 +213,19 @@ func (m *Manager) EmptyTrash(ctx context.Context, repoPath string, branches []st
 		m.logger.Warn().Err(err).Msg("failed to prune worktrees")
 	}
 
+	return nil
+}
+
+// Push pushes the given branch to the "origin" remote.
+func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {
+	m.logger.Info().
+		Str("path", worktreePath).
+		Str("branch", branch).
+		Msg("pushing branch")
+
+	if _, err := runGit(ctx, worktreePath, "push", "-u", "origin", branch); err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
 	return nil
 }
 

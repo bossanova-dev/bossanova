@@ -14,8 +14,11 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
+	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/server"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/migrations"
 )
 
@@ -58,6 +61,12 @@ func run() error {
 	sessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
 
+	// --- Lifecycle ---
+
+	worktrees := gitpkg.NewManager(log.Logger)
+	claudeRunner := claude.NewRunner(log.Logger)
+	lifecycle := session.NewLifecycle(sessions, repos, worktrees, claudeRunner, log.Logger)
+
 	// --- Server ---
 
 	socketPath, err := server.DefaultSocketPath()
@@ -65,7 +74,7 @@ func run() error {
 		return fmt.Errorf("socket path: %w", err)
 	}
 
-	srv := server.New(repos, sessions, attempts)
+	srv := server.New(repos, sessions, attempts, lifecycle)
 
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)

@@ -117,7 +117,8 @@ func stateColor(state pb.SessionState) color.Color {
 	}
 }
 
-func stateLabel(state pb.SessionState) string {
+// StateLabel returns a short human-readable label for a session state.
+func StateLabel(state pb.SessionState) string {
 	switch state {
 	case pb.SessionState_SESSION_STATE_CREATING_WORKTREE:
 		return "creating"
@@ -145,6 +146,20 @@ func stateLabel(state pb.SessionState) string {
 		return "closed"
 	default:
 		return "unknown"
+	}
+}
+
+// ChecksLabel returns a plain text label for CI status (for non-TUI output).
+func ChecksLabel(state pb.ChecksOverall) string {
+	switch state {
+	case pb.ChecksOverall_CHECKS_OVERALL_PASSED:
+		return "pass"
+	case pb.ChecksOverall_CHECKS_OVERALL_FAILED:
+		return "fail"
+	case pb.ChecksOverall_CHECKS_OVERALL_PENDING:
+		return "pending"
+	default:
+		return "-"
 	}
 }
 
@@ -201,7 +216,7 @@ func (h HomeModel) View() tea.View {
 
 		id := truncate(sess.Id, 8)
 		title := truncate(sess.Title, 28)
-		state := stateLabel(sess.State)
+		state := StateLabel(sess.State)
 		branch := truncate(sess.BranchName, 20)
 		pr := "-"
 		if sess.PrNumber != nil {

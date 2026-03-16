@@ -28,6 +28,8 @@ func rootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	root.PersistentFlags().String("remote", "", "Connect to orchestrator URL instead of local daemon")
+
 	root.AddCommand(
 		lsCmd(),
 		newCmd(),

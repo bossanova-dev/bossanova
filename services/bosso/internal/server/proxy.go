@@ -156,3 +156,114 @@ func (s *Server) ProxyGetSession(ctx context.Context, req *connect.Request[pb.Pr
 		Session: resp.Msg.Session,
 	}), nil
 }
+
+// ProxyAttachSession relays a streaming attach from the daemon to the caller.
+func (s *Server) ProxyAttachSession(ctx context.Context, req *connect.Request[pb.ProxyAttachSessionRequest], stream *connect.ServerStream[pb.ProxyAttachSessionResponse]) error {
+	client, err := s.getDaemonClient(ctx, req.Msg.Id)
+	if err != nil {
+		return err
+	}
+
+	daemonReq := connect.NewRequest(&pb.AttachSessionRequest{
+		Id: req.Msg.Id,
+	})
+
+	daemonStream, err := client.AttachSession(ctx, daemonReq)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("proxy attach session: %w", err))
+	}
+	defer func() { _ = daemonStream.Close() }()
+
+	for daemonStream.Receive() {
+		msg := daemonStream.Msg()
+		proxyMsg := &pb.ProxyAttachSessionResponse{}
+
+		switch ev := msg.Event.(type) {
+		case *pb.AttachSessionResponse_OutputLine:
+			proxyMsg.Event = &pb.ProxyAttachSessionResponse_OutputLine{
+				OutputLine: ev.OutputLine,
+			}
+		case *pb.AttachSessionResponse_StateChange:
+			proxyMsg.Event = &pb.ProxyAttachSessionResponse_StateChange{
+				StateChange: ev.StateChange,
+			}
+		case *pb.AttachSessionResponse_SessionEnded:
+			proxyMsg.Event = &pb.ProxyAttachSessionResponse_SessionEnded{
+				SessionEnded: ev.SessionEnded,
+			}
+		}
+
+		if err := stream.Send(proxyMsg); err != nil {
+			return err
+		}
+	}
+
+	if err := daemonStream.Err(); err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("daemon stream error: %w", err))
+	}
+
+	return nil
+}
+
+// ProxyStopSession stops a session on its daemon with ownership verification.
+func (s *Server) ProxyStopSession(ctx context.Context, req *connect.Request[pb.ProxyStopSessionRequest]) (*connect.Response[pb.ProxyStopSessionResponse], error) {
+	client, err := s.getDaemonClient(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	daemonReq := connect.NewRequest(&pb.StopSessionRequest{
+		Id: req.Msg.Id,
+	})
+
+	resp, err := client.StopSession(ctx, daemonReq)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proxy stop session: %w", err))
+	}
+
+	return connect.NewResponse(&pb.ProxyStopSessionResponse{
+		Session: resp.Msg.Session,
+	}), nil
+}
+
+// ProxyPauseSession pauses a session on its daemon with ownership verification.
+func (s *Server) ProxyPauseSession(ctx context.Context, req *connect.Request[pb.ProxyPauseSessionRequest]) (*connect.Response[pb.ProxyPauseSessionResponse], error) {
+	client, err := s.getDaemonClient(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	daemonReq := connect.NewRequest(&pb.PauseSessionRequest{
+		Id: req.Msg.Id,
+	})
+
+	resp, err := client.PauseSession(ctx, daemonReq)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proxy pause session: %w", err))
+	}
+
+	return connect.NewResponse(&pb.ProxyPauseSessionResponse{
+		Session: resp.Msg.Session,
+	}), nil
+}
+
+// ProxyResumeSession resumes a session on its daemon with ownership verification.
+func (s *Server) ProxyResumeSession(ctx context.Context, req *connect.Request[pb.ProxyResumeSessionRequest]) (*connect.Response[pb.ProxyResumeSessionResponse], error) {
+	client, err := s.getDaemonClient(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	daemonReq := connect.NewRequest(&pb.ResumeSessionRequest{
+		Id: req.Msg.Id,
+	})
+
+	resp, err := client.ResumeSession(ctx, daemonReq)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("proxy resume session: %w", err))
+	}
+
+	return connect.NewResponse(&pb.ProxyResumeSessionResponse{
+		Session: resp.Msg.Session,
+	}), nil
+}

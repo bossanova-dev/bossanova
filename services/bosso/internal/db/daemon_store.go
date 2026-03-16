@@ -20,9 +20,9 @@ func NewDaemonStore(db *sql.DB) *SQLiteDaemonStore {
 func (s *SQLiteDaemonStore) Create(ctx context.Context, params CreateDaemonParams) (*Daemon, error) {
 	now := timeNow()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO daemons (id, user_id, hostname, session_token, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		params.ID, params.UserID, params.Hostname, params.SessionToken, now, now,
+		`INSERT INTO daemons (id, user_id, hostname, endpoint, session_token, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		params.ID, params.UserID, params.Hostname, params.Endpoint, params.SessionToken, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert daemon: %w", err)
@@ -35,7 +35,7 @@ func (s *SQLiteDaemonStore) Create(ctx context.Context, params CreateDaemonParam
 
 func (s *SQLiteDaemonStore) Get(ctx context.Context, id string) (*Daemon, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, hostname, session_token, active_sessions, last_heartbeat, online, created_at, updated_at
+		`SELECT id, user_id, hostname, endpoint, session_token, active_sessions, last_heartbeat, online, created_at, updated_at
 		 FROM daemons WHERE id = ?`, id)
 	d, err := scanDaemon(row)
 	if err != nil {
@@ -51,7 +51,7 @@ func (s *SQLiteDaemonStore) Get(ctx context.Context, id string) (*Daemon, error)
 
 func (s *SQLiteDaemonStore) GetByToken(ctx context.Context, token string) (*Daemon, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, user_id, hostname, session_token, active_sessions, last_heartbeat, online, created_at, updated_at
+		`SELECT id, user_id, hostname, endpoint, session_token, active_sessions, last_heartbeat, online, created_at, updated_at
 		 FROM daemons WHERE session_token = ?`, token)
 	d, err := scanDaemon(row)
 	if err != nil {
@@ -67,7 +67,7 @@ func (s *SQLiteDaemonStore) GetByToken(ctx context.Context, token string) (*Daem
 
 func (s *SQLiteDaemonStore) ListByUser(ctx context.Context, userID string) ([]*Daemon, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, user_id, hostname, session_token, active_sessions, last_heartbeat, online, created_at, updated_at
+		`SELECT id, user_id, hostname, endpoint, session_token, active_sessions, last_heartbeat, online, created_at, updated_at
 		 FROM daemons WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list daemons: %w", err)
@@ -192,7 +192,7 @@ func scanDaemon(row *sql.Row) (*Daemon, error) {
 	var lastHB *string
 	var online int
 	var createdAt, updatedAt string
-	err := row.Scan(&d.ID, &d.UserID, &d.Hostname, &d.SessionToken,
+	err := row.Scan(&d.ID, &d.UserID, &d.Hostname, &d.Endpoint, &d.SessionToken,
 		&d.ActiveSessions, &lastHB, &online, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
@@ -209,7 +209,7 @@ func scanDaemonRows(rows *sql.Rows) (*Daemon, error) {
 	var lastHB *string
 	var online int
 	var createdAt, updatedAt string
-	err := rows.Scan(&d.ID, &d.UserID, &d.Hostname, &d.SessionToken,
+	err := rows.Scan(&d.ID, &d.UserID, &d.Hostname, &d.Endpoint, &d.SessionToken,
 		&d.ActiveSessions, &lastHB, &online, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err

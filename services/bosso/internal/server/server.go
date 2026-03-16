@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bosso/internal/auth"
 	"github.com/recurser/bosso/internal/db"
+	"github.com/recurser/bosso/internal/relay"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -22,17 +23,19 @@ type Server struct {
 	daemons  db.DaemonStore
 	sessions db.SessionRegistryStore
 	audit    db.AuditStore
+	pool     *relay.Pool
 
 	bossanovav1connect.UnimplementedOrchestratorServiceHandler
 }
 
 // New creates a new orchestrator server.
-func New(users db.UserStore, daemons db.DaemonStore, sessions db.SessionRegistryStore, audit db.AuditStore) *Server {
+func New(users db.UserStore, daemons db.DaemonStore, sessions db.SessionRegistryStore, audit db.AuditStore, pool *relay.Pool) *Server {
 	return &Server{
 		users:    users,
 		daemons:  daemons,
 		sessions: sessions,
 		audit:    audit,
+		pool:     pool,
 	}
 }
 
@@ -57,15 +60,26 @@ func (s *Server) RegisterDaemon(ctx context.Context, req *connect.Request[pb.Reg
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("generate token: %w", err))
 	}
 
+	endpoint := ""
+	if msg.Endpoint != nil {
+		endpoint = *msg.Endpoint
+	}
+
 	daemon, err := s.daemons.Create(ctx, db.CreateDaemonParams{
 		ID:           msg.DaemonId,
 		UserID:       info.UserID,
 		Hostname:     msg.Hostname,
+		Endpoint:     endpoint,
 		SessionToken: token,
 		RepoIDs:      msg.RepoIds,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("register daemon: %w", err))
+	}
+
+	// Register in relay pool if endpoint provided.
+	if endpoint != "" {
+		s.pool.Register(daemon.ID, endpoint)
 	}
 
 	// Audit log.

@@ -23,6 +23,7 @@ import (
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bosso/internal/auth"
 	"github.com/recurser/bosso/internal/db"
+	"github.com/recurser/bosso/internal/relay"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -54,6 +55,7 @@ type testEnv struct {
 	daemons  db.DaemonStore
 	sessions db.SessionRegistryStore
 	audit    db.AuditStore
+	pool     *relay.Pool
 	key      *rsa.PrivateKey
 	kid      string
 	issuer   string
@@ -106,7 +108,8 @@ func setupTestEnv(t *testing.T) *testEnv {
 
 	authMiddleware := auth.NewMiddleware(jwtValidator, users, daemons)
 
-	srv := New(users, daemons, sessions, audit)
+	pool := relay.NewPool()
+	srv := New(users, daemons, sessions, audit, pool)
 
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(srv)
@@ -126,6 +129,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 		daemons:  daemons,
 		sessions: sessions,
 		audit:    audit,
+		pool:     pool,
 		key:      key,
 		kid:      kid,
 		issuer:   issuer,
@@ -413,11 +417,11 @@ func TestExpiredJWTRejected(t *testing.T) {
 
 	// Sign an expired JWT.
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"iss":   env.issuer,
-		"aud":   []string{env.audience},
-		"sub":   sub,
-		"exp":   time.Now().Add(-1 * time.Hour).Unix(), // expired
-		"iat":   time.Now().Add(-2 * time.Hour).Unix(),
+		"iss": env.issuer,
+		"aud": []string{env.audience},
+		"sub": sub,
+		"exp": time.Now().Add(-1 * time.Hour).Unix(), // expired
+		"iat": time.Now().Add(-2 * time.Hour).Unix(),
 	})
 	token.Header["kid"] = env.kid
 	expiredJWT, err := token.SignedString(env.key)

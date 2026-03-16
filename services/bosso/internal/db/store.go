@@ -20,6 +20,7 @@ type Daemon struct {
 	ID             string
 	UserID         string
 	Hostname       string
+	Endpoint       string // optional ConnectRPC endpoint URL for proxy access
 	SessionToken   string
 	RepoIDs        []string
 	ActiveSessions int
@@ -79,6 +80,7 @@ type CreateDaemonParams struct {
 	ID           string // daemon-provided ID
 	UserID       string
 	Hostname     string
+	Endpoint     string // optional ConnectRPC endpoint URL
 	SessionToken string
 	RepoIDs      []string
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bosso/internal/auth"
 	"github.com/recurser/bosso/internal/db"
+	"github.com/recurser/bosso/internal/relay"
 	"github.com/recurser/bosso/internal/server"
 	"github.com/recurser/bosso/migrations"
 )
@@ -82,7 +83,8 @@ func run() error {
 
 	// --- Server ---
 
-	srv := server.New(users, daemons, sessions, audit)
+	pool := relay.NewPool()
+	srv := server.New(users, daemons, sessions, audit, pool)
 
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewOrchestratorServiceHandler(srv)

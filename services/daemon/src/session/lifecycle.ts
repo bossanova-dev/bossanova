@@ -4,6 +4,7 @@ import type { ClaudeSupervisor } from '~/claude/supervisor';
 import type { RepoStore } from '~/db/repos';
 import type { SessionStore } from '~/db/sessions';
 import { createWorktree, removeWorktree } from '~/git/worktree';
+import { pushAndCreatePr } from '~/session/pr-lifecycle';
 
 /**
  * Create a new session: insert DB record, create worktree, start Claude,
@@ -57,7 +58,24 @@ export async function startSession(
             blockedReason: message.errors.join('; '),
           });
         } else {
-          sessions.update(sessionId, { state: 'pushing_branch' });
+          // Trigger push + draft PR creation in background
+          const s = sessions.get(sessionId);
+          if (s?.worktreePath && s.branchName) {
+            pushAndCreatePr(
+              sessions,
+              sessionId,
+              s.worktreePath,
+              s.branchName,
+              s.title,
+              s.plan,
+              s.baseBranch,
+            ).catch((err) => {
+              sessions.update(sessionId, {
+                state: 'blocked',
+                blockedReason: err instanceof Error ? err.message : 'Push/PR creation failed',
+              });
+            });
+          }
         }
       }
 

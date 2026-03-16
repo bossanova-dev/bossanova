@@ -26,6 +26,8 @@ type App struct {
 	activeView View
 	home       HomeModel
 	newSession NewSessionModel
+	repoAdd    RepoAddModel
+	repoList   RepoListModel
 	width      int
 	height     int
 	quitting   bool
@@ -46,8 +48,13 @@ func NewApp(c *client.Client) App {
 // SetInitialView overrides the default initial view before running the program.
 func (a *App) SetInitialView(v View) {
 	a.activeView = v
-	if v == ViewNewSession {
+	switch v {
+	case ViewNewSession:
 		a.newSession = NewNewSessionModel(a.client, a.ctx)
+	case ViewRepoAdd:
+		a.repoAdd = NewRepoAddModel(a.client, a.ctx)
+	case ViewRepoList:
+		a.repoList = NewRepoListModel(a.client, a.ctx)
 	}
 }
 
@@ -55,6 +62,10 @@ func (a App) Init() tea.Cmd {
 	switch a.activeView {
 	case ViewNewSession:
 		return a.newSession.Init()
+	case ViewRepoAdd:
+		return a.repoAdd.Init()
+	case ViewRepoList:
+		return a.repoList.Init()
 	default:
 		return a.home.Init()
 	}
@@ -86,6 +97,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewNewSession:
 			a.newSession = NewNewSessionModel(a.client, a.ctx)
 			return a, a.newSession.Init()
+		case ViewRepoAdd:
+			a.repoAdd = NewRepoAddModel(a.client, a.ctx)
+			return a, a.repoAdd.Init()
+		case ViewRepoList:
+			a.repoList = NewRepoListModel(a.client, a.ctx)
+			return a, a.repoList.Init()
 		case ViewHome:
 			a.home = NewHomeModel(a.client, a.ctx)
 			return a, a.home.Init()
@@ -102,14 +119,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.newSession.Update(msg)
 		a.newSession = updated.(NewSessionModel)
 		if a.newSession.Cancelled() || a.newSession.Done() {
-			a.activeView = ViewHome
-			a.home = NewHomeModel(a.client, a.ctx)
-			return a, a.home.Init()
+			return a, a.switchToHome()
+		}
+		return a, cmd
+	case ViewRepoAdd:
+		updated, cmd := a.repoAdd.Update(msg)
+		a.repoAdd = updated.(RepoAddModel)
+		if a.repoAdd.Cancelled() || a.repoAdd.Done() {
+			return a, a.switchToHome()
+		}
+		return a, cmd
+	case ViewRepoList:
+		updated, cmd := a.repoList.Update(msg)
+		a.repoList = updated.(RepoListModel)
+		if a.repoList.Cancelled() {
+			return a, a.switchToHome()
 		}
 		return a, cmd
 	}
 
 	return a, nil
+}
+
+func (a *App) switchToHome() tea.Cmd {
+	a.activeView = ViewHome
+	a.home = NewHomeModel(a.client, a.ctx)
+	return a.home.Init()
 }
 
 func (a App) View() tea.View {
@@ -123,6 +158,10 @@ func (a App) View() tea.View {
 		v = a.home.View()
 	case ViewNewSession:
 		v = a.newSession.View()
+	case ViewRepoAdd:
+		v = a.repoAdd.View()
+	case ViewRepoList:
+		v = a.repoList.View()
 	default:
 		v = tea.NewView("Unknown view")
 	}

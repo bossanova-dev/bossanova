@@ -3,14 +3,31 @@ package main
 import (
 	"fmt"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
+
+	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/views"
 )
 
-// Handler stubs — implemented in subsequent tasks.
+// newClient creates a daemon client using the default socket path.
+func newClient() (*client.Client, error) {
+	socketPath, err := client.DefaultSocketPath()
+	if err != nil {
+		return nil, fmt.Errorf("socket path: %w", err)
+	}
+	return client.New(socketPath), nil
+}
 
 func runTUI(_ *cobra.Command) error {
-	fmt.Println("boss: interactive TUI (not yet implemented)")
-	return nil
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	app := views.NewApp(c)
+	p := tea.NewProgram(app)
+	_, err = p.Run()
+	return err
 }
 
 func runLS(_ *cobra.Command) error {

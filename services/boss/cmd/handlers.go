@@ -75,7 +75,9 @@ func runLS(cmd *cobra.Command) error {
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tTITLE\tSTATE\tBRANCH\tPR\tCI")
+	if _, err := fmt.Fprintln(w, "ID\tTITLE\tSTATE\tBRANCH\tPR\tCI"); err != nil {
+		return err
+	}
 	for _, sess := range sessions {
 		id := sess.Id
 		if len(id) > 8 {
@@ -92,7 +94,9 @@ func runLS(cmd *cobra.Command) error {
 			pr = fmt.Sprintf("#%d", *sess.PrNumber)
 		}
 		ci := views.ChecksLabel(sess.LastCheckState)
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, title, state, branch, pr, ci)
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, title, state, branch, pr, ci); err != nil {
+			return err
+		}
 	}
 	return w.Flush()
 }

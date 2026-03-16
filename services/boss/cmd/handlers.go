@@ -18,6 +18,7 @@ import (
 )
 
 // newClient creates either a local or remote client depending on the --remote flag.
+// For local connections, it ensures the daemon is running first.
 func newClient(cmd *cobra.Command) (client.BossClient, error) {
 	remote, _ := cmd.Root().Flags().GetString("remote")
 	if remote != "" {
@@ -27,6 +28,12 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("socket path: %w", err)
 	}
+
+	// Auto-start daemon if not running.
+	if err := daemon.EnsureRunning(socketPath); err != nil {
+		return nil, fmt.Errorf("daemon: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually.", err)
+	}
+
 	return client.NewLocal(socketPath), nil
 }
 

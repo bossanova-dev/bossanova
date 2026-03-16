@@ -3,12 +3,15 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 )
 
 const (
@@ -228,4 +231,79 @@ func GetStatus() (*Status, error) {
 	}
 
 	return st, nil
+}
+
+// EnsureRunning checks if the daemon socket is reachable. If not, it attempts
+// to start bossd as a background process. It waits up to 3 seconds for the
+// socket to become available.
+func EnsureRunning(socketPath string) error {
+	// Try to connect to the existing socket.
+	if isSocketReachable(socketPath) {
+		return nil
+	}
+
+	// Try the LaunchAgent first (if installed).
+	st, err := GetStatus()
+	if err == nil && st.Installed && !st.Running {
+		plistPath, _ := PlistPath()
+		if cmd := exec.Command("launchctl", "load", plistPath); cmd.Run() == nil {
+			if waitForSocket(socketPath, 3*time.Second) {
+				return nil
+			}
+		}
+	}
+
+	// Fall back to starting bossd directly as a background process.
+	bossdPath, err := ResolveBossdPath()
+	if err != nil {
+		return fmt.Errorf("cannot auto-start daemon: %w", err)
+	}
+
+	cmd := exec.Command(bossdPath)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	// Detach from the parent process.
+	cmd.SysProcAttr = nil
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start bossd: %w", err)
+	}
+
+	// Release the child process so it runs independently.
+	_ = cmd.Process.Release()
+
+	if !waitForSocket(socketPath, 3*time.Second) {
+		return fmt.Errorf("daemon started but socket not ready at %s", socketPath)
+	}
+
+	return nil
+}
+
+// isSocketReachable checks if a Unix socket is connectable.
+func isSocketReachable(socketPath string) bool {
+	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// waitForSocket polls for the socket to become reachable.
+func waitForSocket(socketPath string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			if isSocketReachable(socketPath) {
+				return true
+			}
+		}
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -22,6 +23,7 @@ type Lifecycle struct {
 	repos     db.RepoStore
 	worktrees gitpkg.WorktreeManager
 	claude    claude.ClaudeRunner
+	provider  vcs.Provider
 	logger    zerolog.Logger
 }
 
@@ -31,6 +33,7 @@ func NewLifecycle(
 	repos db.RepoStore,
 	worktrees gitpkg.WorktreeManager,
 	claude claude.ClaudeRunner,
+	provider vcs.Provider,
 	logger zerolog.Logger,
 ) *Lifecycle {
 	return &Lifecycle{
@@ -38,6 +41,7 @@ func NewLifecycle(
 		repos:     repos,
 		worktrees: worktrees,
 		claude:    claude,
+		provider:  provider,
 		logger:    logger,
 	}
 }
@@ -138,6 +142,108 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string) error {
 		Str("session", sessionID).
 		Str("claudeSession", claudeSessionID).
 		Msg("session started, implementing plan")
+
+	return nil
+}
+
+// SubmitPR pushes the branch, creates a draft PR, and transitions the session
+// through PushingBranch → OpeningDraftPR → AwaitingChecks. It updates the
+// session record with the PR number and URL.
+func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
+	session, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	repo, err := l.repos.Get(ctx, session.RepoID)
+	if err != nil {
+		return fmt.Errorf("get repo: %w", err)
+	}
+
+	// Initialize state machine at the session's current state.
+	sm := machine.NewWithContext(session.State, &machine.SessionContext{
+		AttemptCount: session.AttemptCount,
+		MaxAttempts:  machine.MaxAttempts,
+	})
+
+	// Fire PlanComplete → PushingBranch.
+	if err := sm.FireCtx(ctx, machine.PlanComplete); err != nil {
+		return fmt.Errorf("fire plan_complete: %w", err)
+	}
+
+	pushingState := int(machine.PushingBranch)
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		State: &pushingState,
+	}); err != nil {
+		return fmt.Errorf("set pushing_branch state: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("branch", session.BranchName).
+		Msg("pushing branch")
+
+	// Push the branch to remote.
+	if err := l.worktrees.Push(ctx, session.WorktreePath, session.BranchName); err != nil {
+		return fmt.Errorf("push branch: %w", err)
+	}
+
+	// Fire BranchPushed → OpeningDraftPR.
+	if err := sm.FireCtx(ctx, machine.BranchPushed); err != nil {
+		return fmt.Errorf("fire branch_pushed: %w", err)
+	}
+
+	openingState := int(machine.OpeningDraftPR)
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		State: &openingState,
+	}); err != nil {
+		return fmt.Errorf("set opening_draft_pr state: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Msg("creating draft PR")
+
+	// Create a draft PR via the VCS provider.
+	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
+		RepoPath:   repo.OriginURL,
+		HeadBranch: session.BranchName,
+		BaseBranch: session.BaseBranch,
+		Title:      session.Title,
+		Body:       session.Plan,
+		Draft:      true,
+	})
+	if err != nil {
+		return fmt.Errorf("create draft PR: %w", err)
+	}
+
+	// Update session with PR info.
+	prNumber := &prInfo.Number
+	prURL := &prInfo.URL
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		PRNumber: &prNumber,
+		PRURL:    &prURL,
+	}); err != nil {
+		return fmt.Errorf("update PR info: %w", err)
+	}
+
+	// Fire PROpened → AwaitingChecks.
+	if err := sm.FireCtx(ctx, machine.PROpened); err != nil {
+		return fmt.Errorf("fire pr_opened: %w", err)
+	}
+
+	awaitingState := int(machine.AwaitingChecks)
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		State: &awaitingState,
+	}); err != nil {
+		return fmt.Errorf("set awaiting_checks state: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Int("prNumber", prInfo.Number).
+		Str("prURL", prInfo.URL).
+		Msg("draft PR created, awaiting checks")
 
 	return nil
 }

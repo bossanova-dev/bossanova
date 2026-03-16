@@ -50,5 +50,6 @@
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-15-1551-bossanova-full-build"` to see available tasks
 2. Review files: `services/daemon/src/github/client.ts`, `services/daemon/src/github/poll.ts`, `services/daemon/src/session/lifecycle.ts`

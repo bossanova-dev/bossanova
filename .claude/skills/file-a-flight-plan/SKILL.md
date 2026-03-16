@@ -148,17 +148,22 @@ Use these templates as starting points, adapting them to the project's actual to
 **When:** After implementing the endpoint and restarting the server
 
 \`\`\`bash
+
 # Start server (adapt to project's dev command)
+
 make dev &
 until curl -s http://localhost:<port>/health > /dev/null 2>&1; do sleep 1; done
 
 # Execute test request
+
 curl -X POST http://localhost:<port>/api/<endpoint> \
  -H "Content-Type: application/json" \
  -d '{"key": "value"}'
 
 # Expected: 200 OK with expected response shape
+
 # Fail if: error response or unexpected data
+
 \`\`\`
 ```
 
@@ -189,7 +194,9 @@ curl -X POST http://localhost:<port>/api/<endpoint> \
 
 \`\`\`bash
 make test
+
 # Expected: All tests pass
+
 \`\`\`
 ```
 
@@ -413,29 +420,29 @@ Please review the plan. Would you like any changes before we proceed?
 
 ## Anti-Patterns
 
-| Anti-Pattern              | Problem                       | Fix                                             |
-| ------------------------- | ----------------------------- | ----------------------------------------------- |
-| Skipping design skills    | Misses required patterns      | ALWAYS read design skills for affected areas    |
-| No post-flight checks     | Agent can't verify its work   | Every flight leg needs testable verification    |
-| Vague test steps          | Agent won't know if it passed | Write exact commands with expected output       |
-| Manual-only testing       | Agent can't test autonomously | Prefer curl, Playwright MCP, make test          |
-| Too few handoffs          | Runaway implementation        | One handoff per logical phase                   |
-| Too many tasks per leg    | Long gaps between reviews     | Keep flight legs to 3-5 tasks max               |
-| Not reading existing code | Plan doesn't match reality    | Examine code BEFORE writing the plan            |
-| Giant tasks               | Context bloat, errors         | Split to under 2 minutes each                   |
+| Anti-Pattern              | Problem                       | Fix                                          |
+| ------------------------- | ----------------------------- | -------------------------------------------- |
+| Skipping design skills    | Misses required patterns      | ALWAYS read design skills for affected areas |
+| No post-flight checks     | Agent can't verify its work   | Every flight leg needs testable verification |
+| Vague test steps          | Agent won't know if it passed | Write exact commands with expected output    |
+| Manual-only testing       | Agent can't test autonomously | Prefer curl, Playwright MCP, make test       |
+| Too few handoffs          | Runaway implementation        | One handoff per logical phase                |
+| Too many tasks per leg    | Long gaps between reviews     | Keep flight legs to 3-5 tasks max            |
+| Not reading existing code | Plan doesn't match reality    | Examine code BEFORE writing the plan         |
+| Giant tasks               | Context bloat, errors         | Split to under 2 minutes each                |
 
 ---
 
 ## Related Skills
 
-| Skill                | Relationship                                          |
-| -------------------- | ----------------------------------------------------- |
-| `/pre-flight-checks` | Next step: creates bd tasks from the plan             |
-| `/take-off`          | Executes the bd tasks created by `/pre-flight-checks` |
-| `/handoff-task`      | Handoff format used at checkpoints during `/take-off` |
-| `/resume-handoff`    | Resume work from a previous handoff checkpoint        |
-| `/post-flight-checks`| Runs verification tests at end of each flight leg     |
-| `/land-the-plane`    | End session with commit and push                      |
+| Skill                 | Relationship                                          |
+| --------------------- | ----------------------------------------------------- |
+| `/pre-flight-checks`  | Next step: creates bd tasks from the plan             |
+| `/take-off`           | Executes the bd tasks created by `/pre-flight-checks` |
+| `/handoff-task`       | Handoff format used at checkpoints during `/take-off` |
+| `/resume-handoff`     | Resume work from a previous handoff checkpoint        |
+| `/post-flight-checks` | Runs verification tests at end of each flight leg     |
+| `/land-the-plane`     | End session with commit and push                      |
 
 ### Typical Flow
 

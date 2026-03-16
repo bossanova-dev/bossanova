@@ -13,13 +13,13 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 
 **You MUST satisfy ALL of these before completing. No exceptions.**
 
-| #   | Requirement                              | How to Verify                                                                                                                                                                                           |
-| --- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **Format and lint pass for ALL changed code** | Run `git diff --name-only origin/main..HEAD` to find changed areas, then run `make format` and `make lint`. Fix any failures before proceeding.                                                                |
-| 2   | **PR number in ALL commits**             | Every commit on this branch (compared to origin/main) MUST have `[#PR-NUM]` in the message. Check with `git log origin/main..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
-| 3   | **User approval obtained**               | You MUST ask the user "Do I have permission to push?" and WAIT for their explicit "yes" before ANY push or force-push.                                                                                  |
-| 4   | **Commits squashed and tidied**          | You MUST squash commits into logical groups and force-push. Show the user the proposed grouping for approval.                                                                                           |
-| 5   | **GitHub checks not failing**            | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
+| #   | Requirement                                   | How to Verify                                                                                                                                                                                           |
+| --- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Format and lint pass for ALL changed code** | Run `git diff --name-only origin/main..HEAD` to find changed areas, then run `make format` and `make lint`. Fix any failures before proceeding.                                                         |
+| 2   | **PR number in ALL commits**                  | Every commit on this branch (compared to origin/main) MUST have `[#PR-NUM]` in the message. Check with `git log origin/main..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
+| 3   | **User approval obtained**                    | You MUST ask the user "Do I have permission to push?" and WAIT for their explicit "yes" before ANY push or force-push.                                                                                  |
+| 4   | **Commits squashed and tidied**               | You MUST squash commits into logical groups and force-push. Show the user the proposed grouping for approval.                                                                                           |
+| 5   | **GitHub checks not failing**                 | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
 
 **If you complete without satisfying ALL FIVE requirements, you have failed this workflow.**
 
@@ -154,6 +154,7 @@ git log origin/main..HEAD --oneline
 **Show the user your proposed grouping:**
 
 > "I'll squash these [N] commits into [M] logical commits:
+>
 > 1. `type(scope): [#PR] description` — [what it contains]
 > 2. `type(scope): [#PR] description` — [what it contains]
 >
@@ -162,6 +163,7 @@ git log origin/main..HEAD --oneline
 **Wait for user approval before rebasing.**
 
 **After squashing, verify:**
+
 ```bash
 git log origin/main..HEAD --oneline          # Clean, logical commits
 git log origin/main..HEAD --oneline | grep -v "\[#"  # All have PR numbers
@@ -296,7 +298,7 @@ Before saying "done", verify ALL items:
 
 | Failure                              | Why It's Wrong         | What You Should Have Done                                                                 |
 | ------------------------------------ | ---------------------- | ----------------------------------------------------------------------------------------- |
-| Skipped format/lint for changed code     | CI will fail           | Run `make format` and `make lint` before committing                                       |
+| Skipped format/lint for changed code | CI will fail           | Run `make format` and `make lint` before committing                                       |
 | Pushed without asking                | User didn't approve    | ALWAYS ask "Do I have permission to push?" and WAIT                                       |
 | Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/land-the-plane/add-pr-numbers.sh` to fix ALL commits                  |
 | Reported issue but didn't fix        | Commits still broken   | You MUST run the script, not just report that commits need fixing                         |
@@ -311,11 +313,11 @@ Before saying "done", verify ALL items:
 
 ## Related Skills
 
-| Skill                 | Relationship                               |
-| --------------------- | ------------------------------------------ |
-| `/file-a-flight-plan`  | Create plan before implementation          |
-| `/pre-flight-checks`  | Create bd tasks from plan                  |
-| `/post-flight-checks` | Verify flight leg before handoff           |
-| `/take-off`            | Execute tasks, stopping at handoffs        |
-| `/handoff-task`        | Create handoff documents at checkpoints    |
-| `/resume-handoff`      | Resume work from a previous handoff        |
+| Skill                 | Relationship                            |
+| --------------------- | --------------------------------------- |
+| `/file-a-flight-plan` | Create plan before implementation       |
+| `/pre-flight-checks`  | Create bd tasks from plan               |
+| `/post-flight-checks` | Verify flight leg before handoff        |
+| `/take-off`           | Execute tasks, stopping at handoffs     |
+| `/handoff-task`       | Create handoff documents at checkpoints |
+| `/resume-handoff`     | Resume work from a previous handoff     |

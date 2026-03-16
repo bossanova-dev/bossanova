@@ -10,26 +10,26 @@ This plan covers the full build from monorepo scaffolding through automated fix 
 
 ## Key Architectural Decisions
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Runtime | Node.js everywhere | Ink (CLI framework) has yoga-layout issues with Bun |
-| Package manager | pnpm | User preference, workspace support |
-| Linting | Biome (not ESLint) | User preference |
-| Formatting | Prettier + Biome | Consistent with madverts/core pattern |
-| Testing | Vitest | Modern, fast, TypeScript-native |
-| SQLite | better-sqlite3 | Node.js compatible (no bun:sqlite) |
-| SQLite migrations | Yes — versioned migrations | Schema evolves over time; `schema_version` table tracks current version |
-| State machine | XState v5 | Production-grade state machine with `setup().createMachine()` pattern; follows madverts/core |
-| Dependency injection | tsyringe | Lightweight DI with decorators; follows madverts/core services/flows pattern |
-| CLI framework | Ink v6 | React-based terminal UI |
-| Claude integration | @anthropic-ai/claude-agent-sdk | Official SDK |
-| Cloud services | Cloudflare Workers + Hono | 2 separate Workers (webhook + orchestrator) |
-| Transport | WebSocket + TLS (v1) | Daemon opens persistent WSS to orchestrator |
-| Encryption | E2E deferred to v2 (iOS) | v1 uses TLS only; app-layer E2E encryption added when a second peer (iOS app) exists |
-| Multiplexing | Frame-based over WebSocket | Channel 0=control, 1=PTY, 2=chat |
-| Scheduled sessions | Deferred to future phase | Focus on webhook-triggered automation first |
-| QUIC/WebRTC | Deferred to future phase | WebSocket is production-ready; QUIC/WebRTC for iOS P2P later |
-| Worktree setup script | Per-repo configurable | Repos can define a setup script (e.g. `pnpm install`) run after worktree creation |
+| Decision              | Choice                         | Rationale                                                                                    |
+| --------------------- | ------------------------------ | -------------------------------------------------------------------------------------------- |
+| Runtime               | Node.js everywhere             | Ink (CLI framework) has yoga-layout issues with Bun                                          |
+| Package manager       | pnpm                           | User preference, workspace support                                                           |
+| Linting               | Biome (not ESLint)             | User preference                                                                              |
+| Formatting            | Prettier + Biome               | Consistent with madverts/core pattern                                                        |
+| Testing               | Vitest                         | Modern, fast, TypeScript-native                                                              |
+| SQLite                | better-sqlite3                 | Node.js compatible (no bun:sqlite)                                                           |
+| SQLite migrations     | Yes — versioned migrations     | Schema evolves over time; `schema_version` table tracks current version                      |
+| State machine         | XState v5                      | Production-grade state machine with `setup().createMachine()` pattern; follows madverts/core |
+| Dependency injection  | tsyringe                       | Lightweight DI with decorators; follows madverts/core services/flows pattern                 |
+| CLI framework         | Ink v6                         | React-based terminal UI                                                                      |
+| Claude integration    | @anthropic-ai/claude-agent-sdk | Official SDK                                                                                 |
+| Cloud services        | Cloudflare Workers + Hono      | 2 separate Workers (webhook + orchestrator)                                                  |
+| Transport             | WebSocket + TLS (v1)           | Daemon opens persistent WSS to orchestrator                                                  |
+| Encryption            | E2E deferred to v2 (iOS)       | v1 uses TLS only; app-layer E2E encryption added when a second peer (iOS app) exists         |
+| Multiplexing          | Frame-based over WebSocket     | Channel 0=control, 1=PTY, 2=chat                                                             |
+| Scheduled sessions    | Deferred to future phase       | Focus on webhook-triggered automation first                                                  |
+| QUIC/WebRTC           | Deferred to future phase       | WebSocket is production-ready; QUIC/WebRTC for iOS P2P later                                 |
+| Worktree setup script | Per-repo configurable          | Repos can define a setup script (e.g. `pnpm install`) run after worktree creation            |
 
 ## Monorepo Structure
 
@@ -634,6 +634,7 @@ Human reviews: Complete feature set, end-to-end flow, LaunchAgent, error handlin
 ## Rollback Plan
 
 Each flight leg produces independent commits. To roll back:
+
 - `git revert` commits from the specific flight leg
 - No external state mutations until Flight Leg 8+ (GitHub PRs)
 - Database schema changes are additive only
@@ -656,16 +657,16 @@ Each flight leg produces independent commits. To roll back:
 
 ## Critical Files
 
-| File | Why It's Critical |
-|------|-------------------|
-| `lib/shared/src/types.ts` | Core domain types every service depends on |
-| `lib/shared/src/session-machine.ts` | XState v5 state machine governing all session behavior |
-| `lib/shared/src/db-schema.ts` | SQLite schema + versioned migrations array |
-| `lib/shared/src/rpc.ts` | CLI-daemon contract |
-| `services/daemon/src/di/container.ts` | DI container wiring all daemon services together |
-| `lib/shared/src/ws-protocol.ts` | Transport abstraction (WebSocket now, QUIC later) |
-| `services/daemon/src/session/lifecycle.ts` | Central orchestration wiring everything together |
-| `services/daemon/src/claude/session.ts` | Agent SDK integration — prompt design determines effectiveness |
-| `services/daemon/src/fix-loop/dispatcher.ts` | The automated repair cycle that makes Bossanova autonomous |
-| `services/daemon/src/ipc/server.ts` | CLI-daemon communication backbone |
-| `services/orchestrator/src/daemon-session.ts` | Durable Object holding daemon WebSocket connections |
+| File                                          | Why It's Critical                                              |
+| --------------------------------------------- | -------------------------------------------------------------- |
+| `lib/shared/src/types.ts`                     | Core domain types every service depends on                     |
+| `lib/shared/src/session-machine.ts`           | XState v5 state machine governing all session behavior         |
+| `lib/shared/src/db-schema.ts`                 | SQLite schema + versioned migrations array                     |
+| `lib/shared/src/rpc.ts`                       | CLI-daemon contract                                            |
+| `services/daemon/src/di/container.ts`         | DI container wiring all daemon services together               |
+| `lib/shared/src/ws-protocol.ts`               | Transport abstraction (WebSocket now, QUIC later)              |
+| `services/daemon/src/session/lifecycle.ts`    | Central orchestration wiring everything together               |
+| `services/daemon/src/claude/session.ts`       | Agent SDK integration — prompt design determines effectiveness |
+| `services/daemon/src/fix-loop/dispatcher.ts`  | The automated repair cycle that makes Bossanova autonomous     |
+| `services/daemon/src/ipc/server.ts`           | CLI-daemon communication backbone                              |
+| `services/orchestrator/src/daemon-session.ts` | Durable Object holding daemon WebSocket connections            |

@@ -9,12 +9,14 @@
 ### Tasks Completed
 
 **Flight Leg 6: Git Worktree Management**
+
 - bossanova-pol: Implement worktree creation with setup script support
 - bossanova-9h9: Implement worktree cleanup and branch push
 - bossanova-0m1: Implement git utility functions
 - bossanova-ved: Wire worktree into session creation/removal lifecycle
 
 **Flight Leg 7: Claude Session Management**
+
 - bossanova-vgn: Implement Claude session launcher using Agent SDK
 - bossanova-bzz: Implement ClaudeSupervisor class (start/stop/pause/resume)
 - bossanova-aua: Implement session output log capture
@@ -65,5 +67,6 @@
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-15-1551-bossanova-full-build"` to see available tasks
 2. Review files: `services/daemon/src/session/lifecycle.ts`, `services/daemon/src/claude/supervisor.ts`, `services/daemon/src/ipc/dispatcher.ts`

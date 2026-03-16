@@ -16,7 +16,7 @@
 ### Files Changed
 
 - `package.json` — Root workspace config with pnpm, TypeScript, Vitest, Biome, XState, tsyringe, reflect-metadata
-- `pnpm-workspace.yaml` — Workspace package declarations (lib/*, services/*)
+- `pnpm-workspace.yaml` — Workspace package declarations (lib/_, services/_)
 - `tsconfig.json` — Base TypeScript config (ES2022, ESNext, bundler, strict, decorators)
 - `biome.json` — Biome linting with recommended rules, organizeImports
 - `.prettierrc` — Prettier formatting config
@@ -48,6 +48,7 @@
 ### Next Flight Leg
 
 Flight Leg 2: Shared Types and Schemas
+
 - bossanova-478: Define session state machine using XState v5 (setup/createMachine)
 - bossanova-qgs: Define core domain types (Repo, Session) and database row types
 - bossanova-mm3: Define JSON-RPC schema for CLI-daemon IPC

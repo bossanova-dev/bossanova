@@ -337,28 +337,28 @@ Before completing a handoff:
 
 ## Anti-Patterns
 
-| Anti-Pattern                | Problem                           | Fix                                                    |
-| --------------------------- | --------------------------------- | ------------------------------------------------------ |
-| **Skipping post-flight checks** | **Broken code at handoff**    | **Run `/post-flight-checks` FIRST, fix until pass**   |
-| **Not writing to file**     | **Lost context across clears**    | **Write to `docs/handoffs/` ALWAYS**                   |
-| **Not running /clear**      | **Context bloat**                 | **ALWAYS /clear after writing handoff**                |
-| **Continuing past handoff** | **Context bloat, lost structure** | **Write file, output continue, /clear — that's it**    |
-| Missing Flight ID           | Tasks mix between flights         | ALWAYS include Flight ID                               |
-| Missing planning doc        | Lost original requirements        | ALWAYS include `docs/plans/` path                      |
-| Large code blocks           | Bloats handoff, stale quickly     | Use `file:line` references                             |
-| Vague descriptions          | Lost context                      | Be specific: what, where, why                          |
-| Skipping learnings          | Repeating mistakes                | Always document discoveries                            |
-| No next steps               | Unclear continuation              | Pull from `bd ready --label "flight:..."`              |
+| Anti-Pattern                    | Problem                           | Fix                                                 |
+| ------------------------------- | --------------------------------- | --------------------------------------------------- |
+| **Skipping post-flight checks** | **Broken code at handoff**        | **Run `/post-flight-checks` FIRST, fix until pass** |
+| **Not writing to file**         | **Lost context across clears**    | **Write to `docs/handoffs/` ALWAYS**                |
+| **Not running /clear**          | **Context bloat**                 | **ALWAYS /clear after writing handoff**             |
+| **Continuing past handoff**     | **Context bloat, lost structure** | **Write file, output continue, /clear — that's it** |
+| Missing Flight ID               | Tasks mix between flights         | ALWAYS include Flight ID                            |
+| Missing planning doc            | Lost original requirements        | ALWAYS include `docs/plans/` path                   |
+| Large code blocks               | Bloats handoff, stale quickly     | Use `file:line` references                          |
+| Vague descriptions              | Lost context                      | Be specific: what, where, why                       |
+| Skipping learnings              | Repeating mistakes                | Always document discoveries                         |
+| No next steps                   | Unclear continuation              | Pull from `bd ready --label "flight:..."`           |
 
 ---
 
 ## Related Skills
 
-| Skill                 | Relationship                               |
-| --------------------- | ------------------------------------------ |
-| `/file-a-flight-plan`  | Create plan before implementation          |
-| `/pre-flight-checks`  | Create bd tasks from plan                  |
-| `/post-flight-checks` | Verify flight leg before handoff           |
-| `/take-off`            | Execute tasks, stopping at handoffs        |
-| `/resume-handoff`      | Resume work from this handoff              |
-| `/land-the-plane`      | End session with commit and push           |
+| Skill                 | Relationship                        |
+| --------------------- | ----------------------------------- |
+| `/file-a-flight-plan` | Create plan before implementation   |
+| `/pre-flight-checks`  | Create bd tasks from plan           |
+| `/post-flight-checks` | Verify flight leg before handoff    |
+| `/take-off`           | Execute tasks, stopping at handoffs |
+| `/resume-handoff`     | Resume work from this handoff       |
+| `/land-the-plane`     | End session with commit and push    |

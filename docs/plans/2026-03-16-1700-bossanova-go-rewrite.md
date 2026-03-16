@@ -17,17 +17,17 @@ Rewriting Bossanova from TypeScript to Go. This update incorporates feedback on:
 
 ## Key Changes from Previous Plan
 
-| Area | Before | After |
-| ---- | ------ | ----- |
-| Project layout | Single go.mod | Multi-module: go.work + per-service go.mod |
-| Open source split | `internal/` boundaries only | splitsh/lite mirrors services/boss, services/bossd, lib/bossalib to separate repos |
-| VCS types | GitHub-specific types in daemon | VCS-agnostic interfaces in bossalib/vcs, GitHub impl in bossd |
-| Migration naming | `001_initial_schema.sql` | `20260316170000_initial_schema.sql` (goose default timestamp format) |
-| Worktree cleanup | `git worktree remove --force` | Archive (remove dir, keep branch) + resurrect + empty trash |
-| Web UI | templ + htmx server-rendered | React SPA on CF Pages, ConnectRPC web client, Auth0 PKCE |
-| Infrastructure | Manual Fly.io deploy | Terraform modules for Fly.io, Auth0, Cloudflare, R2 |
-| Setup timeout | 120s | 5 minutes (300s) |
-| DI pattern | Constructor injection | Same — but emphasize interface boundaries at every package edge for testability |
+| Area              | Before                          | After                                                                              |
+| ----------------- | ------------------------------- | ---------------------------------------------------------------------------------- |
+| Project layout    | Single go.mod                   | Multi-module: go.work + per-service go.mod                                         |
+| Open source split | `internal/` boundaries only     | splitsh/lite mirrors services/boss, services/bossd, lib/bossalib to separate repos |
+| VCS types         | GitHub-specific types in daemon | VCS-agnostic interfaces in bossalib/vcs, GitHub impl in bossd                      |
+| Migration naming  | `001_initial_schema.sql`        | `20260316170000_initial_schema.sql` (goose default timestamp format)               |
+| Worktree cleanup  | `git worktree remove --force`   | Archive (remove dir, keep branch) + resurrect + empty trash                        |
+| Web UI            | templ + htmx server-rendered    | React SPA on CF Pages, ConnectRPC web client, Auth0 PKCE                           |
+| Infrastructure    | Manual Fly.io deploy            | Terraform modules for Fly.io, Auth0, Cloudflare, R2                                |
+| Setup timeout     | 120s                            | 5 minutes (300s)                                                                   |
+| DI pattern        | Constructor injection           | Same — but emphasize interface boundaries at every package edge for testability    |
 
 ## Architecture
 
@@ -53,20 +53,20 @@ LOCAL (open source)                    CLOUD (paid tier)
 
 ## Updated Key Decisions
 
-| Decision | Choice | Rationale |
-| -------- | ------ | --------- |
-| Language | Go everywhere (backend), React (web SPA) | Go for services, React for CF Pages SPA |
-| CLI framework | Bubbletea v2 + Lipgloss + Bubbles | Best TUI ecosystem |
-| RPC | ConnectRPC + Protobuf | JSON transport works in browsers natively, no gRPC-web proxy needed |
-| State machine | qmuntal/stateless | Guards, actions, fluent API |
-| SQLite | modernc.org/sqlite | Pure Go, no CGO |
-| Migrations | pressly/goose (timestamp mode) | Embedded via go:embed, YYYYMMDDHHMMSS format |
-| Auth | Auth0 OIDC | PKCE for CLI + SPA, JWT validation server-side, free 25K MAU |
-| DI | Constructor injection + interfaces | Every package boundary defined by interface for mock injection |
-| Logging | zerolog | Structured JSON, zero-allocation |
-| Web UI | React SPA on CF Pages | ConnectRPC web client, server-streaming for live output, Auth0 SPA SDK |
-| Infrastructure | Terraform | Modules for Fly.io, Auth0, Cloudflare (Pages + R2), GitHub App |
-| Monorepo tooling | go.work + splitsh/lite | Multi-module local dev, automated read-only mirrors for OSS |
+| Decision         | Choice                                   | Rationale                                                              |
+| ---------------- | ---------------------------------------- | ---------------------------------------------------------------------- |
+| Language         | Go everywhere (backend), React (web SPA) | Go for services, React for CF Pages SPA                                |
+| CLI framework    | Bubbletea v2 + Lipgloss + Bubbles        | Best TUI ecosystem                                                     |
+| RPC              | ConnectRPC + Protobuf                    | JSON transport works in browsers natively, no gRPC-web proxy needed    |
+| State machine    | qmuntal/stateless                        | Guards, actions, fluent API                                            |
+| SQLite           | modernc.org/sqlite                       | Pure Go, no CGO                                                        |
+| Migrations       | pressly/goose (timestamp mode)           | Embedded via go:embed, YYYYMMDDHHMMSS format                           |
+| Auth             | Auth0 OIDC                               | PKCE for CLI + SPA, JWT validation server-side, free 25K MAU           |
+| DI               | Constructor injection + interfaces       | Every package boundary defined by interface for mock injection         |
+| Logging          | zerolog                                  | Structured JSON, zero-allocation                                       |
+| Web UI           | React SPA on CF Pages                    | ConnectRPC web client, server-streaming for live output, Auth0 SPA SDK |
+| Infrastructure   | Terraform                                | Modules for Fly.io, Auth0, Cloudflare (Pages + R2), GitHub App         |
+| Monorepo tooling | go.work + splitsh/lite                   | Multi-module local dev, automated read-only mirrors for OSS            |
 
 ## Project Structure
 
@@ -595,44 +595,44 @@ Human reviews: Distribution, splitsh/lite, CI/CD, E2E tests, LaunchAgent
 
 ## Open Source Boundary (via splitsh/lite)
 
-| Monorepo Path | Split Repo | License |
-| ------------- | ---------- | ------- |
-| `proto/` | github.com/recurser/bossanova-proto | MIT |
-| `lib/bossalib/` | github.com/recurser/bossalib | MIT |
-| `services/boss/` | github.com/recurser/boss | MIT |
-| `services/bossd/` | github.com/recurser/bossd | MIT |
-| `services/bosso/` | _(not split)_ | Proprietary |
-| `services/web/` | _(not split)_ | Proprietary |
-| `infra/` | _(not split)_ | Proprietary |
+| Monorepo Path     | Split Repo                          | License     |
+| ----------------- | ----------------------------------- | ----------- |
+| `proto/`          | github.com/recurser/bossanova-proto | MIT         |
+| `lib/bossalib/`   | github.com/recurser/bossalib        | MIT         |
+| `services/boss/`  | github.com/recurser/boss            | MIT         |
+| `services/bossd/` | github.com/recurser/bossd           | MIT         |
+| `services/bosso/` | _(not split)_                       | Proprietary |
+| `services/web/`   | _(not split)_                       | Proprietary |
+| `infra/`          | _(not split)_                       | Proprietary |
 
 ## Cost Summary (1,000 users, paid tier)
 
-| Component | Monthly Cost |
-| --------- | ------------ |
-| Fly.io VM (orchestrator, 2x shared-cpu-1x) | ~$4 |
-| Fly.io persistent volume (1GB) | ~$0.15 |
-| Litestream → S3/R2 backup | ~$0.50 |
-| Auth0 (25K MAU free tier) | $0 |
-| Cloudflare Pages (free tier) | $0 |
-| Domain + DNS | ~$1 |
-| **Total** | **~$6/mo** |
+| Component                                  | Monthly Cost |
+| ------------------------------------------ | ------------ |
+| Fly.io VM (orchestrator, 2x shared-cpu-1x) | ~$4          |
+| Fly.io persistent volume (1GB)             | ~$0.15       |
+| Litestream → S3/R2 backup                  | ~$0.50       |
+| Auth0 (25K MAU free tier)                  | $0           |
+| Cloudflare Pages (free tier)               | $0           |
+| Domain + DNS                               | ~$1          |
+| **Total**                                  | **~$6/mo**   |
 
 ## Critical Files
 
-| File | Why It's Critical |
-| ---- | ----------------- |
-| `proto/bossanova/v1/models.proto` | Shared message types every component depends on |
-| `proto/bossanova/v1/daemon.proto` | CLI-daemon contract (17 RPC methods) |
-| `lib/bossalib/machine/machine.go` | State machine governing all session behavior |
-| `lib/bossalib/models/models.go` | Go domain types |
-| `lib/bossalib/vcs/provider.go` | VCS-agnostic interface for GitHub/GitLab |
-| `lib/bossalib/migrate/migrate.go` | Shared migration runner used by daemon + orchestrator |
-| `services/bossd/internal/db/db.go` | SQLite initialization, WAL mode, connection pool |
-| `services/bossd/internal/session/lifecycle.go` | Central orchestration wiring everything together |
-| `services/bossd/internal/claude/process.go` | Claude subprocess management — process lifecycle |
-| `services/bossd/internal/session/fixloop.go` | Automated repair cycle that makes Bossanova autonomous |
-| `services/bossd/internal/server/server.go` | ConnectRPC server on Unix socket |
-| `services/bosso/internal/registry/registry.go` | Daemon registry + presence tracking |
+| File                                           | Why It's Critical                                      |
+| ---------------------------------------------- | ------------------------------------------------------ |
+| `proto/bossanova/v1/models.proto`              | Shared message types every component depends on        |
+| `proto/bossanova/v1/daemon.proto`              | CLI-daemon contract (17 RPC methods)                   |
+| `lib/bossalib/machine/machine.go`              | State machine governing all session behavior           |
+| `lib/bossalib/models/models.go`                | Go domain types                                        |
+| `lib/bossalib/vcs/provider.go`                 | VCS-agnostic interface for GitHub/GitLab               |
+| `lib/bossalib/migrate/migrate.go`              | Shared migration runner used by daemon + orchestrator  |
+| `services/bossd/internal/db/db.go`             | SQLite initialization, WAL mode, connection pool       |
+| `services/bossd/internal/session/lifecycle.go` | Central orchestration wiring everything together       |
+| `services/bossd/internal/claude/process.go`    | Claude subprocess management — process lifecycle       |
+| `services/bossd/internal/session/fixloop.go`   | Automated repair cycle that makes Bossanova autonomous |
+| `services/bossd/internal/server/server.go`     | ConnectRPC server on Unix socket                       |
+| `services/bosso/internal/registry/registry.go` | Daemon registry + presence tracking                    |
 
 ## Rollback Plan
 

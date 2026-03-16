@@ -54,6 +54,7 @@
 ### Next Flight Leg
 
 Flight Leg 5: CLI Basics — Ink Rendering, DI, and Daemon Connection
+
 - bossanova-lya: Set up tsyringe DI container for CLI
 - bossanova-0n5: Set up CLI entry point with argument parsing and DI bootstrap
 - bossanova-a3v: Implement interactive home screen with session list and action bar
@@ -63,6 +64,7 @@ Flight Leg 5: CLI Basics — Ink Rendering, DI, and Daemon Connection
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-15-1551-bossanova-full-build"` — should show bossanova-lya
 2. Review files: `services/daemon/src/ipc/server.ts`, `services/daemon/src/ipc/dispatcher.ts`, `services/daemon/src/di/container.ts`, `lib/shared/src/ipc-client.ts`
 3. Read the plan for Leg 5: `docs/plans/2026-03-15-1551-bossanova-full-build.md` lines 254-322

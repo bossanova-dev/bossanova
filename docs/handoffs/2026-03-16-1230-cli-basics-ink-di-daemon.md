@@ -57,12 +57,14 @@
 ### Next Flight Leg
 
 Flight Leg 6: Git Worktree Management
+
 - bossanova-vgn: Implement Claude session launcher using Agent SDK query()
 - Plus worktree creation/cleanup, git utilities, branch push, session lifecycle wiring
 
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-15-1551-bossanova-full-build"` — should show worktree/git tasks
 2. Review files: `services/cli/src/cli.tsx`, `services/cli/src/views/HomeScreen.tsx`, `services/cli/src/router.ts`, `services/cli/src/di/container.ts`
 3. Read the plan for Leg 6: `docs/plans/2026-03-15-1551-bossanova-full-build.md` lines 325-362

@@ -18,7 +18,7 @@
 - `lib/shared/src/session-machine.ts` — XState v5 state machine with 12 states, 15 event types, typed context/input, guards (hasReachedMaxAttempts), and actions (incrementAttemptCount, setChecksPassed/Failed, clearBlockedReason)
 - `lib/shared/src/types.ts` — Repo, Session, Attempt domain interfaces with typed fields
 - `lib/shared/src/db-schema.ts` — RepoRow, SessionRow, AttemptRow, SchemaVersionRow SQL row types; MIGRATIONS array with initial schema (version 1) including repos, sessions, attempts tables with indexes
-- `lib/shared/src/rpc.ts` — JSON-RPC 2.0 envelope types, RpcErrorCode constants, typed request/response pairs for 17 RPC methods (context.resolve, repo.*, session.*), RpcMethods map type
+- `lib/shared/src/rpc.ts` — JSON-RPC 2.0 envelope types, RpcErrorCode constants, typed request/response pairs for 17 RPC methods (context.resolve, repo._, session._), RpcMethods map type
 - `lib/shared/src/webhook-events.ts` — GitHub webhook event types (pull_request, check_run, check_suite, pull_request_review) and DaemonEvent union (check_failed, pr_updated, conflict_detected, review_submitted)
 - `lib/shared/src/ws-protocol.ts` — Frame-based WebSocket protocol (channel/length/payload), Channel enum (0=control, 1=PTY, 2=chat), ControlMessage types (register, heartbeat, event, ack), encodeFrame/decodeFrame/encodeControlMessage/decodeControlMessage functions
 - `lib/shared/src/index.ts` — Barrel exports for all shared modules
@@ -43,6 +43,7 @@
 ### Next Flight Leg
 
 Flight Leg 3: Daemon Core — DI Container, SQLite, and Session CRUD
+
 - bossanova-oft: Set up tsyringe DI container for daemon (tokens, container, setupContainer)
 - bossanova-cxf: Implement SQLite database service with versioned migration runner
 - bossanova-996: Implement RepoStore and SessionStore as injectable services
@@ -52,5 +53,6 @@ Flight Leg 3: Daemon Core — DI Container, SQLite, and Session CRUD
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-15-1551-bossanova-full-build"` — should show bossanova-oft
 2. Review files: `lib/shared/src/types.ts`, `lib/shared/src/db-schema.ts`, `lib/shared/src/session-machine.ts`

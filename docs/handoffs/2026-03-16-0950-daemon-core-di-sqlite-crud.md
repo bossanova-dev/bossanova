@@ -55,6 +55,7 @@
 ### Next Flight Leg
 
 Flight Leg 4: Daemon IPC — Unix Socket Server
+
 - bossanova-poo: Implement Unix socket JSON-RPC server as injectable service
 - bossanova-692: Implement RPC method dispatcher with injected stores
 - bossanova-0vo: Implement context resolution logic (cwd → session/repo detection)
@@ -64,5 +65,6 @@ Flight Leg 4: Daemon IPC — Unix Socket Server
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-15-1551-bossanova-full-build"` — should show bossanova-poo
 2. Review files: `services/daemon/src/di/container.ts`, `services/daemon/src/db/database.ts`, `services/daemon/src/db/repos.ts`, `services/daemon/src/db/sessions.ts`

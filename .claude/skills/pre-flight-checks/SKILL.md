@@ -302,17 +302,17 @@ Before starting implementation:
 
 ## Anti-Patterns
 
-| Anti-Pattern                | Problem                                     | Fix                                                   |
-| --------------------------- | ------------------------------------------- | ----------------------------------------------------- |
-| Starting work immediately   | Bypasses user approval                      | ALWAYS stop after planning, wait for approval         |
-| Tasks too large             | Context bloat, lost focus                   | Split into <2 minute chunks                           |
-| No handoffs                 | Runaway agent, no checkpoints               | Add handoff every 3-5 tasks                           |
-| **Skipping handoff**        | **CRITICAL VIOLATION - User loses control** | **ALWAYS stop at handoff tasks - NO EXCEPTIONS**      |
-| **Multiple flight legs**    | **Agent runs too long, user loses control** | **Execute ONE flight leg, then STOP and wait**        |
-| **Skipping post-flight checks** | **Broken code at handoff**              | **Run `/post-flight-checks`, fix until all pass**     |
-| Serial execution without bd | No tracking, lost on compaction             | Use bd for ALL task tracking                          |
-| Starting without pre-flight | No clear plan, scope creep                  | Always decompose first                                |
-| Missing flight label        | Tasks mix with other flights                | ALWAYS add `--labels "flight:fp-..."`                 |
+| Anti-Pattern                    | Problem                                     | Fix                                               |
+| ------------------------------- | ------------------------------------------- | ------------------------------------------------- |
+| Starting work immediately       | Bypasses user approval                      | ALWAYS stop after planning, wait for approval     |
+| Tasks too large                 | Context bloat, lost focus                   | Split into <2 minute chunks                       |
+| No handoffs                     | Runaway agent, no checkpoints               | Add handoff every 3-5 tasks                       |
+| **Skipping handoff**            | **CRITICAL VIOLATION - User loses control** | **ALWAYS stop at handoff tasks - NO EXCEPTIONS**  |
+| **Multiple flight legs**        | **Agent runs too long, user loses control** | **Execute ONE flight leg, then STOP and wait**    |
+| **Skipping post-flight checks** | **Broken code at handoff**                  | **Run `/post-flight-checks`, fix until all pass** |
+| Serial execution without bd     | No tracking, lost on compaction             | Use bd for ALL task tracking                      |
+| Starting without pre-flight     | No clear plan, scope creep                  | Always decompose first                            |
+| Missing flight label            | Tasks mix with other flights                | ALWAYS add `--labels "flight:fp-..."`             |
 
 ---
 
@@ -320,9 +320,9 @@ Before starting implementation:
 
 | Skill                 | Relationship                                       |
 | --------------------- | -------------------------------------------------- |
-| `/file-a-flight-plan`  | Create comprehensive plan before pre-flight checks |
+| `/file-a-flight-plan` | Create comprehensive plan before pre-flight checks |
 | `/post-flight-checks` | Verify flight leg before handoff                   |
-| `/take-off`            | Execute bd tasks after pre-flight checks           |
-| `/handoff-task`        | Handle handoff checkpoints during execution        |
-| `/resume-handoff`      | Resume work from a previous handoff                |
-| `/land-the-plane`      | End session with commit and push                   |
+| `/take-off`           | Execute bd tasks after pre-flight checks           |
+| `/handoff-task`       | Handle handoff checkpoints during execution        |
+| `/resume-handoff`     | Resume work from a previous handoff                |
+| `/land-the-plane`     | End session with commit and push                   |

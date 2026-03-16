@@ -353,10 +353,10 @@ continue with: /resume-handoff docs/handoffs/2026-02-06-1045-core-types.md
 
 ## Related Skills
 
-| Skill                | When to Use                         |
-| -------------------- | ----------------------------------- |
+| Skill                 | When to Use                         |
+| --------------------- | ----------------------------------- |
 | `/pre-flight-checks`  | Create bd tasks if they don't exist |
 | `/post-flight-checks` | Verify flight leg before handoff    |
-| `/handoff-task`        | Detailed handoff document format    |
-| `/resume-handoff`      | Resume from a handoff file          |
-| `/land-the-plane`      | End session with commit and push    |
+| `/handoff-task`       | Detailed handoff document format    |
+| `/resume-handoff`     | Resume from a handoff file          |
+| `/land-the-plane`     | End session with commit and push    |

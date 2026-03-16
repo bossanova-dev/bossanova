@@ -1,0 +1,227 @@
+syntax = "proto3";
+
+package bossanova.v1;
+
+option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
+
+import "bossanova/v1/models.proto";
+import "google/protobuf/timestamp.proto";
+
+// DaemonService exposes 17 RPCs over a Unix socket for the boss CLI.
+service DaemonService {
+  // Context resolution
+  rpc ResolveContext(ResolveContextRequest) returns (ResolveContextResponse);
+
+  // Repo management
+  rpc RegisterRepo(RegisterRepoRequest) returns (RegisterRepoResponse);
+  rpc ListRepos(ListReposRequest) returns (ListReposResponse);
+  rpc RemoveRepo(RemoveRepoRequest) returns (RemoveRepoResponse);
+  rpc ListRepoPRs(ListRepoPRsRequest) returns (ListRepoPRsResponse);
+
+  // Session lifecycle
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc AttachSession(AttachSessionRequest) returns (stream AttachSessionResponse);
+  rpc StopSession(StopSessionRequest) returns (StopSessionResponse);
+  rpc PauseSession(PauseSessionRequest) returns (PauseSessionResponse);
+  rpc ResumeSession(ResumeSessionRequest) returns (ResumeSessionResponse);
+  rpc RetrySession(RetrySessionRequest) returns (RetrySessionResponse);
+  rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
+
+  // Archive / resurrect
+  rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
+  rpc ResurrectSession(ResurrectSessionRequest) returns (ResurrectSessionResponse);
+  rpc EmptyTrash(EmptyTrashRequest) returns (EmptyTrashResponse);
+}
+
+// --- Context Resolution ---
+
+message ResolveContextRequest {
+  // Working directory to resolve. If empty, uses daemon's cwd.
+  string working_directory = 1;
+}
+
+message ResolveContextResponse {
+  // The resolved repo, if inside a registered repo or worktree.
+  optional Repo repo = 1;
+  // The resolved session, if inside a session worktree.
+  optional Session session = 2;
+}
+
+// --- Repo Management ---
+
+message RegisterRepoRequest {
+  string local_path = 1;
+  string display_name = 2;
+  string default_base_branch = 3;
+  string worktree_base_dir = 4;
+  optional string setup_script = 5;
+}
+
+message RegisterRepoResponse {
+  Repo repo = 1;
+}
+
+message ListReposRequest {}
+
+message ListReposResponse {
+  repeated Repo repos = 1;
+}
+
+message RemoveRepoRequest {
+  string id = 1;
+}
+
+message RemoveRepoResponse {}
+
+message ListRepoPRsRequest {
+  string repo_id = 1;
+}
+
+message ListRepoPRsResponse {
+  repeated PRSummary pull_requests = 1;
+}
+
+// --- Session Lifecycle ---
+
+message CreateSessionRequest {
+  string repo_id = 1;
+  string title = 2;
+  string plan = 3;
+  string base_branch = 4;
+  // If set, attach to an existing PR instead of creating a new one.
+  optional int32 pr_number = 5;
+}
+
+message CreateSessionResponse {
+  Session session = 1;
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+message GetSessionResponse {
+  Session session = 1;
+}
+
+message ListSessionsRequest {
+  // Filter by repo.
+  optional string repo_id = 1;
+  // Filter by state.
+  repeated SessionState states = 2;
+  // Include archived sessions.
+  bool include_archived = 3;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message AttachSessionRequest {
+  string id = 1;
+}
+
+// AttachSessionResponse is streamed to the CLI while attached to a session.
+message AttachSessionResponse {
+  oneof event {
+    // A line of Claude output.
+    OutputLine output_line = 1;
+    // Session state changed.
+    StateChange state_change = 2;
+    // Session ended (merged, closed, or blocked).
+    SessionEnded session_ended = 3;
+  }
+}
+
+message OutputLine {
+  string text = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+message StateChange {
+  SessionState previous_state = 1;
+  SessionState new_state = 2;
+  SessionEvent trigger = 3;
+}
+
+message SessionEnded {
+  SessionState final_state = 1;
+  optional string reason = 2;
+}
+
+message StopSessionRequest {
+  string id = 1;
+}
+
+message StopSessionResponse {
+  Session session = 1;
+}
+
+message PauseSessionRequest {
+  string id = 1;
+}
+
+message PauseSessionResponse {
+  Session session = 1;
+}
+
+message ResumeSessionRequest {
+  string id = 1;
+}
+
+message ResumeSessionResponse {
+  Session session = 1;
+}
+
+message RetrySessionRequest {
+  string id = 1;
+}
+
+message RetrySessionResponse {
+  Session session = 1;
+}
+
+message CloseSessionRequest {
+  string id = 1;
+}
+
+message CloseSessionResponse {
+  Session session = 1;
+}
+
+message RemoveSessionRequest {
+  string id = 1;
+}
+
+message RemoveSessionResponse {}
+
+// --- Archive / Resurrect ---
+
+message ArchiveSessionRequest {
+  string id = 1;
+}
+
+message ArchiveSessionResponse {
+  Session session = 1;
+}
+
+message ResurrectSessionRequest {
+  string id = 1;
+}
+
+message ResurrectSessionResponse {
+  Session session = 1;
+}
+
+message EmptyTrashRequest {
+  // Only empty sessions archived before this timestamp.
+  optional google.protobuf.Timestamp older_than = 1;
+}
+
+message EmptyTrashResponse {
+  // Number of archived sessions permanently deleted.
+  int32 deleted_count = 1;
+}

@@ -130,14 +130,14 @@ Check the plan document for the current flight leg's `### Post-Flight Checks` se
 
 Based on the spec and what changed, plan specific verification steps. Examples:
 
-| What Changed | Verification Approach |
-| --- | --- |
-| API endpoint | `curl` the endpoint, check response shape and status |
-| UI component | Playwright: navigate, snapshot, check elements, click |
-| CLI command | Run the command, check output |
-| Data model | Run query or test that exercises the model |
-| Configuration | Verify the config loads and applies correctly |
-| Refactoring | Run existing tests, verify no regressions |
+| What Changed  | Verification Approach                                 |
+| ------------- | ----------------------------------------------------- |
+| API endpoint  | `curl` the endpoint, check response shape and status  |
+| UI component  | Playwright: navigate, snapshot, check elements, click |
+| CLI command   | Run the command, check output                         |
+| Data model    | Run query or test that exercises the model            |
+| Configuration | Verify the config loads and applies correctly         |
+| Refactoring   | Run existing tests, verify no regressions             |
 
 ### 3.4 Decide What to Test
 
@@ -263,25 +263,25 @@ Post-flight checks are complete. Return control to the calling skill:
 
 ## Anti-Patterns
 
-| Anti-Pattern | Problem | Fix |
-| --- | --- | --- |
+| Anti-Pattern             | Problem                        | Fix                                               |
+| ------------------------ | ------------------------------ | ------------------------------------------------- |
 | Only running `make test` | Misses spec-level verification | Plan tests from the spec, not just the test suite |
-| Single-pass testing | Leaves failures unfixed | Fix-and-retry loop until passing |
-| Testing everything | Wastes time on unchanged code | Focus on what the flight leg built |
-| Skipping the spec | Tests don't match requirements | Always read the plan first |
-| Infinite retry loop | Gets stuck on one failure | Cap at 3 attempts, document and move on |
-| Silent failures | Issues hidden from handoff | Always declare confidence and note limitations |
-| Writing the handoff | Not this skill's job | Return control — the caller handles handoff |
+| Single-pass testing      | Leaves failures unfixed        | Fix-and-retry loop until passing                  |
+| Testing everything       | Wastes time on unchanged code  | Focus on what the flight leg built                |
+| Skipping the spec        | Tests don't match requirements | Always read the plan first                        |
+| Infinite retry loop      | Gets stuck on one failure      | Cap at 3 attempts, document and move on           |
+| Silent failures          | Issues hidden from handoff     | Always declare confidence and note limitations    |
+| Writing the handoff      | Not this skill's job           | Return control — the caller handles handoff       |
 
 ---
 
 ## Related Skills
 
-| Skill | Relationship |
-| --- | --- |
-| `/file-a-flight-plan` | Creates the plan with Post-Flight Checks sections |
-| `/pre-flight-checks` | Creates bd tasks; invokes post-flight-checks before handoff |
-| `/take-off` | Invokes post-flight-checks before handoff |
-| `/handoff-task` | Invokes post-flight-checks; then writes the handoff |
-| `/resume-handoff` | Invokes post-flight-checks before handoff |
-| `/land-the-plane` | End-of-session checks (separate from flight-leg checks) |
+| Skill                 | Relationship                                                |
+| --------------------- | ----------------------------------------------------------- |
+| `/file-a-flight-plan` | Creates the plan with Post-Flight Checks sections           |
+| `/pre-flight-checks`  | Creates bd tasks; invokes post-flight-checks before handoff |
+| `/take-off`           | Invokes post-flight-checks before handoff                   |
+| `/handoff-task`       | Invokes post-flight-checks; then writes the handoff         |
+| `/resume-handoff`     | Invokes post-flight-checks before handoff                   |
+| `/land-the-plane`     | End-of-session checks (separate from flight-leg checks)     |

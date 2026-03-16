@@ -232,11 +232,11 @@ During execution:
 
 ## Related Skills
 
-| Skill                 | Relationship                               |
-| --------------------- | ------------------------------------------ |
-| `/file-a-flight-plan`  | Create plan before implementation          |
-| `/pre-flight-checks`  | Create bd tasks from plan                  |
-| `/post-flight-checks` | Verify flight leg before handoff           |
-| `/take-off`            | Execute tasks, stopping at handoffs        |
-| `/handoff-task`        | Create handoff documents at checkpoints    |
-| `/land-the-plane`      | End session with commit and push           |
+| Skill                 | Relationship                            |
+| --------------------- | --------------------------------------- |
+| `/file-a-flight-plan` | Create plan before implementation       |
+| `/pre-flight-checks`  | Create bd tasks from plan               |
+| `/post-flight-checks` | Verify flight leg before handoff        |
+| `/take-off`           | Execute tasks, stopping at handoffs     |
+| `/handoff-task`       | Create handoff documents at checkpoints |
+| `/land-the-plane`     | End session with commit and push        |

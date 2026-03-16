@@ -1,0 +1,244 @@
+syntax = "proto3";
+
+package bossanova.v1;
+
+option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
+
+import "google/protobuf/timestamp.proto";
+
+// SessionState represents the 12 states of the session lifecycle.
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_CREATING_WORKTREE = 1;
+  SESSION_STATE_STARTING_CLAUDE = 2;
+  SESSION_STATE_PUSHING_BRANCH = 3;
+  SESSION_STATE_OPENING_DRAFT_PR = 4;
+  SESSION_STATE_IMPLEMENTING_PLAN = 5;
+  SESSION_STATE_AWAITING_CHECKS = 6;
+  SESSION_STATE_FIXING_CHECKS = 7;
+  SESSION_STATE_GREEN_DRAFT = 8;
+  SESSION_STATE_READY_FOR_REVIEW = 9;
+  SESSION_STATE_BLOCKED = 10;
+  SESSION_STATE_MERGED = 11;
+  SESSION_STATE_CLOSED = 12;
+}
+
+// SessionEvent represents the 15 events that trigger state transitions.
+enum SessionEvent {
+  SESSION_EVENT_UNSPECIFIED = 0;
+  SESSION_EVENT_WORKTREE_CREATED = 1;
+  SESSION_EVENT_CLAUDE_STARTED = 2;
+  SESSION_EVENT_BRANCH_PUSHED = 3;
+  SESSION_EVENT_PR_OPENED = 4;
+  SESSION_EVENT_PLAN_COMPLETE = 5;
+  SESSION_EVENT_CHECKS_PASSED = 6;
+  SESSION_EVENT_CHECKS_FAILED = 7;
+  SESSION_EVENT_CONFLICT_DETECTED = 8;
+  SESSION_EVENT_REVIEW_SUBMITTED = 9;
+  SESSION_EVENT_FIX_COMPLETE = 10;
+  SESSION_EVENT_FIX_FAILED = 11;
+  SESSION_EVENT_BLOCK = 12;
+  SESSION_EVENT_UNBLOCK = 13;
+  SESSION_EVENT_PR_MERGED = 14;
+  SESSION_EVENT_PR_CLOSED = 15;
+}
+
+// CheckStatus represents the status of a CI check run.
+enum CheckStatus {
+  CHECK_STATUS_UNSPECIFIED = 0;
+  CHECK_STATUS_QUEUED = 1;
+  CHECK_STATUS_IN_PROGRESS = 2;
+  CHECK_STATUS_COMPLETED = 3;
+}
+
+// CheckConclusion represents the conclusion of a completed CI check.
+enum CheckConclusion {
+  CHECK_CONCLUSION_UNSPECIFIED = 0;
+  CHECK_CONCLUSION_SUCCESS = 1;
+  CHECK_CONCLUSION_FAILURE = 2;
+  CHECK_CONCLUSION_NEUTRAL = 3;
+  CHECK_CONCLUSION_CANCELLED = 4;
+  CHECK_CONCLUSION_SKIPPED = 5;
+  CHECK_CONCLUSION_TIMED_OUT = 6;
+}
+
+// ChecksOverall represents the aggregate status of all checks on a PR.
+enum ChecksOverall {
+  CHECKS_OVERALL_UNSPECIFIED = 0;
+  CHECKS_OVERALL_PENDING = 1;
+  CHECKS_OVERALL_PASSED = 2;
+  CHECKS_OVERALL_FAILED = 3;
+}
+
+// PRState represents the state of a pull request.
+enum PRState {
+  PR_STATE_UNSPECIFIED = 0;
+  PR_STATE_OPEN = 1;
+  PR_STATE_CLOSED = 2;
+  PR_STATE_MERGED = 3;
+}
+
+// ReviewState represents the state of a PR review.
+enum ReviewState {
+  REVIEW_STATE_UNSPECIFIED = 0;
+  REVIEW_STATE_APPROVED = 1;
+  REVIEW_STATE_CHANGES_REQUESTED = 2;
+  REVIEW_STATE_COMMENTED = 3;
+  REVIEW_STATE_DISMISSED = 4;
+}
+
+// AttemptTrigger represents what triggered a fix attempt.
+enum AttemptTrigger {
+  ATTEMPT_TRIGGER_UNSPECIFIED = 0;
+  ATTEMPT_TRIGGER_CHECK_FAILURE = 1;
+  ATTEMPT_TRIGGER_CONFLICT = 2;
+  ATTEMPT_TRIGGER_REVIEW_FEEDBACK = 3;
+}
+
+// AttemptResult represents the outcome of a fix attempt.
+enum AttemptResult {
+  ATTEMPT_RESULT_UNSPECIFIED = 0;
+  ATTEMPT_RESULT_SUCCESS = 1;
+  ATTEMPT_RESULT_FAILED = 2;
+  ATTEMPT_RESULT_INCOMPLETE = 3;
+}
+
+// --- Domain Types ---
+
+// Repo represents a registered Git repository.
+message Repo {
+  string id = 1;
+  string display_name = 2;
+  string local_path = 3;
+  string origin_url = 4;
+  string default_base_branch = 5;
+  string worktree_base_dir = 6;
+  optional string setup_script = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+// Session represents a Claude coding session.
+message Session {
+  string id = 1;
+  string repo_id = 2;
+  string title = 3;
+  string plan = 4;
+  string worktree_path = 5;
+  string branch_name = 6;
+  string base_branch = 7;
+  SessionState state = 8;
+  optional string claude_session_id = 9;
+  optional int32 pr_number = 10;
+  optional string pr_url = 11;
+  ChecksOverall last_check_state = 12;
+  bool automation_enabled = 13;
+  int32 attempt_count = 14;
+  optional string blocked_reason = 15;
+  optional google.protobuf.Timestamp archived_at = 16;
+  google.protobuf.Timestamp created_at = 17;
+  google.protobuf.Timestamp updated_at = 18;
+}
+
+// Attempt represents a fix attempt within a session.
+message Attempt {
+  string id = 1;
+  string session_id = 2;
+  AttemptTrigger trigger = 3;
+  AttemptResult result = 4;
+  optional string error = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+// --- VCS-Agnostic Types ---
+
+// PRStatus represents the current status of a pull request.
+message PRStatus {
+  PRState state = 1;
+  optional bool mergeable = 2;
+  string title = 3;
+  string head_branch = 4;
+  string base_branch = 5;
+}
+
+// CheckResult represents the result of a single CI check.
+message CheckResult {
+  string id = 1;
+  string name = 2;
+  CheckStatus status = 3;
+  optional CheckConclusion conclusion = 4;
+}
+
+// ReviewComment represents a review comment on a PR.
+message ReviewComment {
+  string author = 1;
+  string body = 2;
+  ReviewState state = 3;
+  optional string path = 4;
+  optional int32 line = 5;
+}
+
+// PRSummary is a lightweight representation of a PR for listing.
+message PRSummary {
+  int32 number = 1;
+  string title = 2;
+  string head_branch = 3;
+  PRState state = 4;
+}
+
+// CreatePROpts contains options for creating a new pull request.
+message CreatePROpts {
+  string repo_path = 1;
+  string head_branch = 2;
+  string base_branch = 3;
+  string title = 4;
+  string body = 5;
+  bool draft = 6;
+}
+
+// PRInfo is the result of creating a pull request.
+message PRInfo {
+  int32 number = 1;
+  string url = 2;
+}
+
+// --- VCS Events ---
+
+// VCSEvent wraps all possible VCS events in a oneof.
+message VCSEvent {
+  oneof event {
+    ChecksPassedEvent checks_passed = 1;
+    ChecksFailedEvent checks_failed = 2;
+    ConflictDetectedEvent conflict_detected = 3;
+    ReviewSubmittedEvent review_submitted = 4;
+    PRMergedEvent pr_merged = 5;
+    PRClosedEvent pr_closed = 6;
+  }
+}
+
+message ChecksPassedEvent {
+  int32 pr_id = 1;
+}
+
+message ChecksFailedEvent {
+  int32 pr_id = 1;
+  repeated CheckResult failed_checks = 2;
+}
+
+message ConflictDetectedEvent {
+  int32 pr_id = 1;
+}
+
+message ReviewSubmittedEvent {
+  int32 pr_id = 1;
+  repeated ReviewComment comments = 2;
+}
+
+message PRMergedEvent {
+  int32 pr_id = 1;
+}
+
+message PRClosedEvent {
+  int32 pr_id = 1;
+}

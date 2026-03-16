@@ -36,6 +36,9 @@ func rootCmd() *cobra.Command {
 		archiveCmd(),
 		resurrectCmd(),
 		trashCmd(),
+		loginCmd(),
+		logoutCmd(),
+		authStatusCmd(),
 	)
 
 	return root

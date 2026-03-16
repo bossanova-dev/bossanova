@@ -19,6 +19,10 @@ jobs:
 
       - uses: bufbuild/buf-setup-action@v1
 
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          install-mode: binary
+
       - name: Lint
         run: make lint
 

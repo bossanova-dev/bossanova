@@ -36,7 +36,7 @@ type repoRegisteredMsg struct {
 
 // RepoAddModel is the wizard for registering a new repository.
 type RepoAddModel struct {
-	client *client.Client
+	client client.BossClient
 	ctx    context.Context
 
 	step   repoAddStep
@@ -54,7 +54,7 @@ type RepoAddModel struct {
 }
 
 // NewRepoAddModel creates a RepoAddModel with sensible defaults.
-func NewRepoAddModel(c *client.Client, ctx context.Context) RepoAddModel {
+func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 	cwd, _ := os.Getwd()
 
 	pathIn := textinput.New()
@@ -319,7 +319,7 @@ type repoRemovedMsg struct {
 
 // RepoListModel displays registered repos with remove functionality.
 type RepoListModel struct {
-	client *client.Client
+	client client.BossClient
 	ctx    context.Context
 
 	repos   []*pb.Repo
@@ -333,7 +333,7 @@ type RepoListModel struct {
 }
 
 // NewRepoListModel creates a RepoListModel.
-func NewRepoListModel(c *client.Client, ctx context.Context) RepoListModel {
+func NewRepoListModel(c client.BossClient, ctx context.Context) RepoListModel {
 	return RepoListModel{
 		client:  c,
 		ctx:     ctx,

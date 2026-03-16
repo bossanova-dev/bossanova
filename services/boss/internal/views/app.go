@@ -21,7 +21,7 @@ const (
 
 // App is the root Bubbletea model that manages view routing and shared state.
 type App struct {
-	client     *client.Client
+	client     client.BossClient
 	ctx        context.Context
 	activeView View
 	home       HomeModel
@@ -35,7 +35,7 @@ type App struct {
 }
 
 // NewApp creates a new App wired to the daemon client.
-func NewApp(c *client.Client) App {
+func NewApp(c client.BossClient) App {
 	ctx := context.Background()
 	home := NewHomeModel(c, ctx)
 	return App{

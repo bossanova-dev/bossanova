@@ -364,6 +364,234 @@ func TestProxyAttachSession(t *testing.T) {
 	}
 }
 
+// --- TransferSession tests ---
+
+// transferTestEnv extends proxyTestEnv with a second daemon.
+type transferTestEnv struct {
+	*proxyTestEnv
+	targetDaemonToken string
+}
+
+func setupTransferTestEnv(t *testing.T) *transferTestEnv {
+	t.Helper()
+
+	env := setupProxyTestEnv(t)
+
+	// Create a second mock daemon server for the target.
+	targetMock := &mockDaemonHandler{
+		sessions: []*pb.Session{}, // target starts with no sessions
+	}
+	mux := http.NewServeMux()
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(targetMock)
+	mux.Handle(path, handler)
+	targetServer := httptest.NewServer(mux)
+	t.Cleanup(targetServer.Close)
+
+	// Register the target daemon.
+	endpoint := targetServer.URL
+	regReq := connect.NewRequest(&pb.RegisterDaemonRequest{
+		DaemonId: "daemon-target",
+		Hostname: "target-host",
+		Endpoint: &endpoint,
+	})
+	regReq.Header().Set("Authorization", "Bearer "+env.userJWT)
+	regResp, err := env.client.RegisterDaemon(context.Background(), regReq)
+	if err != nil {
+		t.Fatalf("RegisterDaemon target: %v", err)
+	}
+
+	// Mark target daemon online.
+	hbReq := connect.NewRequest(&pb.HeartbeatRequest{
+		DaemonId:       "daemon-target",
+		Timestamp:      timestamppb.Now(),
+		ActiveSessions: 0,
+	})
+	hbReq.Header().Set("Authorization", "Bearer "+regResp.Msg.SessionToken)
+	if _, err := env.client.Heartbeat(context.Background(), hbReq); err != nil {
+		t.Fatalf("Heartbeat target: %v", err)
+	}
+
+	return &transferTestEnv{
+		proxyTestEnv:      env,
+		targetDaemonToken: regResp.Msg.SessionToken,
+	}
+}
+
+func TestTransferSession(t *testing.T) {
+	env := setupTransferTestEnv(t)
+
+	req := connect.NewRequest(&pb.TransferSessionRequest{
+		SessionId:      "session-1",
+		SourceDaemonId: "daemon-proxy",
+		TargetDaemonId: "daemon-target",
+	})
+	req.Header().Set("Authorization", "Bearer "+env.userJWT)
+
+	resp, err := env.client.TransferSession(context.Background(), req)
+	if err != nil {
+		t.Fatalf("TransferSession: %v", err)
+	}
+
+	if resp.Msg.TargetDaemonId != "daemon-target" {
+		t.Errorf("target_daemon_id = %q, want %q", resp.Msg.TargetDaemonId, "daemon-target")
+	}
+	if resp.Msg.Session == nil {
+		t.Fatal("session is nil")
+	}
+	if resp.Msg.Session.Id != "session-1" {
+		t.Errorf("session id = %q, want %q", resp.Msg.Session.Id, "session-1")
+	}
+
+	// Verify registry was updated.
+	entry, err := env.sessions.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("Get session entry: %v", err)
+	}
+	if entry.DaemonID != "daemon-target" {
+		t.Errorf("daemon_id = %q, want %q", entry.DaemonID, "daemon-target")
+	}
+}
+
+func TestTransferSessionRequiresAuth(t *testing.T) {
+	env := setupTransferTestEnv(t)
+
+	req := connect.NewRequest(&pb.TransferSessionRequest{
+		SessionId:      "session-1",
+		SourceDaemonId: "daemon-proxy",
+		TargetDaemonId: "daemon-target",
+	})
+	// No auth header.
+
+	_, err := env.client.TransferSession(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Errorf("code = %v, want Unauthenticated", connect.CodeOf(err))
+	}
+}
+
+func TestTransferSessionOwnershipCheck(t *testing.T) {
+	env := setupTransferTestEnv(t)
+
+	// Create a different user.
+	otherSub := "auth0|other-transfer"
+	_, err := env.users.Create(context.Background(), db.CreateUserParams{
+		Sub:   otherSub,
+		Email: "other-transfer@example.com",
+		Name:  "Other Transfer",
+	})
+	if err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+	otherJWT := env.signJWT(otherSub, "other-transfer@example.com")
+
+	req := connect.NewRequest(&pb.TransferSessionRequest{
+		SessionId:      "session-1",
+		SourceDaemonId: "daemon-proxy",
+		TargetDaemonId: "daemon-target",
+	})
+	req.Header().Set("Authorization", "Bearer "+otherJWT)
+
+	_, err = env.client.TransferSession(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Errorf("code = %v, want PermissionDenied", connect.CodeOf(err))
+	}
+}
+
+func TestTransferSessionSameDaemon(t *testing.T) {
+	env := setupTransferTestEnv(t)
+
+	req := connect.NewRequest(&pb.TransferSessionRequest{
+		SessionId:      "session-1",
+		SourceDaemonId: "daemon-proxy",
+		TargetDaemonId: "daemon-proxy", // same!
+	})
+	req.Header().Set("Authorization", "Bearer "+env.userJWT)
+
+	_, err := env.client.TransferSession(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Errorf("code = %v, want InvalidArgument", connect.CodeOf(err))
+	}
+}
+
+func TestTransferSessionNotFound(t *testing.T) {
+	env := setupTransferTestEnv(t)
+
+	req := connect.NewRequest(&pb.TransferSessionRequest{
+		SessionId:      "nonexistent",
+		SourceDaemonId: "daemon-proxy",
+		TargetDaemonId: "daemon-target",
+	})
+	req.Header().Set("Authorization", "Bearer "+env.userJWT)
+
+	_, err := env.client.TransferSession(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Errorf("code = %v, want NotFound", connect.CodeOf(err))
+	}
+}
+
+func TestTransferSessionWrongSource(t *testing.T) {
+	env := setupTransferTestEnv(t)
+
+	// Session belongs to daemon-proxy, not daemon-target.
+	req := connect.NewRequest(&pb.TransferSessionRequest{
+		SessionId:      "session-1",
+		SourceDaemonId: "daemon-target", // wrong source
+		TargetDaemonId: "daemon-proxy",
+	})
+	req.Header().Set("Authorization", "Bearer "+env.userJWT)
+
+	_, err := env.client.TransferSession(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Errorf("code = %v, want FailedPrecondition", connect.CodeOf(err))
+	}
+}
+
+func TestTransferSessionCreatesAuditLog(t *testing.T) {
+	env := setupTransferTestEnv(t)
+
+	req := connect.NewRequest(&pb.TransferSessionRequest{
+		SessionId:      "session-1",
+		SourceDaemonId: "daemon-proxy",
+		TargetDaemonId: "daemon-target",
+	})
+	req.Header().Set("Authorization", "Bearer "+env.userJWT)
+
+	_, err := env.client.TransferSession(context.Background(), req)
+	if err != nil {
+		t.Fatalf("TransferSession: %v", err)
+	}
+
+	action := "session.transfer"
+	entries, err := env.audit.List(context.Background(), db.AuditListOpts{
+		Action: &action,
+	})
+	if err != nil {
+		t.Fatalf("List audit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(entries))
+	}
+	if entries[0].Resource != "session:session-1" {
+		t.Errorf("resource = %q, want %q", entries[0].Resource, "session:session-1")
+	}
+}
+
+// --- Proxy handler tests (continued) ---
+
 func TestProxyStopSession(t *testing.T) {
 	env := setupProxyTestEnv(t)
 

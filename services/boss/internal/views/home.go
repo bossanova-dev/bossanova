@@ -23,7 +23,7 @@ type sessionListMsg struct {
 
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
-	client   *client.Client
+	client   client.BossClient
 	ctx      context.Context
 	sessions []*pb.Session
 	cursor   int
@@ -34,7 +34,7 @@ type HomeModel struct {
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
-func NewHomeModel(c *client.Client, ctx context.Context) HomeModel {
+func NewHomeModel(c client.BossClient, ctx context.Context) HomeModel {
 	return HomeModel{
 		client:  c,
 		ctx:     ctx,
@@ -279,7 +279,7 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func fetchSessions(c *client.Client, ctx context.Context) tea.Cmd {
+func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
 		return sessionListMsg{sessions: sessions, err: err}

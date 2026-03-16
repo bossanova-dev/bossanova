@@ -53,7 +53,7 @@ type sessionCreatedMsg struct {
 
 // NewSessionModel is the multi-step wizard for creating a new coding session.
 type NewSessionModel struct {
-	client *client.Client
+	client client.BossClient
 	ctx    context.Context
 
 	step   wizardStep
@@ -86,7 +86,7 @@ type NewSessionModel struct {
 }
 
 // NewNewSessionModel creates a NewSessionModel wired to the daemon client.
-func NewNewSessionModel(c *client.Client, ctx context.Context) NewSessionModel {
+func NewNewSessionModel(c client.BossClient, ctx context.Context) NewSessionModel {
 	ti := textinput.New()
 	ti.Placeholder = "Session title"
 	ti.SetWidth(50)
@@ -109,21 +109,21 @@ func (m NewSessionModel) Init() tea.Cmd {
 	return fetchRepos(m.client, m.ctx)
 }
 
-func fetchRepos(c *client.Client, ctx context.Context) tea.Cmd {
+func fetchRepos(c client.BossClient, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		repos, err := c.ListRepos(ctx)
 		return reposMsg{repos: repos, err: err}
 	}
 }
 
-func fetchPRs(c *client.Client, ctx context.Context, repoID string) tea.Cmd {
+func fetchPRs(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
 	return func() tea.Msg {
 		prs, err := c.ListRepoPRs(ctx, repoID)
 		return prsMsg{prs: prs, err: err}
 	}
 }
 
-func createSession(c *client.Client, ctx context.Context, req *pb.CreateSessionRequest) tea.Cmd {
+func createSession(c client.BossClient, ctx context.Context, req *pb.CreateSessionRequest) tea.Cmd {
 	return func() tea.Msg {
 		sess, err := c.CreateSession(ctx, req)
 		return sessionCreatedMsg{session: sess, err: err}

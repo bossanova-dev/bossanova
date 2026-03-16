@@ -8,7 +8,6 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -37,13 +36,13 @@ type attachErrMsg struct {
 
 // AttachModel displays streaming output from an attached session.
 type AttachModel struct {
-	client    *client.Client
+	client    client.BossClient
 	ctx       context.Context
 	cancelFn  context.CancelFunc
 	sessionID string
 
 	session  *pb.Session
-	stream   *connect.ServerStreamForClient[pb.AttachSessionResponse]
+	stream   client.AttachStream
 	viewport viewport.Model
 	lines    []string
 	state    pb.SessionState
@@ -56,7 +55,7 @@ type AttachModel struct {
 }
 
 // NewAttachModel creates an AttachModel for the given session.
-func NewAttachModel(c *client.Client, parentCtx context.Context, sessionID string) AttachModel {
+func NewAttachModel(c client.BossClient, parentCtx context.Context, sessionID string) AttachModel {
 	ctx, cancel := context.WithCancel(parentCtx)
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	vp.SoftWrap = true
@@ -104,10 +103,10 @@ func (m AttachModel) startStream() tea.Cmd {
 
 // streamConnectedMsg carries the established stream.
 type streamConnectedMsg struct {
-	stream *connect.ServerStreamForClient[pb.AttachSessionResponse]
+	stream client.AttachStream
 }
 
-func readFromStream(stream *connect.ServerStreamForClient[pb.AttachSessionResponse]) tea.Cmd {
+func readFromStream(stream client.AttachStream) tea.Cmd {
 	return func() tea.Msg {
 		if !stream.Receive() {
 			if err := stream.Err(); err != nil {
@@ -116,22 +115,23 @@ func readFromStream(stream *connect.ServerStreamForClient[pb.AttachSessionRespon
 			return attachEndedMsg{reason: "stream closed"}
 		}
 
-		resp := stream.Msg()
-		switch evt := resp.Event.(type) {
-		case *pb.AttachSessionResponse_OutputLine:
-			return attachOutputMsg{line: evt.OutputLine.Text}
-		case *pb.AttachSessionResponse_StateChange:
+		ev := stream.Msg()
+		if ev.OutputLine != nil {
+			return attachOutputMsg{line: ev.OutputLine.Text}
+		}
+		if ev.StateChange != nil {
 			return attachStateChangeMsg{
-				prev: evt.StateChange.PreviousState,
-				next: evt.StateChange.NewState,
+				prev: ev.StateChange.PreviousState,
+				next: ev.StateChange.NewState,
 			}
-		case *pb.AttachSessionResponse_SessionEnded:
+		}
+		if ev.SessionEnded != nil {
 			reason := ""
-			if evt.SessionEnded.Reason != nil {
-				reason = *evt.SessionEnded.Reason
+			if ev.SessionEnded.Reason != nil {
+				reason = *ev.SessionEnded.Reason
 			}
 			return attachEndedMsg{
-				finalState: evt.SessionEnded.FinalState,
+				finalState: ev.SessionEnded.FinalState,
 				reason:     reason,
 			}
 		}

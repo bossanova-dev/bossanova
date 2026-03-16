@@ -17,12 +17,12 @@ import (
 )
 
 // newClient creates a daemon client using the default socket path.
-func newClient() (*client.Client, error) {
+func newClient() (client.BossClient, error) {
 	socketPath, err := client.DefaultSocketPath()
 	if err != nil {
 		return nil, fmt.Errorf("socket path: %w", err)
 	}
-	return client.New(socketPath), nil
+	return client.NewLocal(socketPath), nil
 }
 
 func runTUI(_ *cobra.Command) error {

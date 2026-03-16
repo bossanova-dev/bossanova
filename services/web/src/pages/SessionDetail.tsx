@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router'
 import { create } from '@bufbuild/protobuf'
-import { useApi } from '../ApiContext.ts'
+import { useApi } from '../ApiContext'
 import {
   ProxyGetSessionRequestSchema,
   ProxyAttachSessionRequestSchema,
@@ -10,10 +10,10 @@ import {
   ProxyResumeSessionRequestSchema,
   ListDaemonsRequestSchema,
   TransferSessionRequestSchema,
-} from '../gen/bossanova/v1/orchestrator_pb.ts'
-import type { DaemonInfo } from '../gen/bossanova/v1/orchestrator_pb.ts'
-import { SessionState } from '../gen/bossanova/v1/models_pb.ts'
-import type { Session } from '../gen/bossanova/v1/models_pb.ts'
+} from '../gen/bossanova/v1/orchestrator_pb'
+import type { DaemonInfo } from '../gen/bossanova/v1/orchestrator_pb'
+import { SessionState } from '../gen/bossanova/v1/models_pb'
+import type { Session } from '../gen/bossanova/v1/models_pb'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
 
 function timestampToDate(ts: Timestamp | undefined): Date | undefined {

@@ -1,7 +1,7 @@
 import { createClient } from '@connectrpc/connect'
 import { createConnectTransport } from '@connectrpc/connect-web'
 import type { Interceptor } from '@connectrpc/connect'
-import { OrchestratorService } from './gen/bossanova/v1/orchestrator_pb.ts'
+import { OrchestratorService } from './gen/bossanova/v1/orchestrator_pb'
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL as string || 'http://localhost:8080'
 

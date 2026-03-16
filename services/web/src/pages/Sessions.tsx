@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { create } from '@bufbuild/protobuf'
-import { useApi } from '../ApiContext.ts'
-import { ProxyListSessionsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb.ts'
-import { SessionState } from '../gen/bossanova/v1/models_pb.ts'
-import type { Session } from '../gen/bossanova/v1/models_pb.ts'
+import { useApi } from '../ApiContext'
+import { ProxyListSessionsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb'
+import { SessionState } from '../gen/bossanova/v1/models_pb'
+import type { Session } from '../gen/bossanova/v1/models_pb'
 
 const POLL_INTERVAL = 5000
 

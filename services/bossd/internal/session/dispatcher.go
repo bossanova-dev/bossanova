@@ -1,0 +1,234 @@
+package session
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/rs/zerolog"
+
+	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/db"
+)
+
+// Dispatcher consumes VCS events from the poller and applies the
+// corresponding state machine transitions and database updates.
+type Dispatcher struct {
+	sessions db.SessionStore
+	repos    db.RepoStore
+	provider vcs.Provider
+	logger   zerolog.Logger
+	mu       sync.Mutex // guards concurrent session transitions
+}
+
+// NewDispatcher creates a new event dispatcher.
+func NewDispatcher(
+	sessions db.SessionStore,
+	repos db.RepoStore,
+	provider vcs.Provider,
+	logger zerolog.Logger,
+) *Dispatcher {
+	return &Dispatcher{
+		sessions: sessions,
+		repos:    repos,
+		provider: provider,
+		logger:   logger,
+	}
+}
+
+// Run consumes events from the channel and dispatches them until the
+// channel is closed or the context is cancelled.
+func (d *Dispatcher) Run(ctx context.Context, events <-chan SessionEvent) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			if err := d.dispatch(ctx, ev); err != nil {
+				d.logger.Error().Err(err).
+					Str("session", ev.SessionID).
+					Str("event", fmt.Sprintf("%T", ev.Event)).
+					Msg("dispatch failed")
+			}
+		}
+	}
+}
+
+// dispatch routes a single event to the appropriate handler.
+func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	sess, err := d.sessions.Get(ctx, ev.SessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	sm := machine.NewWithContext(sess.State, &machine.SessionContext{
+		AttemptCount: sess.AttemptCount,
+		MaxAttempts:  machine.MaxAttempts,
+	})
+
+	switch event := ev.Event.(type) {
+	case vcs.ChecksPassed:
+		return d.handleChecksPassed(ctx, sm, sess)
+	case vcs.ChecksFailed:
+		return d.handleChecksFailed(ctx, sm, sess, event)
+	case vcs.ConflictDetected:
+		return d.handleConflictDetected(ctx, sm, sess)
+	case vcs.PRMerged:
+		return d.handlePRMerged(ctx, sm, sess)
+	case vcs.PRClosed:
+		return d.handlePRClosed(ctx, sm, sess)
+	default:
+		d.logger.Warn().
+			Str("type", fmt.Sprintf("%T", ev.Event)).
+			Msg("unhandled event type")
+		return nil
+	}
+}
+
+func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+	if err := sm.FireCtx(ctx, machine.ChecksPassed); err != nil {
+		return fmt.Errorf("fire checks_passed: %w", err)
+	}
+
+	newState := int(sm.State())
+	checkState := int(machine.CheckStatePassed)
+	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
+		State:          &newState,
+		LastCheckState: &checkState,
+	}); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+
+	d.logger.Info().
+		Str("session", sess.ID).
+		Str("newState", sm.State().String()).
+		Msg("checks passed")
+
+	// If we transitioned to GreenDraft, mark the PR ready for review.
+	if sm.State() == machine.GreenDraft && sess.PRNumber != nil {
+		repo, err := d.repos.Get(ctx, sess.RepoID)
+		if err != nil {
+			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to get repo for mark ready")
+			return nil
+		}
+		if err := d.provider.MarkReadyForReview(ctx, repo.OriginURL, *sess.PRNumber); err != nil {
+			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to mark ready for review")
+		} else {
+			// Fire PlanComplete → ReadyForReview.
+			if err := sm.FireCtx(ctx, machine.PlanComplete); err == nil {
+				readyState := int(machine.ReadyForReview)
+				if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
+					State: &readyState,
+				}); err != nil {
+					d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to update to ready_for_review")
+				}
+				d.logger.Info().Str("session", sess.ID).Msg("marked ready for review")
+			}
+		}
+	}
+
+	return nil
+}
+
+func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ChecksFailed) error {
+	if err := sm.FireCtx(ctx, machine.ChecksFailed); err != nil {
+		return fmt.Errorf("fire checks_failed: %w", err)
+	}
+
+	newState := int(sm.State())
+	checkState := int(machine.CheckStateFailed)
+	attemptCount := sm.Context().AttemptCount
+	update := db.UpdateSessionParams{
+		State:          &newState,
+		LastCheckState: &checkState,
+		AttemptCount:   &attemptCount,
+	}
+
+	if sm.State() == machine.Blocked {
+		reason := sm.Context().BlockedReason
+		reasonPtr := &reason
+		update.BlockedReason = &reasonPtr
+	}
+
+	if _, err := d.sessions.Update(ctx, sess.ID, update); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+
+	d.logger.Info().
+		Str("session", sess.ID).
+		Str("newState", sm.State().String()).
+		Int("failedChecks", len(event.FailedChecks)).
+		Msg("checks failed")
+
+	return nil
+}
+
+func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+	if err := sm.FireCtx(ctx, machine.ConflictDetected); err != nil {
+		return fmt.Errorf("fire conflict_detected: %w", err)
+	}
+
+	newState := int(sm.State())
+	attemptCount := sm.Context().AttemptCount
+	update := db.UpdateSessionParams{
+		State:        &newState,
+		AttemptCount: &attemptCount,
+	}
+
+	if sm.State() == machine.Blocked {
+		reason := sm.Context().BlockedReason
+		reasonPtr := &reason
+		update.BlockedReason = &reasonPtr
+	}
+
+	if _, err := d.sessions.Update(ctx, sess.ID, update); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+
+	d.logger.Info().
+		Str("session", sess.ID).
+		Str("newState", sm.State().String()).
+		Msg("conflict detected")
+
+	return nil
+}
+
+func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+	if err := sm.FireCtx(ctx, machine.PRMerged); err != nil {
+		return fmt.Errorf("fire pr_merged: %w", err)
+	}
+
+	mergedState := int(machine.Merged)
+	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
+		State: &mergedState,
+	}); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+
+	d.logger.Info().Str("session", sess.ID).Msg("PR merged")
+	return nil
+}
+
+func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
+	if err := sm.FireCtx(ctx, machine.PRClosed); err != nil {
+		return fmt.Errorf("fire pr_closed: %w", err)
+	}
+
+	closedState := int(machine.Closed)
+	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
+		State: &closedState,
+	}); err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+
+	d.logger.Info().Str("session", sess.ID).Msg("PR closed")
+	return nil
+}

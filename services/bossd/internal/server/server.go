@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
@@ -32,21 +33,23 @@ func DefaultSocketPath() (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	repos    db.RepoStore
-	sessions db.SessionStore
-	attempts db.AttemptStore
-	listener net.Listener
-	srv      *http.Server
+	repos     db.RepoStore
+	sessions  db.SessionStore
+	attempts  db.AttemptStore
+	lifecycle *session.Lifecycle
+	listener  net.Listener
+	srv       *http.Server
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
 
-// New creates a new Server wired to the given stores.
-func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore) *Server {
+// New creates a new Server wired to the given stores and lifecycle orchestrator.
+func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle) *Server {
 	return &Server{
-		repos:    repos,
-		sessions: sessions,
-		attempts: attempts,
+		repos:     repos,
+		sessions:  sessions,
+		attempts:  attempts,
+		lifecycle: lifecycle,
 	}
 }
 
@@ -177,19 +180,28 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		baseBranch = repo.DefaultBaseBranch
 	}
 
-	session, err := s.sessions.Create(ctx, db.CreateSessionParams{
-		RepoID:       msg.RepoId,
-		Title:        msg.Title,
-		Plan:         msg.Plan,
-		WorktreePath: "", // Set by worktree manager in Leg 6
-		BranchName:   "", // Set by worktree manager in Leg 6
-		BaseBranch:   baseBranch,
+	sess, err := s.sessions.Create(ctx, db.CreateSessionParams{
+		RepoID:     msg.RepoId,
+		Title:      msg.Title,
+		Plan:       msg.Plan,
+		BaseBranch: baseBranch,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.CreateSessionResponse{Session: sessionToProto(session)}), nil
+	// Start the session lifecycle: create worktree, start Claude, fire state machine.
+	if err := s.lifecycle.StartSession(ctx, sess.ID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
+	}
+
+	// Re-fetch the session to get updated fields from lifecycle.
+	sess, err = s.sessions.Get(ctx, sess.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+	}
+
+	return connect.NewResponse(&pb.CreateSessionResponse{Session: sessionToProto(sess)}), nil
 }
 
 func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {
@@ -277,21 +289,16 @@ func (s *Server) StopSession(ctx context.Context, req *connect.Request[pb.StopSe
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	// State machine transition will be handled by session lifecycle (Leg 6).
-	// For now, update state to Closed via store.
-	closedState := int(machine.Closed)
-	if _, err := s.sessions.Update(ctx, req.Msg.Id, db.UpdateSessionParams{
-		State: &closedState,
-	}); err != nil {
+	if err := s.lifecycle.StopSession(ctx, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("stop session: %w", err))
 	}
 
-	session, err := s.sessions.Get(ctx, req.Msg.Id)
+	sess, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.StopSessionResponse{Session: sessionToProto(session)}), nil
+	return connect.NewResponse(&pb.StopSessionResponse{Session: sessionToProto(sess)}), nil
 }
 
 func (s *Server) PauseSession(ctx context.Context, req *connect.Request[pb.PauseSessionRequest]) (*connect.Response[pb.PauseSessionResponse], error) {
@@ -399,16 +406,16 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	if err := s.sessions.Archive(ctx, req.Msg.Id); err != nil {
+	if err := s.lifecycle.ArchiveSession(ctx, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("archive session: %w", err))
 	}
 
-	session, err := s.sessions.Get(ctx, req.Msg.Id)
+	sess, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: sessionToProto(session)}), nil
+	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: sessionToProto(sess)}), nil
 }
 
 func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
@@ -416,16 +423,16 @@ func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.R
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	if err := s.sessions.Resurrect(ctx, req.Msg.Id); err != nil {
+	if err := s.lifecycle.ResurrectSession(ctx, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resurrect session: %w", err))
 	}
 
-	session, err := s.sessions.Get(ctx, req.Msg.Id)
+	sess, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: sessionToProto(session)}), nil
+	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: sessionToProto(sess)}), nil
 }
 
 func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {

@@ -5,7 +5,13 @@ import { useApi } from '../ApiContext.ts'
 import {
   ProxyGetSessionRequestSchema,
   ProxyAttachSessionRequestSchema,
+  ProxyStopSessionRequestSchema,
+  ProxyPauseSessionRequestSchema,
+  ProxyResumeSessionRequestSchema,
+  ListDaemonsRequestSchema,
+  TransferSessionRequestSchema,
 } from '../gen/bossanova/v1/orchestrator_pb.ts'
+import type { DaemonInfo } from '../gen/bossanova/v1/orchestrator_pb.ts'
 import { SessionState } from '../gen/bossanova/v1/models_pb.ts'
 import type { Session } from '../gen/bossanova/v1/models_pb.ts'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
@@ -44,7 +50,61 @@ export default function SessionDetail() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [streaming, setStreaming] = useState(false)
+  const [actionPending, setActionPending] = useState(false)
+  const [daemons, setDaemons] = useState<DaemonInfo[]>([])
   const logEndRef = useRef<HTMLDivElement>(null)
+
+  const isTerminal =
+    session?.state === SessionState.MERGED ||
+    session?.state === SessionState.CLOSED
+
+  async function runAction(fn: () => Promise<{ session?: Session }>) {
+    setActionPending(true)
+    try {
+      const res = await fn()
+      if (res.session) setSession(res.session)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setActionPending(false)
+    }
+  }
+
+  function handleStop() {
+    if (!id) return
+    runAction(() =>
+      api.proxyStopSession(create(ProxyStopSessionRequestSchema, { id })),
+    )
+  }
+
+  function handlePause() {
+    if (!id) return
+    runAction(() =>
+      api.proxyPauseSession(create(ProxyPauseSessionRequestSchema, { id })),
+    )
+  }
+
+  function handleResume() {
+    if (!id) return
+    runAction(() =>
+      api.proxyResumeSession(create(ProxyResumeSessionRequestSchema, { id })),
+    )
+  }
+
+  function handleTransfer(targetDaemonId: string) {
+    if (!id || !session) return
+    // We need to determine the source daemon — for now use the first daemon
+    // that isn't the target (the orchestrator routes by session ownership)
+    runAction(() =>
+      api.transferSession(
+        create(TransferSessionRequestSchema, {
+          sessionId: id,
+          sourceDaemonId: '',
+          targetDaemonId,
+        }),
+      ),
+    )
+  }
 
   // Fetch session metadata
   useEffect(() => {
@@ -69,6 +129,21 @@ export default function SessionDetail() {
     fetchSession()
     return () => { cancelled = true }
   }, [api, id])
+
+  // Fetch daemons for transfer dropdown
+  useEffect(() => {
+    let cancelled = false
+    async function fetchDaemons() {
+      try {
+        const res = await api.listDaemons(create(ListDaemonsRequestSchema, {}))
+        if (!cancelled) setDaemons(res.daemons.filter((d) => d.online))
+      } catch {
+        // Non-critical — transfer just won't be available
+      }
+    }
+    fetchDaemons()
+    return () => { cancelled = true }
+  }, [api])
 
   // Attach to session stream
   useEffect(() => {
@@ -173,6 +248,52 @@ export default function SessionDetail() {
         )}
       </div>
 
+      {!isTerminal && (
+        <div style={actions}>
+          <button
+            style={actionBtn}
+            disabled={actionPending}
+            onClick={handlePause}
+          >
+            Pause
+          </button>
+          <button
+            style={actionBtn}
+            disabled={actionPending}
+            onClick={handleResume}
+          >
+            Resume
+          </button>
+          <button
+            style={{ ...actionBtn, color: '#ef4444' }}
+            disabled={actionPending}
+            onClick={handleStop}
+          >
+            Stop
+          </button>
+          {daemons.length > 1 && (
+            <select
+              style={actionBtn}
+              disabled={actionPending}
+              defaultValue=""
+              onChange={(e) => {
+                if (e.target.value) handleTransfer(e.target.value)
+                e.target.value = ''
+              }}
+            >
+              <option value="" disabled>
+                Transfer to...
+              </option>
+              {daemons.map((d) => (
+                <option key={d.daemonId} value={d.daemonId}>
+                  {d.hostname}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
       {session.plan && (
         <details style={{ marginBottom: 16 }}>
           <summary style={{ cursor: 'pointer', fontWeight: 600, marginBottom: 8 }}>Plan</summary>
@@ -232,6 +353,22 @@ const planStyle: React.CSSProperties = {
   fontSize: 13,
   whiteSpace: 'pre-wrap',
   margin: 0,
+}
+
+const actions: React.CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  marginBottom: 16,
+}
+
+const actionBtn: React.CSSProperties = {
+  background: 'var(--bg-secondary, #1a1a1a)',
+  color: 'var(--text)',
+  border: '1px solid var(--border)',
+  borderRadius: 4,
+  padding: '6px 14px',
+  cursor: 'pointer',
+  fontSize: 13,
 }
 
 const logHeader: React.CSSProperties = {

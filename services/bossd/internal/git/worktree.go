@@ -138,6 +138,91 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	}, nil
 }
 
+// Archive removes the worktree directory but keeps the git branch alive.
+func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
+	m.logger.Info().Str("path", worktreePath).Msg("archiving worktree")
+
+	// Use the worktree path itself to find its parent repo.
+	// git worktree remove needs to be run from the main repo, but we can
+	// find it via the .git file in the worktree.
+	repoPath, err := runGit(ctx, worktreePath, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("find repo: %w", err)
+	}
+	// --git-common-dir returns the .git dir; we want the repo root.
+	repoPath = filepath.Dir(repoPath)
+
+	if _, err := runGit(ctx, repoPath, "worktree", "remove", "--force", worktreePath); err != nil {
+		return fmt.Errorf("worktree remove: %w", err)
+	}
+	return nil
+}
+
+// Resurrect re-creates a worktree from an existing branch.
+func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
+	m.logger.Info().
+		Str("branch", opts.BranchName).
+		Str("path", opts.WorktreePath).
+		Msg("resurrecting worktree")
+
+	// Ensure parent directory exists.
+	if err := os.MkdirAll(filepath.Dir(opts.WorktreePath), 0o755); err != nil {
+		return fmt.Errorf("create parent dir: %w", err)
+	}
+
+	// git worktree add <path> <existing-branch>
+	if _, err := runGit(ctx, opts.RepoPath,
+		"worktree", "add", opts.WorktreePath, opts.BranchName,
+	); err != nil {
+		return fmt.Errorf("worktree add: %w", err)
+	}
+
+	// Run setup script if provided.
+	if opts.SetupScript != nil && *opts.SetupScript != "" {
+		if err := runSetupScript(ctx, opts.WorktreePath, *opts.SetupScript); err != nil {
+			return fmt.Errorf("setup script: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// EmptyTrash deletes the remote tracking branches and prunes worktree refs.
+func (m *Manager) EmptyTrash(ctx context.Context, repoPath string, branches []string) error {
+	m.logger.Info().
+		Int("count", len(branches)).
+		Msg("emptying trash")
+
+	for _, branch := range branches {
+		// Delete remote branch. Ignore errors (branch may not exist on remote).
+		if _, err := runGit(ctx, repoPath, "push", "origin", "--delete", branch); err != nil {
+			m.logger.Warn().Err(err).Str("branch", branch).Msg("failed to delete remote branch")
+		}
+
+		// Delete local branch.
+		if _, err := runGit(ctx, repoPath, "branch", "-D", branch); err != nil {
+			m.logger.Warn().Err(err).Str("branch", branch).Msg("failed to delete local branch")
+		}
+	}
+
+	// Prune stale worktree references.
+	if _, err := runGit(ctx, repoPath, "worktree", "prune"); err != nil {
+		m.logger.Warn().Err(err).Msg("failed to prune worktrees")
+	}
+
+	return nil
+}
+
+// DetectOriginURL returns the "origin" remote URL for the given repo path.
+func (m *Manager) DetectOriginURL(ctx context.Context, repoPath string) (string, error) {
+	url, err := runGit(ctx, repoPath, "remote", "get-url", "origin")
+	if err != nil {
+		// No origin remote configured — not an error for our purposes.
+		return "", nil
+	}
+	return url, nil
+}
+
 // runSetupScript executes a setup script in the given directory with a 5-minute timeout.
 func runSetupScript(ctx context.Context, dir, script string) error {
 	ctx, cancel := context.WithTimeout(ctx, SetupScriptTimeout)

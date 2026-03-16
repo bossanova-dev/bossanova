@@ -1,25 +1,11 @@
 {
   "name": "bossanova",
   "private": true,
-  "type": "module",
-  "packageManager": "pnpm@10.12.3",
+  "description": "Prettier for markdown formatting only",
   "devDependencies": {
-    "@biomejs/biome": "^1.9.0",
-    "prettier": "^3.4.0",
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "prettier": "^3.4.0"
   },
-  "dependencies": {
-    "reflect-metadata": "^0.2.2",
-    "tsyringe": "^4.8.0",
-    "xstate": "^5.19.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@biomejs/biome",
-      "better-sqlite3",
-      "esbuild",
-      "workerd"
-    ]
+  "scripts": {
+    "format:docs": "prettier --write 'docs/**/*.md' '.claude/**/*.md' 'AGENTS.md'"
   }
 }

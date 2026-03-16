@@ -71,14 +71,31 @@ type process struct {
 	exitErr   error
 }
 
+// RunnerOption configures a Runner.
+type RunnerOption func(*Runner)
+
+// WithCommandFactory overrides the command factory (for testing).
+func WithCommandFactory(f CommandFactory) RunnerOption {
+	return func(r *Runner) { r.cmdFunc = f }
+}
+
+// WithLogDir overrides the log file directory (for testing).
+func WithLogDir(dir string) RunnerOption {
+	return func(r *Runner) { r.logDir = dir }
+}
+
 // NewRunner creates a new Claude process runner.
-func NewRunner(logger zerolog.Logger) *Runner {
-	return &Runner{
+func NewRunner(logger zerolog.Logger, opts ...RunnerOption) *Runner {
+	r := &Runner{
 		procs:   make(map[string]*process),
 		cmdFunc: exec.CommandContext,
 		logger:  logger,
 		bufSize: DefaultRingBufferSize,
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Start spawns a Claude CLI process. It runs `claude --print --output-format=stream-json`

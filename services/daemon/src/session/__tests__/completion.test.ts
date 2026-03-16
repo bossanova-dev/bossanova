@@ -139,11 +139,13 @@ describe('processReadyForReview', () => {
 
   it('transitions all green_draft sessions with passed checks', async () => {
     const mockSessions = {
-      list: vi.fn().mockReturnValue([
-        makeSession({ id: 'sess-1', state: 'green_draft', lastCheckState: 'passed' }),
-        makeSession({ id: 'sess-2', state: 'awaiting_checks', lastCheckState: 'pending' }),
-        makeSession({ id: 'sess-3', state: 'green_draft', lastCheckState: 'passed' }),
-      ]),
+      list: vi
+        .fn()
+        .mockReturnValue([
+          makeSession({ id: 'sess-1', state: 'green_draft', lastCheckState: 'passed' }),
+          makeSession({ id: 'sess-2', state: 'awaiting_checks', lastCheckState: 'pending' }),
+          makeSession({ id: 'sess-3', state: 'green_draft', lastCheckState: 'passed' }),
+        ]),
       update: vi.fn(),
     } as unknown as SessionStore;
 
@@ -158,10 +160,7 @@ describe('processReadyForReview', () => {
       .mockResolvedValueOnce(undefined);
 
     const mockSessions = {
-      list: vi.fn().mockReturnValue([
-        makeSession({ id: 'sess-1' }),
-        makeSession({ id: 'sess-2' }),
-      ]),
+      list: vi.fn().mockReturnValue([makeSession({ id: 'sess-1' }), makeSession({ id: 'sess-2' })]),
       update: vi.fn(),
     } as unknown as SessionStore;
 

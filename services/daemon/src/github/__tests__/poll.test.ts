@@ -161,7 +161,9 @@ describe('processPollResult', () => {
   });
 
   it('transitions awaiting_checks to fixing_checks on checks failed', () => {
-    mockSessions.get.mockReturnValueOnce(makeSession({ state: 'awaiting_checks', attemptCount: 0 }));
+    mockSessions.get.mockReturnValueOnce(
+      makeSession({ state: 'awaiting_checks', attemptCount: 0 }),
+    );
 
     processPollResult(mockSessions, {
       sessionId: 'sess-1',
@@ -178,7 +180,9 @@ describe('processPollResult', () => {
   });
 
   it('transitions to blocked when max attempts reached', () => {
-    mockSessions.get.mockReturnValueOnce(makeSession({ state: 'awaiting_checks', attemptCount: 4 }));
+    mockSessions.get.mockReturnValueOnce(
+      makeSession({ state: 'awaiting_checks', attemptCount: 4 }),
+    );
 
     processPollResult(mockSessions, {
       sessionId: 'sess-1',
@@ -195,7 +199,9 @@ describe('processPollResult', () => {
   });
 
   it('handles conflict detection', () => {
-    mockSessions.get.mockReturnValueOnce(makeSession({ state: 'awaiting_checks', attemptCount: 1 }));
+    mockSessions.get.mockReturnValueOnce(
+      makeSession({ state: 'awaiting_checks', attemptCount: 1 }),
+    );
 
     processPollResult(mockSessions, {
       sessionId: 'sess-1',
@@ -222,7 +228,10 @@ describe('processPollResult', () => {
     });
 
     // Should not update state
-    expect(mockSessions.update).not.toHaveBeenCalledWith('sess-1', expect.objectContaining({ state: expect.any(String) }));
+    expect(mockSessions.update).not.toHaveBeenCalledWith(
+      'sess-1',
+      expect.objectContaining({ state: expect.any(String) }),
+    );
   });
 });
 
@@ -233,10 +242,12 @@ describe('pollAllSessions', () => {
 
   it('polls sessions in awaiting_checks state', async () => {
     const sessions = {
-      list: vi.fn().mockReturnValue([
-        makeSession({ id: 'sess-1', state: 'awaiting_checks' }),
-        makeSession({ id: 'sess-2', state: 'implementing_plan', prNumber: null }),
-      ]),
+      list: vi
+        .fn()
+        .mockReturnValue([
+          makeSession({ id: 'sess-1', state: 'awaiting_checks' }),
+          makeSession({ id: 'sess-2', state: 'implementing_plan', prNumber: null }),
+        ]),
       get: vi.fn().mockReturnValue(makeSession()),
       update: vi.fn(),
     } as unknown as SessionStore;

@@ -7,7 +7,9 @@ vi.mock('~/git/push', () => ({
 }));
 
 vi.mock('~/github/client', () => ({
-  createDraftPr: vi.fn().mockResolvedValue({ number: 42, url: 'https://github.com/owner/repo/pull/42' }),
+  createDraftPr: vi
+    .fn()
+    .mockResolvedValue({ number: 42, url: 'https://github.com/owner/repo/pull/42' }),
 }));
 
 import { pushBranch } from '~/git/push';

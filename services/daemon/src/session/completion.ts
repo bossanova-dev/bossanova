@@ -53,9 +53,7 @@ export async function handlePrMerged(
  * Check all sessions in green_draft state and mark as ready for review.
  * Returns number of sessions transitioned.
  */
-export async function processReadyForReview(
-  sessions: SessionStore,
-): Promise<number> {
+export async function processReadyForReview(sessions: SessionStore): Promise<number> {
   const allSessions = sessions.list();
   let transitioned = 0;
 

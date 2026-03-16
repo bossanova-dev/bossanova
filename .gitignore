@@ -7,8 +7,8 @@ bin/
 # Node (prettier only)
 node_modules/
 
-# Protobuf generated code
-lib/bossalib/gen/
+# Protobuf generated code (committed for CI — regenerate with `make generate`)
+# lib/bossalib/gen/
 
 # IDE
 .idea/

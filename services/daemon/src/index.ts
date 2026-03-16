@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DatabaseService } from '~/db/database';
+import type { RepoStore } from '~/db/repos';
+import type { SessionStore } from '~/db/sessions';
 import { setupContainer } from '~/di/container';
 import { Service } from '~/di/tokens';
+import { startPolling } from '~/github/poll';
 import type { IpcServer } from '~/ipc/server';
 
 async function main(): Promise<void> {
@@ -28,11 +31,17 @@ async function main(): Promise<void> {
   const ipcServer = container.resolve<IpcServer>(Service.IpcServer);
   await ipcServer.start();
 
+  // Start PR polling loop
+  const sessionStore = container.resolve<SessionStore>(Service.SessionStore);
+  const repoStore = container.resolve<RepoStore>(Service.RepoStore);
+  const stopPolling = startPolling(sessionStore, repoStore);
+
   console.info(`bossd started (pid: ${process.pid})`);
 
   // Graceful shutdown
   const shutdown = async () => {
     console.info('Shutting down...');
+    stopPolling();
     await ipcServer.stop();
     db.close();
 

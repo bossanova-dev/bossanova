@@ -2,6 +2,7 @@ import type { Session } from '@bossanova/shared';
 import type { RepoStore } from '~/db/repos';
 import type { SessionStore } from '~/db/sessions';
 import { getPrChecks, getPrStatus, summarizeChecks } from '~/github/client';
+import { handlePrMerged, processReadyForReview } from '~/session/completion';
 
 const DEFAULT_POLL_INTERVAL_MS = 60_000;
 
@@ -40,27 +41,30 @@ export async function pollSession(
 
 /**
  * Process a poll result and update session state accordingly.
+ * Returns the session if it was merged (for cleanup).
  */
 export function processPollResult(
   sessions: SessionStore,
   result: PollResult,
-): void {
+): { merged: boolean; sessionId: string } {
   const session = sessions.get(result.sessionId);
-  if (!session) return;
+  if (!session) return { merged: false, sessionId: result.sessionId };
 
   // Handle PR merged/closed
   if (result.prState === 'merged') {
     sessions.update(result.sessionId, { state: 'merged' });
-    return;
+    return { merged: true, sessionId: result.sessionId };
   }
   if (result.prState === 'closed') {
     sessions.update(result.sessionId, { state: 'closed' });
-    return;
+    return { merged: false, sessionId: result.sessionId };
   }
+
+  const noMerge = { merged: false, sessionId: result.sessionId };
 
   // Only act on sessions in pollable states
   const pollableStates = ['awaiting_checks', 'green_draft', 'ready_for_review'];
-  if (!pollableStates.includes(session.state)) return;
+  if (!pollableStates.includes(session.state)) return noMerge;
 
   // Update lastCheckState
   if (result.checksOverall !== 'pending') {
@@ -74,7 +78,7 @@ export function processPollResult(
       blockedReason: 'Merge conflict detected',
       attemptCount: session.attemptCount + 1,
     });
-    return;
+    return noMerge;
   }
 
   // Handle check results for awaiting_checks state
@@ -100,10 +104,13 @@ export function processPollResult(
       }
     }
   }
+
+  return noMerge;
 }
 
 /**
- * Poll all sessions in pollable states.
+ * Poll all sessions in pollable states, handle merged PRs, and
+ * process ready-for-review transitions.
  * Returns the number of sessions polled.
  */
 export async function pollAllSessions(
@@ -123,13 +130,28 @@ export async function pollAllSessions(
     try {
       const result = await pollSession(session, repos);
       if (result) {
-        processPollResult(sessions, result);
+        const { merged, sessionId } = processPollResult(sessions, result);
         polled++;
+
+        // Clean up worktree for merged PRs
+        if (merged) {
+          const mergedSession = sessions.get(sessionId);
+          if (mergedSession) {
+            await handlePrMerged(sessions, repos, mergedSession).catch(() => {
+              // Cleanup failure is non-fatal
+            });
+          }
+        }
       }
     } catch {
       // Individual poll failure shouldn't stop others
     }
   }
+
+  // Process ready-for-review transitions for any newly green sessions
+  await processReadyForReview(sessions).catch(() => {
+    // Non-fatal
+  });
 
   return polled;
 }

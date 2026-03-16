@@ -9,6 +9,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bosso/internal/auth"
+	"github.com/recurser/bosso/internal/db"
 )
 
 // resolveUserID extracts the owning user's ID from the auth context.
@@ -59,6 +60,115 @@ func (s *Server) getDaemonClient(ctx context.Context, sessionID string) (bossano
 	}
 
 	return client, nil
+}
+
+// TransferSession moves a session from one daemon to another.
+// The orchestrator stops the session on the source, updates the registry, and
+// signals the target to pick it up. Both daemons must belong to the authenticated user.
+func (s *Server) TransferSession(ctx context.Context, req *connect.Request[pb.TransferSessionRequest]) (*connect.Response[pb.TransferSessionResponse], error) {
+	userID, err := resolveUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	msg := req.Msg
+	if msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	if msg.SourceDaemonId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source_daemon_id is required"))
+	}
+	if msg.TargetDaemonId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("target_daemon_id is required"))
+	}
+	if msg.SourceDaemonId == msg.TargetDaemonId {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("source and target daemon must differ"))
+	}
+
+	// Verify source daemon ownership.
+	source, err := s.daemons.Get(ctx, msg.SourceDaemonId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("source daemon not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get source daemon: %w", err))
+	}
+	if source.UserID != userID {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("source daemon belongs to another user"))
+	}
+
+	// Verify target daemon ownership and availability.
+	target, err := s.daemons.Get(ctx, msg.TargetDaemonId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("target daemon not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get target daemon: %w", err))
+	}
+	if target.UserID != userID {
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("target daemon belongs to another user"))
+	}
+	if !target.Online {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("target daemon is offline"))
+	}
+
+	// Verify the session exists in the registry and belongs to the source daemon.
+	entry, err := s.sessions.Get(ctx, msg.SessionId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+	}
+	if entry.DaemonID != msg.SourceDaemonId {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("session is not on the source daemon"))
+	}
+
+	// Stop the session on the source daemon (if reachable).
+	sourceClient := s.pool.Get(source.ID)
+	if sourceClient != nil {
+		_, _ = sourceClient.StopSession(ctx, connect.NewRequest(&pb.StopSessionRequest{
+			Id: msg.SessionId,
+		}))
+	}
+
+	// Update the registry to point to the target daemon.
+	updated, err := s.sessions.Update(ctx, msg.SessionId, db.UpdateSessionEntryParams{
+		DaemonID: &msg.TargetDaemonId,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update session registry: %w", err))
+	}
+
+	// Audit the transfer.
+	detail := fmt.Sprintf("session=%s from=%s to=%s", msg.SessionId, msg.SourceDaemonId, msg.TargetDaemonId)
+	_, _ = s.audit.Create(ctx, db.CreateAuditParams{
+		UserID:   &userID,
+		Action:   "session.transfer",
+		Resource: "session:" + msg.SessionId,
+		Detail:   &detail,
+	})
+
+	// Fetch the session from the target daemon to return current state.
+	// If the target doesn't have the session yet, return what we know from the registry.
+	session := &pb.Session{
+		Id:    updated.SessionID,
+		Title: updated.Title,
+	}
+	targetClient := s.pool.Get(target.ID)
+	if targetClient != nil {
+		resp, err := targetClient.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{
+			Id: msg.SessionId,
+		}))
+		if err == nil && resp.Msg.Session != nil {
+			session = resp.Msg.Session
+		}
+	}
+
+	return connect.NewResponse(&pb.TransferSessionResponse{
+		Session:        session,
+		TargetDaemonId: msg.TargetDaemonId,
+	}), nil
 }
 
 // ProxyListSessions lists sessions from one or all of the user's daemons.

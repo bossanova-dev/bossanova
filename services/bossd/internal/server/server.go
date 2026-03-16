@@ -424,5 +424,64 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 // --- Context Resolution ---
 
 func (s *Server) ResolveContext(ctx context.Context, req *connect.Request[pb.ResolveContextRequest]) (*connect.Response[pb.ResolveContextResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not yet implemented"))
+	wd := req.Msg.WorkingDirectory
+	if wd == "" {
+		var err error
+		wd, err = os.Getwd()
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get working directory: %w", err))
+		}
+	}
+
+	// Resolve to absolute path.
+	absWD, err := filepath.Abs(wd)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolve absolute path: %w", err))
+	}
+
+	resp := &pb.ResolveContextResponse{}
+
+	// Check if inside a session worktree first (more specific match).
+	repos, err := s.repos.List(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
+	}
+
+	for _, repo := range repos {
+		sessions, err := s.sessions.List(ctx, repo.ID)
+		if err != nil {
+			continue
+		}
+		for _, sess := range sessions {
+			if sess.WorktreePath != "" && isSubdirOf(absWD, sess.WorktreePath) {
+				resp.Repo = repoToProto(repo)
+				resp.Session = sessionToProto(sess)
+				return connect.NewResponse(resp), nil
+			}
+		}
+
+		// Check if inside the repo root.
+		if isSubdirOf(absWD, repo.LocalPath) {
+			resp.Repo = repoToProto(repo)
+			return connect.NewResponse(resp), nil
+		}
+	}
+
+	// Not inside any registered repo or worktree.
+	return connect.NewResponse(resp), nil
+}
+
+// isSubdirOf checks if child is the same as or a subdirectory of parent.
+func isSubdirOf(child, parent string) bool {
+	// Clean both paths for consistent comparison.
+	child = filepath.Clean(child)
+	parent = filepath.Clean(parent)
+
+	if child == parent {
+		return true
+	}
+
+	// Ensure parent ends with separator for prefix matching.
+	parentPrefix := parent + string(filepath.Separator)
+	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
 }

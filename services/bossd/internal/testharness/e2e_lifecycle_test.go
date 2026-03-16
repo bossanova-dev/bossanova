@@ -441,4 +441,3 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 		t.Fatalf("expected MERGED, got %v", getResp.Msg.Session.State)
 	}
 }
-

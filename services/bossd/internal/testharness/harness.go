@@ -15,13 +15,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/rs/zerolog"
-	"connectrpc.com/connect"
 )
 
 var socketCounter atomic.Int64

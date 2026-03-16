@@ -78,8 +78,8 @@ type ghRepo struct {
 type ghCheckSuitePayload struct {
 	Action     string `json:"action"`
 	CheckSuite struct {
-		ID         int64  `json:"id"`
-		Conclusion string `json:"conclusion"`
+		ID           int64  `json:"id"`
+		Conclusion   string `json:"conclusion"`
 		PullRequests []struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
@@ -90,10 +90,10 @@ type ghCheckSuitePayload struct {
 type ghCheckRunPayload struct {
 	Action   string `json:"action"`
 	CheckRun struct {
-		ID         int64  `json:"id"`
-		Name       string `json:"name"`
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
+		ID           int64  `json:"id"`
+		Name         string `json:"name"`
+		Status       string `json:"status"`
+		Conclusion   string `json:"conclusion"`
 		PullRequests []struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
@@ -113,8 +113,8 @@ type ghPullRequestPayload struct {
 }
 
 type ghPullRequestReviewPayload struct {
-	Action      string `json:"action"`
-	Review      struct {
+	Action string `json:"action"`
+	Review struct {
 		State string `json:"state"`
 		Body  string `json:"body"`
 		User  struct {

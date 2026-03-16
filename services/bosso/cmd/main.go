@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/pressly/goose/v3"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+
+	"github.com/rs/cors"
 
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bosso/internal/auth"
@@ -39,6 +42,7 @@ func run() error {
 	// --- Configuration ---
 
 	addr := envOr("BOSSO_ADDR", ":8080")
+	corsOrigins := envOr("BOSSO_CORS_ORIGINS", "")
 	oidcIssuer := envOr("BOSSO_OIDC_ISSUER", "")
 	oidcAudience := envOr("BOSSO_OIDC_AUDIENCE", "")
 
@@ -102,9 +106,23 @@ func run() error {
 	mux.Handle(path, handler)
 	mux.Handle("POST /webhooks/{provider}", webhookHandler)
 
+	// CORS middleware for SPA on CF Pages.
+	var origins []string
+	if corsOrigins != "" {
+		for _, o := range splitAndTrim(corsOrigins, ",") {
+			origins = append(origins, o)
+		}
+	}
+	corsMiddleware := cors.New(cors.Options{
+		AllowedOrigins:   origins,
+		AllowedMethods:   []string{"GET", "POST"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "Connect-Protocol-Version"},
+		AllowCredentials: true,
+	})
+
 	httpServer := &http.Server{
 		Addr:    addr,
-		Handler: authMiddleware.Wrap(mux),
+		Handler: authMiddleware.Wrap(corsMiddleware.Handler(mux)),
 	}
 
 	// Start server in a goroutine.
@@ -160,4 +178,16 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func splitAndTrim(s, sep string) []string {
+	parts := strings.Split(s, sep)
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }

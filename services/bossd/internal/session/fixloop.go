@@ -205,7 +205,7 @@ func (f *FixLoop) HandleReviewFeedback(ctx context.Context, sessionID string, co
 
 // runFixAttempt is the common fix attempt logic: resume Claude, wait for
 // completion, push the branch, and fire FixComplete.
-func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, repo *models.Repo, attempt *models.Attempt, plan string) error {
+func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *models.Repo, attempt *models.Attempt, plan string) error {
 	f.logger.Info().
 		Str("session", sess.ID).
 		Str("attempt", attempt.ID).

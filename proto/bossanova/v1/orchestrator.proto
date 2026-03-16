@@ -35,6 +35,9 @@ message RegisterDaemonRequest {
   string hostname = 2;
   // Repos this daemon manages.
   repeated string repo_ids = 3;
+  // Optional endpoint URL where the daemon's DaemonService is reachable.
+  // Required for proxy RPC support. Daemons behind NAT may omit this.
+  optional string endpoint = 4;
 }
 
 message RegisterDaemonResponse {

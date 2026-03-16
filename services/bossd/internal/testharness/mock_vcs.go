@@ -13,9 +13,9 @@ import (
 type MockVCSProvider struct {
 	mu sync.Mutex
 
-	CreateDraftPRCalls     []vcs.CreatePROpts
+	CreateDraftPRCalls      []vcs.CreatePROpts
 	MarkReadyForReviewCalls []markReadyCall
-	prCounter              atomic.Int32
+	prCounter               atomic.Int32
 
 	// PRStatus is returned by GetPRStatus. Defaults to open.
 	PRStatus *vcs.PRStatus

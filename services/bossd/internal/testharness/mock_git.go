@@ -14,10 +14,10 @@ import (
 type MockWorktreeManager struct {
 	mu sync.Mutex
 
-	CreateCalls    []gitpkg.CreateOpts
-	ArchiveCalls   []string
-	ResurrectCalls []gitpkg.ResurrectOpts
-	PushCalls      []pushCall
+	CreateCalls     []gitpkg.CreateOpts
+	ArchiveCalls    []string
+	ResurrectCalls  []gitpkg.ResurrectOpts
+	PushCalls       []pushCall
 	EmptyTrashCalls []emptyTrashCall
 
 	// CreateFunc overrides the default Create behavior when set.

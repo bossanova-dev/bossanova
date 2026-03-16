@@ -74,7 +74,7 @@ func run() error {
 		return fmt.Errorf("socket path: %w", err)
 	}
 
-	srv := server.New(repos, sessions, attempts, lifecycle, claudeRunner)
+	srv := server.New(repos, sessions, attempts, lifecycle, claudeRunner, worktrees)
 
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)

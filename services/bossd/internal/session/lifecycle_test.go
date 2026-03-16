@@ -161,8 +161,8 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 // --- Mock WorktreeManager ---
 
 type mockWorktreeManager struct {
-	created    []gitpkg.CreateOpts
-	archived   []string
+	created     []gitpkg.CreateOpts
+	archived    []string
 	resurrected []gitpkg.ResurrectOpts
 }
 
@@ -195,11 +195,10 @@ func (m *mockWorktreeManager) DetectOriginURL(_ context.Context, _ string) (stri
 // --- Mock ClaudeRunner ---
 
 type mockClaudeRunner struct {
-	started    []mockStartCall
-	stopped    []string
-	running    map[string]bool
-	nextID     string
-	subscribed []string
+	started []mockStartCall
+	stopped []string
+	running map[string]bool
+	nextID  string
 }
 
 type mockStartCall struct {

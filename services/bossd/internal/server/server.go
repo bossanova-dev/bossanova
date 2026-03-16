@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
+	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/session"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -40,6 +41,7 @@ type Server struct {
 	attempts  db.AttemptStore
 	lifecycle *session.Lifecycle
 	claude    claude.ClaudeRunner
+	worktrees gitpkg.WorktreeManager
 	listener  net.Listener
 	srv       *http.Server
 
@@ -47,13 +49,14 @@ type Server struct {
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
-func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner) *Server {
+func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner, wt gitpkg.WorktreeManager) *Server {
 	return &Server{
 		repos:     repos,
 		sessions:  sessions,
 		attempts:  attempts,
 		lifecycle: lifecycle,
 		claude:    cr,
+		worktrees: wt,
 	}
 }
 
@@ -107,10 +110,13 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 		setupScript = msg.SetupScript
 	}
 
+	// Auto-detect origin URL from git config.
+	originURL, _ := s.worktrees.DetectOriginURL(ctx, msg.LocalPath)
+
 	repo, err := s.repos.Create(ctx, db.CreateRepoParams{
 		DisplayName:       msg.DisplayName,
 		LocalPath:         msg.LocalPath,
-		OriginURL:         "", // Detected from git repo in Leg 6
+		OriginURL:         originURL,
 		DefaultBaseBranch: msg.DefaultBaseBranch,
 		WorktreeBaseDir:   msg.WorktreeBaseDir,
 		SetupScript:       setupScript,

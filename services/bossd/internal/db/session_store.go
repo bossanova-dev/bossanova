@@ -154,7 +154,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []*models.Session
 	for rows.Next() {

@@ -29,7 +29,7 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err := migrate.Run(db, os.DirFS(migrationsDir())); err != nil {
 		t.Fatalf("run migrations: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -360,10 +360,12 @@ func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 		BranchName:   "feat/fk",
 		BaseBranch:   "main",
 	})
-	attemptStore.Create(ctx, CreateAttemptParams{
+	if _, err := attemptStore.Create(ctx, CreateAttemptParams{
 		SessionID: sess.ID,
 		Trigger:   int(models.AttemptTriggerConflict),
-	})
+	}); err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
 
 	// Delete repo should cascade to sessions and attempts
 	if err := repoStore.Delete(ctx, repo.ID); err != nil {
@@ -396,10 +398,12 @@ func TestForeignKeyCascade_DeleteSession(t *testing.T) {
 		BranchName:   "feat/fk2",
 		BaseBranch:   "main",
 	})
-	attemptStore.Create(ctx, CreateAttemptParams{
+	if _, err := attemptStore.Create(ctx, CreateAttemptParams{
 		SessionID: sess.ID,
 		Trigger:   int(models.AttemptTriggerCheckFailure),
-	})
+	}); err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
 
 	// Delete session should cascade to attempts
 	if err := sessionStore.Delete(ctx, sess.ID); err != nil {

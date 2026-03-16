@@ -46,7 +46,7 @@ func (s *SQLiteAttemptStore) ListBySession(ctx context.Context, sessionID string
 	if err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var attempts []*models.Attempt
 	for rows.Next() {

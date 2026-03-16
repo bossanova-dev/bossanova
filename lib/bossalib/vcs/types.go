@@ -13,7 +13,7 @@ const (
 type CheckStatus int
 
 const (
-	CheckStatusQueued     CheckStatus = iota + 1
+	CheckStatusQueued CheckStatus = iota + 1
 	CheckStatusInProgress
 	CheckStatusCompleted
 )
@@ -22,7 +22,7 @@ const (
 type CheckConclusion int
 
 const (
-	CheckConclusionSuccess   CheckConclusion = iota + 1
+	CheckConclusionSuccess CheckConclusion = iota + 1
 	CheckConclusionFailure
 	CheckConclusionNeutral
 	CheckConclusionCancelled
@@ -34,7 +34,7 @@ const (
 type ReviewState int
 
 const (
-	ReviewStateApproved         ReviewState = iota + 1
+	ReviewStateApproved ReviewState = iota + 1
 	ReviewStateChangesRequested
 	ReviewStateCommented
 	ReviewStateDismissed

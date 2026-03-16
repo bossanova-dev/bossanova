@@ -32,7 +32,7 @@ const (
 type Event int
 
 const (
-	WorktreeCreated  Event = iota + 1
+	WorktreeCreated Event = iota + 1
 	ClaudeStarted
 	BranchPushed
 	PROpened

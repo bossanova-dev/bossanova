@@ -11,15 +11,15 @@ import (
 
 // Repo represents a registered Git repository.
 type Repo struct {
-	ID               string
-	DisplayName      string
-	LocalPath        string
-	OriginURL        string
+	ID                string
+	DisplayName       string
+	LocalPath         string
+	OriginURL         string
 	DefaultBaseBranch string
-	WorktreeBaseDir  string
-	SetupScript      *string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	WorktreeBaseDir   string
+	SetupScript       *string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // Session represents a Claude coding session.
@@ -59,7 +59,7 @@ type Attempt struct {
 type AttemptTrigger int
 
 const (
-	AttemptTriggerUnspecified    AttemptTrigger = iota
+	AttemptTriggerUnspecified AttemptTrigger = iota
 	AttemptTriggerCheckFailure
 	AttemptTriggerConflict
 	AttemptTriggerReviewFeedback

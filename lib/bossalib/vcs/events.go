@@ -38,9 +38,9 @@ type PRClosed struct {
 	PRID int
 }
 
-func (ChecksPassed) vcsEvent()      {}
-func (ChecksFailed) vcsEvent()      {}
-func (ConflictDetected) vcsEvent()  {}
-func (ReviewSubmitted) vcsEvent()   {}
-func (PRMerged) vcsEvent()          {}
-func (PRClosed) vcsEvent()          {}
+func (ChecksPassed) vcsEvent()     {}
+func (ChecksFailed) vcsEvent()     {}
+func (ConflictDetected) vcsEvent() {}
+func (ReviewSubmitted) vcsEvent()  {}
+func (PRMerged) vcsEvent()         {}
+func (PRClosed) vcsEvent()         {}

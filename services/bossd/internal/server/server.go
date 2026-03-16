@@ -142,6 +142,15 @@ func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveR
 }
 
 func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
+	if req.Msg.RepoId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
+	}
+
+	// Verify the repo exists.
+	if _, err := s.repos.Get(ctx, req.Msg.RepoId); err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
+	}
+
 	// Stub: real implementation requires VCS provider (Leg 7).
 	return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
 }

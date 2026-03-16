@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -42,6 +43,7 @@ type Server struct {
 	lifecycle *session.Lifecycle
 	claude    claude.ClaudeRunner
 	worktrees gitpkg.WorktreeManager
+	provider  vcs.Provider
 	listener  net.Listener
 	srv       *http.Server
 
@@ -49,7 +51,7 @@ type Server struct {
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
-func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner, wt gitpkg.WorktreeManager) *Server {
+func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner, wt gitpkg.WorktreeManager, provider vcs.Provider) *Server {
 	return &Server{
 		repos:     repos,
 		sessions:  sessions,
@@ -57,6 +59,7 @@ func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore,
 		lifecycle: lifecycle,
 		claude:    cr,
 		worktrees: wt,
+		provider:  provider,
 	}
 }
 
@@ -159,13 +162,32 @@ func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRe
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
 	}
 
-	// Verify the repo exists.
-	if _, err := s.repos.Get(ctx, req.Msg.RepoId); err != nil {
+	// Verify the repo exists and get its origin URL.
+	repo, err := s.repos.Get(ctx, req.Msg.RepoId)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 	}
 
-	// Stub: real implementation requires VCS provider (Leg 7).
-	return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
+	if repo.OriginURL == "" {
+		return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
+	}
+
+	prs, err := s.provider.ListOpenPRs(ctx, repo.OriginURL)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list PRs: %w", err))
+	}
+
+	pbPRs := make([]*pb.PRSummary, len(prs))
+	for i, pr := range prs {
+		pbPRs[i] = &pb.PRSummary{
+			Number:     int32(pr.Number),
+			Title:      pr.Title,
+			HeadBranch: pr.HeadBranch,
+			State:      pb.PRState(pr.State),
+		}
+	}
+
+	return connect.NewResponse(&pb.ListRepoPRsResponse{PullRequests: pbPRs}), nil
 }
 
 // --- Session Lifecycle ---

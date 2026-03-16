@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pressly/goose/v3"
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
@@ -25,6 +27,14 @@ import (
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "Print version information and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("bossd " + buildinfo.String())
+		return
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "bossd: %v\n", err)
 		os.Exit(1)

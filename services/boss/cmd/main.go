@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +32,7 @@ func rootCmd() *cobra.Command {
 	root.PersistentFlags().String("remote", "", "Connect to orchestrator URL instead of local daemon")
 
 	root.AddCommand(
+		versionCmd(),
 		lsCmd(),
 		newCmd(),
 		attachCmd(),
@@ -47,6 +49,16 @@ func rootCmd() *cobra.Command {
 }
 
 // --- Subcommands ---
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println("boss " + buildinfo.String())
+		},
+	}
+}
 
 func lsCmd() *cobra.Command {
 	cmd := &cobra.Command{

@@ -1,0 +1,44 @@
+name: Split Mirrors
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - prefix: proto
+            target: bossanova-proto
+          - prefix: lib/bossalib
+            target: bossalib
+          - prefix: services/boss
+            target: boss
+          - prefix: services/bossd
+            target: bossd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install splitsh-lite
+        run: |
+          curl -L https://github.com/splitsh/lite/releases/download/v1.0.1/lite_linux_amd64.tar.gz | tar xz
+          sudo mv splitsh-lite /usr/local/bin/
+
+      - name: Split subtree
+        run: |
+          SHA=$(splitsh-lite --prefix=${{ matrix.prefix }})
+          echo "split_sha=${SHA}" >> "$GITHUB_ENV"
+
+      - name: Push to mirror repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.SPLIT_PUSH_TOKEN }}
+        run: |
+          git remote add mirror "https://x-access-token:${GITHUB_TOKEN}@github.com/recurser/${{ matrix.target }}.git"
+          git push mirror "${{ env.split_sha }}:refs/heads/main" --force

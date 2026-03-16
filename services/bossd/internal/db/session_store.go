@@ -1,0 +1,241 @@
+package db
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+
+	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
+)
+
+// SQLiteSessionStore implements SessionStore using SQLite.
+type SQLiteSessionStore struct {
+	db *sql.DB
+}
+
+// NewSessionStore creates a new SQLite-backed SessionStore.
+func NewSessionStore(db *sql.DB) *SQLiteSessionStore {
+	return &SQLiteSessionStore{db: db}
+}
+
+func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionParams) (*models.Session, error) {
+	id := newID()
+	now := timeNow()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, params.RepoID, params.Title, params.Plan,
+		params.WorktreePath, params.BranchName, params.BaseBranch,
+		int(machine.CreatingWorktree), now, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert session: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
+func (s *SQLiteSessionStore) Get(ctx context.Context, id string) (*models.Session, error) {
+	row := s.db.QueryRowContext(ctx, sessionSelectSQL+" WHERE s.id = ?", id)
+	return scanSession(row)
+}
+
+func (s *SQLiteSessionStore) List(ctx context.Context, repoID string) ([]*models.Session, error) {
+	query := sessionSelectSQL + " WHERE s.repo_id = ? ORDER BY s.created_at DESC"
+	return s.querySessionList(ctx, query, repoID)
+}
+
+func (s *SQLiteSessionStore) ListActive(ctx context.Context, repoID string) ([]*models.Session, error) {
+	query := sessionSelectSQL + " WHERE s.repo_id = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC"
+	return s.querySessionList(ctx, query, repoID)
+}
+
+func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
+	query := sessionSelectSQL + " WHERE s.repo_id = ? AND s.archived_at IS NOT NULL ORDER BY s.created_at DESC"
+	return s.querySessionList(ctx, query, repoID)
+}
+
+func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params UpdateSessionParams) (*models.Session, error) {
+	now := timeNow()
+	sets := []string{"updated_at = ?"}
+	args := []any{now}
+
+	if params.State != nil {
+		sets = append(sets, "state = ?")
+		args = append(args, *params.State)
+	}
+	if params.ClaudeSessionID != nil {
+		sets = append(sets, "claude_session_id = ?")
+		args = append(args, *params.ClaudeSessionID)
+	}
+	if params.PRNumber != nil {
+		sets = append(sets, "pr_number = ?")
+		args = append(args, *params.PRNumber)
+	}
+	if params.PRURL != nil {
+		sets = append(sets, "pr_url = ?")
+		args = append(args, *params.PRURL)
+	}
+	if params.LastCheckState != nil {
+		sets = append(sets, "last_check_state = ?")
+		args = append(args, *params.LastCheckState)
+	}
+	if params.AutomationEnabled != nil {
+		sets = append(sets, "automation_enabled = ?")
+		args = append(args, boolToInt(*params.AutomationEnabled))
+	}
+	if params.AttemptCount != nil {
+		sets = append(sets, "attempt_count = ?")
+		args = append(args, *params.AttemptCount)
+	}
+	if params.BlockedReason != nil {
+		sets = append(sets, "blocked_reason = ?")
+		args = append(args, *params.BlockedReason)
+	}
+	if params.ArchivedAt != nil {
+		sets = append(sets, "archived_at = ?")
+		args = append(args, *params.ArchivedAt)
+	}
+
+	args = append(args, id)
+	query := "UPDATE sessions SET " + joinStrings(sets, ", ") + " WHERE id = ?"
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("update session: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return s.Get(ctx, id)
+}
+
+func (s *SQLiteSessionStore) Archive(ctx context.Context, id string) error {
+	now := timeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
+		now, now, id)
+	if err != nil {
+		return fmt.Errorf("archive session: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) Resurrect(ctx context.Context, id string) error {
+	now := timeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("resurrect session: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string, args ...any) ([]*models.Session, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []*models.Session
+	for rows.Next() {
+		sess, err := scanSessionRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
+	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.last_check_state,
+	s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at
+	FROM sessions s`
+
+func scanSession(row *sql.Row) (*models.Session, error) {
+	var sess models.Session
+	var state, lastCheckState, automationEnabled int
+	var archivedAt, createdAt, updatedAt *string
+	err := row.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
+		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
+		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
+		&lastCheckState, &automationEnabled, &sess.AttemptCount,
+		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	sess.State = machine.State(state)
+	sess.LastCheckState = machine.CheckState(lastCheckState)
+	sess.AutomationEnabled = automationEnabled != 0
+	if archivedAt != nil {
+		t := parseTime(*archivedAt)
+		sess.ArchivedAt = &t
+	}
+	if createdAt != nil {
+		sess.CreatedAt = parseTime(*createdAt)
+	}
+	if updatedAt != nil {
+		sess.UpdatedAt = parseTime(*updatedAt)
+	}
+	return &sess, nil
+}
+
+func scanSessionRows(rows *sql.Rows) (*models.Session, error) {
+	var sess models.Session
+	var state, lastCheckState, automationEnabled int
+	var archivedAt, createdAt, updatedAt *string
+	err := rows.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
+		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
+		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
+		&lastCheckState, &automationEnabled, &sess.AttemptCount,
+		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	sess.State = machine.State(state)
+	sess.LastCheckState = machine.CheckState(lastCheckState)
+	sess.AutomationEnabled = automationEnabled != 0
+	if archivedAt != nil {
+		t := parseTime(*archivedAt)
+		sess.ArchivedAt = &t
+	}
+	if createdAt != nil {
+		sess.CreatedAt = parseTime(*createdAt)
+	}
+	if updatedAt != nil {
+		sess.UpdatedAt = parseTime(*updatedAt)
+	}
+	return &sess, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// timeNow returns the current time as an ISO 8601 string for SQLite storage.
+func timeNow() string {
+	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+}

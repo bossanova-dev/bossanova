@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/recurser/bossalib/safego"
 	"github.com/rs/cors"
 
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -127,10 +128,10 @@ func run() error {
 
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)
-	go func() {
+	safego.Go(log.Logger, func() {
 		log.Info().Str("addr", addr).Msg("starting orchestrator")
 		errCh <- httpServer.ListenAndServe()
-	}()
+	})
 
 	// --- Signal handling ---
 

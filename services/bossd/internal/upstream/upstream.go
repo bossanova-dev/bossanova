@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/safego"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -102,7 +103,7 @@ func (m *Manager) Connect(ctx context.Context, repoIDs []string) error {
 		return fmt.Errorf("register: %w", err)
 	}
 
-	go m.heartbeatLoop()
+	safego.Go(m.logger, m.heartbeatLoop)
 	return nil
 }
 

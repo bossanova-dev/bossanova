@@ -65,6 +65,14 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "state = ?")
 		args = append(args, *params.State)
 	}
+	if params.WorktreePath != nil {
+		sets = append(sets, "worktree_path = ?")
+		args = append(args, *params.WorktreePath)
+	}
+	if params.BranchName != nil {
+		sets = append(sets, "branch_name = ?")
+		args = append(args, *params.BranchName)
+	}
 	if params.ClaudeSessionID != nil {
 		sets = append(sets, "claude_session_id = ?")
 		args = append(args, *params.ClaudeSessionID)

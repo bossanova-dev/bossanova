@@ -119,17 +119,64 @@ func runAttach(_ *cobra.Command, _ string) error {
 }
 
 func runRepoAdd(_ *cobra.Command) error {
-	fmt.Println("boss repo add: add repository (not yet implemented)")
-	return nil
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	app := views.NewApp(c)
+	app.SetInitialView(views.ViewRepoAdd)
+	p := tea.NewProgram(app)
+	_, err = p.Run()
+	return err
 }
 
-func runRepoLS(_ *cobra.Command) error {
-	fmt.Println("boss repo ls: list repositories (not yet implemented)")
-	return nil
+func runRepoLS(cmd *cobra.Command) error {
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	repos, err := c.ListRepos(ctx)
+	if err != nil {
+		return fmt.Errorf("list repos: %w", err)
+	}
+
+	if len(repos) == 0 {
+		fmt.Println("No repositories registered.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	if _, err := fmt.Fprintln(w, "ID\tNAME\tPATH\tBRANCH\tSETUP"); err != nil {
+		return err
+	}
+	for _, repo := range repos {
+		id := repo.Id
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		setup := "-"
+		if repo.SetupScript != nil {
+			setup = *repo.SetupScript
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id, repo.DisplayName, repo.LocalPath, repo.DefaultBaseBranch, setup); err != nil {
+			return err
+		}
+	}
+	return w.Flush()
 }
 
-func runRepoRemove(_ *cobra.Command, _ string) error {
-	fmt.Println("boss repo remove: remove repository (not yet implemented)")
+func runRepoRemove(_ *cobra.Command, id string) error {
+	c, err := newClient()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	if err := c.RemoveRepo(ctx, id); err != nil {
+		return fmt.Errorf("remove repo: %w", err)
+	}
+	fmt.Printf("Repository %s removed.\n", id)
 	return nil
 }
 

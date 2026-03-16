@@ -43,6 +43,7 @@ func rootCmd() *cobra.Command {
 		loginCmd(),
 		logoutCmd(),
 		authStatusCmd(),
+		daemonCmd(),
 	)
 
 	return root
@@ -149,6 +150,39 @@ func resurrectCmd() *cobra.Command {
 			return runResurrect(cmd, args[0])
 		},
 	}
+}
+
+func daemonCmd() *cobra.Command {
+	d := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the bossd daemon",
+	}
+
+	d.AddCommand(
+		&cobra.Command{
+			Use:   "install",
+			Short: "Install bossd as a macOS LaunchAgent",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonInstall(cmd)
+			},
+		},
+		&cobra.Command{
+			Use:   "uninstall",
+			Short: "Uninstall the bossd LaunchAgent",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonUninstall(cmd)
+			},
+		},
+		&cobra.Command{
+			Use:   "status",
+			Short: "Show bossd daemon status",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonStatus(cmd)
+			},
+		},
+	)
+
+	return d
 }
 
 func trashCmd() *cobra.Command {

@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/views"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -264,6 +265,57 @@ func runTrashEmpty(cmd *cobra.Command) error {
 	} else {
 		fmt.Printf("Deleted %d archived session(s).\n", count)
 	}
+	return nil
+}
+
+// --- Daemon Management ---
+
+func runDaemonInstall(_ *cobra.Command) error {
+	bossdPath, err := daemon.ResolveBossdPath()
+	if err != nil {
+		return err
+	}
+
+	if err := daemon.Install(bossdPath); err != nil {
+		return fmt.Errorf("install daemon: %w", err)
+	}
+
+	fmt.Printf("Daemon installed and started.\n")
+	fmt.Printf("  bossd: %s\n", bossdPath)
+	plistPath, _ := daemon.PlistPath()
+	fmt.Printf("  plist: %s\n", plistPath)
+	return nil
+}
+
+func runDaemonUninstall(_ *cobra.Command) error {
+	if err := daemon.Uninstall(); err != nil {
+		return fmt.Errorf("uninstall daemon: %w", err)
+	}
+	fmt.Println("Daemon uninstalled.")
+	return nil
+}
+
+func runDaemonStatus(_ *cobra.Command) error {
+	st, err := daemon.GetStatus()
+	if err != nil {
+		return fmt.Errorf("daemon status: %w", err)
+	}
+
+	if !st.Installed {
+		fmt.Println("Daemon is not installed.")
+		fmt.Println("  Run 'boss daemon install' to set up the LaunchAgent.")
+		return nil
+	}
+
+	if st.Running {
+		fmt.Println("Daemon is running.")
+		if st.PID > 0 {
+			fmt.Printf("  PID:   %d\n", st.PID)
+		}
+	} else {
+		fmt.Println("Daemon is installed but not running.")
+	}
+	fmt.Printf("  Plist: %s\n", st.PlistPath)
 	return nil
 }
 

@@ -14,7 +14,7 @@
 ### Files Changed
 
 - `.github/workflows/test-web.yml:1-68` — Created; dorny/paths-filter two-job pattern for web SPA, triggers on services/web/** and proto/**, runs npm ci + lint + build
-- `.github/workflows/deploy.yml:1-161` — Created; tag-triggered (v*) with five jobs: deploy-bosso (Docker build+push+fly deploy), deploy-web (npm build+CF Pages deploy), build (cross-platform matrix), release (GitHub Release), bump-versions (sed update bosso_image in TF)
+- `.github/workflows/deploy.yml:1-161` — Created; tag-triggered (v\*) with five jobs: deploy-bosso (Docker build+push+fly deploy), deploy-web (npm build+CF Pages deploy), build (cross-platform matrix), release (GitHub Release), bump-versions (sed update bosso_image in TF)
 - `.github/workflows/release.yml` — Deleted; all functionality preserved in deploy.yml
 
 ### Learnings & Notes
@@ -38,7 +38,7 @@
 
 - bossanova-bbc2: Add CF Pages project to cloudflare Terraform module
 - bossanova-ldes: Consolidate Terraform envs into single workspace-keyed config
-- bossanova-880l: Add *.tfvars to .gitignore
+- bossanova-880l: Add \*.tfvars to .gitignore
 - bossanova-8y9w: [HANDOFF] Review Flight Leg 3
 
 ### Resume Command

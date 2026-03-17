@@ -369,7 +369,7 @@ func TestStartSession(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1", ""); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", "", false); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 

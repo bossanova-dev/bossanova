@@ -744,7 +744,9 @@ type CreateSessionRequest struct {
 	Plan       string                 `protobuf:"bytes,3,opt,name=plan,proto3" json:"plan,omitempty"`
 	BaseBranch string                 `protobuf:"bytes,4,opt,name=base_branch,json=baseBranch,proto3" json:"base_branch,omitempty"`
 	// If set, attach to an existing PR instead of creating a new one.
-	PrNumber      *int32 `protobuf:"varint,5,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
+	PrNumber *int32 `protobuf:"varint,5,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
+	// If true, remove any existing branch with the same name before creating.
+	ForceBranch   bool `protobuf:"varint,6,opt,name=force_branch,json=forceBranch,proto3" json:"force_branch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -812,6 +814,13 @@ func (x *CreateSessionRequest) GetPrNumber() int32 {
 		return *x.PrNumber
 	}
 	return 0
+}
+
+func (x *CreateSessionRequest) GetForceBranch() bool {
+	if x != nil {
+		return x.ForceBranch
+	}
+	return false
 }
 
 type CreateSessionResponse struct {
@@ -2572,14 +2581,15 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x12ListRepoPRsRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"S\n" +
 	"\x13ListRepoPRsResponse\x12<\n" +
-	"\rpull_requests\x18\x01 \x03(\v2\x17.bossanova.v1.PRSummaryR\fpullRequests\"\xaa\x01\n" +
+	"\rpull_requests\x18\x01 \x03(\v2\x17.bossanova.v1.PRSummaryR\fpullRequests\"\xcd\x01\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
 	"\x04plan\x18\x03 \x01(\tR\x04plan\x12\x1f\n" +
 	"\vbase_branch\x18\x04 \x01(\tR\n" +
 	"baseBranch\x12 \n" +
-	"\tpr_number\x18\x05 \x01(\x05H\x00R\bprNumber\x88\x01\x01B\f\n" +
+	"\tpr_number\x18\x05 \x01(\x05H\x00R\bprNumber\x88\x01\x01\x12!\n" +
+	"\fforce_branch\x18\x06 \x01(\bR\vforceBranchB\f\n" +
 	"\n" +
 	"_pr_number\"H\n" +
 	"\x15CreateSessionResponse\x12/\n" +

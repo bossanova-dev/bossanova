@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -17,12 +19,13 @@ import (
 type wizardStep int
 
 const (
-	stepRepoSelect  wizardStep = iota
-	stepSessionType            // replaces stepPRMode
-	stepPRSelect               // existing PR only
-	stepTitleInput             // new PR only
-	stepPlanInput              // plan feature only
-	stepCreating               // waiting for CreateSession RPC
+	stepRepoSelect       wizardStep = iota
+	stepSessionType                 // replaces stepPRMode
+	stepPRSelect                    // existing PR only
+	stepTitleInput                  // new PR only
+	stepPlanInput                   // plan feature only
+	stepConfirmOverwrite            // branch exists, confirm force
+	stepCreating                    // waiting for CreateSession RPC
 )
 
 // sessionType identifies the kind of session to create.
@@ -85,6 +88,7 @@ type NewSessionModel struct {
 	selectedRepo *pb.Repo
 	selectedPR   *pb.PRSummary
 	createdSess  *pb.Session
+	forceBranch  bool // retry with force after branch conflict
 }
 
 // NewNewSessionModel creates a NewSessionModel wired to the daemon client.
@@ -163,6 +167,13 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionCreatedMsg:
 		if msg.err != nil {
+			// Check if the error is a branch-already-exists conflict.
+			var connectErr *connect.Error
+			if errors.As(msg.err, &connectErr) && connectErr.Code() == connect.CodeAlreadyExists {
+				m.step = stepConfirmOverwrite
+				m.err = nil
+				return m, nil
+			}
 			m.err = msg.err
 			return m, nil
 		}
@@ -189,6 +200,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTitleInput(msg)
 		case stepPlanInput:
 			return m.updatePlanInput(msg)
+		case stepConfirmOverwrite:
+			return m.updateConfirmOverwrite(msg)
 		default:
 		}
 	}
@@ -309,12 +322,26 @@ func (m NewSessionModel) updatePlanInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		m.forceBranch = true
+		return m, m.startCreating()
+	case "n", "N":
+		// Go back to the title input step.
+		m.step = stepTitleInput
+		return m, m.titleInput.Focus()
+	}
+	return m, nil
+}
+
 // startCreating builds a CreateSessionRequest and fires the RPC.
 func (m *NewSessionModel) startCreating() tea.Cmd {
 	m.step = stepCreating
 	req := &pb.CreateSessionRequest{
-		RepoId:     m.selectedRepo.Id,
-		BaseBranch: m.selectedRepo.DefaultBaseBranch,
+		RepoId:      m.selectedRepo.Id,
+		BaseBranch:  m.selectedRepo.DefaultBaseBranch,
+		ForceBranch: m.forceBranch,
 	}
 
 	switch m.selectedSessionType() {
@@ -392,6 +419,8 @@ func (m NewSessionModel) View() tea.View {
 		m.viewTitleInput(&b)
 	case stepPlanInput:
 		m.viewPlanInput(&b)
+	case stepConfirmOverwrite:
+		m.viewConfirmOverwrite(&b)
 	default:
 	}
 
@@ -515,4 +544,14 @@ func (m NewSessionModel) viewPlanInput(b *strings.Builder) {
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.planInput.View()))
 	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[ctrl+d] next  [esc] cancel"))
+}
+
+func (m NewSessionModel) viewConfirmOverwrite(b *strings.Builder) {
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorYellow).Render(
+		"A branch with this name already exists."))
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
+		"Remove the old branch and create a new session?"))
+	b.WriteString("\n\n")
+	b.WriteString(styleActionBar.Render("[y] yes  [n] go back  [esc] cancel"))
 }

@@ -4,6 +4,7 @@ package git
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,10 @@ import (
 
 	"github.com/rs/zerolog"
 )
+
+// ErrBranchExists is returned when a branch with the derived name already
+// exists and the caller did not set Force in CreateOpts.
+var ErrBranchExists = errors.New("branch already exists")
 
 // SetupScriptTimeout is the maximum time allowed for a setup script to run.
 const SetupScriptTimeout = 5 * time.Minute
@@ -66,6 +71,7 @@ type CreateOpts struct {
 	WorktreeBaseDir string  // Directory under which worktrees are created.
 	Title           string  // Session title, used to derive branch name.
 	SetupScript     *string // Optional setup script to run after creation.
+	Force           bool    // If true, remove any existing branch with the same name.
 }
 
 // CreateResult holds the output of a successful worktree creation.
@@ -132,6 +138,12 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// branchExists checks whether a local branch ref exists.
+func branchExists(ctx context.Context, repoPath, branch string) bool {
+	_, err := runGit(ctx, repoPath, "rev-parse", "--verify", "refs/heads/"+branch)
+	return err == nil
+}
+
 // Create creates a new git worktree with a fresh branch based on baseBranch.
 func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, error) {
 	branch := sanitizeBranchName(opts.Title)
@@ -140,6 +152,33 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	// Ensure the worktree base directory exists.
 	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create worktree base dir: %w", err)
+	}
+
+	// Check for an existing branch with the same name.
+	if branchExists(ctx, opts.RepoPath, branch) {
+		if !opts.Force {
+			return nil, ErrBranchExists
+		}
+
+		m.logger.Warn().
+			Str("branch", branch).
+			Msg("force-removing existing branch")
+
+		// Remove any worktree that references this branch.
+		if _, err := runGit(ctx, opts.RepoPath, "worktree", "remove", "--force", wtPath); err != nil {
+			// Worktree may not exist — that's fine.
+			m.logger.Debug().Err(err).Msg("worktree remove (may not exist)")
+		}
+
+		// Prune stale worktree refs so the branch is no longer locked.
+		if _, err := runGit(ctx, opts.RepoPath, "worktree", "prune"); err != nil {
+			m.logger.Debug().Err(err).Msg("worktree prune")
+		}
+
+		// Delete the local branch.
+		if _, err := runGit(ctx, opts.RepoPath, "branch", "-D", branch); err != nil {
+			return nil, fmt.Errorf("delete existing branch: %w", err)
+		}
 	}
 
 	m.logger.Info().

@@ -152,16 +152,46 @@ for i, opt := range options {
 
 ## Error Views
 
-Use inline concat (not `strings.Builder`) for simple error + action bar:
+Use `renderError()` (defined in `home.go`) to render errors that wrap to the terminal width instead of truncating:
 
 ```go
 return tea.NewView(
-    styleError.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" +
+    renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
         styleActionBar.Render("[esc] back"),
 )
 ```
 
-Note: `styleError` has its own padding. The `"\n"` between error and action bar is correct here because the error style's padding and action bar's padding together produce exactly one blank line.
+Every model that displays errors must track `width int` and handle `tea.WindowSizeMsg`:
+
+```go
+case tea.WindowSizeMsg:
+    m.width = msg.Width
+    return m, nil
+```
+
+The `App` must propagate width to child views on resize and when switching views.
+
+Note: `renderError` applies `styleError` with `Width(width - 4)` to account for padding. The `"\n"` between error and action bar is correct here because the error style's padding and action bar's padding together produce exactly one blank line.
+
+---
+
+## Confirmation Dialogs
+
+Use `[y/enter] confirm  [n/esc] cancel` for all yes/no confirmation prompts. Accept both `y`/`Y`/`enter` to confirm and `n`/`N`/`esc` to cancel:
+
+```go
+func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+    switch msg.String() {
+    case "y", "Y", "enter":
+        // proceed
+    case "n", "N":
+        // go back
+    }
+    return m, nil
+}
+```
+
+The `esc` key is handled globally (outside the step switch) so it doesn't need a separate case.
 
 ---
 
@@ -173,10 +203,12 @@ Format: `[key] action` separated by two spaces.
 [n]ew session  [r]epo  [enter] select  [q]uit
 [a] add  [d] remove  [esc] back
 [enter] select  [esc] cancel
+[y/enter] confirm  [n/esc] cancel
 ```
 
 - Highlight the key letter inside brackets for single-char keys: `[n]ew`, `[r]epo`, `[q]uit`
 - Use full key name for special keys: `[enter]`, `[esc]`, `[ctrl+d]`
+- Combine keys with `/` when multiple keys do the same thing: `[y/enter]`, `[n/esc]`
 - Keep action labels short (1-2 words)
 
 ---
@@ -190,5 +222,6 @@ Format: `[key] action` separated by two spaces.
 - [ ] Cursor is `"> "` / `"  "` (2 chars)
 - [ ] Rows wrapped with `Padding(0, 2)`
 - [ ] No extra `\n` before `styleActionBar`
-- [ ] Error view uses `styleError` + `"\n"` + `styleActionBar`
+- [ ] Error view uses `renderError(msg, m.width)` + `"\n"` + `styleActionBar`
+- [ ] Confirmation dialogs use `[y/enter] confirm  [n/esc] cancel`
 - [ ] Action bar key format is `[key] action`

@@ -43,6 +43,8 @@ type CreateSessionParams struct {
 	WorktreePath string
 	BranchName   string
 	BaseBranch   string
+	PRNumber     *int
+	PRURL        *string
 }
 
 // UpdateSessionParams holds the fields that can be updated on a session.
@@ -71,6 +73,21 @@ type SessionStore interface {
 	Archive(ctx context.Context, id string) error
 	Resurrect(ctx context.Context, id string) error
 	Delete(ctx context.Context, id string) error
+}
+
+// CreateClaudeChatParams holds the parameters for creating a new Claude chat record.
+type CreateClaudeChatParams struct {
+	SessionID string
+	ClaudeID  string
+	Title     string
+}
+
+// ClaudeChatStore defines the interface for Claude chat persistence.
+type ClaudeChatStore interface {
+	Create(ctx context.Context, params CreateClaudeChatParams) (*models.ClaudeChat, error)
+	ListBySession(ctx context.Context, sessionID string) ([]*models.ClaudeChat, error)
+	UpdateTitle(ctx context.Context, id string, title string) error
+	UpdateTitleByClaudeID(ctx context.Context, claudeID string, title string) error
 }
 
 // CreateAttemptParams holds the parameters for creating a new attempt.

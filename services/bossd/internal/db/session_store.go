@@ -24,11 +24,11 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 	id := newID()
 	now := timeNow()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, pr_number, pr_url, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Title, params.Plan,
 		params.WorktreePath, params.BranchName, params.BaseBranch,
-		int(machine.CreatingWorktree), now, now,
+		int(machine.CreatingWorktree), params.PRNumber, params.PRURL, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert session: %w", err)

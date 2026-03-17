@@ -73,6 +73,16 @@ func (c *LocalClient) ResolveContext(ctx context.Context, workingDir string) (*p
 
 // --- Repo Management ---
 
+func (c *LocalClient) ValidateRepoPath(ctx context.Context, localPath string) (*pb.ValidateRepoPathResponse, error) {
+	resp, err := c.rpc.ValidateRepoPath(ctx, connect.NewRequest(&pb.ValidateRepoPathRequest{
+		LocalPath: localPath,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 func (c *LocalClient) RegisterRepo(ctx context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error) {
 	resp, err := c.rpc.RegisterRepo(ctx, connect.NewRequest(req))
 	if err != nil {
@@ -213,6 +223,38 @@ func (c *LocalClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest)
 		return 0, err
 	}
 	return resp.Msg.DeletedCount, nil
+}
+
+// --- Claude Chat Tracking ---
+
+func (c *LocalClient) RecordChat(ctx context.Context, sessionID, claudeID, title string) (*pb.ClaudeChat, error) {
+	resp, err := c.rpc.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+		SessionId: sessionID,
+		ClaudeId:  claudeID,
+		Title:     title,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Chat, nil
+}
+
+func (c *LocalClient) ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error) {
+	resp, err := c.rpc.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{
+		SessionId: sessionID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Chats, nil
+}
+
+func (c *LocalClient) UpdateChatTitle(ctx context.Context, claudeID, title string) error {
+	_, err := c.rpc.UpdateChatTitle(ctx, connect.NewRequest(&pb.UpdateChatTitleRequest{
+		ClaudeId: claudeID,
+		Title:    title,
+	}))
+	return err
 }
 
 // localAttachStream wraps the DaemonService AttachSession stream.

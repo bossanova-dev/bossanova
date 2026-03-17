@@ -73,6 +73,7 @@ func run() error {
 	repos := db.NewRepoStore(database)
 	sessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
+	claudeChats := db.NewClaudeChatStore(database)
 
 	// --- Lifecycle ---
 
@@ -95,7 +96,7 @@ func run() error {
 		return fmt.Errorf("socket path: %w", err)
 	}
 
-	srv := server.New(repos, sessions, attempts, lifecycle, claudeRunner, worktrees, ghProvider)
+	srv := server.New(repos, sessions, attempts, claudeChats, lifecycle, claudeRunner, worktrees, ghProvider)
 
 	// --- Upstream (optional, cloud mode) ---
 

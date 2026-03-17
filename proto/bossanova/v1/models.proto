@@ -138,6 +138,9 @@ message Session {
   optional google.protobuf.Timestamp archived_at = 16;
   google.protobuf.Timestamp created_at = 17;
   google.protobuf.Timestamp updated_at = 18;
+
+  // Denormalized repo display name, populated server-side for convenience.
+  string repo_display_name = 19;
 }
 
 // Attempt represents a fix attempt within a session.
@@ -241,4 +244,14 @@ message PRMergedEvent {
 
 message PRClosedEvent {
   int32 pr_id = 1;
+}
+
+// ClaudeChat represents a Claude Code conversation associated with a session.
+message ClaudeChat {
+  string id = 1;
+  string session_id = 2;
+  string claude_id = 3;          // Claude Code session UUID
+  string title = 4;              // First user prompt or "New chat"
+  string daemon_id = 5;          // Originating daemon (empty = local)
+  google.protobuf.Timestamp created_at = 6;
 }

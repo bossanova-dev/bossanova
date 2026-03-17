@@ -13,6 +13,7 @@ service DaemonService {
   rpc ResolveContext(ResolveContextRequest) returns (ResolveContextResponse);
 
   // Repo management
+  rpc ValidateRepoPath(ValidateRepoPathRequest) returns (ValidateRepoPathResponse);
   rpc RegisterRepo(RegisterRepoRequest) returns (RegisterRepoResponse);
   rpc CloneAndRegisterRepo(CloneAndRegisterRepoRequest) returns (CloneAndRegisterRepoResponse);
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
@@ -36,6 +37,11 @@ service DaemonService {
   rpc ResurrectSession(ResurrectSessionRequest) returns (ResurrectSessionResponse);
   rpc EmptyTrash(EmptyTrashRequest) returns (EmptyTrashResponse);
 
+  // Claude chat tracking
+  rpc RecordChat(RecordChatRequest) returns (RecordChatResponse);
+  rpc ListChats(ListChatsRequest) returns (ListChatsResponse);
+  rpc UpdateChatTitle(UpdateChatTitleRequest) returns (UpdateChatTitleResponse);
+
   // VCS event delivery (orchestrator → daemon via webhook routing)
   rpc DeliverVCSEvent(DeliverVCSEventRequest) returns (DeliverVCSEventResponse);
 }
@@ -52,6 +58,20 @@ message ResolveContextResponse {
   optional Repo repo = 1;
   // The resolved session, if inside a session worktree.
   optional Session session = 2;
+}
+
+// --- Repo Validation ---
+
+message ValidateRepoPathRequest {
+  string local_path = 1;
+}
+
+message ValidateRepoPathResponse {
+  bool is_valid = 1;           // path exists, is dir, is git repo
+  string error_message = 2;    // human-readable error if not valid
+  string origin_url = 3;       // detected origin remote URL
+  bool is_github = 4;          // true if origin URL is github.com
+  string default_branch = 5;   // detected default branch (HEAD ref)
 }
 
 // --- Repo Management ---
@@ -242,6 +262,33 @@ message EmptyTrashResponse {
   // Number of archived sessions permanently deleted.
   int32 deleted_count = 1;
 }
+
+// --- Claude Chat Tracking ---
+
+message RecordChatRequest {
+  string session_id = 1;
+  string claude_id = 2;   // Claude Code session UUID
+  string title = 3;       // First user prompt or "New chat"
+}
+
+message RecordChatResponse {
+  ClaudeChat chat = 1;
+}
+
+message ListChatsRequest {
+  string session_id = 1;
+}
+
+message ListChatsResponse {
+  repeated ClaudeChat chats = 1;
+}
+
+message UpdateChatTitleRequest {
+  string claude_id = 1;  // Claude Code session UUID
+  string title = 2;
+}
+
+message UpdateChatTitleResponse {}
 
 // --- VCS Event Delivery ---
 

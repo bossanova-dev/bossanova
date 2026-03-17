@@ -704,8 +704,10 @@ type Session struct {
 	ArchivedAt        *timestamppb.Timestamp `protobuf:"bytes,16,opt,name=archived_at,json=archivedAt,proto3,oneof" json:"archived_at,omitempty"`
 	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Denormalized repo display name, populated server-side for convenience.
+	RepoDisplayName string `protobuf:"bytes,19,opt,name=repo_display_name,json=repoDisplayName,proto3" json:"repo_display_name,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -862,6 +864,13 @@ func (x *Session) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *Session) GetRepoDisplayName() string {
+	if x != nil {
+		return x.RepoDisplayName
+	}
+	return ""
 }
 
 // Attempt represents a fix attempt within a session.
@@ -1814,6 +1823,91 @@ func (x *PRClosedEvent) GetPrId() int32 {
 	return 0
 }
 
+// ClaudeChat represents a Claude Code conversation associated with a session.
+type ClaudeChat struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	ClaudeId      string                 `protobuf:"bytes,3,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"` // Claude Code session UUID
+	Title         string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`                       // First user prompt or "New chat"
+	DaemonId      string                 `protobuf:"bytes,5,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"` // Originating daemon (empty = local)
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClaudeChat) Reset() {
+	*x = ClaudeChat{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClaudeChat) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClaudeChat) ProtoMessage() {}
+
+func (x *ClaudeChat) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClaudeChat.ProtoReflect.Descriptor instead.
+func (*ClaudeChat) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ClaudeChat) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetClaudeId() string {
+	if x != nil {
+		return x.ClaudeId
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetDaemonId() string {
+	if x != nil {
+		return x.DaemonId
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
 var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
@@ -1833,7 +1927,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x0f\n" +
-	"\r_setup_script\"\xb5\x06\n" +
+	"\r_setup_script\"\xe1\x06\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -1858,7 +1952,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x14\n" +
+	"updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12*\n" +
+	"\x11repo_display_name\x18\x13 \x01(\tR\x0frepoDisplayNameB\x14\n" +
 	"\x12_claude_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
@@ -1942,7 +2037,17 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\rPRMergedEvent\x12\x13\n" +
 	"\x05pr_id\x18\x01 \x01(\x05R\x04prId\"$\n" +
 	"\rPRClosedEvent\x12\x13\n" +
-	"\x05pr_id\x18\x01 \x01(\x05R\x04prId*\xb6\x03\n" +
+	"\x05pr_id\x18\x01 \x01(\x05R\x04prId\"\xc6\x01\n" +
+	"\n" +
+	"ClaudeChat\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1b\n" +
+	"\tclaude_id\x18\x03 \x01(\tR\bclaudeId\x12\x14\n" +
+	"\x05title\x18\x04 \x01(\tR\x05title\x12\x1b\n" +
+	"\tdaemon_id\x18\x05 \x01(\tR\bdaemonId\x129\n" +
+	"\n" +
+	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt*\xb6\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12!\n" +
@@ -2029,7 +2134,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),             // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),             // 1: bossanova.v1.SessionEvent
@@ -2056,20 +2161,21 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*ReviewSubmittedEvent)(nil),  // 22: bossanova.v1.ReviewSubmittedEvent
 	(*PRMergedEvent)(nil),         // 23: bossanova.v1.PRMergedEvent
 	(*PRClosedEvent)(nil),         // 24: bossanova.v1.PRClosedEvent
-	(*timestamppb.Timestamp)(nil), // 25: google.protobuf.Timestamp
+	(*ClaudeChat)(nil),            // 25: bossanova.v1.ClaudeChat
+	(*timestamppb.Timestamp)(nil), // 26: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
-	25, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	25, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	26, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	4,  // 3: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
-	25, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	25, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	25, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	26, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	26, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	7,  // 7: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
 	8,  // 8: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	25, // 9: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	25, // 10: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	26, // 9: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	26, // 10: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 11: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	2,  // 12: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	3,  // 13: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
@@ -2083,11 +2189,12 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	24, // 21: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
 	13, // 22: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
 	14, // 23: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
-	24, // [24:24] is the sub-list for method output_type
-	24, // [24:24] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	26, // 24: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	25, // [25:25] is the sub-list for method output_type
+	25, // [25:25] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -2115,7 +2222,7 @@ func file_bossanova_v1_models_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
 			NumEnums:      9,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

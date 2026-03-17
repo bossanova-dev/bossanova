@@ -8,6 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/google/uuid"
+	"github.com/recurser/boss/internal/claude"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -16,6 +18,9 @@ import (
 type claudeFinishedMsg struct {
 	err error
 }
+
+// chatTitleUpdatedMsg signals a best-effort title update completed (ignored).
+type chatTitleUpdatedMsg struct{}
 
 // sessionFetchedMsg carries a session fetched via RPC.
 type sessionFetchedMsg struct {
@@ -33,6 +38,7 @@ type AttachModel struct {
 	ctx       context.Context
 	sessionID string
 	resumeID  string // Claude Code session UUID to resume (empty = new chat)
+	claudeID  string // The Claude Code session UUID actually launched
 
 	session   *pb.Session
 	launching bool  // true while fetching session
@@ -79,9 +85,18 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Launch interactive Claude in the session's worktree.
 		var claudeCmd *exec.Cmd
 		if m.resumeID != "" {
+			// Resume an existing Claude Code session.
+			m.claudeID = m.resumeID
 			claudeCmd = exec.Command("claude", "--resume", m.resumeID)
 		} else {
-			claudeCmd = exec.Command("claude")
+			// New chat: generate UUID, record it, and launch with --session-id.
+			newID := uuid.New().String()
+			if _, err := m.client.RecordChat(m.ctx, m.sessionID, newID, "New chat"); err != nil {
+				m.err = fmt.Errorf("record chat: %w", err)
+				return m, nil
+			}
+			m.claudeID = newID
+			claudeCmd = exec.Command("claude", "--session-id", newID)
 		}
 		claudeCmd.Dir = msg.session.GetWorktreePath()
 
@@ -97,6 +112,11 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.claudeErr = msg.err
 		// Auto-detach back to home screen.
 		m.detach = true
+		// Best-effort: update chat title from JSONL.
+		return m, m.updateChatTitle()
+
+	case chatTitleUpdatedMsg:
+		// Ignored — fire-and-forget.
 		return m, nil
 
 	case attachErrMsg:
@@ -117,6 +137,22 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// updateChatTitle reads the Claude JSONL file and updates the chat title via RPC.
+func (m AttachModel) updateChatTitle() tea.Cmd {
+	if m.claudeID == "" || m.session == nil {
+		return nil
+	}
+	claudeID := m.claudeID
+	worktreePath := m.session.GetWorktreePath()
+	return func() tea.Msg {
+		title := claude.ChatTitle(worktreePath, claudeID)
+		if title != "" {
+			_ = m.client.UpdateChatTitle(m.ctx, claudeID, title)
+		}
+		return chatTitleUpdatedMsg{}
+	}
 }
 
 // Detached returns true if the user should return to the home screen.

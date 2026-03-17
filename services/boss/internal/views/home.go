@@ -17,6 +17,16 @@ import (
 
 const pollInterval = 2 * time.Second
 
+// Shared layout constants for consistent TUI styling.
+const (
+	shortIDLen    = 7 // characters shown for truncated UUIDs
+	colGap        = 2 // spaces between table columns
+	actionBarPadY = 1 // blank lines above action bar
+)
+
+// colSep is the string used to separate table columns.
+var colSep = strings.Repeat(" ", colGap)
+
 // sessionListMsg carries the result of a ListSessions RPC call.
 type sessionListMsg struct {
 	sessions []*pb.Session
@@ -105,24 +115,39 @@ var (
 
 	styleTitle     = lipgloss.NewStyle().Bold(true).Padding(0, 2)
 	styleSelected  = lipgloss.NewStyle().Bold(true)
-	styleActionBar = lipgloss.NewStyle().Faint(true).Padding(1, 2)
+	styleActionBar = lipgloss.NewStyle().Faint(true).Padding(actionBarPadY, 2)
 	styleError     = lipgloss.NewStyle().Foreground(colorRed).Padding(1, 2)
 	styleSubtle    = lipgloss.NewStyle().Faint(true)
 )
 
-func renderBanner() string {
-	l := lipgloss.NewStyle().Foreground(colorOrange)
+// bannerGradient defines a horizontal color gradient for the B icon (dawn palette).
+var bannerGradient = []color.Color{
+	lipgloss.Color("#00C6FF"),
+	lipgloss.Color("#00AAFF"),
+	lipgloss.Color("#008EFF"),
+	lipgloss.Color("#0072FF"),
+}
 
+func renderBanner() string {
 	cwd, _ := os.Getwd()
 	if home, err := os.UserHomeDir(); err == nil {
 		cwd = strings.Replace(cwd, home, "~", 1)
 	}
 
-	banner := l.Render(" ████") + "\n" +
-		l.Render(" █   █") + "   Bossanova v" + buildinfo.Version + "\n" +
-		l.Render(" ████") + "   " + styleSubtle.Render(cwd) + "\n" +
-		l.Render(" █   █") + "\n" +
-		l.Render(" ████")
+	// Logo chars per row, matching `npx oh-my-logo "B" dawn --filled --block-font tiny`.
+	row1 := []string{" ", "█", "▄", "▄"}
+	row2 := []string{" ", "█", "▄", "█"}
+
+	colorize := func(chars []string) string {
+		var b strings.Builder
+		for i, ch := range chars {
+			b.WriteString(lipgloss.NewStyle().Foreground(bannerGradient[i]).Render(ch))
+		}
+		return b.String()
+	}
+
+	banner := colorize(row1) + "  Bossanova v" + buildinfo.Version + "\n" +
+		colorize(row2) + "  " + styleSubtle.Render(cwd)
 
 	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
 }
@@ -214,7 +239,7 @@ func (h HomeModel) View() tea.View {
 			styleError.Render(fmt.Sprintf("Cannot connect to daemon: %v", h.err)) +
 				"\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render("Start the daemon with: bossd") +
-				"\n\n" +
+				"\n" +
 				styleActionBar.Render("Press q to quit."),
 		)
 	}
@@ -230,7 +255,7 @@ func (h HomeModel) View() tea.View {
 		return tea.NewView(
 			renderBanner() + "\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
-				styleActionBar.Render("[n]ew session  [r]epo  [q]uit"),
+				styleActionBar.Render("[n]ew session  [r]epos  [q]uit"),
 		)
 	}
 
@@ -239,16 +264,27 @@ func (h HomeModel) View() tea.View {
 	b.WriteString(renderBanner())
 	b.WriteString("\n")
 
-	// Fixed columns: cursor(2) + padding(4) + ID(7) + STATE(14) + PR(5) + CI(4) + spacing(9) = 45
-	const fixedCols = 45
-	branchWidth := h.width - fixedCols
-	if branchWidth < 16 {
-		branchWidth = 16
+	// Compute dynamic column widths from data.
+	maxRepo := len("REPO")
+	maxBranch := len("BRANCH")
+	for _, sess := range h.sessions {
+		if rl := len(sess.RepoDisplayName); rl > maxRepo {
+			maxRepo = rl
+		}
+		if bl := len(strings.TrimPrefix(sess.BranchName, "boss/")); bl > maxBranch {
+			maxBranch = bl
+		}
+	}
+	if maxRepo > 20 {
+		maxRepo = 20
+	}
+	if maxBranch > 60 {
+		maxBranch = 60
 	}
 
 	// Table header.
-	header := fmt.Sprintf("  %-7s  %-*s  %-14s  %-5s  %-4s",
-		"ID", branchWidth, "BRANCH", "STATE", "PR", "CI")
+	header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-14s"+colSep+"%-5s"+colSep+"%-4s",
+		shortIDLen, "ID", maxRepo, "REPO", maxBranch, "BRANCH", "STATE", "PR", "CI")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
 	b.WriteString("\n")
 
@@ -257,8 +293,9 @@ func (h HomeModel) View() tea.View {
 		selected := i == h.cursor
 
 		state := StateLabel(sess.State)
+		repoName := truncate(sess.RepoDisplayName, maxRepo)
 		branchDisplay := strings.TrimPrefix(sess.BranchName, "boss/")
-		branch := truncate(branchDisplay, branchWidth)
+		branch := truncate(branchDisplay, maxBranch)
 		pr := "-"
 		if sess.PrNumber != nil {
 			pr = fmt.Sprintf("#%d", *sess.PrNumber)
@@ -273,12 +310,12 @@ func (h HomeModel) View() tea.View {
 		}
 
 		shortID := sess.Id
-		if len(shortID) > 7 {
-			shortID = shortID[:7]
+		if len(shortID) > shortIDLen {
+			shortID = shortID[:shortIDLen]
 		}
 
-		row := fmt.Sprintf("%s%-7s  %-*s  %s  %-5s  %s",
-			cursor, shortID, branchWidth, branch, stateStyled, pr, ci)
+		row := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%s"+colSep+"%-5s"+colSep+"%s",
+			cursor, shortIDLen, shortID, maxRepo, repoName, maxBranch, branch, stateStyled, pr, ci)
 
 		if selected {
 			row = styleSelected.Render(row)
@@ -288,7 +325,7 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(styleActionBar.Render("[n]ew session  [r]epo  [enter] chats  [q]uit"))
+	b.WriteString(styleActionBar.Render("[n]ew session  [r]epos  [enter] select  [q]uit"))
 
 	return tea.NewView(b.String())
 }

@@ -8,11 +8,11 @@ All 12 flight legs from the Go rewrite plan are already implemented (24 sub-legs
 
 Cloudflare Universal SSL only covers `*.bossanova.dev` (one level), so staging uses hyphens not sub-sub-domains. Auth0 uses a single tenant (`id.bossanova.dev`) shared across all envs, with separate Auth0 applications per env.
 
-| Service                | Staging                                 | Production                        |
-| ---------------------- | --------------------------------------- | --------------------------------- |
-| Orchestrator (Fly.io)  | `orchestrator-staging.bossanova.dev`    | `orchestrator.bossanova.dev`      |
-| Auth0 (shared tenant)  | `id.bossanova.dev`                      | `id.bossanova.dev`                |
-| Web SPA (CF Pages)     | `app-staging.bossanova.dev`             | `app.bossanova.dev`               |
+| Service               | Staging                              | Production                   |
+| --------------------- | ------------------------------------ | ---------------------------- |
+| Orchestrator (Fly.io) | `orchestrator-staging.bossanova.dev` | `orchestrator.bossanova.dev` |
+| Auth0 (shared tenant) | `id.bossanova.dev`                   | `id.bossanova.dev`           |
+| Web SPA (CF Pages)    | `app-staging.bossanova.dev`          | `app.bossanova.dev`          |
 
 ## Changes
 
@@ -256,22 +256,22 @@ Add `*.tfvars` and `!*.tfvars.example` to `.gitignore` (safety net — currently
 
 ## Critical Files
 
-| File                                        | Action                              |
-| ------------------------------------------- | ----------------------------------- |
-| `services/bosso/internal/db/db.go`          | Modify                              |
-| `services/bosso/Dockerfile`                 | Create                              |
-| `services/bosso/litestream.yml`             | Create                              |
-| `services/bosso/fly.toml`                   | Create                              |
-| `.github/workflows/deploy.yml`              | Create                              |
-| `.github/workflows/release.yml`             | Delete (merged into deploy.yml)     |
-| `.github/workflows/test-web.yml`            | Create                              |
-| `infra/modules/cloudflare/main.tf`          | Modify (add pages_project)          |
-| `infra/modules/cloudflare/variables.tf`     | Modify (add pages vars)             |
-| `infra/environments/staging/`               | Delete (merged into single config)  |
-| `infra/environments/production/`            | Delete (merged into single config)  |
-| `infra/environments/main.tf`                | Create (workspace-keyed locals)     |
-| `infra/environments/variables.tf`           | Create (secrets only)               |
-| `.gitignore`                                | Modify (add \*.tfvars)              |
+| File                                    | Action                             |
+| --------------------------------------- | ---------------------------------- |
+| `services/bosso/internal/db/db.go`      | Modify                             |
+| `services/bosso/Dockerfile`             | Create                             |
+| `services/bosso/litestream.yml`         | Create                             |
+| `services/bosso/fly.toml`               | Create                             |
+| `.github/workflows/deploy.yml`          | Create                             |
+| `.github/workflows/release.yml`         | Delete (merged into deploy.yml)    |
+| `.github/workflows/test-web.yml`        | Create                             |
+| `infra/modules/cloudflare/main.tf`      | Modify (add pages_project)         |
+| `infra/modules/cloudflare/variables.tf` | Modify (add pages vars)            |
+| `infra/environments/staging/`           | Delete (merged into single config) |
+| `infra/environments/production/`        | Delete (merged into single config) |
+| `infra/environments/main.tf`            | Create (workspace-keyed locals)    |
+| `infra/environments/variables.tf`       | Create (secrets only)              |
+| `.gitignore`                            | Modify (add \*.tfvars)             |
 
 ## Verification
 

@@ -17,9 +17,9 @@
 ### Files Changed
 
 - `.github/workflows/ci.yml:1-73` — NEW: CI workflow with lint (buf + golangci-lint per module), test (all modules), and build jobs. Triggered on push to main and PRs
-- `.github/workflows/release.yml:1-74` — NEW: Release workflow triggered by v* tags. Matrix build for darwin/amd64, darwin/arm64, linux/amd64 with CGO_ENABLED=0. Uses softprops/action-gh-release for GitHub Release creation with auto-generated notes
+- `.github/workflows/release.yml:1-74` — NEW: Release workflow triggered by v\* tags. Matrix build for darwin/amd64, darwin/arm64, linux/amd64 with CGO_ENABLED=0. Uses softprops/action-gh-release for GitHub Release creation with auto-generated notes
 - `.github/workflows/split.yml:1-44` — NEW: splitsh-lite mirror workflow. Matrix strategy for proto→bossanova-proto, bossalib→bossalib, boss→boss, bossd→bossd. Requires SPLIT_PUSH_TOKEN secret
-- `infra/homebrew/bossanova.rb:1-51` — NEW: Homebrew formula template with platform-specific binary downloads and bossd as a resource. Uses ${VERSION} and ${SHA256_*} placeholders
+- `infra/homebrew/bossanova.rb:1-51` — NEW: Homebrew formula template with platform-specific binary downloads and bossd as a resource. Uses ${VERSION} and ${SHA256\_\*} placeholders
 - `infra/homebrew/generate-formula.sh:1-28` — NEW: Script to generate formula from template by filling in version and SHA256 checksums from release artifacts
 
 ### Learnings & Notes

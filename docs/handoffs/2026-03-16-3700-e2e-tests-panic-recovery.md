@@ -48,6 +48,7 @@
 This completes the Go rewrite flight legs as defined in the plan. The remaining work would be new feature legs (web SPA, Terraform infra, etc.) which are not yet planned as bd tasks.
 
 Potential next work:
+
 - Fix pre-existing lint errors across boss/bossd/bosso modules
 - Add more E2E test coverage (conflict detection, review feedback paths)
 - Web SPA implementation (React + ConnectRPC web client)
@@ -56,5 +57,6 @@ Potential next work:
 ### Resume Command
 
 To continue this work:
+
 1. Run `bd ready --label "flight:fp-2026-03-16-1700-bossanova-go-rewrite"` to see available tasks
 2. Review files: `services/bossd/internal/testharness/harness.go`, `lib/bossalib/safego/safego.go`

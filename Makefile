@@ -45,21 +45,21 @@ $(BIN_DIR)/bosso:
 test:
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
-		(cd $$mod && go test ./...); \
+		$(MAKE) -C $$mod test; \
 	done
 
 ## Per-module test targets
 test-bossalib:
-	cd lib/bossalib && go test ./...
+	$(MAKE) -C lib/bossalib test
 
 test-boss:
-	cd services/boss && go test ./...
+	$(MAKE) -C services/boss test
 
 test-bossd:
-	cd services/bossd && go test ./...
+	$(MAKE) -C services/bossd test
 
 test-bosso:
-	cd services/bosso && go test ./...
+	$(MAKE) -C services/bosso test
 
 ## lint: Run golangci-lint and buf lint
 lint:
@@ -92,11 +92,13 @@ build-bossd: $(BIN_DIR)/bossd
 
 build-bosso: $(BIN_DIR)/bosso
 
-## format: Format Go code and markdown
+## format: Format Go code, web code, and markdown
 format:
 	@for mod in $(MODULES); do \
-		(cd $$mod && gofmt -w .); \
+		echo "==> Formatting $$mod"; \
+		$(MAKE) -C $$mod format; \
 	done
+	$(MAKE) -C services/web format
 	pnpm run format:docs
 
 ## build-all: Cross-platform builds for distribution
@@ -121,7 +123,10 @@ build-all:
 ## clean: Remove build artifacts and generated code
 clean:
 	rm -rf $(BIN_DIR)
-	rm -rf lib/bossalib/gen
+	@for mod in $(MODULES); do \
+		$(MAKE) -C $$mod clean; \
+	done
+	$(MAKE) -C services/web clean
 
 ## split: Mirror subtrees to separate repos via splitsh/lite
 split:

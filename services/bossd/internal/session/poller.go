@@ -129,6 +129,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 	case vcs.PRStateClosed:
 		p.emit(ctx, ch, sess.ID, vcs.PRClosed{PRID: prID})
 		return
+	default:
 	}
 
 	// Check for merge conflicts.
@@ -161,6 +162,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 			}
 		}
 		p.emit(ctx, ch, sess.ID, vcs.ChecksFailed{PRID: prID, FailedChecks: failed})
+	default:
 		// ChecksOverallPending — do nothing, wait for next poll.
 	}
 }

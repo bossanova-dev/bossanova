@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -102,7 +103,7 @@ func (s *Server) ListenAndServe(socketPath string) error {
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(s)
 	mux.Handle(path, handler)
 
-	s.srv = &http.Server{Handler: mux}
+	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	return s.srv.Serve(ln)
 }
 

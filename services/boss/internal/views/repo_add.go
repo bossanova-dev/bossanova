@@ -393,6 +393,7 @@ func (m RepoAddModel) updateActiveInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.worktreeDirInput, cmd = m.worktreeDirInput.Update(msg)
 	case repoAddStepSetup:
 		m.setupInput, cmd = m.setupInput.Update(msg)
+	default:
 	}
 	return m, cmd
 }

@@ -58,6 +58,7 @@ func (a *App) SetInitialView(v View) {
 		a.repoAdd = NewRepoAddModel(a.client, a.ctx)
 	case ViewRepoList:
 		a.repoList = NewRepoListModel(a.client, a.ctx)
+	default:
 	}
 }
 

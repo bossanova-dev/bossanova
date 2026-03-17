@@ -331,7 +331,7 @@ func (m NewSessionModel) updatePlanInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y":
+	case "y", "Y", "enter":
 		m.forceBranch = true
 		return m, m.startCreating()
 	case "n", "N":
@@ -560,5 +560,5 @@ func (m NewSessionModel) viewConfirmOverwrite(b *strings.Builder) {
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
 		"Remove the old branch and create a new session?"))
 	b.WriteString("\n\n")
-	b.WriteString(styleActionBar.Render("[y] yes  [n] go back  [esc] cancel"))
+	b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 }

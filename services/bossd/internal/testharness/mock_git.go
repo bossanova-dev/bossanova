@@ -9,6 +9,8 @@ import (
 	gitpkg "github.com/recurser/bossd/internal/git"
 )
 
+var _ gitpkg.WorktreeManager = (*MockWorktreeManager)(nil)
+
 // MockWorktreeManager is a mock WorktreeManager that records calls and
 // returns configurable results without touching the filesystem.
 type MockWorktreeManager struct {

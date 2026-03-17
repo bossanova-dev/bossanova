@@ -78,7 +78,16 @@ func New(t *testing.T) *Harness {
 	lifecycle := session.NewLifecycle(sessions, repos, gitMock, claudeMock, vcsMock, logger)
 
 	// Server.
-	srv := server.New(repos, sessions, attempts, claudeChats, lifecycle, claudeMock, gitMock, vcsMock)
+	srv := server.New(server.Config{
+		Repos:       repos,
+		Sessions:    sessions,
+		Attempts:    attempts,
+		ClaudeChats: claudeChats,
+		Lifecycle:   lifecycle,
+		Claude:      claudeMock,
+		Worktrees:   gitMock,
+		Provider:    vcsMock,
+	})
 
 	// Start server on a temp Unix socket.
 	// Use /tmp directly — t.TempDir() paths can exceed the 104-char Unix socket limit on macOS.

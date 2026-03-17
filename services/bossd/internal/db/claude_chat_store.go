@@ -8,6 +8,8 @@ import (
 	"github.com/recurser/bossalib/models"
 )
 
+var _ ClaudeChatStore = (*SQLiteClaudeChatStore)(nil)
+
 // SQLiteClaudeChatStore implements ClaudeChatStore using SQLite.
 type SQLiteClaudeChatStore struct {
 	db *sql.DB

@@ -4,10 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/recurser/bossalib/models"
 )
+
+var _ RepoStore = (*SQLiteRepoStore)(nil)
 
 // SQLiteRepoStore implements RepoStore using SQLite.
 type SQLiteRepoStore struct {
@@ -59,7 +62,7 @@ func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
 
 	var repos []*models.Repo
 	for rows.Next() {
-		r, err := scanRepoRows(rows)
+		r, err := scanRepo(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +94,7 @@ func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRe
 	}
 
 	args = append(args, id)
-	query := "UPDATE repos SET " + joinStrings(sets, ", ") + " WHERE id = ?"
+	query := "UPDATE repos SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update repo: %w", err)
@@ -113,26 +116,11 @@ func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// scanRepo scans a single repo row.
-func scanRepo(row *sql.Row) (*models.Repo, error) {
+// scanRepo scans a repo from any scanner (*sql.Row or *sql.Rows).
+func scanRepo(s scanner) (*models.Repo, error) {
 	var r models.Repo
 	var createdAt, updatedAt string
-	err := row.Scan(&r.ID, &r.DisplayName, &r.LocalPath, &r.OriginURL,
-		&r.DefaultBaseBranch, &r.WorktreeBaseDir, &r.SetupScript,
-		&createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	r.CreatedAt = parseTime(createdAt)
-	r.UpdatedAt = parseTime(updatedAt)
-	return &r, nil
-}
-
-// scanRepoRows scans a repo from *sql.Rows.
-func scanRepoRows(rows *sql.Rows) (*models.Repo, error) {
-	var r models.Repo
-	var createdAt, updatedAt string
-	err := rows.Scan(&r.ID, &r.DisplayName, &r.LocalPath, &r.OriginURL,
+	err := s.Scan(&r.ID, &r.DisplayName, &r.LocalPath, &r.OriginURL,
 		&r.DefaultBaseBranch, &r.WorktreeBaseDir, &r.SetupScript,
 		&createdAt, &updatedAt)
 	if err != nil {

@@ -91,6 +91,8 @@ type ResurrectOpts struct {
 	SetupScript  *string // Optional setup script to run after creation.
 }
 
+var _ WorktreeManager = (*Manager)(nil)
+
 // Manager is the default WorktreeManager implementation backed by real git commands.
 type Manager struct {
 	logger zerolog.Logger

@@ -51,17 +51,29 @@ type Server struct {
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
 
+// Config holds all dependencies for creating a new Server.
+type Config struct {
+	Repos       db.RepoStore
+	Sessions    db.SessionStore
+	Attempts    db.AttemptStore
+	ClaudeChats db.ClaudeChatStore
+	Lifecycle   *session.Lifecycle
+	Claude      claude.ClaudeRunner
+	Worktrees   gitpkg.WorktreeManager
+	Provider    vcs.Provider
+}
+
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
-func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, claudeChats db.ClaudeChatStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner, wt gitpkg.WorktreeManager, provider vcs.Provider) *Server {
+func New(cfg Config) *Server {
 	return &Server{
-		repos:       repos,
-		sessions:    sessions,
-		attempts:    attempts,
-		claudeChats: claudeChats,
-		lifecycle:   lifecycle,
-		claude:      cr,
-		worktrees:   wt,
-		provider:    provider,
+		repos:       cfg.Repos,
+		sessions:    cfg.Sessions,
+		attempts:    cfg.Attempts,
+		claudeChats: cfg.ClaudeChats,
+		lifecycle:   cfg.Lifecycle,
+		claude:      cfg.Claude,
+		worktrees:   cfg.Worktrees,
+		provider:    cfg.Provider,
 	}
 }
 

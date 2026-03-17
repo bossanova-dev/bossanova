@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 )
+
+var _ SessionStore = (*SQLiteSessionStore)(nil)
 
 // SQLiteSessionStore implements SessionStore using SQLite.
 type SQLiteSessionStore struct {
@@ -119,7 +122,7 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	}
 
 	args = append(args, id)
-	query := "UPDATE sessions SET " + joinStrings(sets, ", ") + " WHERE id = ?"
+	query := "UPDATE sessions SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update session: %w", err)
@@ -178,7 +181,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 
 	var sessions []*models.Session
 	for rows.Next() {
-		sess, err := scanSessionRows(rows)
+		sess, err := scanSession(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -192,39 +195,11 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at
 	FROM sessions s`
 
-func scanSession(row *sql.Row) (*models.Session, error) {
+func scanSession(s scanner) (*models.Session, error) {
 	var sess models.Session
 	var state, lastCheckState, automationEnabled int
 	var archivedAt, createdAt, updatedAt *string
-	err := row.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
-		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
-		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
-		&lastCheckState, &automationEnabled, &sess.AttemptCount,
-		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	sess.State = machine.State(state)
-	sess.LastCheckState = machine.CheckState(lastCheckState)
-	sess.AutomationEnabled = automationEnabled != 0
-	if archivedAt != nil {
-		t := parseTime(*archivedAt)
-		sess.ArchivedAt = &t
-	}
-	if createdAt != nil {
-		sess.CreatedAt = parseTime(*createdAt)
-	}
-	if updatedAt != nil {
-		sess.UpdatedAt = parseTime(*updatedAt)
-	}
-	return &sess, nil
-}
-
-func scanSessionRows(rows *sql.Rows) (*models.Session, error) {
-	var sess models.Session
-	var state, lastCheckState, automationEnabled int
-	var archivedAt, createdAt, updatedAt *string
-	err := rows.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
+	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,

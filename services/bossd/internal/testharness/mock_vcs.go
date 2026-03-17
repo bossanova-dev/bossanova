@@ -9,6 +9,8 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
+var _ vcs.Provider = (*MockVCSProvider)(nil)
+
 // MockVCSProvider is a mock VCS provider for E2E tests.
 type MockVCSProvider struct {
 	mu sync.Mutex

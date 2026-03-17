@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"os"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -82,7 +84,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(h.sessions) > 0 {
 				sess := h.sessions[h.cursor]
 				return h, func() tea.Msg {
-					return switchViewMsg{view: ViewAttach, sessionID: sess.Id}
+					return switchViewMsg{view: ViewChatPicker, sessionID: sess.Id}
 				}
 			}
 			return h, nil
@@ -99,13 +101,31 @@ var (
 	colorRed    = lipgloss.Color("#FF6347")
 	colorCyan   = lipgloss.Color("#00CED1")
 	colorGray   = lipgloss.Color("#626262")
+	colorOrange = lipgloss.Color("#F09837")
 
-	styleTitle     = lipgloss.NewStyle().Bold(true).Padding(1, 2)
+	styleTitle     = lipgloss.NewStyle().Bold(true).Padding(0, 2)
 	styleSelected  = lipgloss.NewStyle().Bold(true)
 	styleActionBar = lipgloss.NewStyle().Faint(true).Padding(1, 2)
 	styleError     = lipgloss.NewStyle().Foreground(colorRed).Padding(1, 2)
 	styleSubtle    = lipgloss.NewStyle().Faint(true)
 )
+
+func renderBanner() string {
+	l := lipgloss.NewStyle().Foreground(colorOrange)
+
+	cwd, _ := os.Getwd()
+	if home, err := os.UserHomeDir(); err == nil {
+		cwd = strings.Replace(cwd, home, "~", 1)
+	}
+
+	banner := l.Render(" ████") + "\n" +
+		l.Render(" █   █") + "   Bossanova v" + buildinfo.Version + "\n" +
+		l.Render(" ████") + "   " + styleSubtle.Render(cwd) + "\n" +
+		l.Render(" █   █") + "\n" +
+		l.Render(" ████")
+
+	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
+}
 
 func stateColor(state pb.SessionState) color.Color {
 	switch state {
@@ -200,12 +220,15 @@ func (h HomeModel) View() tea.View {
 	}
 
 	if h.loading {
-		return tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render("Loading sessions..."))
+		return tea.NewView(
+			renderBanner() + "\n" +
+				lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions..."),
+		)
 	}
 
 	if len(h.sessions) == 0 {
 		return tea.NewView(
-			styleTitle.Render("Bossanova") + "\n" +
+			renderBanner() + "\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
 				styleActionBar.Render("[n]ew session  [r]epo  [q]uit"),
 		)
@@ -213,12 +236,19 @@ func (h HomeModel) View() tea.View {
 
 	var b strings.Builder
 
-	b.WriteString(styleTitle.Render("Bossanova"))
+	b.WriteString(renderBanner())
 	b.WriteString("\n")
 
+	// Fixed columns: cursor(2) + padding(4) + ID(7) + STATE(14) + PR(5) + CI(4) + spacing(9) = 45
+	const fixedCols = 45
+	branchWidth := h.width - fixedCols
+	if branchWidth < 16 {
+		branchWidth = 16
+	}
+
 	// Table header.
-	header := fmt.Sprintf("  %-10s %-28s %-14s %-20s %-5s %-5s",
-		"ID", "TITLE", "STATE", "BRANCH", "PR", "CI")
+	header := fmt.Sprintf("  %-7s  %-*s  %-14s  %-5s  %-4s",
+		"ID", branchWidth, "BRANCH", "STATE", "PR", "CI")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
 	b.WriteString("\n")
 
@@ -226,10 +256,9 @@ func (h HomeModel) View() tea.View {
 	for i, sess := range h.sessions {
 		selected := i == h.cursor
 
-		id := truncate(sess.Id, 8)
-		title := truncate(sess.Title, 28)
 		state := StateLabel(sess.State)
-		branch := truncate(sess.BranchName, 20)
+		branchDisplay := strings.TrimPrefix(sess.BranchName, "boss/")
+		branch := truncate(branchDisplay, branchWidth)
 		pr := "-"
 		if sess.PrNumber != nil {
 			pr = fmt.Sprintf("#%d", *sess.PrNumber)
@@ -243,8 +272,13 @@ func (h HomeModel) View() tea.View {
 			cursor = "> "
 		}
 
-		row := fmt.Sprintf("%s%-10s %-28s %s %-20s %-5s %s",
-			cursor, id, title, stateStyled, branch, pr, ci)
+		shortID := sess.Id
+		if len(shortID) > 7 {
+			shortID = shortID[:7]
+		}
+
+		row := fmt.Sprintf("%s%-7s  %-*s  %s  %-5s  %s",
+			cursor, shortID, branchWidth, branch, stateStyled, pr, ci)
 
 		if selected {
 			row = styleSelected.Render(row)
@@ -254,8 +288,7 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(styleActionBar.Render("[n]ew  [r]epo  [enter] attach  [q]uit"))
+	b.WriteString(styleActionBar.Render("[n]ew session  [r]epo  [enter] chats  [q]uit"))
 
 	return tea.NewView(b.String())
 }

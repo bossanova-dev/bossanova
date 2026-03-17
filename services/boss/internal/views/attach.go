@@ -3,77 +3,61 @@ package views
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// attachOutputMsg carries a line of output from the stream.
-type attachOutputMsg struct {
-	line string
+// claudeFinishedMsg signals that the interactive Claude process has exited.
+type claudeFinishedMsg struct {
+	err error
 }
 
-// attachStateChangeMsg carries a state change event.
-type attachStateChangeMsg struct {
-	prev pb.SessionState
-	next pb.SessionState
+// sessionFetchedMsg carries a session fetched via RPC.
+type sessionFetchedMsg struct {
+	session *pb.Session
 }
 
-// attachEndedMsg signals the session has ended.
-type attachEndedMsg struct {
-	finalState pb.SessionState
-	reason     string
-}
-
-// attachErrMsg signals a stream error.
+// attachErrMsg signals a fetch or launch error.
 type attachErrMsg struct {
 	err error
 }
 
-// AttachModel displays streaming output from an attached session.
+// AttachModel launches an interactive Claude Code TUI in the session's worktree.
 type AttachModel struct {
 	client    client.BossClient
 	ctx       context.Context
-	cancelFn  context.CancelFunc
 	sessionID string
+	resumeID  string // Claude Code session UUID to resume (empty = new chat)
 
-	session  *pb.Session
-	stream   client.AttachStream
-	viewport viewport.Model
-	lines    []string
-	state    pb.SessionState
-	ended    bool
-	endMsg   string
-	err      error
-	detach   bool
-	width    int
-	height   int
+	session   *pb.Session
+	launching bool  // true while fetching session
+	returned  bool  // true after claude exits
+	claudeErr error // error from claude process (if any)
+	detach    bool
+	err       error
+	width     int
+	height    int
 }
 
 // NewAttachModel creates an AttachModel for the given session.
-func NewAttachModel(c client.BossClient, parentCtx context.Context, sessionID string) AttachModel {
-	ctx, cancel := context.WithCancel(parentCtx)
-	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
-	vp.SoftWrap = true
-
+// If resumeID is non-empty, Claude Code will be launched with --resume.
+func NewAttachModel(c client.BossClient, parentCtx context.Context, sessionID, resumeID string) AttachModel {
 	return AttachModel{
 		client:    c,
-		ctx:       ctx,
-		cancelFn:  cancel,
+		ctx:       parentCtx,
 		sessionID: sessionID,
-		viewport:  vp,
+		resumeID:  resumeID,
+		launching: true,
 	}
 }
 
 func (m AttachModel) Init() tea.Cmd {
-	return tea.Batch(
-		m.fetchSession(),
-		m.startStream(),
-	)
+	return m.fetchSession()
 }
 
 func (m AttachModel) fetchSession() tea.Cmd {
@@ -86,91 +70,33 @@ func (m AttachModel) fetchSession() tea.Cmd {
 	}
 }
 
-// sessionFetchedMsg carries a session fetched for the header.
-type sessionFetchedMsg struct {
-	session *pb.Session
-}
-
-func (m AttachModel) startStream() tea.Cmd {
-	return func() tea.Msg {
-		stream, err := m.client.AttachSession(m.ctx, m.sessionID)
-		if err != nil {
-			return attachErrMsg{err: err}
-		}
-		return streamConnectedMsg{stream: stream}
-	}
-}
-
-// streamConnectedMsg carries the established stream.
-type streamConnectedMsg struct {
-	stream client.AttachStream
-}
-
-func readFromStream(stream client.AttachStream) tea.Cmd {
-	return func() tea.Msg {
-		if !stream.Receive() {
-			if err := stream.Err(); err != nil {
-				return attachErrMsg{err: err}
-			}
-			return attachEndedMsg{reason: "stream closed"}
-		}
-
-		ev := stream.Msg()
-		if ev.OutputLine != nil {
-			return attachOutputMsg{line: ev.OutputLine.Text}
-		}
-		if ev.StateChange != nil {
-			return attachStateChangeMsg{
-				prev: ev.StateChange.PreviousState,
-				next: ev.StateChange.NewState,
-			}
-		}
-		if ev.SessionEnded != nil {
-			reason := ""
-			if ev.SessionEnded.Reason != nil {
-				reason = *ev.SessionEnded.Reason
-			}
-			return attachEndedMsg{
-				finalState: ev.SessionEnded.FinalState,
-				reason:     reason,
-			}
-		}
-		return nil
-	}
-}
-
 func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case sessionFetchedMsg:
 		m.session = msg.session
-		m.state = msg.session.State
-		return m, nil
+		m.launching = false
 
-	case streamConnectedMsg:
-		m.stream = msg.stream
-		return m, readFromStream(m.stream)
-
-	case attachOutputMsg:
-		m.lines = append(m.lines, msg.line)
-		m.viewport.SetContent(strings.Join(m.lines, "\n"))
-		m.viewport.GotoBottom()
-		return m, readFromStream(m.stream)
-
-	case attachStateChangeMsg:
-		m.state = msg.next
-		label := fmt.Sprintf("--- state: %s → %s ---", StateLabel(msg.prev), StateLabel(msg.next))
-		m.lines = append(m.lines, label)
-		m.viewport.SetContent(strings.Join(m.lines, "\n"))
-		m.viewport.GotoBottom()
-		return m, readFromStream(m.stream)
-
-	case attachEndedMsg:
-		m.ended = true
-		if msg.reason != "" {
-			m.endMsg = msg.reason
+		// Launch interactive Claude in the session's worktree.
+		var claudeCmd *exec.Cmd
+		if m.resumeID != "" {
+			claudeCmd = exec.Command("claude", "--resume", m.resumeID)
 		} else {
-			m.endMsg = "session ended"
+			claudeCmd = exec.Command("claude")
 		}
+		claudeCmd.Dir = msg.session.GetWorktreePath()
+
+		return m, tea.ExecProcess(claudeCmd, func(err error) tea.Msg {
+			// Clear the primary screen buffer so Claude's logo/intro
+			// text doesn't linger in scrollback when boss exits alt screen.
+			fmt.Print("\033[2J\033[H\033[3J")
+			return claudeFinishedMsg{err: err}
+		})
+
+	case claudeFinishedMsg:
+		m.returned = true
+		m.claudeErr = msg.err
+		// Auto-detach back to home screen.
+		m.detach = true
 		return m, nil
 
 	case attachErrMsg:
@@ -180,32 +106,20 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		headerHeight := 4
-		footerHeight := 2
-		m.viewport.SetWidth(msg.Width)
-		m.viewport.SetHeight(msg.Height - headerHeight - footerHeight)
 		return m, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "esc", "ctrl+c":
-			m.cancelFn()
+		case "esc", "q":
 			m.detach = true
 			return m, nil
-		case "q":
-			if m.ended {
-				m.detach = true
-				return m, nil
-			}
 		}
 	}
 
-	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
-	return m, cmd
+	return m, nil
 }
 
-// Detached returns true if the user detached or the session ended and they pressed q.
+// Detached returns true if the user should return to the home screen.
 func (m AttachModel) Detached() bool { return m.detach }
 
 func (m AttachModel) View() tea.View {
@@ -216,36 +130,28 @@ func (m AttachModel) View() tea.View {
 		)
 	}
 
-	var b strings.Builder
-
-	// Header
-	title := m.sessionID
-	branch := ""
-	if m.session != nil {
-		title = m.session.Title
-		branch = m.session.BranchName
+	if m.launching {
+		var b strings.Builder
+		title := m.sessionID
+		if m.session != nil {
+			title = m.session.Title
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render(
+			fmt.Sprintf("Launching Claude Code for %s...", title)))
+		return tea.NewView(b.String())
 	}
 
-	stateStyled := lipgloss.NewStyle().Foreground(stateColor(m.state)).Render(StateLabel(m.state))
-	header := fmt.Sprintf(" %s  %s  %s", title, stateStyled, styleSubtle.Render(branch))
-	b.WriteString(lipgloss.NewStyle().Bold(true).Padding(0, 1).Render(header))
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Faint(true).Render(strings.Repeat("─", max(m.width, 40))))
-	b.WriteString("\n")
-
-	// Viewport
-	b.WriteString(m.viewport.View())
-	b.WriteString("\n")
-
-	// Footer
-	if m.ended {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Foreground(colorYellow).Render(
-			fmt.Sprintf("Session ended: %s", m.endMsg)))
+	if m.returned {
+		var b strings.Builder
+		if m.claudeErr != nil {
+			b.WriteString(styleError.Render(fmt.Sprintf("Claude Code exited with error: %v", m.claudeErr)))
+		} else {
+			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Claude Code session ended."))
+		}
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[q] back"))
-	} else {
-		b.WriteString(styleActionBar.Render("[esc] detach"))
+		return tea.NewView(b.String())
 	}
 
-	return tea.NewView(b.String())
+	return tea.NewView("")
 }

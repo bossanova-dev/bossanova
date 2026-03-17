@@ -1,13 +1,19 @@
-.PHONY: generate build test lint clean split format build-all \
+.PHONY: all generate build test lint clean split format build-all \
 	test-bossalib test-boss test-bossd test-bosso \
 	lint-bossalib lint-boss lint-bossd lint-bosso lint-proto \
 	build-boss build-bossd build-bosso
+
+## all: Clean, generate protos, format, and build all binaries (default target)
+all: clean generate format build build-all
 
 # Binaries output to bin/
 BIN_DIR := bin
 
 # All Go modules in the workspace
 MODULES := lib/bossalib services/boss services/bossd services/bosso
+
+# Suppress clang deployment-version warnings from CGO dependencies
+export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
 
 # Version info injected via ldflags
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")

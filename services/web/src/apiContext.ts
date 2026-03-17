@@ -1,6 +1,6 @@
-import { createContext } from 'react'
 import type { Client } from '@connectrpc/connect'
-import type { OrchestratorService } from './gen/bossanova/v1/orchestrator_pb'
+import { createContext } from 'react'
+import type { OrchestratorService } from '~/gen/bossanova/v1/orchestrator_pb'
 
 export type Api = Client<typeof OrchestratorService>
 

@@ -2,7 +2,7 @@
 
 ## format: Lint/fix TypeScript and CSS
 format:
-	-pnpm run lint --fix
+	pnpm run format
 
 ## test: Run tests (placeholder — no test runner configured yet)
 test:

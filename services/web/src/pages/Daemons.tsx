@@ -1,14 +1,16 @@
-import { useEffect, useState } from 'react'
 import { create } from '@bufbuild/protobuf'
-import { useApi } from '../useApi'
-import { ListDaemonsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb'
-import type { DaemonInfo } from '../gen/bossanova/v1/orchestrator_pb'
 import type { Timestamp } from '@bufbuild/protobuf/wkt'
+import { useEffect, useState } from 'react'
+import type { DaemonInfo } from '~/gen/bossanova/v1/orchestrator_pb'
+import { ListDaemonsRequestSchema } from '~/gen/bossanova/v1/orchestrator_pb'
+import { useApi } from '~/useApi'
 
-const POLL_INTERVAL = 10000
+const POLL_INTERVAL = 10_000
 
 function formatTimestamp(ts: Timestamp | undefined): string {
-  if (!ts) return '—'
+  if (!ts) {
+    return '—'
+  }
   const d = new Date(Number(ts.seconds) * 1000 + ts.nanos / 1_000_000)
   return d.toLocaleTimeString()
 }
@@ -24,17 +26,19 @@ export default function Daemons() {
 
     async function fetch() {
       try {
-        const res = await api.listDaemons(
-          create(ListDaemonsRequestSchema, {}),
-        )
+        const res = await api.listDaemons(create(ListDaemonsRequestSchema, {}))
         if (!cancelled) {
           setDaemons(res.daemons)
           setError(null)
         }
       } catch (err) {
-        if (!cancelled) setError(String(err))
+        if (!cancelled) {
+          setError(String(err))
+        }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+        }
       }
     }
 
@@ -46,8 +50,12 @@ export default function Daemons() {
     }
   }, [api])
 
-  if (loading) return <p>Loading daemons...</p>
-  if (error) return <p style={{ color: 'red' }}>Error: {error}</p>
+  if (loading) {
+    return <p>Loading daemons...</p>
+  }
+  if (error) {
+    return <p style={{ color: 'red' }}>Error: {error}</p>
+  }
 
   return (
     <div style={{ textAlign: 'left', padding: '0 24px' }}>
@@ -73,7 +81,9 @@ export default function Daemons() {
                     {d.online ? 'Online' : 'Offline'}
                   </span>
                 </td>
-                <td style={td}><code>{d.hostname}</code></td>
+                <td style={td}>
+                  <code>{d.hostname}</code>
+                </td>
                 <td style={td}>{d.repoIds.length}</td>
                 <td style={td}>{d.activeSessions}</td>
                 <td style={td}>{formatTimestamp(d.lastHeartbeat)}</td>

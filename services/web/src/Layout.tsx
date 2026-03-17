@@ -1,5 +1,5 @@
-import { NavLink, Outlet } from 'react-router'
 import { useAuth0 } from '@auth0/auth0-react'
+import { NavLink, Outlet } from 'react-router'
 
 export default function Layout() {
   const { isAuthenticated, loginWithRedirect, logout, user } = useAuth0()
@@ -9,14 +9,19 @@ export default function Layout() {
       <header style={header}>
         <nav style={nav}>
           <strong style={{ fontSize: 18, color: 'var(--text-h)' }}>Bossanova</strong>
-          <NavLink to="/" style={link}>Sessions</NavLink>
-          <NavLink to="/daemons" style={link}>Daemons</NavLink>
+          <NavLink to="/" style={link}>
+            Sessions
+          </NavLink>
+          <NavLink to="/daemons" style={link}>
+            Daemons
+          </NavLink>
         </nav>
         <div>
           {isAuthenticated ? (
             <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <span style={{ fontSize: 14 }}>{user?.email}</span>
               <button
+                type="button"
                 onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })}
                 style={btn}
               >
@@ -24,7 +29,7 @@ export default function Layout() {
               </button>
             </span>
           ) : (
-            <button onClick={() => loginWithRedirect()} style={btn}>
+            <button type="button" onClick={() => loginWithRedirect()} style={btn}>
               Log in
             </button>
           )}

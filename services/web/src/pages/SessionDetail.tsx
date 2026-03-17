@@ -1,23 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
-import { useParams, Link } from 'react-router'
 import { create } from '@bufbuild/protobuf'
-import { useApi } from '../useApi'
+import type { Timestamp } from '@bufbuild/protobuf/wkt'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useParams } from 'react-router'
+import type { Session } from '~/gen/bossanova/v1/models_pb'
+import { SessionState } from '~/gen/bossanova/v1/models_pb'
+import type { DaemonInfo } from '~/gen/bossanova/v1/orchestrator_pb'
 import {
-  ProxyGetSessionRequestSchema,
+  ListDaemonsRequestSchema,
   ProxyAttachSessionRequestSchema,
-  ProxyStopSessionRequestSchema,
+  ProxyGetSessionRequestSchema,
   ProxyPauseSessionRequestSchema,
   ProxyResumeSessionRequestSchema,
-  ListDaemonsRequestSchema,
+  ProxyStopSessionRequestSchema,
   TransferSessionRequestSchema,
-} from '../gen/bossanova/v1/orchestrator_pb'
-import type { DaemonInfo } from '../gen/bossanova/v1/orchestrator_pb'
-import { SessionState } from '../gen/bossanova/v1/models_pb'
-import type { Session } from '../gen/bossanova/v1/models_pb'
-import type { Timestamp } from '@bufbuild/protobuf/wkt'
+} from '~/gen/bossanova/v1/orchestrator_pb'
+import { useApi } from '~/useApi'
 
 function timestampToDate(ts: Timestamp | undefined): Date | undefined {
-  if (!ts) return undefined
+  if (!ts) {
+    return
+  }
   return new Date(Number(ts.seconds) * 1000 + ts.nanos / 1_000_000)
 }
 
@@ -42,6 +44,8 @@ interface LogEntry {
   timestamp?: Date
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: page component with streaming logic
+// biome-ignore lint/complexity/noExcessiveLinesPerFunction: page component with hooks, handlers, and JSX
 export default function SessionDetail() {
   const { id } = useParams()
   const api = useApi()
@@ -55,14 +59,15 @@ export default function SessionDetail() {
   const logEndRef = useRef<HTMLDivElement>(null)
 
   const isTerminal =
-    session?.state === SessionState.MERGED ||
-    session?.state === SessionState.CLOSED
+    session?.state === SessionState.MERGED || session?.state === SessionState.CLOSED
 
   async function runAction(fn: () => Promise<{ session?: Session }>) {
     setActionPending(true)
     try {
       const res = await fn()
-      if (res.session) setSession(res.session)
+      if (res.session) {
+        setSession(res.session)
+      }
     } catch (err) {
       setError(String(err))
     } finally {
@@ -71,28 +76,30 @@ export default function SessionDetail() {
   }
 
   function handleStop() {
-    if (!id) return
-    runAction(() =>
-      api.proxyStopSession(create(ProxyStopSessionRequestSchema, { id })),
-    )
+    if (!id) {
+      return
+    }
+    runAction(() => api.proxyStopSession(create(ProxyStopSessionRequestSchema, { id })))
   }
 
   function handlePause() {
-    if (!id) return
-    runAction(() =>
-      api.proxyPauseSession(create(ProxyPauseSessionRequestSchema, { id })),
-    )
+    if (!id) {
+      return
+    }
+    runAction(() => api.proxyPauseSession(create(ProxyPauseSessionRequestSchema, { id })))
   }
 
   function handleResume() {
-    if (!id) return
-    runAction(() =>
-      api.proxyResumeSession(create(ProxyResumeSessionRequestSchema, { id })),
-    )
+    if (!id) {
+      return
+    }
+    runAction(() => api.proxyResumeSession(create(ProxyResumeSessionRequestSchema, { id })))
   }
 
   function handleTransfer(targetDaemonId: string) {
-    if (!id || !session) return
+    if (!(id && session)) {
+      return
+    }
     // We need to determine the source daemon — for now use the first daemon
     // that isn't the target (the orchestrator routes by session ownership)
     runAction(() =>
@@ -108,26 +115,32 @@ export default function SessionDetail() {
 
   // Fetch session metadata
   useEffect(() => {
-    if (!id) return
+    if (!id) {
+      return
+    }
     let cancelled = false
 
     async function fetchSession() {
       try {
-        const res = await api.proxyGetSession(
-          create(ProxyGetSessionRequestSchema, { id }),
-        )
+        const res = await api.proxyGetSession(create(ProxyGetSessionRequestSchema, { id }))
         if (!cancelled && res.session) {
           setSession(res.session)
         }
       } catch (err) {
-        if (!cancelled) setError(String(err))
+        if (!cancelled) {
+          setError(String(err))
+        }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+        }
       }
     }
 
     fetchSession()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [api, id])
 
   // Fetch daemons for transfer dropdown
@@ -136,27 +149,32 @@ export default function SessionDetail() {
     async function fetchDaemons() {
       try {
         const res = await api.listDaemons(create(ListDaemonsRequestSchema, {}))
-        if (!cancelled) setDaemons(res.daemons.filter((d) => d.online))
+        if (!cancelled) {
+          setDaemons(res.daemons.filter((d) => d.online))
+        }
       } catch {
         // Non-critical — transfer just won't be available
       }
     }
     fetchDaemons()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [api])
 
   // Attach to session stream
   useEffect(() => {
-    if (!id) return
+    if (!id) {
+      return
+    }
     const abortController = new AbortController()
     setStreaming(true)
 
     async function attach() {
       try {
-        const stream = api.proxyAttachSession(
-          create(ProxyAttachSessionRequestSchema, { id }),
-          { signal: abortController.signal },
-        )
+        const stream = api.proxyAttachSession(create(ProxyAttachSessionRequestSchema, { id }), {
+          signal: abortController.signal,
+        })
         for await (const msg of stream) {
           const event = msg.event
           switch (event.case) {
@@ -179,9 +197,7 @@ export default function SessionDetail() {
                 },
               ])
               // Update session state locally
-              setSession((prev) =>
-                prev ? { ...prev, state: event.value.newState } : prev,
-              )
+              setSession((prev) => (prev ? { ...prev, state: event.value.newState } : prev))
               break
             case 'sessionEnded':
               setLog((prev) => [
@@ -193,6 +209,8 @@ export default function SessionDetail() {
               ])
               setStreaming(false)
               break
+            default:
+              break
           }
         }
       } catch {
@@ -203,17 +221,25 @@ export default function SessionDetail() {
     }
 
     attach()
-    return () => { abortController.abort() }
+    return () => {
+      abortController.abort()
+    }
   }, [api, id])
 
   // Auto-scroll log
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [log])
+  }, [])
 
-  if (loading) return <p style={page}>Loading session...</p>
-  if (error) return <p style={{ ...page, color: 'red' }}>Error: {error}</p>
-  if (!session) return <p style={page}>Session not found.</p>
+  if (loading) {
+    return <p style={page}>Loading session...</p>
+  }
+  if (error) {
+    return <p style={{ ...page, color: 'red' }}>Error: {error}</p>
+  }
+  if (!session) {
+    return <p style={page}>Session not found.</p>
+  }
 
   return (
     <div style={page}>
@@ -243,28 +269,19 @@ export default function SessionDetail() {
         />
         <MetaItem label="Automation" value={session.automationEnabled ? 'On' : 'Off'} />
         <MetaItem label="Attempts" value={String(session.attemptCount)} />
-        {session.blockedReason && (
-          <MetaItem label="Blocked" value={session.blockedReason} />
-        )}
+        {session.blockedReason && <MetaItem label="Blocked" value={session.blockedReason} />}
       </div>
 
       {!isTerminal && (
         <div style={actions}>
-          <button
-            style={actionBtn}
-            disabled={actionPending}
-            onClick={handlePause}
-          >
+          <button type="button" style={actionBtn} disabled={actionPending} onClick={handlePause}>
             Pause
           </button>
-          <button
-            style={actionBtn}
-            disabled={actionPending}
-            onClick={handleResume}
-          >
+          <button type="button" style={actionBtn} disabled={actionPending} onClick={handleResume}>
             Resume
           </button>
           <button
+            type="button"
             style={{ ...actionBtn, color: '#ef4444' }}
             disabled={actionPending}
             onClick={handleStop}
@@ -277,11 +294,13 @@ export default function SessionDetail() {
               disabled={actionPending}
               defaultValue=""
               onChange={(e) => {
-                if (e.target.value) handleTransfer(e.target.value)
+                if (e.target.value) {
+                  handleTransfer(e.target.value)
+                }
                 e.target.value = ''
               }}
             >
-              <option value="" disabled>
+              <option value="" disabled={true}>
                 Transfer to...
               </option>
               {daemons.map((d) => (
@@ -312,6 +331,7 @@ export default function SessionDetail() {
           </p>
         ) : (
           log.map((entry, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: log entries are append-only
             <div key={i} style={logLine(entry.type)}>
               {entry.text}
             </div>
@@ -400,7 +420,11 @@ const logContainer: React.CSSProperties = {
 
 function logLine(type: LogEntry['type']): React.CSSProperties {
   const base: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-all' }
-  if (type === 'state') return { ...base, color: '#60a5fa', fontWeight: 600 }
-  if (type === 'ended') return { ...base, color: '#facc15', fontWeight: 600 }
+  if (type === 'state') {
+    return { ...base, color: '#60a5fa', fontWeight: 600 }
+  }
+  if (type === 'ended') {
+    return { ...base, color: '#facc15', fontWeight: 600 }
+  }
   return base
 }

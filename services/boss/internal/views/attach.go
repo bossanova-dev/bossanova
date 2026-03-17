@@ -161,7 +161,7 @@ func (m AttachModel) Detached() bool { return m.detach }
 func (m AttachModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			styleError.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" +
+			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}
@@ -180,7 +180,7 @@ func (m AttachModel) View() tea.View {
 	if m.returned {
 		var b strings.Builder
 		if m.claudeErr != nil {
-			b.WriteString(styleError.Render(fmt.Sprintf("Claude Code exited with error: %v", m.claudeErr)))
+			b.WriteString(renderError(fmt.Sprintf("Claude Code exited with error: %v", m.claudeErr), m.width))
 		} else {
 			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Claude Code session ended."))
 		}

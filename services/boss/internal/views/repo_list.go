@@ -37,6 +37,9 @@ type RepoListModel struct {
 
 	// Remove confirmation
 	confirming bool
+
+	// Layout
+	width int
 }
 
 // NewRepoListModel creates a RepoListModel.
@@ -57,6 +60,10 @@ func (m RepoListModel) Init() tea.Cmd {
 
 func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+
 	case repoListLoadedMsg:
 		m.loading = false
 		m.repos = msg.repos
@@ -122,7 +129,7 @@ func (m RepoListModel) Cancelled() bool { return m.cancel }
 func (m RepoListModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			styleError.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" +
+			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}

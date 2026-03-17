@@ -89,6 +89,9 @@ type NewSessionModel struct {
 	selectedPR   *pb.PRSummary
 	createdSess  *pb.Session
 	forceBranch  bool // retry with force after branch conflict
+
+	// Layout
+	width int
 }
 
 // NewNewSessionModel creates a NewSessionModel wired to the daemon client.
@@ -147,6 +150,10 @@ func createSession(c client.BossClient, ctx context.Context, req *pb.CreateSessi
 
 func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+
 	case reposMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -378,7 +385,7 @@ func (m NewSessionModel) CreatedSession() *pb.Session { return m.createdSess }
 func (m NewSessionModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			styleError.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" +
+			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}
@@ -493,7 +500,7 @@ func (m NewSessionModel) viewSessionType(b *strings.Builder) {
 
 func (m NewSessionModel) viewPRSelect(b *strings.Builder) {
 	if m.prsErr != nil {
-		b.WriteString(styleError.Render(fmt.Sprintf("Failed to load PRs: %v", m.prsErr)))
+		b.WriteString(renderError(fmt.Sprintf("Failed to load PRs: %v", m.prsErr), m.width))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[esc] back"))
 		return

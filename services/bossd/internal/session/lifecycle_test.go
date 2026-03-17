@@ -210,6 +210,10 @@ func (m *mockWorktreeManager) Resurrect(_ context.Context, opts gitpkg.Resurrect
 	return nil
 }
 
+func (m *mockWorktreeManager) EmptyCommit(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockWorktreeManager) Push(_ context.Context, _ string, branch string) error {
 	m.pushed = append(m.pushed, branch)
 	return nil

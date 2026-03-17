@@ -107,6 +107,10 @@ func (m *MockWorktreeManager) EmptyTrash(ctx context.Context, repoPath string, b
 	return nil
 }
 
+func (m *MockWorktreeManager) EmptyCommit(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *MockWorktreeManager) Push(ctx context.Context, worktreePath, branch string) error {
 	m.mu.Lock()
 	m.PushCalls = append(m.PushCalls, pushCall{WorktreePath: worktreePath, Branch: branch})

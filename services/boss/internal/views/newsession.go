@@ -392,7 +392,7 @@ func (m NewSessionModel) View() tea.View {
 
 	if m.step == stepCreating {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Render("Creating session..."),
+			lipgloss.NewStyle().Padding(1, 2).Render("Creating a new session..."),
 		)
 	}
 

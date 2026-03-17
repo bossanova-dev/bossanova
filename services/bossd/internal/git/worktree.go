@@ -45,6 +45,11 @@ type WorktreeManager interface {
 	// stale worktree refs.
 	EmptyTrash(ctx context.Context, repoPath string, branches []string) error
 
+	// EmptyCommit creates an empty commit in the given worktree. This is
+	// used to ensure a branch has at least one commit diverging from the
+	// base branch before creating a PR.
+	EmptyCommit(ctx context.Context, worktreePath, message string) error
+
 	// Push pushes the given branch to the "origin" remote.
 	Push(ctx context.Context, worktreePath, branch string) error
 
@@ -283,6 +288,13 @@ func (m *Manager) EmptyTrash(ctx context.Context, repoPath string, branches []st
 }
 
 // Push pushes the given branch to the "origin" remote.
+func (m *Manager) EmptyCommit(ctx context.Context, worktreePath, message string) error {
+	if _, err := runGit(ctx, worktreePath, "commit", "--allow-empty", "-m", message); err != nil {
+		return fmt.Errorf("empty commit: %w", err)
+	}
+	return nil
+}
+
 func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {
 	m.logger.Info().
 		Str("path", worktreePath).

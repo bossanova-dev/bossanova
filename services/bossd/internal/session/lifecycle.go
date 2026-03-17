@@ -307,6 +307,12 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 		Str("branch", branchName).
 		Msg("pushing branch for immediate PR")
 
+	// Create an empty commit so the branch diverges from base — GitHub
+	// rejects PRs with "No commits between" otherwise.
+	if err := l.worktrees.EmptyCommit(ctx, worktreePath, "chore: initialize session branch"); err != nil {
+		return fmt.Errorf("empty commit: %w", err)
+	}
+
 	if err := l.worktrees.Push(ctx, worktreePath, branchName); err != nil {
 		return fmt.Errorf("push branch: %w", err)
 	}

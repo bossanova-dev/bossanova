@@ -56,8 +56,8 @@ Every view follows this top-to-bottom structure:
 
 ### Rules
 
-1. **One blank line** between heading and content (`"\n\n"` after `styleTitle`)
-2. **No explicit newline before `styleActionBar`** — it has `Padding(actionBarPadY, 2)` built in, which provides the blank line above
+1. **One blank line** between heading and content — the `View()` method writes the title + `"\n"`, so step view functions must start with `b.WriteString("\n")` to produce the blank line
+2. **No explicit newline before `styleActionBar`** — it has `Padding(actionBarPadY, 2)` built in, which provides the blank line above. This applies everywhere, including confirmation dialogs.
 3. **Cursor prefix** is always `"> "` (selected) or `"  "` (unselected) — 2 chars wide
 4. **Wrap rows** with `lipgloss.NewStyle().Padding(0, 2).Render(row)` for horizontal indent
 
@@ -67,14 +67,16 @@ Every view follows this top-to-bottom structure:
 
 ```go
 // WRONG — creates double blank line
+b.WriteString("\n\n")
+b.WriteString(styleActionBar.Render("[q] quit"))
+
+// ALSO WRONG — creates double blank line
 b.WriteString("\n")
 b.WriteString(styleActionBar.Render("[q] quit"))
 
 // CORRECT — styleActionBar handles spacing
 b.WriteString(styleActionBar.Render("[q] quit"))
 ```
-
-The one exception: if content before the action bar uses a style without top padding (e.g., a confirmation prompt), add `"\n"` manually in that branch only.
 
 ---
 

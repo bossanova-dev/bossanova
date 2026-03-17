@@ -78,6 +78,10 @@ func (c *RemoteClient) ResolveContext(_ context.Context, _ string) (*pb.ResolveC
 
 // --- Repo Management (local only) ---
 
+func (c *RemoteClient) ValidateRepoPath(_ context.Context, _ string) (*pb.ValidateRepoPathResponse, error) {
+	return nil, errLocalOnly("ValidateRepoPath")
+}
+
 func (c *RemoteClient) RegisterRepo(_ context.Context, _ *pb.RegisterRepoRequest) (*pb.Repo, error) {
 	return nil, errLocalOnly("RegisterRepo")
 }
@@ -183,6 +187,20 @@ func (c *RemoteClient) ResurrectSession(_ context.Context, _ string) (*pb.Sessio
 
 func (c *RemoteClient) EmptyTrash(_ context.Context, _ *pb.EmptyTrashRequest) (int32, error) {
 	return 0, errLocalOnly("EmptyTrash")
+}
+
+// --- Claude Chat Tracking (local only) ---
+
+func (c *RemoteClient) RecordChat(_ context.Context, _, _, _ string) (*pb.ClaudeChat, error) {
+	return nil, errLocalOnly("RecordChat")
+}
+
+func (c *RemoteClient) ListChats(_ context.Context, _ string) ([]*pb.ClaudeChat, error) {
+	return nil, errLocalOnly("ListChats")
+}
+
+func (c *RemoteClient) UpdateChatTitle(_ context.Context, _, _ string) error {
+	return errLocalOnly("UpdateChatTitle")
 }
 
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.

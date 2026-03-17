@@ -38,6 +38,7 @@ type BossClient interface {
 	ResolveContext(ctx context.Context, workingDir string) (*pb.ResolveContextResponse, error)
 
 	// Repo management
+	ValidateRepoPath(ctx context.Context, localPath string) (*pb.ValidateRepoPathResponse, error)
 	RegisterRepo(ctx context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error)
 	CloneAndRegisterRepo(ctx context.Context, req *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error)
 	ListRepos(ctx context.Context) ([]*pb.Repo, error)
@@ -60,4 +61,9 @@ type BossClient interface {
 	ArchiveSession(ctx context.Context, id string) (*pb.Session, error)
 	ResurrectSession(ctx context.Context, id string) (*pb.Session, error)
 	EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
+
+	// Claude chat tracking
+	RecordChat(ctx context.Context, sessionID, claudeID, title string) (*pb.ClaudeChat, error)
+	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
+	UpdateChatTitle(ctx context.Context, claudeID, title string) error
 }

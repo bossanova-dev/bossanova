@@ -13,6 +13,7 @@ Home (session list) → [enter] → Chat Picker → [enter] → Launch Claude
 ```
 
 When a user selects a session, a new **ChatPickerModel** view shows:
+
 1. **"New chat"** option at top (always present)
 2. Previous Claude Code conversations for that worktree, sorted most-recent-first
 3. Each chat shows: first user message (truncated) + relative time (e.g. "2h ago")
@@ -79,15 +80,15 @@ Chat discovery logic (pure I/O, no TUI concerns):
 
 ## Files
 
-| File | Type | Description |
-|------|------|-------------|
-| `services/boss/internal/claude/chats.go` | NEW | Chat discovery: scan JSONL files, parse metadata |
-| `services/boss/internal/claude/chats_test.go` | NEW | Unit tests for DiscoverChats and parseSessionMeta |
-| `services/boss/internal/views/chatpicker.go` | NEW | ChatPickerModel view |
-| `services/boss/internal/views/app.go` | MODIFY | Add ViewChatPicker routing, resumeID plumbing |
-| `services/boss/internal/views/attach.go` | MODIFY | Accept resumeID, pass `--resume` to claude |
-| `services/boss/internal/views/home.go` | MODIFY | Enter → ViewChatPicker, update action bar |
-| `services/boss/cmd/handlers.go` | MODIFY | Update SetAttachSession call |
+| File                                          | Type   | Description                                       |
+| --------------------------------------------- | ------ | ------------------------------------------------- |
+| `services/boss/internal/claude/chats.go`      | NEW    | Chat discovery: scan JSONL files, parse metadata  |
+| `services/boss/internal/claude/chats_test.go` | NEW    | Unit tests for DiscoverChats and parseSessionMeta |
+| `services/boss/internal/views/chatpicker.go`  | NEW    | ChatPickerModel view                              |
+| `services/boss/internal/views/app.go`         | MODIFY | Add ViewChatPicker routing, resumeID plumbing     |
+| `services/boss/internal/views/attach.go`      | MODIFY | Accept resumeID, pass `--resume` to claude        |
+| `services/boss/internal/views/home.go`        | MODIFY | Enter → ViewChatPicker, update action bar         |
+| `services/boss/cmd/handlers.go`               | MODIFY | Update SetAttachSession call                      |
 
 ## Verification
 

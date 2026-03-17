@@ -66,4 +66,5 @@ type BossClient interface {
 	RecordChat(ctx context.Context, sessionID, claudeID, title string) (*pb.ClaudeChat, error)
 	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
 	UpdateChatTitle(ctx context.Context, claudeID, title string) error
+	DeleteChat(ctx context.Context, claudeID string) error
 }

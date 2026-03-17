@@ -158,6 +158,62 @@ func TestClaudeChatStore_FKCascade_DeleteSession(t *testing.T) {
 	}
 }
 
+func TestClaudeChatStore_DeleteByClaudeID(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewClaudeChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Delete by claude ID test",
+		WorktreePath: "/tmp/wt/delete-claude",
+		BranchName:   "feat/delete-claude",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Create two chats.
+	_, err = chatStore.Create(ctx, CreateClaudeChatParams{
+		SessionID: sess.ID, ClaudeID: "keep-me", Title: "Keeper",
+	})
+	if err != nil {
+		t.Fatalf("create chat 1: %v", err)
+	}
+	_, err = chatStore.Create(ctx, CreateClaudeChatParams{
+		SessionID: sess.ID, ClaudeID: "delete-me", Title: "Orphan",
+	})
+	if err != nil {
+		t.Fatalf("create chat 2: %v", err)
+	}
+
+	// Delete one by claude_id.
+	if err := chatStore.DeleteByClaudeID(ctx, "delete-me"); err != nil {
+		t.Fatalf("delete by claude ID: %v", err)
+	}
+
+	// Only one should remain.
+	chats, err := chatStore.ListBySession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("list after delete: %v", err)
+	}
+	if len(chats) != 1 {
+		t.Fatalf("expected 1 chat after delete, got %d", len(chats))
+	}
+	if chats[0].ClaudeID != "keep-me" {
+		t.Errorf("remaining chat claude_id = %q, want %q", chats[0].ClaudeID, "keep-me")
+	}
+
+	// Deleting a non-existent claude_id should not error.
+	if err := chatStore.DeleteByClaudeID(ctx, "nonexistent"); err != nil {
+		t.Errorf("delete non-existent should not error, got: %v", err)
+	}
+}
+
 func TestClaudeChatStore_ListBySession_Empty(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

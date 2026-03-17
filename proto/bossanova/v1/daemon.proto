@@ -41,6 +41,7 @@ service DaemonService {
   rpc RecordChat(RecordChatRequest) returns (RecordChatResponse);
   rpc ListChats(ListChatsRequest) returns (ListChatsResponse);
   rpc UpdateChatTitle(UpdateChatTitleRequest) returns (UpdateChatTitleResponse);
+  rpc DeleteChat(DeleteChatRequest) returns (DeleteChatResponse);
 
   // VCS event delivery (orchestrator → daemon via webhook routing)
   rpc DeliverVCSEvent(DeliverVCSEventRequest) returns (DeliverVCSEventResponse);
@@ -291,6 +292,12 @@ message UpdateChatTitleRequest {
 }
 
 message UpdateChatTitleResponse {}
+
+message DeleteChatRequest {
+  string claude_id = 1;  // Claude Code session UUID
+}
+
+message DeleteChatResponse {}
 
 // --- VCS Event Delivery ---
 

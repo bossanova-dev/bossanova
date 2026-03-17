@@ -203,6 +203,10 @@ func (c *RemoteClient) UpdateChatTitle(_ context.Context, _, _ string) error {
 	return errLocalOnly("UpdateChatTitle")
 }
 
+func (c *RemoteClient) DeleteChat(_ context.Context, _ string) error {
+	return errLocalOnly("DeleteChat")
+}
+
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.
 type remoteAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.ProxyAttachSessionResponse]

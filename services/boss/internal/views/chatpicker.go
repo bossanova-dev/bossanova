@@ -34,6 +34,12 @@ type chatTitlesBackfilledMsg struct {
 	updates map[string]string // claude_id -> title
 }
 
+// chatDeletedMsg signals that a chat was deleted (or failed to delete).
+type chatDeletedMsg struct {
+	claudeID string
+	err      error
+}
+
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
@@ -49,6 +55,9 @@ type ChatPickerModel struct {
 	cancel  bool
 	width   int
 	height  int
+
+	// Remove confirmation
+	confirming bool
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
@@ -134,6 +143,22 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case chatDeletedMsg:
+		if msg.err == nil {
+			// Remove the deleted chat from the list.
+			for i, chat := range m.chats {
+				if chat.ClaudeId == msg.claudeID {
+					m.chats = append(m.chats[:i], m.chats[i+1:]...)
+					break
+				}
+			}
+			// Adjust cursor if it's now out of bounds.
+			if m.cursor > len(m.chats) {
+				m.cursor = len(m.chats)
+			}
+		}
+		return m, nil
+
 	case chatPickerErrMsg:
 		m.loading = false
 		m.err = msg.err
@@ -145,6 +170,10 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.confirming {
+			return m.updateDeleteConfirm(msg)
+		}
+
 		switch msg.String() {
 		case "esc", "q":
 			m.cancel = true
@@ -159,6 +188,11 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			maxCursor := len(m.chats) // 0-based: 0 to len(chats)
 			if m.cursor < maxCursor {
 				m.cursor++
+			}
+			return m, nil
+		case "d":
+			if m.cursor > 0 && m.cursor <= len(m.chats) {
+				m.confirming = true
 			}
 			return m, nil
 		case "enter":
@@ -176,6 +210,21 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m, nil
+}
+
+func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		m.confirming = false
+		claudeID := m.chats[m.cursor-1].ClaudeId
+		return m, func() tea.Msg {
+			err := m.client.DeleteChat(m.ctx, claudeID)
+			return chatDeletedMsg{claudeID: claudeID, err: err}
+		}
+	case "n", "esc":
+		m.confirming = false
+	}
 	return m, nil
 }
 
@@ -255,7 +304,23 @@ func (m ChatPickerModel) View() tea.View {
 		}
 	}
 
-	b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+	if m.confirming && m.cursor > 0 && m.cursor <= len(m.chats) {
+		chatTitle := m.chats[m.cursor-1].Title
+		if chatTitle == "" {
+			chatTitle = "New chat"
+		}
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
+			fmt.Sprintf("Remove %q?", chatTitle)))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	} else {
+		actionBar := "[enter] select  [esc] back"
+		if m.cursor > 0 && m.cursor <= len(m.chats) {
+			actionBar = "[enter] select  [d] remove  [esc] back"
+		}
+		b.WriteString(styleActionBar.Render(actionBar))
+	}
 
 	return tea.NewView(b.String())
 }

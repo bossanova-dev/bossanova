@@ -100,6 +100,9 @@ const (
 	// DaemonServiceUpdateChatTitleProcedure is the fully-qualified name of the DaemonService's
 	// UpdateChatTitle RPC.
 	DaemonServiceUpdateChatTitleProcedure = "/bossanova.v1.DaemonService/UpdateChatTitle"
+	// DaemonServiceDeleteChatProcedure is the fully-qualified name of the DaemonService's DeleteChat
+	// RPC.
+	DaemonServiceDeleteChatProcedure = "/bossanova.v1.DaemonService/DeleteChat"
 	// DaemonServiceDeliverVCSEventProcedure is the fully-qualified name of the DaemonService's
 	// DeliverVCSEvent RPC.
 	DaemonServiceDeliverVCSEventProcedure = "/bossanova.v1.DaemonService/DeliverVCSEvent"
@@ -135,6 +138,7 @@ type DaemonServiceClient interface {
 	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
 	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
 	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
+	DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 }
@@ -288,6 +292,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("UpdateChatTitle")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteChat: connect.NewClient[v1.DeleteChatRequest, v1.DeleteChatResponse](
+			httpClient,
+			baseURL+DaemonServiceDeleteChatProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteChat")),
+			connect.WithClientOptions(opts...),
+		),
 		deliverVCSEvent: connect.NewClient[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse](
 			httpClient,
 			baseURL+DaemonServiceDeliverVCSEventProcedure,
@@ -322,6 +332,7 @@ type daemonServiceClient struct {
 	recordChat           *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
 	listChats            *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
 	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
+	deleteChat           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
 	deliverVCSEvent      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
 }
 
@@ -440,6 +451,11 @@ func (c *daemonServiceClient) UpdateChatTitle(ctx context.Context, req *connect.
 	return c.updateChatTitle.CallUnary(ctx, req)
 }
 
+// DeleteChat calls bossanova.v1.DaemonService.DeleteChat.
+func (c *daemonServiceClient) DeleteChat(ctx context.Context, req *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error) {
+	return c.deleteChat.CallUnary(ctx, req)
+}
+
 // DeliverVCSEvent calls bossanova.v1.DaemonService.DeliverVCSEvent.
 func (c *daemonServiceClient) DeliverVCSEvent(ctx context.Context, req *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error) {
 	return c.deliverVCSEvent.CallUnary(ctx, req)
@@ -475,6 +491,7 @@ type DaemonServiceHandler interface {
 	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
 	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
 	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
+	DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 }
@@ -624,6 +641,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("UpdateChatTitle")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceDeleteChatHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteChatProcedure,
+		svc.DeleteChat,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteChat")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceDeliverVCSEventHandler := connect.NewUnaryHandler(
 		DaemonServiceDeliverVCSEventProcedure,
 		svc.DeliverVCSEvent,
@@ -678,6 +701,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListChatsHandler.ServeHTTP(w, r)
 		case DaemonServiceUpdateChatTitleProcedure:
 			daemonServiceUpdateChatTitleHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteChatProcedure:
+			daemonServiceDeleteChatHandler.ServeHTTP(w, r)
 		case DaemonServiceDeliverVCSEventProcedure:
 			daemonServiceDeliverVCSEventHandler.ServeHTTP(w, r)
 		default:
@@ -779,6 +804,10 @@ func (UnimplementedDaemonServiceHandler) ListChats(context.Context, *connect.Req
 
 func (UnimplementedDaemonServiceHandler) UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateChatTitle is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteChat is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error) {

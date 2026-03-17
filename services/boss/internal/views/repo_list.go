@@ -111,7 +111,7 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m RepoListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y":
+	case "y", "enter":
 		repo := m.repos[m.cursor]
 		return m, func() tea.Msg {
 			err := m.client.RemoveRepo(m.ctx, repo.Id)
@@ -207,7 +207,9 @@ func (m RepoListModel) View() tea.View {
 		b.WriteString("\n")
 		repo := m.repos[m.cursor]
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
-			fmt.Sprintf("Remove %q? [y/n]", repo.DisplayName)))
+			fmt.Sprintf("Remove %q?", repo.DisplayName)))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
 		b.WriteString(styleActionBar.Render("[a] add  [d] remove  [esc] back"))
 	}

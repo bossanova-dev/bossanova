@@ -257,6 +257,13 @@ func (c *LocalClient) UpdateChatTitle(ctx context.Context, claudeID, title strin
 	return err
 }
 
+func (c *LocalClient) DeleteChat(ctx context.Context, claudeID string) error {
+	_, err := c.rpc.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
+		ClaudeId: claudeID,
+	}))
+	return err
+}
+
 // localAttachStream wraps the DaemonService AttachSession stream.
 type localAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.AttachSessionResponse]

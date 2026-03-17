@@ -88,6 +88,7 @@ type ClaudeChatStore interface {
 	ListBySession(ctx context.Context, sessionID string) ([]*models.ClaudeChat, error)
 	UpdateTitle(ctx context.Context, id string, title string) error
 	UpdateTitleByClaudeID(ctx context.Context, claudeID string, title string) error
+	DeleteByClaudeID(ctx context.Context, claudeID string) error
 }
 
 // CreateAttemptParams holds the parameters for creating a new attempt.

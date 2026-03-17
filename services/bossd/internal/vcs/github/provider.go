@@ -28,11 +28,19 @@ func New(logger zerolog.Logger) *Provider {
 	return &Provider{logger: logger}
 }
 
+// repoFlag converts a git origin URL to the owner/repo format expected by gh.
+func repoFlag(repoPath string) string {
+	if nwo := vcs.GitHubNWO(repoPath); nwo != "" {
+		return nwo
+	}
+	return repoPath
+}
+
 // CreateDraftPR pushes the head branch and creates a draft pull request.
 func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	args := []string{
 		"pr", "create",
-		"--repo", opts.RepoPath,
+		"--repo", repoFlag(opts.RepoPath),
 		"--head", opts.HeadBranch,
 		"--base", opts.BaseBranch,
 		"--title", opts.Title,
@@ -68,7 +76,7 @@ func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*v
 func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (*vcs.PRStatus, error) {
 	out, err := p.runGH(ctx,
 		"pr", "view", strconv.Itoa(prID),
-		"--repo", repoPath,
+		"--repo", repoFlag(repoPath),
 		"--json", "state,mergeable,title,headRefName,baseRefName",
 	)
 	if err != nil {
@@ -105,7 +113,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error) {
 	out, err := p.runGH(ctx,
 		"pr", "checks", strconv.Itoa(prID),
-		"--repo", repoPath,
+		"--repo", repoFlag(repoPath),
 		"--json", "name,state,conclusion,workflowName",
 	)
 	if err != nil {
@@ -140,7 +148,7 @@ func (p *Provider) GetFailedCheckLogs(ctx context.Context, repoPath string, chec
 	// checkID is "workflow/job" — we use gh run view to get logs.
 	// gh doesn't have a direct "get check logs" command, so we use the API.
 	out, err := p.runGH(ctx,
-		"api", fmt.Sprintf("repos/%s/actions/jobs/%s/logs", repoPath, checkID),
+		"api", fmt.Sprintf("repos/%s/actions/jobs/%s/logs", repoFlag(repoPath), checkID),
 	)
 	if err != nil {
 		return "", fmt.Errorf("get check logs: %w", err)
@@ -152,7 +160,7 @@ func (p *Provider) GetFailedCheckLogs(ctx context.Context, repoPath string, chec
 func (p *Provider) MarkReadyForReview(ctx context.Context, repoPath string, prID int) error {
 	_, err := p.runGH(ctx,
 		"pr", "ready", strconv.Itoa(prID),
-		"--repo", repoPath,
+		"--repo", repoFlag(repoPath),
 	)
 	if err != nil {
 		return fmt.Errorf("mark ready for review: %w", err)
@@ -168,7 +176,7 @@ func (p *Provider) MarkReadyForReview(ctx context.Context, repoPath string, prID
 // GetReviewComments returns review comments on a pull request.
 func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error) {
 	out, err := p.runGH(ctx,
-		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews", repoPath, prID),
+		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews", repoFlag(repoPath), prID),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get reviews: %w", err)
@@ -201,7 +209,7 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
 	out, err := p.runGH(ctx,
 		"pr", "list",
-		"--repo", repoPath,
+		"--repo", repoFlag(repoPath),
 		"--state", "open",
 		"--json", "number,title,headRefName,state",
 	)

@@ -36,6 +36,9 @@ const (
 	// DaemonServiceResolveContextProcedure is the fully-qualified name of the DaemonService's
 	// ResolveContext RPC.
 	DaemonServiceResolveContextProcedure = "/bossanova.v1.DaemonService/ResolveContext"
+	// DaemonServiceValidateRepoPathProcedure is the fully-qualified name of the DaemonService's
+	// ValidateRepoPath RPC.
+	DaemonServiceValidateRepoPathProcedure = "/bossanova.v1.DaemonService/ValidateRepoPath"
 	// DaemonServiceRegisterRepoProcedure is the fully-qualified name of the DaemonService's
 	// RegisterRepo RPC.
 	DaemonServiceRegisterRepoProcedure = "/bossanova.v1.DaemonService/RegisterRepo"
@@ -89,6 +92,14 @@ const (
 	// DaemonServiceEmptyTrashProcedure is the fully-qualified name of the DaemonService's EmptyTrash
 	// RPC.
 	DaemonServiceEmptyTrashProcedure = "/bossanova.v1.DaemonService/EmptyTrash"
+	// DaemonServiceRecordChatProcedure is the fully-qualified name of the DaemonService's RecordChat
+	// RPC.
+	DaemonServiceRecordChatProcedure = "/bossanova.v1.DaemonService/RecordChat"
+	// DaemonServiceListChatsProcedure is the fully-qualified name of the DaemonService's ListChats RPC.
+	DaemonServiceListChatsProcedure = "/bossanova.v1.DaemonService/ListChats"
+	// DaemonServiceUpdateChatTitleProcedure is the fully-qualified name of the DaemonService's
+	// UpdateChatTitle RPC.
+	DaemonServiceUpdateChatTitleProcedure = "/bossanova.v1.DaemonService/UpdateChatTitle"
 	// DaemonServiceDeliverVCSEventProcedure is the fully-qualified name of the DaemonService's
 	// DeliverVCSEvent RPC.
 	DaemonServiceDeliverVCSEventProcedure = "/bossanova.v1.DaemonService/DeliverVCSEvent"
@@ -99,6 +110,7 @@ type DaemonServiceClient interface {
 	// Context resolution
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
 	// Repo management
+	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
 	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
@@ -119,6 +131,10 @@ type DaemonServiceClient interface {
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
 	EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error)
+	// Claude chat tracking
+	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
+	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
+	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 }
@@ -138,6 +154,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceResolveContextProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ResolveContext")),
+			connect.WithClientOptions(opts...),
+		),
+		validateRepoPath: connect.NewClient[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse](
+			httpClient,
+			baseURL+DaemonServiceValidateRepoPathProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ValidateRepoPath")),
 			connect.WithClientOptions(opts...),
 		),
 		registerRepo: connect.NewClient[v1.RegisterRepoRequest, v1.RegisterRepoResponse](
@@ -248,6 +270,24 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("EmptyTrash")),
 			connect.WithClientOptions(opts...),
 		),
+		recordChat: connect.NewClient[v1.RecordChatRequest, v1.RecordChatResponse](
+			httpClient,
+			baseURL+DaemonServiceRecordChatProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RecordChat")),
+			connect.WithClientOptions(opts...),
+		),
+		listChats: connect.NewClient[v1.ListChatsRequest, v1.ListChatsResponse](
+			httpClient,
+			baseURL+DaemonServiceListChatsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListChats")),
+			connect.WithClientOptions(opts...),
+		),
+		updateChatTitle: connect.NewClient[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateChatTitleProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateChatTitle")),
+			connect.WithClientOptions(opts...),
+		),
 		deliverVCSEvent: connect.NewClient[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse](
 			httpClient,
 			baseURL+DaemonServiceDeliverVCSEventProcedure,
@@ -260,6 +300,7 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
 	resolveContext       *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
+	validateRepoPath     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
 	registerRepo         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
 	cloneAndRegisterRepo *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
 	listRepos            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
@@ -278,12 +319,20 @@ type daemonServiceClient struct {
 	archiveSession       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	resurrectSession     *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
 	emptyTrash           *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
+	recordChat           *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
+	listChats            *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
+	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
 	deliverVCSEvent      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
 func (c *daemonServiceClient) ResolveContext(ctx context.Context, req *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error) {
 	return c.resolveContext.CallUnary(ctx, req)
+}
+
+// ValidateRepoPath calls bossanova.v1.DaemonService.ValidateRepoPath.
+func (c *daemonServiceClient) ValidateRepoPath(ctx context.Context, req *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error) {
+	return c.validateRepoPath.CallUnary(ctx, req)
 }
 
 // RegisterRepo calls bossanova.v1.DaemonService.RegisterRepo.
@@ -376,6 +425,21 @@ func (c *daemonServiceClient) EmptyTrash(ctx context.Context, req *connect.Reque
 	return c.emptyTrash.CallUnary(ctx, req)
 }
 
+// RecordChat calls bossanova.v1.DaemonService.RecordChat.
+func (c *daemonServiceClient) RecordChat(ctx context.Context, req *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error) {
+	return c.recordChat.CallUnary(ctx, req)
+}
+
+// ListChats calls bossanova.v1.DaemonService.ListChats.
+func (c *daemonServiceClient) ListChats(ctx context.Context, req *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error) {
+	return c.listChats.CallUnary(ctx, req)
+}
+
+// UpdateChatTitle calls bossanova.v1.DaemonService.UpdateChatTitle.
+func (c *daemonServiceClient) UpdateChatTitle(ctx context.Context, req *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error) {
+	return c.updateChatTitle.CallUnary(ctx, req)
+}
+
 // DeliverVCSEvent calls bossanova.v1.DaemonService.DeliverVCSEvent.
 func (c *daemonServiceClient) DeliverVCSEvent(ctx context.Context, req *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error) {
 	return c.deliverVCSEvent.CallUnary(ctx, req)
@@ -386,6 +450,7 @@ type DaemonServiceHandler interface {
 	// Context resolution
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
 	// Repo management
+	ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error)
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
 	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
@@ -406,6 +471,10 @@ type DaemonServiceHandler interface {
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
 	EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error)
+	// Claude chat tracking
+	RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error)
+	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
+	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 }
@@ -421,6 +490,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceResolveContextProcedure,
 		svc.ResolveContext,
 		connect.WithSchema(daemonServiceMethods.ByName("ResolveContext")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceValidateRepoPathHandler := connect.NewUnaryHandler(
+		DaemonServiceValidateRepoPathProcedure,
+		svc.ValidateRepoPath,
+		connect.WithSchema(daemonServiceMethods.ByName("ValidateRepoPath")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceRegisterRepoHandler := connect.NewUnaryHandler(
@@ -531,6 +606,24 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("EmptyTrash")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceRecordChatHandler := connect.NewUnaryHandler(
+		DaemonServiceRecordChatProcedure,
+		svc.RecordChat,
+		connect.WithSchema(daemonServiceMethods.ByName("RecordChat")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListChatsHandler := connect.NewUnaryHandler(
+		DaemonServiceListChatsProcedure,
+		svc.ListChats,
+		connect.WithSchema(daemonServiceMethods.ByName("ListChats")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateChatTitleHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateChatTitleProcedure,
+		svc.UpdateChatTitle,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateChatTitle")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceDeliverVCSEventHandler := connect.NewUnaryHandler(
 		DaemonServiceDeliverVCSEventProcedure,
 		svc.DeliverVCSEvent,
@@ -541,6 +634,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		switch r.URL.Path {
 		case DaemonServiceResolveContextProcedure:
 			daemonServiceResolveContextHandler.ServeHTTP(w, r)
+		case DaemonServiceValidateRepoPathProcedure:
+			daemonServiceValidateRepoPathHandler.ServeHTTP(w, r)
 		case DaemonServiceRegisterRepoProcedure:
 			daemonServiceRegisterRepoHandler.ServeHTTP(w, r)
 		case DaemonServiceCloneAndRegisterRepoProcedure:
@@ -577,6 +672,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceResurrectSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceEmptyTrashProcedure:
 			daemonServiceEmptyTrashHandler.ServeHTTP(w, r)
+		case DaemonServiceRecordChatProcedure:
+			daemonServiceRecordChatHandler.ServeHTTP(w, r)
+		case DaemonServiceListChatsProcedure:
+			daemonServiceListChatsHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateChatTitleProcedure:
+			daemonServiceUpdateChatTitleHandler.ServeHTTP(w, r)
 		case DaemonServiceDeliverVCSEventProcedure:
 			daemonServiceDeliverVCSEventHandler.ServeHTTP(w, r)
 		default:
@@ -590,6 +691,10 @@ type UnimplementedDaemonServiceHandler struct{}
 
 func (UnimplementedDaemonServiceHandler) ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResolveContext is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ValidateRepoPath(context.Context, *connect.Request[v1.ValidateRepoPathRequest]) (*connect.Response[v1.ValidateRepoPathResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ValidateRepoPath is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error) {
@@ -662,6 +767,18 @@ func (UnimplementedDaemonServiceHandler) ResurrectSession(context.Context, *conn
 
 func (UnimplementedDaemonServiceHandler) EmptyTrash(context.Context, *connect.Request[v1.EmptyTrashRequest]) (*connect.Response[v1.EmptyTrashResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.EmptyTrash is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RecordChat(context.Context, *connect.Request[v1.RecordChatRequest]) (*connect.Response[v1.RecordChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RecordChat is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListChats is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateChatTitle is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error) {

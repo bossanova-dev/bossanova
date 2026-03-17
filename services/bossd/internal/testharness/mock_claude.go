@@ -9,6 +9,8 @@ import (
 	"github.com/recurser/bossd/internal/claude"
 )
 
+var _ claude.ClaudeRunner = (*MockClaudeRunner)(nil)
+
 // MockClaudeRunner is a mock ClaudeRunner that simulates Claude processes
 // without spawning real subprocesses.
 type MockClaudeRunner struct {

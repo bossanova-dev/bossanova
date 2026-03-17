@@ -96,7 +96,16 @@ func run() error {
 		return fmt.Errorf("socket path: %w", err)
 	}
 
-	srv := server.New(repos, sessions, attempts, claudeChats, lifecycle, claudeRunner, worktrees, ghProvider)
+	srv := server.New(server.Config{
+		Repos:       repos,
+		Sessions:    sessions,
+		Attempts:    attempts,
+		ClaudeChats: claudeChats,
+		Lifecycle:   lifecycle,
+		Claude:      claudeRunner,
+		Worktrees:   worktrees,
+		Provider:    ghProvider,
+	})
 
 	// --- Upstream (optional, cloud mode) ---
 

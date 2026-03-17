@@ -15,6 +15,15 @@ import (
 	gitpkg "github.com/recurser/bossd/internal/git"
 )
 
+// Compile-time interface assertions for test mocks.
+var (
+	_ db.SessionStore        = (*mockSessionStore)(nil)
+	_ db.RepoStore           = (*mockRepoStore)(nil)
+	_ gitpkg.WorktreeManager = (*mockWorktreeManager)(nil)
+	_ claude.ClaudeRunner    = (*mockClaudeRunner)(nil)
+	_ vcs.Provider           = (*mockVCSProvider)(nil)
+)
+
 // --- Mock SessionStore ---
 
 type mockSessionStore struct {

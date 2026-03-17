@@ -50,6 +50,8 @@ type ClaudeRunner interface {
 // CommandFactory creates exec.Cmd instances. Allows injection for testing.
 type CommandFactory func(ctx context.Context, name string, args ...string) *exec.Cmd
 
+var _ ClaudeRunner = (*Runner)(nil)
+
 // Runner is the default ClaudeRunner implementation.
 type Runner struct {
 	mu      sync.RWMutex

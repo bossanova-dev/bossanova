@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/recurser/bossalib/models"
 )
+
+var _ AttemptStore = (*SQLiteAttemptStore)(nil)
 
 // SQLiteAttemptStore implements AttemptStore using SQLite.
 type SQLiteAttemptStore struct {
@@ -50,7 +53,7 @@ func (s *SQLiteAttemptStore) ListBySession(ctx context.Context, sessionID string
 
 	var attempts []*models.Attempt
 	for rows.Next() {
-		a, err := scanAttemptRows(rows)
+		a, err := scanAttempt(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +77,7 @@ func (s *SQLiteAttemptStore) Update(ctx context.Context, id string, params Updat
 	}
 
 	args = append(args, id)
-	query := "UPDATE attempts SET " + joinStrings(sets, ", ") + " WHERE id = ?"
+	query := "UPDATE attempts SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("update attempt: %w", err)
@@ -96,26 +99,11 @@ func (s *SQLiteAttemptStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func scanAttempt(row *sql.Row) (*models.Attempt, error) {
+func scanAttempt(s scanner) (*models.Attempt, error) {
 	var a models.Attempt
 	var trigger, result int
 	var createdAt, updatedAt string
-	err := row.Scan(&a.ID, &a.SessionID, &trigger, &result, &a.Error, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	a.Trigger = models.AttemptTrigger(trigger)
-	a.Result = models.AttemptResult(result)
-	a.CreatedAt = parseTime(createdAt)
-	a.UpdatedAt = parseTime(updatedAt)
-	return &a, nil
-}
-
-func scanAttemptRows(rows *sql.Rows) (*models.Attempt, error) {
-	var a models.Attempt
-	var trigger, result int
-	var createdAt, updatedAt string
-	err := rows.Scan(&a.ID, &a.SessionID, &trigger, &result, &a.Error, &createdAt, &updatedAt)
+	err := s.Scan(&a.ID, &a.SessionID, &trigger, &result, &a.Error, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}

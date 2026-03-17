@@ -23,10 +23,15 @@ type chatPickerErrMsg struct {
 	err error
 }
 
-// chatsDiscoveredMsg carries the result of chat discovery.
-type chatsDiscoveredMsg struct {
-	chats []claude.Chat
+// chatsListedMsg carries the result of listing chats via RPC.
+type chatsListedMsg struct {
+	chats []*pb.ClaudeChat
 	err   error
+}
+
+// chatTitlesBackfilledMsg carries updated titles for chats that were "New chat".
+type chatTitlesBackfilledMsg struct {
+	updates map[string]string // claude_id -> title
 }
 
 // ChatPickerModel lets the user choose between starting a new chat or
@@ -36,14 +41,14 @@ type ChatPickerModel struct {
 	ctx       context.Context
 	sessionID string
 
-	session  *pb.Session
-	chats    []claude.Chat
-	cursor   int
-	loading  bool
-	err      error
-	cancel   bool
-	width    int
-	height   int
+	session *pb.Session
+	chats   []*pb.ClaudeChat
+	cursor  int
+	loading bool
+	err     error
+	cancel  bool
+	width   int
+	height  int
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
@@ -70,10 +75,39 @@ func (m ChatPickerModel) fetchSession() tea.Cmd {
 	}
 }
 
-func discoverChats(worktreePath string) tea.Cmd {
+func (m ChatPickerModel) listChats() tea.Cmd {
 	return func() tea.Msg {
-		chats, err := claude.DiscoverChats(worktreePath)
-		return chatsDiscoveredMsg{chats: chats, err: err}
+		chats, err := m.client.ListChats(m.ctx, m.sessionID)
+		return chatsListedMsg{chats: chats, err: err}
+	}
+}
+
+// backfillTitles reads JSONL files for chats still titled "New chat" and
+// updates their titles via RPC. This is best-effort and non-blocking.
+func (m ChatPickerModel) backfillTitles() tea.Cmd {
+	if m.session == nil {
+		return nil
+	}
+	var needsUpdate []*pb.ClaudeChat
+	for _, c := range m.chats {
+		if c.Title == "" || c.Title == "New chat" {
+			needsUpdate = append(needsUpdate, c)
+		}
+	}
+	if len(needsUpdate) == 0 {
+		return nil
+	}
+	worktreePath := m.session.GetWorktreePath()
+	return func() tea.Msg {
+		updates := make(map[string]string)
+		for _, c := range needsUpdate {
+			title := claude.ChatTitle(worktreePath, c.ClaudeId)
+			if title != "" {
+				updates[c.ClaudeId] = title
+				_ = m.client.UpdateChatTitle(m.ctx, c.ClaudeId, title)
+			}
+		}
+		return chatTitlesBackfilledMsg{updates: updates}
 	}
 }
 
@@ -81,15 +115,23 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case chatPickerSessionMsg:
 		m.session = msg.session
-		return m, discoverChats(msg.session.GetWorktreePath())
+		return m, m.listChats()
 
-	case chatsDiscoveredMsg:
+	case chatsListedMsg:
 		m.loading = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
 		}
 		m.chats = msg.chats
+		return m, m.backfillTitles()
+
+	case chatTitlesBackfilledMsg:
+		for i, chat := range m.chats {
+			if title, ok := msg.updates[chat.ClaudeId]; ok {
+				m.chats[i].Title = title
+			}
+		}
 		return m, nil
 
 	case chatPickerErrMsg:
@@ -122,7 +164,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			var resumeID string
 			if m.cursor > 0 && m.cursor <= len(m.chats) {
-				resumeID = m.chats[m.cursor-1].UUID
+				resumeID = m.chats[m.cursor-1].ClaudeId
 			}
 			return m, func() tea.Msg {
 				return switchViewMsg{
@@ -189,10 +231,22 @@ func (m ChatPickerModel) View() tea.View {
 				cursor = "> "
 			}
 
-			timeStr := relativeTime(chat.ModifiedAt)
-			line := fmt.Sprintf("%s%s  %s", cursor, chat.Summary, styleSubtle.Render(timeStr))
+			chatTitle := chat.Title
+			if chatTitle == "" {
+				chatTitle = "New chat"
+			}
+
+			timeStr := relativeTime(chat.CreatedAt.AsTime())
+
+			// Show "(remote)" for chats that originated on another daemon.
+			suffix := ""
+			if chat.DaemonId != "" {
+				suffix = " (remote)"
+			}
+
+			line := fmt.Sprintf("%s%s%s  %s", cursor, chatTitle, suffix, styleSubtle.Render(timeStr))
 			if m.cursor == i+1 {
-				line = styleSelected.Render(fmt.Sprintf("%s%s", cursor, chat.Summary)) +
+				line = styleSelected.Render(fmt.Sprintf("%s%s%s", cursor, chatTitle, suffix)) +
 					"  " + styleSubtle.Render(timeStr)
 			}
 
@@ -201,7 +255,6 @@ func (m ChatPickerModel) View() tea.View {
 		}
 	}
 
-	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
 
 	return tea.NewView(b.String())

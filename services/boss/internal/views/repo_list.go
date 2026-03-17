@@ -133,18 +133,43 @@ func (m RepoListModel) View() tea.View {
 
 	var b strings.Builder
 	b.WriteString(styleTitle.Render("Repositories"))
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	if len(m.repos) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No repositories registered."))
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[a] add  [esc] back"))
 		return tea.NewView(b.String())
 	}
 
+	// Compute column widths from data.
+	maxName := len("NAME")
+	maxPath := len("PATH")
+	maxBranch := len("BRANCH")
+	for _, repo := range m.repos {
+		if len(repo.DisplayName) > maxName {
+			maxName = len(repo.DisplayName)
+		}
+		if len(repo.LocalPath) > maxPath {
+			maxPath = len(repo.LocalPath)
+		}
+		if len(repo.DefaultBaseBranch) > maxBranch {
+			maxBranch = len(repo.DefaultBaseBranch)
+		}
+	}
+	if maxName > 30 {
+		maxName = 30
+	}
+	if maxPath > 60 {
+		maxPath = 60
+	}
+	if maxBranch > 30 {
+		maxBranch = 30
+	}
+
 	// Table header.
-	header := fmt.Sprintf("  %-10s %-20s %-30s %-12s %-10s",
-		"ID", "NAME", "PATH", "BRANCH", "SETUP")
+	header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-*s",
+		shortIDLen, "ID", maxName, "NAME", maxPath, "PATH", maxBranch, "BRANCH")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
 	b.WriteString("\n")
 
@@ -153,17 +178,17 @@ func (m RepoListModel) View() tea.View {
 		if i == m.cursor {
 			cursor = "> "
 		}
-		id := truncate(repo.Id, 8)
-		name := truncate(repo.DisplayName, 20)
-		path := truncate(repo.LocalPath, 30)
-		branch := truncate(repo.DefaultBaseBranch, 12)
-		setup := "-"
-		if repo.SetupScript != nil {
-			setup = truncate(*repo.SetupScript, 10)
+
+		shortID := repo.Id
+		if len(shortID) > shortIDLen {
+			shortID = shortID[:shortIDLen]
 		}
 
-		row := fmt.Sprintf("%s%-10s %-20s %-30s %-12s %-10s",
-			cursor, id, name, path, branch, setup)
+		row := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-*s",
+			cursor, shortIDLen, shortID,
+			maxName, truncate(repo.DisplayName, maxName),
+			maxPath, truncate(repo.LocalPath, maxPath),
+			maxBranch, truncate(repo.DefaultBaseBranch, maxBranch))
 		if i == m.cursor {
 			row = styleSelected.Render(row)
 		}
@@ -171,8 +196,8 @@ func (m RepoListModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
 	if m.confirming {
+		b.WriteString("\n")
 		repo := m.repos[m.cursor]
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
 			fmt.Sprintf("Remove %q? [y/n]", repo.DisplayName)))

@@ -49,6 +49,12 @@ type repoClonedMsg struct {
 	err  error
 }
 
+// repoValidatedMsg carries the result of a ValidateRepoPath RPC call.
+type repoValidatedMsg struct {
+	resp *pb.ValidateRepoPathResponse
+	err  error
+}
+
 // RepoAddModel is the wizard for registering a new repository.
 type RepoAddModel struct {
 	client client.BossClient
@@ -74,6 +80,10 @@ type RepoAddModel struct {
 	baseBranchInput  textinput.Model
 	worktreeDirInput textinput.Model
 	setupInput       textinput.Model
+
+	// Validation
+	validating bool
+	isGithub   bool
 
 	createdRepo *pb.Repo
 }
@@ -156,6 +166,28 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.createdRepo = msg.repo
 		m.done = true
 		return m, nil
+
+	case repoValidatedMsg:
+		m.validating = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		if !msg.resp.IsValid {
+			m.err = fmt.Errorf("%s", msg.resp.ErrorMessage)
+			// Stay on path step so user can fix.
+			m.step = repoAddStepPath
+			return m, m.pathInput.Focus()
+		}
+		// Auto-populate fields from validation response.
+		m.isGithub = msg.resp.IsGithub
+		if msg.resp.DefaultBranch != "" {
+			m.baseBranchInput.SetValue(msg.resp.DefaultBranch)
+		}
+		// Default the name to the basename of the entered path.
+		m.nameInput.SetValue(filepath.Base(m.pathInput.Value()))
+		m.step = repoAddStepName
+		return m, m.nameInput.Focus()
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -246,10 +278,15 @@ func (m RepoAddModel) updateClonePathStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m RepoAddModel) updatePathStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" {
+	if msg.String() == "enter" && m.pathInput.Value() != "" {
 		m.pathInput.Blur()
-		m.step = repoAddStepName
-		return m, m.nameInput.Focus()
+		m.err = nil
+		m.validating = true
+		localPath := m.pathInput.Value()
+		return m, func() tea.Msg {
+			resp, err := m.client.ValidateRepoPath(m.ctx, localPath)
+			return repoValidatedMsg{resp: resp, err: err}
+		}
 	}
 	var cmd tea.Cmd
 	m.pathInput, cmd = m.pathInput.Update(msg)
@@ -367,7 +404,14 @@ func (m RepoAddModel) Cancelled() bool { return m.cancel }
 func (m RepoAddModel) Done() bool { return m.done }
 
 func (m RepoAddModel) View() tea.View {
-	if m.err != nil {
+	if m.validating {
+		return tea.NewView(
+			lipgloss.NewStyle().Padding(1, 2).Foreground(colorCyan).Render(
+				fmt.Sprintf("Validating %s...", m.pathInput.Value())),
+		)
+	}
+
+	if m.err != nil && m.step != repoAddStepPath {
 		return tea.NewView(
 			styleError.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" +
 				styleActionBar.Render("[esc] back"),
@@ -436,7 +480,6 @@ func (m RepoAddModel) viewSourceStep() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
 
 	return b.String()
@@ -494,15 +537,10 @@ func (m RepoAddModel) viewCloneFields() string {
 	}
 
 	if m.step == repoAddStepConfirm {
-		for _, f := range fields {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-				fmt.Sprintf("  %s: %s", f.label, f.value)))
-			b.WriteString("\n")
-		}
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] clone & register  [n/esc] cancel"))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Clone and register this repository?"))
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[enter] next  [esc] cancel"))
 	}
 
@@ -530,6 +568,11 @@ func (m RepoAddModel) viewOpenFields() string {
 				fmt.Sprintf("  %s: %s", f.label, f.input.Value())))
 			b.WriteString("\n")
 		} else if m.step == f.step {
+			if m.err != nil && f.step == repoAddStepPath {
+				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
+					styleError.Render(fmt.Sprintf("  %v", m.err))))
+				b.WriteString("\n")
+			}
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
 				fmt.Sprintf("  %s:", f.label)))
 			b.WriteString("\n")
@@ -539,15 +582,10 @@ func (m RepoAddModel) viewOpenFields() string {
 	}
 
 	if m.step == repoAddStepConfirm {
-		for _, f := range fields {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-				fmt.Sprintf("  %s: %s", f.label, f.input.Value())))
-			b.WriteString("\n")
-		}
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] register  [n/esc] cancel"))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Add this repository?"))
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[enter] next  [esc] cancel"))
 	}
 

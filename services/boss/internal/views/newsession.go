@@ -400,7 +400,7 @@ func (m NewSessionModel) viewRepoSelect(b *strings.Builder) {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No repositories registered."))
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Add one with: boss repo add"))
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[esc] back"))
 		return
 	}
@@ -421,7 +421,6 @@ func (m NewSessionModel) viewRepoSelect(b *strings.Builder) {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
 }
 
@@ -457,14 +456,13 @@ func (m NewSessionModel) viewSessionType(b *strings.Builder) {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
 }
 
 func (m NewSessionModel) viewPRSelect(b *strings.Builder) {
 	if m.prsErr != nil {
 		b.WriteString(styleError.Render(fmt.Sprintf("Failed to load PRs: %v", m.prsErr)))
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[esc] back"))
 		return
 	}
@@ -476,7 +474,7 @@ func (m NewSessionModel) viewPRSelect(b *strings.Builder) {
 
 	if len(m.prs) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No open PRs found."))
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[esc] back"))
 		return
 	}
@@ -497,7 +495,6 @@ func (m NewSessionModel) viewPRSelect(b *strings.Builder) {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
 }
 
@@ -505,7 +502,7 @@ func (m NewSessionModel) viewTitleInput(b *strings.Builder) {
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Session title:"))
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.titleInput.View()))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[enter] next  [esc] cancel"))
 }
 
@@ -513,6 +510,6 @@ func (m NewSessionModel) viewPlanInput(b *strings.Builder) {
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("What would you like to work on?"))
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.planInput.View()))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[ctrl+d] next  [esc] cancel"))
 }

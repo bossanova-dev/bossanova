@@ -163,8 +163,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewRepoAdd:
 		updated, cmd := a.repoAdd.Update(msg)
 		a.repoAdd = updated.(RepoAddModel)
-		if a.repoAdd.Cancelled() || a.repoAdd.Done() {
+		if a.repoAdd.Cancelled() {
 			return a, a.switchToHome()
+		}
+		if a.repoAdd.Done() {
+			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.activeView = ViewRepoList
+			return a, a.repoList.Init()
 		}
 		return a, cmd
 	case ViewRepoList:

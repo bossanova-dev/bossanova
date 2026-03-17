@@ -24,6 +24,11 @@ type WorktreeManager interface {
 	// It returns the worktree path and branch name.
 	Create(ctx context.Context, opts CreateOpts) (*CreateResult, error)
 
+	// CreateFromExistingBranch creates a worktree that checks out an existing
+	// remote branch (e.g. a PR head branch). It fetches the branch from origin
+	// and creates a worktree tracking it.
+	CreateFromExistingBranch(ctx context.Context, opts CreateFromExistingBranchOpts) (*CreateResult, error)
+
 	// Archive removes the worktree directory but keeps the branch alive.
 	Archive(ctx context.Context, worktreePath string) error
 
@@ -44,6 +49,14 @@ type WorktreeManager interface {
 	// DetectOriginURL returns the "origin" remote URL for the repo at the
 	// given path, or empty string if none is configured.
 	DetectOriginURL(ctx context.Context, repoPath string) (string, error)
+
+	// IsGitRepo returns true if the given path is inside a git repository.
+	IsGitRepo(ctx context.Context, path string) bool
+
+	// DetectDefaultBranch returns the default branch name for the repo at
+	// the given path by inspecting refs/remotes/origin/HEAD. Falls back to
+	// "main" if the ref doesn't exist.
+	DetectDefaultBranch(ctx context.Context, repoPath string) (string, error)
 }
 
 // CreateOpts holds the parameters for creating a new worktree.
@@ -59,6 +72,15 @@ type CreateOpts struct {
 type CreateResult struct {
 	WorktreePath string
 	BranchName   string
+}
+
+// CreateFromExistingBranchOpts holds the parameters for creating a worktree
+// from an existing remote branch (e.g. a PR head branch).
+type CreateFromExistingBranchOpts struct {
+	RepoPath        string  // Path to the main repository.
+	BranchName      string  // Remote branch to check out (e.g. "feature/foo").
+	WorktreeBaseDir string  // Directory under which worktrees are created.
+	SetupScript     *string // Optional setup script to run after creation.
 }
 
 // ResurrectOpts holds the parameters for resurrecting an archived worktree.
@@ -253,6 +275,72 @@ func (m *Manager) DetectOriginURL(ctx context.Context, repoPath string) (string,
 		return "", nil
 	}
 	return url, nil
+}
+
+// IsGitRepo returns true if the given path is inside a git repository.
+func (m *Manager) IsGitRepo(ctx context.Context, path string) bool {
+	_, err := runGit(ctx, path, "rev-parse", "--git-dir")
+	return err == nil
+}
+
+// DetectDefaultBranch returns the default branch name for a repo by
+// inspecting refs/remotes/origin/HEAD. Falls back to "main".
+func (m *Manager) DetectDefaultBranch(ctx context.Context, repoPath string) (string, error) {
+	ref, err := runGit(ctx, repoPath, "symbolic-ref", "refs/remotes/origin/HEAD")
+	if err != nil {
+		// Ref doesn't exist — fall back to "main".
+		return "main", nil
+	}
+	// ref is e.g. "refs/remotes/origin/main" → extract "main".
+	parts := strings.SplitN(ref, "refs/remotes/origin/", 2)
+	if len(parts) == 2 && parts[1] != "" {
+		return parts[1], nil
+	}
+	return "main", nil
+}
+
+// CreateFromExistingBranch creates a worktree from an existing remote branch.
+// It fetches the branch from origin and creates a worktree tracking it.
+func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromExistingBranchOpts) (*CreateResult, error) {
+	wtPath := filepath.Join(opts.WorktreeBaseDir, opts.BranchName)
+
+	// Ensure the worktree base directory exists.
+	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create worktree base dir: %w", err)
+	}
+
+	m.logger.Info().
+		Str("repo", opts.RepoPath).
+		Str("branch", opts.BranchName).
+		Str("path", wtPath).
+		Msg("creating worktree from existing branch")
+
+	// Fetch the branch from origin.
+	if _, err := runGit(ctx, opts.RepoPath,
+		"fetch", "origin", opts.BranchName,
+	); err != nil {
+		return nil, fmt.Errorf("fetch branch: %w", err)
+	}
+
+	// Create worktree from the fetched branch.
+	// git worktree add <path> <branch> — checks out existing branch.
+	if _, err := runGit(ctx, opts.RepoPath,
+		"worktree", "add", wtPath, opts.BranchName,
+	); err != nil {
+		return nil, fmt.Errorf("worktree add: %w", err)
+	}
+
+	// Run setup script if provided.
+	if opts.SetupScript != nil && *opts.SetupScript != "" {
+		if err := runSetupScript(ctx, wtPath, *opts.SetupScript); err != nil {
+			return nil, fmt.Errorf("setup script: %w", err)
+		}
+	}
+
+	return &CreateResult{
+		WorktreePath: wtPath,
+		BranchName:   opts.BranchName,
+	}, nil
 }
 
 // runSetupScript executes a setup script in the given directory with a 5-minute timeout.

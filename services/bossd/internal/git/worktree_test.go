@@ -31,6 +31,46 @@ func initTestRepo(t *testing.T) string {
 	return dir
 }
 
+func TestIsGitRepo(t *testing.T) {
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	t.Run("valid repo", func(t *testing.T) {
+		dir := initTestRepo(t)
+		if !mgr.IsGitRepo(ctx, dir) {
+			t.Error("expected IsGitRepo to return true for git repo")
+		}
+	})
+
+	t.Run("non-repo directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if mgr.IsGitRepo(ctx, dir) {
+			t.Error("expected IsGitRepo to return false for non-repo")
+		}
+	})
+
+	t.Run("nonexistent path", func(t *testing.T) {
+		if mgr.IsGitRepo(ctx, "/nonexistent/path/that/does/not/exist") {
+			t.Error("expected IsGitRepo to return false for nonexistent path")
+		}
+	})
+}
+
+func TestDetectDefaultBranch_Fallback(t *testing.T) {
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// A repo without origin/HEAD should fall back to "main".
+	dir := initTestRepo(t)
+	branch, err := mgr.DetectDefaultBranch(ctx, dir)
+	if err != nil {
+		t.Fatalf("DetectDefaultBranch: %v", err)
+	}
+	if branch != "main" {
+		t.Errorf("branch = %q, want %q", branch, "main")
+	}
+}
+
 func TestSanitizeBranchName(t *testing.T) {
 	tests := []struct {
 		title string

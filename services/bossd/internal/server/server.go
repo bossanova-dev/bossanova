@@ -21,6 +21,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -48,6 +49,7 @@ type Server struct {
 	claude      claude.ClaudeRunner
 	worktrees   gitpkg.WorktreeManager
 	provider    vcs.Provider
+	logger      zerolog.Logger
 	listener    net.Listener
 	srv         *http.Server
 
@@ -64,6 +66,7 @@ type Config struct {
 	Claude      claude.ClaudeRunner
 	Worktrees   gitpkg.WorktreeManager
 	Provider    vcs.Provider
+	Logger      zerolog.Logger
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
@@ -77,6 +80,7 @@ func New(cfg Config) *Server {
 		claude:      cfg.Claude,
 		worktrees:   cfg.Worktrees,
 		provider:    cfg.Provider,
+		logger:      cfg.Logger,
 	}
 }
 
@@ -388,6 +392,10 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		if errors.Is(err, gitpkg.ErrBranchExists) {
 			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
 		}
+		s.logger.Error().Err(err).
+			Str("session", sess.ID).
+			Str("title", msg.Title).
+			Msg("start session failed")
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
 	}
 

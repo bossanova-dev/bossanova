@@ -185,7 +185,7 @@ func (m ChatPickerModel) Cancelled() bool { return m.cancel }
 func (m ChatPickerModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
-			styleError.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" +
+			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}

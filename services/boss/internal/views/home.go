@@ -119,6 +119,17 @@ var (
 	styleSubtle    = lipgloss.NewStyle().Faint(true)
 )
 
+// renderError renders an error message that wraps to the given terminal width.
+// If width is 0 (unknown), it falls back to no width constraint.
+func renderError(msg string, width int) string {
+	s := styleError
+	if width > 0 {
+		// Account for padding (2 chars each side).
+		s = s.Width(width - 4)
+	}
+	return s.Render(msg)
+}
+
 // bannerGradient defines a horizontal color gradient for the B icon (dawn palette).
 var bannerGradient = []color.Color{
 	lipgloss.Color("#00C6FF"),
@@ -235,7 +246,7 @@ func checksIcon(state pb.ChecksOverall) string {
 func (h HomeModel) View() tea.View {
 	if h.err != nil {
 		return tea.NewView(
-			styleError.Render(fmt.Sprintf("Cannot connect to daemon: %v", h.err)) +
+			renderError(fmt.Sprintf("Cannot connect to daemon: %v", h.err), h.width) +
 				"\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render("Start the daemon with: bossd") +
 				"\n" +

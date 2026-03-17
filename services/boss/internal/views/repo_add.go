@@ -86,6 +86,9 @@ type RepoAddModel struct {
 	isGithub   bool
 
 	createdRepo *pb.Repo
+
+	// Layout
+	width int
 }
 
 // NewRepoAddModel creates a RepoAddModel with sensible defaults.
@@ -148,6 +151,10 @@ func (m RepoAddModel) Init() tea.Cmd {
 
 func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+
 	case repoRegisteredMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -414,7 +421,7 @@ func (m RepoAddModel) View() tea.View {
 
 	if m.err != nil && m.step != repoAddStepPath {
 		return tea.NewView(
-			styleError.Render(fmt.Sprintf("Error: %v", m.err)) + "\n" +
+			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}
@@ -571,7 +578,7 @@ func (m RepoAddModel) viewOpenFields() string {
 		} else if m.step == f.step {
 			if m.err != nil && f.step == repoAddStepPath {
 				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-					styleError.Render(fmt.Sprintf("  %v", m.err))))
+					renderError(fmt.Sprintf("  %v", m.err), m.width)))
 				b.WriteString("\n")
 			}
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(

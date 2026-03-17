@@ -98,6 +98,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.home.width = msg.Width
 		a.home.height = msg.Height
+		a.newSession.width = msg.Width
+		a.repoAdd.width = msg.Width
+		a.repoList.width = msg.Width
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -111,15 +114,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.view {
 		case ViewNewSession:
 			a.newSession = NewNewSessionModel(a.client, a.ctx)
+			a.newSession.width = a.width
 			return a, a.newSession.Init()
 		case ViewChatPicker:
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, msg.sessionID)
 			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
 			a.repoAdd = NewRepoAddModel(a.client, a.ctx)
+			a.repoAdd.width = a.width
 			return a, a.repoAdd.Init()
 		case ViewRepoList:
 			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.repoList.width = a.width
 			return a, a.repoList.Init()
 		case ViewAttach:
 			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID, msg.resumeID)

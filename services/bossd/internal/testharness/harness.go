@@ -88,6 +88,7 @@ func New(t *testing.T) *Harness {
 		Claude:      claudeMock,
 		Worktrees:   gitMock,
 		Provider:    vcsMock,
+		Logger:      logger,
 	})
 
 	// Start server on a temp Unix socket.

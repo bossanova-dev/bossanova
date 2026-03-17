@@ -105,6 +105,7 @@ func run() error {
 		Claude:      claudeRunner,
 		Worktrees:   worktrees,
 		Provider:    ghProvider,
+		Logger:      log.Logger,
 	})
 
 	// --- Upstream (optional, cloud mode) ---

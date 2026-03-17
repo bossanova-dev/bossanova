@@ -15,6 +15,7 @@ type MockWorktreeManager struct {
 	mu sync.Mutex
 
 	CreateCalls     []gitpkg.CreateOpts
+	CloneCalls      []cloneCall
 	ArchiveCalls    []string
 	ResurrectCalls  []gitpkg.ResurrectOpts
 	PushCalls       []pushCall
@@ -23,11 +24,19 @@ type MockWorktreeManager struct {
 	// CreateFunc overrides the default Create behavior when set.
 	CreateFunc func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
 
+	// CloneFunc overrides the default Clone behavior when set.
+	CloneFunc func(ctx context.Context, cloneURL, localPath string) error
+
 	// PushFunc overrides the default Push behavior when set.
 	PushFunc func(ctx context.Context, worktreePath, branch string) error
 
 	// DetectOriginURLResult is returned by DetectOriginURL.
 	DetectOriginURLResult string
+}
+
+type cloneCall struct {
+	CloneURL  string
+	LocalPath string
 }
 
 type pushCall struct {
@@ -62,6 +71,17 @@ func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts
 		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s", branch),
 		BranchName:   branch,
 	}, nil
+}
+
+func (m *MockWorktreeManager) Clone(ctx context.Context, cloneURL, localPath string) error {
+	m.mu.Lock()
+	m.CloneCalls = append(m.CloneCalls, cloneCall{CloneURL: cloneURL, LocalPath: localPath})
+	m.mu.Unlock()
+
+	if m.CloneFunc != nil {
+		return m.CloneFunc(ctx, cloneURL, localPath)
+	}
+	return nil
 }
 
 func (m *MockWorktreeManager) Archive(ctx context.Context, worktreePath string) error {

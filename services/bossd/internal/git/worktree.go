@@ -38,6 +38,9 @@ type WorktreeManager interface {
 	// Push pushes the given branch to the "origin" remote.
 	Push(ctx context.Context, worktreePath, branch string) error
 
+	// Clone clones a remote repository to the given local path.
+	Clone(ctx context.Context, cloneURL, localPath string) error
+
 	// DetectOriginURL returns the "origin" remote URL for the repo at the
 	// given path, or empty string if none is configured.
 	DetectOriginURL(ctx context.Context, repoPath string) (string, error)
@@ -225,6 +228,19 @@ func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {
 
 	if _, err := runGit(ctx, worktreePath, "push", "-u", "origin", branch); err != nil {
 		return fmt.Errorf("push: %w", err)
+	}
+	return nil
+}
+
+// Clone clones a remote repository to the given local path.
+func (m *Manager) Clone(ctx context.Context, cloneURL, localPath string) error {
+	m.logger.Info().
+		Str("url", cloneURL).
+		Str("path", localPath).
+		Msg("cloning repository")
+
+	if _, err := runGit(ctx, ".", "clone", cloneURL, localPath); err != nil {
+		return fmt.Errorf("clone: %w", err)
 	}
 	return nil
 }

@@ -39,6 +39,9 @@ const (
 	// DaemonServiceRegisterRepoProcedure is the fully-qualified name of the DaemonService's
 	// RegisterRepo RPC.
 	DaemonServiceRegisterRepoProcedure = "/bossanova.v1.DaemonService/RegisterRepo"
+	// DaemonServiceCloneAndRegisterRepoProcedure is the fully-qualified name of the DaemonService's
+	// CloneAndRegisterRepo RPC.
+	DaemonServiceCloneAndRegisterRepoProcedure = "/bossanova.v1.DaemonService/CloneAndRegisterRepo"
 	// DaemonServiceListReposProcedure is the fully-qualified name of the DaemonService's ListRepos RPC.
 	DaemonServiceListReposProcedure = "/bossanova.v1.DaemonService/ListRepos"
 	// DaemonServiceRemoveRepoProcedure is the fully-qualified name of the DaemonService's RemoveRepo
@@ -97,6 +100,7 @@ type DaemonServiceClient interface {
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
 	// Repo management
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
+	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
@@ -140,6 +144,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceRegisterRepoProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("RegisterRepo")),
+			connect.WithClientOptions(opts...),
+		),
+		cloneAndRegisterRepo: connect.NewClient[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse](
+			httpClient,
+			baseURL+DaemonServiceCloneAndRegisterRepoProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CloneAndRegisterRepo")),
 			connect.WithClientOptions(opts...),
 		),
 		listRepos: connect.NewClient[v1.ListReposRequest, v1.ListReposResponse](
@@ -249,25 +259,26 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
-	resolveContext   *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
-	registerRepo     *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
-	listRepos        *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
-	removeRepo       *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
-	listRepoPRs      *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
-	createSession    *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
-	getSession       *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
-	listSessions     *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
-	attachSession    *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
-	stopSession      *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
-	pauseSession     *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
-	resumeSession    *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
-	retrySession     *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
-	closeSession     *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
-	removeSession    *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
-	archiveSession   *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
-	resurrectSession *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
-	emptyTrash       *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
-	deliverVCSEvent  *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
+	resolveContext       *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
+	registerRepo         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
+	cloneAndRegisterRepo *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
+	listRepos            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
+	removeRepo           *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
+	listRepoPRs          *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
+	createSession        *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
+	getSession           *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
+	listSessions         *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
+	attachSession        *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
+	stopSession          *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
+	pauseSession         *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
+	resumeSession        *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
+	retrySession         *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
+	closeSession         *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
+	removeSession        *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
+	archiveSession       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
+	resurrectSession     *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
+	emptyTrash           *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
+	deliverVCSEvent      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -278,6 +289,11 @@ func (c *daemonServiceClient) ResolveContext(ctx context.Context, req *connect.R
 // RegisterRepo calls bossanova.v1.DaemonService.RegisterRepo.
 func (c *daemonServiceClient) RegisterRepo(ctx context.Context, req *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error) {
 	return c.registerRepo.CallUnary(ctx, req)
+}
+
+// CloneAndRegisterRepo calls bossanova.v1.DaemonService.CloneAndRegisterRepo.
+func (c *daemonServiceClient) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error) {
+	return c.cloneAndRegisterRepo.CallUnary(ctx, req)
 }
 
 // ListRepos calls bossanova.v1.DaemonService.ListRepos.
@@ -371,6 +387,7 @@ type DaemonServiceHandler interface {
 	ResolveContext(context.Context, *connect.Request[v1.ResolveContextRequest]) (*connect.Response[v1.ResolveContextResponse], error)
 	// Repo management
 	RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error)
+	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
@@ -410,6 +427,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceRegisterRepoProcedure,
 		svc.RegisterRepo,
 		connect.WithSchema(daemonServiceMethods.ByName("RegisterRepo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceCloneAndRegisterRepoHandler := connect.NewUnaryHandler(
+		DaemonServiceCloneAndRegisterRepoProcedure,
+		svc.CloneAndRegisterRepo,
+		connect.WithSchema(daemonServiceMethods.ByName("CloneAndRegisterRepo")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceListReposHandler := connect.NewUnaryHandler(
@@ -520,6 +543,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceResolveContextHandler.ServeHTTP(w, r)
 		case DaemonServiceRegisterRepoProcedure:
 			daemonServiceRegisterRepoHandler.ServeHTTP(w, r)
+		case DaemonServiceCloneAndRegisterRepoProcedure:
+			daemonServiceCloneAndRegisterRepoHandler.ServeHTTP(w, r)
 		case DaemonServiceListReposProcedure:
 			daemonServiceListReposHandler.ServeHTTP(w, r)
 		case DaemonServiceRemoveRepoProcedure:
@@ -569,6 +594,10 @@ func (UnimplementedDaemonServiceHandler) ResolveContext(context.Context, *connec
 
 func (UnimplementedDaemonServiceHandler) RegisterRepo(context.Context, *connect.Request[v1.RegisterRepoRequest]) (*connect.Response[v1.RegisterRepoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RegisterRepo is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CloneAndRegisterRepo is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error) {

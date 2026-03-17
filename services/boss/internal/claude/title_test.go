@@ -226,7 +226,7 @@ func writeJSONL(t *testing.T, path string, lines ...any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	enc := json.NewEncoder(f)
 	for _, line := range lines {
 		if err := enc.Encode(line); err != nil {

@@ -111,7 +111,6 @@ var (
 	colorRed    = lipgloss.Color("#FF6347")
 	colorCyan   = lipgloss.Color("#00CED1")
 	colorGray   = lipgloss.Color("#626262")
-	colorOrange = lipgloss.Color("#F09837")
 
 	styleTitle     = lipgloss.NewStyle().Bold(true).Padding(0, 2)
 	styleSelected  = lipgloss.NewStyle().Bold(true)

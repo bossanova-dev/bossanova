@@ -37,29 +37,31 @@ func DefaultSocketPath() (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	repos     db.RepoStore
-	sessions  db.SessionStore
-	attempts  db.AttemptStore
-	lifecycle *session.Lifecycle
-	claude    claude.ClaudeRunner
-	worktrees gitpkg.WorktreeManager
-	provider  vcs.Provider
-	listener  net.Listener
-	srv       *http.Server
+	repos       db.RepoStore
+	sessions    db.SessionStore
+	attempts    db.AttemptStore
+	claudeChats db.ClaudeChatStore
+	lifecycle   *session.Lifecycle
+	claude      claude.ClaudeRunner
+	worktrees   gitpkg.WorktreeManager
+	provider    vcs.Provider
+	listener    net.Listener
+	srv         *http.Server
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
-func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner, wt gitpkg.WorktreeManager, provider vcs.Provider) *Server {
+func New(repos db.RepoStore, sessions db.SessionStore, attempts db.AttemptStore, claudeChats db.ClaudeChatStore, lifecycle *session.Lifecycle, cr claude.ClaudeRunner, wt gitpkg.WorktreeManager, provider vcs.Provider) *Server {
 	return &Server{
-		repos:     repos,
-		sessions:  sessions,
-		attempts:  attempts,
-		lifecycle: lifecycle,
-		claude:    cr,
-		worktrees: wt,
-		provider:  provider,
+		repos:       repos,
+		sessions:    sessions,
+		attempts:    attempts,
+		claudeChats: claudeChats,
+		lifecycle:   lifecycle,
+		claude:      cr,
+		worktrees:   wt,
+		provider:    provider,
 	}
 }
 
@@ -100,12 +102,70 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// --- Repo Validation ---
+
+func (s *Server) ValidateRepoPath(ctx context.Context, req *connect.Request[pb.ValidateRepoPathRequest]) (*connect.Response[pb.ValidateRepoPathResponse], error) {
+	localPath := req.Msg.LocalPath
+	if localPath == "" {
+		return connect.NewResponse(&pb.ValidateRepoPathResponse{
+			IsValid:      false,
+			ErrorMessage: "path is required",
+		}), nil
+	}
+
+	// Check path exists and is a directory.
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return connect.NewResponse(&pb.ValidateRepoPathResponse{
+			IsValid:      false,
+			ErrorMessage: fmt.Sprintf("path does not exist: %s", localPath),
+		}), nil
+	}
+	if !info.IsDir() {
+		return connect.NewResponse(&pb.ValidateRepoPathResponse{
+			IsValid:      false,
+			ErrorMessage: fmt.Sprintf("path is not a directory: %s", localPath),
+		}), nil
+	}
+
+	// Check it's a git repo.
+	if !s.worktrees.IsGitRepo(ctx, localPath) {
+		return connect.NewResponse(&pb.ValidateRepoPathResponse{
+			IsValid:      false,
+			ErrorMessage: fmt.Sprintf("not a git repository: %s", localPath),
+		}), nil
+	}
+
+	// Detect metadata.
+	originURL, _ := s.worktrees.DetectOriginURL(ctx, localPath)
+	defaultBranch, _ := s.worktrees.DetectDefaultBranch(ctx, localPath)
+
+	return connect.NewResponse(&pb.ValidateRepoPathResponse{
+		IsValid:       true,
+		OriginUrl:     originURL,
+		IsGithub:      vcs.IsGitHubURL(originURL),
+		DefaultBranch: defaultBranch,
+	}), nil
+}
+
 // --- Repo Management ---
 
 func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.RegisterRepoRequest]) (*connect.Response[pb.RegisterRepoResponse], error) {
 	msg := req.Msg
 	if msg.LocalPath == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local_path is required"))
+	}
+
+	// Validate the path exists, is a directory, and is a git repo.
+	info, err := os.Stat(msg.LocalPath)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("path does not exist: %s", msg.LocalPath))
+	}
+	if !info.IsDir() {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("path is not a directory: %s", msg.LocalPath))
+	}
+	if !s.worktrees.IsGitRepo(ctx, msg.LocalPath) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("not a git repository: %s", msg.LocalPath))
 	}
 
 	var setupScript *string
@@ -266,18 +326,48 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		baseBranch = repo.DefaultBaseBranch
 	}
 
-	sess, err := s.sessions.Create(ctx, db.CreateSessionParams{
+	var prNumber *int
+	var prURL *string
+	var headBranch string
+	if msg.PrNumber != nil {
+		n := int(*msg.PrNumber)
+		prNumber = &n
+
+		// Fetch PR metadata to get head branch and construct PR URL.
+		if repo.OriginURL != "" {
+			prStatus, prErr := s.provider.GetPRStatus(ctx, repo.OriginURL, n)
+			if prErr == nil {
+				headBranch = prStatus.HeadBranch
+				baseBranch = prStatus.BaseBranch
+			}
+			// Construct PR URL from origin.
+			u := constructPRURL(repo.OriginURL, n)
+			if u != "" {
+				prURL = &u
+			}
+		}
+	}
+
+	createParams := db.CreateSessionParams{
 		RepoID:     msg.RepoId,
 		Title:      msg.Title,
 		Plan:       msg.Plan,
 		BaseBranch: baseBranch,
-	})
+		PRNumber:   prNumber,
+	}
+	if prURL != nil {
+		createParams.PRURL = prURL
+	}
+
+	sess, err := s.sessions.Create(ctx, createParams)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
-	if err := s.lifecycle.StartSession(ctx, sess.ID); err != nil {
+	// Pass the head branch for existing PR sessions so the lifecycle can
+	// check out the existing branch instead of creating a new one.
+	if err := s.lifecycle.StartSession(ctx, sess.ID, headBranch); err != nil {
 		// Clean up the orphaned session record on failure.
 		_ = s.sessions.Delete(ctx, sess.ID)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
@@ -336,9 +426,21 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		sessions = filtered
 	}
 
+	// Build repo name lookup for denormalization.
+	repoNames := make(map[string]string)
+	for _, sess := range sessions {
+		if _, ok := repoNames[sess.RepoID]; !ok {
+			if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil {
+				repoNames[sess.RepoID] = repo.DisplayName
+			}
+		}
+	}
+
 	pbSessions := make([]*pb.Session, len(sessions))
 	for i, sess := range sessions {
-		pbSessions[i] = sessionToProto(sess)
+		p := sessionToProto(sess)
+		p.RepoDisplayName = repoNames[sess.RepoID]
+		pbSessions[i] = p
 	}
 
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
@@ -605,6 +707,63 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 	}
 
 	return connect.NewResponse(&pb.EmptyTrashResponse{DeletedCount: deleted}), nil
+}
+
+// --- Claude Chat Tracking ---
+
+func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
+	msg := req.Msg
+	if msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	if msg.ClaudeId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required"))
+	}
+
+	chat, err := s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
+		SessionID: msg.SessionId,
+		ClaudeID:  msg.ClaudeId,
+		Title:     msg.Title,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", err))
+	}
+
+	return connect.NewResponse(&pb.RecordChatResponse{Chat: claudeChatToProto(chat)}), nil
+}
+
+func (s *Server) ListChats(ctx context.Context, req *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
+	if req.Msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+
+	chats, err := s.claudeChats.ListBySession(ctx, req.Msg.SessionId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list chats: %w", err))
+	}
+
+	pbChats := make([]*pb.ClaudeChat, len(chats))
+	for i, c := range chats {
+		pbChats[i] = claudeChatToProto(c)
+	}
+
+	return connect.NewResponse(&pb.ListChatsResponse{Chats: pbChats}), nil
+}
+
+func (s *Server) UpdateChatTitle(ctx context.Context, req *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
+	msg := req.Msg
+	if msg.ClaudeId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required"))
+	}
+	if msg.Title == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
+	}
+
+	if err := s.claudeChats.UpdateTitleByClaudeID(ctx, msg.ClaudeId, msg.Title); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update chat title: %w", err))
+	}
+
+	return connect.NewResponse(&pb.UpdateChatTitleResponse{}), nil
 }
 
 // --- Context Resolution ---

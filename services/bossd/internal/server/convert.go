@@ -2,6 +2,8 @@
 package server
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -61,6 +63,40 @@ func sessionToProto(s *models.Session) *pb.Session {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
 	}
 	return p
+}
+
+// claudeChatToProto converts a domain ClaudeChat to its protobuf representation.
+func claudeChatToProto(c *models.ClaudeChat) *pb.ClaudeChat {
+	return &pb.ClaudeChat{
+		Id:        c.ID,
+		SessionId: c.SessionID,
+		ClaudeId:  c.ClaudeID,
+		Title:     c.Title,
+		DaemonId:  c.DaemonID,
+		CreatedAt: timestamppb.New(c.CreatedAt),
+	}
+}
+
+// constructPRURL constructs a GitHub PR URL from an origin URL and PR number.
+// Returns empty string if the origin URL cannot be parsed.
+func constructPRURL(originURL string, prNumber int) string {
+	// Handle SSH format: git@github.com:owner/repo.git
+	s := originURL
+	if idx := strings.Index(s, ":"); idx > 0 && !strings.Contains(s[:idx], "/") {
+		s = s[idx+1:]
+	}
+	// Strip protocol prefix.
+	for _, prefix := range []string{"https://", "http://", "ssh://"} {
+		s = strings.TrimPrefix(s, prefix)
+	}
+	// Strip .git suffix and leading host.
+	s = strings.TrimSuffix(s, ".git")
+	// s is now e.g. "github.com/owner/repo"
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return fmt.Sprintf("https://%s/%s/pull/%d", parts[0], parts[1], prNumber)
 }
 
 // protoToTimestamp converts an optional protobuf Timestamp to *time.Time.

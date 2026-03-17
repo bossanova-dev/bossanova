@@ -1,0 +1,68 @@
+name: web (test)
+
+concurrency:
+  group:              web-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches-ignore:
+      - 'main'
+    paths:
+      - .github/workflows/test-web.yml
+      - services/web/**
+      - proto/**
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    outputs:
+      status: ${{ steps.changes.conclusion }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dorny/paths-filter@v3
+      id: changes
+      with:
+        filters: |
+          web:
+            - .github/workflows/test-web.yml
+            - services/web/**
+            - proto/**
+
+    - name: Check service changed
+      if:  steps.changes.outputs.web == 'true'
+      run: echo "Service has changed - running CI"
+
+  web:
+    runs-on: ubuntu-latest
+
+    needs: check
+    if:    needs.check.outputs.status == 'success'
+
+    permissions:
+      contents: read
+
+    defaults:
+      run:
+        working-directory: services/web
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: "npm"
+        cache-dependency-path: services/web/package-lock.json
+
+    - name: Install
+      run: npm ci
+
+    - name: Lint
+      run: npm run lint
+
+    - name: Build
+      run: npm run build

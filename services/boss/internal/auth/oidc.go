@@ -96,7 +96,7 @@ func Login(ctx context.Context, cfg Config) (*Tokens, error) {
 		codeCh <- code
 	})
 
-	server := &http.Server{Handler: mux}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("callback server: %w", err)

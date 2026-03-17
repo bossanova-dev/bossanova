@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -104,7 +105,7 @@ func New(t *testing.T) *Harness {
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(srv)
 	mux.Handle(path, handler)
 
-	httpServer := &http.Server{Handler: mux}
+	httpServer := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = httpServer.Serve(ln) }()
 
 	t.Cleanup(func() {

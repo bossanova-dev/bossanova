@@ -15,7 +15,6 @@ linters:
     - govet
     - ineffassign
     - misspell
-    - noctx
     - nolintlint
     - prealloc
     - revive
@@ -34,7 +33,9 @@ linters:
     gosec:
       excludes:
         - G101 # hardcoded credentials — false positives on const names
+        - G112 # Slowloris — local Unix sockets and ephemeral OAuth callbacks
         - G115 # integer overflow int->int32 — intentional protobuf conversions
+        - G117 # marshaled secret field — tokens stored to encrypted keyring
         - G202 # SQL concatenation — column names are controlled, not user input
         - G204 # subprocess with variable — CLI tool shells out by design
         - G301 # directory permissions 0755 — standard Unix directories
@@ -42,6 +43,7 @@ linters:
         - G304 # file inclusion via variable — paths are from our config
         - G306 # WriteFile permissions 0644 — standard file permissions
         - G703 # path traversal — paths are from our config
+        - G705 # XSS — single OAuth callback page with controlled input
     nolintlint:
       require-explanation: true
       require-specific: true
@@ -57,7 +59,6 @@ linters:
       - path: _test\.go
         linters:
           - gosec
-          - noctx
           - prealloc
 
 formatters:

@@ -189,6 +189,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTitleInput(msg)
 		case stepPlanInput:
 			return m.updatePlanInput(msg)
+		default:
 		}
 	}
 
@@ -202,6 +203,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.planInput, cmd = m.planInput.Update(msg)
 		return m, cmd
+	default:
 	}
 
 	return m, nil
@@ -390,6 +392,7 @@ func (m NewSessionModel) View() tea.View {
 		m.viewTitleInput(&b)
 	case stepPlanInput:
 		m.viewPlanInput(&b)
+	default:
 	}
 
 	return tea.NewView(b.String())

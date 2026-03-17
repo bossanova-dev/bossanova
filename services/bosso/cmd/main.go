@@ -120,8 +120,9 @@ func run() error {
 	})
 
 	httpServer := &http.Server{
-		Addr:    addr,
-		Handler: authMiddleware.Wrap(corsMiddleware.Handler(mux)),
+		Addr:              addr,
+		Handler:           authMiddleware.Wrap(corsMiddleware.Handler(mux)),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start server in a goroutine.

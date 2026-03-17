@@ -87,6 +87,15 @@ func (s *SQLiteClaudeChatStore) UpdateTitleByClaudeID(ctx context.Context, claud
 	return nil
 }
 
+func (s *SQLiteClaudeChatStore) DeleteByClaudeID(ctx context.Context, claudeID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM claude_chats WHERE claude_id = ?`, claudeID)
+	if err != nil {
+		return fmt.Errorf("delete claude_chat by claude_id: %w", err)
+	}
+	return nil
+}
+
 func scanClaudeChat(rows *sql.Rows) (*models.ClaudeChat, error) {
 	var c models.ClaudeChat
 	var createdAt string

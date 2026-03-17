@@ -190,7 +190,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.attach.Update(msg)
 		a.attach = updated.(AttachModel)
 		if a.attach.Detached() {
-			return a, a.switchToHome()
+			// Batch the attach cleanup cmd (e.g. orphan delete) with the home switch.
+			return a, tea.Batch(cmd, a.switchToHome())
 		}
 		return a, cmd
 	}

@@ -792,6 +792,18 @@ func (s *Server) UpdateChatTitle(ctx context.Context, req *connect.Request[pb.Up
 	return connect.NewResponse(&pb.UpdateChatTitleResponse{}), nil
 }
 
+func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
+	if req.Msg.ClaudeId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required"))
+	}
+
+	if err := s.claudeChats.DeleteByClaudeID(ctx, req.Msg.ClaudeId); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete chat: %w", err))
+	}
+
+	return connect.NewResponse(&pb.DeleteChatResponse{}), nil
+}
+
 // --- Context Resolution ---
 
 func (s *Server) ResolveContext(ctx context.Context, req *connect.Request[pb.ResolveContextRequest]) (*connect.Response[pb.ResolveContextResponse], error) {

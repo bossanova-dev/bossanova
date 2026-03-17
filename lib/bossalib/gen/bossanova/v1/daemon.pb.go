@@ -2438,6 +2438,86 @@ func (*UpdateChatTitleResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{48}
 }
 
+type DeleteChatRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClaudeId      string                 `protobuf:"bytes,1,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"` // Claude Code session UUID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteChatRequest) Reset() {
+	*x = DeleteChatRequest{}
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteChatRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteChatRequest) ProtoMessage() {}
+
+func (x *DeleteChatRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteChatRequest.ProtoReflect.Descriptor instead.
+func (*DeleteChatRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *DeleteChatRequest) GetClaudeId() string {
+	if x != nil {
+		return x.ClaudeId
+	}
+	return ""
+}
+
+type DeleteChatResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteChatResponse) Reset() {
+	*x = DeleteChatResponse{}
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteChatResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteChatResponse) ProtoMessage() {}
+
+func (x *DeleteChatResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteChatResponse.ProtoReflect.Descriptor instead.
+func (*DeleteChatResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{50}
+}
+
 type DeliverVCSEventRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The repo this event pertains to (origin URL for matching).
@@ -2450,7 +2530,7 @@ type DeliverVCSEventRequest struct {
 
 func (x *DeliverVCSEventRequest) Reset() {
 	*x = DeliverVCSEventRequest{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2462,7 +2542,7 @@ func (x *DeliverVCSEventRequest) String() string {
 func (*DeliverVCSEventRequest) ProtoMessage() {}
 
 func (x *DeliverVCSEventRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[49]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2475,7 +2555,7 @@ func (x *DeliverVCSEventRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverVCSEventRequest.ProtoReflect.Descriptor instead.
 func (*DeliverVCSEventRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{49}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *DeliverVCSEventRequest) GetRepoOriginUrl() string {
@@ -2500,7 +2580,7 @@ type DeliverVCSEventResponse struct {
 
 func (x *DeliverVCSEventResponse) Reset() {
 	*x = DeliverVCSEventResponse{}
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2512,7 +2592,7 @@ func (x *DeliverVCSEventResponse) String() string {
 func (*DeliverVCSEventResponse) ProtoMessage() {}
 
 func (x *DeliverVCSEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_daemon_proto_msgTypes[50]
+	mi := &file_bossanova_v1_daemon_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2525,7 +2605,7 @@ func (x *DeliverVCSEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverVCSEventResponse.ProtoReflect.Descriptor instead.
 func (*DeliverVCSEventResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{50}
+	return file_bossanova_v1_daemon_proto_rawDescGZIP(), []int{52}
 }
 
 var File_bossanova_v1_daemon_proto protoreflect.FileDescriptor
@@ -2679,11 +2759,14 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x16UpdateChatTitleRequest\x12\x1b\n" +
 	"\tclaude_id\x18\x01 \x01(\tR\bclaudeId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"\x19\n" +
-	"\x17UpdateChatTitleResponse\"n\n" +
+	"\x17UpdateChatTitleResponse\"0\n" +
+	"\x11DeleteChatRequest\x12\x1b\n" +
+	"\tclaude_id\x18\x01 \x01(\tR\bclaudeId\"\x14\n" +
+	"\x12DeleteChatResponse\"n\n" +
 	"\x16DeliverVCSEventRequest\x12&\n" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12,\n" +
 	"\x05event\x18\x02 \x01(\v2\x16.bossanova.v1.VCSEventR\x05event\"\x19\n" +
-	"\x17DeliverVCSEventResponse2\xe3\x10\n" +
+	"\x17DeliverVCSEventResponse2\xb4\x11\n" +
 	"\rDaemonService\x12[\n" +
 	"\x0eResolveContext\x12#.bossanova.v1.ResolveContextRequest\x1a$.bossanova.v1.ResolveContextResponse\x12a\n" +
 	"\x10ValidateRepoPath\x12%.bossanova.v1.ValidateRepoPathRequest\x1a&.bossanova.v1.ValidateRepoPathResponse\x12U\n" +
@@ -2711,7 +2794,9 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"RecordChat\x12\x1f.bossanova.v1.RecordChatRequest\x1a .bossanova.v1.RecordChatResponse\x12L\n" +
 	"\tListChats\x12\x1e.bossanova.v1.ListChatsRequest\x1a\x1f.bossanova.v1.ListChatsResponse\x12^\n" +
-	"\x0fUpdateChatTitle\x12$.bossanova.v1.UpdateChatTitleRequest\x1a%.bossanova.v1.UpdateChatTitleResponse\x12^\n" +
+	"\x0fUpdateChatTitle\x12$.bossanova.v1.UpdateChatTitleRequest\x1a%.bossanova.v1.UpdateChatTitleResponse\x12O\n" +
+	"\n" +
+	"DeleteChat\x12\x1f.bossanova.v1.DeleteChatRequest\x1a .bossanova.v1.DeleteChatResponse\x12^\n" +
 	"\x0fDeliverVCSEvent\x12$.bossanova.v1.DeliverVCSEventRequest\x1a%.bossanova.v1.DeliverVCSEventResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
@@ -2726,7 +2811,7 @@ func file_bossanova_v1_daemon_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_daemon_proto_rawDescData
 }
 
-var file_bossanova_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
+var file_bossanova_v1_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 53)
 var file_bossanova_v1_daemon_proto_goTypes = []any{
 	(*ResolveContextRequest)(nil),        // 0: bossanova.v1.ResolveContextRequest
 	(*ResolveContextResponse)(nil),       // 1: bossanova.v1.ResolveContextResponse
@@ -2777,47 +2862,49 @@ var file_bossanova_v1_daemon_proto_goTypes = []any{
 	(*ListChatsResponse)(nil),            // 46: bossanova.v1.ListChatsResponse
 	(*UpdateChatTitleRequest)(nil),       // 47: bossanova.v1.UpdateChatTitleRequest
 	(*UpdateChatTitleResponse)(nil),      // 48: bossanova.v1.UpdateChatTitleResponse
-	(*DeliverVCSEventRequest)(nil),       // 49: bossanova.v1.DeliverVCSEventRequest
-	(*DeliverVCSEventResponse)(nil),      // 50: bossanova.v1.DeliverVCSEventResponse
-	(*Repo)(nil),                         // 51: bossanova.v1.Repo
-	(*Session)(nil),                      // 52: bossanova.v1.Session
-	(*PRSummary)(nil),                    // 53: bossanova.v1.PRSummary
-	(SessionState)(0),                    // 54: bossanova.v1.SessionState
-	(*timestamppb.Timestamp)(nil),        // 55: google.protobuf.Timestamp
-	(SessionEvent)(0),                    // 56: bossanova.v1.SessionEvent
-	(*ClaudeChat)(nil),                   // 57: bossanova.v1.ClaudeChat
-	(*VCSEvent)(nil),                     // 58: bossanova.v1.VCSEvent
+	(*DeleteChatRequest)(nil),            // 49: bossanova.v1.DeleteChatRequest
+	(*DeleteChatResponse)(nil),           // 50: bossanova.v1.DeleteChatResponse
+	(*DeliverVCSEventRequest)(nil),       // 51: bossanova.v1.DeliverVCSEventRequest
+	(*DeliverVCSEventResponse)(nil),      // 52: bossanova.v1.DeliverVCSEventResponse
+	(*Repo)(nil),                         // 53: bossanova.v1.Repo
+	(*Session)(nil),                      // 54: bossanova.v1.Session
+	(*PRSummary)(nil),                    // 55: bossanova.v1.PRSummary
+	(SessionState)(0),                    // 56: bossanova.v1.SessionState
+	(*timestamppb.Timestamp)(nil),        // 57: google.protobuf.Timestamp
+	(SessionEvent)(0),                    // 58: bossanova.v1.SessionEvent
+	(*ClaudeChat)(nil),                   // 59: bossanova.v1.ClaudeChat
+	(*VCSEvent)(nil),                     // 60: bossanova.v1.VCSEvent
 }
 var file_bossanova_v1_daemon_proto_depIdxs = []int32{
-	51, // 0: bossanova.v1.ResolveContextResponse.repo:type_name -> bossanova.v1.Repo
-	52, // 1: bossanova.v1.ResolveContextResponse.session:type_name -> bossanova.v1.Session
-	51, // 2: bossanova.v1.RegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
-	51, // 3: bossanova.v1.CloneAndRegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
-	51, // 4: bossanova.v1.ListReposResponse.repos:type_name -> bossanova.v1.Repo
-	53, // 5: bossanova.v1.ListRepoPRsResponse.pull_requests:type_name -> bossanova.v1.PRSummary
-	52, // 6: bossanova.v1.CreateSessionResponse.session:type_name -> bossanova.v1.Session
-	52, // 7: bossanova.v1.GetSessionResponse.session:type_name -> bossanova.v1.Session
-	54, // 8: bossanova.v1.ListSessionsRequest.states:type_name -> bossanova.v1.SessionState
-	52, // 9: bossanova.v1.ListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	53, // 0: bossanova.v1.ResolveContextResponse.repo:type_name -> bossanova.v1.Repo
+	54, // 1: bossanova.v1.ResolveContextResponse.session:type_name -> bossanova.v1.Session
+	53, // 2: bossanova.v1.RegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
+	53, // 3: bossanova.v1.CloneAndRegisterRepoResponse.repo:type_name -> bossanova.v1.Repo
+	53, // 4: bossanova.v1.ListReposResponse.repos:type_name -> bossanova.v1.Repo
+	55, // 5: bossanova.v1.ListRepoPRsResponse.pull_requests:type_name -> bossanova.v1.PRSummary
+	54, // 6: bossanova.v1.CreateSessionResponse.session:type_name -> bossanova.v1.Session
+	54, // 7: bossanova.v1.GetSessionResponse.session:type_name -> bossanova.v1.Session
+	56, // 8: bossanova.v1.ListSessionsRequest.states:type_name -> bossanova.v1.SessionState
+	54, // 9: bossanova.v1.ListSessionsResponse.sessions:type_name -> bossanova.v1.Session
 	22, // 10: bossanova.v1.AttachSessionResponse.output_line:type_name -> bossanova.v1.OutputLine
 	23, // 11: bossanova.v1.AttachSessionResponse.state_change:type_name -> bossanova.v1.StateChange
 	24, // 12: bossanova.v1.AttachSessionResponse.session_ended:type_name -> bossanova.v1.SessionEnded
-	55, // 13: bossanova.v1.OutputLine.timestamp:type_name -> google.protobuf.Timestamp
-	54, // 14: bossanova.v1.StateChange.previous_state:type_name -> bossanova.v1.SessionState
-	54, // 15: bossanova.v1.StateChange.new_state:type_name -> bossanova.v1.SessionState
-	56, // 16: bossanova.v1.StateChange.trigger:type_name -> bossanova.v1.SessionEvent
-	54, // 17: bossanova.v1.SessionEnded.final_state:type_name -> bossanova.v1.SessionState
-	52, // 18: bossanova.v1.StopSessionResponse.session:type_name -> bossanova.v1.Session
-	52, // 19: bossanova.v1.PauseSessionResponse.session:type_name -> bossanova.v1.Session
-	52, // 20: bossanova.v1.ResumeSessionResponse.session:type_name -> bossanova.v1.Session
-	52, // 21: bossanova.v1.RetrySessionResponse.session:type_name -> bossanova.v1.Session
-	52, // 22: bossanova.v1.CloseSessionResponse.session:type_name -> bossanova.v1.Session
-	52, // 23: bossanova.v1.ArchiveSessionResponse.session:type_name -> bossanova.v1.Session
-	52, // 24: bossanova.v1.ResurrectSessionResponse.session:type_name -> bossanova.v1.Session
-	55, // 25: bossanova.v1.EmptyTrashRequest.older_than:type_name -> google.protobuf.Timestamp
-	57, // 26: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.ClaudeChat
-	57, // 27: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.ClaudeChat
-	58, // 28: bossanova.v1.DeliverVCSEventRequest.event:type_name -> bossanova.v1.VCSEvent
+	57, // 13: bossanova.v1.OutputLine.timestamp:type_name -> google.protobuf.Timestamp
+	56, // 14: bossanova.v1.StateChange.previous_state:type_name -> bossanova.v1.SessionState
+	56, // 15: bossanova.v1.StateChange.new_state:type_name -> bossanova.v1.SessionState
+	58, // 16: bossanova.v1.StateChange.trigger:type_name -> bossanova.v1.SessionEvent
+	56, // 17: bossanova.v1.SessionEnded.final_state:type_name -> bossanova.v1.SessionState
+	54, // 18: bossanova.v1.StopSessionResponse.session:type_name -> bossanova.v1.Session
+	54, // 19: bossanova.v1.PauseSessionResponse.session:type_name -> bossanova.v1.Session
+	54, // 20: bossanova.v1.ResumeSessionResponse.session:type_name -> bossanova.v1.Session
+	54, // 21: bossanova.v1.RetrySessionResponse.session:type_name -> bossanova.v1.Session
+	54, // 22: bossanova.v1.CloseSessionResponse.session:type_name -> bossanova.v1.Session
+	54, // 23: bossanova.v1.ArchiveSessionResponse.session:type_name -> bossanova.v1.Session
+	54, // 24: bossanova.v1.ResurrectSessionResponse.session:type_name -> bossanova.v1.Session
+	57, // 25: bossanova.v1.EmptyTrashRequest.older_than:type_name -> google.protobuf.Timestamp
+	59, // 26: bossanova.v1.RecordChatResponse.chat:type_name -> bossanova.v1.ClaudeChat
+	59, // 27: bossanova.v1.ListChatsResponse.chats:type_name -> bossanova.v1.ClaudeChat
+	60, // 28: bossanova.v1.DeliverVCSEventRequest.event:type_name -> bossanova.v1.VCSEvent
 	0,  // 29: bossanova.v1.DaemonService.ResolveContext:input_type -> bossanova.v1.ResolveContextRequest
 	2,  // 30: bossanova.v1.DaemonService.ValidateRepoPath:input_type -> bossanova.v1.ValidateRepoPathRequest
 	4,  // 31: bossanova.v1.DaemonService.RegisterRepo:input_type -> bossanova.v1.RegisterRepoRequest
@@ -2841,33 +2928,35 @@ var file_bossanova_v1_daemon_proto_depIdxs = []int32{
 	43, // 49: bossanova.v1.DaemonService.RecordChat:input_type -> bossanova.v1.RecordChatRequest
 	45, // 50: bossanova.v1.DaemonService.ListChats:input_type -> bossanova.v1.ListChatsRequest
 	47, // 51: bossanova.v1.DaemonService.UpdateChatTitle:input_type -> bossanova.v1.UpdateChatTitleRequest
-	49, // 52: bossanova.v1.DaemonService.DeliverVCSEvent:input_type -> bossanova.v1.DeliverVCSEventRequest
-	1,  // 53: bossanova.v1.DaemonService.ResolveContext:output_type -> bossanova.v1.ResolveContextResponse
-	3,  // 54: bossanova.v1.DaemonService.ValidateRepoPath:output_type -> bossanova.v1.ValidateRepoPathResponse
-	5,  // 55: bossanova.v1.DaemonService.RegisterRepo:output_type -> bossanova.v1.RegisterRepoResponse
-	7,  // 56: bossanova.v1.DaemonService.CloneAndRegisterRepo:output_type -> bossanova.v1.CloneAndRegisterRepoResponse
-	9,  // 57: bossanova.v1.DaemonService.ListRepos:output_type -> bossanova.v1.ListReposResponse
-	11, // 58: bossanova.v1.DaemonService.RemoveRepo:output_type -> bossanova.v1.RemoveRepoResponse
-	13, // 59: bossanova.v1.DaemonService.ListRepoPRs:output_type -> bossanova.v1.ListRepoPRsResponse
-	15, // 60: bossanova.v1.DaemonService.CreateSession:output_type -> bossanova.v1.CreateSessionResponse
-	17, // 61: bossanova.v1.DaemonService.GetSession:output_type -> bossanova.v1.GetSessionResponse
-	19, // 62: bossanova.v1.DaemonService.ListSessions:output_type -> bossanova.v1.ListSessionsResponse
-	21, // 63: bossanova.v1.DaemonService.AttachSession:output_type -> bossanova.v1.AttachSessionResponse
-	26, // 64: bossanova.v1.DaemonService.StopSession:output_type -> bossanova.v1.StopSessionResponse
-	28, // 65: bossanova.v1.DaemonService.PauseSession:output_type -> bossanova.v1.PauseSessionResponse
-	30, // 66: bossanova.v1.DaemonService.ResumeSession:output_type -> bossanova.v1.ResumeSessionResponse
-	32, // 67: bossanova.v1.DaemonService.RetrySession:output_type -> bossanova.v1.RetrySessionResponse
-	34, // 68: bossanova.v1.DaemonService.CloseSession:output_type -> bossanova.v1.CloseSessionResponse
-	36, // 69: bossanova.v1.DaemonService.RemoveSession:output_type -> bossanova.v1.RemoveSessionResponse
-	38, // 70: bossanova.v1.DaemonService.ArchiveSession:output_type -> bossanova.v1.ArchiveSessionResponse
-	40, // 71: bossanova.v1.DaemonService.ResurrectSession:output_type -> bossanova.v1.ResurrectSessionResponse
-	42, // 72: bossanova.v1.DaemonService.EmptyTrash:output_type -> bossanova.v1.EmptyTrashResponse
-	44, // 73: bossanova.v1.DaemonService.RecordChat:output_type -> bossanova.v1.RecordChatResponse
-	46, // 74: bossanova.v1.DaemonService.ListChats:output_type -> bossanova.v1.ListChatsResponse
-	48, // 75: bossanova.v1.DaemonService.UpdateChatTitle:output_type -> bossanova.v1.UpdateChatTitleResponse
-	50, // 76: bossanova.v1.DaemonService.DeliverVCSEvent:output_type -> bossanova.v1.DeliverVCSEventResponse
-	53, // [53:77] is the sub-list for method output_type
-	29, // [29:53] is the sub-list for method input_type
+	49, // 52: bossanova.v1.DaemonService.DeleteChat:input_type -> bossanova.v1.DeleteChatRequest
+	51, // 53: bossanova.v1.DaemonService.DeliverVCSEvent:input_type -> bossanova.v1.DeliverVCSEventRequest
+	1,  // 54: bossanova.v1.DaemonService.ResolveContext:output_type -> bossanova.v1.ResolveContextResponse
+	3,  // 55: bossanova.v1.DaemonService.ValidateRepoPath:output_type -> bossanova.v1.ValidateRepoPathResponse
+	5,  // 56: bossanova.v1.DaemonService.RegisterRepo:output_type -> bossanova.v1.RegisterRepoResponse
+	7,  // 57: bossanova.v1.DaemonService.CloneAndRegisterRepo:output_type -> bossanova.v1.CloneAndRegisterRepoResponse
+	9,  // 58: bossanova.v1.DaemonService.ListRepos:output_type -> bossanova.v1.ListReposResponse
+	11, // 59: bossanova.v1.DaemonService.RemoveRepo:output_type -> bossanova.v1.RemoveRepoResponse
+	13, // 60: bossanova.v1.DaemonService.ListRepoPRs:output_type -> bossanova.v1.ListRepoPRsResponse
+	15, // 61: bossanova.v1.DaemonService.CreateSession:output_type -> bossanova.v1.CreateSessionResponse
+	17, // 62: bossanova.v1.DaemonService.GetSession:output_type -> bossanova.v1.GetSessionResponse
+	19, // 63: bossanova.v1.DaemonService.ListSessions:output_type -> bossanova.v1.ListSessionsResponse
+	21, // 64: bossanova.v1.DaemonService.AttachSession:output_type -> bossanova.v1.AttachSessionResponse
+	26, // 65: bossanova.v1.DaemonService.StopSession:output_type -> bossanova.v1.StopSessionResponse
+	28, // 66: bossanova.v1.DaemonService.PauseSession:output_type -> bossanova.v1.PauseSessionResponse
+	30, // 67: bossanova.v1.DaemonService.ResumeSession:output_type -> bossanova.v1.ResumeSessionResponse
+	32, // 68: bossanova.v1.DaemonService.RetrySession:output_type -> bossanova.v1.RetrySessionResponse
+	34, // 69: bossanova.v1.DaemonService.CloseSession:output_type -> bossanova.v1.CloseSessionResponse
+	36, // 70: bossanova.v1.DaemonService.RemoveSession:output_type -> bossanova.v1.RemoveSessionResponse
+	38, // 71: bossanova.v1.DaemonService.ArchiveSession:output_type -> bossanova.v1.ArchiveSessionResponse
+	40, // 72: bossanova.v1.DaemonService.ResurrectSession:output_type -> bossanova.v1.ResurrectSessionResponse
+	42, // 73: bossanova.v1.DaemonService.EmptyTrash:output_type -> bossanova.v1.EmptyTrashResponse
+	44, // 74: bossanova.v1.DaemonService.RecordChat:output_type -> bossanova.v1.RecordChatResponse
+	46, // 75: bossanova.v1.DaemonService.ListChats:output_type -> bossanova.v1.ListChatsResponse
+	48, // 76: bossanova.v1.DaemonService.UpdateChatTitle:output_type -> bossanova.v1.UpdateChatTitleResponse
+	50, // 77: bossanova.v1.DaemonService.DeleteChat:output_type -> bossanova.v1.DeleteChatResponse
+	52, // 78: bossanova.v1.DaemonService.DeliverVCSEvent:output_type -> bossanova.v1.DeliverVCSEventResponse
+	54, // [54:79] is the sub-list for method output_type
+	29, // [29:54] is the sub-list for method input_type
 	29, // [29:29] is the sub-list for extension type_name
 	29, // [29:29] is the sub-list for extension extendee
 	0,  // [0:29] is the sub-list for field type_name
@@ -2897,7 +2986,7 @@ func file_bossanova_v1_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_daemon_proto_rawDesc), len(file_bossanova_v1_daemon_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   51,
+			NumMessages:   53,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

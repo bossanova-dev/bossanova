@@ -140,6 +140,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // updateChatTitle reads the Claude JSONL file and updates the chat title via RPC.
+// If the session was never used (no real user message), it deletes the orphan record.
 func (m AttachModel) updateChatTitle() tea.Cmd {
 	if m.claudeID == "" || m.session == nil {
 		return nil
@@ -150,6 +151,9 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 		title := claude.ChatTitle(worktreePath, claudeID)
 		if title != "" {
 			_ = m.client.UpdateChatTitle(m.ctx, claudeID, title)
+		} else {
+			// No real user message — session was never used. Remove the orphan.
+			_ = m.client.DeleteChat(m.ctx, claudeID)
 		}
 		return chatTitleUpdatedMsg{}
 	}

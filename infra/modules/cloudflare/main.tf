@@ -26,3 +26,17 @@ resource "cloudflare_record" "api" {
   type    = "CNAME"
   proxied = true
 }
+
+# Cloudflare Pages project for web SPA.
+resource "cloudflare_pages_project" "web" {
+  account_id        = var.account_id
+  name              = var.pages_project_name
+  production_branch = "main"
+}
+
+# Custom domain for CF Pages.
+resource "cloudflare_pages_domain" "web" {
+  account_id   = var.account_id
+  project_name = cloudflare_pages_project.web.name
+  domain       = var.pages_custom_domain
+}

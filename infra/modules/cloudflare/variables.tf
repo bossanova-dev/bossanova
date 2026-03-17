@@ -37,3 +37,13 @@ variable "r2_location" {
   type        = string
   default     = "wnam"
 }
+
+variable "pages_project_name" {
+  description = "Cloudflare Pages project name"
+  type        = string
+}
+
+variable "pages_custom_domain" {
+  description = "Custom domain for CF Pages (e.g. app.bossanova.dev)"
+  type        = string
+}

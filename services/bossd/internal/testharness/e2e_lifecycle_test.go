@@ -446,3 +446,164 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 		t.Fatalf("expected MERGED, got %v", getResp.Msg.Session.State)
 	}
 }
+
+// TestE2E_ChatTrackingLifecycle exercises RecordChat, ListChats, and UpdateChatTitle.
+func TestE2E_ChatTrackingLifecycle(t *testing.T) {
+	h := testharness.New(t)
+	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
+
+	// Register repo and create session.
+	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "chat-app",
+		LocalPath:         repoDir,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+
+	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId: repoResp.Msg.Repo.Id,
+		Title:  "Chat tracking test",
+		Plan:   "Test chat tracking",
+	}))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	sessionID := sessResp.Msg.Session.Id
+
+	// Record a chat.
+	chatResp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+		SessionId: sessionID,
+		ClaudeId:  "claude-chat-001",
+		Title:     "First chat",
+	}))
+	if err != nil {
+		t.Fatalf("record chat: %v", err)
+	}
+	if chatResp.Msg.Chat.ClaudeId != "claude-chat-001" {
+		t.Fatalf("expected claude_id = %q, got %q", "claude-chat-001", chatResp.Msg.Chat.ClaudeId)
+	}
+	if chatResp.Msg.Chat.Title != "First chat" {
+		t.Fatalf("expected title = %q, got %q", "First chat", chatResp.Msg.Chat.Title)
+	}
+
+	// Record a second chat.
+	_, err = h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+		SessionId: sessionID,
+		ClaudeId:  "claude-chat-002",
+		Title:     "Second chat",
+	}))
+	if err != nil {
+		t.Fatalf("record second chat: %v", err)
+	}
+
+	// List chats.
+	listResp, err := h.Client.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{
+		SessionId: sessionID,
+	}))
+	if err != nil {
+		t.Fatalf("list chats: %v", err)
+	}
+	if len(listResp.Msg.Chats) != 2 {
+		t.Fatalf("expected 2 chats, got %d", len(listResp.Msg.Chats))
+	}
+
+	// Update chat title by claude_id.
+	_, err = h.Client.UpdateChatTitle(ctx, connect.NewRequest(&pb.UpdateChatTitleRequest{
+		ClaudeId: "claude-chat-001",
+		Title:    "Updated first chat",
+	}))
+	if err != nil {
+		t.Fatalf("update chat title: %v", err)
+	}
+
+	// Verify updated title.
+	listResp, err = h.Client.ListChats(ctx, connect.NewRequest(&pb.ListChatsRequest{
+		SessionId: sessionID,
+	}))
+	if err != nil {
+		t.Fatalf("list chats after update: %v", err)
+	}
+	found := false
+	for _, c := range listResp.Msg.Chats {
+		if c.ClaudeId == "claude-chat-001" && c.Title == "Updated first chat" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected to find chat with updated title")
+	}
+}
+
+// TestE2E_RecordChat_ValidationErrors tests validation for RecordChat.
+func TestE2E_RecordChat_ValidationErrors(t *testing.T) {
+	h := testharness.New(t)
+	ctx := context.Background()
+
+	t.Run("missing session_id", func(t *testing.T) {
+		_, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+			ClaudeId: "claude-001",
+		}))
+		if err == nil {
+			t.Fatal("expected error for missing session_id")
+		}
+	})
+
+	t.Run("missing claude_id", func(t *testing.T) {
+		_, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+			SessionId: "sess-1",
+		}))
+		if err == nil {
+			t.Fatal("expected error for missing claude_id")
+		}
+	})
+}
+
+// TestE2E_ValidateRepoPath tests repo path validation.
+func TestE2E_ValidateRepoPath(t *testing.T) {
+	h := testharness.New(t)
+	ctx := context.Background()
+
+	t.Run("empty path", func(t *testing.T) {
+		resp, err := h.Client.ValidateRepoPath(ctx, connect.NewRequest(&pb.ValidateRepoPathRequest{}))
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if resp.Msg.IsValid {
+			t.Error("expected IsValid=false for empty path")
+		}
+		if resp.Msg.ErrorMessage == "" {
+			t.Error("expected error message")
+		}
+	})
+
+	t.Run("nonexistent path", func(t *testing.T) {
+		resp, err := h.Client.ValidateRepoPath(ctx, connect.NewRequest(&pb.ValidateRepoPathRequest{
+			LocalPath: "/nonexistent/path/that/does/not/exist",
+		}))
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if resp.Msg.IsValid {
+			t.Error("expected IsValid=false for nonexistent path")
+		}
+	})
+
+	t.Run("valid path", func(t *testing.T) {
+		repoDir := testharness.TempRepoDir(t)
+		resp, err := h.Client.ValidateRepoPath(ctx, connect.NewRequest(&pb.ValidateRepoPathRequest{
+			LocalPath: repoDir,
+		}))
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		// The mock always returns IsGitRepo=true for any dir.
+		if !resp.Msg.IsValid {
+			t.Errorf("expected IsValid=true, error=%q", resp.Msg.ErrorMessage)
+		}
+	})
+}

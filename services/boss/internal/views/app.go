@@ -15,6 +15,7 @@ const (
 	ViewHome View = iota
 	ViewNewSession
 	ViewAttach
+	ViewChatPicker
 	ViewRepoAdd
 	ViewRepoList
 )
@@ -26,6 +27,7 @@ type App struct {
 	activeView View
 	home       HomeModel
 	newSession NewSessionModel
+	chatPicker ChatPickerModel
 	repoAdd    RepoAddModel
 	repoList   RepoListModel
 	attach     AttachModel
@@ -60,14 +62,16 @@ func (a *App) SetInitialView(v View) {
 }
 
 // SetAttachSession sets the session ID to attach to. Must be called after SetInitialView(ViewAttach).
-func (a *App) SetAttachSession(sessionID string) {
-	a.attach = NewAttachModel(a.client, a.ctx, sessionID)
+func (a *App) SetAttachSession(sessionID, resumeID string) {
+	a.attach = NewAttachModel(a.client, a.ctx, sessionID, resumeID)
 }
 
 func (a App) Init() tea.Cmd {
 	switch a.activeView {
 	case ViewNewSession:
 		return a.newSession.Init()
+	case ViewChatPicker:
+		return a.chatPicker.Init()
 	case ViewRepoAdd:
 		return a.repoAdd.Init()
 	case ViewRepoList:
@@ -82,7 +86,8 @@ func (a App) Init() tea.Cmd {
 // switchViewMsg requests the app to switch to a different view.
 type switchViewMsg struct {
 	view      View
-	sessionID string // used for ViewAttach
+	sessionID string // used for ViewAttach and ViewChatPicker
+	resumeID  string // Claude Code session UUID to resume (ViewAttach only)
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -106,6 +111,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewNewSession:
 			a.newSession = NewNewSessionModel(a.client, a.ctx)
 			return a, a.newSession.Init()
+		case ViewChatPicker:
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, msg.sessionID)
+			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
 			a.repoAdd = NewRepoAddModel(a.client, a.ctx)
 			return a, a.repoAdd.Init()
@@ -113,10 +121,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoList = NewRepoListModel(a.client, a.ctx)
 			return a, a.repoList.Init()
 		case ViewAttach:
-			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID)
+			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID, msg.resumeID)
 			return a, a.attach.Init()
 		case ViewHome:
 			a.home = NewHomeModel(a.client, a.ctx)
+			a.home.width = a.width
+			a.home.height = a.height
 			return a, a.home.Init()
 		}
 		return a, nil
@@ -130,7 +140,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewNewSession:
 		updated, cmd := a.newSession.Update(msg)
 		a.newSession = updated.(NewSessionModel)
-		if a.newSession.Cancelled() || a.newSession.Done() {
+		if a.newSession.Cancelled() {
+			return a, a.switchToHome()
+		}
+		if a.newSession.Done() {
+			sess := a.newSession.CreatedSession()
+			if sess != nil {
+				a.attach = NewAttachModel(a.client, a.ctx, sess.Id, "")
+				a.activeView = ViewAttach
+				return a, a.attach.Init()
+			}
+			return a, a.switchToHome()
+		}
+		return a, cmd
+	case ViewChatPicker:
+		updated, cmd := a.chatPicker.Update(msg)
+		a.chatPicker = updated.(ChatPickerModel)
+		if a.chatPicker.Cancelled() {
 			return a, a.switchToHome()
 		}
 		return a, cmd
@@ -163,6 +189,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) switchToHome() tea.Cmd {
 	a.activeView = ViewHome
 	a.home = NewHomeModel(a.client, a.ctx)
+	a.home.width = a.width
+	a.home.height = a.height
 	return a.home.Init()
 }
 
@@ -177,6 +205,8 @@ func (a App) View() tea.View {
 		v = a.home.View()
 	case ViewNewSession:
 		v = a.newSession.View()
+	case ViewChatPicker:
+		v = a.chatPicker.View()
 	case ViewRepoAdd:
 		v = a.repoAdd.View()
 	case ViewRepoList:

@@ -17,20 +17,22 @@ import (
 type wizardStep int
 
 const (
-	stepRepoSelect wizardStep = iota
-	stepPRMode
-	stepPRSelect
-	stepPlanInput
-	stepTitleInput
-	stepConfirm
+	stepRepoSelect  wizardStep = iota
+	stepSessionType            // replaces stepPRMode
+	stepPRSelect               // existing PR only
+	stepTitleInput             // new PR only
+	stepPlanInput              // plan feature only
+	stepCreating               // waiting for CreateSession RPC
 )
 
-// prMode indicates whether to create a new session or attach to an existing PR.
-type prMode int
+// sessionType identifies the kind of session to create.
+type sessionType int
 
 const (
-	prModeNew prMode = iota
-	prModeExisting
+	sessionTypeNewPR       sessionType = iota // Create a new PR
+	sessionTypeExistingPR                     // Work on an existing PR
+	sessionTypePlanFeature                    // Plan a feature
+	sessionTypeExecutePlan                    // Execute a plan (placeholder)
 )
 
 // reposMsg carries the result of a ListRepos RPC call.
@@ -65,18 +67,18 @@ type NewSessionModel struct {
 	repos      []*pb.Repo
 	repoCursor int
 
-	// Step 2: PR mode
-	prModeChoice prMode
+	// Step 2: Session type
+	sessionTypeCursor int
 
 	// Step 3: PR select (existing PR)
 	prs      []*pb.PRSummary
 	prCursor int
 	prsErr   error
 
-	// Step 4: Plan input
+	// Plan input (plan feature only)
 	planInput textarea.Model
 
-	// Step 5: Title input
+	// Title input (new PR only)
 	titleInput textinput.Model
 
 	// Collected values
@@ -95,6 +97,15 @@ func NewNewSessionModel(c client.BossClient, ctx context.Context) NewSessionMode
 	ta.Placeholder = "Describe what Claude should implement..."
 	ta.SetWidth(60)
 	ta.SetHeight(8)
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	taStyles := ta.Styles()
+	taStyles.Focused.Base = lipgloss.NewStyle().
+		BorderTop(false).BorderBottom(true).
+		BorderLeft(false).BorderRight(false).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("8"))
+	ta.SetStyles(taStyles)
 
 	return NewSessionModel{
 		client:     c,
@@ -141,7 +152,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.repos) == 1 {
 			// Auto-select the only repo.
 			m.selectedRepo = m.repos[0]
-			m.step = stepPRMode
+			m.step = stepSessionType
 		}
 		return m, nil
 
@@ -170,16 +181,14 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.step {
 		case stepRepoSelect:
 			return m.updateRepoSelect(msg)
-		case stepPRMode:
-			return m.updatePRMode(msg)
+		case stepSessionType:
+			return m.updateSessionType(msg)
 		case stepPRSelect:
 			return m.updatePRSelect(msg)
 		case stepTitleInput:
 			return m.updateTitleInput(msg)
 		case stepPlanInput:
 			return m.updatePlanInput(msg)
-		case stepConfirm:
-			return m.updateConfirm(msg)
 		}
 	}
 
@@ -211,27 +220,41 @@ func (m NewSessionModel) updateRepoSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if len(m.repos) > 0 {
 			m.selectedRepo = m.repos[m.repoCursor]
-			m.step = stepPRMode
+			m.step = stepSessionType
 		}
 	}
 	return m, nil
 }
 
-func (m NewSessionModel) updatePRMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m NewSessionModel) selectedSessionType() sessionType {
+	return sessionType(m.sessionTypeCursor)
+}
+
+func (m NewSessionModel) updateSessionType(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	const optionCount = 4
 	switch msg.String() {
-	case "up", "k", "down", "j":
-		if m.prModeChoice == prModeNew {
-			m.prModeChoice = prModeExisting
-		} else {
-			m.prModeChoice = prModeNew
+	case "up", "k":
+		if m.sessionTypeCursor > 0 {
+			m.sessionTypeCursor--
+		}
+	case "down", "j":
+		if m.sessionTypeCursor < optionCount-1 {
+			m.sessionTypeCursor++
 		}
 	case "enter":
-		if m.prModeChoice == prModeNew {
+		switch m.selectedSessionType() {
+		case sessionTypeNewPR:
 			m.step = stepTitleInput
 			return m, m.titleInput.Focus()
+		case sessionTypeExistingPR:
+			m.step = stepPRSelect
+			return m, fetchPRs(m.client, m.ctx, m.selectedRepo.Id)
+		case sessionTypePlanFeature:
+			m.step = stepPlanInput
+			return m, m.planInput.Focus()
+		case sessionTypeExecutePlan:
+			// Placeholder — no action.
 		}
-		m.step = stepPRSelect
-		return m, fetchPRs(m.client, m.ctx, m.selectedRepo.Id)
 	}
 	return m, nil
 }
@@ -249,8 +272,7 @@ func (m NewSessionModel) updatePRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if len(m.prs) > 0 {
 			m.selectedPR = m.prs[m.prCursor]
-			m.step = stepPlanInput
-			return m, m.planInput.Focus()
+			return m, m.startCreating()
 		}
 	}
 	return m, nil
@@ -261,8 +283,7 @@ func (m NewSessionModel) updateTitleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.titleInput.Value() != "" {
 			m.titleInput.Blur()
-			m.step = stepPlanInput
-			return m, m.planInput.Focus()
+			return m, m.startCreating()
 		}
 	}
 	// Pass through to textinput.
@@ -276,7 +297,7 @@ func (m NewSessionModel) updatePlanInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+d":
 		if m.planInput.Value() != "" {
 			m.planInput.Blur()
-			m.step = stepConfirm
+			return m, m.startCreating()
 		}
 		return m, nil
 	}
@@ -286,25 +307,34 @@ func (m NewSessionModel) updatePlanInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m NewSessionModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
-		req := &pb.CreateSessionRequest{
-			RepoId:     m.selectedRepo.Id,
-			Plan:       m.planInput.Value(),
-			BaseBranch: m.selectedRepo.DefaultBaseBranch,
-		}
-		if m.selectedPR != nil {
-			req.Title = m.selectedPR.Title
-			req.PrNumber = &m.selectedPR.Number
-		} else {
-			req.Title = m.titleInput.Value()
-		}
-		return m, createSession(m.client, m.ctx, req)
-	case "n":
-		m.cancel = true
+// startCreating builds a CreateSessionRequest and fires the RPC.
+func (m *NewSessionModel) startCreating() tea.Cmd {
+	m.step = stepCreating
+	req := &pb.CreateSessionRequest{
+		RepoId:     m.selectedRepo.Id,
+		BaseBranch: m.selectedRepo.DefaultBaseBranch,
 	}
-	return m, nil
+
+	switch m.selectedSessionType() {
+	case sessionTypeNewPR:
+		req.Title = m.titleInput.Value()
+	case sessionTypeExistingPR:
+		req.Title = m.selectedPR.Title
+		req.PrNumber = &m.selectedPR.Number
+	case sessionTypePlanFeature:
+		// Use the first line of the plan as the title, or a default.
+		plan := m.planInput.Value()
+		req.Plan = plan
+		firstLine := strings.SplitN(plan, "\n", 2)[0]
+		if len(firstLine) > 72 {
+			firstLine = firstLine[:69] + "..."
+		}
+		req.Title = firstLine
+	default:
+		req.Title = "New session"
+	}
+
+	return createSession(m.client, m.ctx, req)
 }
 
 // Cancelled returns true if the user cancelled the wizard.
@@ -324,6 +354,12 @@ func (m NewSessionModel) View() tea.View {
 		)
 	}
 
+	if m.step == stepCreating {
+		return tea.NewView(
+			lipgloss.NewStyle().Padding(1, 2).Render("Creating session..."),
+		)
+	}
+
 	if m.done && m.createdSess != nil {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Foreground(colorGreen).Render("Session created!") + "\n" +
@@ -334,22 +370,26 @@ func (m NewSessionModel) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("New Session"))
+	bold := lipgloss.NewStyle().Bold(true)
+	if m.step == stepRepoSelect {
+		b.WriteString(styleTitle.Render("New Session"))
+	} else {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
+			"Starting a " + bold.Render("new session") + " for " + bold.Render(m.selectedRepo.DisplayName)))
+	}
 	b.WriteString("\n")
 
 	switch m.step {
 	case stepRepoSelect:
 		m.viewRepoSelect(&b)
-	case stepPRMode:
-		m.viewPRMode(&b)
+	case stepSessionType:
+		m.viewSessionType(&b)
 	case stepPRSelect:
 		m.viewPRSelect(&b)
 	case stepTitleInput:
 		m.viewTitleInput(&b)
 	case stepPlanInput:
 		m.viewPlanInput(&b)
-	case stepConfirm:
-		m.viewConfirm(&b)
 	}
 
 	return tea.NewView(b.String())
@@ -385,22 +425,33 @@ func (m NewSessionModel) viewRepoSelect(b *strings.Builder) {
 	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
 }
 
-func (m NewSessionModel) viewPRMode(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("Repo: %s", styleSelected.Render(m.selectedRepo.DisplayName))))
-	b.WriteString("\n\n")
+func (m NewSessionModel) viewSessionType(b *strings.Builder) {
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Session type:"))
 	b.WriteString("\n\n")
 
-	options := []string{"New session (create fresh PR)", "Existing PR (attach to open PR)"}
+	type option struct {
+		label string
+		desc  string
+	}
+	options := []option{
+		{"Create a new PR", "Start a fresh branch and pull request"},
+		{"Work on an existing PR", "Attach to an open pull request"},
+		{"Plan a feature", "Describe what to build, then launch Claude"},
+		{"Execute a plan", "Coming soon"},
+	}
 	for i, opt := range options {
 		cursor := "  "
-		if i == int(m.prModeChoice) {
+		if i == m.sessionTypeCursor {
 			cursor = "> "
 		}
-		line := cursor + opt
-		if i == int(m.prModeChoice) {
-			line = styleSelected.Render(line)
+		line := cursor + opt.label
+		if i == len(options)-1 {
+			// Dim the placeholder option.
+			line = cursor + styleSubtle.Render(opt.label+" — "+opt.desc)
+		} else if i == m.sessionTypeCursor {
+			line = styleSelected.Render(line) + "  " + styleSubtle.Render(opt.desc)
+		} else {
+			line = line + "  " + styleSubtle.Render(opt.desc)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
 		b.WriteString("\n")
@@ -411,10 +462,6 @@ func (m NewSessionModel) viewPRMode(b *strings.Builder) {
 }
 
 func (m NewSessionModel) viewPRSelect(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("Repo: %s", styleSelected.Render(m.selectedRepo.DisplayName))))
-	b.WriteString("\n\n")
-
 	if m.prsErr != nil {
 		b.WriteString(styleError.Render(fmt.Sprintf("Failed to load PRs: %v", m.prsErr)))
 		b.WriteString("\n\n")
@@ -455,9 +502,6 @@ func (m NewSessionModel) viewPRSelect(b *strings.Builder) {
 }
 
 func (m NewSessionModel) viewTitleInput(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("Repo: %s", styleSelected.Render(m.selectedRepo.DisplayName))))
-	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Session title:"))
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.titleInput.View()))
@@ -466,53 +510,9 @@ func (m NewSessionModel) viewTitleInput(b *strings.Builder) {
 }
 
 func (m NewSessionModel) viewPlanInput(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("Repo: %s", styleSelected.Render(m.selectedRepo.DisplayName))))
-	if m.selectedPR != nil {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			fmt.Sprintf("PR:   #%d %s", m.selectedPR.Number, m.selectedPR.Title)))
-	} else {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			fmt.Sprintf("Title: %s", m.titleInput.Value())))
-	}
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Plan (Ctrl+D when done):"))
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("What would you like to work on?"))
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.planInput.View()))
 	b.WriteString("\n\n")
 	b.WriteString(styleActionBar.Render("[ctrl+d] next  [esc] cancel"))
-}
-
-func (m NewSessionModel) viewConfirm(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Confirm session:"))
-	b.WriteString("\n\n")
-
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("  Repo:   %s", m.selectedRepo.DisplayName)))
-	b.WriteString("\n")
-
-	if m.selectedPR != nil {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			fmt.Sprintf("  PR:     #%d %s", m.selectedPR.Number, m.selectedPR.Title)))
-	} else {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			fmt.Sprintf("  Title:  %s", m.titleInput.Value())))
-	}
-	b.WriteString("\n")
-
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("  Base:   %s", m.selectedRepo.DefaultBaseBranch)))
-	b.WriteString("\n")
-
-	plan := m.planInput.Value()
-	if len(plan) > 80 {
-		plan = plan[:77] + "..."
-	}
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		fmt.Sprintf("  Plan:   %s", plan)))
-	b.WriteString("\n\n")
-
-	b.WriteString(styleActionBar.Render("[y/enter] create  [n/esc] cancel"))
 }

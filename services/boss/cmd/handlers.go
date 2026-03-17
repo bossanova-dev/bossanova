@@ -147,7 +147,7 @@ func runAttach(cmd *cobra.Command, sessionID string) error {
 	}
 	app := views.NewApp(c)
 	app.SetInitialView(views.ViewAttach)
-	app.SetAttachSession(sessionID)
+	app.SetAttachSession(sessionID, "")
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err

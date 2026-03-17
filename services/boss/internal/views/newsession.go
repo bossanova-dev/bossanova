@@ -560,5 +560,6 @@ func (m NewSessionModel) viewConfirmOverwrite(b *strings.Builder) {
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
 		"Remove the old branch and create a new session?"))
+	b.WriteString("\n")
 	b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 }

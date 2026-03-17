@@ -31,6 +31,50 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
+func TestHappyPathNoPlan(t *testing.T) {
+	// No-plan PR sessions: PlanComplete skips PushingBranch/OpeningDraftPR
+	// and goes straight to AwaitingChecks (PR was created during setup).
+	m := New(CreatingWorktree)
+	m.Context().HasPR = true
+
+	steps := []struct {
+		event Event
+		want  State
+	}{
+		{WorktreeCreated, StartingClaude},
+		{ClaudeStarted, ImplementingPlan},
+		{PlanComplete, AwaitingChecks}, // skips PushingBranch → OpeningDraftPR
+		{ChecksPassed, GreenDraft},
+		{PlanComplete, ReadyForReview},
+		{PRMerged, Merged},
+	}
+
+	for _, s := range steps {
+		if err := m.Fire(s.event); err != nil {
+			t.Fatalf("Fire(%s): %v", s.event, err)
+		}
+		if got := m.State(); got != s.want {
+			t.Fatalf("after %s: got %s, want %s", s.event, got, s.want)
+		}
+	}
+}
+
+func TestPlanCompleteWithoutHasPR(t *testing.T) {
+	// Default (HasPR=false): PlanComplete goes to PushingBranch.
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, ClaudeStarted} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, ImplementingPlan)
+
+	if err := m.Fire(PlanComplete); err != nil {
+		t.Fatalf("Fire(PlanComplete): %v", err)
+	}
+	assertState(t, m, PushingBranch)
+}
+
 func TestFixLoopChecksFailed(t *testing.T) {
 	m := New(CreatingWorktree)
 

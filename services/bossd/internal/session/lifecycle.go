@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
@@ -151,6 +152,14 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 		return fmt.Errorf("set implementing_plan state: %w", err)
 	}
 
+	// For new PR sessions (no plan, no existing PR), push the branch and
+	// create a draft PR immediately so the user gets a PR right away.
+	if session.Plan == "" && session.PRNumber == nil {
+		if err := l.createDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName, session, repo); err != nil {
+			return fmt.Errorf("create draft PR: %w", err)
+		}
+	}
+
 	l.logger.Info().
 		Str("session", sessionID).
 		Str("claudeSession", claudeSessionID).
@@ -159,9 +168,11 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 	return nil
 }
 
-// SubmitPR pushes the branch, creates a draft PR, and transitions the session
-// through PushingBranch → OpeningDraftPR → AwaitingChecks. It updates the
-// session record with the PR number and URL.
+// SubmitPR transitions the session from ImplementingPlan through to
+// AwaitingChecks. If the PR was already created (no-plan sessions), it skips
+// push/create and goes directly to AwaitingChecks. Otherwise it pushes the
+// branch, creates a draft PR, and transitions through PushingBranch →
+// OpeningDraftPR → AwaitingChecks.
 func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -173,17 +184,39 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("get repo: %w", err)
 	}
 
+	hasPR := session.PRNumber != nil
+
 	// Initialize state machine at the session's current state.
 	sm := machine.NewWithContext(session.State, &machine.SessionContext{
 		AttemptCount: session.AttemptCount,
 		MaxAttempts:  machine.MaxAttempts,
+		HasPR:        hasPR,
 	})
 
-	// Fire PlanComplete → PushingBranch.
+	// Fire PlanComplete.
+	// If HasPR: → AwaitingChecks (PR already exists).
+	// Otherwise: → PushingBranch (need to push and create PR).
 	if err := sm.FireCtx(ctx, machine.PlanComplete); err != nil {
 		return fmt.Errorf("fire plan_complete: %w", err)
 	}
 
+	if hasPR {
+		// PR already exists — skip push/create, go straight to AwaitingChecks.
+		awaitingState := int(machine.AwaitingChecks)
+		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+			State: &awaitingState,
+		}); err != nil {
+			return fmt.Errorf("set awaiting_checks state: %w", err)
+		}
+
+		l.logger.Info().
+			Str("session", sessionID).
+			Msg("plan complete, PR exists, awaiting checks")
+
+		return nil
+	}
+
+	// No PR yet — push branch and create draft PR.
 	pushingState := int(machine.PushingBranch)
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		State: &pushingState,
@@ -257,6 +290,48 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		Int("prNumber", prInfo.Number).
 		Str("prURL", prInfo.URL).
 		Msg("draft PR created, awaiting checks")
+
+	return nil
+}
+
+// createDraftPR pushes the branch and creates a draft PR on GitHub,
+// storing the PR number and URL on the session. Used during StartSession
+// for no-plan PR sessions to create the PR immediately.
+func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, branchName string, session *models.Session, repo *models.Repo) error {
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("branch", branchName).
+		Msg("pushing branch for immediate PR")
+
+	if err := l.worktrees.Push(ctx, worktreePath, branchName); err != nil {
+		return fmt.Errorf("push branch: %w", err)
+	}
+
+	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
+		RepoPath:   repo.OriginURL,
+		HeadBranch: branchName,
+		BaseBranch: session.BaseBranch,
+		Title:      session.Title,
+		Draft:      true,
+	})
+	if err != nil {
+		return fmt.Errorf("create draft PR: %w", err)
+	}
+
+	prNumber := &prInfo.Number
+	prURL := &prInfo.URL
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		PRNumber: &prNumber,
+		PRURL:    &prURL,
+	}); err != nil {
+		return fmt.Errorf("update PR info: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Int("prNumber", prInfo.Number).
+		Str("prURL", prInfo.URL).
+		Msg("draft PR created during session setup")
 
 	return nil
 }

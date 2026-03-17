@@ -59,6 +59,7 @@ type SessionContext struct {
 	MaxAttempts   int
 	CheckState    CheckState
 	BlockedReason string
+	HasPR         bool // PR already created (e.g. no-plan PR sessions)
 }
 
 // CheckState represents the aggregate check status.
@@ -145,6 +146,15 @@ func (m *Machine) fixOrBlock(_ context.Context, _ ...any) (stateless.State, erro
 	return FixingChecks, nil
 }
 
+// planCompleteDestination routes PlanComplete to AwaitingChecks if the PR
+// already exists (no-plan PR sessions), or PushingBranch otherwise.
+func (m *Machine) planCompleteDestination(_ context.Context, _ ...any) (stateless.State, error) {
+	if m.ctx.HasPR {
+		return AwaitingChecks, nil
+	}
+	return PushingBranch, nil
+}
+
 // fixOrBlockAfterFix is the same as fixOrBlock but used for FixFailed events
 // where we go back to AwaitingChecks if under max, Blocked if at max.
 func (m *Machine) retryOrBlock(_ context.Context, _ ...any) (stateless.State, error) {
@@ -168,7 +178,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		Permit(PRClosed, Closed)
 
 	sm.Configure(ImplementingPlan).
-		Permit(PlanComplete, PushingBranch).
+		PermitDynamic(PlanComplete, m.planCompleteDestination).
 		Permit(Block, Blocked).
 		Permit(PRClosed, Closed)
 

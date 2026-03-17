@@ -55,6 +55,16 @@ type Attempt struct {
 	UpdatedAt time.Time
 }
 
+// ClaudeChat represents a Claude Code conversation associated with a session.
+type ClaudeChat struct {
+	ID        string
+	SessionID string
+	ClaudeID  string // Claude Code session UUID
+	Title     string
+	DaemonID  string // Originating daemon (empty = local)
+	CreatedAt time.Time
+}
+
 // AttemptTrigger represents what triggered a fix attempt.
 type AttemptTrigger int
 

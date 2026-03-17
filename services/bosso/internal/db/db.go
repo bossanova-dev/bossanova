@@ -11,8 +11,15 @@ import (
 )
 
 // DefaultDBPath returns the default database path for the orchestrator.
-// On macOS: ~/Library/Application Support/bossanova/bosso.db
+// If BOSSO_DB_PATH is set, it uses that path (creating parent dirs as needed).
+// Otherwise falls back to ~/Library/Application Support/bossanova/bosso.db.
 func DefaultDBPath() (string, error) {
+	if p := os.Getenv("BOSSO_DB_PATH"); p != "" {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return "", fmt.Errorf("create data dir: %w", err)
+		}
+		return p, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)

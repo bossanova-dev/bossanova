@@ -1,10 +1,10 @@
+import { create } from '@bufbuild/protobuf'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { create } from '@bufbuild/protobuf'
-import { useApi } from '../useApi'
-import { ProxyListSessionsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb'
-import { SessionState } from '../gen/bossanova/v1/models_pb'
-import type { Session } from '../gen/bossanova/v1/models_pb'
+import type { Session } from '~/gen/bossanova/v1/models_pb'
+import { SessionState } from '~/gen/bossanova/v1/models_pb'
+import { ProxyListSessionsRequestSchema } from '~/gen/bossanova/v1/orchestrator_pb'
+import { useApi } from '~/useApi'
 
 const POLL_INTERVAL = 5000
 
@@ -34,17 +34,19 @@ export default function Sessions() {
 
     async function fetch() {
       try {
-        const res = await api.proxyListSessions(
-          create(ProxyListSessionsRequestSchema, {}),
-        )
+        const res = await api.proxyListSessions(create(ProxyListSessionsRequestSchema, {}))
         if (!cancelled) {
           setSessions(res.sessions)
           setError(null)
         }
       } catch (err) {
-        if (!cancelled) setError(String(err))
+        if (!cancelled) {
+          setError(String(err))
+        }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+        }
       }
     }
 
@@ -56,8 +58,12 @@ export default function Sessions() {
     }
   }, [api])
 
-  if (loading) return <p>Loading sessions...</p>
-  if (error) return <p style={{ color: 'red' }}>Error: {error}</p>
+  if (loading) {
+    return <p>Loading sessions...</p>
+  }
+  if (error) {
+    return <p style={{ color: 'red' }}>Error: {error}</p>
+  }
 
   return (
     <div style={{ textAlign: 'left', padding: '0 24px' }}>
@@ -78,11 +84,16 @@ export default function Sessions() {
             {sessions.map((s) => (
               <tr key={s.id}>
                 <td style={td}>
-                  <Link to={`/sessions/${s.id}`} style={{ color: 'var(--accent)', textDecoration: 'none' }}>
+                  <Link
+                    to={`/sessions/${s.id}`}
+                    style={{ color: 'var(--accent)', textDecoration: 'none' }}
+                  >
                     {s.title || s.id}
                   </Link>
                 </td>
-                <td style={td}><code>{s.branchName}</code></td>
+                <td style={td}>
+                  <code>{s.branchName}</code>
+                </td>
                 <td style={td}>{stateLabel[s.state] ?? 'Unknown'}</td>
                 <td style={td}>
                   {s.prUrl ? (

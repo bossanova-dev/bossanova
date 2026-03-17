@@ -61,6 +61,15 @@ jobs:
     - name: Install
       run: npm ci
 
+    - name: Generate protobuf types
+      run: >-
+        buf generate
+        --template '{"version":"v2","plugins":[{"local":"protoc-gen-es","out":"services/web/src/gen","opt":"target=ts","include_imports":true}]}'
+        proto
+      working-directory: ${{ github.workspace }}
+      env:
+        PATH: ${{ github.workspace }}/services/web/node_modules/.bin:${{ env.PATH }}
+
     - name: Lint
       run: npm run lint
 

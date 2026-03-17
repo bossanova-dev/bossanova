@@ -11,11 +11,12 @@ import (
 
 func TestHarness_PingViaClient(t *testing.T) {
 	h := testharness.New(t)
+	repoDir := testharness.TempRepoDir(t)
 
 	// Register a repo via the RPC client.
 	resp, err := h.Client.RegisterRepo(context.Background(), connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "test-repo",
-		LocalPath:         "/tmp/test-repo",
+		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 	}))
@@ -41,11 +42,12 @@ func TestHarness_PingViaClient(t *testing.T) {
 
 func TestHarness_CreateSession(t *testing.T) {
 	h := testharness.New(t)
+	repoDir := testharness.TempRepoDir(t)
 
 	// Register a repo first.
 	repoResp, err := h.Client.RegisterRepo(context.Background(), connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "test-repo",
-		LocalPath:         "/tmp/test-repo",
+		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 	}))

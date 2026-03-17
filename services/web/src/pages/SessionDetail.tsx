@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router'
 import { create } from '@bufbuild/protobuf'
-import { useApi } from '../ApiContext'
+import { useApi } from '../useApi'
 import {
   ProxyGetSessionRequestSchema,
   ProxyAttachSessionRequestSchema,

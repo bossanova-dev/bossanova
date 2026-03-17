@@ -52,7 +52,7 @@ func (s *SQLiteClaudeChatStore) ListBySession(ctx context.Context, sessionID str
 	if err != nil {
 		return nil, fmt.Errorf("list claude_chats: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var chats []*models.ClaudeChat
 	for rows.Next() {

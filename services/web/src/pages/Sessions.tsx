@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { create } from '@bufbuild/protobuf'
-import { useApi } from '../ApiContext'
+import { useApi } from '../useApi'
 import { ProxyListSessionsRequestSchema } from '../gen/bossanova/v1/orchestrator_pb'
 import { SessionState } from '../gen/bossanova/v1/models_pb'
 import type { Session } from '../gen/bossanova/v1/models_pb'

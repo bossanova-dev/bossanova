@@ -1,13 +1,8 @@
-import { createContext, useContext, useMemo } from 'react'
+import { useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { createApi } from './api'
-import type { Client } from '@connectrpc/connect'
-import type { OrchestratorService } from './gen/bossanova/v1/orchestrator_pb'
-
-type Api = Client<typeof OrchestratorService>
-
-const ApiContext = createContext<Api | null>(null)
+import { ApiContext } from './apiContext'
 
 export function ApiProvider({ children }: { children: ReactNode }) {
   const { getAccessTokenSilently } = useAuth0()
@@ -18,10 +13,4 @@ export function ApiProvider({ children }: { children: ReactNode }) {
   )
 
   return <ApiContext value={api}>{children}</ApiContext>
-}
-
-export function useApi(): Api {
-  const api = useContext(ApiContext)
-  if (!api) throw new Error('useApi must be used within ApiProvider')
-  return api
 }

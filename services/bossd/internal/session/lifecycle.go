@@ -309,7 +309,7 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 
 	// Create an empty commit so the branch diverges from base — GitHub
 	// rejects PRs with "No commits between" otherwise.
-	if err := l.worktrees.EmptyCommit(ctx, worktreePath, "chore: initialize session branch"); err != nil {
+	if err := l.worktrees.EmptyCommit(ctx, worktreePath, "chore: [skip ci] create pull request"); err != nil {
 		return fmt.Errorf("empty commit: %w", err)
 	}
 

@@ -63,18 +63,24 @@ Every view follows this top-to-bottom structure:
 
 ### Action Bar Spacing
 
-`styleActionBar` already includes top padding via `Padding(actionBarPadY, 2)`. **Never** add an extra `\n` before it:
+`styleActionBar` has `Padding(actionBarPadY, 2)` which adds one blank line above the text. For this to work correctly:
+
+1. The preceding content **must** end with `"\n"` so the action bar starts on its own line
+2. Do **not** add extra `"\n"` beyond that — the padding handles the blank line
 
 ```go
-// WRONG — creates double blank line
+// WRONG — no newline before, action bar merges with previous line
+b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Some text"))
+b.WriteString(styleActionBar.Render("[q] quit"))
+
+// WRONG — double blank line (extra \n + padding)
+b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Some text"))
 b.WriteString("\n\n")
 b.WriteString(styleActionBar.Render("[q] quit"))
 
-// ALSO WRONG — creates double blank line
+// CORRECT — one newline to end the line, padding adds the blank line
+b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Some text"))
 b.WriteString("\n")
-b.WriteString(styleActionBar.Render("[q] quit"))
-
-// CORRECT — styleActionBar handles spacing
 b.WriteString(styleActionBar.Render("[q] quit"))
 ```
 

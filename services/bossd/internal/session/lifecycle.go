@@ -53,7 +53,10 @@ func NewLifecycle(
 //
 // If existingBranch is non-empty, the worktree checks out that branch
 // instead of creating a new one (used for existing PR sessions).
-func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string) error {
+//
+// If forceBranch is true and a branch with the derived name already exists,
+// it will be removed before creating the new worktree.
+func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -96,6 +99,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			WorktreeBaseDir: repo.WorktreeBaseDir,
 			Title:           session.Title,
 			SetupScript:     repo.SetupScript,
+			Force:           forceBranch,
 		})
 	}
 	if err != nil {

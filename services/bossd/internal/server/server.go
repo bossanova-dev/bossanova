@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"errors"
+
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -380,9 +382,12 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
 	// Pass the head branch for existing PR sessions so the lifecycle can
 	// check out the existing branch instead of creating a new one.
-	if err := s.lifecycle.StartSession(ctx, sess.ID, headBranch); err != nil {
+	if err := s.lifecycle.StartSession(ctx, sess.ID, headBranch, msg.ForceBranch); err != nil {
 		// Clean up the orphaned session record on failure.
 		_ = s.sessions.Delete(ctx, sess.ID)
+		if errors.Is(err, gitpkg.ErrBranchExists) {
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
 	}
 

@@ -130,6 +130,8 @@ message CreateSessionRequest {
   string base_branch = 4;
   // If set, attach to an existing PR instead of creating a new one.
   optional int32 pr_number = 5;
+  // If true, remove any existing branch with the same name before creating.
+  bool force_branch = 6;
 }
 
 message CreateSessionResponse {

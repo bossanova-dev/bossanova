@@ -1,5 +1,5 @@
 # Root Terraform config — not applied directly.
-# Use infra/environments/staging/ or infra/environments/production/ instead.
+# Use infra/environments/ with terraform workspaces (staging/production).
 #
 # This file documents the overall module composition.
 

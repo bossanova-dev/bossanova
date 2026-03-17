@@ -24,6 +24,9 @@ LDFLAGS := -s -w \
 	-X github.com/recurser/bossalib/buildinfo.Commit=$(COMMIT) \
 	-X github.com/recurser/bossalib/buildinfo.Date=$(DATE)
 
+claude:
+	claude --dangerously-skip-permissions
+
 ## generate: Run buf generate to produce Go code from proto definitions
 generate:
 	rm -rf lib/bossalib/gen

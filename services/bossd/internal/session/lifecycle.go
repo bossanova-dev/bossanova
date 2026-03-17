@@ -49,7 +49,10 @@ func NewLifecycle(
 // StartSession creates a worktree, starts a Claude process, and fires
 // state machine events. It updates the session record with the worktree
 // path, branch name, and Claude session ID.
-func (l *Lifecycle) StartSession(ctx context.Context, sessionID string) error {
+//
+// If existingBranch is non-empty, the worktree checks out that branch
+// instead of creating a new one (used for existing PR sessions).
+func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -76,14 +79,24 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string) error {
 		Str("repo", repo.LocalPath).
 		Msg("creating worktree")
 
-	// Create worktree.
-	result, err := l.worktrees.Create(ctx, gitpkg.CreateOpts{
-		RepoPath:        repo.LocalPath,
-		BaseBranch:      session.BaseBranch,
-		WorktreeBaseDir: repo.WorktreeBaseDir,
-		Title:           session.Title,
-		SetupScript:     repo.SetupScript,
-	})
+	// Create worktree: existing branch (PR) or new branch.
+	var result *gitpkg.CreateResult
+	if existingBranch != "" {
+		result, err = l.worktrees.CreateFromExistingBranch(ctx, gitpkg.CreateFromExistingBranchOpts{
+			RepoPath:        repo.LocalPath,
+			BranchName:      existingBranch,
+			WorktreeBaseDir: repo.WorktreeBaseDir,
+			SetupScript:     repo.SetupScript,
+		})
+	} else {
+		result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
+			RepoPath:        repo.LocalPath,
+			BaseBranch:      session.BaseBranch,
+			WorktreeBaseDir: repo.WorktreeBaseDir,
+			Title:           session.Title,
+			SetupScript:     repo.SetupScript,
+		})
+	}
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}

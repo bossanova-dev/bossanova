@@ -7,13 +7,14 @@ option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 import "bossanova/v1/models.proto";
 import "google/protobuf/timestamp.proto";
 
-// DaemonService exposes 17 RPCs over a Unix socket for the boss CLI.
+// DaemonService exposes 18 RPCs over a Unix socket for the boss CLI.
 service DaemonService {
   // Context resolution
   rpc ResolveContext(ResolveContextRequest) returns (ResolveContextResponse);
 
   // Repo management
   rpc RegisterRepo(RegisterRepoRequest) returns (RegisterRepoResponse);
+  rpc CloneAndRegisterRepo(CloneAndRegisterRepoRequest) returns (CloneAndRegisterRepoResponse);
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc RemoveRepo(RemoveRepoRequest) returns (RemoveRepoResponse);
   rpc ListRepoPRs(ListRepoPRsRequest) returns (ListRepoPRsResponse);
@@ -64,6 +65,19 @@ message RegisterRepoRequest {
 }
 
 message RegisterRepoResponse {
+  Repo repo = 1;
+}
+
+message CloneAndRegisterRepoRequest {
+  string clone_url = 1;
+  string local_path = 2;
+  string display_name = 3;
+  string default_base_branch = 4;
+  string worktree_base_dir = 5;
+  optional string setup_script = 6;
+}
+
+message CloneAndRegisterRepoResponse {
   Repo repo = 1;
 }
 

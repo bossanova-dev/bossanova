@@ -82,6 +82,10 @@ func (c *RemoteClient) RegisterRepo(_ context.Context, _ *pb.RegisterRepoRequest
 	return nil, errLocalOnly("RegisterRepo")
 }
 
+func (c *RemoteClient) CloneAndRegisterRepo(_ context.Context, _ *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error) {
+	return nil, errLocalOnly("CloneAndRegisterRepo")
+}
+
 func (c *RemoteClient) ListRepos(_ context.Context) ([]*pb.Repo, error) {
 	return nil, errLocalOnly("ListRepos")
 }

@@ -39,6 +39,7 @@ type BossClient interface {
 
 	// Repo management
 	RegisterRepo(ctx context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error)
+	CloneAndRegisterRepo(ctx context.Context, req *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error)
 	ListRepos(ctx context.Context) ([]*pb.Repo, error)
 	RemoveRepo(ctx context.Context, id string) error
 	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)

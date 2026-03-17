@@ -81,6 +81,14 @@ func (c *LocalClient) RegisterRepo(ctx context.Context, req *pb.RegisterRepoRequ
 	return resp.Msg.Repo, nil
 }
 
+func (c *LocalClient) CloneAndRegisterRepo(ctx context.Context, req *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error) {
+	resp, err := c.rpc.CloneAndRegisterRepo(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Repo, nil
+}
+
 func (c *LocalClient) ListRepos(ctx context.Context) ([]*pb.Repo, error) {
 	resp, err := c.rpc.ListRepos(ctx, connect.NewRequest(&pb.ListReposRequest{}))
 	if err != nil {

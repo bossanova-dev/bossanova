@@ -131,6 +131,60 @@ func (s *Server) RegisterRepo(ctx context.Context, req *connect.Request[pb.Regis
 	return connect.NewResponse(&pb.RegisterRepoResponse{Repo: repoToProto(repo)}), nil
 }
 
+func (s *Server) CloneAndRegisterRepo(ctx context.Context, req *connect.Request[pb.CloneAndRegisterRepoRequest]) (*connect.Response[pb.CloneAndRegisterRepoResponse], error) {
+	msg := req.Msg
+	if msg.CloneUrl == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("clone_url is required"))
+	}
+	if msg.LocalPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("local_path is required"))
+	}
+
+	// Check if the target path already exists.
+	if info, err := os.Stat(msg.LocalPath); err == nil {
+		if !info.IsDir() {
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("local_path exists and is not a directory"))
+		}
+		// Directory exists — check if it's already a git repo with matching origin.
+		existingOrigin, _ := s.worktrees.DetectOriginURL(ctx, msg.LocalPath)
+		if existingOrigin == "" {
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("local_path already exists but is not a git repository"))
+		}
+		// Origin exists but doesn't match — error.
+		if existingOrigin != msg.CloneUrl {
+			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("local_path is a git repo with different origin %q", existingOrigin))
+		}
+		// Matching origin — skip clone, just register.
+	} else {
+		// Path doesn't exist — clone.
+		if err := s.worktrees.Clone(ctx, msg.CloneUrl, msg.LocalPath); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("clone: %w", err))
+		}
+	}
+
+	// Auto-detect origin URL from the cloned repo.
+	originURL, _ := s.worktrees.DetectOriginURL(ctx, msg.LocalPath)
+
+	var setupScript *string
+	if msg.SetupScript != nil {
+		setupScript = msg.SetupScript
+	}
+
+	repo, err := s.repos.Create(ctx, db.CreateRepoParams{
+		DisplayName:       msg.DisplayName,
+		LocalPath:         msg.LocalPath,
+		OriginURL:         originURL,
+		DefaultBaseBranch: msg.DefaultBaseBranch,
+		WorktreeBaseDir:   msg.WorktreeBaseDir,
+		SetupScript:       setupScript,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create repo: %w", err))
+	}
+
+	return connect.NewResponse(&pb.CloneAndRegisterRepoResponse{Repo: repoToProto(repo)}), nil
+}
+
 func (s *Server) ListRepos(ctx context.Context, req *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error) {
 	repos, err := s.repos.List(ctx)
 	if err != nil {

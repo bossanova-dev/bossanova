@@ -206,6 +206,10 @@ func (m *mockWorktreeManager) Push(_ context.Context, _ string, branch string) e
 	return nil
 }
 
+func (m *mockWorktreeManager) Clone(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockWorktreeManager) EmptyTrash(_ context.Context, _ string, _ []string) error {
 	return nil
 }

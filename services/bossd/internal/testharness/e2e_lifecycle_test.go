@@ -19,11 +19,12 @@ import (
 func TestE2E_FullSessionLifecycle(t *testing.T) {
 	h := testharness.New(t)
 	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
 
 	// --- Step 1: Register a repo ---
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "my-app",
-		LocalPath:         "/tmp/my-app",
+		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 	}))
@@ -173,11 +174,12 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 func TestE2E_ChecksFailedFixLoop(t *testing.T) {
 	h := testharness.New(t)
 	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
 
 	// Register repo and create session.
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "my-app",
-		LocalPath:         "/tmp/my-app",
+		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 	}))
@@ -243,11 +245,12 @@ func TestE2E_ChecksFailedFixLoop(t *testing.T) {
 func TestE2E_ArchiveAndResurrect(t *testing.T) {
 	h := testharness.New(t)
 	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
 
 	// Register repo and create session.
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "my-app",
-		LocalPath:         "/tmp/my-app",
+		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 	}))
@@ -315,11 +318,12 @@ func TestE2E_ArchiveAndResurrect(t *testing.T) {
 func TestE2E_ListSessionsWithStateFilter(t *testing.T) {
 	h := testharness.New(t)
 	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
 
 	// Register repo.
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "my-app",
-		LocalPath:         "/tmp/my-app",
+		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 	}))
@@ -381,11 +385,12 @@ func TestE2E_ListSessionsWithStateFilter(t *testing.T) {
 func TestE2E_PRMergedTransition(t *testing.T) {
 	h := testharness.New(t)
 	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
 
 	// Set up repo + session + submit PR.
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "my-app",
-		LocalPath:         "/tmp/my-app",
+		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 	}))

@@ -28,15 +28,16 @@ var socketCounter atomic.Int64
 
 // Harness provides a fully wired bossd daemon for E2E tests.
 type Harness struct {
-	DB        *sql.DB
-	Repos     db.RepoStore
-	Sessions  db.SessionStore
-	Attempts  db.AttemptStore
-	Lifecycle *session.Lifecycle
-	Server    *server.Server
-	Git       *MockWorktreeManager
-	Claude    *MockClaudeRunner
-	VCS       *MockVCSProvider
+	DB          *sql.DB
+	Repos       db.RepoStore
+	Sessions    db.SessionStore
+	Attempts    db.AttemptStore
+	ClaudeChats db.ClaudeChatStore
+	Lifecycle   *session.Lifecycle
+	Server      *server.Server
+	Git         *MockWorktreeManager
+	Claude      *MockClaudeRunner
+	VCS         *MockVCSProvider
 
 	// Client is a ConnectRPC client connected to the test server.
 	Client bossanovav1connect.DaemonServiceClient
@@ -65,6 +66,7 @@ func New(t *testing.T) *Harness {
 	repos := db.NewRepoStore(database)
 	sessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
+	claudeChats := db.NewClaudeChatStore(database)
 
 	// Mocks.
 	logger := zerolog.Nop()
@@ -76,7 +78,7 @@ func New(t *testing.T) *Harness {
 	lifecycle := session.NewLifecycle(sessions, repos, gitMock, claudeMock, vcsMock, logger)
 
 	// Server.
-	srv := server.New(repos, sessions, attempts, lifecycle, claudeMock, gitMock, vcsMock)
+	srv := server.New(repos, sessions, attempts, claudeChats, lifecycle, claudeMock, gitMock, vcsMock)
 
 	// Start server on a temp Unix socket.
 	// Use /tmp directly — t.TempDir() paths can exceed the 104-char Unix socket limit on macOS.
@@ -115,20 +117,29 @@ func New(t *testing.T) *Harness {
 	)
 
 	return &Harness{
-		DB:         database,
-		Repos:      repos,
-		Sessions:   sessions,
-		Attempts:   attempts,
-		Lifecycle:  lifecycle,
-		Server:     srv,
-		Git:        gitMock,
-		Claude:     claudeMock,
-		VCS:        vcsMock,
-		Client:     client,
-		socketPath: socketPath,
-		httpServer: httpServer,
-		listener:   ln,
+		DB:          database,
+		Repos:       repos,
+		Sessions:    sessions,
+		Attempts:    attempts,
+		ClaudeChats: claudeChats,
+		Lifecycle:   lifecycle,
+		Server:      srv,
+		Git:         gitMock,
+		Claude:      claudeMock,
+		VCS:         vcsMock,
+		Client:      client,
+		socketPath:  socketPath,
+		httpServer:  httpServer,
+		listener:    ln,
 	}
+}
+
+// TempRepoDir creates a temporary directory that can pass RegisterRepo path
+// validation. The directory is cleaned up when the test finishes.
+func TempRepoDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	return dir
 }
 
 // migrationsDir returns the absolute path to the bossd migrations directory.

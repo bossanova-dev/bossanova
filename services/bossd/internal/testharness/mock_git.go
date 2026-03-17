@@ -120,6 +120,21 @@ func (m *MockWorktreeManager) DetectOriginURL(ctx context.Context, repoPath stri
 	return m.DetectOriginURLResult, nil
 }
 
+func (m *MockWorktreeManager) IsGitRepo(ctx context.Context, path string) bool {
+	return true
+}
+
+func (m *MockWorktreeManager) DetectDefaultBranch(ctx context.Context, repoPath string) (string, error) {
+	return "main", nil
+}
+
+func (m *MockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
+	return &gitpkg.CreateResult{
+		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s", opts.BranchName),
+		BranchName:   opts.BranchName,
+	}, nil
+}
+
 // sanitize converts a title to a simple branch-safe string.
 func sanitize(s string) string {
 	s = strings.ToLower(s)

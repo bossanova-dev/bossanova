@@ -218,6 +218,21 @@ func (m *mockWorktreeManager) DetectOriginURL(_ context.Context, _ string) (stri
 	return "", nil
 }
 
+func (m *mockWorktreeManager) IsGitRepo(_ context.Context, _ string) bool {
+	return true
+}
+
+func (m *mockWorktreeManager) DetectDefaultBranch(_ context.Context, _ string) (string, error) {
+	return "main", nil
+}
+
+func (m *mockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
+	return &gitpkg.CreateResult{
+		WorktreePath: "/tmp/worktrees/" + opts.BranchName,
+		BranchName:   opts.BranchName,
+	}, nil
+}
+
 // --- Mock ClaudeRunner ---
 
 type mockClaudeRunner struct {
@@ -345,7 +360,7 @@ func TestStartSession(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1"); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", ""); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 

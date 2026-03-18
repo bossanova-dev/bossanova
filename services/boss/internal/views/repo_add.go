@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
@@ -17,17 +17,13 @@ import (
 
 // --- Repo Add Wizard ---
 
-// repoAddStep tracks the current step in the add-repo wizard.
-type repoAddStep int
+// repoAddPhase tracks the current phase in the add-repo wizard.
+type repoAddPhase int
 
 const (
-	repoAddStepSource    repoAddStep = iota // "Open project" vs "Clone from URL"
-	repoAddStepURL                          // git URL input (clone mode only)
-	repoAddStepClonePath                    // clone destination (clone mode only)
-	repoAddStepPath                         // existing local path (open mode only)
-	repoAddStepName
-	repoAddStepSetup
-	repoAddStepConfirm
+	repoAddPhaseSource  repoAddPhase = iota // Phase 1: source + path/URL
+	repoAddPhaseDetails                     // Phase 2: name + setup + confirm
+	repoAddPhaseDone                        // Terminal state
 )
 
 // sourceMode selects between open-project and clone flows.
@@ -59,31 +55,32 @@ type RepoAddModel struct {
 	client client.BossClient
 	ctx    context.Context
 
-	step   repoAddStep
+	phase  repoAddPhase
 	err    error
 	done   bool
 	cancel bool
 
-	// Source selection
-	sourceMode   int
-	sourceCursor int
+	// Form-bound values
+	sourceMode int
+	gitURL     string
+	clonePath  string
+	localPath  string
+	name       string
+	setup      string
+	confirm    bool
 
-	// Clone-specific inputs
-	urlInput       textinput.Model
-	clonePathInput textinput.Model
-	cloning        bool
+	// Async state
+	validating bool
+	cloning    bool
 
-	// Shared inputs
-	pathInput  textinput.Model
-	nameInput  textinput.Model
-	setupInput textinput.Model
-
-	// Validation
-	validating         bool
+	// Validation results
 	isGithub           bool
-	detectedBaseBranch string // populated from ValidateRepoPath response
+	detectedBaseBranch string
 
 	createdRepo *pb.Repo
+
+	// Form
+	form *huh.Form
 
 	// Layout
 	width int
@@ -93,45 +90,100 @@ type RepoAddModel struct {
 func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 	cwd, _ := os.Getwd()
 
-	pathIn := textinput.New()
-	pathIn.Placeholder = "Repository path"
-	pathIn.SetWidth(60)
-	pathIn.SetValue(cwd)
-
-	nameIn := textinput.New()
-	nameIn.Placeholder = "Display name"
-	nameIn.SetWidth(40)
-	if cwd != "" {
-		nameIn.SetValue(filepath.Base(cwd))
-	}
-
-	setupIn := textinput.New()
-	setupIn.Placeholder = "Setup script (optional, e.g. ./setup.sh)"
-	setupIn.SetWidth(60)
-
-	urlIn := textinput.New()
-	urlIn.Placeholder = "https://github.com/user/repo.git"
-	urlIn.SetWidth(60)
-
-	clonePathIn := textinput.New()
-	clonePathIn.Placeholder = "Clone destination path"
-	clonePathIn.SetWidth(60)
-
-	return RepoAddModel{
+	m := RepoAddModel{
 		client:             c,
 		ctx:                ctx,
-		step:               repoAddStepSource,
-		pathInput:          pathIn,
-		nameInput:          nameIn,
-		setupInput:         setupIn,
-		urlInput:           urlIn,
-		clonePathInput:     clonePathIn,
+		phase:              repoAddPhaseSource,
+		localPath:          cwd,
+		name:               filepath.Base(cwd),
 		detectedBaseBranch: "main",
+		confirm:            true,
 	}
+	m.buildSourceForm()
+	return m
+}
+
+func (m *RepoAddModel) buildSourceForm() {
+	m.form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[int]().
+				Title("Add Repository").
+				Options(
+					huh.NewOption("Open project — Register an existing local repo", sourceModeOpen),
+					huh.NewOption("Clone from URL — Clone a repo and register it", sourceModeClone),
+				).
+				Value(&m.sourceMode),
+		),
+		// Clone fields — shown only in clone mode.
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Git URL").
+				Placeholder("https://github.com/user/repo.git").
+				Value(&m.gitURL).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("URL is required")
+					}
+					return nil
+				}),
+			huh.NewInput().
+				Title("Clone path").
+				Placeholder("Clone destination path").
+				Value(&m.clonePath).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("clone path is required")
+					}
+					return nil
+				}),
+		).WithHideFunc(func() bool { return m.sourceMode != sourceModeClone }),
+		// Open fields — shown only in open mode.
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Path").
+				Placeholder("Repository path").
+				Value(&m.localPath).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("path is required")
+					}
+					return nil
+				}),
+		).WithHideFunc(func() bool { return m.sourceMode != sourceModeOpen }),
+	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+}
+
+func (m *RepoAddModel) buildDetailsForm() {
+	m.form = huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Name").
+				Placeholder("Display name").
+				Value(&m.name).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("name is required")
+					}
+					return nil
+				}),
+			huh.NewInput().
+				Title("Setup script").
+				Placeholder("Optional, e.g. ./setup.sh").
+				Value(&m.setup),
+			huh.NewConfirm().
+				Title("Add this repository?").
+				Affirmative("Yes").
+				Negative("No").
+				Value(&m.confirm),
+		),
+	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
 }
 
 func (m RepoAddModel) Init() tea.Cmd {
-	return nil // Source step uses cursor, no textinput focus needed.
+	if m.form != nil {
+		return m.form.Init()
+	}
+	return nil
 }
 
 func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -167,198 +219,121 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !msg.resp.IsValid {
 			m.err = fmt.Errorf("%s", msg.resp.ErrorMessage)
-			// Stay on path step so user can fix.
-			m.step = repoAddStepPath
-			return m, m.pathInput.Focus()
+			// Rebuild source form so user can fix path.
+			m.buildSourceForm()
+			return m, m.form.Init()
 		}
 		// Auto-populate fields from validation response.
 		m.isGithub = msg.resp.IsGithub
 		if msg.resp.DefaultBranch != "" {
 			m.detectedBaseBranch = msg.resp.DefaultBranch
 		}
-		// Default the name to the basename of the entered path.
-		m.nameInput.SetValue(filepath.Base(m.pathInput.Value()))
-		m.step = repoAddStepName
-		return m, m.nameInput.Focus()
+		m.name = filepath.Base(m.localPath)
+		// Advance to details phase.
+		m.phase = repoAddPhaseDetails
+		m.buildDetailsForm()
+		return m, m.form.Init()
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "esc":
+		if msg.String() == "esc" {
+			m.cancel = true
+			return m, nil
+		}
+	}
+
+	// Delegate to form when active.
+	if m.form != nil && m.phase != repoAddPhaseDone {
+		_, cmd := m.form.Update(msg)
+
+		if m.form.State == huh.StateAborted {
 			m.cancel = true
 			return m, nil
 		}
 
-		switch m.step {
-		case repoAddStepSource:
-			return m.updateSourceStep(msg)
-		case repoAddStepURL:
-			return m.updateURLStep(msg)
-		case repoAddStepClonePath:
-			return m.updateClonePathStep(msg)
-		case repoAddStepPath:
-			return m.updatePathStep(msg)
-		case repoAddStepName:
-			return m.updateNameStep(msg)
-		case repoAddStepSetup:
-			return m.updateSetupStep(msg)
-		case repoAddStepConfirm:
-			return m.updateConfirmStep(msg)
+		if m.form.State == huh.StateCompleted {
+			return m.handleFormCompleted()
 		}
+
+		return m, cmd
 	}
 
-	// Pass through to focused inputs.
-	return m.updateActiveInput(msg)
-}
-
-func (m RepoAddModel) updateSourceStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
-		if m.sourceCursor > 0 {
-			m.sourceCursor--
-		}
-	case "down", "j":
-		if m.sourceCursor < 1 {
-			m.sourceCursor++
-		}
-	case "enter":
-		m.sourceMode = m.sourceCursor
-		if m.sourceMode == sourceModeClone {
-			m.step = repoAddStepURL
-			return m, m.urlInput.Focus()
-		}
-		m.step = repoAddStepPath
-		return m, m.pathInput.Focus()
-	}
 	return m, nil
 }
 
-func (m RepoAddModel) updateURLStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" && m.urlInput.Value() != "" {
-		m.urlInput.Blur()
-
-		// Derive defaults from URL.
-		repoName := parseRepoNameFromURL(m.urlInput.Value())
-		if repoName != "" {
-			home, _ := os.UserHomeDir()
-			defaultClonePath := filepath.Join(home, "Code", repoName)
-			m.clonePathInput.SetValue(defaultClonePath)
-			m.nameInput.SetValue(repoName)
+func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
+	switch m.phase {
+	case repoAddPhaseSource:
+		if m.sourceMode == sourceModeClone {
+			// Derive defaults from URL.
+			repoName := parseRepoNameFromURL(m.gitURL)
+			if repoName != "" {
+				home, _ := os.UserHomeDir()
+				if m.clonePath == "" {
+					m.clonePath = filepath.Join(home, "Code", repoName)
+				}
+				m.name = repoName
+			}
+			// Go straight to details.
+			m.phase = repoAddPhaseDetails
+			m.buildDetailsForm()
+			return m, m.form.Init()
 		}
-
-		m.step = repoAddStepClonePath
-		return m, m.clonePathInput.Focus()
-	}
-	var cmd tea.Cmd
-	m.urlInput, cmd = m.urlInput.Update(msg)
-	return m, cmd
-}
-
-func (m RepoAddModel) updateClonePathStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" && m.clonePathInput.Value() != "" {
-		m.clonePathInput.Blur()
-		m.step = repoAddStepName
-		return m, m.nameInput.Focus()
-	}
-	var cmd tea.Cmd
-	m.clonePathInput, cmd = m.clonePathInput.Update(msg)
-	return m, cmd
-}
-
-func (m RepoAddModel) updatePathStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" && m.pathInput.Value() != "" {
-		m.pathInput.Blur()
-		m.err = nil
+		// Open mode — validate path first.
 		m.validating = true
-		localPath := m.pathInput.Value()
+		m.err = nil
+		localPath := m.localPath
 		return m, func() tea.Msg {
 			resp, err := m.client.ValidateRepoPath(m.ctx, localPath)
 			return repoValidatedMsg{resp: resp, err: err}
 		}
-	}
-	var cmd tea.Cmd
-	m.pathInput, cmd = m.pathInput.Update(msg)
-	return m, cmd
-}
 
-func (m RepoAddModel) updateNameStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" && m.nameInput.Value() != "" {
-		m.nameInput.Blur()
-		m.step = repoAddStepSetup
-		return m, m.setupInput.Focus()
-	}
-	var cmd tea.Cmd
-	m.nameInput, cmd = m.nameInput.Update(msg)
-	return m, cmd
-}
+	case repoAddPhaseDetails:
+		if !m.confirm {
+			m.cancel = true
+			return m, nil
+		}
+		return m, m.submitRepo()
 
-func (m RepoAddModel) updateSetupStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" {
-		m.setupInput.Blur()
-		m.step = repoAddStepConfirm
-		return m, nil
-	}
-	var cmd tea.Cmd
-	m.setupInput, cmd = m.setupInput.Update(msg)
-	return m, cmd
-}
-
-func (m RepoAddModel) updateConfirmStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	cfg, _ := config.Load()
-
-	switch msg.String() {
-	case "y", "enter":
-		if m.sourceMode == sourceModeClone {
-			m.cloning = true
-			req := &pb.CloneAndRegisterRepoRequest{
-				CloneUrl:          m.urlInput.Value(),
-				LocalPath:         m.clonePathInput.Value(),
-				DisplayName:       m.nameInput.Value(),
-				DefaultBaseBranch: "main",
-				WorktreeBaseDir:   cfg.WorktreeBaseDir,
-			}
-			if s := m.setupInput.Value(); s != "" {
-				req.SetupScript = &s
-			}
-			return m, func() tea.Msg {
-				repo, err := m.client.CloneAndRegisterRepo(m.ctx, req)
-				return repoClonedMsg{repo: repo, err: err}
-			}
-		}
-		req := &pb.RegisterRepoRequest{
-			LocalPath:         m.pathInput.Value(),
-			DisplayName:       m.nameInput.Value(),
-			DefaultBaseBranch: m.detectedBaseBranch,
-			WorktreeBaseDir:   cfg.WorktreeBaseDir,
-		}
-		if s := m.setupInput.Value(); s != "" {
-			req.SetupScript = &s
-		}
-		return m, func() tea.Msg {
-			repo, err := m.client.RegisterRepo(m.ctx, req)
-			return repoRegisteredMsg{repo: repo, err: err}
-		}
-	case "n":
-		m.cancel = true
+	case repoAddPhaseDone:
+		// Nothing to do.
 	}
 	return m, nil
 }
 
-func (m RepoAddModel) updateActiveInput(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	switch m.step {
-	case repoAddStepURL:
-		m.urlInput, cmd = m.urlInput.Update(msg)
-	case repoAddStepClonePath:
-		m.clonePathInput, cmd = m.clonePathInput.Update(msg)
-	case repoAddStepPath:
-		m.pathInput, cmd = m.pathInput.Update(msg)
-	case repoAddStepName:
-		m.nameInput, cmd = m.nameInput.Update(msg)
-	case repoAddStepSetup:
-		m.setupInput, cmd = m.setupInput.Update(msg)
-	default:
+func (m *RepoAddModel) submitRepo() tea.Cmd {
+	cfg, _ := config.Load()
+
+	if m.sourceMode == sourceModeClone {
+		m.cloning = true
+		req := &pb.CloneAndRegisterRepoRequest{
+			CloneUrl:          m.gitURL,
+			LocalPath:         m.clonePath,
+			DisplayName:       m.name,
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   cfg.WorktreeBaseDir,
+		}
+		if s := m.setup; s != "" {
+			req.SetupScript = &s
+		}
+		return func() tea.Msg {
+			repo, err := m.client.CloneAndRegisterRepo(m.ctx, req)
+			return repoClonedMsg{repo: repo, err: err}
+		}
 	}
-	return m, cmd
+
+	req := &pb.RegisterRepoRequest{
+		LocalPath:         m.localPath,
+		DisplayName:       m.name,
+		DefaultBaseBranch: m.detectedBaseBranch,
+		WorktreeBaseDir:   cfg.WorktreeBaseDir,
+	}
+	if s := m.setup; s != "" {
+		req.SetupScript = &s
+	}
+	return func() tea.Msg {
+		repo, err := m.client.RegisterRepo(m.ctx, req)
+		return repoRegisteredMsg{repo: repo, err: err}
+	}
 }
 
 // Cancelled returns true if the user cancelled.
@@ -371,11 +346,11 @@ func (m RepoAddModel) View() tea.View {
 	if m.validating {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Foreground(colorInfo).Render(
-				fmt.Sprintf("Validating %s...", m.pathInput.Value())),
+				fmt.Sprintf("Validating %s...", m.localPath)),
 		)
 	}
 
-	if m.err != nil && m.step != repoAddStepPath {
+	if m.err != nil {
 		return tea.NewView(
 			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
@@ -385,7 +360,7 @@ func (m RepoAddModel) View() tea.View {
 	if m.cloning {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Foreground(colorInfo).Render(
-				fmt.Sprintf("Cloning %s...", m.urlInput.Value())),
+				fmt.Sprintf("Cloning %s...", m.gitURL)),
 		)
 	}
 
@@ -398,152 +373,21 @@ func (m RepoAddModel) View() tea.View {
 		)
 	}
 
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("Add Repository"))
-	b.WriteString("\n")
-
-	if m.step == repoAddStepSource {
-		return tea.NewView(m.viewSourceStep())
-	}
-
-	// Show source selection as completed.
-	if m.sourceMode == sourceModeClone {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Source: Clone from URL"))
-		b.WriteString("\n")
-		return tea.NewView(b.String() + m.viewCloneFields())
-	}
-
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Source: Open project"))
-	b.WriteString("\n")
-	return tea.NewView(b.String() + m.viewOpenFields())
-}
-
-func (m RepoAddModel) viewSourceStep() string {
-	var b strings.Builder
-	b.WriteString(styleTitle.Render("Add Repository"))
-	b.WriteString("\n")
-
-	options := []struct {
-		label string
-		desc  string
-	}{
-		{"Open project", "Register an existing local repo"},
-		{"Clone from URL", "Clone a repo and register it"},
-	}
-
-	for i, opt := range options {
-		cursor := "  "
-		if i == m.sourceCursor {
-			cursor = "> "
-		}
-		line := fmt.Sprintf("%s%-20s %s", cursor, opt.label, styleSubtle.Render(opt.desc))
-		if i == m.sourceCursor {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
-	}
-
-	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
-
-	return b.String()
-}
-
-func (m RepoAddModel) viewCloneFields() string {
-	var b strings.Builder
-
-	type field struct {
-		label string
-		value string
-		step  repoAddStep
-	}
-
-	fields := []field{
-		{"Git URL", m.urlInput.Value(), repoAddStepURL},
-		{"Clone path", m.clonePathInput.Value(), repoAddStepClonePath},
-		{"Name", m.nameInput.Value(), repoAddStepName},
-		{"Setup script", m.setupInput.Value(), repoAddStepSetup},
-	}
-
-	inputForStep := func(step repoAddStep) textinput.Model {
-		switch step {
-		case repoAddStepURL:
-			return m.urlInput
-		case repoAddStepClonePath:
-			return m.clonePathInput
-		case repoAddStepName:
-			return m.nameInput
-		case repoAddStepSetup:
-			return m.setupInput
-		default:
-			return m.nameInput
-		}
-	}
-
-	for _, f := range fields {
-		if m.step > f.step {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-				fmt.Sprintf("  %s: %s", f.label, f.value)))
+	if m.form != nil {
+		var b strings.Builder
+		if m.phase == repoAddPhaseDetails {
+			b.WriteString(styleTitle.Render("Add Repository"))
 			b.WriteString("\n")
-		} else if m.step == f.step {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-				fmt.Sprintf("  %s:", f.label)))
-			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(inputForStep(f.step).View()))
-			b.WriteString("\n")
-		}
-	}
-
-	if m.step == repoAddStepConfirm {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Clone and register this repository?"))
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-	} else {
-		b.WriteString(styleActionBar.Render("[enter] next  [esc] cancel"))
-	}
-
-	return b.String()
-}
-
-func (m RepoAddModel) viewOpenFields() string {
-	var b strings.Builder
-
-	fields := []struct {
-		label string
-		input textinput.Model
-		step  repoAddStep
-	}{
-		{"Path", m.pathInput, repoAddStepPath},
-		{"Name", m.nameInput, repoAddStepName},
-		{"Setup script", m.setupInput, repoAddStepSetup},
-	}
-
-	for _, f := range fields {
-		if m.step > f.step {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-				fmt.Sprintf("  %s: %s", f.label, f.input.Value())))
-			b.WriteString("\n")
-		} else if m.step == f.step {
-			if m.err != nil && f.step == repoAddStepPath {
-				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-					renderError(fmt.Sprintf("  %v", m.err), m.width)))
-				b.WriteString("\n")
+			if m.sourceMode == sourceModeClone {
+				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Source: Clone from URL"))
+			} else {
+				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Source: Open project"))
 			}
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-				fmt.Sprintf("  %s:", f.label)))
-			b.WriteString("\n")
-			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(f.input.View()))
 			b.WriteString("\n")
 		}
+		b.WriteString(m.form.View())
+		return tea.NewView(b.String())
 	}
 
-	if m.step == repoAddStepConfirm {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Add this repository?"))
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-	} else {
-		b.WriteString(styleActionBar.Render("[enter] next  [esc] cancel"))
-	}
-
-	return b.String()
+	return tea.NewView("")
 }

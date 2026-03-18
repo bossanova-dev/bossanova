@@ -24,48 +24,55 @@ LDFLAGS := -s -w \
 	-X github.com/recurser/bossalib/buildinfo.Commit=$(COMMIT) \
 	-X github.com/recurser/bossalib/buildinfo.Date=$(DATE)
 
+# Proto source files — stamp regenerates when these change
+PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml
+GEN_STAMP := .generate.stamp
+
 claude:
 	claude --dangerously-skip-permissions
 
 ## generate: Run buf generate to produce Go code from proto definitions
-generate:
+generate: $(GEN_STAMP)
+
+$(GEN_STAMP): $(PROTO_SOURCES)
 	rm -rf lib/bossalib/gen
 	buf generate
+	@touch $(GEN_STAMP)
 
-## build: Build all three binaries
+## build: Build all three binaries (generates protos first if needed)
 build: $(BIN_DIR)/boss $(BIN_DIR)/bossd $(BIN_DIR)/bosso
 
-$(BIN_DIR)/boss:
+$(BIN_DIR)/boss: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 
-$(BIN_DIR)/bossd:
+$(BIN_DIR)/bossd: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 
-$(BIN_DIR)/bosso:
+$(BIN_DIR)/bosso: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
 
-## test: Run tests across all modules
-test:
+## test: Run tests across all modules (generates protos first if needed)
+test: $(GEN_STAMP)
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
 		$(MAKE) -C $$mod test; \
 	done
 
 ## Per-module test targets
-test-bossalib:
+test-bossalib: $(GEN_STAMP)
 	$(MAKE) -C lib/bossalib test
 
-test-boss:
+test-boss: $(GEN_STAMP)
 	$(MAKE) -C services/boss test
 
-test-bossd:
+test-bossd: $(GEN_STAMP)
 	$(MAKE) -C services/bossd test
 
-test-bosso:
+test-bosso: $(GEN_STAMP)
 	$(MAKE) -C services/bosso test
 
-## lint: Run golangci-lint and buf lint
-lint:
+## lint: Run golangci-lint and buf lint (generates protos first if needed)
+lint: $(GEN_STAMP)
 	buf lint
 	@for mod in $(MODULES); do \
 		echo "==> Linting $$mod"; \
@@ -76,16 +83,16 @@ lint:
 lint-proto:
 	buf lint
 
-lint-bossalib:
+lint-bossalib: $(GEN_STAMP)
 	cd lib/bossalib && golangci-lint run ./...
 
-lint-boss:
+lint-boss: $(GEN_STAMP)
 	cd services/boss && golangci-lint run ./...
 
-lint-bossd:
+lint-bossd: $(GEN_STAMP)
 	cd services/bossd && golangci-lint run ./...
 
-lint-bosso:
+lint-bosso: $(GEN_STAMP)
 	cd services/bosso && golangci-lint run ./...
 
 ## Per-module build targets
@@ -104,12 +111,12 @@ format:
 	$(MAKE) -C services/web format
 	pnpm run format:docs
 
-## build-all: Cross-platform builds for distribution
+## build-all: Cross-platform builds for distribution (generates protos first if needed)
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64
 # Only boss and bossd are distributed (bosso is deployed to Fly.io directly)
 DIST_BINS := boss bossd
 
-build-all:
+build-all: $(GEN_STAMP)
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%%/*}; \
 		arch=$${platform##*/}; \
@@ -126,6 +133,7 @@ build-all:
 ## clean: Remove build artifacts and generated code
 clean:
 	rm -rf $(BIN_DIR)
+	rm -f $(GEN_STAMP)
 	@for mod in $(MODULES); do \
 		$(MAKE) -C $$mod clean; \
 	done

@@ -18,8 +18,9 @@ format:
 test:
 	go test ./...
 
-## dev: Run the boss CLI TUI in dev mode
+## dev: Run the boss CLI TUI in dev mode (generates protos first if needed)
 dev:
+	$(MAKE) -C ../.. generate
 	go run -ldflags '$(LDFLAGS)' ./cmd
 
 ## build: Build the boss binary

@@ -15,8 +15,9 @@ format:
 test:
 	go test ./...
 
-## dev: Run the bosso orchestrator in dev mode
+## dev: Run the bosso orchestrator in dev mode (generates protos first if needed)
 dev:
+	$(MAKE) -C ../.. generate
 	go run -ldflags '$(LDFLAGS)' ./cmd
 
 ## build: Build the bosso binary

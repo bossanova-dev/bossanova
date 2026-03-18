@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
@@ -28,10 +29,11 @@ const (
 type newSessionPhase int
 
 const (
-	newSessionPhaseLoading  newSessionPhase = iota // Fetching repos
-	newSessionPhaseForm                            // Main huh form active
-	newSessionPhaseCreating                        // Waiting for CreateSession RPC
-	newSessionPhaseDone                            // Terminal
+	newSessionPhaseLoading    newSessionPhase = iota // Fetching repos
+	newSessionPhaseRepoSelect                        // Table-based repo picker
+	newSessionPhaseForm                              // Main huh form active
+	newSessionPhaseCreating                          // Waiting for CreateSession RPC
+	newSessionPhaseDone                              // Terminal
 )
 
 // reposMsg carries the result of a ListRepos RPC call.
@@ -78,11 +80,15 @@ type NewSessionModel struct {
 	forceBranch         bool
 	confirmingOverwrite bool
 
+	// Repo selection table
+	repoTable table.Model
+
 	// Form
 	form *huh.Form
 
 	// Layout
-	width int
+	width  int
+	height int
 }
 
 // NewNewSessionModel creates a NewSessionModel wired to the daemon client.
@@ -119,13 +125,50 @@ func createSession(c client.BossClient, ctx context.Context, req *pb.CreateSessi
 	}
 }
 
-func (m *NewSessionModel) buildForm() {
-	// Build repo options.
-	repoOpts := make([]huh.Option[string], len(m.repos))
+func (m *NewSessionModel) buildRepoTable() {
+	names := make([]string, len(m.repos))
+	paths := make([]string, len(m.repos))
 	for i, r := range m.repos {
-		repoOpts[i] = huh.NewOption(r.DisplayName+"  "+styleSubtle.Render(r.LocalPath), r.Id)
+		names[i] = r.DisplayName
+		paths[i] = r.LocalPath
 	}
 
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "NAME", Width: maxColWidth("NAME", names, 30)},
+		{Title: "PATH", Width: maxColWidth("PATH", paths, 60)},
+	}
+
+	rows := make([]table.Row, len(m.repos))
+	for i := range m.repos {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, names[i], paths[i]}
+	}
+
+	m.repoTable = newBossTable(cols, rows, m.repoTableHeight())
+	m.repoTable.SetWidth(columnsWidth(cols))
+}
+
+// repoTableHeight returns the height for the repo selection table.
+func (m NewSessionModel) repoTableHeight() int {
+	needed := len(m.repos) + 1
+	if m.height <= 0 {
+		return needed
+	}
+	avail := m.height - 6 // header + gaps + action bar
+	if avail < 1 {
+		avail = 1
+	}
+	if needed < avail {
+		return needed
+	}
+	return avail
+}
+
+func (m *NewSessionModel) buildForm() {
 	// Session type options.
 	typeOpts := []huh.Option[sessionType]{
 		huh.NewOption("Create a new PR — Start a fresh branch and pull request", sessionTypeNewPR),
@@ -134,14 +177,6 @@ func (m *NewSessionModel) buildForm() {
 	}
 
 	groups := []*huh.Group{
-		// Repo select — skip if single repo (auto-selected in reposMsg handler).
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Select a repository").
-				Options(repoOpts...).
-				Value(&m.selectedRepoID),
-		).WithHideFunc(func() bool { return len(m.repos) <= 1 }),
-
 		// Session type.
 		huh.NewGroup(
 			huh.NewSelect[sessionType]().
@@ -191,6 +226,11 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		if m.phase == newSessionPhaseRepoSelect {
+			m.repoTable.SetHeight(m.repoTableHeight())
+			m.repoTable.SetWidth(msg.Width)
+		}
 		return m, nil
 
 	case reposMsg:
@@ -201,10 +241,13 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repos = msg.repos
 		if len(m.repos) == 1 {
 			m.selectedRepoID = m.repos[0].Id
+			m.phase = newSessionPhaseForm
+			m.buildForm()
+			return m, m.form.Init()
 		}
-		m.phase = newSessionPhaseForm
-		m.buildForm()
-		return m, m.form.Init()
+		m.phase = newSessionPhaseRepoSelect
+		m.buildRepoTable()
+		return m, nil
 
 	case prsMsg:
 		m.prs = msg.prs
@@ -256,6 +299,29 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.confirmingOverwrite {
 			return m.updateConfirmOverwrite(msg)
 		}
+
+		if m.phase == newSessionPhaseRepoSelect {
+			switch msg.String() {
+			case "esc", "q":
+				m.cancel = true
+				return m, nil
+			case "enter":
+				idx := m.repoTable.Cursor()
+				if idx >= 0 && idx < len(m.repos) {
+					m.selectedRepoID = m.repos[idx].Id
+					m.phase = newSessionPhaseForm
+					m.buildForm()
+					return m, m.form.Init()
+				}
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.repoTable, cmd = m.repoTable.Update(msg)
+			updateCursorColumn(&m.repoTable)
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
@@ -387,6 +453,16 @@ func (m NewSessionModel) View() tea.View {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Render("Loading..."),
 		)
+	}
+
+	if m.phase == newSessionPhaseRepoSelect {
+		var b strings.Builder
+		b.WriteString(styleTitle.Render("Select a repository"))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.repoTable.View()))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		return tea.NewView(b.String())
 	}
 
 	if m.phase == newSessionPhaseCreating {

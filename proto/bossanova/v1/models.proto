@@ -116,6 +116,10 @@ message Repo {
   optional string setup_script = 7;
   google.protobuf.Timestamp created_at = 8;
   google.protobuf.Timestamp updated_at = 9;
+  bool can_auto_merge = 10;
+  bool can_auto_merge_dependabot = 11;
+  bool can_auto_address_reviews = 12;
+  bool can_auto_resolve_conflicts = 13;
 }
 
 // Session represents a Claude coding session.

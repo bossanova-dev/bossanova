@@ -147,6 +147,12 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirming = true
 			}
 			return m, nil
+		case "s":
+			if len(m.repos) > 0 {
+				repo := m.repos[m.table.Cursor()]
+				return m, func() tea.Msg { return switchViewMsg{view: ViewRepoSettings, sessionID: repo.Id} }
+			}
+			return m, nil
 		}
 
 		// Forward navigation keys to the table.
@@ -227,7 +233,7 @@ func (m RepoListModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(styleActionBar.Render("[a] add  [d] remove  [esc] back"))
+		b.WriteString(styleActionBar.Render("[a] add  [d] remove  [s] settings  [esc] back"))
 	}
 
 	return tea.NewView(b.String())

@@ -11,15 +11,19 @@ import (
 
 // Repo represents a registered Git repository.
 type Repo struct {
-	ID                string
-	DisplayName       string
-	LocalPath         string
-	OriginURL         string
-	DefaultBaseBranch string
-	WorktreeBaseDir   string
-	SetupScript       *string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                      string
+	DisplayName             string
+	LocalPath               string
+	OriginURL               string
+	DefaultBaseBranch       string
+	WorktreeBaseDir         string
+	SetupScript             *string
+	CanAutoMerge            bool
+	CanAutoMergeDependabot  bool
+	CanAutoAddressReviews   bool
+	CanAutoResolveConflicts bool
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // Session represents a Claude coding session.

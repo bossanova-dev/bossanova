@@ -22,27 +22,29 @@ const (
 	ViewChatPicker
 	ViewRepoAdd
 	ViewRepoList
+	ViewRepoSettings
 	ViewTrash
 	ViewSettings
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
 type App struct {
-	client     client.BossClient
-	ctx        context.Context
-	manager    *bosspty.Manager
-	activeView View
-	home       HomeModel
-	newSession NewSessionModel
-	chatPicker ChatPickerModel
-	repoAdd    RepoAddModel
-	repoList   RepoListModel
-	trash      TrashModel
-	settings   SettingsModel
-	attach     AttachModel
-	width      int
-	height     int
-	quitting   bool
+	client       client.BossClient
+	ctx          context.Context
+	manager      *bosspty.Manager
+	activeView   View
+	home         HomeModel
+	newSession   NewSessionModel
+	chatPicker   ChatPickerModel
+	repoAdd      RepoAddModel
+	repoList     RepoListModel
+	repoSettings RepoSettingsModel
+	trash        TrashModel
+	settings     SettingsModel
+	attach       AttachModel
+	width        int
+	height       int
+	quitting     bool
 }
 
 // NewApp creates a new App wired to the daemon client.
@@ -127,6 +129,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoAdd.width = msg.Width
 		a.repoList.width = msg.Width
 		a.repoList.height = msg.Height
+		a.repoSettings.width = msg.Width
 		a.trash.width = msg.Width
 		a.trash.height = msg.Height
 		a.chatPicker.width = msg.Width
@@ -165,6 +168,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoList.width = a.width
 			a.repoList.height = a.height
 			return a, a.repoList.Init()
+		case ViewRepoSettings:
+			a.repoSettings = NewRepoSettingsModel(a.client, a.ctx, msg.sessionID)
+			a.repoSettings.width = a.width
+			return a, a.repoSettings.Init()
 		case ViewTrash:
 			a.trash = NewTrashModel(a.client, a.ctx)
 			a.trash.width = a.width
@@ -231,6 +238,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoList = updated.(RepoListModel)
 		if a.repoList.Cancelled() {
 			return a, a.switchToHome()
+		}
+		return a, cmd
+	case ViewRepoSettings:
+		updated, cmd := a.repoSettings.Update(msg)
+		a.repoSettings = updated.(RepoSettingsModel)
+		if a.repoSettings.Cancelled() || a.repoSettings.Done() {
+			// Return to repo list.
+			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.repoList.width = a.width
+			a.repoList.height = a.height
+			a.activeView = ViewRepoList
+			return a, a.repoList.Init()
 		}
 		return a, cmd
 	case ViewTrash:
@@ -326,6 +345,8 @@ func (a App) View() tea.View {
 		v = a.repoAdd.View()
 	case ViewRepoList:
 		v = a.repoList.View()
+	case ViewRepoSettings:
+		v = a.repoSettings.View()
 	case ViewTrash:
 		v = a.trash.View()
 	case ViewSettings:

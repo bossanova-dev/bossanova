@@ -300,6 +300,37 @@ func (s *Server) RemoveRepo(ctx context.Context, req *connect.Request[pb.RemoveR
 	return connect.NewResponse(&pb.RemoveRepoResponse{}), nil
 }
 
+func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateRepoRequest]) (*connect.Response[pb.UpdateRepoResponse], error) {
+	msg := req.Msg
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	params := db.UpdateRepoParams{}
+	if msg.DisplayName != nil {
+		params.DisplayName = msg.DisplayName
+	}
+	if msg.CanAutoMerge != nil {
+		params.CanAutoMerge = msg.CanAutoMerge
+	}
+	if msg.CanAutoMergeDependabot != nil {
+		params.CanAutoMergeDependabot = msg.CanAutoMergeDependabot
+	}
+	if msg.CanAutoAddressReviews != nil {
+		params.CanAutoAddressReviews = msg.CanAutoAddressReviews
+	}
+	if msg.CanAutoResolveConflicts != nil {
+		params.CanAutoResolveConflicts = msg.CanAutoResolveConflicts
+	}
+
+	repo, err := s.repos.Update(ctx, msg.Id, params)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update repo: %w", err))
+	}
+
+	return connect.NewResponse(&pb.UpdateRepoResponse{Repo: repoToProto(repo)}), nil
+}
+
 func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
 	if req.Msg.RepoId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))

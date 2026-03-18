@@ -43,6 +43,7 @@ type BossClient interface {
 	CloneAndRegisterRepo(ctx context.Context, req *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error)
 	ListRepos(ctx context.Context) ([]*pb.Repo, error)
 	RemoveRepo(ctx context.Context, id string) error
+	UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error)
 	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
 
 	// Session lifecycle

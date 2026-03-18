@@ -629,18 +629,22 @@ func (ChatStatus) EnumDescriptor() ([]byte, []int) {
 
 // Repo represents a registered Git repository.
 type Repo struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Id                string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	DisplayName       string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	LocalPath         string                 `protobuf:"bytes,3,opt,name=local_path,json=localPath,proto3" json:"local_path,omitempty"`
-	OriginUrl         string                 `protobuf:"bytes,4,opt,name=origin_url,json=originUrl,proto3" json:"origin_url,omitempty"`
-	DefaultBaseBranch string                 `protobuf:"bytes,5,opt,name=default_base_branch,json=defaultBaseBranch,proto3" json:"default_base_branch,omitempty"`
-	WorktreeBaseDir   string                 `protobuf:"bytes,6,opt,name=worktree_base_dir,json=worktreeBaseDir,proto3" json:"worktree_base_dir,omitempty"`
-	SetupScript       *string                `protobuf:"bytes,7,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
-	CreatedAt         *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt         *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	Id                      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	DisplayName             string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	LocalPath               string                 `protobuf:"bytes,3,opt,name=local_path,json=localPath,proto3" json:"local_path,omitempty"`
+	OriginUrl               string                 `protobuf:"bytes,4,opt,name=origin_url,json=originUrl,proto3" json:"origin_url,omitempty"`
+	DefaultBaseBranch       string                 `protobuf:"bytes,5,opt,name=default_base_branch,json=defaultBaseBranch,proto3" json:"default_base_branch,omitempty"`
+	WorktreeBaseDir         string                 `protobuf:"bytes,6,opt,name=worktree_base_dir,json=worktreeBaseDir,proto3" json:"worktree_base_dir,omitempty"`
+	SetupScript             *string                `protobuf:"bytes,7,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
+	CreatedAt               *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt               *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	CanAutoMerge            bool                   `protobuf:"varint,10,opt,name=can_auto_merge,json=canAutoMerge,proto3" json:"can_auto_merge,omitempty"`
+	CanAutoMergeDependabot  bool                   `protobuf:"varint,11,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3" json:"can_auto_merge_dependabot,omitempty"`
+	CanAutoAddressReviews   bool                   `protobuf:"varint,12,opt,name=can_auto_address_reviews,json=canAutoAddressReviews,proto3" json:"can_auto_address_reviews,omitempty"`
+	CanAutoResolveConflicts bool                   `protobuf:"varint,13,opt,name=can_auto_resolve_conflicts,json=canAutoResolveConflicts,proto3" json:"can_auto_resolve_conflicts,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *Repo) Reset() {
@@ -734,6 +738,34 @@ func (x *Repo) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *Repo) GetCanAutoMerge() bool {
+	if x != nil {
+		return x.CanAutoMerge
+	}
+	return false
+}
+
+func (x *Repo) GetCanAutoMergeDependabot() bool {
+	if x != nil {
+		return x.CanAutoMergeDependabot
+	}
+	return false
+}
+
+func (x *Repo) GetCanAutoAddressReviews() bool {
+	if x != nil {
+		return x.CanAutoAddressReviews
+	}
+	return false
+}
+
+func (x *Repo) GetCanAutoResolveConflicts() bool {
+	if x != nil {
+		return x.CanAutoResolveConflicts
+	}
+	return false
 }
 
 // Session represents a Claude coding session.
@@ -1965,7 +1997,7 @@ var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x82\x03\n" +
+	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd9\x04\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -1979,7 +2011,12 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
-	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\x0f\n" +
+	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12$\n" +
+	"\x0ecan_auto_merge\x18\n" +
+	" \x01(\bR\fcanAutoMerge\x129\n" +
+	"\x19can_auto_merge_dependabot\x18\v \x01(\bR\x16canAutoMergeDependabot\x127\n" +
+	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
+	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflictsB\x0f\n" +
 	"\r_setup_script\"\xe1\x06\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +

@@ -112,6 +112,14 @@ func (c *LocalClient) RemoveRepo(ctx context.Context, id string) error {
 	return err
 }
 
+func (c *LocalClient) UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
+	resp, err := c.rpc.UpdateRepo(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Repo, nil
+}
+
 func (c *LocalClient) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error) {
 	resp, err := c.rpc.ListRepoPRs(ctx, connect.NewRequest(&pb.ListRepoPRsRequest{RepoId: repoID}))
 	if err != nil {

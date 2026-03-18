@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
+	bosspty "github.com/recurser/boss/internal/pty"
 )
 
 // View identifies which screen is currently active.
@@ -24,6 +25,7 @@ const (
 type App struct {
 	client     client.BossClient
 	ctx        context.Context
+	manager    *bosspty.Manager
 	activeView View
 	home       HomeModel
 	newSession NewSessionModel
@@ -39,10 +41,12 @@ type App struct {
 // NewApp creates a new App wired to the daemon client.
 func NewApp(c client.BossClient) App {
 	ctx := context.Background()
-	home := NewHomeModel(c, ctx)
+	mgr := bosspty.NewManager()
+	home := NewHomeModel(c, ctx, mgr)
 	return App{
 		client:     c,
 		ctx:        ctx,
+		manager:    mgr,
 		activeView: ViewHome,
 		home:       home,
 	}
@@ -64,7 +68,7 @@ func (a *App) SetInitialView(v View) {
 
 // SetAttachSession sets the session ID to attach to. Must be called after SetInitialView(ViewAttach).
 func (a *App) SetAttachSession(sessionID, resumeID string) {
-	a.attach = NewAttachModel(a.client, a.ctx, sessionID, resumeID)
+	a.attach = NewAttachModel(a.client, a.ctx, a.manager, sessionID, resumeID)
 }
 
 func (a App) Init() tea.Cmd {
@@ -117,7 +121,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.newSession.width = a.width
 			return a, a.newSession.Init()
 		case ViewChatPicker:
-			a.chatPicker = NewChatPickerModel(a.client, a.ctx, msg.sessionID)
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, msg.sessionID, "")
 			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
 			a.repoAdd = NewRepoAddModel(a.client, a.ctx)
@@ -128,10 +132,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoList.width = a.width
 			return a, a.repoList.Init()
 		case ViewAttach:
-			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID, msg.resumeID)
+			a.attach = NewAttachModel(a.client, a.ctx, a.manager, msg.sessionID, msg.resumeID)
 			return a, a.attach.Init()
 		case ViewHome:
-			a.home = NewHomeModel(a.client, a.ctx)
+			a.home = NewHomeModel(a.client, a.ctx, a.manager)
 			a.home.width = a.width
 			a.home.height = a.height
 			return a, a.home.Init()
@@ -153,7 +157,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.newSession.Done() {
 			sess := a.newSession.CreatedSession()
 			if sess != nil {
-				a.attach = NewAttachModel(a.client, a.ctx, sess.Id, "")
+				a.attach = NewAttachModel(a.client, a.ctx, a.manager, sess.Id, "")
 				a.activeView = ViewAttach
 				return a, a.attach.Init()
 			}
@@ -190,8 +194,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.attach.Update(msg)
 		a.attach = updated.(AttachModel)
 		if a.attach.Detached() {
-			// Batch the attach cleanup cmd (e.g. orphan delete) with the home switch.
-			return a, tea.Batch(cmd, a.switchToHome())
+			sessionID := a.attach.SessionID()
+			claudeID := a.attach.ClaudeID()
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, sessionID, claudeID)
+			a.activeView = ViewChatPicker
+			// Batch the attach cleanup cmd (e.g. orphan delete) with the chat picker init.
+			return a, tea.Batch(cmd, a.chatPicker.Init())
 		}
 		return a, cmd
 	}
@@ -201,7 +209,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) switchToHome() tea.Cmd {
 	a.activeView = ViewHome
-	a.home = NewHomeModel(a.client, a.ctx)
+	a.home = NewHomeModel(a.client, a.ctx, a.manager)
 	a.home.width = a.width
 	a.home.height = a.height
 	return a.home.Init()

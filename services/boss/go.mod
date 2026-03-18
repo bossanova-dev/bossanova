@@ -8,6 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.2
 	connectrpc.com/connect v1.19.1
 	github.com/99designs/keyring v1.2.2
+	github.com/creack/pty/v2 v2.0.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/protobuf v1.36.11

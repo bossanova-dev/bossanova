@@ -3,13 +3,16 @@ package views
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/claude"
 	"github.com/recurser/boss/internal/client"
+	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -43,13 +46,16 @@ type chatDeletedMsg struct {
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
-	client    client.BossClient
-	ctx       context.Context
-	sessionID string
+	client      client.BossClient
+	ctx         context.Context
+	manager     *bosspty.Manager
+	sessionID   string
+	highlightID string // Claude ID to auto-highlight after detach
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat
 	cursor  int
+	spinner spinner.Model
 	loading bool
 	err     error
 	cancel  bool
@@ -61,17 +67,21 @@ type ChatPickerModel struct {
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
-func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionID string) ChatPickerModel {
+// If highlightClaudeID is non-empty, that chat will be auto-highlighted after loading.
+func NewChatPickerModel(c client.BossClient, parentCtx context.Context, manager *bosspty.Manager, sessionID, highlightClaudeID string) ChatPickerModel {
 	return ChatPickerModel{
-		client:    c,
-		ctx:       parentCtx,
-		sessionID: sessionID,
-		loading:   true,
+		client:      c,
+		ctx:         parentCtx,
+		manager:     manager,
+		sessionID:   sessionID,
+		highlightID: highlightClaudeID,
+		spinner:     newStatusSpinner(),
+		loading:     true,
 	}
 }
 
 func (m ChatPickerModel) Init() tea.Cmd {
-	return m.fetchSession()
+	return tea.Batch(m.fetchSession(), m.spinner.Tick)
 }
 
 func (m ChatPickerModel) fetchSession() tea.Cmd {
@@ -122,6 +132,11 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 
 func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
 	case chatPickerSessionMsg:
 		m.session = msg.session
 		return m, m.listChats()
@@ -133,6 +148,27 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.chats = msg.chats
+		// Sort chats by last activity (most recent first).
+		// Running processes use their last output time; others use created_at.
+		sort.Slice(m.chats, func(i, j int) bool {
+			return m.chatLastActive(m.chats[i]).After(m.chatLastActive(m.chats[j]))
+		})
+		// Auto-highlight the chat the user just left, or the first running chat.
+		if m.highlightID != "" {
+			for i, chat := range m.chats {
+				if chat.ClaudeId == m.highlightID {
+					m.cursor = i + 1 // +1 because cursor 0 = "New chat"
+					break
+				}
+			}
+		} else if m.manager != nil {
+			for i, chat := range m.chats {
+				if m.manager.IsRunning(chat.ClaudeId) {
+					m.cursor = i + 1
+					break
+				}
+			}
+		}
 		return m, m.backfillTitles()
 
 	case chatTitlesBackfilledMsg:
@@ -270,36 +306,60 @@ func (m ChatPickerModel) View() tea.View {
 	b.WriteString("\n")
 
 	if len(m.chats) > 0 {
+		// Compute dynamic title column width.
+		maxTitle := len("CHAT")
+		for _, chat := range m.chats {
+			t := chat.Title
+			if t == "" {
+				t = "New chat"
+			}
+			if len(t) > maxTitle {
+				maxTitle = len(t)
+			}
+		}
+		if maxTitle > 60 {
+			maxTitle = 60
+		}
+
 		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render("Previous chats"))
-		b.WriteString("\n\n")
+		// Table header.
+		header := fmt.Sprintf("  %-*s"+colSep+"%-8s"+colSep+"%s",
+			maxTitle, "CHAT", "ACTIVE", "STATUS")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
+		b.WriteString("\n")
 
 		for i, chat := range m.chats {
-			cursor := "  "
-			if m.cursor == i+1 {
-				cursor = "> "
-			}
+			selected := m.cursor == i+1
 
 			chatTitle := chat.Title
 			if chatTitle == "" {
 				chatTitle = "New chat"
 			}
+			chatTitle = truncate(chatTitle, maxTitle)
 
-			timeStr := relativeTime(chat.CreatedAt.AsTime())
+			status := bosspty.StatusStopped
+			if m.manager != nil {
+				status = m.manager.ProcessStatus(chat.ClaudeId)
+			}
+			statusStr := renderStatus(status, m.spinner)
+			timeStr := relativeTime(m.chatLastActive(chat))
 
-			// Show "(remote)" for chats that originated on another daemon.
-			suffix := ""
-			if chat.DaemonId != "" {
-				suffix = " (remote)"
+			cursor := "  "
+			if selected {
+				cursor = "> "
 			}
 
-			line := fmt.Sprintf("%s%s%s  %s", cursor, chatTitle, suffix, styleSubtle.Render(timeStr))
-			if m.cursor == i+1 {
-				line = styleSelected.Render(fmt.Sprintf("%s%s%s", cursor, chatTitle, suffix)) +
-					"  " + styleSubtle.Render(timeStr)
+			timePadded := fmt.Sprintf("%-8s", timeStr)
+
+			row := fmt.Sprintf("%s%-*s"+colSep+"%s"+colSep+"%s",
+				cursor, maxTitle, chatTitle, styleSubtle.Render(timePadded), statusStr)
+
+			if selected {
+				row = styleSelected.Render(fmt.Sprintf("%s%-*s", cursor, maxTitle, chatTitle)) +
+					colSep + styleSubtle.Render(timePadded) + colSep + statusStr
 			}
 
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(row))
 			b.WriteString("\n")
 		}
 	}
@@ -323,6 +383,17 @@ func (m ChatPickerModel) View() tea.View {
 	}
 
 	return tea.NewView(b.String())
+}
+
+// chatLastActive returns the most recent activity time for a chat.
+// For running processes this is the last PTY output time; otherwise created_at.
+func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
+	if m.manager != nil {
+		if lw := m.manager.ProcessLastWrite(chat.ClaudeId); !lw.IsZero() {
+			return lw
+		}
+	}
+	return chat.CreatedAt.AsTime()
 }
 
 // relativeTime formats a time as a human-readable relative string.

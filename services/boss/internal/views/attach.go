@@ -11,12 +11,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/recurser/boss/internal/claude"
 	"github.com/recurser/boss/internal/client"
+	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// claudeFinishedMsg signals that the interactive Claude process has exited.
+// claudeFinishedMsg signals that the interactive Claude process has exited or
+// the user has detached from it.
 type claudeFinishedMsg struct {
-	err error
+	err      error
+	detached bool
 }
 
 // chatTitleUpdatedMsg signals a best-effort title update completed (ignored).
@@ -36,6 +39,7 @@ type attachErrMsg struct {
 type AttachModel struct {
 	client    client.BossClient
 	ctx       context.Context
+	manager   *bosspty.Manager
 	sessionID string
 	resumeID  string // Claude Code session UUID to resume (empty = new chat)
 	claudeID  string // The Claude Code session UUID actually launched
@@ -52,10 +56,11 @@ type AttachModel struct {
 
 // NewAttachModel creates an AttachModel for the given session.
 // If resumeID is non-empty, Claude Code will be launched with --resume.
-func NewAttachModel(c client.BossClient, parentCtx context.Context, sessionID, resumeID string) AttachModel {
+func NewAttachModel(c client.BossClient, parentCtx context.Context, manager *bosspty.Manager, sessionID, resumeID string) AttachModel {
 	return AttachModel{
 		client:    c,
 		ctx:       parentCtx,
+		manager:   manager,
 		sessionID: sessionID,
 		resumeID:  resumeID,
 		launching: true,
@@ -100,14 +105,21 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		claudeCmd.Dir = msg.session.GetWorktreePath()
 
-		return m, tea.ExecProcess(claudeCmd, func(err error) tea.Msg {
+		m.manager.RegisterSession(m.claudeID, m.sessionID)
+		ptycmd := bosspty.NewPTYCommand(m.manager, m.claudeID, claudeCmd)
+		return m, tea.Exec(ptycmd, func(err error) tea.Msg {
 			// Clear the primary screen buffer so Claude's logo/intro
 			// text doesn't linger in scrollback when boss exits alt screen.
 			fmt.Print("\033[2J\033[H\033[3J")
-			return claudeFinishedMsg{err: err}
+			return claudeFinishedMsg{err: err, detached: ptycmd.Detached}
 		})
 
 	case claudeFinishedMsg:
+		if msg.detached {
+			// User pressed Ctrl+] — process is still running in background.
+			m.detach = true
+			return m, nil
+		}
 		m.returned = true
 		m.claudeErr = msg.err
 		// Auto-detach back to home screen.
@@ -162,6 +174,12 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 // Detached returns true if the user should return to the home screen.
 func (m AttachModel) Detached() bool { return m.detach }
 
+// SessionID returns the session ID for navigation after detach.
+func (m AttachModel) SessionID() string { return m.sessionID }
+
+// ClaudeID returns the Claude Code session UUID for navigation after detach.
+func (m AttachModel) ClaudeID() string { return m.claudeID }
+
 func (m AttachModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
@@ -177,7 +195,7 @@ func (m AttachModel) View() tea.View {
 			title = m.session.Title
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render(
-			fmt.Sprintf("Launching Claude Code for %s...", title)))
+			fmt.Sprintf("Launching Claude Code for %s...  Press Ctrl+] to detach", title)))
 		return tea.NewView(b.String())
 	}
 

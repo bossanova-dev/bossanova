@@ -8,9 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
+	bosspty "github.com/recurser/boss/internal/pty"
 	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -37,6 +39,8 @@ type sessionListMsg struct {
 type HomeModel struct {
 	client   client.BossClient
 	ctx      context.Context
+	manager  *bosspty.Manager
+	spinner  spinner.Model
 	sessions []*pb.Session
 	cursor   int
 	err      error
@@ -46,16 +50,18 @@ type HomeModel struct {
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
-func NewHomeModel(c client.BossClient, ctx context.Context) HomeModel {
+func NewHomeModel(c client.BossClient, ctx context.Context, manager *bosspty.Manager) HomeModel {
 	return HomeModel{
 		client:  c,
 		ctx:     ctx,
+		manager: manager,
+		spinner: newStatusSpinner(),
 		loading: true,
 	}
 }
 
 func (h HomeModel) Init() tea.Cmd {
-	return tea.Batch(fetchSessions(h.client, h.ctx), tickCmd())
+	return tea.Batch(fetchSessions(h.client, h.ctx), tickCmd(), h.spinner.Tick)
 }
 
 func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -68,6 +74,11 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.cursor = len(h.sessions) - 1
 		}
 		return h, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		h.spinner, cmd = h.spinner.Update(msg)
+		return h, cmd
 
 	case tickMsg:
 		return h, tea.Batch(fetchSessions(h.client, h.ctx), tickCmd())
@@ -162,28 +173,6 @@ func renderBanner() string {
 	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
 }
 
-func stateColor(state pb.SessionState) color.Color {
-	switch state {
-	case pb.SessionState_SESSION_STATE_MERGED,
-		pb.SessionState_SESSION_STATE_GREEN_DRAFT,
-		pb.SessionState_SESSION_STATE_READY_FOR_REVIEW:
-		return colorGreen
-	case pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
-		pb.SessionState_SESSION_STATE_AWAITING_CHECKS:
-		return colorYellow
-	case pb.SessionState_SESSION_STATE_FIXING_CHECKS,
-		pb.SessionState_SESSION_STATE_BLOCKED:
-		return colorRed
-	case pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
-		pb.SessionState_SESSION_STATE_STARTING_CLAUDE,
-		pb.SessionState_SESSION_STATE_PUSHING_BRANCH,
-		pb.SessionState_SESSION_STATE_OPENING_DRAFT_PR:
-		return colorCyan
-	default:
-		return colorGray
-	}
-}
-
 // StateLabel returns a short human-readable label for a session state.
 func StateLabel(state pb.SessionState) string {
 	switch state {
@@ -230,16 +219,17 @@ func ChecksLabel(state pb.ChecksOverall) string {
 	}
 }
 
-func checksIcon(state pb.ChecksOverall) string {
+// checksLabelAndColor returns the raw label and color for a CI status.
+func checksLabelAndColor(state pb.ChecksOverall) (string, color.Color) {
 	switch state {
 	case pb.ChecksOverall_CHECKS_OVERALL_PASSED:
-		return lipgloss.NewStyle().Foreground(colorGreen).Render("pass")
+		return "pass", colorGreen
 	case pb.ChecksOverall_CHECKS_OVERALL_FAILED:
-		return lipgloss.NewStyle().Foreground(colorRed).Render("fail")
+		return "fail", colorRed
 	case pb.ChecksOverall_CHECKS_OVERALL_PENDING:
-		return lipgloss.NewStyle().Foreground(colorYellow).Render("...")
+		return "...", colorYellow
 	default:
-		return styleSubtle.Render("-")
+		return "-", colorGray
 	}
 }
 
@@ -293,8 +283,8 @@ func (h HomeModel) View() tea.View {
 	}
 
 	// Table header.
-	header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-14s"+colSep+"%-5s"+colSep+"%-4s",
-		shortIDLen, "ID", maxRepo, "REPO", maxBranch, "BRANCH", "STATE", "PR", "CI")
+	header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-5s"+colSep+"%-4s"+colSep+"%s",
+		shortIDLen, "ID", maxRepo, "REPO", maxBranch, "BRANCH", "PR", "CI", "STATUS")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
 	b.WriteString("\n")
 
@@ -302,7 +292,7 @@ func (h HomeModel) View() tea.View {
 	for i, sess := range h.sessions {
 		selected := i == h.cursor
 
-		state := StateLabel(sess.State)
+		status := h.manager.SessionStatus(sess.Id)
 		repoName := truncate(sess.RepoDisplayName, maxRepo)
 		branchDisplay := strings.TrimPrefix(sess.BranchName, "boss/")
 		branch := truncate(branchDisplay, maxBranch)
@@ -310,9 +300,9 @@ func (h HomeModel) View() tea.View {
 		if sess.PrNumber != nil {
 			pr = fmt.Sprintf("#%d", *sess.PrNumber)
 		}
-		ci := checksIcon(sess.LastCheckState)
+		ciLabel, ciColor := checksLabelAndColor(sess.LastCheckState)
 
-		stateStyled := lipgloss.NewStyle().Foreground(stateColor(sess.State)).Render(fmt.Sprintf("%-14s", state))
+		stateStyled := renderStatus(status, h.spinner)
 
 		cursor := "  "
 		if selected {
@@ -324,11 +314,23 @@ func (h HomeModel) View() tea.View {
 			shortID = shortID[:shortIDLen]
 		}
 
-		row := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%s"+colSep+"%-5s"+colSep+"%s",
-			cursor, shortIDLen, shortID, maxRepo, repoName, maxBranch, branch, stateStyled, pr, ci)
+		// Pad raw text to column width before styling, so ANSI codes don't
+		// break column alignment.
+		prPadded := fmt.Sprintf("%-5s", pr)
+		ciPadded := fmt.Sprintf("%-4s", ciLabel)
+		ciStyled := lipgloss.NewStyle().Foreground(ciColor).Render(ciPadded)
 
+		// Build text-only prefix (cursor through branch) — this part gets
+		// bold styling when selected. Styled columns (CI, status) are appended
+		// independently so their ANSI codes don't inflate the padding.
+		textPrefix := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%s",
+			cursor, shortIDLen, shortID, maxRepo, repoName, maxBranch, branch, prPadded)
+
+		var row string
 		if selected {
-			row = styleSelected.Render(row)
+			row = styleSelected.Render(textPrefix) + colSep + ciStyled + colSep + stateStyled
+		} else {
+			row = textPrefix + colSep + ciStyled + colSep + stateStyled
 		}
 
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(row))

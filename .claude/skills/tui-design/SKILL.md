@@ -6,39 +6,40 @@ Reference guide for building consistent Bubbletea v2 views in the boss CLI. Cons
 
 ## Layout Constants
 
-All shared layout constants live in `services/boss/internal/views/home.go`:
+Shared layout constants live in `services/boss/internal/views/`:
 
 ```go
+// home.go
 const (
     shortIDLen    = 7 // characters shown for truncated UUIDs
-    colGap        = 2 // spaces between table columns
     actionBarPadY = 1 // blank lines above action bar
 )
 
-var colSep = strings.Repeat(" ", colGap)
+// tablehelpers.go
+const defaultTableHeight = 20 // fallback before first WindowSizeMsg
 ```
 
-**Always use these constants** — never hardcode `7`, `2`, or `1` for these purposes.
+**Always use these constants** — never hardcode `7` or `1` for these purposes.
 
 ---
 
 ## Shared Styles
 
-Defined in `services/boss/internal/views/home.go`:
+Defined in `services/boss/internal/views/home.go` and `tablehelpers.go`:
 
-| Variable         | Purpose                          |
-| ---------------- | -------------------------------- |
-| `styleTitle`     | Bold heading with horizontal pad |
-| `styleSelected`  | Bold text for cursor-highlighted |
-| `styleActionBar` | Faint bottom menu with top pad   |
-| `styleError`     | Red text with padding            |
-| `styleSubtle`    | Faint secondary text             |
-| `colorGreen`     | Success / merged / green states  |
-| `colorYellow`    | In-progress / pending states     |
-| `colorRed`       | Error / blocked states           |
-| `colorCyan`      | Transitional states              |
-| `colorGray`      | Unknown / default states         |
-| `colorOrange`    | Brand / banner accent            |
+| Variable         | Purpose                               |
+| ---------------- | ------------------------------------- |
+| `styleTitle`     | Bold heading with horizontal pad      |
+| `styleSelected`  | Bold text for cursor-highlighted      |
+| `styleActionBar` | Faint bottom menu with top pad        |
+| `styleError`     | Red text with padding                 |
+| `styleSubtle`    | Faint secondary text                  |
+| `colorGreen`     | Success / merged / green states       |
+| `colorYellow`    | In-progress / pending states          |
+| `colorRed`       | Error / blocked states                |
+| `colorCyan`      | Transitional states                   |
+| `colorGray`      | Unknown / default states              |
+| `colorSelected`  | `#A8B1F4` — selected row fg + chevron |
 
 ---
 
@@ -49,8 +50,7 @@ Every view follows this top-to-bottom structure:
 ```
 [heading]          styleTitle.Render("Title") + "\n\n"
 [blank line]
-[faint header]     table column headers (faint)
-[rows]             data rows with "> " / "  " cursor
+[table]            bubbles table.Model with ❯ cursor column
 [action bar]       styleActionBar.Render("[key] action  ...")
 ```
 
@@ -58,8 +58,8 @@ Every view follows this top-to-bottom structure:
 
 1. **One blank line** between heading and content — the `View()` method writes the title + `"\n"`, so step view functions must start with `b.WriteString("\n")` to produce the blank line
 2. **No explicit newline before `styleActionBar`** — it has `Padding(actionBarPadY, 2)` built in, which provides the blank line above. This applies everywhere, including confirmation dialogs.
-3. **Cursor prefix** is always `"> "` (selected) or `"  "` (unselected) — 2 chars wide
-4. **Wrap rows** with `lipgloss.NewStyle().Padding(0, 2).Render(row)` for horizontal indent
+3. **Table views** use `table.Model` from `charm.land/bubbles/v2/table` — see Table Formatting below.
+4. **Non-table lists** use manual `"❯ "` / `"  "` cursor prefix — see Select Lists below.
 
 ### Action Bar Spacing
 
@@ -88,20 +88,90 @@ b.WriteString(styleActionBar.Render("[q] quit"))
 
 ## Table Formatting
 
-### Column Widths
+Tables use `charm.land/bubbles/v2/table` with shared helpers from `tablehelpers.go`.
 
-Compute column widths from actual data, capped at a reasonable max:
+### Table Styles (`bossTableStyles()`)
+
+- **Header**: bold, faint, left-only padding `Padding(0, 0, 0, 1)`
+- **Cell**: left-only padding `Padding(0, 0, 0, 1)` — tighter than default
+- **Selected**: bold text with `Foreground(colorSelected)` (`#A8B1F4` periwinkle) — **no background highlight**
+
+### Cursor Column
+
+Every TUI table includes a narrow first column (`cursorColumn`, width 1) that displays `❯` (U+276F) on the selected row and is blank on all others:
 
 ```go
-maxName := len("NAME")
-for _, item := range items {
-    if len(item.Name) > maxName {
-        maxName = len(item.Name)
+cols := []table.Column{
+    cursorColumn,  // {Title: " ", Width: 1}
+    {Title: "NAME", Width: nameWidth},
+    // ...
+}
+```
+
+When building rows, prepend the indicator:
+
+```go
+cursor := m.table.Cursor()
+for i, item := range items {
+    indicator := ""
+    if i == cursor {
+        indicator = "❯"
     }
+    rows[i] = table.Row{indicator, item.Name, ...}
 }
-if maxName > 30 {
-    maxName = 30
+```
+
+After forwarding key events to the table, update the cursor column:
+
+```go
+// Forward navigation keys to the table.
+var cmd tea.Cmd
+m.table, cmd = m.table.Update(msg)
+updateCursorColumn(&m.table)
+return m, cmd
+```
+
+### CLI Tables (No Cursor)
+
+CLI output tables (`handlers.go`) use `WithFocused(false)` and their own styles. They do **not** include `cursorColumn` and do **not** call `updateCursorColumn`. CLI tables use `Padding(0, 1)` for both left and right padding.
+
+### Creating Tables
+
+Use `newBossTable()` for TUI tables (focused, with boss key map and styles):
+
+```go
+m.table = newBossTable(cols, rows, height)
+```
+
+### Column Widths
+
+Use `maxColWidth(header, values, cap)` to compute widths from data:
+
+```go
+cols := []table.Column{
+    cursorColumn,
+    {Title: "NAME", Width: maxColWidth("NAME", names, 30)},
+    {Title: "PATH", Width: maxColWidth("PATH", paths, 60)},
 }
+```
+
+Use `columnsWidth(cols)` for total rendered width (accounts for left-only padding).
+
+### Table Height
+
+Each view provides a `tableHeight()` method that calculates available height:
+
+- `WithHeight(h)` renders 1 header line + (h-1) data rows
+- For CLI showing all rows: `WithHeight(len(rows) + 1)`
+- For TUI: compute from terminal height minus overhead (banner, title, action bar)
+- Cap at `len(items) + 1` so the table doesn't expand beyond content
+
+### Pre-styled Cell Content
+
+Use `fgOnly()` to wrap pre-styled ANSI content (status colors, etc.) so that inline resets don't clobber the bold attribute on the selected row:
+
+```go
+ciStyled := fgOnly(lipgloss.NewStyle().Foreground(ciColor).Render(ciLabel))
 ```
 
 ### ID Columns
@@ -115,25 +185,9 @@ if len(shortID) > shortIDLen {
 }
 ```
 
-### Column Separator
+### Key Map
 
-Use `colSep` (derived from `colGap`) between columns in format strings:
-
-```go
-header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s",
-    shortIDLen, "ID", maxName, "NAME", maxPath, "PATH")
-
-row := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s",
-    cursor, shortIDLen, shortID, maxName, name, maxPath, path)
-```
-
-### Truncation
-
-Use the shared `truncate()` function for content that may exceed column width:
-
-```go
-func truncate(s string, max int) string  // adds "..." suffix
-```
+Use `bossKeyMap()` which removes `"d"` from HalfPageDown to avoid conflicts with delete bindings. Only `ctrl+d` remains for half-page-down.
 
 ---
 
@@ -145,7 +199,7 @@ For simple option lists (not tables), use this pattern:
 for i, opt := range options {
     cursor := "  "
     if i == m.cursor {
-        cursor = "> "
+        cursor = "❯ "
     }
     line := cursor + opt.Label
     if i == m.cursor {
@@ -225,11 +279,12 @@ Format: `[key] action` separated by two spaces.
 
 - [ ] Uses `styleTitle` for heading
 - [ ] Blank line after heading (`"\n\n"`)
-- [ ] Table columns use `colSep` and computed widths
+- [ ] Table uses `newBossTable()` with `cursorColumn` as first column
 - [ ] IDs truncated to `shortIDLen`
-- [ ] Cursor is `"> "` / `"  "` (2 chars)
-- [ ] Rows wrapped with `Padding(0, 2)`
+- [ ] Cursor column shows `❯` on selected row via `updateCursorColumn()`
+- [ ] Table wrapped with `Padding(0, 1)` in `View()`
 - [ ] No extra `\n` before `styleActionBar`
 - [ ] Error view uses `renderError(msg, m.width)` + `"\n"` + `styleActionBar`
 - [ ] Confirmation dialogs use `[y/enter] confirm  [n/esc] cancel`
 - [ ] Action bar key format is `[key] action`
+- [ ] Handles `tea.WindowSizeMsg` to set `width`, `height`, and update table dimensions

@@ -4,14 +4,17 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"os"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
+	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -29,11 +32,6 @@ type sessionArchivedMsg struct {
 	err error
 }
 
-// sessionStatusesMsg carries daemon-side session statuses.
-type sessionStatusesMsg struct {
-	statuses map[string]string // session_id -> status string
-}
-
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
 	client   client.BossClient
@@ -41,14 +39,11 @@ type HomeModel struct {
 	manager  *bosspty.Manager
 	spinner  spinner.Model
 	sessions []*pb.Session
-	cursor   int
+	table    table.Model
 	err      error
 	loading  bool
 	width    int
 	height   int
-
-	// Daemon-side statuses for cross-client visibility.
-	sessionStatuses map[string]string // session_id -> status string
 
 	// Archive confirmation / in-progress
 	confirming bool
@@ -63,6 +58,7 @@ func NewHomeModel(c client.BossClient, ctx context.Context, manager *bosspty.Man
 		manager: manager,
 		spinner: newStatusSpinner(),
 		loading: true,
+		table:   newBossTable(nil, nil, 0),
 	}
 }
 
@@ -70,19 +66,75 @@ func (h HomeModel) Init() tea.Cmd {
 	return tea.Batch(fetchSessions(h.client, h.ctx), tickCmd(), h.spinner.Tick)
 }
 
+// buildTableRows rebuilds the table columns and rows from h.sessions.
+func (h *HomeModel) buildTableRows() {
+	if len(h.sessions) == 0 {
+		h.table.SetRows(nil)
+		return
+	}
+
+	repos := make([]string, len(h.sessions))
+	branches := make([]string, len(h.sessions))
+	prs := make([]string, len(h.sessions))
+	for i, sess := range h.sessions {
+		repos[i] = sess.RepoDisplayName
+		branches[i] = strings.TrimPrefix(sess.BranchName, "boss/")
+		if sess.PrNumber != nil {
+			prs[i] = fmt.Sprintf("#%d", *sess.PrNumber)
+		} else {
+			prs[i] = "-"
+		}
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "REPO", Width: maxColWidth("REPO", repos, 20)},
+		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60)},
+		{Title: "PR", Width: maxColWidth("PR", prs, 8)},
+		{Title: "CI", Width: 7},
+		{Title: "STATUS", Width: 14},
+	}
+
+	cursor := h.table.Cursor()
+	rows := make([]table.Row, len(h.sessions))
+	for i, sess := range h.sessions {
+		ciLabel, ciColor := checksLabelAndColor(sess.LastCheckState)
+		ciStyled := lipgloss.NewStyle().Foreground(ciColor).Render(ciLabel)
+
+		status := h.manager.SessionStatus(sess.Id)
+		statusStyled := renderStatus(status, h.spinner)
+
+		indicator := ""
+		if i == cursor {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, repos[i], branches[i], prs[i], ciStyled, statusStyled}
+	}
+
+	h.table.SetColumns(cols)
+	h.table.SetRows(rows)
+	h.table.SetWidth(columnsWidth(cols))
+	h.table.SetHeight(h.tableHeight())
+	h.table.SetCursor(cursor)
+}
+
 func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		h.width = msg.Width
+		h.height = msg.Height
+		h.table.SetHeight(h.tableHeight())
+		h.table.SetWidth(msg.Width)
+		return h, nil
+
 	case sessionListMsg:
 		h.loading = false
 		h.sessions = msg.sessions
 		h.err = msg.err
-		if h.cursor >= len(h.sessions) && len(h.sessions) > 0 {
-			h.cursor = len(h.sessions) - 1
+		h.buildTableRows()
+		if h.table.Cursor() >= len(h.sessions) && len(h.sessions) > 0 {
+			h.table.SetCursor(len(h.sessions) - 1)
 		}
-		return h, fetchSessionStatuses(h.client, h.ctx, h.sessions)
-
-	case sessionStatusesMsg:
-		h.sessionStatuses = msg.statuses
 		return h, nil
 
 	case sessionArchivedMsg:
@@ -99,18 +151,23 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		if h.cursor >= len(h.sessions) && len(h.sessions) > 0 {
-			h.cursor = len(h.sessions) - 1
+		h.buildTableRows()
+		if h.table.Cursor() >= len(h.sessions) && len(h.sessions) > 0 {
+			h.table.SetCursor(len(h.sessions) - 1)
 		}
 		return h, nil
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		h.spinner, cmd = h.spinner.Update(msg)
+		// Rebuild rows to animate spinner frames.
+		if len(h.sessions) > 0 {
+			h.buildTableRows()
+		}
 		return h, cmd
 
 	case tickMsg:
-		return h, tea.Batch(fetchSessions(h.client, h.ctx), fetchSessionStatuses(h.client, h.ctx, h.sessions), tickCmd())
+		return h, tea.Batch(fetchSessions(h.client, h.ctx), tickCmd())
 
 	case tea.KeyMsg:
 		if h.confirming {
@@ -133,25 +190,21 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.confirming = true
 			}
 			return h, nil
-		case "up", "k":
-			if h.cursor > 0 {
-				h.cursor--
-			}
-			return h, nil
-		case "down", "j":
-			if h.cursor < len(h.sessions)-1 {
-				h.cursor++
-			}
-			return h, nil
 		case "enter":
 			if len(h.sessions) > 0 {
-				sess := h.sessions[h.cursor]
+				sess := h.sessions[h.table.Cursor()]
 				return h, func() tea.Msg {
 					return switchViewMsg{view: ViewChatPicker, sessionID: sess.Id}
 				}
 			}
 			return h, nil
 		}
+
+		// Forward navigation keys to the table.
+		var cmd tea.Cmd
+		h.table, cmd = h.table.Update(msg)
+		updateCursorColumn(&h.table)
+		return h, cmd
 	}
 
 	return h, nil
@@ -162,7 +215,7 @@ func (h HomeModel) updateArchiveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "enter":
 		h.confirming = false
 		h.archiving = true
-		sess := h.sessions[h.cursor]
+		sess := h.sessions[h.table.Cursor()]
 		return h, func() tea.Msg {
 			_, err := h.client.ArchiveSession(h.ctx, sess.Id)
 			return sessionArchivedMsg{id: sess.Id, err: err}
@@ -171,6 +224,53 @@ func (h HomeModel) updateArchiveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.confirming = false
 	}
 	return h, nil
+}
+
+// renderError renders an error message that wraps to the given terminal width.
+// If width is 0 (unknown), it falls back to no width constraint.
+func renderError(msg string, width int) string {
+	s := styleError
+	if width > 0 {
+		// Account for padding (2 chars each side).
+		s = s.Width(width - 4)
+	}
+	return s.Render(msg)
+}
+
+// bannerGradient defines a horizontal color gradient for the B icon (dawn palette).
+var bannerGradient = []color.Color{
+	lipgloss.Color("#00C6FF"),
+	lipgloss.Color("#00AAFF"),
+	lipgloss.Color("#008EFF"),
+	lipgloss.Color("#0072FF"),
+}
+
+// bannerHeight is the number of lines rendered by renderBanner (including padding).
+// Banner has padding(1,1,1,1) = 1 top + 2 content + 1 bottom = 4 lines.
+const bannerHeight = 4
+
+func renderBanner() string {
+	cwd, _ := os.Getwd()
+	if home, err := os.UserHomeDir(); err == nil {
+		cwd = strings.Replace(cwd, home, "~", 1)
+	}
+
+	// Logo chars per row, matching `npx oh-my-logo "B" dawn --filled --block-font tiny`.
+	row1 := []string{" ", "█", "▄", "▄"}
+	row2 := []string{" ", "█", "▄", "█"}
+
+	colorize := func(chars []string) string {
+		var b strings.Builder
+		for i, ch := range chars {
+			b.WriteString(lipgloss.NewStyle().Foreground(bannerGradient[i]).Render(ch))
+		}
+		return b.String()
+	}
+
+	banner := colorize(row1) + "  Bossanova v" + buildinfo.Version + "\n" +
+		colorize(row2) + "  " + styleSubtle.Render(cwd)
+
+	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
 }
 
 // StateLabel returns a short human-readable label for a session state.
@@ -223,14 +323,34 @@ func ChecksLabel(state pb.ChecksOverall) string {
 func checksLabelAndColor(state pb.ChecksOverall) (string, color.Color) {
 	switch state {
 	case pb.ChecksOverall_CHECKS_OVERALL_PASSED:
-		return "pass", colorGreen
+		return "pass", colorSuccess
 	case pb.ChecksOverall_CHECKS_OVERALL_FAILED:
-		return "fail", colorRed
+		return "fail", colorDanger
 	case pb.ChecksOverall_CHECKS_OVERALL_PENDING:
-		return "...", colorYellow
+		return "...", colorWarning
 	default:
-		return "-", colorGray
+		return "-", colorMuted
 	}
+}
+
+// tableHeight returns the height to pass to table.SetHeight.
+// The table renders header + (h-1) data rows, so h = available vertical space.
+// Capped at len(sessions)+1 so the table doesn't expand beyond its content.
+func (h HomeModel) tableHeight() int {
+	// Only as tall as needed: header + all rows.
+	needed := len(h.sessions) + 1
+	if h.height <= 0 {
+		return needed
+	}
+	overhead := bannerHeight + 1 + 1 + actionBarPadY + 1 // banner + gap + gap + actionbar padding + actionbar
+	avail := h.height - overhead
+	if avail < 1 {
+		avail = 1
+	}
+	if needed < avail {
+		return needed
+	}
+	return avail
 }
 
 func (h HomeModel) View() tea.View {
@@ -246,122 +366,46 @@ func (h HomeModel) View() tea.View {
 
 	if h.loading {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions..."),
+			renderBanner() + "\n" +
+				lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions..."),
 		)
 	}
 
 	if len(h.sessions) == 0 {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
+			renderBanner() + "\n" +
+				lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
 				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t] open trash  [q]uit"),
 		)
 	}
 
 	var b strings.Builder
 
-	// Compute dynamic column widths from data.
-	maxRepo := len("REPO")
-	maxBranch := len("BRANCH")
-	for _, sess := range h.sessions {
-		if rl := len(sess.RepoDisplayName); rl > maxRepo {
-			maxRepo = rl
-		}
-		if bl := len(strings.TrimPrefix(sess.BranchName, "boss/")); bl > maxBranch {
-			maxBranch = bl
-		}
-	}
-	if maxRepo > 20 {
-		maxRepo = 20
-	}
-	if maxBranch > 60 {
-		maxBranch = 60
-	}
-
-	// Table header.
-	header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-5s"+colSep+"%-4s"+colSep+"%s",
-		shortIDLen, "ID", maxRepo, "REPO", maxBranch, "BRANCH", "PR", "CI", "STATUS")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
+	b.WriteString(renderBanner())
 	b.WriteString("\n")
 
-	// Session rows.
-	for i, sess := range h.sessions {
-		selected := i == h.cursor
-
-		status := h.resolveSessionStatus(sess.Id)
-		repoName := truncate(sess.RepoDisplayName, maxRepo)
-		branchDisplay := strings.TrimPrefix(sess.BranchName, "boss/")
-		branch := truncate(branchDisplay, maxBranch)
-		pr := "-"
-		if sess.PrNumber != nil {
-			pr = fmt.Sprintf("#%d", *sess.PrNumber)
-		}
-		ciLabel, ciColor := checksLabelAndColor(sess.LastCheckState)
-
-		stateStyled := renderStatus(status, h.spinner)
-
-		cursor := "  "
-		if selected {
-			cursor = "> "
-		}
-
-		shortID := sess.Id
-		if len(shortID) > shortIDLen {
-			shortID = shortID[:shortIDLen]
-		}
-
-		// Pad raw text to column width before styling, so ANSI codes don't
-		// break column alignment. Use lipgloss Width to pad after styling,
-		// since Render() can trim trailing whitespace.
-		prPadded := fmt.Sprintf("%-5s", pr)
-		ciStyled := lipgloss.NewStyle().Foreground(ciColor).Width(4).Render(ciLabel)
-
-		// Build text-only prefix (cursor through branch) — this part gets
-		// bold styling when selected. Styled columns (CI, status) are appended
-		// independently so their ANSI codes don't inflate the padding.
-		textPrefix := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%s",
-			cursor, shortIDLen, shortID, maxRepo, repoName, maxBranch, branch, prPadded)
-
-		var row string
-		if selected {
-			row = styleSelected.Render(textPrefix) + colSep + ciStyled + colSep + stateStyled
-		} else {
-			row = textPrefix + colSep + ciStyled + colSep + stateStyled
-		}
-
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(row))
+	if len(h.sessions) > 0 {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(h.table.View()))
 		b.WriteString("\n")
 	}
 
 	if h.archiving {
-		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorRed).Render(
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			h.spinner.View() + "Archiving..."))
 	} else if h.confirming {
 		b.WriteString("\n")
-		sess := h.sessions[h.cursor]
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
+		sess := h.sessions[h.table.Cursor()]
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
 			fmt.Sprintf("Archive %q?", sess.Title)))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	} else if len(h.sessions) > 0 {
+		b.WriteString(styleActionBar.Render("[enter] select  [n]ew session  [a]rchive  [r]epos  [s]ettings  [t] open trash  [q]uit"))
 	} else {
-		b.WriteString(styleActionBar.Render("[n]ew session  [enter] select  [a]rchive  [r]epos  [s]ettings  [t] open trash  [q]uit"))
+		b.WriteString(styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t] open trash  [q]uit"))
 	}
 
 	return tea.NewView(b.String())
-}
-
-// resolveSessionStatus returns the best status for a session, preferring
-// local PTY manager status if any process is running, else daemon-cached status.
-func (h HomeModel) resolveSessionStatus(sessionID string) string {
-	// Prefer local manager if it has a non-stopped status.
-	localStatus := h.manager.SessionStatus(sessionID)
-	if localStatus != bosspty.StatusStopped {
-		return localStatus
-	}
-	// Fall back to daemon-cached status.
-	if s, ok := h.sessionStatuses[sessionID]; ok {
-		return s
-	}
-	return bosspty.StatusStopped
 }
 
 // tickMsg signals a polling refresh.
@@ -377,33 +421,5 @@ func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
 		return sessionListMsg{sessions: sessions, err: err}
-	}
-}
-
-func fetchSessionStatuses(c client.BossClient, ctx context.Context, sessions []*pb.Session) tea.Cmd {
-	if len(sessions) == 0 {
-		return nil
-	}
-	ids := make([]string, len(sessions))
-	for i, s := range sessions {
-		ids[i] = s.Id
-	}
-	return func() tea.Msg {
-		entries, err := c.GetSessionStatuses(ctx, ids)
-		if err != nil {
-			return nil // best-effort
-		}
-		result := make(map[string]string, len(entries))
-		for _, e := range entries {
-			switch e.Status {
-			case pb.ChatStatus_CHAT_STATUS_WORKING:
-				result[e.SessionId] = bosspty.StatusWorking
-			case pb.ChatStatus_CHAT_STATUS_IDLE:
-				result[e.SessionId] = bosspty.StatusIdle
-			default:
-				result[e.SessionId] = bosspty.StatusStopped
-			}
-		}
-		return sessionStatusesMsg{statuses: result}
 	}
 }

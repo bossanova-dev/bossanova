@@ -398,7 +398,7 @@ func (m NewSessionModel) View() tea.View {
 
 	if m.done && m.createdSess != nil {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Foreground(colorGreen).Render("Session created!") + "\n" +
+			lipgloss.NewStyle().Padding(1, 2).Foreground(colorSuccess).Render("Session created!") + "\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render(
 					fmt.Sprintf("  ID:     %s\n  Title:  %s\n  Branch: %s",
 						m.createdSess.Id, m.createdSess.Title, m.createdSess.BranchName)),
@@ -555,7 +555,7 @@ func (m NewSessionModel) viewPlanInput(b *strings.Builder) {
 
 func (m NewSessionModel) viewConfirmOverwrite(b *strings.Builder) {
 	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorYellow).Render(
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
 		"A branch with this name already exists."))
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(

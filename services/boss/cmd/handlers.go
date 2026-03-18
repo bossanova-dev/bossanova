@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"text/tabwriter"
 	"time"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -101,31 +101,57 @@ func runLS(cmd *cobra.Command) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "ID\tTITLE\tSTATE\tBRANCH\tPR\tCI"); err != nil {
-		return err
-	}
-	for _, sess := range sessions {
+	ids := make([]string, len(sessions))
+	titles := make([]string, len(sessions))
+	stateStrs2 := make([]string, len(sessions))
+	branchStrs := make([]string, len(sessions))
+	prStrs := make([]string, len(sessions))
+	ciStrs := make([]string, len(sessions))
+	for i, sess := range sessions {
 		id := sess.Id
 		if len(id) > 8 {
 			id = id[:8]
 		}
-		title := sess.Title
-		if len(title) > 30 {
-			title = title[:27] + "..."
+		ids[i] = id
+		t := sess.Title
+		if len(t) > 30 {
+			t = t[:27] + "..."
 		}
-		state := views.StateLabel(sess.State)
-		branch := sess.BranchName
-		pr := "-"
+		titles[i] = t
+		stateStrs2[i] = views.StateLabel(sess.State)
+		branchStrs[i] = sess.BranchName
 		if sess.PrNumber != nil {
-			pr = fmt.Sprintf("#%d", *sess.PrNumber)
+			prStrs[i] = fmt.Sprintf("#%d", *sess.PrNumber)
+		} else {
+			prStrs[i] = "-"
 		}
-		ci := views.ChecksLabel(sess.LastCheckState)
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, title, state, branch, pr, ci); err != nil {
-			return err
-		}
+		ciStrs[i] = views.ChecksLabel(sess.LastCheckState)
 	}
-	return w.Flush()
+
+	cols := []table.Column{
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "TITLE", Width: views.MaxColWidth("TITLE", titles, 30)},
+		{Title: "STATE", Width: views.MaxColWidth("STATE", stateStrs2, 14)},
+		{Title: "BRANCH", Width: views.MaxColWidth("BRANCH", branchStrs, 40)},
+		{Title: "PR", Width: views.MaxColWidth("PR", prStrs, 8)},
+		{Title: "CI", Width: views.MaxColWidth("CI", ciStrs, 8)},
+	}
+
+	rows := make([]table.Row, len(sessions))
+	for i := range sessions {
+		rows[i] = table.Row{ids[i], titles[i], stateStrs2[i], branchStrs[i], prStrs[i], ciStrs[i]}
+	}
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithHeight(len(rows)+1),
+		table.WithWidth(views.CLIColumnsWidth(cols)),
+		table.WithStyles(views.CLITableStyles()),
+		table.WithFocused(false),
+	)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+	return nil
 }
 
 func runNew(cmd *cobra.Command) error {
@@ -182,24 +208,50 @@ func runRepoLS(cmd *cobra.Command) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "ID\tNAME\tPATH\tBRANCH\tSETUP"); err != nil {
-		return err
-	}
-	for _, repo := range repos {
+	ids := make([]string, len(repos))
+	names := make([]string, len(repos))
+	paths := make([]string, len(repos))
+	branches := make([]string, len(repos))
+	setups := make([]string, len(repos))
+	for i, repo := range repos {
 		id := repo.Id
 		if len(id) > 8 {
 			id = id[:8]
 		}
-		setup := "-"
+		ids[i] = id
+		names[i] = repo.DisplayName
+		paths[i] = repo.LocalPath
+		branches[i] = repo.DefaultBaseBranch
 		if repo.SetupScript != nil {
-			setup = *repo.SetupScript
-		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id, repo.DisplayName, repo.LocalPath, repo.DefaultBaseBranch, setup); err != nil {
-			return err
+			setups[i] = *repo.SetupScript
+		} else {
+			setups[i] = "-"
 		}
 	}
-	return w.Flush()
+
+	cols := []table.Column{
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "NAME", Width: views.MaxColWidth("NAME", names, 30)},
+		{Title: "PATH", Width: views.MaxColWidth("PATH", paths, 60)},
+		{Title: "BRANCH", Width: views.MaxColWidth("BRANCH", branches, 30)},
+		{Title: "SETUP", Width: views.MaxColWidth("SETUP", setups, 40)},
+	}
+
+	rows := make([]table.Row, len(repos))
+	for i := range repos {
+		rows[i] = table.Row{ids[i], names[i], paths[i], branches[i], setups[i]}
+	}
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithHeight(len(rows)+1),
+		table.WithWidth(views.CLIColumnsWidth(cols)),
+		table.WithStyles(views.CLITableStyles()),
+		table.WithFocused(false),
+	)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+	return nil
 }
 
 func runRepoRemove(cmd *cobra.Command, id string) error {

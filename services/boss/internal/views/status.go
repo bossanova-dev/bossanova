@@ -6,22 +6,22 @@ import (
 	bosspty "github.com/recurser/boss/internal/pty"
 )
 
-// newStatusSpinner creates a spinner configured for status display.
+// newStatusSpinner creates an unstyled spinner for status display.
+// Color is applied by renderStatus so the entire cell has a single ANSI wrap.
 func newStatusSpinner() spinner.Model {
-	s := spinner.New(spinner.WithSpinner(spinner.Dot))
-	s.Style = lipgloss.NewStyle().Foreground(colorGreen)
-	return s
+	return spinner.New(spinner.WithSpinner(spinner.Dot))
 }
 
 // renderStatus returns a styled status string.
-// When status is "working", the spinner view is prepended.
+// The spinner + label are wrapped in a single Render call to avoid
+// intermediate ANSI resets that interfere with the table's Selected style.
 func renderStatus(status string, sp spinner.Model) string {
 	switch status {
 	case bosspty.StatusWorking:
-		return sp.View() + lipgloss.NewStyle().Foreground(colorGreen).Render("working")
+		return lipgloss.NewStyle().Foreground(colorSuccess).Render(sp.View() + "working")
 	case bosspty.StatusIdle:
-		return lipgloss.NewStyle().Foreground(colorYellow).Render("idle")
+		return lipgloss.NewStyle().Foreground(colorWarning).Render("idle")
 	default: // StatusStopped
-		return lipgloss.NewStyle().Foreground(colorGray).Render("stopped")
+		return lipgloss.NewStyle().Foreground(colorMuted).Render("stopped")
 	}
 }

@@ -1,13 +1,14 @@
 {
   "name": "bossanova",
-  "private": true,
   "description": "Prettier for markdown formatting only",
   "devDependencies": {
     "@commitlint/cli": "^20.4.3",
     "@commitlint/config-conventional": "^20.4.3",
     "husky": "^9.1.7",
-    "prettier": "^3.4.0"
+    "prettier": "^3.4.0",
+    "syncpack": "^14.2.0"
   },
+  "private": true,
   "scripts": {
     "format:docs": "prettier --write 'docs/**/*.md' '.claude/**/*.md' 'AGENTS.md'",
     "prepare": "husky"

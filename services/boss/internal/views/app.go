@@ -326,6 +326,12 @@ func (a App) View() tea.View {
 		v = tea.NewView("Unknown view")
 	}
 
+	// Prepend the banner to every screen except during tea.Exec (AttachModel
+	// returns empty content while Claude Code owns the terminal).
+	if v.Content != "" {
+		v.Content = renderBanner() + "\n" + v.Content
+	}
+
 	v.AltScreen = true
 	return v
 }

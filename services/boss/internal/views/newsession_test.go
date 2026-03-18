@@ -1,0 +1,343 @@
+package views
+
+import (
+	"context"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/client"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+)
+
+// stubClient implements client.BossClient for testing NewSessionModel.
+// Only the methods used by the wizard are implemented; the rest panic.
+type stubClient struct {
+	repos     []*pb.Repo
+	reposErr  error
+	created   *pb.Session
+	createErr error
+	createReq *pb.CreateSessionRequest // captures the last CreateSession request
+	prs       []*pb.PRSummary
+	prsErr    error
+}
+
+func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
+	return s.repos, s.reposErr
+}
+
+func (s *stubClient) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+	s.createReq = req
+	return s.created, s.createErr
+}
+
+func (s *stubClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
+	return s.prs, s.prsErr
+}
+
+// Unused interface methods — panic if called unexpectedly.
+func (s *stubClient) Ping(context.Context) error { panic("unused") }
+func (s *stubClient) ResolveContext(context.Context, string) (*pb.ResolveContextResponse, error) {
+	panic("unused")
+}
+func (s *stubClient) ValidateRepoPath(context.Context, string) (*pb.ValidateRepoPathResponse, error) {
+	panic("unused")
+}
+func (s *stubClient) RegisterRepo(context.Context, *pb.RegisterRepoRequest) (*pb.Repo, error) {
+	panic("unused")
+}
+func (s *stubClient) CloneAndRegisterRepo(context.Context, *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error) {
+	panic("unused")
+}
+func (s *stubClient) RemoveRepo(context.Context, string) error { panic("unused") }
+func (s *stubClient) UpdateRepo(context.Context, *pb.UpdateRepoRequest) (*pb.Repo, error) {
+	panic("unused")
+}
+func (s *stubClient) GetSession(context.Context, string) (*pb.Session, error) { panic("unused") }
+func (s *stubClient) ListSessions(context.Context, *pb.ListSessionsRequest) ([]*pb.Session, error) {
+	panic("unused")
+}
+func (s *stubClient) AttachSession(context.Context, string) (client.AttachStream, error) {
+	panic("unused")
+}
+func (s *stubClient) StopSession(context.Context, string) (*pb.Session, error)   { panic("unused") }
+func (s *stubClient) PauseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
+func (s *stubClient) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
+func (s *stubClient) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
+func (s *stubClient) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
+func (s *stubClient) RemoveSession(context.Context, string) error                { panic("unused") }
+func (s *stubClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
+	panic("unused")
+}
+func (s *stubClient) ResurrectSession(context.Context, string) (*pb.Session, error) {
+	panic("unused")
+}
+func (s *stubClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
+	panic("unused")
+}
+func (s *stubClient) RecordChat(context.Context, string, string, string) (*pb.ClaudeChat, error) {
+	panic("unused")
+}
+func (s *stubClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
+	panic("unused")
+}
+func (s *stubClient) UpdateChatTitle(context.Context, string, string) error { panic("unused") }
+func (s *stubClient) DeleteChat(context.Context, string) error              { panic("unused") }
+func (s *stubClient) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
+	panic("unused")
+}
+func (s *stubClient) GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error) {
+	panic("unused")
+}
+func (s *stubClient) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
+	panic("unused")
+}
+
+// --- Helpers ---
+
+func twoRepos() []*pb.Repo {
+	return []*pb.Repo{
+		{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main"},
+		{Id: "repo-2", DisplayName: "beta", LocalPath: "/path/beta", DefaultBaseBranch: "main"},
+	}
+}
+
+func oneRepo() []*pb.Repo {
+	return []*pb.Repo{
+		{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main"},
+	}
+}
+
+// keyPress creates a KeyPressMsg for a printable rune (e.g. "j", "q").
+func keyPress(ch rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: ch, Text: string(ch)}
+}
+
+// specialKeyPress creates a KeyPressMsg for a special key (e.g. tea.KeyEnter).
+func specialKeyPress(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: code}
+}
+
+// sendKey simulates a key press through the model's Update, mimicking how
+// bubbletea calls Update with a value receiver and stores the returned copy.
+func sendKey(t *testing.T, m NewSessionModel, ch rune) NewSessionModel {
+	t.Helper()
+	updated, _ := m.Update(keyPress(ch))
+	return assertValueType(t, updated)
+}
+
+func sendSpecialKey(t *testing.T, m NewSessionModel, code rune) NewSessionModel {
+	t.Helper()
+	updated, _ := m.Update(specialKeyPress(code))
+	return assertValueType(t, updated)
+}
+
+// sendMsg sends an arbitrary tea.Msg through Update.
+func sendMsg(t *testing.T, m NewSessionModel, msg tea.Msg) NewSessionModel {
+	t.Helper()
+	updated, _ := m.Update(msg)
+	return assertValueType(t, updated)
+}
+
+// assertValueType asserts Update returned NewSessionModel (not *NewSessionModel).
+func assertValueType(t *testing.T, model tea.Model) NewSessionModel {
+	t.Helper()
+	m, ok := model.(NewSessionModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want views.NewSessionModel (value type)", model)
+	}
+	return m
+}
+
+// --- Tests ---
+
+func TestNewSession_SingleRepoAutoSelects(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseForm {
+		t.Fatalf("phase = %d, want newSessionPhaseForm (%d)", m.phase, newSessionPhaseForm)
+	}
+	if m.selectedRepoID != "repo-1" {
+		t.Fatalf("selectedRepoID = %q, want %q", m.selectedRepoID, "repo-1")
+	}
+}
+
+func TestNewSession_MultipleReposShowTable(t *testing.T) {
+	sc := &stubClient{repos: twoRepos()}
+	m := NewNewSessionModel(sc, context.Background())
+
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseRepoSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseRepoSelect (%d)", m.phase, newSessionPhaseRepoSelect)
+	}
+}
+
+func TestNewSession_TableSelectTransitionsToForm(t *testing.T) {
+	sc := &stubClient{repos: twoRepos()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Move to second repo and press enter.
+	m = sendKey(t, m, 'j')                       // down
+	m = sendSpecialKey(t, m, tea.KeyEnter) // select
+
+	if m.phase != newSessionPhaseForm {
+		t.Fatalf("phase = %d, want newSessionPhaseForm (%d)", m.phase, newSessionPhaseForm)
+	}
+	if m.selectedRepoID != "repo-2" {
+		t.Fatalf("selectedRepoID = %q, want %q", m.selectedRepoID, "repo-2")
+	}
+}
+
+func TestNewSession_FormDataSurvivesCopies(t *testing.T) {
+	// Regression test for the stale-pointer bug: huh form Value() pointers
+	// must target heap-allocated formData, not stack fields that get
+	// invalidated by value-receiver copies.
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.fd == nil {
+		t.Fatal("formData is nil after repos loaded")
+	}
+
+	// Simulate what the huh form does: write to fd fields via the stable pointer.
+	m.fd.selectedType = sessionTypeNewPR
+	m.fd.title = "my feature"
+
+	// Simulate multiple value-receiver copies (as bubbletea does on each Update).
+	copy1 := m
+	copy2 := copy1
+
+	if copy2.fd.title != "my feature" {
+		t.Fatalf("fd.title = %q after copies, want %q", copy2.fd.title, "my feature")
+	}
+
+	// Mutate via one copy — should be visible in all (shared heap pointer).
+	copy1.fd.title = "updated title"
+	if copy2.fd.title != "updated title" {
+		t.Fatalf("fd.title = %q in copy2, want %q — formData is not shared", copy2.fd.title, "updated title")
+	}
+}
+
+func TestNewSession_HandleFormCompletedReturnsValueType(t *testing.T) {
+	// Regression test: handleFormCompleted has a pointer receiver and must
+	// return *m (dereferenced), not m (which would be *NewSessionModel).
+	sc := &stubClient{
+		repos:   oneRepo(),
+		created: &pb.Session{Id: "sess-1", Title: "test", BranchName: "boss/test"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.fd.selectedType = sessionTypeNewPR
+	m.fd.title = "test title"
+
+	result, _ := m.handleFormCompleted()
+	assertValueType(t, result)
+}
+
+func TestNewSession_CreateSessionReceivesTitle(t *testing.T) {
+	sc := &stubClient{
+		repos:   oneRepo(),
+		created: &pb.Session{Id: "sess-1", Title: "my feature", BranchName: "boss/my-feature"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.fd.selectedType = sessionTypeNewPR
+	m.fd.title = "my feature"
+
+	cmd := m.startCreating()
+	if cmd == nil {
+		t.Fatal("startCreating returned nil cmd")
+	}
+	msg := cmd()
+	created := msg.(sessionCreatedMsg)
+	if created.err != nil {
+		t.Fatalf("unexpected error: %v", created.err)
+	}
+
+	if sc.createReq == nil {
+		t.Fatal("CreateSession was not called")
+	}
+	if sc.createReq.Title != "my feature" {
+		t.Fatalf("CreateSession title = %q, want %q", sc.createReq.Title, "my feature")
+	}
+}
+
+func TestNewSession_PlanFlowSendsText(t *testing.T) {
+	sc := &stubClient{
+		repos:   oneRepo(),
+		created: &pb.Session{Id: "sess-1", Title: "Add dark mode", BranchName: "boss/add-dark-mode"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.fd.selectedType = sessionTypePlanFeature
+	m.fd.plan = "Add dark mode\nWith system preference detection"
+
+	cmd := m.startCreating()
+	if cmd == nil {
+		t.Fatal("startCreating returned nil cmd")
+	}
+	cmd() // execute to trigger RPC
+
+	if sc.createReq.Plan != "Add dark mode\nWith system preference detection" {
+		t.Fatalf("CreateSession plan = %q, want full plan text", sc.createReq.Plan)
+	}
+	if sc.createReq.Title != "Add dark mode" {
+		t.Fatalf("CreateSession title = %q, want first line of plan", sc.createReq.Title)
+	}
+}
+
+func TestNewSession_FormDataSharedAcrossUpdateCycles(t *testing.T) {
+	// End-to-end regression: simulate the full bubbletea Update cycle where
+	// the model is copied on every call. Verify that fd written by the form
+	// in one cycle is readable in a later cycle's handleFormCompleted.
+	sc := &stubClient{
+		repos:   twoRepos(),
+		created: &pb.Session{Id: "sess-1", Title: "test", BranchName: "boss/test"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Select first repo.
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+	if m.fd == nil {
+		t.Fatal("fd is nil after entering form phase")
+	}
+
+	// Simulate form writing values (as huh would via Value pointers).
+	m.fd.selectedType = sessionTypeNewPR
+	m.fd.title = "works across copies"
+
+	// Simulate several Update cycles (each creates a new value-receiver copy).
+	for i := 0; i < 5; i++ {
+		m = sendMsg(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	}
+
+	// fd must still be accessible and correct.
+	if m.fd.title != "works across copies" {
+		t.Fatalf("fd.title = %q after 5 Update cycles, want %q", m.fd.title, "works across copies")
+	}
+
+	// handleFormCompleted should read the correct title.
+	result, cmd := m.handleFormCompleted()
+	rm := assertValueType(t, result)
+	if rm.phase != newSessionPhaseCreating {
+		t.Fatalf("phase = %d, want newSessionPhaseCreating (%d)", rm.phase, newSessionPhaseCreating)
+	}
+	if cmd == nil {
+		t.Fatal("handleFormCompleted returned nil cmd")
+	}
+
+	// Execute the command to trigger CreateSession.
+	cmd()
+	if sc.createReq.Title != "works across copies" {
+		t.Fatalf("CreateSession title = %q, want %q", sc.createReq.Title, "works across copies")
+	}
+}

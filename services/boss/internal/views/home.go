@@ -366,23 +366,18 @@ func (h HomeModel) View() tea.View {
 
 	if h.loading {
 		return tea.NewView(
-			renderBanner() + "\n" +
-				lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions..."),
+			lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions..."),
 		)
 	}
 
 	if len(h.sessions) == 0 {
 		return tea.NewView(
-			renderBanner() + "\n" +
-				lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
+			lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
 				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t] open trash  [q]uit"),
 		)
 	}
 
 	var b strings.Builder
-
-	b.WriteString(renderBanner())
-	b.WriteString("\n")
 
 	if len(h.sessions) > 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(h.table.View()))

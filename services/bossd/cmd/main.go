@@ -21,6 +21,7 @@ import (
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/upstream"
 	"github.com/recurser/bossd/internal/vcs/github"
 	"github.com/recurser/bossd/migrations"
@@ -87,6 +88,10 @@ func run() error {
 	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, fixLoop, log.Logger)
 	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, log.Logger)
 
+	// --- Chat Status Tracker ---
+
+	chatStatusTracker := status.NewTracker()
+
 	// --- Server ---
 
 	socketPath, err := server.DefaultSocketPath()
@@ -99,6 +104,7 @@ func run() error {
 		Sessions:    sessions,
 		Attempts:    attempts,
 		ClaudeChats: claudeChats,
+		ChatStatus:  chatStatusTracker,
 		Lifecycle:   lifecycle,
 		Claude:      claudeRunner,
 		Worktrees:   worktrees,
@@ -134,6 +140,20 @@ func run() error {
 	defer pollerCancel()
 	events := poller.Run(pollerCtx)
 	safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
+
+	// Start chat status cleanup goroutine (GC stale entries every 30s).
+	safego.Go(log.Logger, func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				chatStatusTracker.Cleanup()
+			}
+		}
+	})
 
 	// Start server in a goroutine.
 	errCh := make(chan error, 1)

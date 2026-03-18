@@ -103,6 +103,15 @@ const (
 	// DaemonServiceDeleteChatProcedure is the fully-qualified name of the DaemonService's DeleteChat
 	// RPC.
 	DaemonServiceDeleteChatProcedure = "/bossanova.v1.DaemonService/DeleteChat"
+	// DaemonServiceReportChatStatusProcedure is the fully-qualified name of the DaemonService's
+	// ReportChatStatus RPC.
+	DaemonServiceReportChatStatusProcedure = "/bossanova.v1.DaemonService/ReportChatStatus"
+	// DaemonServiceGetChatStatusesProcedure is the fully-qualified name of the DaemonService's
+	// GetChatStatuses RPC.
+	DaemonServiceGetChatStatusesProcedure = "/bossanova.v1.DaemonService/GetChatStatuses"
+	// DaemonServiceGetSessionStatusesProcedure is the fully-qualified name of the DaemonService's
+	// GetSessionStatuses RPC.
+	DaemonServiceGetSessionStatusesProcedure = "/bossanova.v1.DaemonService/GetSessionStatuses"
 	// DaemonServiceDeliverVCSEventProcedure is the fully-qualified name of the DaemonService's
 	// DeliverVCSEvent RPC.
 	DaemonServiceDeliverVCSEventProcedure = "/bossanova.v1.DaemonService/DeliverVCSEvent"
@@ -139,6 +148,10 @@ type DaemonServiceClient interface {
 	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
 	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
 	DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error)
+	// Chat status (cross-client heartbeat sharing)
+	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
+	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
+	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 }
@@ -298,6 +311,24 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DeleteChat")),
 			connect.WithClientOptions(opts...),
 		),
+		reportChatStatus: connect.NewClient[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse](
+			httpClient,
+			baseURL+DaemonServiceReportChatStatusProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ReportChatStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		getChatStatuses: connect.NewClient[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse](
+			httpClient,
+			baseURL+DaemonServiceGetChatStatusesProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetChatStatuses")),
+			connect.WithClientOptions(opts...),
+		),
+		getSessionStatuses: connect.NewClient[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse](
+			httpClient,
+			baseURL+DaemonServiceGetSessionStatusesProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetSessionStatuses")),
+			connect.WithClientOptions(opts...),
+		),
 		deliverVCSEvent: connect.NewClient[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse](
 			httpClient,
 			baseURL+DaemonServiceDeliverVCSEventProcedure,
@@ -333,6 +364,9 @@ type daemonServiceClient struct {
 	listChats            *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
 	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
 	deleteChat           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
+	reportChatStatus     *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
+	getChatStatuses      *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
+	getSessionStatuses   *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
 	deliverVCSEvent      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
 }
 
@@ -456,6 +490,21 @@ func (c *daemonServiceClient) DeleteChat(ctx context.Context, req *connect.Reque
 	return c.deleteChat.CallUnary(ctx, req)
 }
 
+// ReportChatStatus calls bossanova.v1.DaemonService.ReportChatStatus.
+func (c *daemonServiceClient) ReportChatStatus(ctx context.Context, req *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error) {
+	return c.reportChatStatus.CallUnary(ctx, req)
+}
+
+// GetChatStatuses calls bossanova.v1.DaemonService.GetChatStatuses.
+func (c *daemonServiceClient) GetChatStatuses(ctx context.Context, req *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error) {
+	return c.getChatStatuses.CallUnary(ctx, req)
+}
+
+// GetSessionStatuses calls bossanova.v1.DaemonService.GetSessionStatuses.
+func (c *daemonServiceClient) GetSessionStatuses(ctx context.Context, req *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error) {
+	return c.getSessionStatuses.CallUnary(ctx, req)
+}
+
 // DeliverVCSEvent calls bossanova.v1.DaemonService.DeliverVCSEvent.
 func (c *daemonServiceClient) DeliverVCSEvent(ctx context.Context, req *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error) {
 	return c.deliverVCSEvent.CallUnary(ctx, req)
@@ -492,6 +541,10 @@ type DaemonServiceHandler interface {
 	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
 	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
 	DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error)
+	// Chat status (cross-client heartbeat sharing)
+	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
+	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
+	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 }
@@ -647,6 +700,24 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DeleteChat")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceReportChatStatusHandler := connect.NewUnaryHandler(
+		DaemonServiceReportChatStatusProcedure,
+		svc.ReportChatStatus,
+		connect.WithSchema(daemonServiceMethods.ByName("ReportChatStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetChatStatusesHandler := connect.NewUnaryHandler(
+		DaemonServiceGetChatStatusesProcedure,
+		svc.GetChatStatuses,
+		connect.WithSchema(daemonServiceMethods.ByName("GetChatStatuses")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetSessionStatusesHandler := connect.NewUnaryHandler(
+		DaemonServiceGetSessionStatusesProcedure,
+		svc.GetSessionStatuses,
+		connect.WithSchema(daemonServiceMethods.ByName("GetSessionStatuses")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceDeliverVCSEventHandler := connect.NewUnaryHandler(
 		DaemonServiceDeliverVCSEventProcedure,
 		svc.DeliverVCSEvent,
@@ -703,6 +774,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceUpdateChatTitleHandler.ServeHTTP(w, r)
 		case DaemonServiceDeleteChatProcedure:
 			daemonServiceDeleteChatHandler.ServeHTTP(w, r)
+		case DaemonServiceReportChatStatusProcedure:
+			daemonServiceReportChatStatusHandler.ServeHTTP(w, r)
+		case DaemonServiceGetChatStatusesProcedure:
+			daemonServiceGetChatStatusesHandler.ServeHTTP(w, r)
+		case DaemonServiceGetSessionStatusesProcedure:
+			daemonServiceGetSessionStatusesHandler.ServeHTTP(w, r)
 		case DaemonServiceDeliverVCSEventProcedure:
 			daemonServiceDeliverVCSEventHandler.ServeHTTP(w, r)
 		default:
@@ -808,6 +885,18 @@ func (UnimplementedDaemonServiceHandler) UpdateChatTitle(context.Context, *conne
 
 func (UnimplementedDaemonServiceHandler) DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteChat is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ReportChatStatus is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetChatStatuses is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetSessionStatuses is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error) {

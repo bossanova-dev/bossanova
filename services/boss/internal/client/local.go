@@ -264,6 +264,35 @@ func (c *LocalClient) DeleteChat(ctx context.Context, claudeID string) error {
 	return err
 }
 
+// --- Chat Status ---
+
+func (c *LocalClient) ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error {
+	_, err := c.rpc.ReportChatStatus(ctx, connect.NewRequest(&pb.ReportChatStatusRequest{
+		Reports: statuses,
+	}))
+	return err
+}
+
+func (c *LocalClient) GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error) {
+	resp, err := c.rpc.GetChatStatuses(ctx, connect.NewRequest(&pb.GetChatStatusesRequest{
+		SessionId: sessionID,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Statuses, nil
+}
+
+func (c *LocalClient) GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error) {
+	resp, err := c.rpc.GetSessionStatuses(ctx, connect.NewRequest(&pb.GetSessionStatusesRequest{
+		SessionIds: sessionIDs,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Statuses, nil
+}
+
 // localAttachStream wraps the DaemonService AttachSession stream.
 type localAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.AttachSessionResponse]

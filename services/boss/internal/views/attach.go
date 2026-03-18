@@ -14,6 +14,7 @@ import (
 	bosspty "github.com/recurser/boss/internal/pty"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // claudeFinishedMsg signals that the interactive Claude process has exited or
@@ -130,8 +131,8 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.claudeErr = msg.err
 		// Auto-detach back to home screen.
 		m.detach = true
-		// Best-effort: update chat title from JSONL.
-		return m, m.updateChatTitle()
+		// Best-effort: update chat title from JSONL and report stopped status.
+		return m, tea.Batch(m.updateChatTitle(), m.reportStopped())
 
 	case chatTitleUpdatedMsg:
 		// Ignored — fire-and-forget.
@@ -174,6 +175,23 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 			_ = m.client.DeleteChat(m.ctx, claudeID)
 		}
 		return chatTitleUpdatedMsg{}
+	}
+}
+
+// reportStopped sends a fire-and-forget stopped status to the daemon so other
+// clients see the change immediately.
+func (m AttachModel) reportStopped() tea.Cmd {
+	if m.claudeID == "" {
+		return nil
+	}
+	claudeID := m.claudeID
+	return func() tea.Msg {
+		_ = m.client.ReportChatStatus(m.ctx, []*pb.ChatStatusReport{{
+			ClaudeId:     claudeID,
+			Status:       pb.ChatStatus_CHAT_STATUS_STOPPED,
+			LastOutputAt: timestamppb.Now(),
+		}})
+		return nil
 	}
 }
 

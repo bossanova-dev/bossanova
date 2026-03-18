@@ -574,6 +574,59 @@ func (AttemptResult) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{8}
 }
 
+// ChatStatus represents the live status of a Claude Code chat process.
+type ChatStatus int32
+
+const (
+	ChatStatus_CHAT_STATUS_UNSPECIFIED ChatStatus = 0
+	ChatStatus_CHAT_STATUS_WORKING     ChatStatus = 1
+	ChatStatus_CHAT_STATUS_IDLE        ChatStatus = 2
+	ChatStatus_CHAT_STATUS_STOPPED     ChatStatus = 3
+)
+
+// Enum value maps for ChatStatus.
+var (
+	ChatStatus_name = map[int32]string{
+		0: "CHAT_STATUS_UNSPECIFIED",
+		1: "CHAT_STATUS_WORKING",
+		2: "CHAT_STATUS_IDLE",
+		3: "CHAT_STATUS_STOPPED",
+	}
+	ChatStatus_value = map[string]int32{
+		"CHAT_STATUS_UNSPECIFIED": 0,
+		"CHAT_STATUS_WORKING":     1,
+		"CHAT_STATUS_IDLE":        2,
+		"CHAT_STATUS_STOPPED":     3,
+	}
+)
+
+func (x ChatStatus) Enum() *ChatStatus {
+	p := new(ChatStatus)
+	*p = x
+	return p
+}
+
+func (x ChatStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ChatStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_bossanova_v1_models_proto_enumTypes[9].Descriptor()
+}
+
+func (ChatStatus) Type() protoreflect.EnumType {
+	return &file_bossanova_v1_models_proto_enumTypes[9]
+}
+
+func (x ChatStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ChatStatus.Descriptor instead.
+func (ChatStatus) EnumDescriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{9}
+}
+
 // Repo represents a registered Git repository.
 type Repo struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
@@ -2119,7 +2172,13 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1aATTEMPT_RESULT_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16ATTEMPT_RESULT_SUCCESS\x10\x01\x12\x19\n" +
 	"\x15ATTEMPT_RESULT_FAILED\x10\x02\x12\x1d\n" +
-	"\x19ATTEMPT_RESULT_INCOMPLETE\x10\x03B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x19ATTEMPT_RESULT_INCOMPLETE\x10\x03*q\n" +
+	"\n" +
+	"ChatStatus\x12\x1b\n" +
+	"\x17CHAT_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13CHAT_STATUS_WORKING\x10\x01\x12\x14\n" +
+	"\x10CHAT_STATUS_IDLE\x10\x02\x12\x17\n" +
+	"\x13CHAT_STATUS_STOPPED\x10\x03B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_models_proto_rawDescOnce sync.Once
@@ -2133,7 +2192,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_models_proto_rawDescData
 }
 
-var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
+var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 10)
 var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),             // 0: bossanova.v1.SessionState
@@ -2145,51 +2204,52 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(ReviewState)(0),              // 6: bossanova.v1.ReviewState
 	(AttemptTrigger)(0),           // 7: bossanova.v1.AttemptTrigger
 	(AttemptResult)(0),            // 8: bossanova.v1.AttemptResult
-	(*Repo)(nil),                  // 9: bossanova.v1.Repo
-	(*Session)(nil),               // 10: bossanova.v1.Session
-	(*Attempt)(nil),               // 11: bossanova.v1.Attempt
-	(*PRStatus)(nil),              // 12: bossanova.v1.PRStatus
-	(*CheckResult)(nil),           // 13: bossanova.v1.CheckResult
-	(*ReviewComment)(nil),         // 14: bossanova.v1.ReviewComment
-	(*PRSummary)(nil),             // 15: bossanova.v1.PRSummary
-	(*CreatePROpts)(nil),          // 16: bossanova.v1.CreatePROpts
-	(*PRInfo)(nil),                // 17: bossanova.v1.PRInfo
-	(*VCSEvent)(nil),              // 18: bossanova.v1.VCSEvent
-	(*ChecksPassedEvent)(nil),     // 19: bossanova.v1.ChecksPassedEvent
-	(*ChecksFailedEvent)(nil),     // 20: bossanova.v1.ChecksFailedEvent
-	(*ConflictDetectedEvent)(nil), // 21: bossanova.v1.ConflictDetectedEvent
-	(*ReviewSubmittedEvent)(nil),  // 22: bossanova.v1.ReviewSubmittedEvent
-	(*PRMergedEvent)(nil),         // 23: bossanova.v1.PRMergedEvent
-	(*PRClosedEvent)(nil),         // 24: bossanova.v1.PRClosedEvent
-	(*ClaudeChat)(nil),            // 25: bossanova.v1.ClaudeChat
-	(*timestamppb.Timestamp)(nil), // 26: google.protobuf.Timestamp
+	(ChatStatus)(0),               // 9: bossanova.v1.ChatStatus
+	(*Repo)(nil),                  // 10: bossanova.v1.Repo
+	(*Session)(nil),               // 11: bossanova.v1.Session
+	(*Attempt)(nil),               // 12: bossanova.v1.Attempt
+	(*PRStatus)(nil),              // 13: bossanova.v1.PRStatus
+	(*CheckResult)(nil),           // 14: bossanova.v1.CheckResult
+	(*ReviewComment)(nil),         // 15: bossanova.v1.ReviewComment
+	(*PRSummary)(nil),             // 16: bossanova.v1.PRSummary
+	(*CreatePROpts)(nil),          // 17: bossanova.v1.CreatePROpts
+	(*PRInfo)(nil),                // 18: bossanova.v1.PRInfo
+	(*VCSEvent)(nil),              // 19: bossanova.v1.VCSEvent
+	(*ChecksPassedEvent)(nil),     // 20: bossanova.v1.ChecksPassedEvent
+	(*ChecksFailedEvent)(nil),     // 21: bossanova.v1.ChecksFailedEvent
+	(*ConflictDetectedEvent)(nil), // 22: bossanova.v1.ConflictDetectedEvent
+	(*ReviewSubmittedEvent)(nil),  // 23: bossanova.v1.ReviewSubmittedEvent
+	(*PRMergedEvent)(nil),         // 24: bossanova.v1.PRMergedEvent
+	(*PRClosedEvent)(nil),         // 25: bossanova.v1.PRClosedEvent
+	(*ClaudeChat)(nil),            // 26: bossanova.v1.ClaudeChat
+	(*timestamppb.Timestamp)(nil), // 27: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
-	26, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	26, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	27, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	27, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	4,  // 3: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
-	26, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	26, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	26, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	27, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	27, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	27, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	7,  // 7: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
 	8,  // 8: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	26, // 9: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	26, // 10: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	27, // 9: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	27, // 10: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 11: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	2,  // 12: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	3,  // 13: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
 	6,  // 14: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
 	5,  // 15: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
-	19, // 16: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
-	20, // 17: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
-	21, // 18: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
-	22, // 19: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
-	23, // 20: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
-	24, // 21: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
-	13, // 22: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
-	14, // 23: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
-	26, // 24: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	20, // 16: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
+	21, // 17: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
+	22, // 18: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
+	23, // 19: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
+	24, // 20: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
+	25, // 21: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
+	14, // 22: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
+	15, // 23: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
+	27, // 24: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
 	25, // [25:25] is the sub-list for method output_type
 	25, // [25:25] is the sub-list for method input_type
 	25, // [25:25] is the sub-list for extension type_name
@@ -2221,7 +2281,7 @@ func file_bossanova_v1_models_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
-			NumEnums:      9,
+			NumEnums:      10,
 			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,

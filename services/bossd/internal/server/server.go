@@ -21,6 +21,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -45,6 +46,7 @@ type Server struct {
 	sessions    db.SessionStore
 	attempts    db.AttemptStore
 	claudeChats db.ClaudeChatStore
+	chatStatus  *status.Tracker
 	lifecycle   *session.Lifecycle
 	claude      claude.ClaudeRunner
 	worktrees   gitpkg.WorktreeManager
@@ -62,6 +64,7 @@ type Config struct {
 	Sessions    db.SessionStore
 	Attempts    db.AttemptStore
 	ClaudeChats db.ClaudeChatStore
+	ChatStatus  *status.Tracker
 	Lifecycle   *session.Lifecycle
 	Claude      claude.ClaudeRunner
 	Worktrees   gitpkg.WorktreeManager
@@ -76,6 +79,7 @@ func New(cfg Config) *Server {
 		sessions:    cfg.Sessions,
 		attempts:    cfg.Attempts,
 		claudeChats: cfg.ClaudeChats,
+		chatStatus:  cfg.ChatStatus,
 		lifecycle:   cfg.Lifecycle,
 		claude:      cfg.Claude,
 		worktrees:   cfg.Worktrees,
@@ -835,7 +839,114 @@ func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteC
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete chat: %w", err))
 	}
 
+	// Also clean up any cached status for this chat.
+	if s.chatStatus != nil {
+		s.chatStatus.Remove(req.Msg.ClaudeId)
+	}
+
 	return connect.NewResponse(&pb.DeleteChatResponse{}), nil
+}
+
+// --- Chat Status ---
+
+func (s *Server) ReportChatStatus(_ context.Context, req *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
+	if s.chatStatus == nil {
+		return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
+	}
+	for _, r := range req.Msg.Reports {
+		if r.ClaudeId == "" {
+			continue
+		}
+		var lastOutputAt time.Time
+		if r.LastOutputAt != nil {
+			lastOutputAt = r.LastOutputAt.AsTime()
+		}
+		s.chatStatus.Update(r.ClaudeId, r.Status, lastOutputAt)
+	}
+	return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
+}
+
+func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.GetChatStatusesRequest]) (*connect.Response[pb.GetChatStatusesResponse], error) {
+	if req.Msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+
+	// Look up chats for this session.
+	chats, err := s.claudeChats.ListBySession(ctx, req.Msg.SessionId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list chats: %w", err))
+	}
+
+	if s.chatStatus == nil || len(chats) == 0 {
+		return connect.NewResponse(&pb.GetChatStatusesResponse{}), nil
+	}
+
+	claudeIDs := make([]string, len(chats))
+	for i, c := range chats {
+		claudeIDs[i] = c.ClaudeID
+	}
+
+	entries := s.chatStatus.GetBatch(claudeIDs)
+	statuses := make([]*pb.ChatStatusEntry, 0, len(entries))
+	for id, e := range entries {
+		entry := &pb.ChatStatusEntry{
+			ClaudeId: id,
+			Status:   e.Status,
+		}
+		if !e.LastOutputAt.IsZero() {
+			entry.LastOutputAt = timestamppb.New(e.LastOutputAt)
+		}
+		statuses = append(statuses, entry)
+	}
+
+	return connect.NewResponse(&pb.GetChatStatusesResponse{Statuses: statuses}), nil
+}
+
+func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb.GetSessionStatusesRequest]) (*connect.Response[pb.GetSessionStatusesResponse], error) {
+	if s.chatStatus == nil {
+		return connect.NewResponse(&pb.GetSessionStatusesResponse{}), nil
+	}
+
+	statuses := make([]*pb.SessionStatusEntry, 0, len(req.Msg.SessionIds))
+
+	for _, sessionID := range req.Msg.SessionIds {
+		chats, err := s.claudeChats.ListBySession(ctx, sessionID)
+		if err != nil {
+			s.logger.Warn().Err(err).Str("session_id", sessionID).Msg("list chats for session status")
+			continue
+		}
+		if len(chats) == 0 {
+			statuses = append(statuses, &pb.SessionStatusEntry{
+				SessionId: sessionID,
+				Status:    pb.ChatStatus_CHAT_STATUS_STOPPED,
+			})
+			continue
+		}
+
+		claudeIDs := make([]string, len(chats))
+		for i, c := range chats {
+			claudeIDs[i] = c.ClaudeID
+		}
+		entries := s.chatStatus.GetBatch(claudeIDs)
+
+		// Compute best status: working > idle > stopped.
+		best := pb.ChatStatus_CHAT_STATUS_STOPPED
+		for _, e := range entries {
+			if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
+				best = pb.ChatStatus_CHAT_STATUS_WORKING
+				break
+			}
+			if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best != pb.ChatStatus_CHAT_STATUS_WORKING {
+				best = pb.ChatStatus_CHAT_STATUS_IDLE
+			}
+		}
+		statuses = append(statuses, &pb.SessionStatusEntry{
+			SessionId: sessionID,
+			Status:    best,
+		})
+	}
+
+	return connect.NewResponse(&pb.GetSessionStatusesResponse{Statuses: statuses}), nil
 }
 
 // --- Context Resolution ---

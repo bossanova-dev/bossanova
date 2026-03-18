@@ -246,6 +246,14 @@ message PRClosedEvent {
   int32 pr_id = 1;
 }
 
+// ChatStatus represents the live status of a Claude Code chat process.
+enum ChatStatus {
+  CHAT_STATUS_UNSPECIFIED = 0;
+  CHAT_STATUS_WORKING = 1;
+  CHAT_STATUS_IDLE = 2;
+  CHAT_STATUS_STOPPED = 3;
+}
+
 // ClaudeChat represents a Claude Code conversation associated with a session.
 message ClaudeChat {
   string id = 1;

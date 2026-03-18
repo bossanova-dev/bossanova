@@ -3,10 +3,13 @@ package views
 
 import (
 	"context"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // View identifies which screen is currently active.
@@ -76,20 +79,22 @@ func (a *App) SetAttachSession(sessionID, resumeID string) {
 }
 
 func (a App) Init() tea.Cmd {
+	var viewCmd tea.Cmd
 	switch a.activeView {
 	case ViewNewSession:
-		return a.newSession.Init()
+		viewCmd = a.newSession.Init()
 	case ViewChatPicker:
-		return a.chatPicker.Init()
+		viewCmd = a.chatPicker.Init()
 	case ViewRepoAdd:
-		return a.repoAdd.Init()
+		viewCmd = a.repoAdd.Init()
 	case ViewRepoList:
-		return a.repoList.Init()
+		viewCmd = a.repoList.Init()
 	case ViewAttach:
-		return a.attach.Init()
+		viewCmd = a.attach.Init()
 	default:
-		return a.home.Init()
+		viewCmd = a.home.Init()
 	}
+	return tea.Batch(viewCmd, heartbeatCmd())
 }
 
 // switchViewMsg requests the app to switch to a different view.
@@ -97,6 +102,18 @@ type switchViewMsg struct {
 	view      View
 	sessionID string // used for ViewAttach and ViewChatPicker
 	resumeID  string // Claude Code session UUID to resume (ViewAttach only)
+}
+
+const heartbeatInterval = 3 * time.Second
+
+// heartbeatMsg triggers a periodic status heartbeat report to the daemon.
+type heartbeatMsg struct{}
+
+// heartbeatCmd returns a tea.Cmd that fires a heartbeatMsg after the interval.
+func heartbeatCmd() tea.Cmd {
+	return tea.Tick(heartbeatInterval, func(time.Time) tea.Msg {
+		return heartbeatMsg{}
+	})
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -111,6 +128,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoList.width = msg.Width
 		a.trash.width = msg.Width
 		a.settings.width = msg.Width
+
+	case heartbeatMsg:
+		// Fire-and-forget: push local process statuses to the daemon.
+		return a, tea.Batch(a.reportStatuses(), heartbeatCmd())
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -241,6 +262,41 @@ func (a *App) switchToHome() tea.Cmd {
 	a.home.width = a.width
 	a.home.height = a.height
 	return a.home.Init()
+}
+
+// reportStatuses pushes local PTY process statuses to the daemon as heartbeats.
+func (a App) reportStatuses() tea.Cmd {
+	if a.manager == nil {
+		return nil
+	}
+	allStatuses := a.manager.AllStatuses()
+	if len(allStatuses) == 0 {
+		return nil
+	}
+	reports := make([]*pb.ChatStatusReport, 0, len(allStatuses))
+	for claudeID, info := range allStatuses {
+		var status pb.ChatStatus
+		switch info.Status {
+		case bosspty.StatusWorking:
+			status = pb.ChatStatus_CHAT_STATUS_WORKING
+		case bosspty.StatusIdle:
+			status = pb.ChatStatus_CHAT_STATUS_IDLE
+		default:
+			status = pb.ChatStatus_CHAT_STATUS_STOPPED
+		}
+		report := &pb.ChatStatusReport{
+			ClaudeId: claudeID,
+			Status:   status,
+		}
+		if !info.LastWrite.IsZero() {
+			report.LastOutputAt = timestamppb.New(info.LastWrite)
+		}
+		reports = append(reports, report)
+	}
+	return func() tea.Msg {
+		_ = a.client.ReportChatStatus(a.ctx, reports)
+		return nil
+	}
 }
 
 func (a App) View() tea.View {

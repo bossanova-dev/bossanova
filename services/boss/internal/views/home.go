@@ -41,6 +41,11 @@ type sessionArchivedMsg struct {
 	err error
 }
 
+// sessionStatusesMsg carries daemon-side session statuses.
+type sessionStatusesMsg struct {
+	statuses map[string]string // session_id -> status string
+}
+
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
 	client   client.BossClient
@@ -53,6 +58,9 @@ type HomeModel struct {
 	loading  bool
 	width    int
 	height   int
+
+	// Daemon-side statuses for cross-client visibility.
+	sessionStatuses map[string]string // session_id -> status string
 
 	// Archive confirmation / in-progress
 	confirming bool
@@ -83,6 +91,10 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.cursor >= len(h.sessions) && len(h.sessions) > 0 {
 			h.cursor = len(h.sessions) - 1
 		}
+		return h, fetchSessionStatuses(h.client, h.ctx, h.sessions)
+
+	case sessionStatusesMsg:
+		h.sessionStatuses = msg.statuses
 		return h, nil
 
 	case sessionArchivedMsg:
@@ -110,7 +122,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, cmd
 
 	case tickMsg:
-		return h, tea.Batch(fetchSessions(h.client, h.ctx), tickCmd())
+		return h, tea.Batch(fetchSessions(h.client, h.ctx), fetchSessionStatuses(h.client, h.ctx, h.sessions), tickCmd())
 
 	case tea.KeyMsg:
 		if h.confirming {
@@ -350,7 +362,7 @@ func (h HomeModel) View() tea.View {
 	for i, sess := range h.sessions {
 		selected := i == h.cursor
 
-		status := h.manager.SessionStatus(sess.Id)
+		status := h.resolveSessionStatus(sess.Id)
 		repoName := truncate(sess.RepoDisplayName, maxRepo)
 		branchDisplay := strings.TrimPrefix(sess.BranchName, "boss/")
 		branch := truncate(branchDisplay, maxBranch)
@@ -412,6 +424,21 @@ func (h HomeModel) View() tea.View {
 	return tea.NewView(b.String())
 }
 
+// resolveSessionStatus returns the best status for a session, preferring
+// local PTY manager status if any process is running, else daemon-cached status.
+func (h HomeModel) resolveSessionStatus(sessionID string) string {
+	// Prefer local manager if it has a non-stopped status.
+	localStatus := h.manager.SessionStatus(sessionID)
+	if localStatus != bosspty.StatusStopped {
+		return localStatus
+	}
+	// Fall back to daemon-cached status.
+	if s, ok := h.sessionStatuses[sessionID]; ok {
+		return s
+	}
+	return bosspty.StatusStopped
+}
+
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -435,5 +462,33 @@ func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
 		return sessionListMsg{sessions: sessions, err: err}
+	}
+}
+
+func fetchSessionStatuses(c client.BossClient, ctx context.Context, sessions []*pb.Session) tea.Cmd {
+	if len(sessions) == 0 {
+		return nil
+	}
+	ids := make([]string, len(sessions))
+	for i, s := range sessions {
+		ids[i] = s.Id
+	}
+	return func() tea.Msg {
+		entries, err := c.GetSessionStatuses(ctx, ids)
+		if err != nil {
+			return nil // best-effort
+		}
+		result := make(map[string]string, len(entries))
+		for _, e := range entries {
+			switch e.Status {
+			case pb.ChatStatus_CHAT_STATUS_WORKING:
+				result[e.SessionId] = bosspty.StatusWorking
+			case pb.ChatStatus_CHAT_STATUS_IDLE:
+				result[e.SessionId] = bosspty.StatusIdle
+			default:
+				result[e.SessionId] = bosspty.StatusStopped
+			}
+		}
+		return sessionStatusesMsg{statuses: result}
 	}
 }

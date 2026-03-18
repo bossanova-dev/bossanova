@@ -43,6 +43,11 @@ type chatDeletedMsg struct {
 	err      error
 }
 
+// chatStatusesMsg carries daemon-side chat statuses.
+type chatStatusesMsg struct {
+	statuses []*pb.ChatStatusEntry
+}
+
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
@@ -61,6 +66,9 @@ type ChatPickerModel struct {
 	cancel  bool
 	width   int
 	height  int
+
+	// Daemon-side statuses for cross-client visibility.
+	chatStatuses map[string]*pb.ChatStatusEntry
 
 	// Remove confirmation
 	confirming bool
@@ -98,6 +106,25 @@ func (m ChatPickerModel) listChats() tea.Cmd {
 	return func() tea.Msg {
 		chats, err := m.client.ListChats(m.ctx, m.sessionID)
 		return chatsListedMsg{chats: chats, err: err}
+	}
+}
+
+// chatStatusPollMsg triggers a periodic re-fetch of daemon chat statuses.
+type chatStatusPollMsg struct{}
+
+func chatStatusPollCmd() tea.Cmd {
+	return tea.Tick(heartbeatInterval, func(time.Time) tea.Msg {
+		return chatStatusPollMsg{}
+	})
+}
+
+func (m ChatPickerModel) fetchChatStatuses() tea.Cmd {
+	return func() tea.Msg {
+		statuses, err := m.client.GetChatStatuses(m.ctx, m.sessionID)
+		if err != nil {
+			return nil // best-effort, ignore errors
+		}
+		return chatStatusesMsg{statuses: statuses}
 	}
 }
 
@@ -169,7 +196,20 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		return m, m.backfillTitles()
+		return m, tea.Batch(m.backfillTitles(), m.fetchChatStatuses(), chatStatusPollCmd())
+
+	case chatStatusesMsg:
+		m.chatStatuses = make(map[string]*pb.ChatStatusEntry, len(msg.statuses))
+		for _, s := range msg.statuses {
+			m.chatStatuses[s.ClaudeId] = s
+		}
+		return m, nil
+
+	case chatStatusPollMsg:
+		if !m.loading && len(m.chats) > 0 {
+			return m, tea.Batch(m.fetchChatStatuses(), chatStatusPollCmd())
+		}
+		return m, chatStatusPollCmd()
 
 	case chatTitlesBackfilledMsg:
 		for i, chat := range m.chats {
@@ -337,10 +377,7 @@ func (m ChatPickerModel) View() tea.View {
 			}
 			chatTitle = truncate(chatTitle, maxTitle)
 
-			status := bosspty.StatusStopped
-			if m.manager != nil {
-				status = m.manager.ProcessStatus(chat.ClaudeId)
-			}
+			status := m.chatStatusStr(chat.ClaudeId)
 			statusStr := renderStatus(status, m.spinner)
 			timeStr := relativeTime(m.chatLastActive(chat))
 
@@ -385,12 +422,42 @@ func (m ChatPickerModel) View() tea.View {
 	return tea.NewView(b.String())
 }
 
+// chatStatusStr returns the status string for a chat, preferring local manager
+// if the process is running locally, otherwise falling back to daemon status.
+func (m ChatPickerModel) chatStatusStr(claudeID string) string {
+	// Prefer local manager if process is running.
+	if m.manager != nil {
+		if m.manager.IsRunning(claudeID) {
+			return m.manager.ProcessStatus(claudeID)
+		}
+	}
+	// Fall back to daemon-cached status.
+	if e, ok := m.chatStatuses[claudeID]; ok {
+		switch e.Status {
+		case pb.ChatStatus_CHAT_STATUS_WORKING:
+			return bosspty.StatusWorking
+		case pb.ChatStatus_CHAT_STATUS_IDLE:
+			return bosspty.StatusIdle
+		case pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_UNSPECIFIED:
+			return bosspty.StatusStopped
+		}
+	}
+	return bosspty.StatusStopped
+}
+
 // chatLastActive returns the most recent activity time for a chat.
-// For running processes this is the last PTY output time; otherwise created_at.
+// Prefers local PTY output time, then daemon-cached last_output_at, then created_at.
 func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
 	if m.manager != nil {
 		if lw := m.manager.ProcessLastWrite(chat.ClaudeId); !lw.IsZero() {
 			return lw
+		}
+	}
+	// Fall back to daemon-cached last output time.
+	if e, ok := m.chatStatuses[chat.ClaudeId]; ok && e.LastOutputAt != nil {
+		t := e.LastOutputAt.AsTime()
+		if !t.IsZero() {
+			return t
 		}
 	}
 	return chat.CreatedAt.AsTime()

@@ -160,6 +160,39 @@ func (m *Manager) ProcessLastWrite(id string) time.Time {
 	return p.LastWrite()
 }
 
+// ProcessInfo holds a snapshot of a process's status for heartbeat reporting.
+type ProcessInfo struct {
+	Status    string
+	LastWrite time.Time
+}
+
+// AllStatuses returns a snapshot of all tracked processes for heartbeat batch reporting.
+func (m *Manager) AllStatuses() map[string]ProcessInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := make(map[string]ProcessInfo, len(m.processes))
+	for id, p := range m.processes {
+		var status string
+		select {
+		case <-p.done:
+			status = StatusStopped
+		default:
+			lw := p.LastWrite()
+			if !lw.IsZero() && time.Since(lw) < activeThreshold {
+				status = StatusWorking
+			} else {
+				status = StatusIdle
+			}
+		}
+		result[id] = ProcessInfo{
+			Status:    status,
+			LastWrite: p.LastWrite(),
+		}
+	}
+	return result
+}
+
 // Cleanup removes a dead process from the map.
 func (m *Manager) Cleanup(id string) {
 	m.mu.Lock()

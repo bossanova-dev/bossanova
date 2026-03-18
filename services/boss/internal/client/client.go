@@ -67,4 +67,9 @@ type BossClient interface {
 	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
 	UpdateChatTitle(ctx context.Context, claudeID, title string) error
 	DeleteChat(ctx context.Context, claudeID string) error
+
+	// Chat status (cross-client heartbeat sharing)
+	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error
+	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
+	GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
 }

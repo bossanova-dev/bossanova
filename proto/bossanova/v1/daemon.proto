@@ -43,6 +43,11 @@ service DaemonService {
   rpc UpdateChatTitle(UpdateChatTitleRequest) returns (UpdateChatTitleResponse);
   rpc DeleteChat(DeleteChatRequest) returns (DeleteChatResponse);
 
+  // Chat status (cross-client heartbeat sharing)
+  rpc ReportChatStatus(ReportChatStatusRequest) returns (ReportChatStatusResponse);
+  rpc GetChatStatuses(GetChatStatusesRequest) returns (GetChatStatusesResponse);
+  rpc GetSessionStatuses(GetSessionStatusesRequest) returns (GetSessionStatusesResponse);
+
   // VCS event delivery (orchestrator → daemon via webhook routing)
   rpc DeliverVCSEvent(DeliverVCSEventRequest) returns (DeliverVCSEventResponse);
 }
@@ -298,6 +303,50 @@ message DeleteChatRequest {
 }
 
 message DeleteChatResponse {}
+
+// --- Chat Status (cross-client heartbeat sharing) ---
+
+// ChatStatusReport is a single heartbeat from an owning client.
+message ChatStatusReport {
+  string claude_id = 1;        // Claude Code session UUID
+  ChatStatus status = 2;       // Current process status
+  google.protobuf.Timestamp last_output_at = 3; // Last PTY output time
+}
+
+message ReportChatStatusRequest {
+  repeated ChatStatusReport reports = 1;
+}
+
+message ReportChatStatusResponse {}
+
+message GetChatStatusesRequest {
+  string session_id = 1;       // Fetch statuses for chats in this session
+}
+
+// ChatStatusEntry is a single chat's cached status.
+message ChatStatusEntry {
+  string claude_id = 1;
+  ChatStatus status = 2;
+  google.protobuf.Timestamp last_output_at = 3;
+}
+
+message GetChatStatusesResponse {
+  repeated ChatStatusEntry statuses = 1;
+}
+
+message GetSessionStatusesRequest {
+  repeated string session_ids = 1;
+}
+
+// SessionStatusEntry is an aggregate status for a session.
+message SessionStatusEntry {
+  string session_id = 1;
+  ChatStatus status = 2;       // Best status across all chats (working > idle > stopped)
+}
+
+message GetSessionStatusesResponse {
+  repeated SessionStatusEntry statuses = 1;
+}
 
 // --- VCS Event Delivery ---
 

@@ -67,6 +67,13 @@ func (f *FixLoop) sessionMutex(sessionID string) *sync.Mutex {
 	return m
 }
 
+// releaseLock removes the per-session mutex from the map, preventing unbounded growth.
+func (f *FixLoop) releaseLock(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.locks, sessionID)
+}
+
 // HandleCheckFailure processes a check failure event by fetching failed check
 // logs, resuming Claude with fix instructions, pushing the fix, and
 // transitioning back to AwaitingChecks.
@@ -270,6 +277,8 @@ func (f *FixLoop) waitForClaude(ctx context.Context, claudeSessionID string) {
 
 // fireFixComplete fires FixComplete on the state machine and updates the DB.
 func (f *FixLoop) fireFixComplete(ctx context.Context, sess *models.Session) error {
+	f.releaseLock(sess.ID)
+
 	// Re-fetch session to get latest state.
 	sess, err := f.sessions.Get(ctx, sess.ID)
 	if err != nil {
@@ -302,6 +311,8 @@ func (f *FixLoop) fireFixComplete(ctx context.Context, sess *models.Session) err
 
 // fireFixFailed fires FixFailed on the state machine and updates the DB.
 func (f *FixLoop) fireFixFailed(ctx context.Context, sess *models.Session, reason error) error {
+	f.releaseLock(sess.ID)
+
 	// Re-fetch session to get latest state.
 	sess, err := f.sessions.Get(ctx, sess.ID)
 	if err != nil {

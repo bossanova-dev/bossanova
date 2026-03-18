@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 var _ AttemptStore = (*SQLiteAttemptStore)(nil)
@@ -22,8 +23,8 @@ func NewAttemptStore(db *sql.DB) *SQLiteAttemptStore {
 }
 
 func (s *SQLiteAttemptStore) Create(ctx context.Context, params CreateAttemptParams) (*models.Attempt, error) {
-	id := newID()
-	now := timeNow()
+	id := sqlutil.NewID()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO attempts (id, session_id, trigger, result, created_at, updated_at)
 		 VALUES (?, ?, ?, 0, ?, ?)`,
@@ -63,7 +64,7 @@ func (s *SQLiteAttemptStore) ListBySession(ctx context.Context, sessionID string
 }
 
 func (s *SQLiteAttemptStore) Update(ctx context.Context, id string, params UpdateAttemptParams) (*models.Attempt, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 
@@ -99,7 +100,7 @@ func (s *SQLiteAttemptStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func scanAttempt(s scanner) (*models.Attempt, error) {
+func scanAttempt(s sqlutil.Scanner) (*models.Attempt, error) {
 	var a models.Attempt
 	var trigger, result int
 	var createdAt, updatedAt string
@@ -109,7 +110,7 @@ func scanAttempt(s scanner) (*models.Attempt, error) {
 	}
 	a.Trigger = models.AttemptTrigger(trigger)
 	a.Result = models.AttemptResult(result)
-	a.CreatedAt = parseTime(createdAt)
-	a.UpdatedAt = parseTime(updatedAt)
+	a.CreatedAt = sqlutil.ParseTime(createdAt)
+	a.UpdatedAt = sqlutil.ParseTime(updatedAt)
 	return &a, nil
 }

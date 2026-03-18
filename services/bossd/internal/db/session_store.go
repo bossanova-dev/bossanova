@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 var _ SessionStore = (*SQLiteSessionStore)(nil)
@@ -24,8 +24,8 @@ func NewSessionStore(db *sql.DB) *SQLiteSessionStore {
 }
 
 func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionParams) (*models.Session, error) {
-	id := newID()
-	now := timeNow()
+	id := sqlutil.NewID()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, pr_number, pr_url, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -72,7 +72,7 @@ func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([
 }
 
 func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params UpdateSessionParams) (*models.Session, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 
@@ -106,7 +106,7 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	}
 	if params.AutomationEnabled != nil {
 		sets = append(sets, "automation_enabled = ?")
-		args = append(args, boolToInt(*params.AutomationEnabled))
+		args = append(args, sqlutil.BoolToInt(*params.AutomationEnabled))
 	}
 	if params.AttemptCount != nil {
 		sets = append(sets, "attempt_count = ?")
@@ -134,7 +134,7 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 }
 
 func (s *SQLiteSessionStore) Archive(ctx context.Context, id string) error {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET archived_at = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`,
 		now, now, id)
@@ -148,7 +148,7 @@ func (s *SQLiteSessionStore) Archive(ctx context.Context, id string) error {
 }
 
 func (s *SQLiteSessionStore) Resurrect(ctx context.Context, id string) error {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET archived_at = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL`,
 		now, id)
@@ -195,7 +195,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at
 	FROM sessions s`
 
-func scanSession(s scanner) (*models.Session, error) {
+func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var sess models.Session
 	var state, lastCheckState, automationEnabled int
 	var archivedAt, createdAt, updatedAt *string
@@ -211,26 +211,14 @@ func scanSession(s scanner) (*models.Session, error) {
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.AutomationEnabled = automationEnabled != 0
 	if archivedAt != nil {
-		t := parseTime(*archivedAt)
+		t := sqlutil.ParseTime(*archivedAt)
 		sess.ArchivedAt = &t
 	}
 	if createdAt != nil {
-		sess.CreatedAt = parseTime(*createdAt)
+		sess.CreatedAt = sqlutil.ParseTime(*createdAt)
 	}
 	if updatedAt != nil {
-		sess.UpdatedAt = parseTime(*updatedAt)
+		sess.UpdatedAt = sqlutil.ParseTime(*updatedAt)
 	}
 	return &sess, nil
-}
-
-func boolToInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}
-
-// timeNow returns the current time as an ISO 8601 string for SQLite storage.
-func timeNow() string {
-	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 }

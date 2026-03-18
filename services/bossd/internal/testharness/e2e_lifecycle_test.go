@@ -130,7 +130,7 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 
 	// --- Step 5: Simulate checks passing via dispatcher ---
 	// Create a dispatcher to handle the ChecksPassed event.
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
 
 	// Send ChecksPassed event through the dispatcher.
 	events := make(chan session.SessionEvent, 1)
@@ -210,7 +210,7 @@ func TestE2E_ChecksFailedFixLoop(t *testing.T) {
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
 	// Send ChecksFailed — should transition to FixingChecks (attempt 1).
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
 
 	failureConclusion := vcs.CheckConclusionFailure
 	failedChecks := []vcs.CheckResult{
@@ -419,7 +419,7 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 	}
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
 
 	// Checks passed.
 	events := make(chan session.SessionEvent, 1)

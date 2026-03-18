@@ -42,8 +42,16 @@ func TestGo_RecoversPanic(t *testing.T) {
 		panic("test panic")
 	})
 
-	// Allow time for the goroutine to complete recovery and logging.
-	time.Sleep(100 * time.Millisecond)
+	// Poll the buffer with short intervals instead of a single sleep.
+	deadline := time.After(2 * time.Second)
+	for buf.Len() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for panic recovery log output")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 
 	output := buf.String()
 	if output == "" {

@@ -31,7 +31,7 @@ func TestDispatcherChecksPassed(t *testing.T) {
 		PRNumber: &prNum,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
@@ -64,7 +64,7 @@ func TestDispatcherChecksFailed(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	failure := vcs.CheckConclusionFailure
 	ch := make(chan SessionEvent, 1)
@@ -99,7 +99,7 @@ func TestDispatcherChecksFailedMaxAttempts(t *testing.T) {
 		AttemptCount: machine.MaxAttempts - 1, // One attempt away from max.
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksFailed{PRID: 42}}
@@ -129,7 +129,7 @@ func TestDispatcherConflictDetected(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
@@ -156,7 +156,7 @@ func TestDispatcherPRMerged(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
@@ -182,7 +182,7 @@ func TestDispatcherPRClosed(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
@@ -201,7 +201,7 @@ func TestDispatcherContextCancellation(t *testing.T) {
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan SessionEvent)

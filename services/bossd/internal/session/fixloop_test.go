@@ -441,7 +441,7 @@ func TestDispatcherReviewSubmitted(t *testing.T) {
 		State:  machine.ReadyForReview,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{
@@ -477,7 +477,7 @@ func TestDispatcherReviewSubmittedMaxAttempts(t *testing.T) {
 		AttemptCount: machine.MaxAttempts - 1,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, logger)
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{

@@ -1,4 +1,7 @@
-.PHONY: format test dev clean build
+.PHONY: all format test dev clean build
+
+## all: Clean, format, build, and test
+all: clean format build test
 
 # Suppress clang deployment-version warnings from CGO dependencies
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)

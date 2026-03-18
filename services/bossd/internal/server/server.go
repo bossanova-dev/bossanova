@@ -667,6 +667,22 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	// Get session first to find branch name and repo for git cleanup.
+	sess, err := s.sessions.Get(ctx, req.Msg.Id)
+	if err != nil {
+		// If not found, nothing to delete.
+		return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
+	}
+
+	// Best-effort git cleanup: delete branch + prune worktree.
+	if sess.RepoID != "" && sess.BranchName != "" {
+		repo, err := s.repos.Get(ctx, sess.RepoID)
+		if err == nil {
+			_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{sess.BranchName})
+		}
+	}
+
+	// Delete from DB.
 	if err := s.sessions.Delete(ctx, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove session: %w", err))
 	}
@@ -711,9 +727,6 @@ func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.R
 }
 
 func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {
-	// Get all archived sessions, optionally filtering by age.
-	// For now, delete all archived sessions. olderThan filtering requires
-	// a store query enhancement (deferred to Leg 6 worktree integration).
 	repoID := "" // all repos
 	archived, err := s.sessions.ListArchived(ctx, repoID)
 	if err != nil {
@@ -721,15 +734,30 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 	}
 
 	olderThan := protoToTimestamp(req.Msg.OlderThan)
+
+	// Collect branches to delete, grouped by repo, and delete DB records.
+	repoBranches := make(map[string][]string) // repoID -> branch names
 	deleted := int32(0)
 	for _, sess := range archived {
 		if olderThan != nil && sess.ArchivedAt != nil && sess.ArchivedAt.After(*olderThan) {
 			continue
 		}
+		if sess.RepoID != "" && sess.BranchName != "" {
+			repoBranches[sess.RepoID] = append(repoBranches[sess.RepoID], sess.BranchName)
+		}
 		if err := s.sessions.Delete(ctx, sess.ID); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete archived session %s: %w", sess.ID, err))
 		}
 		deleted++
+	}
+
+	// Best-effort git cleanup: delete branches and prune worktrees per repo.
+	for repoID, branches := range repoBranches {
+		repo, err := s.repos.Get(ctx, repoID)
+		if err != nil {
+			continue
+		}
+		_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, branches)
 	}
 
 	return connect.NewResponse(&pb.EmptyTrashResponse{DeletedCount: deleted}), nil

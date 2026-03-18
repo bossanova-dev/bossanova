@@ -58,17 +58,17 @@ test: $(GEN_STAMP)
 		$(MAKE) -C $$mod test; \
 	done
 
-## Per-module test targets
-test-bossalib: $(GEN_STAMP)
+## Per-module test targets (no generate dep — CI uses committed gen code)
+test-bossalib:
 	$(MAKE) -C lib/bossalib test
 
-test-boss: $(GEN_STAMP)
+test-boss:
 	$(MAKE) -C services/boss test
 
-test-bossd: $(GEN_STAMP)
+test-bossd:
 	$(MAKE) -C services/bossd test
 
-test-bosso: $(GEN_STAMP)
+test-bosso:
 	$(MAKE) -C services/bosso test
 
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
@@ -83,24 +83,27 @@ lint: $(GEN_STAMP)
 lint-proto:
 	buf lint
 
-lint-bossalib: $(GEN_STAMP)
+lint-bossalib:
 	cd lib/bossalib && golangci-lint run ./...
 
-lint-boss: $(GEN_STAMP)
+lint-boss:
 	cd services/boss && golangci-lint run ./...
 
-lint-bossd: $(GEN_STAMP)
+lint-bossd:
 	cd services/bossd && golangci-lint run ./...
 
-lint-bosso: $(GEN_STAMP)
+lint-bosso:
 	cd services/bosso && golangci-lint run ./...
 
-## Per-module build targets
-build-boss: $(BIN_DIR)/boss
+## Per-module build targets (no generate dep — CI uses committed gen code)
+build-boss:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 
-build-bossd: $(BIN_DIR)/bossd
+build-bossd:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 
-build-bosso: $(BIN_DIR)/bosso
+build-bosso:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
 
 ## format: Format Go code, web code, and markdown
 format:

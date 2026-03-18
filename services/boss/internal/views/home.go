@@ -315,10 +315,10 @@ func (h HomeModel) View() tea.View {
 		}
 
 		// Pad raw text to column width before styling, so ANSI codes don't
-		// break column alignment.
+		// break column alignment. Use lipgloss Width to pad after styling,
+		// since Render() can trim trailing whitespace.
 		prPadded := fmt.Sprintf("%-5s", pr)
-		ciPadded := fmt.Sprintf("%-4s", ciLabel)
-		ciStyled := lipgloss.NewStyle().Foreground(ciColor).Render(ciPadded)
+		ciStyled := lipgloss.NewStyle().Foreground(ciColor).Width(4).Render(ciLabel)
 
 		// Build text-only prefix (cursor through branch) — this part gets
 		// bold styling when selected. Styled columns (CI, status) are appended

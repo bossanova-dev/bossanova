@@ -351,23 +351,23 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 	// If we were selecting a PR, that form just completed.
 	if m.selectedType == sessionTypeExistingPR && m.prs != nil {
-		return m, m.startCreating()
+		return *m, m.startCreating()
 	}
 
 	// If existing PR was chosen but we haven't loaded PRs yet, fetch them.
 	if m.selectedType == sessionTypeExistingPR && m.prs == nil {
 		m.phase = newSessionPhaseLoading
-		return m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
+		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
 	}
 
 	// Execute plan is a placeholder — do nothing.
 	if m.selectedType == sessionTypeExecutePlan {
 		m.cancel = true
-		return m, nil
+		return *m, nil
 	}
 
 	// New PR or plan — proceed to create.
-	return m, m.startCreating()
+	return *m, m.startCreating()
 }
 
 func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

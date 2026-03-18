@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // SQLiteSessionRegistryStore implements SessionRegistryStore using SQLite.
@@ -18,7 +20,7 @@ func NewSessionRegistryStore(db *sql.DB) *SQLiteSessionRegistryStore {
 }
 
 func (s *SQLiteSessionRegistryStore) Create(ctx context.Context, params CreateSessionEntryParams) (*SessionEntry, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions_registry (session_id, daemon_id, title, state, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -48,7 +50,7 @@ func (s *SQLiteSessionRegistryStore) ListByDaemon(ctx context.Context, daemonID 
 
 	var entries []*SessionEntry
 	for rows.Next() {
-		e, err := scanSessionEntryRows(rows)
+		e, err := scanSessionEntry(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -58,7 +60,7 @@ func (s *SQLiteSessionRegistryStore) ListByDaemon(ctx context.Context, daemonID 
 }
 
 func (s *SQLiteSessionRegistryStore) Update(ctx context.Context, sessionID string, params UpdateSessionEntryParams) (*SessionEntry, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 
@@ -98,26 +100,14 @@ func (s *SQLiteSessionRegistryStore) Delete(ctx context.Context, sessionID strin
 	return nil
 }
 
-func scanSessionEntry(row *sql.Row) (*SessionEntry, error) {
+func scanSessionEntry(s sqlutil.Scanner) (*SessionEntry, error) {
 	var e SessionEntry
 	var createdAt, updatedAt string
-	err := row.Scan(&e.SessionID, &e.DaemonID, &e.Title, &e.State, &createdAt, &updatedAt)
+	err := s.Scan(&e.SessionID, &e.DaemonID, &e.Title, &e.State, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
-	e.CreatedAt = parseTime(createdAt)
-	e.UpdatedAt = parseTime(updatedAt)
-	return &e, nil
-}
-
-func scanSessionEntryRows(rows *sql.Rows) (*SessionEntry, error) {
-	var e SessionEntry
-	var createdAt, updatedAt string
-	err := rows.Scan(&e.SessionID, &e.DaemonID, &e.Title, &e.State, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	e.CreatedAt = parseTime(createdAt)
-	e.UpdatedAt = parseTime(updatedAt)
+	e.CreatedAt = sqlutil.ParseTime(createdAt)
+	e.UpdatedAt = sqlutil.ParseTime(updatedAt)
 	return &e, nil
 }

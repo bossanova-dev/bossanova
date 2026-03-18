@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // migrationsDir returns the absolute path to the bosso migrations directory.
@@ -49,10 +50,10 @@ func createTestUser(t *testing.T, store *SQLiteUserStore) *User {
 func createTestDaemon(t *testing.T, dStore *SQLiteDaemonStore, userID string) *Daemon {
 	t.Helper()
 	daemon, err := dStore.Create(context.Background(), CreateDaemonParams{
-		ID:           newID(),
+		ID:           sqlutil.NewID(),
 		UserID:       userID,
 		Hostname:     "macbook-pro.local",
-		SessionToken: newID() + newID(),
+		SessionToken: sqlutil.NewID() + sqlutil.NewID(),
 		RepoIDs:      []string{"repo-1", "repo-2"},
 	})
 	if err != nil {
@@ -174,8 +175,8 @@ func TestDaemonStore_CRUD(t *testing.T) {
 	user := createTestUser(t, uStore)
 
 	// Create
-	daemonID := newID()
-	token := newID() + newID()
+	daemonID := sqlutil.NewID()
+	token := sqlutil.NewID() + sqlutil.NewID()
 	daemon, err := dStore.Create(ctx, CreateDaemonParams{
 		ID:           daemonID,
 		UserID:       user.ID,
@@ -226,7 +227,7 @@ func TestDaemonStore_CRUD(t *testing.T) {
 	// Update
 	online := true
 	activeSessions := 3
-	hb := timeNow()
+	hb := sqlutil.TimeNow()
 	updated, err := dStore.Update(ctx, daemonID, UpdateDaemonParams{
 		Online:         &online,
 		ActiveSessions: &activeSessions,
@@ -274,7 +275,7 @@ func TestDaemonStore_UniqueToken(t *testing.T) {
 	sameToken := "shared-token-value"
 
 	if _, err := dStore.Create(ctx, CreateDaemonParams{
-		ID:           newID(),
+		ID:           sqlutil.NewID(),
 		UserID:       user.ID,
 		Hostname:     "host1",
 		SessionToken: sameToken,
@@ -283,7 +284,7 @@ func TestDaemonStore_UniqueToken(t *testing.T) {
 	}
 
 	_, err := dStore.Create(ctx, CreateDaemonParams{
-		ID:           newID(),
+		ID:           sqlutil.NewID(),
 		UserID:       user.ID,
 		Hostname:     "host2",
 		SessionToken: sameToken,

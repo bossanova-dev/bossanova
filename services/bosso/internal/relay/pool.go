@@ -11,24 +11,28 @@ import (
 )
 
 // Pool manages ConnectRPC client connections to registered daemons.
-// It creates clients lazily and caches them by daemon ID.
+// It creates clients lazily and caches them by daemon ID. A single
+// shared HTTP client is reused across all connections.
 type Pool struct {
-	mu      sync.RWMutex
-	clients map[string]bossanovav1connect.DaemonServiceClient
+	mu         sync.RWMutex
+	clients    map[string]bossanovav1connect.DaemonServiceClient
+	httpClient *http.Client
 }
 
-// NewPool creates a new daemon connection pool.
+// NewPool creates a new daemon connection pool with a shared HTTP client.
 func NewPool() *Pool {
 	return &Pool{
 		clients: make(map[string]bossanovav1connect.DaemonServiceClient),
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
 // Register creates (or replaces) a DaemonServiceClient for the given endpoint.
 // Called when a daemon registers with the orchestrator and provides an endpoint.
 func (p *Pool) Register(daemonID, endpoint string) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	client := bossanovav1connect.NewDaemonServiceClient(httpClient, endpoint)
+	client := bossanovav1connect.NewDaemonServiceClient(p.httpClient, endpoint)
 
 	p.mu.Lock()
 	p.clients[daemonID] = client

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 var _ ClaudeChatStore = (*SQLiteClaudeChatStore)(nil)
@@ -21,8 +22,8 @@ func NewClaudeChatStore(db *sql.DB) *SQLiteClaudeChatStore {
 }
 
 func (s *SQLiteClaudeChatStore) Create(ctx context.Context, params CreateClaudeChatParams) (*models.ClaudeChat, error) {
-	id := newID()
-	now := timeNow()
+	id := sqlutil.NewID()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO claude_chats (id, session_id, claude_id, title, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
@@ -37,7 +38,7 @@ func (s *SQLiteClaudeChatStore) Create(ctx context.Context, params CreateClaudeC
 		SessionID: params.SessionID,
 		ClaudeID:  params.ClaudeID,
 		Title:     params.Title,
-		CreatedAt: parseTime(now),
+		CreatedAt: sqlutil.ParseTime(now),
 	}, nil
 }
 
@@ -102,6 +103,6 @@ func scanClaudeChat(rows *sql.Rows) (*models.ClaudeChat, error) {
 	if err := rows.Scan(&c.ID, &c.SessionID, &c.ClaudeID, &c.Title, &c.DaemonID, &createdAt); err != nil {
 		return nil, fmt.Errorf("scan claude_chat: %w", err)
 	}
-	c.CreatedAt = parseTime(createdAt)
+	c.CreatedAt = sqlutil.ParseTime(createdAt)
 	return &c, nil
 }

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // SQLiteUserStore implements UserStore using SQLite.
@@ -18,8 +20,8 @@ func NewUserStore(db *sql.DB) *SQLiteUserStore {
 }
 
 func (s *SQLiteUserStore) Create(ctx context.Context, params CreateUserParams) (*User, error) {
-	id := newID()
-	now := timeNow()
+	id := sqlutil.NewID()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO users (id, sub, email, name, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -53,7 +55,7 @@ func (s *SQLiteUserStore) List(ctx context.Context) ([]*User, error) {
 
 	var users []*User
 	for rows.Next() {
-		u, err := scanUserRows(rows)
+		u, err := scanUser(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -63,7 +65,7 @@ func (s *SQLiteUserStore) List(ctx context.Context) ([]*User, error) {
 }
 
 func (s *SQLiteUserStore) Update(ctx context.Context, id string, params UpdateUserParams) (*User, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 
@@ -99,26 +101,14 @@ func (s *SQLiteUserStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-func scanUser(row *sql.Row) (*User, error) {
+func scanUser(s sqlutil.Scanner) (*User, error) {
 	var u User
 	var createdAt, updatedAt string
-	err := row.Scan(&u.ID, &u.Sub, &u.Email, &u.Name, &createdAt, &updatedAt)
+	err := s.Scan(&u.ID, &u.Sub, &u.Email, &u.Name, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
-	u.CreatedAt = parseTime(createdAt)
-	u.UpdatedAt = parseTime(updatedAt)
-	return &u, nil
-}
-
-func scanUserRows(rows *sql.Rows) (*User, error) {
-	var u User
-	var createdAt, updatedAt string
-	err := rows.Scan(&u.ID, &u.Sub, &u.Email, &u.Name, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	u.CreatedAt = parseTime(createdAt)
-	u.UpdatedAt = parseTime(updatedAt)
+	u.CreatedAt = sqlutil.ParseTime(createdAt)
+	u.UpdatedAt = sqlutil.ParseTime(updatedAt)
 	return &u, nil
 }

@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"flag"
 	"fmt"
 	"os"
@@ -11,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/recurser/bossalib/buildinfo"
-	"github.com/rs/zerolog"
+	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/migrate"
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossalib/safego"
@@ -44,8 +43,7 @@ func main() {
 
 func run() error {
 	// Human-friendly console logging.
-	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
-		With().Timestamp().Str("service", "bossd").Logger()
+	bossalog.Setup("bossd")
 
 	// --- Database ---
 
@@ -64,9 +62,10 @@ func run() error {
 
 	// --- Migrations ---
 
-	if err := runMigrations(database); err != nil {
+	if err := migrate.Run(database, migrations.FS); err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}
+	log.Info().Msg("migrations complete")
 
 	// --- Stores ---
 
@@ -85,8 +84,7 @@ func run() error {
 	// --- Fix Loop + Dispatcher + Poller ---
 
 	fixLoop := session.NewFixLoop(sessions, attempts, repos, ghProvider, claudeRunner, worktrees, log.Logger)
-	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, log.Logger)
-	dispatcher.SetFixLoop(fixLoop)
+	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, fixLoop, log.Logger)
 	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, log.Logger)
 
 	// --- Server ---
@@ -177,20 +175,5 @@ func run() error {
 	_ = os.Remove(socketPath)
 
 	log.Info().Msg("daemon stopped")
-	return nil
-}
-
-func runMigrations(database *sql.DB) error {
-	goose.SetBaseFS(migrations.FS)
-
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return fmt.Errorf("set dialect: %w", err)
-	}
-
-	if err := goose.Up(database, "."); err != nil {
-		return fmt.Errorf("run migrations: %w", err)
-	}
-
-	log.Info().Msg("migrations complete")
 	return nil
 }

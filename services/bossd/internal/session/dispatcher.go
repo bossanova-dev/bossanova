@@ -14,13 +14,21 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
+// FixHandler handles automated fix attempts for sessions. It is satisfied by
+// *FixLoop and exists to decouple the Dispatcher from the concrete FixLoop type.
+type FixHandler interface {
+	HandleCheckFailure(ctx context.Context, sessionID string, failedChecks []vcs.CheckResult) error
+	HandleConflict(ctx context.Context, sessionID string) error
+	HandleReviewFeedback(ctx context.Context, sessionID string, comments []vcs.ReviewComment) error
+}
+
 // Dispatcher consumes VCS events from the poller and applies the
 // corresponding state machine transitions and database updates.
 type Dispatcher struct {
 	sessions db.SessionStore
 	repos    db.RepoStore
 	provider vcs.Provider
-	fixLoop  *FixLoop
+	fixLoop  FixHandler
 	logger   zerolog.Logger
 	mu       sync.Mutex // guards concurrent session transitions
 }
@@ -30,21 +38,16 @@ func NewDispatcher(
 	sessions db.SessionStore,
 	repos db.RepoStore,
 	provider vcs.Provider,
+	fixLoop FixHandler,
 	logger zerolog.Logger,
 ) *Dispatcher {
 	return &Dispatcher{
 		sessions: sessions,
 		repos:    repos,
 		provider: provider,
+		fixLoop:  fixLoop,
 		logger:   logger,
 	}
-}
-
-// SetFixLoop sets the fix loop handler for automated fix attempts.
-// This is set after construction to break the circular dependency
-// between Dispatcher and FixLoop.
-func (d *Dispatcher) SetFixLoop(fl *FixLoop) {
-	d.fixLoop = fl
 }
 
 // Run consumes events from the channel and dispatches them until the

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // SQLiteWebhookConfigStore implements WebhookConfigStore using SQLite.
@@ -17,8 +19,8 @@ func NewWebhookConfigStore(db *sql.DB) *SQLiteWebhookConfigStore {
 }
 
 func (s *SQLiteWebhookConfigStore) Create(ctx context.Context, params CreateWebhookConfigParams) (*WebhookConfig, error) {
-	id := newID()
-	now := timeNow()
+	id := sqlutil.NewID()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO webhook_configs (id, repo_origin_url, provider, secret, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
@@ -56,7 +58,7 @@ func (s *SQLiteWebhookConfigStore) List(ctx context.Context) ([]*WebhookConfig, 
 
 	var configs []*WebhookConfig
 	for rows.Next() {
-		c, err := scanWebhookConfigRows(rows)
+		c, err := scanWebhookConfig(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -76,24 +78,13 @@ func (s *SQLiteWebhookConfigStore) Delete(ctx context.Context, id string) error 
 	return nil
 }
 
-func scanWebhookConfig(row *sql.Row) (*WebhookConfig, error) {
+func scanWebhookConfig(s sqlutil.Scanner) (*WebhookConfig, error) {
 	var c WebhookConfig
 	var createdAt string
-	err := row.Scan(&c.ID, &c.RepoOriginURL, &c.Provider, &c.Secret, &createdAt)
+	err := s.Scan(&c.ID, &c.RepoOriginURL, &c.Provider, &c.Secret, &createdAt)
 	if err != nil {
 		return nil, err
 	}
-	c.CreatedAt = parseTime(createdAt)
-	return &c, nil
-}
-
-func scanWebhookConfigRows(rows *sql.Rows) (*WebhookConfig, error) {
-	var c WebhookConfig
-	var createdAt string
-	err := rows.Scan(&c.ID, &c.RepoOriginURL, &c.Provider, &c.Secret, &createdAt)
-	if err != nil {
-		return nil, err
-	}
-	c.CreatedAt = parseTime(createdAt)
+	c.CreatedAt = sqlutil.ParseTime(createdAt)
 	return &c, nil
 }

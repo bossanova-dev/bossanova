@@ -109,7 +109,13 @@ func (s *Server) ListenAndServe(socketPath string) error {
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(s)
 	mux.Handle(path, handler)
 
-	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	s.srv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      120 * time.Second, // streaming RPCs need longer write timeout
+		IdleTimeout:       120 * time.Second,
+	}
 	return s.srv.Serve(ln)
 }
 

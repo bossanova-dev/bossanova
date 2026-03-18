@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // SQLiteAuditStore implements AuditStore using SQLite.
@@ -17,8 +19,8 @@ func NewAuditStore(db *sql.DB) *SQLiteAuditStore {
 }
 
 func (s *SQLiteAuditStore) Create(ctx context.Context, params CreateAuditParams) (*AuditEntry, error) {
-	id := newID()
-	now := timeNow()
+	id := sqlutil.NewID()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit_log (id, user_id, action, resource, detail, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -67,11 +69,14 @@ func (s *SQLiteAuditStore) List(ctx context.Context, opts AuditListOpts) ([]*Aud
 
 	var entries []*AuditEntry
 	for rows.Next() {
-		e, err := scanAuditRows(rows)
+		var e AuditEntry
+		var createdAt string
+		err := rows.Scan(&e.ID, &e.UserID, &e.Action, &e.Resource, &e.Detail, &createdAt)
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, e)
+		e.CreatedAt = sqlutil.ParseTime(createdAt)
+		entries = append(entries, &e)
 	}
 	return entries, rows.Err()
 }
@@ -85,17 +90,6 @@ func (s *SQLiteAuditStore) get(ctx context.Context, id string) (*AuditEntry, err
 	if err != nil {
 		return nil, err
 	}
-	e.CreatedAt = parseTime(createdAt)
-	return &e, nil
-}
-
-func scanAuditRows(rows *sql.Rows) (*AuditEntry, error) {
-	var e AuditEntry
-	var createdAt string
-	err := rows.Scan(&e.ID, &e.UserID, &e.Action, &e.Resource, &e.Detail, &createdAt)
-	if err != nil {
-		return nil, err
-	}
-	e.CreatedAt = parseTime(createdAt)
+	e.CreatedAt = sqlutil.ParseTime(createdAt)
 	return &e, nil
 }

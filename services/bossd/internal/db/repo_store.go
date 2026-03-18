@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 var _ RepoStore = (*SQLiteRepoStore)(nil)
@@ -23,8 +23,8 @@ func NewRepoStore(db *sql.DB) *SQLiteRepoStore {
 }
 
 func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (*models.Repo, error) {
-	id := newID()
-	now := timeNow()
+	id := sqlutil.NewID()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -72,7 +72,7 @@ func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
 }
 
 func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 
@@ -117,7 +117,7 @@ func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
 }
 
 // scanRepo scans a repo from any scanner (*sql.Row or *sql.Rows).
-func scanRepo(s scanner) (*models.Repo, error) {
+func scanRepo(s sqlutil.Scanner) (*models.Repo, error) {
 	var r models.Repo
 	var createdAt, updatedAt string
 	err := s.Scan(&r.ID, &r.DisplayName, &r.LocalPath, &r.OriginURL,
@@ -126,16 +126,7 @@ func scanRepo(s scanner) (*models.Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.CreatedAt = parseTime(createdAt)
-	r.UpdatedAt = parseTime(updatedAt)
+	r.CreatedAt = sqlutil.ParseTime(createdAt)
+	r.UpdatedAt = sqlutil.ParseTime(updatedAt)
 	return &r, nil
-}
-
-// parseTime parses an ISO 8601 timestamp string from SQLite.
-func parseTime(s string) time.Time {
-	t, _ := time.Parse("2006-01-02T15:04:05.000Z", s)
-	if t.IsZero() {
-		t, _ = time.Parse(time.RFC3339Nano, s)
-	}
-	return t
 }

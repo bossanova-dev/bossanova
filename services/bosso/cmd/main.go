@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,10 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pressly/goose/v3"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
+	"github.com/recurser/bossalib/config"
+	bossalog "github.com/recurser/bossalib/log"
+	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/safego"
 	"github.com/rs/cors"
 
@@ -37,15 +37,14 @@ func main() {
 
 func run() error {
 	// Human-friendly console logging.
-	log.Logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
-		With().Timestamp().Str("service", "bosso").Logger()
+	bossalog.Setup("bosso")
 
 	// --- Configuration ---
 
-	addr := envOr("BOSSO_ADDR", ":8080")
-	corsOrigins := envOr("BOSSO_CORS_ORIGINS", "")
-	oidcIssuer := envOr("BOSSO_OIDC_ISSUER", "")
-	oidcAudience := envOr("BOSSO_OIDC_AUDIENCE", "")
+	addr := config.EnvOr("BOSSO_ADDR", ":8080")
+	corsOrigins := config.EnvOr("BOSSO_CORS_ORIGINS", "")
+	oidcIssuer := config.EnvOr("BOSSO_OIDC_ISSUER", "")
+	oidcAudience := config.EnvOr("BOSSO_OIDC_AUDIENCE", "")
 
 	if oidcIssuer == "" || oidcAudience == "" {
 		return fmt.Errorf("BOSSO_OIDC_ISSUER and BOSSO_OIDC_AUDIENCE are required")
@@ -68,9 +67,10 @@ func run() error {
 
 	// --- Migrations ---
 
-	if err := runMigrations(database); err != nil {
+	if err := migrate.Run(database, migrations.FS); err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}
+	log.Info().Msg("migrations complete")
 
 	// --- Stores ---
 
@@ -156,28 +156,6 @@ func run() error {
 
 	log.Info().Msg("orchestrator stopped")
 	return nil
-}
-
-func runMigrations(database *sql.DB) error {
-	goose.SetBaseFS(migrations.FS)
-
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return fmt.Errorf("set dialect: %w", err)
-	}
-
-	if err := goose.Up(database, "."); err != nil {
-		return fmt.Errorf("run migrations: %w", err)
-	}
-
-	log.Info().Msg("migrations complete")
-	return nil
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 func splitAndTrim(s, sep string) []string {

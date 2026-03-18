@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/recurser/bossalib/sqlutil"
 )
 
 // SQLiteDaemonStore implements DaemonStore using SQLite.
@@ -18,7 +20,7 @@ func NewDaemonStore(db *sql.DB) *SQLiteDaemonStore {
 }
 
 func (s *SQLiteDaemonStore) Create(ctx context.Context, params CreateDaemonParams) (*Daemon, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO daemons (id, user_id, hostname, endpoint, session_token, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -78,7 +80,7 @@ func (s *SQLiteDaemonStore) ListByUser(ctx context.Context, userID string) ([]*D
 	// SQLite with MaxOpenConns(1) deadlocks if we query repos while iterating.
 	var daemons []*Daemon
 	for rows.Next() {
-		d, err := scanDaemonRows(rows)
+		d, err := scanDaemon(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +115,7 @@ func (s *SQLiteDaemonStore) ListByRepoID(ctx context.Context, repoID string) ([]
 
 	var daemons []*Daemon
 	for rows.Next() {
-		d, err := scanDaemonRows(rows)
+		d, err := scanDaemon(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -135,7 +137,7 @@ func (s *SQLiteDaemonStore) ListByRepoID(ctx context.Context, repoID string) ([]
 }
 
 func (s *SQLiteDaemonStore) Update(ctx context.Context, id string, params UpdateDaemonParams) (*Daemon, error) {
-	now := timeNow()
+	now := sqlutil.TimeNow()
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 
@@ -222,36 +224,19 @@ func (s *SQLiteDaemonStore) getRepos(ctx context.Context, daemonID string) ([]st
 	return ids, rows.Err()
 }
 
-func scanDaemon(row *sql.Row) (*Daemon, error) {
+func scanDaemon(s sqlutil.Scanner) (*Daemon, error) {
 	var d Daemon
 	var lastHB *string
 	var online int
 	var createdAt, updatedAt string
-	err := row.Scan(&d.ID, &d.UserID, &d.Hostname, &d.Endpoint, &d.SessionToken,
+	err := s.Scan(&d.ID, &d.UserID, &d.Hostname, &d.Endpoint, &d.SessionToken,
 		&d.ActiveSessions, &lastHB, &online, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
 	d.Online = online != 0
-	d.LastHeartbeat = parseOptionalTime(lastHB)
-	d.CreatedAt = parseTime(createdAt)
-	d.UpdatedAt = parseTime(updatedAt)
-	return &d, nil
-}
-
-func scanDaemonRows(rows *sql.Rows) (*Daemon, error) {
-	var d Daemon
-	var lastHB *string
-	var online int
-	var createdAt, updatedAt string
-	err := rows.Scan(&d.ID, &d.UserID, &d.Hostname, &d.Endpoint, &d.SessionToken,
-		&d.ActiveSessions, &lastHB, &online, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	d.Online = online != 0
-	d.LastHeartbeat = parseOptionalTime(lastHB)
-	d.CreatedAt = parseTime(createdAt)
-	d.UpdatedAt = parseTime(updatedAt)
+	d.LastHeartbeat = sqlutil.ParseOptionalTime(lastHB)
+	d.CreatedAt = sqlutil.ParseTime(createdAt)
+	d.UpdatedAt = sqlutil.ParseTime(updatedAt)
 	return &d, nil
 }

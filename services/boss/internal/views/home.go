@@ -35,6 +35,12 @@ type sessionListMsg struct {
 	err      error
 }
 
+// sessionArchivedMsg carries the result of archiving a session.
+type sessionArchivedMsg struct {
+	id  string
+	err error
+}
+
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
 	client   client.BossClient
@@ -47,6 +53,10 @@ type HomeModel struct {
 	loading  bool
 	width    int
 	height   int
+
+	// Archive confirmation / in-progress
+	confirming bool
+	archiving  bool
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
@@ -75,6 +85,25 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
+	case sessionArchivedMsg:
+		h.confirming = false
+		h.archiving = false
+		if msg.err != nil {
+			h.err = msg.err
+			return h, nil
+		}
+		// Remove from list and adjust cursor.
+		for i, s := range h.sessions {
+			if s.Id == msg.id {
+				h.sessions = append(h.sessions[:i], h.sessions[i+1:]...)
+				break
+			}
+		}
+		if h.cursor >= len(h.sessions) && len(h.sessions) > 0 {
+			h.cursor = len(h.sessions) - 1
+		}
+		return h, nil
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		h.spinner, cmd = h.spinner.Update(msg)
@@ -84,6 +113,10 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, tea.Batch(fetchSessions(h.client, h.ctx), tickCmd())
 
 	case tea.KeyMsg:
+		if h.confirming {
+			return h.updateArchiveConfirm(msg)
+		}
+
 		switch msg.String() {
 		case "q":
 			return h, tea.Quit
@@ -91,6 +124,13 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, func() tea.Msg { return switchViewMsg{view: ViewNewSession} }
 		case "r":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewRepoList} }
+		case "t":
+			return h, func() tea.Msg { return switchViewMsg{view: ViewTrash} }
+		case "a":
+			if len(h.sessions) > 0 {
+				h.confirming = true
+			}
+			return h, nil
 		case "up", "k":
 			if h.cursor > 0 {
 				h.cursor--
@@ -112,6 +152,22 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return h, nil
+}
+
+func (h HomeModel) updateArchiveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		h.confirming = false
+		h.archiving = true
+		sess := h.sessions[h.cursor]
+		return h, func() tea.Msg {
+			_, err := h.client.ArchiveSession(h.ctx, sess.Id)
+			return sessionArchivedMsg{id: sess.Id, err: err}
+		}
+	case "n", "esc":
+		h.confirming = false
+	}
 	return h, nil
 }
 
@@ -255,7 +311,7 @@ func (h HomeModel) View() tea.View {
 		return tea.NewView(
 			renderBanner() + "\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
-				styleActionBar.Render("[n]ew session  [r]epos  [q]uit"),
+				styleActionBar.Render("[n]ew session  [r]epos  [t] open trash  [q]uit"),
 		)
 	}
 
@@ -337,7 +393,19 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(styleActionBar.Render("[n]ew session  [r]epos  [enter] select  [q]uit"))
+	if h.archiving {
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorRed).Render(
+			h.spinner.View() + "Archiving..."))
+	} else if h.confirming {
+		b.WriteString("\n")
+		sess := h.sessions[h.cursor]
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
+			fmt.Sprintf("Archive %q?", sess.Title)))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	} else {
+		b.WriteString(styleActionBar.Render("[n]ew session  [enter] select  [a]rchive  [r]epos  [t] open trash  [q]uit"))
+	}
 
 	return tea.NewView(b.String())
 }

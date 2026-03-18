@@ -19,6 +19,7 @@ const (
 	ViewChatPicker
 	ViewRepoAdd
 	ViewRepoList
+	ViewTrash
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
@@ -32,6 +33,7 @@ type App struct {
 	chatPicker ChatPickerModel
 	repoAdd    RepoAddModel
 	repoList   RepoListModel
+	trash      TrashModel
 	attach     AttachModel
 	width      int
 	height     int
@@ -105,6 +107,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.newSession.width = msg.Width
 		a.repoAdd.width = msg.Width
 		a.repoList.width = msg.Width
+		a.trash.width = msg.Width
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -131,6 +134,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoList = NewRepoListModel(a.client, a.ctx)
 			a.repoList.width = a.width
 			return a, a.repoList.Init()
+		case ViewTrash:
+			a.trash = NewTrashModel(a.client, a.ctx)
+			a.trash.width = a.width
+			return a, a.trash.Init()
 		case ViewAttach:
 			a.attach = NewAttachModel(a.client, a.ctx, a.manager, msg.sessionID, msg.resumeID)
 			return a, a.attach.Init()
@@ -190,6 +197,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.switchToHome()
 		}
 		return a, cmd
+	case ViewTrash:
+		updated, cmd := a.trash.Update(msg)
+		a.trash = updated.(TrashModel)
+		if a.trash.Cancelled() {
+			return a, a.switchToHome()
+		}
+		return a, cmd
 	case ViewAttach:
 		updated, cmd := a.attach.Update(msg)
 		a.attach = updated.(AttachModel)
@@ -232,6 +246,8 @@ func (a App) View() tea.View {
 		v = a.repoAdd.View()
 	case ViewRepoList:
 		v = a.repoList.View()
+	case ViewTrash:
+		v = a.trash.View()
 	case ViewAttach:
 		v = a.attach.View()
 	default:

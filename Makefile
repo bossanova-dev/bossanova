@@ -27,14 +27,20 @@ LDFLAGS := -s -w \
 # Proto source files — stamp regenerates when these change
 PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml
 GEN_STAMP := .generate.stamp
+WEB_DEPS_STAMP := services/web/node_modules/.package-lock.json
 
 claude:
 	claude --dangerously-skip-permissions
 
+## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
+$(WEB_DEPS_STAMP): services/web/package.json
+	cd services/web && pnpm install
+	@touch $(WEB_DEPS_STAMP)
+
 ## generate: Run buf generate to produce Go code from proto definitions
 generate: $(GEN_STAMP)
 
-$(GEN_STAMP): $(PROTO_SOURCES)
+$(GEN_STAMP): $(PROTO_SOURCES) $(WEB_DEPS_STAMP)
 	rm -rf lib/bossalib/gen
 	buf generate
 	@touch $(GEN_STAMP)

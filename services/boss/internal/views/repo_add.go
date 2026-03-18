@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -25,8 +26,6 @@ const (
 	repoAddStepClonePath                    // clone destination (clone mode only)
 	repoAddStepPath                         // existing local path (open mode only)
 	repoAddStepName
-	repoAddStepBaseBranch
-	repoAddStepWorktreeDir
 	repoAddStepSetup
 	repoAddStepConfirm
 )
@@ -75,15 +74,14 @@ type RepoAddModel struct {
 	cloning        bool
 
 	// Shared inputs
-	pathInput        textinput.Model
-	nameInput        textinput.Model
-	baseBranchInput  textinput.Model
-	worktreeDirInput textinput.Model
-	setupInput       textinput.Model
+	pathInput  textinput.Model
+	nameInput  textinput.Model
+	setupInput textinput.Model
 
 	// Validation
-	validating bool
-	isGithub   bool
+	validating         bool
+	isGithub           bool
+	detectedBaseBranch string // populated from ValidateRepoPath response
 
 	createdRepo *pb.Repo
 
@@ -107,18 +105,6 @@ func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 		nameIn.SetValue(filepath.Base(cwd))
 	}
 
-	branchIn := textinput.New()
-	branchIn.Placeholder = "Default base branch"
-	branchIn.SetWidth(30)
-	branchIn.SetValue("main")
-
-	wtIn := textinput.New()
-	wtIn.Placeholder = "Worktree base directory"
-	wtIn.SetWidth(60)
-	if cwd != "" {
-		wtIn.SetValue(filepath.Join(filepath.Dir(cwd), ".worktrees"))
-	}
-
 	setupIn := textinput.New()
 	setupIn.Placeholder = "Setup script (optional, e.g. ./setup.sh)"
 	setupIn.SetWidth(60)
@@ -132,16 +118,15 @@ func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 	clonePathIn.SetWidth(60)
 
 	return RepoAddModel{
-		client:           c,
-		ctx:              ctx,
-		step:             repoAddStepSource,
-		pathInput:        pathIn,
-		nameInput:        nameIn,
-		baseBranchInput:  branchIn,
-		worktreeDirInput: wtIn,
-		setupInput:       setupIn,
-		urlInput:         urlIn,
-		clonePathInput:   clonePathIn,
+		client:             c,
+		ctx:                ctx,
+		step:               repoAddStepSource,
+		pathInput:          pathIn,
+		nameInput:          nameIn,
+		setupInput:         setupIn,
+		urlInput:           urlIn,
+		clonePathInput:     clonePathIn,
+		detectedBaseBranch: "main",
 	}
 }
 
@@ -189,7 +174,7 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-populate fields from validation response.
 		m.isGithub = msg.resp.IsGithub
 		if msg.resp.DefaultBranch != "" {
-			m.baseBranchInput.SetValue(msg.resp.DefaultBranch)
+			m.detectedBaseBranch = msg.resp.DefaultBranch
 		}
 		// Default the name to the basename of the entered path.
 		m.nameInput.SetValue(filepath.Base(m.pathInput.Value()))
@@ -214,10 +199,6 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePathStep(msg)
 		case repoAddStepName:
 			return m.updateNameStep(msg)
-		case repoAddStepBaseBranch:
-			return m.updateBaseBranchStep(msg)
-		case repoAddStepWorktreeDir:
-			return m.updateWorktreeDirStep(msg)
 		case repoAddStepSetup:
 			return m.updateSetupStep(msg)
 		case repoAddStepConfirm:
@@ -262,7 +243,6 @@ func (m RepoAddModel) updateURLStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			defaultClonePath := filepath.Join(home, "Code", repoName)
 			m.clonePathInput.SetValue(defaultClonePath)
 			m.nameInput.SetValue(repoName)
-			m.worktreeDirInput.SetValue(filepath.Join(home, "Code", ".worktrees"))
 		}
 
 		m.step = repoAddStepClonePath
@@ -303,33 +283,11 @@ func (m RepoAddModel) updatePathStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m RepoAddModel) updateNameStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "enter" && m.nameInput.Value() != "" {
 		m.nameInput.Blur()
-		m.step = repoAddStepBaseBranch
-		return m, m.baseBranchInput.Focus()
-	}
-	var cmd tea.Cmd
-	m.nameInput, cmd = m.nameInput.Update(msg)
-	return m, cmd
-}
-
-func (m RepoAddModel) updateBaseBranchStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" && m.baseBranchInput.Value() != "" {
-		m.baseBranchInput.Blur()
-		m.step = repoAddStepWorktreeDir
-		return m, m.worktreeDirInput.Focus()
-	}
-	var cmd tea.Cmd
-	m.baseBranchInput, cmd = m.baseBranchInput.Update(msg)
-	return m, cmd
-}
-
-func (m RepoAddModel) updateWorktreeDirStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "enter" && m.worktreeDirInput.Value() != "" {
-		m.worktreeDirInput.Blur()
 		m.step = repoAddStepSetup
 		return m, m.setupInput.Focus()
 	}
 	var cmd tea.Cmd
-	m.worktreeDirInput, cmd = m.worktreeDirInput.Update(msg)
+	m.nameInput, cmd = m.nameInput.Update(msg)
 	return m, cmd
 }
 
@@ -345,6 +303,8 @@ func (m RepoAddModel) updateSetupStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m RepoAddModel) updateConfirmStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cfg, _ := config.Load()
+
 	switch msg.String() {
 	case "y", "enter":
 		if m.sourceMode == sourceModeClone {
@@ -353,8 +313,8 @@ func (m RepoAddModel) updateConfirmStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				CloneUrl:          m.urlInput.Value(),
 				LocalPath:         m.clonePathInput.Value(),
 				DisplayName:       m.nameInput.Value(),
-				DefaultBaseBranch: m.baseBranchInput.Value(),
-				WorktreeBaseDir:   m.worktreeDirInput.Value(),
+				DefaultBaseBranch: "main",
+				WorktreeBaseDir:   cfg.WorktreeBaseDir,
 			}
 			if s := m.setupInput.Value(); s != "" {
 				req.SetupScript = &s
@@ -367,8 +327,8 @@ func (m RepoAddModel) updateConfirmStep(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		req := &pb.RegisterRepoRequest{
 			LocalPath:         m.pathInput.Value(),
 			DisplayName:       m.nameInput.Value(),
-			DefaultBaseBranch: m.baseBranchInput.Value(),
-			WorktreeBaseDir:   m.worktreeDirInput.Value(),
+			DefaultBaseBranch: m.detectedBaseBranch,
+			WorktreeBaseDir:   cfg.WorktreeBaseDir,
 		}
 		if s := m.setupInput.Value(); s != "" {
 			req.SetupScript = &s
@@ -394,10 +354,6 @@ func (m RepoAddModel) updateActiveInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pathInput, cmd = m.pathInput.Update(msg)
 	case repoAddStepName:
 		m.nameInput, cmd = m.nameInput.Update(msg)
-	case repoAddStepBaseBranch:
-		m.baseBranchInput, cmd = m.baseBranchInput.Update(msg)
-	case repoAddStepWorktreeDir:
-		m.worktreeDirInput, cmd = m.worktreeDirInput.Update(msg)
 	case repoAddStepSetup:
 		m.setupInput, cmd = m.setupInput.Update(msg)
 	default:
@@ -506,8 +462,6 @@ func (m RepoAddModel) viewCloneFields() string {
 		{"Git URL", m.urlInput.Value(), repoAddStepURL},
 		{"Clone path", m.clonePathInput.Value(), repoAddStepClonePath},
 		{"Name", m.nameInput.Value(), repoAddStepName},
-		{"Base branch", m.baseBranchInput.Value(), repoAddStepBaseBranch},
-		{"Worktree dir", m.worktreeDirInput.Value(), repoAddStepWorktreeDir},
 		{"Setup script", m.setupInput.Value(), repoAddStepSetup},
 	}
 
@@ -519,10 +473,6 @@ func (m RepoAddModel) viewCloneFields() string {
 			return m.clonePathInput
 		case repoAddStepName:
 			return m.nameInput
-		case repoAddStepBaseBranch:
-			return m.baseBranchInput
-		case repoAddStepWorktreeDir:
-			return m.worktreeDirInput
 		case repoAddStepSetup:
 			return m.setupInput
 		default:
@@ -565,8 +515,6 @@ func (m RepoAddModel) viewOpenFields() string {
 	}{
 		{"Path", m.pathInput, repoAddStepPath},
 		{"Name", m.nameInput, repoAddStepName},
-		{"Base branch", m.baseBranchInput, repoAddStepBaseBranch},
-		{"Worktree dir", m.worktreeDirInput, repoAddStepWorktreeDir},
 		{"Setup script", m.setupInput, repoAddStepSetup},
 	}
 

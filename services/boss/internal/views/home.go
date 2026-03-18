@@ -124,6 +124,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, func() tea.Msg { return switchViewMsg{view: ViewNewSession} }
 		case "r":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewRepoList} }
+		case "s":
+			return h, func() tea.Msg { return switchViewMsg{view: ViewSettings} }
 		case "t":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewTrash} }
 		case "a":
@@ -311,7 +313,7 @@ func (h HomeModel) View() tea.View {
 		return tea.NewView(
 			renderBanner() + "\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
-				styleActionBar.Render("[n]ew session  [r]epos  [t] open trash  [q]uit"),
+				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t] open trash  [q]uit"),
 		)
 	}
 
@@ -404,7 +406,7 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(styleActionBar.Render("[n]ew session  [enter] select  [a]rchive  [r]epos  [t] open trash  [q]uit"))
+		b.WriteString(styleActionBar.Render("[n]ew session  [enter] select  [a]rchive  [r]epos  [s]ettings  [t] open trash  [q]uit"))
 	}
 
 	return tea.NewView(b.String())

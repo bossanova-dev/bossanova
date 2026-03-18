@@ -12,6 +12,7 @@ import (
 	"github.com/recurser/boss/internal/claude"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -88,11 +89,12 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.launching = false
 
 		// Launch interactive Claude in the session's worktree.
-		var claudeCmd *exec.Cmd
+		cfg, _ := config.Load()
+		var args []string
 		if m.resumeID != "" {
 			// Resume an existing Claude Code session.
 			m.claudeID = m.resumeID
-			claudeCmd = exec.Command("claude", "--resume", m.resumeID)
+			args = append(args, "--resume", m.resumeID)
 		} else {
 			// New chat: generate UUID, record it, and launch with --session-id.
 			newID := uuid.New().String()
@@ -101,8 +103,12 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.claudeID = newID
-			claudeCmd = exec.Command("claude", "--session-id", newID)
+			args = append(args, "--session-id", newID)
 		}
+		if cfg.DangerouslySkipPermissions {
+			args = append(args, "--dangerously-skip-permissions")
+		}
+		claudeCmd := exec.Command("claude", args...)
 		claudeCmd.Dir = msg.session.GetWorktreePath()
 
 		m.manager.RegisterSession(m.claudeID, m.sessionID)

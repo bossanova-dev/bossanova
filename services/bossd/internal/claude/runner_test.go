@@ -16,6 +16,7 @@ import (
 func testRunner(t *testing.T) *Runner {
 	t.Helper()
 	logDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "settings.json")
 	return NewRunner(
 		zerolog.Nop(),
 		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -24,7 +25,24 @@ func testRunner(t *testing.T) *Runner {
 				`cat > /dev/null; for i in $(seq 1 10); do echo "line $i"; done`)
 		}),
 		WithLogDir(logDir),
+		WithConfigPath(configPath),
 	)
+}
+
+// waitForExit polls IsRunning until the process exits or the timeout expires.
+func waitForExit(t *testing.T, r *Runner, sid string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		if !r.IsRunning(sid) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for session %s to exit", sid)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 func TestStartStop(t *testing.T) {
@@ -72,7 +90,7 @@ func TestIsRunning(t *testing.T) {
 	}
 
 	// Wait for process to finish naturally (the echo script is fast).
-	time.Sleep(200 * time.Millisecond)
+	waitForExit(t, r, sid)
 
 	// Should no longer be running (process exited).
 	if r.IsRunning(sid) {
@@ -91,7 +109,7 @@ func TestHistory(t *testing.T) {
 	}
 
 	// Wait for process to finish and output to be captured.
-	time.Sleep(200 * time.Millisecond)
+	waitForExit(t, r, sid)
 
 	lines := r.History(sid)
 	if len(lines) != 10 {
@@ -108,6 +126,7 @@ func TestHistory(t *testing.T) {
 
 func TestLogFileWritten(t *testing.T) {
 	logDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "settings.json")
 	r := NewRunner(
 		zerolog.Nop(),
 		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -115,6 +134,7 @@ func TestLogFileWritten(t *testing.T) {
 				`cat > /dev/null; echo "hello"; echo "world"`)
 		}),
 		WithLogDir(logDir),
+		WithConfigPath(configPath),
 	)
 
 	ctx := context.Background()
@@ -126,7 +146,7 @@ func TestLogFileWritten(t *testing.T) {
 	}
 
 	// Wait for process to finish.
-	time.Sleep(200 * time.Millisecond)
+	waitForExit(t, r, sid)
 
 	// Check log file exists at logDir/<sessionID>.log.
 	logPath := filepath.Join(logDir, sid+".log")
@@ -142,22 +162,24 @@ func TestLogFileWritten(t *testing.T) {
 }
 
 func TestDefaultLogPath(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "settings.json")
 	r := NewRunner(zerolog.Nop(),
 		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			return exec.CommandContext(ctx, "sh", "-c", `cat > /dev/null; echo "ok"`)
 		}),
+		WithConfigPath(configPath),
 	)
 
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	_, err := r.Start(ctx, workDir, "test", nil)
+	sid, err := r.Start(ctx, workDir, "test", nil)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
 	// Wait for process to finish.
-	time.Sleep(200 * time.Millisecond)
+	waitForExit(t, r, sid)
 
 	// Default log path should be workDir/.boss/claude.log.
 	logPath := filepath.Join(workDir, ".boss", "claude.log")
@@ -328,8 +350,89 @@ func TestRingBuffer1000Overflow(t *testing.T) {
 	}
 }
 
+func TestStartWithDangerouslySkipPermissions(t *testing.T) {
+	logDir := t.TempDir()
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "settings.json")
+
+	// Write a config file with dangerously_skip_permissions enabled.
+	if err := os.WriteFile(configPath, []byte(`{"dangerously_skip_permissions": true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedArgs []string
+	r := NewRunner(
+		zerolog.Nop(),
+		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return exec.CommandContext(ctx, "sh", "-c", "cat > /dev/null; echo ok")
+		}),
+		WithLogDir(logDir),
+		WithConfigPath(configPath),
+	)
+
+	ctx := context.Background()
+	workDir := t.TempDir()
+
+	_, err := r.Start(ctx, workDir, "test plan", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Verify --dangerously-skip-permissions was passed.
+	found := false
+	for _, arg := range capturedArgs {
+		if arg == "--dangerously-skip-permissions" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --dangerously-skip-permissions in args, got %v", capturedArgs)
+	}
+}
+
+func TestStartWithoutDangerouslySkipPermissions(t *testing.T) {
+	logDir := t.TempDir()
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "settings.json")
+
+	// Write a config file with dangerously_skip_permissions disabled.
+	if err := os.WriteFile(configPath, []byte(`{"dangerously_skip_permissions": false}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedArgs []string
+	r := NewRunner(
+		zerolog.Nop(),
+		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return exec.CommandContext(ctx, "sh", "-c", "cat > /dev/null; echo ok")
+		}),
+		WithLogDir(logDir),
+		WithConfigPath(configPath),
+	)
+
+	ctx := context.Background()
+	workDir := t.TempDir()
+
+	_, err := r.Start(ctx, workDir, "test plan", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Verify --dangerously-skip-permissions was NOT passed.
+	for _, arg := range capturedArgs {
+		if arg == "--dangerously-skip-permissions" {
+			t.Errorf("expected no --dangerously-skip-permissions in args, got %v", capturedArgs)
+			break
+		}
+	}
+}
+
 func TestStartWithResume(t *testing.T) {
 	logDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "settings.json")
 	resumeID := "prev-session-123"
 	var capturedArgs []string
 
@@ -340,6 +443,7 @@ func TestStartWithResume(t *testing.T) {
 			return exec.CommandContext(ctx, "sh", "-c", "cat > /dev/null; echo resumed")
 		}),
 		WithLogDir(logDir),
+		WithConfigPath(configPath),
 	)
 
 	ctx := context.Background()

@@ -2,7 +2,7 @@
 package claude
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/safego"
 )
 
@@ -54,12 +55,13 @@ var _ ClaudeRunner = (*Runner)(nil)
 
 // Runner is the default ClaudeRunner implementation.
 type Runner struct {
-	mu      sync.RWMutex
-	procs   map[string]*process
-	cmdFunc CommandFactory
-	logger  zerolog.Logger
-	bufSize int
-	logDir  string // if set, write log files here; otherwise use workDir/.boss/
+	mu         sync.RWMutex
+	procs      map[string]*process
+	cmdFunc    CommandFactory
+	logger     zerolog.Logger
+	bufSize    int
+	logDir     string // if set, write log files here; otherwise use workDir/.boss/
+	configPath string // if set, load config from this path; otherwise use default
 }
 
 // process tracks a running Claude subprocess.
@@ -86,6 +88,11 @@ func WithCommandFactory(f CommandFactory) RunnerOption {
 // WithLogDir overrides the log file directory (for testing).
 func WithLogDir(dir string) RunnerOption {
 	return func(r *Runner) { r.logDir = dir }
+}
+
+// WithConfigPath overrides the config file path (for testing).
+func WithConfigPath(path string) RunnerOption {
+	return func(r *Runner) { r.configPath = path }
 }
 
 // NewRunner creates a new Claude process runner.
@@ -121,6 +128,17 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 		args = append(args, "--resume", *resume)
 	}
 
+	// Read global config for optional flags.
+	var cfg config.Settings
+	if r.configPath != "" {
+		cfg, _ = config.LoadFrom(r.configPath)
+	} else {
+		cfg, _ = config.Load()
+	}
+	if cfg.DangerouslySkipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+
 	procCtx, cancel := context.WithCancel(ctx)
 	cmd := r.cmdFunc(procCtx, "claude", args...)
 	cmd.Dir = workDir
@@ -130,20 +148,6 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	if err != nil {
 		cancel()
 		return "", fmt.Errorf("create stdin pipe: %w", err)
-	}
-
-	// Capture stdout.
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return "", fmt.Errorf("create stdout pipe: %w", err)
-	}
-
-	// Capture stderr (merged into same output stream).
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return "", fmt.Errorf("create stderr pipe: %w", err)
 	}
 
 	// Open log file.
@@ -170,6 +174,13 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 		done:      make(chan struct{}),
 	}
 
+	// Use lineWriter for stdout/stderr so that Go's internal I/O copying
+	// completes before cmd.Wait returns — eliminating the race between
+	// goroutine scheduling and fast process exits on CI.
+	lw := &lineWriter{proc: p, logFile: logFile}
+	cmd.Stdout = lw
+	cmd.Stderr = lw
+
 	r.mu.Lock()
 	r.procs[sessionID] = p
 	r.mu.Unlock()
@@ -194,13 +205,10 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 		_, _ = io.WriteString(stdin, plan)
 	})
 
-	// Stream stdout and stderr into ring buffer + log file.
-	safego.Go(r.logger, func() { r.captureOutput(p, stdout) })
-	safego.Go(r.logger, func() { r.captureOutput(p, stderr) })
-
 	// Wait for process exit.
 	safego.Go(r.logger, func() {
 		p.exitErr = cmd.Wait()
+		lw.flush() // emit any trailing partial line
 		_ = p.logFile.Close()
 		p.subs.close()
 		close(p.done)
@@ -287,28 +295,56 @@ func (r *Runner) logPath(workDir, sessionID string) string {
 	return filepath.Join(workDir, ".boss", "claude.log")
 }
 
-// captureOutput reads from a reader line by line and feeds into the ring buffer,
-// log file, and subscriber channels.
-func (r *Runner) captureOutput(p *process, reader io.Reader) {
-	scanner := bufio.NewScanner(reader)
-	// Allow up to 1MB per line for JSON output.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+// lineWriter is an io.Writer that splits output into lines and feeds them
+// into the ring buffer, log file, and subscriber channels. Using cmd.Stdout/
+// cmd.Stderr = lineWriter ensures Go's internal I/O copy completes before
+// cmd.Wait returns, eliminating races with goroutine scheduling.
+type lineWriter struct {
+	mu      sync.Mutex
+	proc    *process
+	logFile *os.File
+	buf     []byte
+}
 
-	for scanner.Scan() {
-		line := OutputLine{
-			Text:      scanner.Text(),
-			Timestamp: time.Now(),
+func (lw *lineWriter) Write(data []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+
+	n := len(data)
+	lw.buf = append(lw.buf, data...)
+
+	for {
+		idx := bytes.IndexByte(lw.buf, '\n')
+		if idx < 0 {
+			break
 		}
+		text := string(lw.buf[:idx])
+		lw.buf = lw.buf[idx+1:]
 
-		// Write to ring buffer.
-		p.ring.add(line)
-
-		// Write to log file.
-		_, _ = fmt.Fprintf(p.logFile, "%s\n", line.Text)
-
-		// Broadcast to subscribers.
-		p.subs.broadcast(line)
+		line := OutputLine{Text: text, Timestamp: time.Now()}
+		lw.proc.ring.add(line)
+		_, _ = fmt.Fprintf(lw.logFile, "%s\n", text)
+		lw.proc.subs.broadcast(line)
 	}
+
+	return n, nil
+}
+
+// flush emits any remaining partial line in the buffer.
+func (lw *lineWriter) flush() {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+
+	if len(lw.buf) == 0 {
+		return
+	}
+	text := string(lw.buf)
+	lw.buf = nil
+
+	line := OutputLine{Text: text, Timestamp: time.Now()}
+	lw.proc.ring.add(line)
+	_, _ = fmt.Fprintf(lw.logFile, "%s\n", text)
+	lw.proc.subs.broadcast(line)
 }
 
 // --- Ring Buffer ---

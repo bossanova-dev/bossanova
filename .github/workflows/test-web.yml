@@ -61,6 +61,10 @@ jobs:
     - name: Install
       run: npm ci
 
+    - uses: bufbuild/buf-action@v1
+      with:
+        setup_only: true
+
     - name: Generate protobuf types
       run: >-
         buf generate

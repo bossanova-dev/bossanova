@@ -20,8 +20,9 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 | 3   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Show the user the proposed grouping for approval.                                                                                           |
 | 4   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
 | 5   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready` to mark the PR as ready for review. Do NOT leave the PR as a draft.                                                                        |
+| 6   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto main and resolve conflicts before completing.                                          |
 
-**If you complete without satisfying ALL FIVE requirements, you have failed this workflow.**
+**If you complete without satisfying ALL SIX requirements, you have failed this workflow.**
 
 ---
 
@@ -235,6 +236,30 @@ This converts the PR from draft to ready-for-review status. Do NOT leave the PR 
 
 **If the PR is already ready for review**, this command is a no-op and safe to run.
 
+### Step 7d: Check for Merge Conflicts
+
+**This step is NON-NEGOTIABLE. You MUST verify there are no merge conflicts.**
+
+```bash
+gh pr view --json mergeable -q .mergeable
+```
+
+**Expected result:** `MERGEABLE` — the PR can be merged cleanly.
+
+**If the result is `CONFLICTING`:**
+
+1. Fetch the latest main: `git fetch origin main`
+2. Rebase onto main: `git rebase origin/main`
+3. Resolve any conflicts during the rebase
+4. Re-run quality gates (`make`, `make lint`, `make test`) to ensure nothing broke
+5. Force-push: `git push --force-with-lease`
+6. Wait and re-check: `gh pr view --json mergeable -q .mergeable`
+7. Repeat until `MERGEABLE`
+
+**If the result is `UNKNOWN`:** GitHub is still computing mergeability. Wait a few seconds and re-check.
+
+**Do NOT leave the session with merge conflicts.** A PR with conflicts cannot be merged and blocks the review process.
+
 ### Step 8: Clean Up and Verify
 
 ```bash
@@ -287,6 +312,7 @@ Before saying "done", verify ALL items:
 - [ ] `git push` succeeded
 - [ ] GitHub checks are not failing (idle/queued/in_progress/passing are OK)
 - [ ] PR marked as ready for review (`gh pr ready`)
+- [ ] No merge conflicts (`gh pr view --json mergeable -q .mergeable` → `MERGEABLE`)
 - [ ] Provided handoff with next steps
 
 ---
@@ -309,6 +335,7 @@ Before saying "done", verify ALL items:
 | Ignored failing check as "unrelated" | CI still red           | Even if unrelated, inform user and get explicit acknowledgment                                       |
 | Left empty "create PR" commit        | Messy history          | Use `drop` in rebase to remove empty scaffolding commits like `chore: [skip ci] create pull request` |
 | Left PR as draft                     | Not reviewable         | Run `gh pr ready` to mark the PR as ready for review before completing                               |
+| Left PR with merge conflicts         | PR can't be merged     | Run `gh pr view --json mergeable -q .mergeable`, rebase onto main if `CONFLICTING`                   |
 
 ---
 

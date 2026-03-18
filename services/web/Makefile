@@ -1,4 +1,7 @@
-.PHONY: format test dev clean build
+.PHONY: all format test dev clean build
+
+## all: Clean, format, build, and test
+all: clean format build test
 
 ## format: Lint/fix TypeScript and CSS
 format:

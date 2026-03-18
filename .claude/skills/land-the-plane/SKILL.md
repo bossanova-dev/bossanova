@@ -17,12 +17,13 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **All quality gates pass**      | Run `make` (full build), then `make lint` and `make test`. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on origin/main.                                        |
 | 2   | **PR number in ALL commits**    | Every commit on this branch (compared to origin/main) MUST have `[#PR-NUM]` in the message. Check with `git log origin/main..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
-| 3   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Show the user the proposed grouping for approval.                                                                                           |
-| 4   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
-| 5   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready` to mark the PR as ready for review. Do NOT leave the PR as a draft.                                                                        |
-| 6   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto main and resolve conflicts before completing.                                          |
+| 3   | **User approval obtained**      | You MUST ask the user "Do I have permission to push?" and WAIT for their explicit "yes" before ANY push or force-push.                                                                                  |
+| 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Show the user the proposed grouping for approval.                                                                                           |
+| 5   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
+| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready` to mark the PR as ready for review. Do NOT leave the PR as a draft.                                                                        |
+| 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto main and resolve conflicts before completing.                                          |
 
-**If you complete without satisfying ALL SIX requirements, you have failed this workflow.**
+**If you complete without satisfying ALL SEVEN requirements, you have failed this workflow.**
 
 ---
 
@@ -228,6 +229,8 @@ gh pr checks
 
 **This step is NON-NEGOTIABLE. You MUST mark the PR as ready for review.**
 
+After checks are passing (or pending/in_progress), mark the PR as ready:
+
 ```bash
 gh pr ready
 ```
@@ -325,6 +328,7 @@ Before saying "done", verify ALL items:
 | Skipped quality gates                | CI will fail           | Run ALL gates: `make`, `make lint`, `make test`                                                      |
 | Dismissed failure as "pre-existing"  | Failure was fixable    | Verify on origin/main before dismissing. Missing generated code is NOT pre-existing — run `make`     |
 | Missing dependencies in worktree     | Generate/format fails  | Run `cd services/web && pnpm install` before `make` if node_modules is missing                       |
+| Pushed without asking                | User didn't approve    | ALWAYS ask "Do I have permission to push?" and WAIT for explicit "yes"                               |
 | Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/land-the-plane/add-pr-numbers.sh` to fix ALL commits                             |
 | Reported issue but didn't fix        | Commits still broken   | You MUST run the script, not just report that commits need fixing                                    |
 | Used `origin/HEAD` not `origin/main` | Wrong comparison       | Always compare to `origin/main` to find all branch commits                                           |

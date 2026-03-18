@@ -6,26 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-)
-
-// Wizard steps for new session creation.
-type wizardStep int
-
-const (
-	stepRepoSelect       wizardStep = iota
-	stepSessionType                 // replaces stepPRMode
-	stepPRSelect                    // existing PR only
-	stepTitleInput                  // new PR only
-	stepPlanInput                   // plan feature only
-	stepConfirmOverwrite            // branch exists, confirm force
-	stepCreating                    // waiting for CreateSession RPC
 )
 
 // sessionType identifies the kind of session to create.
@@ -36,6 +22,16 @@ const (
 	sessionTypeExistingPR                     // Work on an existing PR
 	sessionTypePlanFeature                    // Plan a feature
 	sessionTypeExecutePlan                    // Execute a plan (placeholder)
+)
+
+// newSessionPhase tracks the current phase of the wizard.
+type newSessionPhase int
+
+const (
+	newSessionPhaseLoading  newSessionPhase = iota // Fetching repos
+	newSessionPhaseForm                            // Main huh form active
+	newSessionPhaseCreating                        // Waiting for CreateSession RPC
+	newSessionPhaseDone                            // Terminal
 )
 
 // reposMsg carries the result of a ListRepos RPC call.
@@ -61,34 +57,29 @@ type NewSessionModel struct {
 	client client.BossClient
 	ctx    context.Context
 
-	step   wizardStep
+	phase  newSessionPhase
 	err    error
 	done   bool
 	cancel bool
 
-	// Step 1: Repo select
-	repos      []*pb.Repo
-	repoCursor int
+	// Data
+	repos []*pb.Repo
+	prs   []*pb.PRSummary
 
-	// Step 2: Session type
-	sessionTypeCursor int
+	// Form-bound values
+	selectedRepoID string
+	selectedType   sessionType
+	selectedPRIdx  int
+	title          string
+	plan           string
 
-	// Step 3: PR select (existing PR)
-	prs      []*pb.PRSummary
-	prCursor int
-	prsErr   error
+	// Async / conflict state
+	createdSess         *pb.Session
+	forceBranch         bool
+	confirmingOverwrite bool
 
-	// Plan input (plan feature only)
-	planInput textarea.Model
-
-	// Title input (new PR only)
-	titleInput textinput.Model
-
-	// Collected values
-	selectedRepo *pb.Repo
-	selectedPR   *pb.PRSummary
-	createdSess  *pb.Session
-	forceBranch  bool // retry with force after branch conflict
+	// Form
+	form *huh.Form
 
 	// Layout
 	width int
@@ -96,30 +87,10 @@ type NewSessionModel struct {
 
 // NewNewSessionModel creates a NewSessionModel wired to the daemon client.
 func NewNewSessionModel(c client.BossClient, ctx context.Context) NewSessionModel {
-	ti := textinput.New()
-	ti.Placeholder = "Session title"
-	ti.SetWidth(50)
-
-	ta := textarea.New()
-	ta.Placeholder = "Describe what Claude should implement..."
-	ta.SetWidth(60)
-	ta.SetHeight(8)
-	ta.ShowLineNumbers = false
-	ta.Prompt = ""
-	taStyles := ta.Styles()
-	taStyles.Focused.Base = lipgloss.NewStyle().
-		BorderTop(false).BorderBottom(true).
-		BorderLeft(false).BorderRight(false).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("8"))
-	ta.SetStyles(taStyles)
-
 	return NewSessionModel{
-		client:     c,
-		ctx:        ctx,
-		step:       stepRepoSelect,
-		titleInput: ti,
-		planInput:  ta,
+		client: c,
+		ctx:    ctx,
+		phase:  newSessionPhaseLoading,
 	}
 }
 
@@ -148,6 +119,74 @@ func createSession(c client.BossClient, ctx context.Context, req *pb.CreateSessi
 	}
 }
 
+func (m *NewSessionModel) buildForm() {
+	// Build repo options.
+	repoOpts := make([]huh.Option[string], len(m.repos))
+	for i, r := range m.repos {
+		repoOpts[i] = huh.NewOption(r.DisplayName+"  "+styleSubtle.Render(r.LocalPath), r.Id)
+	}
+
+	// Session type options.
+	typeOpts := []huh.Option[sessionType]{
+		huh.NewOption("Create a new PR — Start a fresh branch and pull request", sessionTypeNewPR),
+		huh.NewOption("Work on an existing PR — Attach to an open pull request", sessionTypeExistingPR),
+		huh.NewOption("Plan a feature — Describe what to build, then launch Claude", sessionTypePlanFeature),
+	}
+
+	groups := []*huh.Group{
+		// Repo select — skip if single repo (auto-selected in reposMsg handler).
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Select a repository").
+				Options(repoOpts...).
+				Value(&m.selectedRepoID),
+		).WithHideFunc(func() bool { return len(m.repos) <= 1 }),
+
+		// Session type.
+		huh.NewGroup(
+			huh.NewSelect[sessionType]().
+				Title("Session type").
+				Options(typeOpts...).
+				Value(&m.selectedType),
+		),
+
+		// Title input — new PR only.
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Session title").
+				Placeholder("What are you working on?").
+				Value(&m.title).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("title is required")
+					}
+					return nil
+				}),
+		).WithHideFunc(func() bool { return m.selectedType != sessionTypeNewPR }),
+
+		// Plan input — plan feature only.
+		huh.NewGroup(
+			huh.NewText().
+				Title("What would you like to work on?").
+				Placeholder("Describe what Claude should implement...").
+				Lines(8).
+				Value(&m.plan).
+				ExternalEditor(false).
+				Validate(func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("plan is required")
+					}
+					return nil
+				}),
+		).WithHideFunc(func() bool { return m.selectedType != sessionTypePlanFeature }),
+	}
+
+	m.form = huh.NewForm(groups...).
+		WithTheme(bossHuhTheme()).
+		WithShowHelp(false).
+		WithWidth(70)
+}
+
 func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -161,27 +200,52 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.repos = msg.repos
 		if len(m.repos) == 1 {
-			// Auto-select the only repo.
-			m.selectedRepo = m.repos[0]
-			m.step = stepSessionType
+			m.selectedRepoID = m.repos[0].Id
 		}
-		return m, nil
+		m.phase = newSessionPhaseForm
+		m.buildForm()
+		return m, m.form.Init()
 
 	case prsMsg:
 		m.prs = msg.prs
-		m.prsErr = msg.err
-		return m, nil
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		if len(m.prs) == 0 {
+			m.err = fmt.Errorf("no open PRs found")
+			return m, nil
+		}
+		// Build a selection form for PRs.
+		prOpts := make([]huh.Option[int], len(m.prs))
+		for i, pr := range m.prs {
+			prOpts[i] = huh.NewOption(
+				fmt.Sprintf("#%d  %s  %s", pr.Number, pr.Title, styleSubtle.Render(pr.HeadBranch)),
+				i,
+			)
+		}
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[int]().
+					Title("Select a PR").
+					Options(prOpts...).
+					Value(&m.selectedPRIdx),
+			),
+		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+		m.phase = newSessionPhaseForm
+		return m, m.form.Init()
 
 	case sessionCreatedMsg:
 		if msg.err != nil {
-			// Check if the error is a branch-already-exists conflict.
 			var connectErr *connect.Error
 			if errors.As(msg.err, &connectErr) && connectErr.Code() == connect.CodeAlreadyExists {
-				m.step = stepConfirmOverwrite
+				m.confirmingOverwrite = true
+				m.phase = newSessionPhaseForm
 				m.err = nil
 				return m, nil
 			}
 			m.err = msg.err
+			m.phase = newSessionPhaseForm
 			return m, nil
 		}
 		m.createdSess = msg.session
@@ -189,177 +253,106 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Global keys
+		if m.confirmingOverwrite {
+			return m.updateConfirmOverwrite(msg)
+		}
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
 			return m, nil
 		}
-
-		switch m.step {
-		case stepRepoSelect:
-			return m.updateRepoSelect(msg)
-		case stepSessionType:
-			return m.updateSessionType(msg)
-		case stepPRSelect:
-			return m.updatePRSelect(msg)
-		case stepTitleInput:
-			return m.updateTitleInput(msg)
-		case stepPlanInput:
-			return m.updatePlanInput(msg)
-		case stepConfirmOverwrite:
-			return m.updateConfirmOverwrite(msg)
-		default:
-		}
 	}
 
-	// Pass through to focused inputs.
-	switch m.step {
-	case stepTitleInput:
-		var cmd tea.Cmd
-		m.titleInput, cmd = m.titleInput.Update(msg)
+	// Delegate to form.
+	if m.form != nil && m.phase == newSessionPhaseForm && !m.confirmingOverwrite {
+		_, cmd := m.form.Update(msg)
+
+		if m.form.State == huh.StateAborted {
+			m.cancel = true
+			return m, nil
+		}
+
+		if m.form.State == huh.StateCompleted {
+			return m.handleFormCompleted()
+		}
+
 		return m, cmd
-	case stepPlanInput:
-		var cmd tea.Cmd
-		m.planInput, cmd = m.planInput.Update(msg)
-		return m, cmd
-	default:
 	}
 
 	return m, nil
 }
 
-func (m NewSessionModel) updateRepoSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
-		if m.repoCursor > 0 {
-			m.repoCursor--
-		}
-	case "down", "j":
-		if m.repoCursor < len(m.repos)-1 {
-			m.repoCursor++
-		}
-	case "enter":
-		if len(m.repos) > 0 {
-			m.selectedRepo = m.repos[m.repoCursor]
-			m.step = stepSessionType
-		}
+func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
+	// If we were selecting a PR, that form just completed.
+	if m.selectedType == sessionTypeExistingPR && m.prs != nil {
+		return m, m.startCreating()
 	}
-	return m, nil
-}
 
-func (m NewSessionModel) selectedSessionType() sessionType {
-	return sessionType(m.sessionTypeCursor)
-}
-
-func (m NewSessionModel) updateSessionType(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	const optionCount = 4
-	switch msg.String() {
-	case "up", "k":
-		if m.sessionTypeCursor > 0 {
-			m.sessionTypeCursor--
-		}
-	case "down", "j":
-		if m.sessionTypeCursor < optionCount-1 {
-			m.sessionTypeCursor++
-		}
-	case "enter":
-		switch m.selectedSessionType() {
-		case sessionTypeNewPR:
-			m.step = stepTitleInput
-			return m, m.titleInput.Focus()
-		case sessionTypeExistingPR:
-			m.step = stepPRSelect
-			return m, fetchPRs(m.client, m.ctx, m.selectedRepo.Id)
-		case sessionTypePlanFeature:
-			m.step = stepPlanInput
-			return m, m.planInput.Focus()
-		case sessionTypeExecutePlan:
-			// Placeholder — no action.
-		}
+	// If existing PR was chosen but we haven't loaded PRs yet, fetch them.
+	if m.selectedType == sessionTypeExistingPR && m.prs == nil {
+		m.phase = newSessionPhaseLoading
+		return m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
 	}
-	return m, nil
-}
 
-func (m NewSessionModel) updatePRSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
-		if m.prCursor > 0 {
-			m.prCursor--
-		}
-	case "down", "j":
-		if m.prCursor < len(m.prs)-1 {
-			m.prCursor++
-		}
-	case "enter":
-		if len(m.prs) > 0 {
-			m.selectedPR = m.prs[m.prCursor]
-			return m, m.startCreating()
-		}
-	}
-	return m, nil
-}
-
-func (m NewSessionModel) updateTitleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
-		if m.titleInput.Value() != "" {
-			m.titleInput.Blur()
-			return m, m.startCreating()
-		}
-	}
-	// Pass through to textinput.
-	var cmd tea.Cmd
-	m.titleInput, cmd = m.titleInput.Update(msg)
-	return m, cmd
-}
-
-func (m NewSessionModel) updatePlanInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+d":
-		if m.planInput.Value() != "" {
-			m.planInput.Blur()
-			return m, m.startCreating()
-		}
+	// Execute plan is a placeholder — do nothing.
+	if m.selectedType == sessionTypeExecutePlan {
+		m.cancel = true
 		return m, nil
 	}
-	// Pass through to textarea.
-	var cmd tea.Cmd
-	m.planInput, cmd = m.planInput.Update(msg)
-	return m, cmd
+
+	// New PR or plan — proceed to create.
+	return m, m.startCreating()
 }
 
 func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
+		m.confirmingOverwrite = false
 		m.forceBranch = true
 		return m, m.startCreating()
-	case "n", "N":
-		// Go back to the title input step.
-		m.step = stepTitleInput
-		return m, m.titleInput.Focus()
+	case "n", "N", "esc":
+		m.confirmingOverwrite = false
+		m.cancel = true
+		return m, nil
 	}
 	return m, nil
 }
 
+func (m *NewSessionModel) selectedRepo() *pb.Repo {
+	for _, r := range m.repos {
+		if r.Id == m.selectedRepoID {
+			return r
+		}
+	}
+	return nil
+}
+
 // startCreating builds a CreateSessionRequest and fires the RPC.
 func (m *NewSessionModel) startCreating() tea.Cmd {
-	m.step = stepCreating
+	m.phase = newSessionPhaseCreating
+	repo := m.selectedRepo()
+	if repo == nil {
+		m.err = fmt.Errorf("no repository selected")
+		return nil
+	}
+
 	req := &pb.CreateSessionRequest{
-		RepoId:      m.selectedRepo.Id,
-		BaseBranch:  m.selectedRepo.DefaultBaseBranch,
+		RepoId:      repo.Id,
+		BaseBranch:  repo.DefaultBaseBranch,
 		ForceBranch: m.forceBranch,
 	}
 
-	switch m.selectedSessionType() {
+	switch m.selectedType {
 	case sessionTypeNewPR:
-		req.Title = m.titleInput.Value()
+		req.Title = m.title
 	case sessionTypeExistingPR:
-		req.Title = m.selectedPR.Title
-		req.PrNumber = &m.selectedPR.Number
+		if m.selectedPRIdx >= 0 && m.selectedPRIdx < len(m.prs) {
+			pr := m.prs[m.selectedPRIdx]
+			req.Title = pr.Title
+			req.PrNumber = &pr.Number
+		}
 	case sessionTypePlanFeature:
-		// Use the first line of the plan as the title, or a default.
-		plan := m.planInput.Value()
+		plan := m.plan
 		req.Plan = plan
 		firstLine := strings.SplitN(plan, "\n", 2)[0]
 		if len(firstLine) > 72 {
@@ -383,14 +376,20 @@ func (m NewSessionModel) Done() bool { return m.done }
 func (m NewSessionModel) CreatedSession() *pb.Session { return m.createdSess }
 
 func (m NewSessionModel) View() tea.View {
-	if m.err != nil {
+	if m.err != nil && !m.confirmingOverwrite {
 		return tea.NewView(
 			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
 				styleActionBar.Render("[esc] back"),
 		)
 	}
 
-	if m.step == stepCreating {
+	if m.phase == newSessionPhaseLoading {
+		return tea.NewView(
+			lipgloss.NewStyle().Padding(1, 2).Render("Loading..."),
+		)
+	}
+
+	if m.phase == newSessionPhaseCreating {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Render("Creating a new session..."),
 		)
@@ -405,161 +404,36 @@ func (m NewSessionModel) View() tea.View {
 		)
 	}
 
-	var b strings.Builder
-	bold := lipgloss.NewStyle().Bold(true)
-	if m.step == stepRepoSelect {
-		b.WriteString(styleTitle.Render("New Session"))
-	} else {
+	if m.confirmingOverwrite {
+		var b strings.Builder
+		b.WriteString(m.headerView())
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+			"A branch with this name already exists."))
+		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			"Starting a " + bold.Render("new session") + " for " + bold.Render(m.selectedRepo.DisplayName)))
-	}
-	b.WriteString("\n")
-
-	switch m.step {
-	case stepRepoSelect:
-		m.viewRepoSelect(&b)
-	case stepSessionType:
-		m.viewSessionType(&b)
-	case stepPRSelect:
-		m.viewPRSelect(&b)
-	case stepTitleInput:
-		m.viewTitleInput(&b)
-	case stepPlanInput:
-		m.viewPlanInput(&b)
-	case stepConfirmOverwrite:
-		m.viewConfirmOverwrite(&b)
-	default:
+			"Remove the old branch and create a new session?"))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+		return tea.NewView(b.String())
 	}
 
-	return tea.NewView(b.String())
+	if m.form != nil {
+		var b strings.Builder
+		b.WriteString(m.headerView())
+		b.WriteString(m.form.View())
+		return tea.NewView(b.String())
+	}
+
+	return tea.NewView("")
 }
 
-func (m NewSessionModel) viewRepoSelect(b *strings.Builder) {
-	if len(m.repos) == 0 {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No repositories registered."))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Add one with: boss repo add"))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[esc] back"))
-		return
+func (m NewSessionModel) headerView() string {
+	repo := m.selectedRepo()
+	if repo == nil {
+		return ""
 	}
-
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Select a repository:"))
-	b.WriteString("\n\n")
-
-	for i, repo := range m.repos {
-		cursor := "  "
-		if i == m.repoCursor {
-			cursor = "> "
-		}
-		line := fmt.Sprintf("%s%s  %s", cursor, repo.DisplayName, styleSubtle.Render(repo.LocalPath))
-		if i == m.repoCursor {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
-	}
-
-	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
-}
-
-func (m NewSessionModel) viewSessionType(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Session type:"))
-	b.WriteString("\n\n")
-
-	type option struct {
-		label string
-		desc  string
-	}
-	options := []option{
-		{"Create a new PR", "Start a fresh branch and pull request"},
-		{"Work on an existing PR", "Attach to an open pull request"},
-		{"Plan a feature", "Describe what to build, then launch Claude"},
-		{"Execute a plan", "Coming soon"},
-	}
-	for i, opt := range options {
-		cursor := "  "
-		if i == m.sessionTypeCursor {
-			cursor = "> "
-		}
-		line := cursor + opt.label
-		if i == len(options)-1 {
-			// Dim the placeholder option.
-			line = cursor + styleSubtle.Render(opt.label+" — "+opt.desc)
-		} else if i == m.sessionTypeCursor {
-			line = styleSelected.Render(line) + "  " + styleSubtle.Render(opt.desc)
-		} else {
-			line = line + "  " + styleSubtle.Render(opt.desc)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
-	}
-
-	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
-}
-
-func (m NewSessionModel) viewPRSelect(b *strings.Builder) {
-	if m.prsErr != nil {
-		b.WriteString(renderError(fmt.Sprintf("Failed to load PRs: %v", m.prsErr), m.width))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[esc] back"))
-		return
-	}
-
-	if m.prs == nil {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Loading PRs..."))
-		return
-	}
-
-	if len(m.prs) == 0 {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No open PRs found."))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[esc] back"))
-		return
-	}
-
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Select a PR:"))
-	b.WriteString("\n\n")
-
-	for i, pr := range m.prs {
-		cursor := "  "
-		if i == m.prCursor {
-			cursor = "> "
-		}
-		line := fmt.Sprintf("%s#%d  %s  %s", cursor, pr.Number, pr.Title, styleSubtle.Render(pr.HeadBranch))
-		if i == m.prCursor {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
-	}
-
-	b.WriteString(styleActionBar.Render("[enter] select  [esc] cancel"))
-}
-
-func (m NewSessionModel) viewTitleInput(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Session title:"))
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.titleInput.View()))
-	b.WriteString("\n")
-	b.WriteString(styleActionBar.Render("[enter] next  [esc] cancel"))
-}
-
-func (m NewSessionModel) viewPlanInput(b *strings.Builder) {
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("What would you like to work on?"))
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(m.planInput.View()))
-	b.WriteString("\n")
-	b.WriteString(styleActionBar.Render("[ctrl+d] next  [esc] cancel"))
-}
-
-func (m NewSessionModel) viewConfirmOverwrite(b *strings.Builder) {
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
-		"A branch with this name already exists."))
-	b.WriteString("\n")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-		"Remove the old branch and create a new session?"))
-	b.WriteString("\n")
-	b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	bold := lipgloss.NewStyle().Bold(true)
+	return lipgloss.NewStyle().Padding(0, 2).Render(
+		"Starting a "+bold.Render("new session")+" for "+bold.Render(repo.DisplayName)) + "\n"
 }

@@ -54,6 +54,15 @@ type sessionCreatedMsg struct {
 	err     error
 }
 
+// formData holds huh form-bound values on the heap so that Value() pointers
+// remain valid across bubbletea value-receiver copies of NewSessionModel.
+type formData struct {
+	selectedType  sessionType
+	selectedPRIdx int
+	title         string
+	plan          string
+}
+
 // NewSessionModel is the multi-step wizard for creating a new coding session.
 type NewSessionModel struct {
 	client client.BossClient
@@ -68,12 +77,9 @@ type NewSessionModel struct {
 	repos []*pb.Repo
 	prs   []*pb.PRSummary
 
-	// Form-bound values
+	// Form-bound values (heap-allocated for stable pointers)
 	selectedRepoID string
-	selectedType   sessionType
-	selectedPRIdx  int
-	title          string
-	plan           string
+	fd             *formData
 
 	// Async / conflict state
 	createdSess         *pb.Session
@@ -169,6 +175,8 @@ func (m NewSessionModel) repoTableHeight() int {
 }
 
 func (m *NewSessionModel) buildForm() {
+	m.fd = &formData{}
+
 	// Session type options.
 	typeOpts := []huh.Option[sessionType]{
 		huh.NewOption("Create a new PR — Start a fresh branch and pull request", sessionTypeNewPR),
@@ -182,7 +190,7 @@ func (m *NewSessionModel) buildForm() {
 			huh.NewSelect[sessionType]().
 				Title("Session type").
 				Options(typeOpts...).
-				Value(&m.selectedType),
+				Value(&m.fd.selectedType),
 		),
 
 		// Title input — new PR only.
@@ -190,14 +198,14 @@ func (m *NewSessionModel) buildForm() {
 			huh.NewInput().
 				Title("Session title").
 				Placeholder("What are you working on?").
-				Value(&m.title).
+				Value(&m.fd.title).
 				Validate(func(s string) error {
 					if strings.TrimSpace(s) == "" {
 						return fmt.Errorf("title is required")
 					}
 					return nil
 				}),
-		).WithHideFunc(func() bool { return m.selectedType != sessionTypeNewPR }),
+		).WithHideFunc(func() bool { return m.fd.selectedType != sessionTypeNewPR }),
 
 		// Plan input — plan feature only.
 		huh.NewGroup(
@@ -205,7 +213,7 @@ func (m *NewSessionModel) buildForm() {
 				Title("What would you like to work on?").
 				Placeholder("Describe what Claude should implement...").
 				Lines(8).
-				Value(&m.plan).
+				Value(&m.fd.plan).
 				ExternalEditor(false).
 				Validate(func(s string) error {
 					if strings.TrimSpace(s) == "" {
@@ -213,7 +221,7 @@ func (m *NewSessionModel) buildForm() {
 					}
 					return nil
 				}),
-		).WithHideFunc(func() bool { return m.selectedType != sessionTypePlanFeature }),
+		).WithHideFunc(func() bool { return m.fd.selectedType != sessionTypePlanFeature }),
 	}
 
 	m.form = huh.NewForm(groups...).
@@ -267,12 +275,13 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				i,
 			)
 		}
+		m.fd.selectedPRIdx = 0
 		m.form = huh.NewForm(
 			huh.NewGroup(
 				huh.NewSelect[int]().
 					Title("Select a PR").
 					Options(prOpts...).
-					Value(&m.selectedPRIdx),
+					Value(&m.fd.selectedPRIdx),
 			),
 		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
 		m.phase = newSessionPhaseForm
@@ -350,18 +359,18 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 	// If we were selecting a PR, that form just completed.
-	if m.selectedType == sessionTypeExistingPR && m.prs != nil {
+	if m.fd.selectedType == sessionTypeExistingPR && m.prs != nil {
 		return *m, m.startCreating()
 	}
 
 	// If existing PR was chosen but we haven't loaded PRs yet, fetch them.
-	if m.selectedType == sessionTypeExistingPR && m.prs == nil {
+	if m.fd.selectedType == sessionTypeExistingPR && m.prs == nil {
 		m.phase = newSessionPhaseLoading
 		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
 	}
 
 	// Execute plan is a placeholder — do nothing.
-	if m.selectedType == sessionTypeExecutePlan {
+	if m.fd.selectedType == sessionTypeExecutePlan {
 		m.cancel = true
 		return *m, nil
 	}
@@ -408,17 +417,17 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		ForceBranch: m.forceBranch,
 	}
 
-	switch m.selectedType {
+	switch m.fd.selectedType {
 	case sessionTypeNewPR:
-		req.Title = m.title
+		req.Title = m.fd.title
 	case sessionTypeExistingPR:
-		if m.selectedPRIdx >= 0 && m.selectedPRIdx < len(m.prs) {
-			pr := m.prs[m.selectedPRIdx]
+		if m.fd.selectedPRIdx >= 0 && m.fd.selectedPRIdx < len(m.prs) {
+			pr := m.prs[m.fd.selectedPRIdx]
 			req.Title = pr.Title
 			req.PrNumber = &pr.Number
 		}
 	case sessionTypePlanFeature:
-		plan := m.plan
+		plan := m.fd.plan
 		req.Plan = plan
 		firstLine := strings.SplitN(plan, "\n", 2)[0]
 		if len(firstLine) > 72 {

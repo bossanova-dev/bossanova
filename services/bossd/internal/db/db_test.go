@@ -345,6 +345,98 @@ func TestAttemptStore_CRUD(t *testing.T) {
 	}
 }
 
+func TestRepoStore_SettingsFields(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewRepoStore(db)
+	ctx := context.Background()
+
+	// Create repo — verify defaults.
+	repo, err := store.Create(ctx, CreateRepoParams{
+		DisplayName:       "settings-test",
+		LocalPath:         "/tmp/settings-test",
+		OriginURL:         "https://github.com/test/settings.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if repo.CanAutoMerge {
+		t.Error("CanAutoMerge should default to false")
+	}
+	if !repo.CanAutoMergeDependabot {
+		t.Error("CanAutoMergeDependabot should default to true")
+	}
+	if !repo.CanAutoAddressReviews {
+		t.Error("CanAutoAddressReviews should default to true")
+	}
+	if !repo.CanAutoResolveConflicts {
+		t.Error("CanAutoResolveConflicts should default to true")
+	}
+
+	// Update each field and verify.
+	trueVal := true
+	falseVal := false
+
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{
+		CanAutoMerge: &trueVal,
+	})
+	if err != nil {
+		t.Fatalf("update CanAutoMerge: %v", err)
+	}
+	if !updated.CanAutoMerge {
+		t.Error("CanAutoMerge should be true after update")
+	}
+
+	updated, err = store.Update(ctx, repo.ID, UpdateRepoParams{
+		CanAutoMergeDependabot: &falseVal,
+	})
+	if err != nil {
+		t.Fatalf("update CanAutoMergeDependabot: %v", err)
+	}
+	if updated.CanAutoMergeDependabot {
+		t.Error("CanAutoMergeDependabot should be false after update")
+	}
+
+	updated, err = store.Update(ctx, repo.ID, UpdateRepoParams{
+		CanAutoAddressReviews: &falseVal,
+	})
+	if err != nil {
+		t.Fatalf("update CanAutoAddressReviews: %v", err)
+	}
+	if updated.CanAutoAddressReviews {
+		t.Error("CanAutoAddressReviews should be false after update")
+	}
+
+	updated, err = store.Update(ctx, repo.ID, UpdateRepoParams{
+		CanAutoResolveConflicts: &falseVal,
+	})
+	if err != nil {
+		t.Fatalf("update CanAutoResolveConflicts: %v", err)
+	}
+	if updated.CanAutoResolveConflicts {
+		t.Error("CanAutoResolveConflicts should be false after update")
+	}
+
+	// Verify persistence by re-fetching.
+	got, err := store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.CanAutoMerge {
+		t.Error("CanAutoMerge should persist as true")
+	}
+	if got.CanAutoMergeDependabot {
+		t.Error("CanAutoMergeDependabot should persist as false")
+	}
+	if got.CanAutoAddressReviews {
+		t.Error("CanAutoAddressReviews should persist as false")
+	}
+	if got.CanAutoResolveConflicts {
+		t.Error("CanAutoResolveConflicts should persist as false")
+	}
+}
+
 func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

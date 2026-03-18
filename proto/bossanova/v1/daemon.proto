@@ -18,6 +18,7 @@ service DaemonService {
   rpc CloneAndRegisterRepo(CloneAndRegisterRepoRequest) returns (CloneAndRegisterRepoResponse);
   rpc ListRepos(ListReposRequest) returns (ListReposResponse);
   rpc RemoveRepo(RemoveRepoRequest) returns (RemoveRepoResponse);
+  rpc UpdateRepo(UpdateRepoRequest) returns (UpdateRepoResponse);
   rpc ListRepoPRs(ListRepoPRsRequest) returns (ListRepoPRsResponse);
 
   // Session lifecycle
@@ -118,6 +119,19 @@ message RemoveRepoRequest {
 }
 
 message RemoveRepoResponse {}
+
+message UpdateRepoRequest {
+  string id = 1;
+  optional string display_name = 2;
+  optional bool can_auto_merge = 3;
+  optional bool can_auto_merge_dependabot = 4;
+  optional bool can_auto_address_reviews = 5;
+  optional bool can_auto_resolve_conflicts = 6;
+}
+
+message UpdateRepoResponse {
+  Repo repo = 1;
+}
 
 message ListRepoPRsRequest {
   string repo_id = 1;

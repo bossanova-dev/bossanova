@@ -14,14 +14,18 @@ import (
 // repoToProto converts a domain Repo to its protobuf representation.
 func repoToProto(r *models.Repo) *pb.Repo {
 	p := &pb.Repo{
-		Id:                r.ID,
-		DisplayName:       r.DisplayName,
-		LocalPath:         r.LocalPath,
-		OriginUrl:         r.OriginURL,
-		DefaultBaseBranch: r.DefaultBaseBranch,
-		WorktreeBaseDir:   r.WorktreeBaseDir,
-		CreatedAt:         timestamppb.New(r.CreatedAt),
-		UpdatedAt:         timestamppb.New(r.UpdatedAt),
+		Id:                      r.ID,
+		DisplayName:             r.DisplayName,
+		LocalPath:               r.LocalPath,
+		OriginUrl:               r.OriginURL,
+		DefaultBaseBranch:       r.DefaultBaseBranch,
+		WorktreeBaseDir:         r.WorktreeBaseDir,
+		CanAutoMerge:            r.CanAutoMerge,
+		CanAutoMergeDependabot:  r.CanAutoMergeDependabot,
+		CanAutoAddressReviews:   r.CanAutoAddressReviews,
+		CanAutoResolveConflicts: r.CanAutoResolveConflicts,
+		CreatedAt:               timestamppb.New(r.CreatedAt),
+		UpdatedAt:               timestamppb.New(r.UpdatedAt),
 	}
 	if r.SetupScript != nil {
 		p.SetupScript = r.SetupScript

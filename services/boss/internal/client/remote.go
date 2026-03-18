@@ -98,6 +98,10 @@ func (c *RemoteClient) RemoveRepo(_ context.Context, _ string) error {
 	return errLocalOnly("RemoveRepo")
 }
 
+func (c *RemoteClient) UpdateRepo(_ context.Context, _ *pb.UpdateRepoRequest) (*pb.Repo, error) {
+	return nil, errLocalOnly("UpdateRepo")
+}
+
 func (c *RemoteClient) ListRepoPRs(_ context.Context, _ string) ([]*pb.PRSummary, error) {
 	return nil, errLocalOnly("ListRepoPRs")
 }

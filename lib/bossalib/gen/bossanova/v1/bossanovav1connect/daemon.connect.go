@@ -50,6 +50,9 @@ const (
 	// DaemonServiceRemoveRepoProcedure is the fully-qualified name of the DaemonService's RemoveRepo
 	// RPC.
 	DaemonServiceRemoveRepoProcedure = "/bossanova.v1.DaemonService/RemoveRepo"
+	// DaemonServiceUpdateRepoProcedure is the fully-qualified name of the DaemonService's UpdateRepo
+	// RPC.
+	DaemonServiceUpdateRepoProcedure = "/bossanova.v1.DaemonService/UpdateRepo"
 	// DaemonServiceListRepoPRsProcedure is the fully-qualified name of the DaemonService's ListRepoPRs
 	// RPC.
 	DaemonServiceListRepoPRsProcedure = "/bossanova.v1.DaemonService/ListRepoPRs"
@@ -127,6 +130,7 @@ type DaemonServiceClient interface {
 	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
+	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
 	// Session lifecycle
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error)
@@ -201,6 +205,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceRemoveRepoProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("RemoveRepo")),
+			connect.WithClientOptions(opts...),
+		),
+		updateRepo: connect.NewClient[v1.UpdateRepoRequest, v1.UpdateRepoResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateRepoProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateRepo")),
 			connect.WithClientOptions(opts...),
 		),
 		listRepoPRs: connect.NewClient[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse](
@@ -346,6 +356,7 @@ type daemonServiceClient struct {
 	cloneAndRegisterRepo *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
 	listRepos            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
 	removeRepo           *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
+	updateRepo           *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
 	listRepoPRs          *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
 	createSession        *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
 	getSession           *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
@@ -398,6 +409,11 @@ func (c *daemonServiceClient) ListRepos(ctx context.Context, req *connect.Reques
 // RemoveRepo calls bossanova.v1.DaemonService.RemoveRepo.
 func (c *daemonServiceClient) RemoveRepo(ctx context.Context, req *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error) {
 	return c.removeRepo.CallUnary(ctx, req)
+}
+
+// UpdateRepo calls bossanova.v1.DaemonService.UpdateRepo.
+func (c *daemonServiceClient) UpdateRepo(ctx context.Context, req *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error) {
+	return c.updateRepo.CallUnary(ctx, req)
 }
 
 // ListRepoPRs calls bossanova.v1.DaemonService.ListRepoPRs.
@@ -520,6 +536,7 @@ type DaemonServiceHandler interface {
 	CloneAndRegisterRepo(context.Context, *connect.Request[v1.CloneAndRegisterRepoRequest]) (*connect.Response[v1.CloneAndRegisterRepoResponse], error)
 	ListRepos(context.Context, *connect.Request[v1.ListReposRequest]) (*connect.Response[v1.ListReposResponse], error)
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
+	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
 	// Session lifecycle
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error)
@@ -590,6 +607,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceRemoveRepoProcedure,
 		svc.RemoveRepo,
 		connect.WithSchema(daemonServiceMethods.ByName("RemoveRepo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateRepoHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateRepoProcedure,
+		svc.UpdateRepo,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateRepo")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceListRepoPRsHandler := connect.NewUnaryHandler(
@@ -738,6 +761,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceListReposHandler.ServeHTTP(w, r)
 		case DaemonServiceRemoveRepoProcedure:
 			daemonServiceRemoveRepoHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateRepoProcedure:
+			daemonServiceUpdateRepoHandler.ServeHTTP(w, r)
 		case DaemonServiceListRepoPRsProcedure:
 			daemonServiceListRepoPRsHandler.ServeHTTP(w, r)
 		case DaemonServiceCreateSessionProcedure:
@@ -813,6 +838,10 @@ func (UnimplementedDaemonServiceHandler) ListRepos(context.Context, *connect.Req
 
 func (UnimplementedDaemonServiceHandler) RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RemoveRepo is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateRepo is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error) {

@@ -1,5 +1,6 @@
 # Go
 bin/
+.generate.stamp
 *.exe
 *.test
 *.out

@@ -126,7 +126,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.newSession.width = msg.Width
 		a.repoAdd.width = msg.Width
 		a.repoList.width = msg.Width
+		a.repoList.height = msg.Height
 		a.trash.width = msg.Width
+		a.trash.height = msg.Height
+		a.chatPicker.width = msg.Width
+		a.chatPicker.height = msg.Height
 		a.settings.width = msg.Width
 
 	case heartbeatMsg:
@@ -149,6 +153,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.newSession.Init()
 		case ViewChatPicker:
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, msg.sessionID, "")
+			a.chatPicker.width = a.width
+			a.chatPicker.height = a.height
 			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
 			a.repoAdd = NewRepoAddModel(a.client, a.ctx)
@@ -157,10 +163,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewRepoList:
 			a.repoList = NewRepoListModel(a.client, a.ctx)
 			a.repoList.width = a.width
+			a.repoList.height = a.height
 			return a, a.repoList.Init()
 		case ViewTrash:
 			a.trash = NewTrashModel(a.client, a.ctx)
 			a.trash.width = a.width
+			a.trash.height = a.height
 			return a, a.trash.Init()
 		case ViewSettings:
 			a.settings = NewSettingsModel()
@@ -246,6 +254,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sessionID := a.attach.SessionID()
 			claudeID := a.attach.ClaudeID()
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, sessionID, claudeID)
+			a.chatPicker.width = a.width
+			a.chatPicker.height = a.height
 			a.activeView = ViewChatPicker
 			// Batch the attach cleanup cmd (e.g. orphan delete) with the chat picker init.
 			return a, tea.Batch(cmd, a.chatPicker.Init())

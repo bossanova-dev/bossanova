@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
@@ -39,7 +40,7 @@ type TrashModel struct {
 	spinner spinner.Model
 
 	sessions []*pb.Session
-	cursor   int
+	table    table.Model
 	err      error
 	cancel   bool
 	loading  bool
@@ -50,7 +51,8 @@ type TrashModel struct {
 	restoring  bool
 
 	// Layout
-	width int
+	width  int
+	height int
 }
 
 // NewTrashModel creates a TrashModel.
@@ -60,6 +62,7 @@ func NewTrashModel(c client.BossClient, ctx context.Context) TrashModel {
 		ctx:     ctx,
 		spinner: newStatusSpinner(),
 		loading: true,
+		table:   newBossTable(nil, nil, 0),
 	}
 }
 
@@ -84,10 +87,75 @@ func (m TrashModel) fetchArchived() tea.Cmd {
 	}
 }
 
+func (m *TrashModel) buildTable() {
+	if len(m.sessions) == 0 {
+		return
+	}
+
+	ids := make([]string, len(m.sessions))
+	repos := make([]string, len(m.sessions))
+	branches := make([]string, len(m.sessions))
+	archiveds := make([]string, len(m.sessions))
+	for i, sess := range m.sessions {
+		id := sess.Id
+		if len(id) > shortIDLen {
+			id = id[:shortIDLen]
+		}
+		ids[i] = id
+		repos[i] = sess.RepoDisplayName
+		branches[i] = strings.TrimPrefix(sess.BranchName, "boss/")
+		if sess.ArchivedAt != nil {
+			archiveds[i] = relativeTime(sess.ArchivedAt.AsTime())
+		} else {
+			archiveds[i] = "-"
+		}
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen)},
+		{Title: "REPO", Width: maxColWidth("REPO", repos, 20)},
+		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60)},
+		{Title: "ARCHIVED", Width: maxColWidth("ARCHIVED", archiveds, 12)},
+	}
+
+	cursor := m.table.Cursor()
+	rows := make([]table.Row, len(m.sessions))
+	for i := range m.sessions {
+		indicator := ""
+		if i == cursor {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, ids[i], repos[i], branches[i], archiveds[i]}
+	}
+	m.table.SetColumns(cols)
+	m.table.SetRows(rows)
+	m.table.SetWidth(columnsWidth(cols))
+	m.table.SetHeight(m.tableHeight())
+	m.table.SetCursor(cursor)
+}
+
+func (m *TrashModel) removeSession(id string) {
+	for i, s := range m.sessions {
+		if s.Id == id {
+			m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
+			break
+		}
+	}
+	m.buildTable()
+	// Clamp cursor after rebuild.
+	if m.table.Cursor() >= len(m.sessions) && len(m.sessions) > 0 {
+		m.table.SetCursor(len(m.sessions) - 1)
+	}
+}
+
 func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		m.table.SetHeight(m.tableHeight())
+		m.table.SetWidth(msg.Width)
 		return m, nil
 
 	case spinner.TickMsg:
@@ -99,6 +167,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.sessions = msg.sessions
 		m.err = msg.err
+		m.buildTable()
 		return m, nil
 
 	case sessionRestoredMsg:
@@ -107,16 +176,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		// Remove from list and adjust cursor.
-		for i, s := range m.sessions {
-			if s.Id == msg.id {
-				m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
-				break
-			}
-		}
-		if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
-			m.cursor = len(m.sessions) - 1
-		}
+		m.removeSession(msg.id)
 		return m, nil
 
 	case sessionDeletedMsg:
@@ -126,16 +186,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
-		// Remove from list and adjust cursor.
-		for i, s := range m.sessions {
-			if s.Id == msg.id {
-				m.sessions = append(m.sessions[:i], m.sessions[i+1:]...)
-				break
-			}
-		}
-		if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
-			m.cursor = len(m.sessions) - 1
-		}
+		m.removeSession(msg.id)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -147,28 +198,28 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc", "q":
 			m.cancel = true
 			return m, nil
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.sessions)-1 {
-				m.cursor++
-			}
 		case "r":
 			if len(m.sessions) > 0 {
 				m.restoring = true
-				sess := m.sessions[m.cursor]
+				sess := m.sessions[m.table.Cursor()]
 				return m, func() tea.Msg {
 					_, err := m.client.ResurrectSession(m.ctx, sess.Id)
 					return sessionRestoredMsg{id: sess.Id, err: err}
 				}
 			}
+			return m, nil
 		case "d":
 			if len(m.sessions) > 0 {
 				m.confirming = true
 			}
+			return m, nil
 		}
+
+		// Forward navigation keys to the table.
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		updateCursorColumn(&m.table)
+		return m, cmd
 	}
 
 	return m, nil
@@ -179,7 +230,7 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "enter":
 		m.confirming = false
 		m.deleting = true
-		sess := m.sessions[m.cursor]
+		sess := m.sessions[m.table.Cursor()]
 		return m, func() tea.Msg {
 			err := m.client.RemoveSession(m.ctx, sess.Id)
 			return sessionDeletedMsg{id: sess.Id, err: err}
@@ -192,6 +243,23 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // Cancelled returns true if the user exited the trash view.
 func (m TrashModel) Cancelled() bool { return m.cancel }
+
+// tableHeight returns the height to pass to table.SetHeight.
+// Capped at len(sessions)+1 so the table doesn't expand beyond its content.
+func (m TrashModel) tableHeight() int {
+	needed := len(m.sessions) + 1
+	if m.height <= 0 {
+		return needed
+	}
+	avail := m.height - 4 // title(1) + blank(1) + blank(1) + action bar(1)
+	if avail < 1 {
+		avail = 1
+	}
+	if needed < avail {
+		return needed
+	}
+	return avail
+}
 
 func (m TrashModel) View() tea.View {
 	if m.err != nil {
@@ -216,72 +284,19 @@ func (m TrashModel) View() tea.View {
 		return tea.NewView(b.String())
 	}
 
-	// Compute column widths from data.
-	maxRepo := len("REPO")
-	maxBranch := len("BRANCH")
-	for _, sess := range m.sessions {
-		if rl := len(sess.RepoDisplayName); rl > maxRepo {
-			maxRepo = rl
-		}
-		if bl := len(strings.TrimPrefix(sess.BranchName, "boss/")); bl > maxBranch {
-			maxBranch = bl
-		}
-	}
-	if maxRepo > 20 {
-		maxRepo = 20
-	}
-	if maxBranch > 60 {
-		maxBranch = 60
-	}
-
-	// Table header.
-	header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%s",
-		shortIDLen, "ID", maxRepo, "REPO", maxBranch, "BRANCH", "ARCHIVED")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
+	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
 	b.WriteString("\n")
 
-	for i, sess := range m.sessions {
-		cursor := "  "
-		if i == m.cursor {
-			cursor = "> "
-		}
-
-		shortID := sess.Id
-		if len(shortID) > shortIDLen {
-			shortID = shortID[:shortIDLen]
-		}
-
-		repoName := truncate(sess.RepoDisplayName, maxRepo)
-		branchDisplay := strings.TrimPrefix(sess.BranchName, "boss/")
-		branch := truncate(branchDisplay, maxBranch)
-
-		archived := "-"
-		if sess.ArchivedAt != nil {
-			archived = relativeTime(sess.ArchivedAt.AsTime())
-		}
-
-		row := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%s",
-			cursor, shortIDLen, shortID,
-			maxRepo, repoName,
-			maxBranch, branch,
-			archived)
-		if i == m.cursor {
-			row = styleSelected.Render(row)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(row))
-		b.WriteString("\n")
-	}
-
 	if m.deleting {
-		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorRed).Render(
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Deleting..."))
 	} else if m.restoring {
-		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorRed).Render(
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Restoring..."))
 	} else if m.confirming {
 		b.WriteString("\n")
-		sess := m.sessions[m.cursor]
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
+		sess := m.sessions[m.table.Cursor()]
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
 			fmt.Sprintf("Permanently delete %q?", sess.Title)))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))

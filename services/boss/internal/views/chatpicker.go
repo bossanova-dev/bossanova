@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/claude"
@@ -43,11 +44,6 @@ type chatDeletedMsg struct {
 	err      error
 }
 
-// chatStatusesMsg carries daemon-side chat statuses.
-type chatStatusesMsg struct {
-	statuses []*pb.ChatStatusEntry
-}
-
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
@@ -59,16 +55,13 @@ type ChatPickerModel struct {
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat
-	cursor  int
+	table   table.Model
 	spinner spinner.Model
 	loading bool
 	err     error
 	cancel  bool
 	width   int
 	height  int
-
-	// Daemon-side statuses for cross-client visibility.
-	chatStatuses map[string]*pb.ChatStatusEntry
 
 	// Remove confirmation
 	confirming bool
@@ -85,6 +78,7 @@ func NewChatPickerModel(c client.BossClient, parentCtx context.Context, manager 
 		highlightID: highlightClaudeID,
 		spinner:     newStatusSpinner(),
 		loading:     true,
+		table:       newBossTable(nil, nil, 0),
 	}
 }
 
@@ -106,25 +100,6 @@ func (m ChatPickerModel) listChats() tea.Cmd {
 	return func() tea.Msg {
 		chats, err := m.client.ListChats(m.ctx, m.sessionID)
 		return chatsListedMsg{chats: chats, err: err}
-	}
-}
-
-// chatStatusPollMsg triggers a periodic re-fetch of daemon chat statuses.
-type chatStatusPollMsg struct{}
-
-func chatStatusPollCmd() tea.Cmd {
-	return tea.Tick(heartbeatInterval, func(time.Time) tea.Msg {
-		return chatStatusPollMsg{}
-	})
-}
-
-func (m ChatPickerModel) fetchChatStatuses() tea.Cmd {
-	return func() tea.Msg {
-		statuses, err := m.client.GetChatStatuses(m.ctx, m.sessionID)
-		if err != nil {
-			return nil // best-effort, ignore errors
-		}
-		return chatStatusesMsg{statuses: statuses}
 	}
 }
 
@@ -157,11 +132,75 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 	}
 }
 
+// buildTableRows rebuilds the table rows from m.chats.
+func (m *ChatPickerModel) buildTableRows() {
+	if len(m.chats) == 0 {
+		m.table.SetRows(nil)
+		return
+	}
+
+	titles := make([]string, len(m.chats))
+	actives := make([]string, len(m.chats))
+	for i, chat := range m.chats {
+		t := chat.Title
+		if t == "" {
+			t = "New chat"
+		}
+		titles[i] = t
+		actives[i] = relativeTime(m.chatLastActive(chat))
+	}
+
+	titleWidth := maxColWidth("CHAT", titles, 60)
+	activeWidth := maxColWidth("ACTIVE", actives, 12)
+	statusWidth := 12 // enough for spinner + "working"
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "CHAT", Width: titleWidth},
+		{Title: "ACTIVE", Width: activeWidth},
+		{Title: "STATUS", Width: statusWidth},
+	}
+
+	cursor := m.table.Cursor()
+	rows := make([]table.Row, len(m.chats))
+	for i, chat := range m.chats {
+		status := bosspty.StatusStopped
+		if m.manager != nil {
+			status = m.manager.ProcessStatus(chat.ClaudeId)
+		}
+		statusStr := renderStatus(status, m.spinner)
+		activeStr := styleSubtle.Render(actives[i])
+		indicator := ""
+		if i == cursor {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, titles[i], activeStr, statusStr}
+	}
+	m.table.SetColumns(cols)
+	m.table.SetRows(rows)
+	m.table.SetWidth(columnsWidth(cols))
+	m.table.SetHeight(m.tableHeight())
+	m.table.SetCursor(cursor)
+}
+
+// selectedChat returns the chat at the current table cursor, or nil if empty.
+func (m ChatPickerModel) selectedChat() *pb.ClaudeChat {
+	idx := m.table.Cursor()
+	if idx < 0 || idx >= len(m.chats) {
+		return nil
+	}
+	return m.chats[idx]
+}
+
 func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
+		// Rebuild rows to animate spinner frames.
+		if len(m.chats) > 0 {
+			m.buildTableRows()
+		}
 		return m, cmd
 
 	case chatPickerSessionMsg:
@@ -176,40 +215,27 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.chats = msg.chats
 		// Sort chats by last activity (most recent first).
-		// Running processes use their last output time; others use created_at.
 		sort.Slice(m.chats, func(i, j int) bool {
 			return m.chatLastActive(m.chats[i]).After(m.chatLastActive(m.chats[j]))
 		})
+		m.buildTableRows()
 		// Auto-highlight the chat the user just left, or the first running chat.
 		if m.highlightID != "" {
 			for i, chat := range m.chats {
 				if chat.ClaudeId == m.highlightID {
-					m.cursor = i + 1 // +1 because cursor 0 = "New chat"
+					m.table.SetCursor(i)
 					break
 				}
 			}
 		} else if m.manager != nil {
 			for i, chat := range m.chats {
 				if m.manager.IsRunning(chat.ClaudeId) {
-					m.cursor = i + 1
+					m.table.SetCursor(i)
 					break
 				}
 			}
 		}
-		return m, tea.Batch(m.backfillTitles(), m.fetchChatStatuses(), chatStatusPollCmd())
-
-	case chatStatusesMsg:
-		m.chatStatuses = make(map[string]*pb.ChatStatusEntry, len(msg.statuses))
-		for _, s := range msg.statuses {
-			m.chatStatuses[s.ClaudeId] = s
-		}
-		return m, nil
-
-	case chatStatusPollMsg:
-		if !m.loading && len(m.chats) > 0 {
-			return m, tea.Batch(m.fetchChatStatuses(), chatStatusPollCmd())
-		}
-		return m, chatStatusPollCmd()
+		return m, m.backfillTitles()
 
 	case chatTitlesBackfilledMsg:
 		for i, chat := range m.chats {
@@ -217,20 +243,20 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chats[i].Title = title
 			}
 		}
+		m.buildTableRows()
 		return m, nil
 
 	case chatDeletedMsg:
 		if msg.err == nil {
-			// Remove the deleted chat from the list.
 			for i, chat := range m.chats {
 				if chat.ClaudeId == msg.claudeID {
 					m.chats = append(m.chats[:i], m.chats[i+1:]...)
 					break
 				}
 			}
-			// Adjust cursor if it's now out of bounds.
-			if m.cursor > len(m.chats) {
-				m.cursor = len(m.chats)
+			m.buildTableRows()
+			if m.table.Cursor() >= len(m.chats) && len(m.chats) > 0 {
+				m.table.SetCursor(len(m.chats) - 1)
 			}
 		}
 		return m, nil
@@ -243,6 +269,8 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.table.SetHeight(m.tableHeight())
+		m.table.SetWidth(msg.Width)
 		return m, nil
 
 	case tea.KeyMsg:
@@ -254,36 +282,37 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc", "q":
 			m.cancel = true
 			return m, nil
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			return m, nil
-		case "down", "j":
-			// cursor 0 = "New chat", cursor 1..N = previous chats
-			maxCursor := len(m.chats) // 0-based: 0 to len(chats)
-			if m.cursor < maxCursor {
-				m.cursor++
-			}
-			return m, nil
-		case "d":
-			if m.cursor > 0 && m.cursor <= len(m.chats) {
-				m.confirming = true
-			}
-			return m, nil
-		case "enter":
-			var resumeID string
-			if m.cursor > 0 && m.cursor <= len(m.chats) {
-				resumeID = m.chats[m.cursor-1].ClaudeId
-			}
+		case "n":
 			return m, func() tea.Msg {
 				return switchViewMsg{
 					view:      ViewAttach,
 					sessionID: m.sessionID,
-					resumeID:  resumeID,
 				}
 			}
+		case "d":
+			if chat := m.selectedChat(); chat != nil {
+				m.confirming = true
+			}
+			return m, nil
+		case "enter":
+			if chat := m.selectedChat(); chat != nil {
+				resumeID := chat.ClaudeId
+				return m, func() tea.Msg {
+					return switchViewMsg{
+						view:      ViewAttach,
+						sessionID: m.sessionID,
+						resumeID:  resumeID,
+					}
+				}
+			}
+			return m, nil
 		}
+
+		// Forward navigation keys to the table.
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		updateCursorColumn(&m.table)
+		return m, cmd
 	}
 
 	return m, nil
@@ -293,7 +322,11 @@ func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	switch msg.String() {
 	case "y", "enter":
 		m.confirming = false
-		claudeID := m.chats[m.cursor-1].ClaudeId
+		chat := m.selectedChat()
+		if chat == nil {
+			return m, nil
+		}
+		claudeID := chat.ClaudeId
 		return m, func() tea.Msg {
 			err := m.client.DeleteChat(m.ctx, claudeID)
 			return chatDeletedMsg{claudeID: claudeID, err: err}
@@ -306,6 +339,23 @@ func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 
 // Cancelled returns true if the user cancelled the chat picker.
 func (m ChatPickerModel) Cancelled() bool { return m.cancel }
+
+// tableHeight returns the height to pass to table.SetHeight.
+// Capped at row count + 1 so the table doesn't expand beyond its content.
+func (m ChatPickerModel) tableHeight() int {
+	needed := len(m.chats) + 1 // header + chat rows
+	if m.height <= 0 {
+		return needed
+	}
+	avail := m.height - 4 // title(1) + blank(1) + blank(1) + action bar(1)
+	if avail < 1 {
+		avail = 1
+	}
+	if needed < avail {
+		return needed
+	}
+	return avail
+}
 
 func (m ChatPickerModel) View() tea.View {
 	if m.err != nil {
@@ -336,85 +386,26 @@ func (m ChatPickerModel) View() tea.View {
 	b.WriteString(styleTitle.Render(title))
 	b.WriteString("\n\n")
 
-	// "New chat" option (always cursor 0).
-	newChatLine := "  New chat"
-	if m.cursor == 0 {
-		newChatLine = "> New chat"
-		newChatLine = styleSelected.Render(newChatLine)
-	}
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(newChatLine))
+	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
 	b.WriteString("\n")
 
-	if len(m.chats) > 0 {
-		// Compute dynamic title column width.
-		maxTitle := len("CHAT")
-		for _, chat := range m.chats {
-			t := chat.Title
-			if t == "" {
-				t = "New chat"
-			}
-			if len(t) > maxTitle {
-				maxTitle = len(t)
-			}
-		}
-		if maxTitle > 60 {
-			maxTitle = 60
-		}
-
-		b.WriteString("\n")
-		// Table header.
-		header := fmt.Sprintf("  %-*s"+colSep+"%-8s"+colSep+"%s",
-			maxTitle, "CHAT", "ACTIVE", "STATUS")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
-		b.WriteString("\n")
-
-		for i, chat := range m.chats {
-			selected := m.cursor == i+1
-
+	if m.confirming {
+		chat := m.selectedChat()
+		if chat != nil {
 			chatTitle := chat.Title
 			if chatTitle == "" {
 				chatTitle = "New chat"
 			}
-			chatTitle = truncate(chatTitle, maxTitle)
-
-			status := m.chatStatusStr(chat.ClaudeId)
-			statusStr := renderStatus(status, m.spinner)
-			timeStr := relativeTime(m.chatLastActive(chat))
-
-			cursor := "  "
-			if selected {
-				cursor = "> "
-			}
-
-			timePadded := fmt.Sprintf("%-8s", timeStr)
-
-			row := fmt.Sprintf("%s%-*s"+colSep+"%s"+colSep+"%s",
-				cursor, maxTitle, chatTitle, styleSubtle.Render(timePadded), statusStr)
-
-			if selected {
-				row = styleSelected.Render(fmt.Sprintf("%s%-*s", cursor, maxTitle, chatTitle)) +
-					colSep + styleSubtle.Render(timePadded) + colSep + statusStr
-			}
-
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(row))
 			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
+				fmt.Sprintf("Remove %q?", chatTitle)))
+			b.WriteString("\n")
+			b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 		}
-	}
-
-	if m.confirming && m.cursor > 0 && m.cursor <= len(m.chats) {
-		chatTitle := m.chats[m.cursor-1].Title
-		if chatTitle == "" {
-			chatTitle = "New chat"
-		}
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
-			fmt.Sprintf("Remove %q?", chatTitle)))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		actionBar := "[enter] select  [esc] back"
-		if m.cursor > 0 && m.cursor <= len(m.chats) {
-			actionBar = "[enter] select  [d] remove  [esc] back"
+		actionBar := "[n]ew chat  [esc] back"
+		if m.selectedChat() != nil {
+			actionBar = "[n]ew chat  [enter] select  [d] remove  [esc] back"
 		}
 		b.WriteString(styleActionBar.Render(actionBar))
 	}
@@ -422,42 +413,12 @@ func (m ChatPickerModel) View() tea.View {
 	return tea.NewView(b.String())
 }
 
-// chatStatusStr returns the status string for a chat, preferring local manager
-// if the process is running locally, otherwise falling back to daemon status.
-func (m ChatPickerModel) chatStatusStr(claudeID string) string {
-	// Prefer local manager if process is running.
-	if m.manager != nil {
-		if m.manager.IsRunning(claudeID) {
-			return m.manager.ProcessStatus(claudeID)
-		}
-	}
-	// Fall back to daemon-cached status.
-	if e, ok := m.chatStatuses[claudeID]; ok {
-		switch e.Status {
-		case pb.ChatStatus_CHAT_STATUS_WORKING:
-			return bosspty.StatusWorking
-		case pb.ChatStatus_CHAT_STATUS_IDLE:
-			return bosspty.StatusIdle
-		case pb.ChatStatus_CHAT_STATUS_STOPPED, pb.ChatStatus_CHAT_STATUS_UNSPECIFIED:
-			return bosspty.StatusStopped
-		}
-	}
-	return bosspty.StatusStopped
-}
-
 // chatLastActive returns the most recent activity time for a chat.
-// Prefers local PTY output time, then daemon-cached last_output_at, then created_at.
+// For running processes this is the last PTY output time; otherwise created_at.
 func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
 	if m.manager != nil {
 		if lw := m.manager.ProcessLastWrite(chat.ClaudeId); !lw.IsZero() {
 			return lw
-		}
-	}
-	// Fall back to daemon-cached last output time.
-	if e, ok := m.chatStatuses[chat.ClaudeId]; ok && e.LastOutputAt != nil {
-		t := e.LastOutputAt.AsTime()
-		if !t.IsZero() {
-			return t
 		}
 	}
 	return chat.CreatedAt.AsTime()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
@@ -30,7 +31,7 @@ type RepoListModel struct {
 	ctx    context.Context
 
 	repos   []*pb.Repo
-	cursor  int
+	table   table.Model
 	err     error
 	cancel  bool
 	loading bool
@@ -39,7 +40,8 @@ type RepoListModel struct {
 	confirming bool
 
 	// Layout
-	width int
+	width  int
+	height int
 }
 
 // NewRepoListModel creates a RepoListModel.
@@ -48,6 +50,7 @@ func NewRepoListModel(c client.BossClient, ctx context.Context) RepoListModel {
 		client:  c,
 		ctx:     ctx,
 		loading: true,
+		table:   newBossTable(nil, nil, 0),
 	}
 }
 
@@ -58,16 +61,64 @@ func (m RepoListModel) Init() tea.Cmd {
 	}
 }
 
+func (m *RepoListModel) buildTable() {
+	if len(m.repos) == 0 {
+		return
+	}
+
+	ids := make([]string, len(m.repos))
+	names := make([]string, len(m.repos))
+	paths := make([]string, len(m.repos))
+	branches := make([]string, len(m.repos))
+	for i, repo := range m.repos {
+		id := repo.Id
+		if len(id) > shortIDLen {
+			id = id[:shortIDLen]
+		}
+		ids[i] = id
+		names[i] = repo.DisplayName
+		paths[i] = repo.LocalPath
+		branches[i] = repo.DefaultBaseBranch
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen)},
+		{Title: "NAME", Width: maxColWidth("NAME", names, 30)},
+		{Title: "PATH", Width: maxColWidth("PATH", paths, 60)},
+		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 30)},
+	}
+
+	cursor := m.table.Cursor()
+	rows := make([]table.Row, len(m.repos))
+	for i := range m.repos {
+		indicator := ""
+		if i == cursor {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, ids[i], names[i], paths[i], branches[i]}
+	}
+	m.table.SetColumns(cols)
+	m.table.SetRows(rows)
+	m.table.SetWidth(columnsWidth(cols))
+	m.table.SetHeight(m.tableHeight())
+	m.table.SetCursor(cursor)
+}
+
 func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		m.table.SetHeight(m.tableHeight())
+		m.table.SetWidth(msg.Width)
 		return m, nil
 
 	case repoListLoadedMsg:
 		m.loading = false
 		m.repos = msg.repos
 		m.err = msg.err
+		m.buildTable()
 		return m, nil
 
 	case repoRemovedMsg:
@@ -89,21 +140,20 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc", "q":
 			m.cancel = true
 			return m, nil
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.repos)-1 {
-				m.cursor++
-			}
 		case "a":
 			return m, func() tea.Msg { return switchViewMsg{view: ViewRepoAdd} }
 		case "d":
 			if len(m.repos) > 0 {
 				m.confirming = true
 			}
+			return m, nil
 		}
+
+		// Forward navigation keys to the table.
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		updateCursorColumn(&m.table)
+		return m, cmd
 	}
 
 	return m, nil
@@ -112,7 +162,7 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m RepoListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
-		repo := m.repos[m.cursor]
+		repo := m.repos[m.table.Cursor()]
 		return m, func() tea.Msg {
 			err := m.client.RemoveRepo(m.ctx, repo.Id)
 			return repoRemovedMsg{err: err}
@@ -125,6 +175,23 @@ func (m RepoListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // Cancelled returns true if the user exited the list.
 func (m RepoListModel) Cancelled() bool { return m.cancel }
+
+// tableHeight returns the height to pass to table.SetHeight.
+// Capped at len(repos)+1 so the table doesn't expand beyond its content.
+func (m RepoListModel) tableHeight() int {
+	needed := len(m.repos) + 1
+	if m.height <= 0 {
+		return needed
+	}
+	avail := m.height - 4 // title(1) + blank(1) + blank(1) + action bar(1)
+	if avail < 1 {
+		avail = 1
+	}
+	if needed < avail {
+		return needed
+	}
+	return avail
+}
 
 func (m RepoListModel) View() tea.View {
 	if m.err != nil {
@@ -149,64 +216,13 @@ func (m RepoListModel) View() tea.View {
 		return tea.NewView(b.String())
 	}
 
-	// Compute column widths from data.
-	maxName := len("NAME")
-	maxPath := len("PATH")
-	maxBranch := len("BRANCH")
-	for _, repo := range m.repos {
-		if len(repo.DisplayName) > maxName {
-			maxName = len(repo.DisplayName)
-		}
-		if len(repo.LocalPath) > maxPath {
-			maxPath = len(repo.LocalPath)
-		}
-		if len(repo.DefaultBaseBranch) > maxBranch {
-			maxBranch = len(repo.DefaultBaseBranch)
-		}
-	}
-	if maxName > 30 {
-		maxName = 30
-	}
-	if maxPath > 60 {
-		maxPath = 60
-	}
-	if maxBranch > 30 {
-		maxBranch = 30
-	}
-
-	// Table header.
-	header := fmt.Sprintf("  %-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-*s",
-		shortIDLen, "ID", maxName, "NAME", maxPath, "PATH", maxBranch, "BRANCH")
-	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Faint(true).Render(header))
+	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
 	b.WriteString("\n")
-
-	for i, repo := range m.repos {
-		cursor := "  "
-		if i == m.cursor {
-			cursor = "> "
-		}
-
-		shortID := repo.Id
-		if len(shortID) > shortIDLen {
-			shortID = shortID[:shortIDLen]
-		}
-
-		row := fmt.Sprintf("%s%-*s"+colSep+"%-*s"+colSep+"%-*s"+colSep+"%-*s",
-			cursor, shortIDLen, shortID,
-			maxName, truncate(repo.DisplayName, maxName),
-			maxPath, truncate(repo.LocalPath, maxPath),
-			maxBranch, truncate(repo.DefaultBaseBranch, maxBranch))
-		if i == m.cursor {
-			row = styleSelected.Render(row)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(row))
-		b.WriteString("\n")
-	}
 
 	if m.confirming {
 		b.WriteString("\n")
-		repo := m.repos[m.cursor]
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorRed).Render(
+		repo := m.repos[m.table.Cursor()]
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
 			fmt.Sprintf("Remove %q?", repo.DisplayName)))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))

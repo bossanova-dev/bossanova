@@ -105,8 +105,10 @@ build-bossd:
 build-bosso:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
 
-## format: Format Go code, web code, and markdown
+## format: Format Go code, web code, package.json files, and markdown
 format:
+	pnpm syncpack format
+	pnpm syncpack fix
 	@for mod in $(MODULES); do \
 		echo "==> Formatting $$mod"; \
 		$(MAKE) -C $$mod format; \

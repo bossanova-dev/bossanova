@@ -145,6 +145,10 @@ message Session {
 
   // Denormalized repo display name, populated server-side for convenience.
   string repo_display_name = 19;
+
+  // PR display status, hydrated server-side from the PR display tracker.
+  PRDisplayStatus pr_display_status = 20;
+  bool pr_display_has_failures = 21;
 }
 
 // Attempt represents a fix attempt within a session.
@@ -248,6 +252,19 @@ message PRMergedEvent {
 
 message PRClosedEvent {
   int32 pr_id = 1;
+}
+
+// PRDisplayStatus represents the unified display status for a PR in the TUI.
+enum PRDisplayStatus {
+  PR_DISPLAY_STATUS_UNSPECIFIED = 0;
+  PR_DISPLAY_STATUS_IDLE = 1;
+  PR_DISPLAY_STATUS_CHECKING = 2;
+  PR_DISPLAY_STATUS_FAILING = 3;
+  PR_DISPLAY_STATUS_CONFLICT = 4;
+  PR_DISPLAY_STATUS_REVIEWED = 5;
+  PR_DISPLAY_STATUS_PASSING = 6;
+  PR_DISPLAY_STATUS_MERGED = 7;
+  PR_DISPLAY_STATUS_CLOSED = 8;
 }
 
 // ChatStatus represents the live status of a Claude Code chat process.

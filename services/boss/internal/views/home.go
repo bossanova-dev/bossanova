@@ -20,10 +20,12 @@ import (
 
 const pollInterval = 2 * time.Second
 
-// sessionListMsg carries the result of a ListSessions RPC call.
+// sessionListMsg carries the result of a ListSessions RPC call,
+// along with daemon-side heartbeat statuses for cross-instance display.
 type sessionListMsg struct {
-	sessions []*pb.Session
-	err      error
+	sessions       []*pb.Session
+	daemonStatuses map[string]string // session_id → status string
+	err            error
 }
 
 // sessionArchivedMsg carries the result of archiving a session.
@@ -34,16 +36,17 @@ type sessionArchivedMsg struct {
 
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
-	client   client.BossClient
-	ctx      context.Context
-	manager  *bosspty.Manager
-	spinner  spinner.Model
-	sessions []*pb.Session
-	table    table.Model
-	err      error
-	loading  bool
-	width    int
-	height   int
+	client         client.BossClient
+	ctx            context.Context
+	manager        *bosspty.Manager
+	spinner        spinner.Model
+	sessions       []*pb.Session
+	daemonStatuses map[string]string // session_id → status string from daemon heartbeats
+	table          table.Model
+	err            error
+	loading        bool
+	width          int
+	height         int
 
 	// Archive confirmation / in-progress
 	confirming bool
@@ -101,7 +104,9 @@ func (h *HomeModel) buildTableRows() {
 		ciLabel, ciColor := checksLabelAndColor(sess.LastCheckState)
 		ciStyled := lipgloss.NewStyle().Foreground(ciColor).Render(ciLabel)
 
-		status := h.manager.SessionStatus(sess.Id)
+		local := h.manager.SessionStatus(sess.Id)
+		daemon := h.daemonStatuses[sess.Id]
+		status := mergeStatus(local, daemon)
 		statusStyled := renderStatus(status, h.spinner)
 
 		indicator := ""
@@ -130,6 +135,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionListMsg:
 		h.loading = false
 		h.sessions = msg.sessions
+		h.daemonStatuses = msg.daemonStatuses
 		h.err = msg.err
 		h.buildTableRows()
 		if h.table.Cursor() >= len(h.sessions) && len(h.sessions) > 0 {
@@ -415,6 +421,26 @@ func tickCmd() tea.Cmd {
 func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
-		return sessionListMsg{sessions: sessions, err: err}
+		if err != nil {
+			return sessionListMsg{err: err}
+		}
+
+		// Fetch daemon-side heartbeat statuses for cross-instance display.
+		var daemonStatuses map[string]string
+		if len(sessions) > 0 {
+			ids := make([]string, len(sessions))
+			for i, s := range sessions {
+				ids[i] = s.Id
+			}
+			entries, sErr := c.GetSessionStatuses(ctx, ids)
+			if sErr == nil {
+				daemonStatuses = make(map[string]string, len(entries))
+				for _, e := range entries {
+					daemonStatuses[e.SessionId] = chatStatusString(e.Status)
+				}
+			}
+		}
+
+		return sessionListMsg{sessions: sessions, daemonStatuses: daemonStatuses}
 	}
 }

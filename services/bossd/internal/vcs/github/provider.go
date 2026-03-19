@@ -114,17 +114,16 @@ func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID in
 	out, err := p.runGH(ctx,
 		"pr", "checks", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "name,state,conclusion,workflowName",
+		"--json", "name,state,workflow",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get check results: %w", err)
 	}
 
 	var raw []struct {
-		Name         string `json:"name"`
-		State        string `json:"state"`
-		Conclusion   string `json:"conclusion"`
-		WorkflowName string `json:"workflowName"`
+		Name     string `json:"name"`
+		State    string `json:"state"`
+		Workflow string `json:"workflow"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parse check results: %w", err)
@@ -132,11 +131,12 @@ func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID in
 
 	results := make([]vcs.CheckResult, len(raw))
 	for i, r := range raw {
+		status, conclusion := parseCheckState(r.State)
 		results[i] = vcs.CheckResult{
-			ID:         r.WorkflowName + "/" + r.Name,
+			ID:         r.Workflow + "/" + r.Name,
 			Name:       r.Name,
-			Status:     parseCheckStatus(r.State),
-			Conclusion: parseCheckConclusion(r.Conclusion),
+			Status:     status,
+			Conclusion: conclusion,
 		}
 	}
 
@@ -292,41 +292,35 @@ func parsePRState(s string) vcs.PRState {
 	}
 }
 
-// parseCheckStatus converts a GitHub check state string to vcs.CheckStatus.
-func parseCheckStatus(s string) vcs.CheckStatus {
-	switch strings.ToUpper(s) {
-	case "COMPLETED":
-		return vcs.CheckStatusCompleted
-	case "IN_PROGRESS":
-		return vcs.CheckStatusInProgress
-	case "QUEUED", "PENDING", "WAITING":
-		return vcs.CheckStatusQueued
-	default:
-		return vcs.CheckStatusQueued
-	}
-}
-
-// parseCheckConclusion converts a GitHub check conclusion string to *vcs.CheckConclusion.
-func parseCheckConclusion(s string) *vcs.CheckConclusion {
-	if s == "" {
-		return nil
-	}
-	var c vcs.CheckConclusion
+// parseCheckState converts a gh pr checks "state" field into a status and
+// optional conclusion. The state field combines both concepts: terminal
+// values like SUCCESS/FAILURE imply completed+conclusion, while PENDING
+// and similar imply in-progress with no conclusion yet.
+func parseCheckState(s string) (vcs.CheckStatus, *vcs.CheckConclusion) {
 	switch strings.ToUpper(s) {
 	case "SUCCESS":
-		c = vcs.CheckConclusionSuccess
+		c := vcs.CheckConclusionSuccess
+		return vcs.CheckStatusCompleted, &c
 	case "FAILURE":
-		c = vcs.CheckConclusionFailure
+		c := vcs.CheckConclusionFailure
+		return vcs.CheckStatusCompleted, &c
 	case "NEUTRAL":
-		c = vcs.CheckConclusionNeutral
+		c := vcs.CheckConclusionNeutral
+		return vcs.CheckStatusCompleted, &c
 	case "CANCELLED":
-		c = vcs.CheckConclusionCancelled
+		c := vcs.CheckConclusionCancelled
+		return vcs.CheckStatusCompleted, &c
 	case "SKIPPED":
-		c = vcs.CheckConclusionSkipped
+		c := vcs.CheckConclusionSkipped
+		return vcs.CheckStatusCompleted, &c
 	case "TIMED_OUT":
-		c = vcs.CheckConclusionTimedOut
+		c := vcs.CheckConclusionTimedOut
+		return vcs.CheckStatusCompleted, &c
+	case "IN_PROGRESS":
+		return vcs.CheckStatusInProgress, nil
+	case "QUEUED", "PENDING", "WAITING":
+		return vcs.CheckStatusQueued, nil
 	default:
-		return nil
+		return vcs.CheckStatusQueued, nil
 	}
-	return &c
 }

@@ -298,11 +298,14 @@ func (m *mockClaudeRunner) History(_ string) []claude.OutputLine {
 // --- Mock VCS Provider ---
 
 type mockVCSProvider struct {
-	createPRCalls    []vcs.CreatePROpts
-	markReadyCalls   []int
-	nextPRInfo       *vcs.PRInfo
-	nextPRStatus     *vcs.PRStatus
-	nextCheckResults []vcs.CheckResult
+	createPRCalls      []vcs.CreatePROpts
+	markReadyCalls     []int
+	nextPRInfo         *vcs.PRInfo
+	nextPRStatus       *vcs.PRStatus
+	nextCheckResults   []vcs.CheckResult
+	nextReviewComments []vcs.ReviewComment
+	checkResultsErr    error
+	reviewCommentsErr  error
 }
 
 func newMockVCSProvider() *mockVCSProvider {
@@ -325,7 +328,7 @@ func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.
 }
 
 func (m *mockVCSProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
-	return m.nextCheckResults, nil
+	return m.nextCheckResults, m.checkResultsErr
 }
 
 func (m *mockVCSProvider) GetFailedCheckLogs(_ context.Context, _ string, _ string) (string, error) {
@@ -338,7 +341,7 @@ func (m *mockVCSProvider) MarkReadyForReview(_ context.Context, _ string, prID i
 }
 
 func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {
-	return nil, nil
+	return m.nextReviewComments, m.reviewCommentsErr
 }
 
 func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {

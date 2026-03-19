@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDefaultSettings(t *testing.T) {
@@ -32,6 +33,7 @@ func TestSaveAndLoad(t *testing.T) {
 	original := Settings{
 		DangerouslySkipPermissions: true,
 		WorktreeBaseDir:            "/custom/worktrees",
+		PollIntervalSeconds:        60,
 	}
 
 	if err := SaveTo(path, original); err != nil {
@@ -50,6 +52,10 @@ func TestSaveAndLoad(t *testing.T) {
 	if loaded.WorktreeBaseDir != original.WorktreeBaseDir {
 		t.Errorf("WorktreeBaseDir: got %q, want %q",
 			loaded.WorktreeBaseDir, original.WorktreeBaseDir)
+	}
+	if loaded.PollIntervalSeconds != original.PollIntervalSeconds {
+		t.Errorf("PollIntervalSeconds: got %d, want %d",
+			loaded.PollIntervalSeconds, original.PollIntervalSeconds)
 	}
 }
 
@@ -78,5 +84,62 @@ func TestSaveCreatesDirectories(t *testing.T) {
 
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("file not created: %v", err)
+	}
+}
+
+func TestDisplayPollInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		seconds  int
+		expected time.Duration
+	}{
+		{
+			name:     "zero returns default 30s",
+			seconds:  0,
+			expected: 30 * time.Second,
+		},
+		{
+			name:     "negative returns default 30s",
+			seconds:  -5,
+			expected: 30 * time.Second,
+		},
+		{
+			name:     "custom value",
+			seconds:  60,
+			expected: 60 * time.Second,
+		},
+		{
+			name:     "minimum value of 1",
+			seconds:  1,
+			expected: 1 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Settings{PollIntervalSeconds: tt.seconds}
+			got := s.DisplayPollInterval()
+			if got != tt.expected {
+				t.Errorf("DisplayPollInterval() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestPollIntervalOmittedFromJSON(t *testing.T) {
+	// When PollIntervalSeconds is 0, it should be omitted from JSON (omitempty).
+	path := filepath.Join(t.TempDir(), "settings.json")
+	original := Settings{WorktreeBaseDir: "/test"}
+
+	if err := SaveTo(path, original); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if loaded.PollIntervalSeconds != 0 {
+		t.Errorf("PollIntervalSeconds: got %d, want 0 (omitted)", loaded.PollIntervalSeconds)
 	}
 }

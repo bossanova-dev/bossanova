@@ -8,6 +8,7 @@ import (
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -120,7 +121,12 @@ func runLS(cmd *cobra.Command) error {
 		stateStrs2[i] = views.StateLabel(sess.State)
 		branchStrs[i] = sess.BranchName
 		if sess.PrNumber != nil {
-			prStrs[i] = fmt.Sprintf("#%d", *sess.PrNumber)
+			prText := fmt.Sprintf("#%d", *sess.PrNumber)
+			if sess.PrUrl != nil {
+				prStrs[i] = lipgloss.NewStyle().Hyperlink(*sess.PrUrl).Render(prText)
+			} else {
+				prStrs[i] = prText
+			}
 		} else {
 			prStrs[i] = "-"
 		}

@@ -195,8 +195,8 @@ type mockWorktreeManager struct {
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
 	m.created = append(m.created, opts)
 	return &gitpkg.CreateResult{
-		WorktreePath: "/tmp/worktrees/boss/test-session",
-		BranchName:   "boss/test-session",
+		WorktreePath: "/tmp/worktrees/test-repo/test-session",
+		BranchName:   "test-session",
 	}, nil
 }
 
@@ -395,8 +395,8 @@ func TestStartSession(t *testing.T) {
 	if len(cr.started) != 1 {
 		t.Fatalf("expected 1 claude start, got %d", len(cr.started))
 	}
-	if cr.started[0].workDir != "/tmp/worktrees/boss/test-session" {
-		t.Errorf("claude workDir = %q, want /tmp/worktrees/boss/test-session", cr.started[0].workDir)
+	if cr.started[0].workDir != "/tmp/worktrees/test-repo/test-session" {
+		t.Errorf("claude workDir = %q, want /tmp/worktrees/test-repo/test-session", cr.started[0].workDir)
 	}
 	if cr.started[0].plan != "Do something" {
 		t.Errorf("claude plan = %q, want 'Do something'", cr.started[0].plan)
@@ -410,11 +410,11 @@ func TestStartSession(t *testing.T) {
 	if sess.State != machine.ImplementingPlan {
 		t.Errorf("session state = %v, want ImplementingPlan", sess.State)
 	}
-	if sess.WorktreePath != "/tmp/worktrees/boss/test-session" {
-		t.Errorf("worktree path = %q, want /tmp/worktrees/boss/test-session", sess.WorktreePath)
+	if sess.WorktreePath != "/tmp/worktrees/test-repo/test-session" {
+		t.Errorf("worktree path = %q, want /tmp/worktrees/test-repo/test-session", sess.WorktreePath)
 	}
-	if sess.BranchName != "boss/test-session" {
-		t.Errorf("branch name = %q, want boss/test-session", sess.BranchName)
+	if sess.BranchName != "test-session" {
+		t.Errorf("branch name = %q, want test-session", sess.BranchName)
 	}
 	if sess.ClaudeSessionID == nil || *sess.ClaudeSessionID != "claude-123" {
 		t.Errorf("claude session id = %v, want claude-123", sess.ClaudeSessionID)
@@ -471,7 +471,7 @@ func TestArchiveSession(t *testing.T) {
 		ID:              "sess-1",
 		RepoID:          "repo-1",
 		State:           machine.ImplementingPlan,
-		WorktreePath:    "/tmp/worktrees/boss/test",
+		WorktreePath:    "/tmp/worktrees/test-repo/test",
 		ClaudeSessionID: &claudeID,
 	}
 
@@ -487,8 +487,8 @@ func TestArchiveSession(t *testing.T) {
 	}
 
 	// Verify worktree was archived.
-	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/worktrees/boss/test" {
-		t.Errorf("expected worktree archived at /tmp/worktrees/boss/test, got %v", wt.archived)
+	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/worktrees/test-repo/test" {
+		t.Errorf("expected worktree archived at /tmp/worktrees/test-repo/test, got %v", wt.archived)
 	}
 }
 
@@ -515,8 +515,8 @@ func TestResurrectSession(t *testing.T) {
 			RepoID:       "repo-1",
 			Title:        "Test Session",
 			Plan:         "Do something",
-			WorktreePath: "/tmp/worktrees/boss/test",
-			BranchName:   "boss/test",
+			WorktreePath: "/tmp/worktrees/test-repo/test",
+			BranchName:   "test",
 			State:        machine.ImplementingPlan,
 		}
 		// Set ArchivedAt to mark as archived.
@@ -548,8 +548,8 @@ func TestResurrectSession(t *testing.T) {
 	if len(wt.resurrected) != 1 {
 		t.Fatalf("expected 1 resurrect call, got %d", len(wt.resurrected))
 	}
-	if wt.resurrected[0].BranchName != "boss/test" {
-		t.Errorf("resurrect branch = %q, want boss/test", wt.resurrected[0].BranchName)
+	if wt.resurrected[0].BranchName != "test" {
+		t.Errorf("resurrect branch = %q, want test", wt.resurrected[0].BranchName)
 	}
 
 	// Verify Claude was started with resume.
@@ -643,8 +643,8 @@ func TestSubmitPR(t *testing.T) {
 		RepoID:       "repo-1",
 		Title:        "Test Session",
 		Plan:         "Do something",
-		WorktreePath: "/tmp/worktrees/boss/test-session",
-		BranchName:   "boss/test-session",
+		WorktreePath: "/tmp/worktrees/test-repo/test-session",
+		BranchName:   "test-session",
 		BaseBranch:   "main",
 		State:        machine.ImplementingPlan,
 	}
@@ -656,8 +656,8 @@ func TestSubmitPR(t *testing.T) {
 	}
 
 	// Verify branch was pushed.
-	if len(wt.pushed) != 1 || wt.pushed[0] != "boss/test-session" {
-		t.Errorf("expected push of boss/test-session, got %v", wt.pushed)
+	if len(wt.pushed) != 1 || wt.pushed[0] != "test-session" {
+		t.Errorf("expected push of test-session, got %v", wt.pushed)
 	}
 
 	// Verify draft PR was created.
@@ -668,8 +668,8 @@ func TestSubmitPR(t *testing.T) {
 	if call.RepoPath != "owner/repo" {
 		t.Errorf("PR repo = %q, want owner/repo", call.RepoPath)
 	}
-	if call.HeadBranch != "boss/test-session" {
-		t.Errorf("PR head = %q, want boss/test-session", call.HeadBranch)
+	if call.HeadBranch != "test-session" {
+		t.Errorf("PR head = %q, want test-session", call.HeadBranch)
 	}
 	if call.BaseBranch != "main" {
 		t.Errorf("PR base = %q, want main", call.BaseBranch)

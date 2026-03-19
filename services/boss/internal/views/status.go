@@ -41,7 +41,7 @@ func mergeStatus(local, daemon string) string {
 func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 	switch sess.PrDisplayStatus {
 	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED:
-		return styleStatusInfo.Render("merged")
+		return styleStatusMuted.Render("✔ merged")
 	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED:
 		return styleStatusMuted.Render("closed")
 	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING:
@@ -112,4 +112,21 @@ func renderPRLink(sess *pb.Session) string {
 		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, underlined)
 	}
 	return underlined
+}
+
+// renderMergedPRLink returns a muted, strikethrough, underlined, OSC 8
+// hyperlinked PR label for merged rows. Uses raw ANSI escapes (not lipgloss)
+// to avoid SGR resets that break the OSC 8 hyperlink context.
+func renderMergedPRLink(sess *pb.Session) string {
+	if sess == nil || sess.PrNumber == nil {
+		return ""
+	}
+	label := fmt.Sprintf("#%d", *sess.PrNumber)
+	// SGR 38;2;98;98;98 = muted gray foreground (#626262)
+	// SGR 9 = strikethrough, SGR 4 = underline
+	styled := "\x1b[38;2;98;98;98;9;4m" + label + "\x1b[39;29;24m"
+	if sess.PrUrl != nil && *sess.PrUrl != "" {
+		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, styled)
+	}
+	return styled
 }

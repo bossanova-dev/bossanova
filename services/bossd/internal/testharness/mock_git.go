@@ -68,9 +68,9 @@ func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts
 	}
 
 	// Default: generate a worktree path and branch name from the title.
-	branch := "boss/" + sanitize(opts.Title)
+	branch := sanitize(opts.Title)
 	return &gitpkg.CreateResult{
-		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s", branch),
+		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s/%s", sanitize(opts.RepoName), branch),
 		BranchName:   branch,
 	}, nil
 }

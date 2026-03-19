@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -67,22 +68,20 @@ func (m *RepoListModel) buildTable() {
 		return
 	}
 
-	ids := make([]string, len(m.repos))
+	home, _ := os.UserHomeDir()
 	names := make([]string, len(m.repos))
 	paths := make([]string, len(m.repos))
 	for i, repo := range m.repos {
-		id := repo.Id
-		if len(id) > shortIDLen {
-			id = id[:shortIDLen]
-		}
-		ids[i] = id
 		names[i] = repo.DisplayName
-		paths[i] = repo.LocalPath
+		p := repo.LocalPath
+		if home != "" {
+			p = strings.Replace(p, home, "~", 1)
+		}
+		paths[i] = p
 	}
 
 	cols := []table.Column{
 		cursorColumn,
-		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen) + tableColumnSep},
 		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
 		{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep},
 	}
@@ -94,7 +93,7 @@ func (m *RepoListModel) buildTable() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, ids[i], names[i], paths[i]}
+		rows[i] = table.Row{indicator, names[i], paths[i]}
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -201,8 +200,6 @@ func (m RepoListModel) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Repositories"))
-	b.WriteString("\n\n")
 
 	if len(m.repos) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No repositories registered."))

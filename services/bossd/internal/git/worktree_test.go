@@ -11,16 +11,28 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// initTestRepo creates a bare-minimum git repo in a temp dir with an initial commit.
+// initTestRepo creates a git repo in a temp dir with an initial commit and a
+// bare "origin" remote, so that `git fetch origin <branch>` works in tests.
 func initTestRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
 
+	// Create a bare repo to act as "origin".
+	bareDir := t.TempDir()
+	bareCmd := exec.Command("git", "init", "--bare", "-b", "main")
+	bareCmd.Dir = bareDir
+	if out, err := bareCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+
+	// Create working repo, commit, and push to origin.
+	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-b", "main"},
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
 		{"commit", "--allow-empty", "-m", "init"},
+		{"remote", "add", "origin", bareDir},
+		{"push", "-u", "origin", "main"},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -76,12 +88,12 @@ func TestSanitizeBranchName(t *testing.T) {
 		title string
 		want  string
 	}{
-		{"Fix the login bug!", "boss/fix-the-login-bug"},
-		{"Add README.md", "boss/add-readme-md"},
-		{"  spaces  ", "boss/spaces"},
-		{"UPPER CASE", "boss/upper-case"},
-		{"a/b/c", "boss/a-b-c"},
-		{strings.Repeat("x", 100), "boss/" + strings.Repeat("x", 60)},
+		{"Fix the login bug!", "fix-the-login-bug"},
+		{"Add README.md", "add-readme-md"},
+		{"  spaces  ", "spaces"},
+		{"UPPER CASE", "upper-case"},
+		{"a/b/c", "a-b-c"},
+		{strings.Repeat("x", 100), strings.Repeat("x", 60)},
 	}
 
 	for _, tt := range tests {
@@ -104,19 +116,24 @@ func TestCreate(t *testing.T) {
 		RepoPath:        repoDir,
 		BaseBranch:      "main",
 		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
 		Title:           "Test session",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if result.BranchName != "boss/test-session" {
-		t.Errorf("branch = %q, want %q", result.BranchName, "boss/test-session")
+	if result.BranchName != "test-session" {
+		t.Errorf("branch = %q, want %q", result.BranchName, "test-session")
 	}
 
-	// Verify worktree directory exists.
+	// Verify worktree directory exists under <base>/<repo>/<branch>.
 	if _, err := os.Stat(result.WorktreePath); err != nil {
 		t.Errorf("worktree dir not found: %v", err)
+	}
+	wantPath := filepath.Join(wtBase, "my-repo", "test-session")
+	if result.WorktreePath != wantPath {
+		t.Errorf("worktree path = %q, want %q", result.WorktreePath, wantPath)
 	}
 
 	// Verify branch exists.
@@ -124,7 +141,7 @@ func TestCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list branches: %v", err)
 	}
-	if !strings.Contains(out, "boss/test-session") {
+	if !strings.Contains(out, "test-session") {
 		t.Errorf("branch not found in: %q", out)
 	}
 }
@@ -140,6 +157,7 @@ func TestCreateWithSetupScript(t *testing.T) {
 		RepoPath:        repoDir,
 		BaseBranch:      "main",
 		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
 		Title:           "Setup test",
 		SetupScript:     &script,
 	})
@@ -164,6 +182,7 @@ func TestArchive(t *testing.T) {
 		RepoPath:        repoDir,
 		BaseBranch:      "main",
 		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
 		Title:           "Archive test",
 	})
 	if err != nil {
@@ -185,7 +204,7 @@ func TestArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list branches: %v", err)
 	}
-	if !strings.Contains(out, "boss/archive-test") {
+	if !strings.Contains(out, "archive-test") {
 		t.Errorf("branch should still exist after archive, got: %q", out)
 	}
 }
@@ -201,6 +220,7 @@ func TestResurrect(t *testing.T) {
 		RepoPath:        repoDir,
 		BaseBranch:      "main",
 		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
 		Title:           "Resurrect test",
 	})
 	if err != nil {
@@ -237,6 +257,7 @@ func TestEmptyTrash(t *testing.T) {
 		RepoPath:        repoDir,
 		BaseBranch:      "main",
 		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
 		Title:           "Trash test",
 	})
 	if err != nil {
@@ -257,35 +278,49 @@ func TestEmptyTrash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list branches: %v", err)
 	}
-	if strings.Contains(out, "boss/trash-test") {
+	if strings.Contains(out, "trash-test") {
 		t.Errorf("branch should be deleted after empty trash, got: %q", out)
 	}
 }
 
 func TestDetectOriginURL(t *testing.T) {
-	repoDir := initTestRepo(t)
 	logger := zerolog.Nop()
 	mgr := NewManager(logger)
 
-	// No origin configured yet — should return empty.
-	url, err := mgr.DetectOriginURL(context.Background(), repoDir)
-	if err != nil {
-		t.Fatalf("DetectOriginURL: %v", err)
-	}
-	if url != "" {
-		t.Errorf("expected empty URL, got %q", url)
-	}
+	t.Run("no origin", func(t *testing.T) {
+		// Create a repo without an origin remote.
+		dir := t.TempDir()
+		for _, args := range [][]string{
+			{"init", "-b", "main"},
+			{"config", "user.email", "test@test.com"},
+			{"config", "user.name", "Test"},
+			{"commit", "--allow-empty", "-m", "init"},
+		} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+			}
+		}
 
-	// Add an origin remote.
-	if _, err := runGit(context.Background(), repoDir, "remote", "add", "origin", "https://github.com/test/repo.git"); err != nil {
-		t.Fatalf("add remote: %v", err)
-	}
+		url, err := mgr.DetectOriginURL(context.Background(), dir)
+		if err != nil {
+			t.Fatalf("DetectOriginURL: %v", err)
+		}
+		if url != "" {
+			t.Errorf("expected empty URL, got %q", url)
+		}
+	})
 
-	url, err = mgr.DetectOriginURL(context.Background(), repoDir)
-	if err != nil {
-		t.Fatalf("DetectOriginURL: %v", err)
-	}
-	if url != "https://github.com/test/repo.git" {
-		t.Errorf("URL = %q, want %q", url, "https://github.com/test/repo.git")
-	}
+	t.Run("with origin", func(t *testing.T) {
+		repoDir := initTestRepo(t)
+
+		url, err := mgr.DetectOriginURL(context.Background(), repoDir)
+		if err != nil {
+			t.Fatalf("DetectOriginURL: %v", err)
+		}
+		if url == "" {
+			t.Error("expected non-empty URL")
+		}
+	})
 }

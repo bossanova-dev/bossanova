@@ -374,7 +374,15 @@ func (a App) View() tea.View {
 	// Prepend the banner to every screen except during tea.Exec (AttachModel
 	// returns empty content while Claude Code owns the terminal).
 	if v.Content != "" {
-		v.Content = renderBanner() + "\n" + v.Content
+		var opts bannerOpts
+		switch a.activeView { //nolint:exhaustive // only override for specific views
+		case ViewChatPicker:
+			opts.session = a.chatPicker.session
+			opts.spinner = a.chatPicker.spinner
+		case ViewRepoSettings:
+			opts.repo = a.repoSettings.repo
+		}
+		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}
 
 	v.AltScreen = true

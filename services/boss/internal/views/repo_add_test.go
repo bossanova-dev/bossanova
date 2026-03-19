@@ -209,8 +209,8 @@ func TestRepoAdd_OpenMode_NameFromOriginURL(t *testing.T) {
 		},
 	})
 
-	if m.fd.name != "my-cool-project" {
-		t.Fatalf("name = %q, want %q (from origin URL)", m.fd.name, "my-cool-project")
+	if m.fd.name != "@owner/my-cool-project" {
+		t.Fatalf("name = %q, want %q (from origin URL)", m.fd.name, "@owner/my-cool-project")
 	}
 }
 
@@ -263,8 +263,8 @@ func TestRepoAdd_CloneMode_AdvancesToDetails(t *testing.T) {
 	if rm.phase != repoAddPhaseDetails {
 		t.Fatalf("phase = %d, want repoAddPhaseDetails (%d)", rm.phase, repoAddPhaseDetails)
 	}
-	if rm.fd.name != "my-repo" {
-		t.Fatalf("name = %q, want %q", rm.fd.name, "my-repo")
+	if rm.fd.name != "@owner/my-repo" {
+		t.Fatalf("name = %q, want %q", rm.fd.name, "@owner/my-repo")
 	}
 }
 

@@ -116,7 +116,7 @@ func TestSessionToProto(t *testing.T) {
 		Title:             "Fix bug",
 		Plan:              "Fix the thing",
 		WorktreePath:      "/tmp/wt",
-		BranchName:        "boss/fix-bug",
+		BranchName:        "fix-bug",
 		BaseBranch:        "main",
 		State:             machine.ImplementingPlan,
 		ClaudeSessionID:   &claudeID,

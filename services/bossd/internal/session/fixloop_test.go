@@ -100,8 +100,8 @@ func TestFixLoopHandleCheckFailure(t *testing.T) {
 		State:           machine.FixingChecks,
 		AttemptCount:    1,
 		PRNumber:        &prNum,
-		WorktreePath:    "/tmp/worktrees/boss/test",
-		BranchName:      "boss/test",
+		WorktreePath:    "/tmp/worktrees/test-repo/test",
+		BranchName:      "test",
 		BaseBranch:      "main",
 		ClaudeSessionID: &claudeID,
 	}
@@ -125,8 +125,8 @@ func TestFixLoopHandleCheckFailure(t *testing.T) {
 	}
 
 	// Verify branch was pushed.
-	if len(wt.pushed) != 1 || wt.pushed[0] != "boss/test" {
-		t.Errorf("expected push of boss/test, got %v", wt.pushed)
+	if len(wt.pushed) != 1 || wt.pushed[0] != "test" {
+		t.Errorf("expected push of test, got %v", wt.pushed)
 	}
 
 	// Verify session transitioned to AwaitingChecks (FixComplete).
@@ -167,8 +167,8 @@ func TestFixLoopHandleConflict(t *testing.T) {
 		ID:           "sess-1",
 		RepoID:       "repo-1",
 		State:        machine.FixingChecks,
-		WorktreePath: "/tmp/worktrees/boss/test",
-		BranchName:   "boss/test",
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
 		BaseBranch:   "main",
 	}
 
@@ -215,8 +215,8 @@ func TestFixLoopHandleReviewFeedback(t *testing.T) {
 		ID:           "sess-1",
 		RepoID:       "repo-1",
 		State:        machine.FixingChecks,
-		WorktreePath: "/tmp/worktrees/boss/test",
-		BranchName:   "boss/test",
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
 		BaseBranch:   "main",
 	}
 
@@ -323,8 +323,8 @@ func TestIntegrationChecksFailedFixLoop(t *testing.T) {
 		RepoID:       "repo-1",
 		State:        machine.FixingChecks,
 		AttemptCount: 1,
-		WorktreePath: "/tmp/worktrees/boss/test",
-		BranchName:   "boss/test",
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
 		BaseBranch:   "main",
 	}
 
@@ -373,8 +373,8 @@ func TestIntegrationConflictFixLoop(t *testing.T) {
 		ID:           "sess-1",
 		RepoID:       "repo-1",
 		State:        machine.FixingChecks,
-		WorktreePath: "/tmp/worktrees/boss/test",
-		BranchName:   "boss/test",
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
 		BaseBranch:   "main",
 	}
 
@@ -408,8 +408,8 @@ func TestIntegrationReviewFeedbackFixLoop(t *testing.T) {
 		ID:           "sess-1",
 		RepoID:       "repo-1",
 		State:        machine.FixingChecks,
-		WorktreePath: "/tmp/worktrees/boss/test",
-		BranchName:   "boss/test",
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
 		BaseBranch:   "main",
 	}
 

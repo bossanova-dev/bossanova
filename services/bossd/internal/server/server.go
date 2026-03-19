@@ -47,6 +47,7 @@ type Server struct {
 	attempts    db.AttemptStore
 	claudeChats db.ClaudeChatStore
 	chatStatus  *status.Tracker
+	prDisplay   *status.PRTracker
 	lifecycle   *session.Lifecycle
 	claude      claude.ClaudeRunner
 	worktrees   gitpkg.WorktreeManager
@@ -65,6 +66,7 @@ type Config struct {
 	Attempts    db.AttemptStore
 	ClaudeChats db.ClaudeChatStore
 	ChatStatus  *status.Tracker
+	PRDisplay   *status.PRTracker
 	Lifecycle   *session.Lifecycle
 	Claude      claude.ClaudeRunner
 	Worktrees   gitpkg.WorktreeManager
@@ -80,6 +82,7 @@ func New(cfg Config) *Server {
 		attempts:    cfg.Attempts,
 		claudeChats: cfg.ClaudeChats,
 		chatStatus:  cfg.ChatStatus,
+		prDisplay:   cfg.PRDisplay,
 		lifecycle:   cfg.Lifecycle,
 		claude:      cfg.Claude,
 		worktrees:   cfg.Worktrees,
@@ -459,7 +462,17 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 	}
 
-	return connect.NewResponse(&pb.GetSessionResponse{Session: sessionToProto(session)}), nil
+	p := sessionToProto(session)
+
+	// Hydrate PR display status from the in-memory tracker.
+	if s.prDisplay != nil {
+		if e := s.prDisplay.Get(session.ID); e != nil {
+			p.PrDisplayStatus = pb.PRDisplayStatus(e.Status)
+			p.PrDisplayHasFailures = e.HasFailures
+		}
+	}
+
+	return connect.NewResponse(&pb.GetSessionResponse{Session: p}), nil
 }
 
 func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
@@ -508,6 +521,21 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		p := sessionToProto(sess)
 		p.RepoDisplayName = repoNames[sess.RepoID]
 		pbSessions[i] = p
+	}
+
+	// Hydrate PR display statuses from the in-memory tracker.
+	if s.prDisplay != nil {
+		sessionIDs := make([]string, len(sessions))
+		for i, sess := range sessions {
+			sessionIDs[i] = sess.ID
+		}
+		entries := s.prDisplay.GetBatch(sessionIDs)
+		for i, sess := range sessions {
+			if e, ok := entries[sess.ID]; ok {
+				pbSessions[i].PrDisplayStatus = pb.PRDisplayStatus(e.Status)
+				pbSessions[i].PrDisplayHasFailures = e.HasFailures
+			}
+		}
 	}
 
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil

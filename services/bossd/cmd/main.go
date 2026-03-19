@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/config"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/rs/zerolog/log"
@@ -92,6 +93,15 @@ func run() error {
 
 	chatStatusTracker := status.NewTracker()
 
+	// --- PR Display Tracker + Poller ---
+
+	prDisplayTracker := status.NewPRTracker()
+	settings, _ := config.Load()
+	displayPoller := session.NewDisplayPoller(
+		sessions, repos, ghProvider, prDisplayTracker,
+		settings.DisplayPollInterval(), log.Logger,
+	)
+
 	// --- Server ---
 
 	socketPath, err := server.DefaultSocketPath()
@@ -105,6 +115,7 @@ func run() error {
 		Attempts:    attempts,
 		ClaudeChats: claudeChats,
 		ChatStatus:  chatStatusTracker,
+		PRDisplay:   prDisplayTracker,
 		Lifecycle:   lifecycle,
 		Claude:      claudeRunner,
 		Worktrees:   worktrees,
@@ -140,6 +151,9 @@ func run() error {
 	defer pollerCancel()
 	events := poller.Run(pollerCtx)
 	safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
+
+	// Start display status poller.
+	displayPoller.Run(pollerCtx)
 
 	// Start chat status cleanup goroutine (GC stale entries every 30s).
 	safego.Go(log.Logger, func() {

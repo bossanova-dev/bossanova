@@ -110,6 +110,11 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 }
 
 // GetCheckResults returns CI check results for a pull request.
+//
+// The gh CLI's "pr checks" command combines status and conclusion into a single
+// "state" field (SUCCESS, FAILURE, PENDING, STARTUP_FAILURE, etc.) rather than
+// exposing them separately. We map these combined states back to our Status +
+// Conclusion model.
 func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error) {
 	out, err := p.runGH(ctx,
 		"pr", "checks", strconv.Itoa(prID),
@@ -293,15 +298,14 @@ func parsePRState(s string) vcs.PRState {
 }
 
 // parseCheckState converts a gh pr checks "state" field into a status and
-// optional conclusion. The state field combines both concepts: terminal
-// values like SUCCESS/FAILURE imply completed+conclusion, while PENDING
-// and similar imply in-progress with no conclusion yet.
+// optional conclusion. The gh CLI combines status and conclusion into a single
+// field: SUCCESS, FAILURE, PENDING, STARTUP_FAILURE, CANCELLED, SKIPPED, etc.
 func parseCheckState(s string) (vcs.CheckStatus, *vcs.CheckConclusion) {
 	switch strings.ToUpper(s) {
 	case "SUCCESS":
 		c := vcs.CheckConclusionSuccess
 		return vcs.CheckStatusCompleted, &c
-	case "FAILURE":
+	case "FAILURE", "STARTUP_FAILURE", "STALE":
 		c := vcs.CheckConclusionFailure
 		return vcs.CheckStatusCompleted, &c
 	case "NEUTRAL":

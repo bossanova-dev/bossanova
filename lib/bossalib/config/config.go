@@ -6,12 +6,23 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
 	DangerouslySkipPermissions bool   `json:"dangerously_skip_permissions"`
 	WorktreeBaseDir            string `json:"worktree_base_dir"`
+	PollIntervalSeconds        int    `json:"poll_interval_seconds,omitempty"`
+}
+
+// DisplayPollInterval returns the interval for polling PR display status.
+// Defaults to 30 seconds if not configured.
+func (s Settings) DisplayPollInterval() time.Duration {
+	if s.PollIntervalSeconds > 0 {
+		return time.Duration(s.PollIntervalSeconds) * time.Second
+	}
+	return 30 * time.Second
 }
 
 // DefaultSettings returns settings with sensible defaults.

@@ -8,11 +8,11 @@ import (
 // --- Colors (semantic names, decoupled from actual color values) ---
 
 var (
-	colorSelected = lipgloss.Color("#3B9FF9") // selected row + chevron
+	colorSelected = lipgloss.Color("#4CA7F8") // selected row + chevron
 	colorSuccess  = lipgloss.Color("#04B575") // pass, working, completion
 	colorWarning  = lipgloss.Color("#DBBD70") // pending, idle
 	colorDanger   = lipgloss.Color("#FF6347") // fail, error, destructive confirms
-	colorInfo     = lipgloss.Color("#00CED1") // transitional/progress states
+	colorInfo     = lipgloss.Color("#4CA7F8") // transitional/progress states
 	colorMuted    = lipgloss.Color("#626262") // stopped, unknown, default
 )
 
@@ -109,10 +109,10 @@ func columnsWidth(cols []table.Column) int {
 // maxColWidth returns the maximum width needed for a column, given its header
 // and a set of values, capped at cap.
 func maxColWidth(header string, values []string, cap int) int {
-	w := len(header)
+	w := lipgloss.Width(header)
 	for _, v := range values {
-		if len(v) > w {
-			w = len(v)
+		if vw := lipgloss.Width(v); vw > w {
+			w = vw
 		}
 	}
 	if w > cap {

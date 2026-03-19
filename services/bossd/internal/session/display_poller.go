@@ -82,6 +82,10 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 			if sess.PRNumber == nil {
 				continue
 			}
+			// Skip merged PRs — terminal state, no further polling needed.
+			if entry := p.tracker.Get(sess.ID); entry != nil && entry.Status == vcs.PRDisplayStatusMerged {
+				continue
+			}
 			p.pollSession(ctx, repo.OriginURL, sess.ID, *sess.PRNumber)
 		}
 	}

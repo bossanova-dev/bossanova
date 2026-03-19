@@ -92,18 +92,25 @@ func (m *TrashModel) buildTable() {
 		return
 	}
 
-	ids := make([]string, len(m.sessions))
 	repos := make([]string, len(m.sessions))
-	branches := make([]string, len(m.sessions))
+	names := make([]string, len(m.sessions))
+	prLabels := make([]string, len(m.sessions))
+	prs := make([]string, len(m.sessions))
 	archiveds := make([]string, len(m.sessions))
 	for i, sess := range m.sessions {
-		id := sess.Id
-		if len(id) > shortIDLen {
-			id = id[:shortIDLen]
-		}
-		ids[i] = id
 		repos[i] = sess.RepoDisplayName
-		branches[i] = strings.TrimPrefix(sess.BranchName, "boss/")
+		if sess.Title != "" {
+			names[i] = sess.Title
+		} else {
+			names[i] = sess.BranchName
+		}
+		if sess.PrNumber != nil {
+			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
+			prs[i] = renderPRLink(sess)
+		} else {
+			prLabels[i] = "-"
+			prs[i] = "-"
+		}
 		if sess.ArchivedAt != nil {
 			archiveds[i] = relativeTime(sess.ArchivedAt.AsTime())
 		} else {
@@ -113,9 +120,9 @@ func (m *TrashModel) buildTable() {
 
 	cols := []table.Column{
 		cursorColumn,
-		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen) + tableColumnSep},
 		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
-		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60) + tableColumnSep},
+		{Title: "NAME", Width: maxColWidth("NAME", names, 60) + tableColumnSep},
+		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
 		{Title: "ARCHIVED", Width: maxColWidth("ARCHIVED", archiveds, 12) + tableColumnSep},
 	}
 
@@ -126,7 +133,7 @@ func (m *TrashModel) buildTable() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, ids[i], repos[i], branches[i], archiveds[i]}
+		rows[i] = table.Row{indicator, repos[i], names[i], prs[i], archiveds[i]}
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -262,7 +269,7 @@ func (m TrashModel) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Trash"))
+	b.WriteString(styleTitle.Render("Archived Sessions"))
 	b.WriteString("\n\n")
 
 	if len(m.sessions) == 0 {

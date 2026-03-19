@@ -439,20 +439,6 @@ func (m ChatPickerModel) View() tea.View {
 
 	var b strings.Builder
 
-	// Header with PR link, session title, and PR status.
-	title := m.sessionID
-	if m.session != nil {
-		title = m.session.Title
-		if prLink := renderPRLink(m.session); prLink != "" {
-			title = prLink + " " + title
-		}
-		if prStatus := renderSessionPRStatus(m.session, m.spinner); prStatus != "" {
-			title += " (" + prStatus + ")"
-		}
-	}
-	b.WriteString(styleTitle.Render(title))
-	b.WriteString("\n\n")
-
 	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
 	b.WriteString("\n")
 

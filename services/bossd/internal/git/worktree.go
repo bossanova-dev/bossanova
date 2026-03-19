@@ -74,6 +74,7 @@ type CreateOpts struct {
 	RepoPath        string  // Path to the main repository.
 	BaseBranch      string  // Branch to base the worktree on (e.g. "main").
 	WorktreeBaseDir string  // Directory under which worktrees are created.
+	RepoName        string  // Display name of the repo, used to derive worktree subdirectory.
 	Title           string  // Session title, used to derive branch name.
 	SetupScript     *string // Optional setup script to run after creation.
 	Force           bool    // If true, remove any existing branch with the same name.
@@ -91,6 +92,7 @@ type CreateFromExistingBranchOpts struct {
 	RepoPath        string  // Path to the main repository.
 	BranchName      string  // Remote branch to check out (e.g. "feature/foo").
 	WorktreeBaseDir string  // Directory under which worktrees are created.
+	RepoName        string  // Display name of the repo, used to derive worktree subdirectory.
 	SetupScript     *string // Optional setup script to run after creation.
 }
 
@@ -115,7 +117,7 @@ func NewManager(logger zerolog.Logger) *Manager {
 }
 
 // sanitizeBranchName converts a session title into a valid git branch name.
-// Example: "Fix the login bug!" → "boss/fix-the-login-bug"
+// Example: "Fix the login bug!" → "fix-the-login-bug"
 func sanitizeBranchName(title string) string {
 	s := strings.ToLower(title)
 	// Replace non-alphanumeric characters with hyphens.
@@ -127,7 +129,20 @@ func sanitizeBranchName(title string) string {
 		s = s[:60]
 		s = strings.TrimRight(s, "-")
 	}
-	return "boss/" + s
+	return s
+}
+
+// sanitizeDirName converts a name (e.g. repo display name) into a
+// filesystem-safe directory component.
+func sanitizeDirName(name string) string {
+	s := strings.ToLower(name)
+	re := regexp.MustCompile(`[^a-z0-9]+`)
+	s = re.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if s == "" {
+		s = "repo"
+	}
+	return s
 }
 
 // runGit runs a git command in the given directory and returns stdout.
@@ -152,7 +167,7 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 // Create creates a new git worktree with a fresh branch based on baseBranch.
 func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, error) {
 	branch := sanitizeBranchName(opts.Title)
-	wtPath := filepath.Join(opts.WorktreeBaseDir, branch)
+	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), branch)
 
 	// Ensure the worktree base directory exists.
 	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o755); err != nil {
@@ -192,9 +207,17 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		Str("path", wtPath).
 		Msg("creating worktree")
 
-	// git worktree add -b <branch> <path> <baseBranch>
+	// Fetch the latest base branch from origin so the worktree starts from
+	// the most recent remote state, not a potentially stale local ref.
 	if _, err := runGit(ctx, opts.RepoPath,
-		"worktree", "add", "-b", branch, wtPath, opts.BaseBranch,
+		"fetch", "origin", opts.BaseBranch,
+	); err != nil {
+		return nil, fmt.Errorf("fetch base branch: %w", err)
+	}
+
+	// git worktree add -b <branch> <path> origin/<baseBranch>
+	if _, err := runGit(ctx, opts.RepoPath,
+		"worktree", "add", "-b", branch, wtPath, "origin/"+opts.BaseBranch,
 	); err != nil {
 		return nil, fmt.Errorf("worktree add: %w", err)
 	}
@@ -355,7 +378,7 @@ func (m *Manager) DetectDefaultBranch(ctx context.Context, repoPath string) (str
 // CreateFromExistingBranch creates a worktree from an existing remote branch.
 // It fetches the branch from origin and creates a worktree tracking it.
 func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromExistingBranchOpts) (*CreateResult, error) {
-	wtPath := filepath.Join(opts.WorktreeBaseDir, opts.BranchName)
+	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), opts.BranchName)
 
 	// Ensure the worktree base directory exists.
 	if err := os.MkdirAll(opts.WorktreeBaseDir, 0o755); err != nil {

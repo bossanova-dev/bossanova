@@ -225,8 +225,6 @@ func (m RepoSettingsModel) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Repository Settings"))
-	b.WriteString("\n\n")
 
 	if m.err != nil {
 		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))

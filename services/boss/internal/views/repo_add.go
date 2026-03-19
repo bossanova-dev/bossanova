@@ -14,6 +14,7 @@ import (
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 )
 
 // --- Repo Add Wizard ---
@@ -110,7 +111,7 @@ type RepoAddModel struct {
 
 // NewRepoAddModel creates a RepoAddModel with sensible defaults.
 func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
-	cwd, _ := os.Getwd()
+	home, _ := os.UserHomeDir()
 
 	m := RepoAddModel{
 		client:             c,
@@ -118,8 +119,8 @@ func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 		phase:              repoAddPhaseSource,
 		detectedBaseBranch: "main",
 		fd: &repoAddFormData{
-			localPath: cwd,
-			name:      filepath.Base(cwd),
+			localPath: home + "/",
+			name:      filepath.Base(home),
 			confirm:   true,
 		},
 	}
@@ -265,7 +266,13 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.resp.DefaultBranch != "" {
 			m.detectedBaseBranch = msg.resp.DefaultBranch
 		}
-		if n := parseRepoNameFromURL(msg.resp.OriginUrl); n != "" {
+		if msg.resp.IsGithub {
+			if nwo := vcs.GitHubNWO(msg.resp.OriginUrl); nwo != "" {
+				m.fd.name = "@" + nwo
+			} else {
+				m.fd.name = filepath.Base(m.fd.localPath)
+			}
+		} else if n := parseRepoNameFromURL(msg.resp.OriginUrl); n != "" {
 			m.fd.name = n
 		} else {
 			m.fd.name = filepath.Base(m.fd.localPath)
@@ -277,11 +284,17 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.String() == "esc" {
+			// If showing an error, go back to the input form with data preserved.
+			if m.err != nil {
+				m.err = nil
+				m.phase = repoAddPhaseInput
+				m.buildInputForm()
+				return m, m.form.Init()
+			}
 			if m.phase == repoAddPhaseInput {
 				// Go back to source selection.
 				m.phase = repoAddPhaseSource
 				m.form = nil
-				m.err = nil
 				return m, nil
 			}
 			m.cancel = true
@@ -343,7 +356,15 @@ func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 				if m.fd.clonePath == "" {
 					m.fd.clonePath = filepath.Join(home, "Code", repoName)
 				}
-				m.fd.name = repoName
+				if vcs.IsGitHubURL(m.fd.gitURL) {
+					if nwo := vcs.GitHubNWO(m.fd.gitURL); nwo != "" {
+						m.fd.name = "@" + nwo
+					} else {
+						m.fd.name = repoName
+					}
+				} else {
+					m.fd.name = repoName
+				}
 			}
 			// Go straight to details.
 			m.phase = repoAddPhaseDetails

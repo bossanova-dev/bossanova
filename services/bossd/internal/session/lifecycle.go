@@ -90,6 +90,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			RepoPath:        repo.LocalPath,
 			BranchName:      existingBranch,
 			WorktreeBaseDir: repo.WorktreeBaseDir,
+			RepoName:        repo.DisplayName,
 			SetupScript:     repo.SetupScript,
 		})
 	} else {
@@ -97,6 +98,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			RepoPath:        repo.LocalPath,
 			BaseBranch:      session.BaseBranch,
 			WorktreeBaseDir: repo.WorktreeBaseDir,
+			RepoName:        repo.DisplayName,
 			Title:           session.Title,
 			SetupScript:     repo.SetupScript,
 			Force:           forceBranch,

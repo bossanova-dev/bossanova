@@ -77,12 +77,16 @@ func (h *HomeModel) buildTableRows() {
 	}
 
 	repos := make([]string, len(h.sessions))
-	branches := make([]string, len(h.sessions))
+	names := make([]string, len(h.sessions))
 	prLabels := make([]string, len(h.sessions)) // visible text for width calc
 	prs := make([]string, len(h.sessions))      // may contain OSC 8 hyperlinks
 	for i, sess := range h.sessions {
 		repos[i] = sess.RepoDisplayName
-		branches[i] = strings.TrimPrefix(sess.BranchName, "boss/")
+		if sess.Title != "" {
+			names[i] = sess.Title
+		} else {
+			names[i] = sess.BranchName
+		}
 		if sess.PrNumber != nil {
 			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
 			prs[i] = renderPRLink(sess)
@@ -95,12 +99,12 @@ func (h *HomeModel) buildTableRows() {
 	cols := []table.Column{
 		cursorColumn,
 		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
-		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60) + tableColumnSep},
+		{Title: "NAME", Width: maxColWidth("NAME", names, 60) + tableColumnSep},
 		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
 		{Title: "STATUS", Width: 14 + tableColumnSep},
 	}
 
-	strikethrough := lipgloss.NewStyle().Strikethrough(true)
+	mutedStrike := lipgloss.NewStyle().Foreground(colorMuted).Strikethrough(true)
 
 	cursor := h.table.Cursor()
 	rows := make([]table.Row, len(h.sessions))
@@ -110,18 +114,18 @@ func (h *HomeModel) buildTableRows() {
 		claudeStatus := mergeStatus(local, daemon)
 		statusStyled := renderPRDisplayStatus(sess, claudeStatus, h.spinner)
 
-		repo, branch, pr := repos[i], branches[i], prs[i]
+		repo, name, pr := repos[i], names[i], prs[i]
 		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED {
-			repo = strikethrough.Render(repo)
-			branch = strikethrough.Render(branch)
-			pr = strikethrough.Render(pr)
+			repo = mutedStrike.Render(repos[i])
+			name = mutedStrike.Render(names[i])
+			pr = renderMergedPRLink(sess)
 		}
 
 		indicator := ""
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, repo, branch, pr, statusStyled}
+		rows[i] = table.Row{indicator, repo, name, pr, statusStyled}
 	}
 
 	h.table.SetColumns(cols)
@@ -263,12 +267,14 @@ var bannerGradient = []color.Color{
 // Banner has padding(1,1,1,1) = 1 top + 2 content + 1 bottom = 4 lines.
 const bannerHeight = 4
 
-func renderBanner() string {
-	cwd, _ := os.Getwd()
-	if home, err := os.UserHomeDir(); err == nil {
-		cwd = strings.Replace(cwd, home, "~", 1)
-	}
+// bannerOpts carries optional per-screen overrides for the banner.
+type bannerOpts struct {
+	session *pb.Session
+	repo    *pb.Repo
+	spinner spinner.Model
+}
 
+func renderBanner(active View, opts bannerOpts) string {
 	// Logo chars per row, matching `npx oh-my-logo "B" dawn --filled --block-font tiny`.
 	row1 := []string{" ", "█", "▄", "▄"}
 	row2 := []string{" ", "█", "▄", "█"}
@@ -281,8 +287,41 @@ func renderBanner() string {
 		return b.String()
 	}
 
-	banner := colorize(row1) + "  Bossanova v" + buildinfo.Version + "\n" +
-		colorize(row2) + "  " + styleSubtle.Render(cwd)
+	var line1, line2 string
+	switch {
+	case active == ViewChatPicker && opts.session != nil:
+		// PR title with clickable number and colored status.
+		title := opts.session.Title
+		if prLink := renderPRLink(opts.session); prLink != "" {
+			title = prLink + " " + title
+		}
+		if prStatus := renderSessionPRStatus(opts.session, opts.spinner); prStatus != "" {
+			title += " (" + prStatus + ")"
+		}
+		line1 = title
+
+		// Worktree root path.
+		wt := opts.session.GetWorktreePath()
+		if home, err := os.UserHomeDir(); err == nil {
+			wt = strings.Replace(wt, home, "~", 1)
+		}
+		line2 = styleSubtle.Render(wt)
+
+	case opts.repo != nil:
+		line1 = opts.repo.DisplayName
+		lp := opts.repo.LocalPath
+		if home, err := os.UserHomeDir(); err == nil {
+			lp = strings.Replace(lp, home, "~", 1)
+		}
+		line2 = styleSubtle.Render(lp)
+
+	default:
+		line1 = "Bossanova"
+		line2 = styleSubtle.Render("v" + buildinfo.Version)
+	}
+
+	banner := colorize(row1) + "  " + line1 + "\n" +
+		colorize(row2) + "  " + line2
 
 	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
 }
@@ -311,7 +350,7 @@ func StateLabel(state pb.SessionState) string {
 	case pb.SessionState_SESSION_STATE_BLOCKED:
 		return "blocked"
 	case pb.SessionState_SESSION_STATE_MERGED:
-		return "merged"
+		return "✔ merged"
 	case pb.SessionState_SESSION_STATE_CLOSED:
 		return "closed"
 	default:

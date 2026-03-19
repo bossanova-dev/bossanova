@@ -15,8 +15,8 @@ func bossHuhTheme() huh.Theme {
 		t.Focused.Base = lipgloss.NewStyle().PaddingLeft(1)
 		t.Blurred.Base = lipgloss.NewStyle().PaddingLeft(1)
 
-		// Selector + buttons → colorSelected (blue).
-		t.Focused.SelectSelector = t.Focused.SelectSelector.Foreground(colorSelected)
+		// Selector → chevron matching table cursor, colorSelected (blue).
+		t.Focused.SelectSelector = t.Focused.SelectSelector.SetString(cursorChevron + " ").Foreground(colorSelected)
 		t.Focused.NextIndicator = t.Focused.NextIndicator.Foreground(colorSelected)
 		t.Focused.PrevIndicator = t.Focused.PrevIndicator.Foreground(colorSelected)
 		t.Focused.FocusedButton = t.Focused.FocusedButton.

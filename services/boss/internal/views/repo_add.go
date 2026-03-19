@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
@@ -21,8 +22,9 @@ import (
 type repoAddPhase int
 
 const (
-	repoAddPhaseSource  repoAddPhase = iota // Phase 1: source + path/URL
-	repoAddPhaseDetails                     // Phase 2: name + setup + confirm
+	repoAddPhaseSource  repoAddPhase = iota // Phase 1: table pick (open/clone)
+	repoAddPhaseInput                       // Phase 2: path/URL input
+	repoAddPhaseDetails                     // Phase 3: name + setup + confirm
 	repoAddPhaseDone                        // Terminal state
 )
 
@@ -50,6 +52,27 @@ type repoValidatedMsg struct {
 	err  error
 }
 
+// sourceOptions defines the rows for the source-selection table.
+var sourceOptions = []struct {
+	label string
+	desc  string
+	mode  int
+}{
+	{"Open project", "Register an existing local repo", sourceModeOpen},
+	{"Clone from URL", "Clone a repo and register it", sourceModeClone},
+}
+
+// repoAddFormData holds huh form-bound values on the heap so that Value()
+// pointers remain valid across bubbletea value-receiver copies of RepoAddModel.
+type repoAddFormData struct {
+	gitURL    string
+	clonePath string
+	localPath string
+	name      string
+	setup     string
+	confirm   bool
+}
+
 // RepoAddModel is the wizard for registering a new repository.
 type RepoAddModel struct {
 	client client.BossClient
@@ -60,14 +83,13 @@ type RepoAddModel struct {
 	done   bool
 	cancel bool
 
-	// Form-bound values
+	// Source selection table (phase 1)
+	sourceTable table.Model
+
 	sourceMode int
-	gitURL     string
-	clonePath  string
-	localPath  string
-	name       string
-	setup      string
-	confirm    bool
+
+	// Form-bound values (heap-allocated for stable pointers)
+	fd *repoAddFormData
 
 	// Async state
 	validating bool
@@ -79,7 +101,7 @@ type RepoAddModel struct {
 
 	createdRepo *pb.Repo
 
-	// Form
+	// Form (used for clone/open input fields + details phase)
 	form *huh.Form
 
 	// Layout
@@ -94,63 +116,77 @@ func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 		client:             c,
 		ctx:                ctx,
 		phase:              repoAddPhaseSource,
-		localPath:          cwd,
-		name:               filepath.Base(cwd),
 		detectedBaseBranch: "main",
-		confirm:            true,
+		fd: &repoAddFormData{
+			localPath: cwd,
+			name:      filepath.Base(cwd),
+			confirm:   true,
+		},
 	}
-	m.buildSourceForm()
+	m.buildSourceTable()
 	return m
 }
 
-func (m *RepoAddModel) buildSourceForm() {
-	m.form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[int]().
-				Title("Add Repository").
-				Options(
-					huh.NewOption("Open project — Register an existing local repo", sourceModeOpen),
-					huh.NewOption("Clone from URL — Clone a repo and register it", sourceModeClone),
-				).
-				Value(&m.sourceMode),
-		),
-		// Clone fields — shown only in clone mode.
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Git URL").
-				Placeholder("https://github.com/user/repo.git").
-				Value(&m.gitURL).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("URL is required")
-					}
-					return nil
-				}),
-			huh.NewInput().
-				Title("Clone path").
-				Placeholder("Clone destination path").
-				Value(&m.clonePath).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("clone path is required")
-					}
-					return nil
-				}),
-		).WithHideFunc(func() bool { return m.sourceMode != sourceModeClone }),
-		// Open fields — shown only in open mode.
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Path").
-				Placeholder("Repository path").
-				Value(&m.localPath).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("path is required")
-					}
-					return nil
-				}),
-		).WithHideFunc(func() bool { return m.sourceMode != sourceModeOpen }),
-	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+func (m *RepoAddModel) buildSourceTable() {
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "", Width: 14 + tableColumnSep},
+		{Title: "", Width: 32 + tableColumnSep},
+	}
+	rows := make([]table.Row, len(sourceOptions))
+	for i, opt := range sourceOptions {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, opt.label, styleSubtle.Render(opt.desc)}
+	}
+	m.sourceTable = newBossTable(cols, rows, len(sourceOptions)+1)
+	m.sourceTable.SetWidth(columnsWidth(cols))
+}
+
+func (m *RepoAddModel) buildInputForm() {
+	if m.sourceMode == sourceModeClone {
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Git URL").
+					Placeholder("https://github.com/user/repo.git").
+					Value(&m.fd.gitURL).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("URL is required")
+						}
+						return nil
+					}),
+				huh.NewInput().
+					Title("Clone path").
+					Placeholder("Clone destination path").
+					Value(&m.fd.clonePath).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("clone path is required")
+						}
+						return nil
+					}),
+			),
+		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+	} else {
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Path").
+					Placeholder("Repository path").
+					Value(&m.fd.localPath).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("path is required")
+						}
+						return nil
+					}),
+			),
+		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+	}
 }
 
 func (m *RepoAddModel) buildDetailsForm() {
@@ -159,7 +195,7 @@ func (m *RepoAddModel) buildDetailsForm() {
 			huh.NewInput().
 				Title("Name").
 				Placeholder("Display name").
-				Value(&m.name).
+				Value(&m.fd.name).
 				Validate(func(s string) error {
 					if strings.TrimSpace(s) == "" {
 						return fmt.Errorf("name is required")
@@ -169,12 +205,12 @@ func (m *RepoAddModel) buildDetailsForm() {
 			huh.NewInput().
 				Title("Setup script").
 				Placeholder("Optional, e.g. ./setup.sh").
-				Value(&m.setup),
+				Value(&m.fd.setup),
 			huh.NewConfirm().
 				Title("Add this repository?").
 				Affirmative("Yes").
 				Negative("No").
-				Value(&m.confirm),
+				Value(&m.fd.confirm),
 		),
 	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
 }
@@ -219,8 +255,9 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !msg.resp.IsValid {
 			m.err = fmt.Errorf("%s", msg.resp.ErrorMessage)
-			// Rebuild source form so user can fix path.
-			m.buildSourceForm()
+			// Go back to input phase so user can fix path.
+			m.phase = repoAddPhaseInput
+			m.buildInputForm()
 			return m, m.form.Init()
 		}
 		// Auto-populate fields from validation response.
@@ -228,7 +265,11 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.resp.DefaultBranch != "" {
 			m.detectedBaseBranch = msg.resp.DefaultBranch
 		}
-		m.name = filepath.Base(m.localPath)
+		if n := parseRepoNameFromURL(msg.resp.OriginUrl); n != "" {
+			m.fd.name = n
+		} else {
+			m.fd.name = filepath.Base(m.fd.localPath)
+		}
 		// Advance to details phase.
 		m.phase = repoAddPhaseDetails
 		m.buildDetailsForm()
@@ -236,16 +277,47 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.String() == "esc" {
+			if m.phase == repoAddPhaseInput {
+				// Go back to source selection.
+				m.phase = repoAddPhaseSource
+				m.form = nil
+				m.err = nil
+				return m, nil
+			}
 			m.cancel = true
 			return m, nil
 		}
 	}
 
-	// Delegate to form when active.
+	// Source phase: table navigation.
+	if m.phase == repoAddPhaseSource {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			if msg.String() == "enter" {
+				m.sourceMode = sourceOptions[m.sourceTable.Cursor()].mode
+				m.phase = repoAddPhaseInput
+				m.buildInputForm()
+				return m, m.form.Init()
+			}
+			var cmd tea.Cmd
+			m.sourceTable, cmd = m.sourceTable.Update(msg)
+			updateCursorColumn(&m.sourceTable)
+			return m, cmd
+		}
+		return m, nil
+	}
+
+	// Delegate to form when active (input + details phases).
 	if m.form != nil && m.phase != repoAddPhaseDone {
 		_, cmd := m.form.Update(msg)
 
 		if m.form.State == huh.StateAborted {
+			if m.phase == repoAddPhaseInput {
+				m.phase = repoAddPhaseSource
+				m.form = nil
+				m.err = nil
+				return m, nil
+			}
 			m.cancel = true
 			return m, nil
 		}
@@ -262,42 +334,44 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 	switch m.phase {
-	case repoAddPhaseSource:
+	case repoAddPhaseInput:
 		if m.sourceMode == sourceModeClone {
 			// Derive defaults from URL.
-			repoName := parseRepoNameFromURL(m.gitURL)
+			repoName := parseRepoNameFromURL(m.fd.gitURL)
 			if repoName != "" {
 				home, _ := os.UserHomeDir()
-				if m.clonePath == "" {
-					m.clonePath = filepath.Join(home, "Code", repoName)
+				if m.fd.clonePath == "" {
+					m.fd.clonePath = filepath.Join(home, "Code", repoName)
 				}
-				m.name = repoName
+				m.fd.name = repoName
 			}
 			// Go straight to details.
 			m.phase = repoAddPhaseDetails
 			m.buildDetailsForm()
-			return m, m.form.Init()
+			return *m, m.form.Init()
 		}
 		// Open mode — validate path first.
 		m.validating = true
 		m.err = nil
-		localPath := m.localPath
-		return m, func() tea.Msg {
+		localPath := m.fd.localPath
+		return *m, func() tea.Msg {
 			resp, err := m.client.ValidateRepoPath(m.ctx, localPath)
 			return repoValidatedMsg{resp: resp, err: err}
 		}
 
 	case repoAddPhaseDetails:
-		if !m.confirm {
+		if !m.fd.confirm {
 			m.cancel = true
-			return m, nil
+			return *m, nil
 		}
-		return m, m.submitRepo()
+		return *m, m.submitRepo()
 
+	case repoAddPhaseSource:
+		// Source table selection — no form completion to handle.
 	case repoAddPhaseDone:
 		// Nothing to do.
 	}
-	return m, nil
+	return *m, nil
 }
 
 func (m *RepoAddModel) submitRepo() tea.Cmd {
@@ -306,13 +380,13 @@ func (m *RepoAddModel) submitRepo() tea.Cmd {
 	if m.sourceMode == sourceModeClone {
 		m.cloning = true
 		req := &pb.CloneAndRegisterRepoRequest{
-			CloneUrl:          m.gitURL,
-			LocalPath:         m.clonePath,
-			DisplayName:       m.name,
+			CloneUrl:          m.fd.gitURL,
+			LocalPath:         m.fd.clonePath,
+			DisplayName:       m.fd.name,
 			DefaultBaseBranch: "main",
 			WorktreeBaseDir:   cfg.WorktreeBaseDir,
 		}
-		if s := m.setup; s != "" {
+		if s := m.fd.setup; s != "" {
 			req.SetupScript = &s
 		}
 		return func() tea.Msg {
@@ -322,12 +396,12 @@ func (m *RepoAddModel) submitRepo() tea.Cmd {
 	}
 
 	req := &pb.RegisterRepoRequest{
-		LocalPath:         m.localPath,
-		DisplayName:       m.name,
+		LocalPath:         m.fd.localPath,
+		DisplayName:       m.fd.name,
 		DefaultBaseBranch: m.detectedBaseBranch,
 		WorktreeBaseDir:   cfg.WorktreeBaseDir,
 	}
-	if s := m.setup; s != "" {
+	if s := m.fd.setup; s != "" {
 		req.SetupScript = &s
 	}
 	return func() tea.Msg {
@@ -346,7 +420,7 @@ func (m RepoAddModel) View() tea.View {
 	if m.validating {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Foreground(colorInfo).Render(
-				fmt.Sprintf("Validating %s...", m.localPath)),
+				fmt.Sprintf("Validating %s...", m.fd.localPath)),
 		)
 	}
 
@@ -360,7 +434,7 @@ func (m RepoAddModel) View() tea.View {
 	if m.cloning {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Foreground(colorInfo).Render(
-				fmt.Sprintf("Cloning %s...", m.gitURL)),
+				fmt.Sprintf("Cloning %s...", m.fd.gitURL)),
 		)
 	}
 
@@ -373,19 +447,25 @@ func (m RepoAddModel) View() tea.View {
 		)
 	}
 
+	if m.phase == repoAddPhaseSource {
+		var b strings.Builder
+		b.WriteString(styleTitle.Render("Add Repository"))
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.sourceTable.View()))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		return tea.NewView(b.String())
+	}
+
 	if m.form != nil {
 		var b strings.Builder
-		if m.phase == repoAddPhaseDetails {
-			b.WriteString(styleTitle.Render("Add Repository"))
-			b.WriteString("\n")
-			if m.sourceMode == sourceModeClone {
-				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Source: Clone from URL"))
-			} else {
-				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Source: Open project"))
-			}
-			b.WriteString("\n")
+		if m.sourceMode == sourceModeClone {
+			b.WriteString(styleTitle.Render("Clone a repository from URL"))
+		} else {
+			b.WriteString(styleTitle.Render("Add a local repository"))
 		}
-		b.WriteString(m.form.View())
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()))
 		return tea.NewView(b.String())
 	}
 

@@ -113,10 +113,10 @@ func (m *TrashModel) buildTable() {
 
 	cols := []table.Column{
 		cursorColumn,
-		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen)},
-		{Title: "REPO", Width: maxColWidth("REPO", repos, 20)},
-		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60)},
-		{Title: "ARCHIVED", Width: maxColWidth("ARCHIVED", archiveds, 12)},
+		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen) + tableColumnSep},
+		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
+		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60) + tableColumnSep},
+		{Title: "ARCHIVED", Width: maxColWidth("ARCHIVED", archiveds, 12) + tableColumnSep},
 	}
 
 	cursor := m.table.Cursor()
@@ -245,20 +245,8 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m TrashModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
-// Capped at len(sessions)+1 so the table doesn't expand beyond its content.
 func (m TrashModel) tableHeight() int {
-	needed := len(m.sessions) + 1
-	if m.height <= 0 {
-		return needed
-	}
-	avail := m.height - 4 // title(1) + blank(1) + blank(1) + action bar(1)
-	if avail < 1 {
-		avail = 1
-	}
-	if needed < avail {
-		return needed
-	}
-	return avail
+	return clampedTableHeight(len(m.sessions), m.height, 4) // title + blank + blank + action bar
 }
 
 func (m TrashModel) View() tea.View {

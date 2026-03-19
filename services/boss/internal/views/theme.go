@@ -38,7 +38,22 @@ var (
 	styleSubtle    = lipgloss.NewStyle().Faint(true)
 )
 
+// --- Status Styles ---
+
+var (
+	styleStatusSuccess = lipgloss.NewStyle().Foreground(colorSuccess)
+	styleStatusWarning = lipgloss.NewStyle().Foreground(colorWarning)
+	styleStatusDanger  = lipgloss.NewStyle().Foreground(colorDanger)
+	styleStatusInfo    = lipgloss.NewStyle().Foreground(colorInfo)
+	styleStatusMuted   = lipgloss.NewStyle().Foreground(colorMuted)
+)
+
 // --- TUI Table ---
+
+const (
+	tableColumnGap = 1 // left padding applied to every cell
+	tableColumnSep = 1 // extra width added to data columns so gap between them = 2
+)
 
 var cursorColumn = table.Column{Title: " ", Width: 1}
 
@@ -53,8 +68,6 @@ func bossTableStyles() table.Styles {
 }
 
 // newBossTable creates a focused table with the standard boss key map and styles.
-//
-//nolint:unparam // cols/rows are nil at init but the API supports pre-populating.
 func newBossTable(cols []table.Column, rows []table.Row, height int) table.Model {
 	if height <= 0 {
 		height = defaultTableHeight
@@ -84,11 +97,11 @@ func updateCursorColumn(t *table.Model) {
 }
 
 // columnsWidth returns the total rendered width for a set of columns,
-// including left-only cell padding (1 char per column).
+// including left-only cell padding (tableColumnGap per column).
 func columnsWidth(cols []table.Column) int {
 	w := 0
 	for _, c := range cols {
-		w += c.Width + 1 // +1 for left-only Padding(0, 0, 0, 1) on each cell
+		w += c.Width + tableColumnGap
 	}
 	return w
 }
@@ -106,6 +119,21 @@ func maxColWidth(header string, values []string, cap int) int {
 		return cap
 	}
 	return w
+}
+
+// clampedTableHeight returns the height for a table given the number of data rows,
+// total terminal height, and fixed overhead (title + gaps + action bar lines).
+// Returns rows+1 (header + data) clamped to available vertical space.
+func clampedTableHeight(rows, termHeight, overhead int) int {
+	needed := rows + 1
+	if termHeight <= 0 {
+		return needed
+	}
+	avail := max(termHeight-overhead, 1)
+	if needed < avail {
+		return needed
+	}
+	return avail
 }
 
 // --- CLI Table (exported for cmd/ package) ---

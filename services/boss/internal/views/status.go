@@ -1,16 +1,15 @@
 package views
 
 import (
-	"image/color"
+	"fmt"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/lipgloss/v2"
 	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // newStatusSpinner creates an unstyled spinner for status display.
-// Color is applied by renderStatus so the entire cell has a single ANSI wrap.
+// Color is applied by renderPRDisplayStatus so the entire cell has a single ANSI wrap.
 func newStatusSpinner() spinner.Model {
 	return spinner.New(spinner.WithSpinner(spinner.Dot))
 }
@@ -37,56 +36,80 @@ func mergeStatus(local, daemon string) string {
 	return daemon
 }
 
-// renderStatus returns a styled status string for chat-level display.
-// The spinner + label are wrapped in a single Render call to avoid
-// intermediate ANSI resets that interfere with the table's Selected style.
-func renderStatus(status string, sp spinner.Model) string {
+// styledPRStatus returns a styled label for a PR display status.
+// Returns "" for unspecified/unknown statuses.
+func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
+	switch sess.PrDisplayStatus {
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED:
+		return styleStatusInfo.Render("merged")
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED:
+		return styleStatusMuted.Render("closed")
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING:
+		return styleStatusSuccess.Render("✓ passing")
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING:
+		return styleStatusDanger.Render("⨯ failing")
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CONFLICT:
+		return styleStatusDanger.Render("conflict")
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_REVIEWED:
+		return styleStatusInfo.Render("reviewed")
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CHECKING:
+		s := styleStatusWarning
+		if sess.PrDisplayHasFailures {
+			s = styleStatusDanger
+		}
+		return s.Render(sp.View() + "checking")
+	default:
+		return ""
+	}
+}
+
+// renderPRDisplayStatus returns a styled status string for the unified STATUS column.
+// Claude working status overrides all PR display statuses.
+func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Model) string {
+	if claudeStatus == bosspty.StatusWorking {
+		return styleStatusSuccess.Render(sp.View() + "working")
+	}
+	if label := styledPRStatus(sess, sp); label != "" {
+		return label
+	}
+	if claudeStatus == bosspty.StatusIdle {
+		return styleStatusWarning.Render("idle")
+	}
+	return styleStatusMuted.Render("stopped")
+}
+
+// renderSessionPRStatus returns a styled PR status label for display next to
+// a session title (e.g. "checking", "failing"). Returns "" when there is no
+// meaningful PR status to show (idle / unspecified).
+func renderSessionPRStatus(sess *pb.Session, sp spinner.Model) string {
+	return styledPRStatus(sess, sp)
+}
+
+// renderClaudeStatus returns a styled status string for a Claude process
+// (working/idle/stopped) without PR display context.
+func renderClaudeStatus(status string, sp spinner.Model) string {
 	switch status {
 	case bosspty.StatusWorking:
-		return lipgloss.NewStyle().Foreground(colorSuccess).Render(sp.View() + "working")
+		return styleStatusSuccess.Render(sp.View() + "working")
 	case bosspty.StatusIdle:
-		return lipgloss.NewStyle().Foreground(colorWarning).Render("idle")
-	default: // StatusStopped
-		return lipgloss.NewStyle().Foreground(colorMuted).Render("stopped")
-	}
-}
-
-// renderSessionStatus returns a styled status for the session list.
-// When the PTY is active it shows working/idle; when stopped it falls back
-// to the session's state-machine state which is more informative.
-func renderSessionStatus(ptyStatus string, sessState pb.SessionState, sp spinner.Model) string {
-	switch ptyStatus {
-	case bosspty.StatusWorking:
-		return lipgloss.NewStyle().Foreground(colorSuccess).Render(sp.View() + "working")
-	case bosspty.StatusIdle:
-		return lipgloss.NewStyle().Foreground(colorWarning).Render("idle")
-	}
-
-	// PTY stopped — show session state instead.
-	label := StateLabel(sessState)
-	color := stateColor(sessState)
-	return lipgloss.NewStyle().Foreground(color).Render(label)
-}
-
-// stateColor maps a session state to its display color.
-func stateColor(state pb.SessionState) color.Color {
-	switch state {
-	case pb.SessionState_SESSION_STATE_AWAITING_CHECKS:
-		return colorWarning
-	case pb.SessionState_SESSION_STATE_GREEN_DRAFT,
-		pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
-		pb.SessionState_SESSION_STATE_MERGED:
-		return colorSuccess
-	case pb.SessionState_SESSION_STATE_BLOCKED:
-		return colorDanger
-	case pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
-		pb.SessionState_SESSION_STATE_STARTING_CLAUDE,
-		pb.SessionState_SESSION_STATE_PUSHING_BRANCH,
-		pb.SessionState_SESSION_STATE_OPENING_DRAFT_PR,
-		pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
-		pb.SessionState_SESSION_STATE_FIXING_CHECKS:
-		return colorInfo
+		return styleStatusWarning.Render("idle")
 	default:
-		return colorMuted
+		return styleStatusMuted.Render("stopped")
 	}
+}
+
+// renderPRLink returns an underlined, OSC 8 hyperlinked PR label (e.g. "#12")
+// that opens the PR URL on cmd+click. Returns plain label if no URL is available.
+// Uses raw ANSI underline escapes (not lipgloss) so the table's row-level
+// foreground color is inherited rather than overridden.
+func renderPRLink(sess *pb.Session) string {
+	if sess == nil || sess.PrNumber == nil {
+		return ""
+	}
+	label := fmt.Sprintf("#%d", *sess.PrNumber)
+	underlined := "\x1b[4m" + label + "\x1b[24m"
+	if sess.PrUrl != nil && *sess.PrUrl != "" {
+		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, underlined)
+	}
+	return underlined
 }

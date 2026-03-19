@@ -2,7 +2,7 @@ package views
 
 import (
 	"fmt"
-	"os"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -18,17 +18,20 @@ type SettingsModel struct {
 	cancel   bool
 	err      error
 
-	// Worktree dir inline editing
-	editing          bool
-	worktreeDirInput textinput.Model
+	// Which row is being edited (-1 = none).
+	editingRow int
+
+	worktreeDirInput  textinput.Model
+	pollIntervalInput textinput.Model
 
 	width int
 }
 
 const (
-	settingsRowSkipPerms = 0
-	settingsRowWorktree  = 1
-	settingsRowCount     = 2
+	settingsRowSkipPerms    = 0
+	settingsRowWorktree     = 1
+	settingsRowPollInterval = 2
+	settingsRowCount        = 3
 )
 
 // NewSettingsModel creates a SettingsModel, loading current settings.
@@ -40,9 +43,18 @@ func NewSettingsModel() SettingsModel {
 	wtIn.SetWidth(60)
 	wtIn.SetValue(s.WorktreeBaseDir)
 
+	piIn := textinput.New()
+	piIn.Placeholder = "30"
+	piIn.SetWidth(10)
+	if s.PollIntervalSeconds > 0 {
+		piIn.SetValue(strconv.Itoa(s.PollIntervalSeconds))
+	}
+
 	return SettingsModel{
-		settings:         s,
-		worktreeDirInput: wtIn,
+		settings:          s,
+		editingRow:        -1,
+		worktreeDirInput:  wtIn,
+		pollIntervalInput: piIn,
 	}
 }
 
@@ -57,7 +69,7 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.editing {
+		if m.editingRow >= 0 {
 			return m.updateEditing(msg)
 		}
 
@@ -84,31 +96,82 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m SettingsModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
+		return m.commitEdit()
+	case "esc":
+		return m.cancelEdit()
+	}
+
+	var cmd tea.Cmd
+	switch m.editingRow {
+	case settingsRowWorktree:
+		m.worktreeDirInput, cmd = m.worktreeDirInput.Update(msg)
+	case settingsRowPollInterval:
+		m.pollIntervalInput, cmd = m.pollIntervalInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m SettingsModel) commitEdit() (tea.Model, tea.Cmd) {
+	switch m.editingRow {
+	case settingsRowWorktree:
 		dir := m.worktreeDirInput.Value()
-		info, err := os.Stat(dir)
-		if err != nil || !info.IsDir() {
-			m.err = fmt.Errorf("directory does not exist: %s", dir)
+		if dir == "" {
+			m.err = fmt.Errorf("directory cannot be empty")
 			return m, nil
 		}
-		m.editing = false
+		m.editingRow = -1
 		m.err = nil
 		m.worktreeDirInput.Blur()
 		m.settings.WorktreeBaseDir = dir
 		if err := config.Save(m.settings); err != nil {
 			m.err = err
 		}
-		return m, nil
-	case "esc":
-		m.editing = false
+
+	case settingsRowPollInterval:
+		val := m.pollIntervalInput.Value()
+		if val == "" {
+			// Empty means use default (clear the setting).
+			m.editingRow = -1
+			m.err = nil
+			m.pollIntervalInput.Blur()
+			m.settings.PollIntervalSeconds = 0
+			if err := config.Save(m.settings); err != nil {
+				m.err = err
+			}
+			return m, nil
+		}
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 1 {
+			m.err = fmt.Errorf("poll interval must be a positive integer")
+			return m, nil
+		}
+		m.editingRow = -1
 		m.err = nil
+		m.pollIntervalInput.Blur()
+		m.settings.PollIntervalSeconds = n
+		if err := config.Save(m.settings); err != nil {
+			m.err = err
+		}
+	}
+	return m, nil
+}
+
+func (m SettingsModel) cancelEdit() (tea.Model, tea.Cmd) {
+	switch m.editingRow {
+	case settingsRowWorktree:
 		m.worktreeDirInput.Blur()
 		m.worktreeDirInput.SetValue(m.settings.WorktreeBaseDir)
-		return m, nil
+	case settingsRowPollInterval:
+		m.pollIntervalInput.Blur()
+		if m.settings.PollIntervalSeconds > 0 {
+			m.pollIntervalInput.SetValue(strconv.Itoa(m.settings.PollIntervalSeconds))
+		} else {
+			m.pollIntervalInput.SetValue("")
+		}
 	}
-
-	var cmd tea.Cmd
-	m.worktreeDirInput, cmd = m.worktreeDirInput.Update(msg)
-	return m, cmd
+	m.editingRow = -1
+	m.err = nil
+	return m, nil
 }
 
 func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
@@ -119,8 +182,11 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			m.err = err
 		}
 	case settingsRowWorktree:
-		m.editing = true
+		m.editingRow = settingsRowWorktree
 		return m, m.worktreeDirInput.Focus()
+	case settingsRowPollInterval:
+		m.editingRow = settingsRowPollInterval
+		return m, m.pollIntervalInput.Focus()
 	}
 	return m, nil
 }
@@ -138,17 +204,19 @@ func (m SettingsModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
+	editing := m.editingRow >= 0
+
 	// Row 0: dangerously skip permissions toggle
 	check := " "
 	if m.settings.DangerouslySkipPermissions {
 		check = "x"
 	}
 	cursor := "  "
-	if m.cursor == settingsRowSkipPerms && !m.editing {
-		cursor = "> "
+	if m.cursor == settingsRowSkipPerms && !editing {
+		cursor = cursorChevron + " "
 	}
 	line := fmt.Sprintf("%s[%s] Enable Claude --dangerously-skip-permissions", cursor, check)
-	if m.cursor == settingsRowSkipPerms && !m.editing {
+	if m.cursor == settingsRowSkipPerms && !editing {
 		line = styleSelected.Render(line)
 	}
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
@@ -156,10 +224,10 @@ func (m SettingsModel) View() tea.View {
 
 	// Row 1: worktree base dir
 	cursor = "  "
-	if m.cursor == settingsRowWorktree && !m.editing {
-		cursor = "> "
+	if m.cursor == settingsRowWorktree && !editing {
+		cursor = cursorChevron + " "
 	}
-	if m.editing {
+	if m.editingRow == settingsRowWorktree {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Worktree base directory:"))
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.worktreeDirInput.View()))
@@ -173,7 +241,30 @@ func (m SettingsModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	if m.editing {
+	// Row 2: poll interval
+	cursor = "  "
+	if m.cursor == settingsRowPollInterval && !editing {
+		cursor = cursorChevron + " "
+	}
+	if m.editingRow == settingsRowPollInterval {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Poll interval (seconds):"))
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.pollIntervalInput.View()))
+		b.WriteString("\n")
+	} else {
+		intervalStr := "30 (default)"
+		if m.settings.PollIntervalSeconds > 0 {
+			intervalStr = strconv.Itoa(m.settings.PollIntervalSeconds)
+		}
+		line = fmt.Sprintf("%sPoll interval (seconds): %s", cursor, intervalStr)
+		if m.cursor == settingsRowPollInterval {
+			line = styleSelected.Render(line)
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString("\n")
+	}
+
+	if editing {
 		b.WriteString(styleActionBar.Render("[enter] save  [esc] cancel"))
 	} else {
 		b.WriteString(styleActionBar.Render("[enter/space] toggle/edit  [esc] back"))

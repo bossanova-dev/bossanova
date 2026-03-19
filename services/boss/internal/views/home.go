@@ -107,7 +107,7 @@ func (h *HomeModel) buildTableRows() {
 		local := h.manager.SessionStatus(sess.Id)
 		daemon := h.daemonStatuses[sess.Id]
 		status := mergeStatus(local, daemon)
-		statusStyled := renderStatus(status, h.spinner)
+		statusStyled := renderSessionStatus(status, sess.State, h.spinner)
 
 		indicator := ""
 		if i == cursor {

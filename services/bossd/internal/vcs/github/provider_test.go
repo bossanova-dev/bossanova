@@ -72,57 +72,40 @@ func TestParsePRState(t *testing.T) {
 	}
 }
 
-func TestParseCheckStatus(t *testing.T) {
+func TestParseCheckState(t *testing.T) {
 	tests := []struct {
-		input string
-		want  vcs.CheckStatus
+		input          string
+		wantStatus     vcs.CheckStatus
+		wantConclusion *vcs.CheckConclusion
 	}{
-		{"COMPLETED", vcs.CheckStatusCompleted},
-		{"completed", vcs.CheckStatusCompleted},
-		{"IN_PROGRESS", vcs.CheckStatusInProgress},
-		{"QUEUED", vcs.CheckStatusQueued},
-		{"PENDING", vcs.CheckStatusQueued},
-		{"WAITING", vcs.CheckStatusQueued},
-		{"unknown", vcs.CheckStatusQueued},
+		// Terminal states — completed with conclusion.
+		{"SUCCESS", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionSuccess)},
+		{"FAILURE", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure)},
+		{"NEUTRAL", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionNeutral)},
+		{"CANCELLED", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionCancelled)},
+		{"SKIPPED", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionSkipped)},
+		{"TIMED_OUT", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionTimedOut)},
+		// In-progress states — no conclusion.
+		{"IN_PROGRESS", vcs.CheckStatusInProgress, nil},
+		{"QUEUED", vcs.CheckStatusQueued, nil},
+		{"PENDING", vcs.CheckStatusQueued, nil},
+		{"WAITING", vcs.CheckStatusQueued, nil},
+		// Unknown defaults to queued.
+		{"unknown", vcs.CheckStatusQueued, nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			if got := parseCheckStatus(tt.input); got != tt.want {
-				t.Errorf("parseCheckStatus(%q) = %v, want %v", tt.input, got, tt.want)
+			gotStatus, gotConclusion := parseCheckState(tt.input)
+			if gotStatus != tt.wantStatus {
+				t.Errorf("parseCheckState(%q) status = %v, want %v", tt.input, gotStatus, tt.wantStatus)
 			}
-		})
-	}
-}
-
-func TestParseCheckConclusion(t *testing.T) {
-	tests := []struct {
-		input string
-		want  *vcs.CheckConclusion
-	}{
-		{"SUCCESS", ptr(vcs.CheckConclusionSuccess)},
-		{"FAILURE", ptr(vcs.CheckConclusionFailure)},
-		{"NEUTRAL", ptr(vcs.CheckConclusionNeutral)},
-		{"CANCELLED", ptr(vcs.CheckConclusionCancelled)},
-		{"SKIPPED", ptr(vcs.CheckConclusionSkipped)},
-		{"TIMED_OUT", ptr(vcs.CheckConclusionTimedOut)},
-		{"", nil},
-		{"unknown", nil},
-	}
-
-	for _, tt := range tests {
-		name := tt.input
-		if name == "" {
-			name = "empty"
-		}
-		t.Run(name, func(t *testing.T) {
-			got := parseCheckConclusion(tt.input)
-			if (got == nil) != (tt.want == nil) {
-				t.Errorf("parseCheckConclusion(%q) = %v, want %v", tt.input, got, tt.want)
+			if (gotConclusion == nil) != (tt.wantConclusion == nil) {
+				t.Errorf("parseCheckState(%q) conclusion = %v, want %v", tt.input, gotConclusion, tt.wantConclusion)
 				return
 			}
-			if got != nil && *got != *tt.want {
-				t.Errorf("parseCheckConclusion(%q) = %v, want %v", tt.input, *got, *tt.want)
+			if gotConclusion != nil && *gotConclusion != *tt.wantConclusion {
+				t.Errorf("parseCheckState(%q) conclusion = %v, want %v", tt.input, *gotConclusion, *tt.wantConclusion)
 			}
 		})
 	}

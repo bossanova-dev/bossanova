@@ -156,8 +156,8 @@ func TestNewSession_SingleRepoAutoSelects(t *testing.T) {
 
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	if m.phase != newSessionPhaseForm {
-		t.Fatalf("phase = %d, want newSessionPhaseForm (%d)", m.phase, newSessionPhaseForm)
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
 	}
 	if m.selectedRepoID != "repo-1" {
 		t.Fatalf("selectedRepoID = %q, want %q", m.selectedRepoID, "repo-1")
@@ -175,17 +175,17 @@ func TestNewSession_MultipleReposShowTable(t *testing.T) {
 	}
 }
 
-func TestNewSession_TableSelectTransitionsToForm(t *testing.T) {
+func TestNewSession_TableSelectTransitionsToTypeSelect(t *testing.T) {
 	sc := &stubClient{repos: twoRepos()}
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
 	// Move to second repo and press enter.
-	m = sendKey(t, m, 'j')                       // down
+	m = sendKey(t, m, 'j')                 // down
 	m = sendSpecialKey(t, m, tea.KeyEnter) // select
 
-	if m.phase != newSessionPhaseForm {
-		t.Fatalf("phase = %d, want newSessionPhaseForm (%d)", m.phase, newSessionPhaseForm)
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
 	}
 	if m.selectedRepoID != "repo-2" {
 		t.Fatalf("selectedRepoID = %q, want %q", m.selectedRepoID, "repo-2")
@@ -200,12 +200,16 @@ func TestNewSession_FormDataSurvivesCopies(t *testing.T) {
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
+	// Advance to form phase (type select → form).
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
+
 	if m.fd == nil {
-		t.Fatal("formData is nil after repos loaded")
+		t.Fatal("formData is nil after buildForm")
 	}
 
 	// Simulate what the huh form does: write to fd fields via the stable pointer.
-	m.fd.selectedType = sessionTypeNewPR
 	m.fd.title = "my feature"
 
 	// Simulate multiple value-receiver copies (as bubbletea does on each Update).
@@ -233,7 +237,9 @@ func TestNewSession_HandleFormCompletedReturnsValueType(t *testing.T) {
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	m.fd.selectedType = sessionTypeNewPR
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
 	m.fd.title = "test title"
 
 	result, _ := m.handleFormCompleted()
@@ -248,7 +254,9 @@ func TestNewSession_CreateSessionReceivesTitle(t *testing.T) {
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	m.fd.selectedType = sessionTypeNewPR
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
 	m.fd.title = "my feature"
 
 	cmd := m.startCreating()
@@ -277,7 +285,9 @@ func TestNewSession_PlanFlowSendsText(t *testing.T) {
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	m.fd.selectedType = sessionTypePlanFeature
+	m.selectedType = sessionTypePlanFeature
+	m.phase = newSessionPhaseForm
+	m.buildForm()
 	m.fd.plan = "Add dark mode\nWith system preference detection"
 
 	cmd := m.startCreating()
@@ -305,14 +315,22 @@ func TestNewSession_FormDataSharedAcrossUpdateCycles(t *testing.T) {
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	// Select first repo.
+	// Select first repo (goes to type select now).
 	m = sendSpecialKey(t, m, tea.KeyEnter)
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect", m.phase)
+	}
+
+	// Advance to form phase.
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
+
 	if m.fd == nil {
-		t.Fatal("fd is nil after entering form phase")
+		t.Fatal("fd is nil after buildForm")
 	}
 
 	// Simulate form writing values (as huh would via Value pointers).
-	m.fd.selectedType = sessionTypeNewPR
 	m.fd.title = "works across copies"
 
 	// Simulate several Update cycles (each creates a new value-receiver copy).

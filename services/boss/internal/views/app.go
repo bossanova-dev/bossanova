@@ -272,7 +272,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.repoAdd.Update(msg)
 		a.repoAdd = updated.(RepoAddModel)
 		if a.repoAdd.Cancelled() {
-			return a, a.switchToHome()
+			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.activeView = ViewRepoList
+			return a, a.repoList.Init()
 		}
 		if a.repoAdd.Done() {
 			a.repoList = NewRepoListModel(a.client, a.ctx)

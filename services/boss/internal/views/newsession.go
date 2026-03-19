@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/table"
@@ -19,7 +20,8 @@ import (
 type sessionType int
 
 const (
-	sessionTypeNewPR       sessionType = iota // Create a new PR
+	sessionTypeQuickChat   sessionType = iota // Quick chat in base folder
+	sessionTypeNewPR                          // Create a new PR
 	sessionTypeExistingPR                     // Work on an existing PR
 	sessionTypePlanFeature                    // Plan a feature
 	sessionTypeExecutePlan                    // Execute a plan (placeholder)
@@ -31,6 +33,7 @@ type newSessionPhase int
 const (
 	newSessionPhaseLoading    newSessionPhase = iota // Fetching repos
 	newSessionPhaseRepoSelect                        // Table-based repo picker
+	newSessionPhaseTypeSelect                        // Table-based session type picker
 	newSessionPhaseForm                              // Main huh form active
 	newSessionPhaseCreating                          // Waiting for CreateSession RPC
 	newSessionPhaseDone                              // Terminal
@@ -54,10 +57,21 @@ type sessionCreatedMsg struct {
 	err     error
 }
 
+// sessionTypeOption defines a row in the session-type selection table.
+var sessionTypeOptions = []struct {
+	label string
+	desc  string
+	typ   sessionType
+}{
+	{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
+	{"Create a new PR", "Start a fresh branch and pull request", sessionTypeNewPR},
+	{"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
+	{"Plan a feature", "Describe what to build, then launch Claude", sessionTypePlanFeature},
+}
+
 // formData holds huh form-bound values on the heap so that Value() pointers
 // remain valid across bubbletea value-receiver copies of NewSessionModel.
 type formData struct {
-	selectedType  sessionType
 	selectedPRIdx int
 	title         string
 	plan          string
@@ -79,6 +93,7 @@ type NewSessionModel struct {
 
 	// Form-bound values (heap-allocated for stable pointers)
 	selectedRepoID string
+	selectedType   sessionType
 	fd             *formData
 
 	// Async / conflict state
@@ -86,8 +101,9 @@ type NewSessionModel struct {
 	forceBranch         bool
 	confirmingOverwrite bool
 
-	// Repo selection table
+	// Tables
 	repoTable table.Model
+	typeTable table.Model
 
 	// Form
 	form *huh.Form
@@ -141,8 +157,8 @@ func (m *NewSessionModel) buildRepoTable() {
 
 	cols := []table.Column{
 		cursorColumn,
-		{Title: "NAME", Width: maxColWidth("NAME", names, 30)},
-		{Title: "PATH", Width: maxColWidth("PATH", paths, 60)},
+		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
+		{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep},
 	}
 
 	rows := make([]table.Row, len(m.repos))
@@ -160,74 +176,68 @@ func (m *NewSessionModel) buildRepoTable() {
 
 // repoTableHeight returns the height for the repo selection table.
 func (m NewSessionModel) repoTableHeight() int {
-	needed := len(m.repos) + 1
-	if m.height <= 0 {
-		return needed
+	return clampedTableHeight(len(m.repos), m.height, 6) // header + gaps + action bar
+}
+
+func (m *NewSessionModel) buildTypeTable() {
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "", Width: 24 + tableColumnSep},
+		{Title: "", Width: 46 + tableColumnSep},
 	}
-	avail := m.height - 6 // header + gaps + action bar
-	if avail < 1 {
-		avail = 1
+	rows := make([]table.Row, len(sessionTypeOptions))
+	for i, opt := range sessionTypeOptions {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, opt.label, styleSubtle.Render(opt.desc)}
 	}
-	if needed < avail {
-		return needed
-	}
-	return avail
+	m.typeTable = newBossTable(cols, rows, len(sessionTypeOptions)+1)
+	m.typeTable.SetWidth(columnsWidth(cols))
 }
 
 func (m *NewSessionModel) buildForm() {
 	m.fd = &formData{}
 
-	// Session type options.
-	typeOpts := []huh.Option[sessionType]{
-		huh.NewOption("Create a new PR — Start a fresh branch and pull request", sessionTypeNewPR),
-		huh.NewOption("Work on an existing PR — Attach to an open pull request", sessionTypeExistingPR),
-		huh.NewOption("Plan a feature — Describe what to build, then launch Claude", sessionTypePlanFeature),
+	switch m.selectedType {
+	case sessionTypeNewPR:
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Session title").
+					Placeholder("What are you working on?").
+					Value(&m.fd.title).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("title is required")
+						}
+						return nil
+					}),
+			),
+		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+
+	case sessionTypePlanFeature:
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewText().
+					Title("What would you like to work on?").
+					Placeholder("Describe what Claude should implement...").
+					Lines(8).
+					Value(&m.fd.plan).
+					ExternalEditor(false).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return fmt.Errorf("plan is required")
+						}
+						return nil
+					}),
+			),
+		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+
+	case sessionTypeQuickChat, sessionTypeExistingPR, sessionTypeExecutePlan:
+		// No form needed for these types.
 	}
-
-	groups := []*huh.Group{
-		// Session type.
-		huh.NewGroup(
-			huh.NewSelect[sessionType]().
-				Title("Session type").
-				Options(typeOpts...).
-				Value(&m.fd.selectedType),
-		),
-
-		// Title input — new PR only.
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Session title").
-				Placeholder("What are you working on?").
-				Value(&m.fd.title).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("title is required")
-					}
-					return nil
-				}),
-		).WithHideFunc(func() bool { return m.fd.selectedType != sessionTypeNewPR }),
-
-		// Plan input — plan feature only.
-		huh.NewGroup(
-			huh.NewText().
-				Title("What would you like to work on?").
-				Placeholder("Describe what Claude should implement...").
-				Lines(8).
-				Value(&m.fd.plan).
-				ExternalEditor(false).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("plan is required")
-					}
-					return nil
-				}),
-		).WithHideFunc(func() bool { return m.fd.selectedType != sessionTypePlanFeature }),
-	}
-
-	m.form = huh.NewForm(groups...).
-		WithTheme(bossHuhTheme()).
-		WithShowHelp(false).
-		WithWidth(70)
 }
 
 func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -247,11 +257,14 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.repos = msg.repos
+		slices.SortFunc(m.repos, func(a, b *pb.Repo) int {
+			return strings.Compare(strings.ToLower(a.DisplayName), strings.ToLower(b.DisplayName))
+		})
 		if len(m.repos) == 1 {
 			m.selectedRepoID = m.repos[0].Id
-			m.phase = newSessionPhaseForm
-			m.buildForm()
-			return m, m.form.Init()
+			m.phase = newSessionPhaseTypeSelect
+			m.buildTypeTable()
+			return m, nil
 		}
 		m.phase = newSessionPhaseRepoSelect
 		m.buildRepoTable()
@@ -318,9 +331,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				idx := m.repoTable.Cursor()
 				if idx >= 0 && idx < len(m.repos) {
 					m.selectedRepoID = m.repos[idx].Id
-					m.phase = newSessionPhaseForm
-					m.buildForm()
-					return m, m.form.Init()
+					m.phase = newSessionPhaseTypeSelect
+					m.buildTypeTable()
 				}
 				return m, nil
 			}
@@ -328,6 +340,28 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.repoTable, cmd = m.repoTable.Update(msg)
 			updateCursorColumn(&m.repoTable)
+			return m, cmd
+		}
+
+		if m.phase == newSessionPhaseTypeSelect {
+			switch msg.String() {
+			case "esc":
+				// Go back to repo select if multiple repos, otherwise cancel.
+				if len(m.repos) > 1 {
+					m.phase = newSessionPhaseRepoSelect
+					return m, nil
+				}
+				m.cancel = true
+				return m, nil
+			case "enter":
+				idx := m.typeTable.Cursor()
+				m.selectedType = sessionTypeOptions[idx].typ
+				return m.advanceFromTypeSelect()
+			}
+
+			var cmd tea.Cmd
+			m.typeTable, cmd = m.typeTable.Update(msg)
+			updateCursorColumn(&m.typeTable)
 			return m, cmd
 		}
 
@@ -357,25 +391,27 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
-	// If we were selecting a PR, that form just completed.
-	if m.fd.selectedType == sessionTypeExistingPR && m.prs != nil {
+func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
+	switch m.selectedType {
+	case sessionTypeQuickChat:
+		// No form needed — create session directly.
 		return *m, m.startCreating()
-	}
-
-	// If existing PR was chosen but we haven't loaded PRs yet, fetch them.
-	if m.fd.selectedType == sessionTypeExistingPR && m.prs == nil {
+	case sessionTypeExistingPR:
+		// Fetch PRs, then show PR selector form.
 		m.phase = newSessionPhaseLoading
 		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
-	}
-
-	// Execute plan is a placeholder — do nothing.
-	if m.fd.selectedType == sessionTypeExecutePlan {
+	case sessionTypeNewPR, sessionTypePlanFeature:
+		m.phase = newSessionPhaseForm
+		m.buildForm()
+		return *m, m.form.Init()
+	default:
 		m.cancel = true
 		return *m, nil
 	}
+}
 
-	// New PR or plan — proceed to create.
+func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
+	// PR selection, title input, or plan input completed — proceed to create.
 	return *m, m.startCreating()
 }
 
@@ -417,7 +453,9 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		ForceBranch: m.forceBranch,
 	}
 
-	switch m.fd.selectedType {
+	switch m.selectedType {
+	case sessionTypeQuickChat:
+		req.Title = "Quick chat"
 	case sessionTypeNewPR:
 		req.Title = m.fd.title
 	case sessionTypeExistingPR:
@@ -474,6 +512,15 @@ func (m NewSessionModel) View() tea.View {
 		return tea.NewView(b.String())
 	}
 
+	if m.phase == newSessionPhaseTypeSelect {
+		var b strings.Builder
+		b.WriteString(m.headerView())
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.typeTable.View()))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		return tea.NewView(b.String())
+	}
+
 	if m.phase == newSessionPhaseCreating {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(1, 2).Render("Creating a new session..."),
@@ -506,7 +553,8 @@ func (m NewSessionModel) View() tea.View {
 	if m.form != nil {
 		var b strings.Builder
 		b.WriteString(m.headerView())
-		b.WriteString(m.form.View())
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Render(m.form.View()))
 		return tea.NewView(b.String())
 	}
 

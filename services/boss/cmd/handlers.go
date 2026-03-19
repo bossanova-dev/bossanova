@@ -106,7 +106,6 @@ func runLS(cmd *cobra.Command) error {
 	stateStrs2 := make([]string, len(sessions))
 	branchStrs := make([]string, len(sessions))
 	prStrs := make([]string, len(sessions))
-	ciStrs := make([]string, len(sessions))
 	for i, sess := range sessions {
 		id := sess.Id
 		if len(id) > 8 {
@@ -125,7 +124,6 @@ func runLS(cmd *cobra.Command) error {
 		} else {
 			prStrs[i] = "-"
 		}
-		ciStrs[i] = views.ChecksLabel(sess.LastCheckState)
 	}
 
 	cols := []table.Column{
@@ -134,12 +132,11 @@ func runLS(cmd *cobra.Command) error {
 		{Title: "STATE", Width: views.MaxColWidth("STATE", stateStrs2, 14)},
 		{Title: "BRANCH", Width: views.MaxColWidth("BRANCH", branchStrs, 40)},
 		{Title: "PR", Width: views.MaxColWidth("PR", prStrs, 8)},
-		{Title: "CI", Width: views.MaxColWidth("CI", ciStrs, 8)},
 	}
 
 	rows := make([]table.Row, len(sessions))
 	for i := range sessions {
-		rows[i] = table.Row{ids[i], titles[i], stateStrs2[i], branchStrs[i], prStrs[i], ciStrs[i]}
+		rows[i] = table.Row{ids[i], titles[i], stateStrs2[i], branchStrs[i], prStrs[i]}
 	}
 
 	t := table.New(

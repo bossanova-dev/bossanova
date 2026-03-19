@@ -242,7 +242,7 @@ func (m RepoSettingsModel) View() tea.View {
 	} else {
 		cursor := "  "
 		if m.cursor == repoSettingsRowName {
-			cursor = "> "
+			cursor = cursorChevron + " "
 		}
 		line := fmt.Sprintf("%sName: %s", cursor, m.repo.DisplayName)
 		if m.cursor == repoSettingsRowName {
@@ -273,7 +273,7 @@ func (m RepoSettingsModel) View() tea.View {
 		}
 		cursor := "  "
 		if m.cursor == cb.row && !m.editing {
-			cursor = "> "
+			cursor = cursorChevron + " "
 		}
 		line := fmt.Sprintf("%s[%s] %s", cursor, check, cb.label)
 		if m.cursor == cb.row && !m.editing {

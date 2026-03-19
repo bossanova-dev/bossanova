@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/table"
@@ -69,7 +70,6 @@ func (m *RepoListModel) buildTable() {
 	ids := make([]string, len(m.repos))
 	names := make([]string, len(m.repos))
 	paths := make([]string, len(m.repos))
-	branches := make([]string, len(m.repos))
 	for i, repo := range m.repos {
 		id := repo.Id
 		if len(id) > shortIDLen {
@@ -78,15 +78,13 @@ func (m *RepoListModel) buildTable() {
 		ids[i] = id
 		names[i] = repo.DisplayName
 		paths[i] = repo.LocalPath
-		branches[i] = repo.DefaultBaseBranch
 	}
 
 	cols := []table.Column{
 		cursorColumn,
-		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen)},
-		{Title: "NAME", Width: maxColWidth("NAME", names, 30)},
-		{Title: "PATH", Width: maxColWidth("PATH", paths, 60)},
-		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 30)},
+		{Title: "ID", Width: maxColWidth("ID", ids, shortIDLen) + tableColumnSep},
+		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
+		{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep},
 	}
 
 	cursor := m.table.Cursor()
@@ -96,7 +94,7 @@ func (m *RepoListModel) buildTable() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, ids[i], names[i], paths[i], branches[i]}
+		rows[i] = table.Row{indicator, ids[i], names[i], paths[i]}
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -118,6 +116,9 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.repos = msg.repos
 		m.err = msg.err
+		slices.SortFunc(m.repos, func(a, b *pb.Repo) int {
+			return strings.Compare(strings.ToLower(a.DisplayName), strings.ToLower(b.DisplayName))
+		})
 		m.buildTable()
 		return m, nil
 
@@ -147,7 +148,7 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirming = true
 			}
 			return m, nil
-		case "s":
+		case "s", "enter":
 			if len(m.repos) > 0 {
 				repo := m.repos[m.table.Cursor()]
 				return m, func() tea.Msg { return switchViewMsg{view: ViewRepoSettings, sessionID: repo.Id} }
@@ -183,20 +184,8 @@ func (m RepoListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m RepoListModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
-// Capped at len(repos)+1 so the table doesn't expand beyond its content.
 func (m RepoListModel) tableHeight() int {
-	needed := len(m.repos) + 1
-	if m.height <= 0 {
-		return needed
-	}
-	avail := m.height - 4 // title(1) + blank(1) + blank(1) + action bar(1)
-	if avail < 1 {
-		avail = 1
-	}
-	if needed < avail {
-		return needed
-	}
-	return avail
+	return clampedTableHeight(len(m.repos), m.height, 4) // title + blank + blank + action bar
 }
 
 func (m RepoListModel) View() tea.View {
@@ -218,7 +207,7 @@ func (m RepoListModel) View() tea.View {
 	if len(m.repos) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No repositories registered."))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[a] add  [esc] back"))
+		b.WriteString(styleActionBar.Render("[a]dd  [esc] back"))
 		return tea.NewView(b.String())
 	}
 
@@ -233,7 +222,7 @@ func (m RepoListModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(styleActionBar.Render("[a] add  [d] remove  [s] settings  [esc] back"))
+		b.WriteString(styleActionBar.Render("[s/enter] settings  [a]dd  [d] remove  [esc] back"))
 	}
 
 	return tea.NewView(b.String())

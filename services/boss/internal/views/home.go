@@ -78,42 +78,50 @@ func (h *HomeModel) buildTableRows() {
 
 	repos := make([]string, len(h.sessions))
 	branches := make([]string, len(h.sessions))
-	prs := make([]string, len(h.sessions))
+	prLabels := make([]string, len(h.sessions)) // visible text for width calc
+	prs := make([]string, len(h.sessions))      // may contain OSC 8 hyperlinks
 	for i, sess := range h.sessions {
 		repos[i] = sess.RepoDisplayName
 		branches[i] = strings.TrimPrefix(sess.BranchName, "boss/")
 		if sess.PrNumber != nil {
-			prs[i] = fmt.Sprintf("#%d", *sess.PrNumber)
+			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
+			prs[i] = renderPRLink(sess)
 		} else {
+			prLabels[i] = "-"
 			prs[i] = "-"
 		}
 	}
 
 	cols := []table.Column{
 		cursorColumn,
-		{Title: "REPO", Width: maxColWidth("REPO", repos, 20)},
-		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60)},
-		{Title: "PR", Width: maxColWidth("PR", prs, 8)},
-		{Title: "CI", Width: 7},
-		{Title: "STATUS", Width: 14},
+		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
+		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 60) + tableColumnSep},
+		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
+		{Title: "STATUS", Width: 14 + tableColumnSep},
 	}
+
+	strikethrough := lipgloss.NewStyle().Strikethrough(true)
 
 	cursor := h.table.Cursor()
 	rows := make([]table.Row, len(h.sessions))
 	for i, sess := range h.sessions {
-		ciLabel, ciColor := checksLabelAndColor(sess.LastCheckState)
-		ciStyled := lipgloss.NewStyle().Foreground(ciColor).Render(ciLabel)
-
 		local := h.manager.SessionStatus(sess.Id)
 		daemon := h.daemonStatuses[sess.Id]
-		status := mergeStatus(local, daemon)
-		statusStyled := renderSessionStatus(status, sess.State, h.spinner)
+		claudeStatus := mergeStatus(local, daemon)
+		statusStyled := renderPRDisplayStatus(sess, claudeStatus, h.spinner)
+
+		repo, branch, pr := repos[i], branches[i], prs[i]
+		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED {
+			repo = strikethrough.Render(repo)
+			branch = strikethrough.Render(branch)
+			pr = strikethrough.Render(pr)
+		}
 
 		indicator := ""
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, repos[i], branches[i], prs[i], ciStyled, statusStyled}
+		rows[i] = table.Row{indicator, repo, branch, pr, statusStyled}
 	}
 
 	h.table.SetColumns(cols)
@@ -311,52 +319,10 @@ func StateLabel(state pb.SessionState) string {
 	}
 }
 
-// ChecksLabel returns a plain text label for CI status (for non-TUI output).
-func ChecksLabel(state pb.ChecksOverall) string {
-	switch state {
-	case pb.ChecksOverall_CHECKS_OVERALL_PASSED:
-		return "pass"
-	case pb.ChecksOverall_CHECKS_OVERALL_FAILED:
-		return "fail"
-	case pb.ChecksOverall_CHECKS_OVERALL_PENDING:
-		return "pending"
-	default:
-		return "-"
-	}
-}
-
-// checksLabelAndColor returns the raw label and color for a CI status.
-func checksLabelAndColor(state pb.ChecksOverall) (string, color.Color) {
-	switch state {
-	case pb.ChecksOverall_CHECKS_OVERALL_PASSED:
-		return "pass", colorSuccess
-	case pb.ChecksOverall_CHECKS_OVERALL_FAILED:
-		return "fail", colorDanger
-	case pb.ChecksOverall_CHECKS_OVERALL_PENDING:
-		return "...", colorWarning
-	default:
-		return "-", colorMuted
-	}
-}
-
 // tableHeight returns the height to pass to table.SetHeight.
-// The table renders header + (h-1) data rows, so h = available vertical space.
-// Capped at len(sessions)+1 so the table doesn't expand beyond its content.
 func (h HomeModel) tableHeight() int {
-	// Only as tall as needed: header + all rows.
-	needed := len(h.sessions) + 1
-	if h.height <= 0 {
-		return needed
-	}
 	overhead := bannerHeight + 1 + 1 + actionBarPadY + 1 // banner + gap + gap + actionbar padding + actionbar
-	avail := h.height - overhead
-	if avail < 1 {
-		avail = 1
-	}
-	if needed < avail {
-		return needed
-	}
-	return avail
+	return clampedTableHeight(len(h.sessions), h.height, overhead)
 }
 
 func (h HomeModel) View() tea.View {
@@ -379,7 +345,7 @@ func (h HomeModel) View() tea.View {
 	if len(h.sessions) == 0 {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
-				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t] open trash  [q]uit"),
+				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t]rash  [q]uit"),
 		)
 	}
 
@@ -400,10 +366,8 @@ func (h HomeModel) View() tea.View {
 			fmt.Sprintf("Archive %q?", sess.Title)))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-	} else if len(h.sessions) > 0 {
-		b.WriteString(styleActionBar.Render("[enter] select  [n]ew session  [a]rchive  [r]epos  [s]ettings  [t] open trash  [q]uit"))
 	} else {
-		b.WriteString(styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t] open trash  [q]uit"))
+		b.WriteString(styleActionBar.Render("[enter] select  [n]ew session  [a]rchive  [r]epos  [s]ettings  [t]rash  [q]uit"))
 	}
 
 	return tea.NewView(b.String())

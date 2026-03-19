@@ -30,14 +30,22 @@ type chatPickerErrMsg struct {
 // chatsListedMsg carries the result of listing chats via RPC,
 // along with daemon-side heartbeat statuses for cross-instance display.
 type chatsListedMsg struct {
-	chats          []*pb.ClaudeChat
-	daemonStatuses map[string]string // claude_id → status string
-	err            error
+	chats            []*pb.ClaudeChat
+	daemonStatuses   map[string]string    // claude_id → status string
+	daemonLastOutput map[string]time.Time // claude_id → last PTY output time
+	err              error
 }
 
 // chatTitlesBackfilledMsg carries updated titles for chats that were "New chat".
 type chatTitlesBackfilledMsg struct {
 	updates map[string]string // claude_id -> title
+}
+
+// chatPickerRefreshMsg carries refreshed session + daemon statuses for polling.
+type chatPickerRefreshMsg struct {
+	session          *pb.Session
+	daemonStatuses   map[string]string
+	daemonLastOutput map[string]time.Time
 }
 
 // chatDeletedMsg signals that a chat was deleted (or failed to delete).
@@ -49,12 +57,13 @@ type chatDeletedMsg struct {
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
-	client         client.BossClient
-	ctx            context.Context
-	manager        *bosspty.Manager
-	sessionID      string
-	highlightID    string            // Claude ID to auto-highlight after detach
-	daemonStatuses map[string]string // claude_id → status string from daemon heartbeats
+	client           client.BossClient
+	ctx              context.Context
+	manager          *bosspty.Manager
+	sessionID        string
+	highlightID      string               // Claude ID to auto-highlight after detach
+	daemonStatuses   map[string]string    // claude_id → status string from daemon heartbeats
+	daemonLastOutput map[string]time.Time // claude_id → last PTY output time from daemon
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat
@@ -86,7 +95,7 @@ func NewChatPickerModel(c client.BossClient, parentCtx context.Context, manager 
 }
 
 func (m ChatPickerModel) Init() tea.Cmd {
-	return tea.Batch(m.fetchSession(), m.spinner.Tick)
+	return tea.Batch(m.fetchSession(), m.spinner.Tick, tickCmd())
 }
 
 func (m ChatPickerModel) fetchSession() tea.Cmd {
@@ -99,23 +108,49 @@ func (m ChatPickerModel) fetchSession() tea.Cmd {
 	}
 }
 
+// parseChatStatuses fetches daemon-side heartbeat statuses and converts them
+// into maps keyed by Claude ID.
+func parseChatStatuses(c client.BossClient, ctx context.Context, sessionID string) (map[string]string, map[string]time.Time) {
+	entries, err := c.GetChatStatuses(ctx, sessionID)
+	if err != nil {
+		return nil, nil
+	}
+	statuses := make(map[string]string, len(entries))
+	lastOutput := make(map[string]time.Time, len(entries))
+	for _, e := range entries {
+		statuses[e.ClaudeId] = chatStatusString(e.Status)
+		if e.LastOutputAt != nil {
+			lastOutput[e.ClaudeId] = e.LastOutputAt.AsTime()
+		}
+	}
+	return statuses, lastOutput
+}
+
 func (m ChatPickerModel) listChats() tea.Cmd {
 	return func() tea.Msg {
 		chats, err := m.client.ListChats(m.ctx, m.sessionID)
 		if err != nil {
 			return chatsListedMsg{err: err}
 		}
+		statuses, lastOutput := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		return chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput}
+	}
+}
 
-		// Fetch daemon-side heartbeat statuses for cross-instance display.
-		var daemonStatuses map[string]string
-		if entries, sErr := m.client.GetChatStatuses(m.ctx, m.sessionID); sErr == nil {
-			daemonStatuses = make(map[string]string, len(entries))
-			for _, e := range entries {
-				daemonStatuses[e.ClaudeId] = chatStatusString(e.Status)
-			}
+// refreshStatuses fetches the latest session (for PR status) and daemon
+// chat statuses without re-listing all chats.
+func (m ChatPickerModel) refreshStatuses() tea.Cmd {
+	return func() tea.Msg {
+		sess, err := m.client.GetSession(m.ctx, m.sessionID)
+		if err != nil {
+			return chatPickerRefreshMsg{}
 		}
-
-		return chatsListedMsg{chats: chats, daemonStatuses: daemonStatuses}
+		statuses, lastOutput := parseChatStatuses(m.client, m.ctx, m.sessionID)
+		return chatPickerRefreshMsg{
+			session:          sess,
+			daemonStatuses:   statuses,
+			daemonLastOutput: lastOutput,
+		}
 	}
 }
 
@@ -172,9 +207,9 @@ func (m *ChatPickerModel) buildTableRows() {
 
 	cols := []table.Column{
 		cursorColumn,
-		{Title: "CHAT", Width: titleWidth},
-		{Title: "ACTIVE", Width: activeWidth},
-		{Title: "STATUS", Width: statusWidth},
+		{Title: "CHAT", Width: titleWidth + tableColumnSep},
+		{Title: "ACTIVE", Width: activeWidth + tableColumnSep},
+		{Title: "STATUS", Width: statusWidth + tableColumnSep},
 	}
 
 	cursor := m.table.Cursor()
@@ -186,7 +221,7 @@ func (m *ChatPickerModel) buildTableRows() {
 		}
 		daemon := m.daemonStatuses[chat.ClaudeId]
 		status := mergeStatus(local, daemon)
-		statusStr := renderStatus(status, m.spinner)
+		statusStr := renderClaudeStatus(status, m.spinner)
 		activeStr := styleSubtle.Render(actives[i])
 		indicator := ""
 		if i == cursor {
@@ -233,6 +268,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.chats = msg.chats
 		m.daemonStatuses = msg.daemonStatuses
+		m.daemonLastOutput = msg.daemonLastOutput
 		// Sort chats by last activity (most recent first).
 		sort.Slice(m.chats, func(i, j int) bool {
 			return m.chatLastActive(m.chats[i]).After(m.chatLastActive(m.chats[j]))
@@ -277,6 +313,24 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.table.Cursor() >= len(m.chats) && len(m.chats) > 0 {
 				m.table.SetCursor(len(m.chats) - 1)
 			}
+		}
+		return m, nil
+
+	case tickMsg:
+		return m, tea.Batch(m.refreshStatuses(), tickCmd())
+
+	case chatPickerRefreshMsg:
+		if msg.session != nil {
+			m.session = msg.session
+		}
+		if msg.daemonStatuses != nil {
+			m.daemonStatuses = msg.daemonStatuses
+		}
+		if msg.daemonLastOutput != nil {
+			m.daemonLastOutput = msg.daemonLastOutput
+		}
+		if len(m.chats) > 0 {
+			m.buildTableRows()
 		}
 		return m, nil
 
@@ -360,20 +414,8 @@ func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 func (m ChatPickerModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
-// Capped at row count + 1 so the table doesn't expand beyond its content.
 func (m ChatPickerModel) tableHeight() int {
-	needed := len(m.chats) + 1 // header + chat rows
-	if m.height <= 0 {
-		return needed
-	}
-	avail := m.height - 4 // title(1) + blank(1) + blank(1) + action bar(1)
-	if avail < 1 {
-		avail = 1
-	}
-	if needed < avail {
-		return needed
-	}
-	return avail
+	return clampedTableHeight(len(m.chats), m.height, 4) // title + blank + blank + action bar
 }
 
 func (m ChatPickerModel) View() tea.View {
@@ -397,10 +439,16 @@ func (m ChatPickerModel) View() tea.View {
 
 	var b strings.Builder
 
-	// Header with session title.
+	// Header with PR link, session title, and PR status.
 	title := m.sessionID
 	if m.session != nil {
 		title = m.session.Title
+		if prLink := renderPRLink(m.session); prLink != "" {
+			title = prLink + " " + title
+		}
+		if prStatus := renderSessionPRStatus(m.session, m.spinner); prStatus != "" {
+			title += " (" + prStatus + ")"
+		}
 	}
 	b.WriteString(styleTitle.Render(title))
 	b.WriteString("\n\n")
@@ -424,7 +472,7 @@ func (m ChatPickerModel) View() tea.View {
 	} else {
 		actionBar := "[n]ew chat  [esc] back"
 		if m.selectedChat() != nil {
-			actionBar = "[n]ew chat  [enter] select  [d] remove  [esc] back"
+			actionBar = "[enter] select  [n]ew chat  [d] remove  [esc] back"
 		}
 		b.WriteString(styleActionBar.Render(actionBar))
 	}
@@ -433,12 +481,17 @@ func (m ChatPickerModel) View() tea.View {
 }
 
 // chatLastActive returns the most recent activity time for a chat.
-// For running processes this is the last PTY output time; otherwise created_at.
+// Prefers local PTY output time, then daemon-reported output time, then created_at.
 func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
+	// Local PTY (this instance owns the process).
 	if m.manager != nil {
 		if lw := m.manager.ProcessLastWrite(chat.ClaudeId); !lw.IsZero() {
 			return lw
 		}
+	}
+	// Daemon-reported last output (another instance owns the process).
+	if t, ok := m.daemonLastOutput[chat.ClaudeId]; ok && !t.IsZero() {
+		return t
 	}
 	return chat.CreatedAt.AsTime()
 }

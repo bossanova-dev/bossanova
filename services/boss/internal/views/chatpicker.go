@@ -27,10 +27,12 @@ type chatPickerErrMsg struct {
 	err error
 }
 
-// chatsListedMsg carries the result of listing chats via RPC.
+// chatsListedMsg carries the result of listing chats via RPC,
+// along with daemon-side heartbeat statuses for cross-instance display.
 type chatsListedMsg struct {
-	chats []*pb.ClaudeChat
-	err   error
+	chats          []*pb.ClaudeChat
+	daemonStatuses map[string]string // claude_id → status string
+	err            error
 }
 
 // chatTitlesBackfilledMsg carries updated titles for chats that were "New chat".
@@ -47,11 +49,12 @@ type chatDeletedMsg struct {
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
-	client      client.BossClient
-	ctx         context.Context
-	manager     *bosspty.Manager
-	sessionID   string
-	highlightID string // Claude ID to auto-highlight after detach
+	client         client.BossClient
+	ctx            context.Context
+	manager        *bosspty.Manager
+	sessionID      string
+	highlightID    string            // Claude ID to auto-highlight after detach
+	daemonStatuses map[string]string // claude_id → status string from daemon heartbeats
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat
@@ -99,7 +102,20 @@ func (m ChatPickerModel) fetchSession() tea.Cmd {
 func (m ChatPickerModel) listChats() tea.Cmd {
 	return func() tea.Msg {
 		chats, err := m.client.ListChats(m.ctx, m.sessionID)
-		return chatsListedMsg{chats: chats, err: err}
+		if err != nil {
+			return chatsListedMsg{err: err}
+		}
+
+		// Fetch daemon-side heartbeat statuses for cross-instance display.
+		var daemonStatuses map[string]string
+		if entries, sErr := m.client.GetChatStatuses(m.ctx, m.sessionID); sErr == nil {
+			daemonStatuses = make(map[string]string, len(entries))
+			for _, e := range entries {
+				daemonStatuses[e.ClaudeId] = chatStatusString(e.Status)
+			}
+		}
+
+		return chatsListedMsg{chats: chats, daemonStatuses: daemonStatuses}
 	}
 }
 
@@ -164,10 +180,12 @@ func (m *ChatPickerModel) buildTableRows() {
 	cursor := m.table.Cursor()
 	rows := make([]table.Row, len(m.chats))
 	for i, chat := range m.chats {
-		status := bosspty.StatusStopped
+		local := bosspty.StatusStopped
 		if m.manager != nil {
-			status = m.manager.ProcessStatus(chat.ClaudeId)
+			local = m.manager.ProcessStatus(chat.ClaudeId)
 		}
+		daemon := m.daemonStatuses[chat.ClaudeId]
+		status := mergeStatus(local, daemon)
 		statusStr := renderStatus(status, m.spinner)
 		activeStr := styleSubtle.Render(actives[i])
 		indicator := ""
@@ -214,6 +232,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.chats = msg.chats
+		m.daemonStatuses = msg.daemonStatuses
 		// Sort chats by last activity (most recent first).
 		sort.Slice(m.chats, func(i, j int) bool {
 			return m.chatLastActive(m.chats[i]).After(m.chatLastActive(m.chats[j]))

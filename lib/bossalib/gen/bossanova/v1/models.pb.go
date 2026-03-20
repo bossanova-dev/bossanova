@@ -653,6 +653,7 @@ const (
 	ChatStatus_CHAT_STATUS_WORKING     ChatStatus = 1
 	ChatStatus_CHAT_STATUS_IDLE        ChatStatus = 2
 	ChatStatus_CHAT_STATUS_STOPPED     ChatStatus = 3
+	ChatStatus_CHAT_STATUS_QUESTION    ChatStatus = 4
 )
 
 // Enum value maps for ChatStatus.
@@ -662,12 +663,14 @@ var (
 		1: "CHAT_STATUS_WORKING",
 		2: "CHAT_STATUS_IDLE",
 		3: "CHAT_STATUS_STOPPED",
+		4: "CHAT_STATUS_QUESTION",
 	}
 	ChatStatus_value = map[string]int32{
 		"CHAT_STATUS_UNSPECIFIED": 0,
 		"CHAT_STATUS_WORKING":     1,
 		"CHAT_STATUS_IDLE":        2,
 		"CHAT_STATUS_STOPPED":     3,
+		"CHAT_STATUS_QUESTION":    4,
 	}
 )
 
@@ -2310,13 +2313,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x19PR_DISPLAY_STATUS_PASSING\x10\x06\x12\x1c\n" +
 	"\x18PR_DISPLAY_STATUS_MERGED\x10\a\x12\x1c\n" +
 	"\x18PR_DISPLAY_STATUS_CLOSED\x10\b\x12\x1b\n" +
-	"\x17PR_DISPLAY_STATUS_DRAFT\x10\t*q\n" +
+	"\x17PR_DISPLAY_STATUS_DRAFT\x10\t*\x8b\x01\n" +
 	"\n" +
 	"ChatStatus\x12\x1b\n" +
 	"\x17CHAT_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13CHAT_STATUS_WORKING\x10\x01\x12\x14\n" +
 	"\x10CHAT_STATUS_IDLE\x10\x02\x12\x17\n" +
-	"\x13CHAT_STATUS_STOPPED\x10\x03B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x13CHAT_STATUS_STOPPED\x10\x03\x12\x18\n" +
+	"\x14CHAT_STATUS_QUESTION\x10\x04B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_models_proto_rawDescOnce sync.Once

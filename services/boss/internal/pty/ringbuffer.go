@@ -64,6 +64,39 @@ func (r *RingBuffer) Bytes() []byte {
 	return out
 }
 
+// Tail returns the last n bytes of buffered content.
+// If fewer than n bytes have been written, it returns all available bytes.
+func (r *RingBuffer) Tail(n int) []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var total int
+	if r.full {
+		total = len(r.buf)
+	} else {
+		total = r.pos
+	}
+	if total == 0 {
+		return nil
+	}
+	if n > total {
+		n = total
+	}
+
+	out := make([]byte, n)
+	// r.pos points to the next write position, so the most recent byte is at r.pos-1.
+	// We need the last n bytes ending at r.pos-1 (wrapping around).
+	start := (r.pos - n + len(r.buf)) % len(r.buf)
+	if start+n <= len(r.buf) {
+		copy(out, r.buf[start:start+n])
+	} else {
+		first := len(r.buf) - start
+		copy(out, r.buf[start:])
+		copy(out[first:], r.buf[:n-first])
+	}
+	return out
+}
+
 // Reset clears the buffer.
 func (r *RingBuffer) Reset() {
 	r.mu.Lock()

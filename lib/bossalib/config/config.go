@@ -9,11 +9,20 @@ import (
 	"time"
 )
 
+// PluginConfig describes a single plugin to load.
+type PluginConfig struct {
+	Name    string            `json:"name"`
+	Path    string            `json:"path"`
+	Enabled bool              `json:"enabled"`
+	Config  map[string]string `json:"config,omitempty"`
+}
+
 // Settings holds global Bossanova configuration.
 type Settings struct {
-	DangerouslySkipPermissions bool   `json:"dangerously_skip_permissions"`
-	WorktreeBaseDir            string `json:"worktree_base_dir"`
-	PollIntervalSeconds        int    `json:"poll_interval_seconds,omitempty"`
+	DangerouslySkipPermissions bool           `json:"dangerously_skip_permissions"`
+	WorktreeBaseDir            string         `json:"worktree_base_dir"`
+	PollIntervalSeconds        int            `json:"poll_interval_seconds,omitempty"`
+	Plugins                    []PluginConfig `json:"plugins,omitempty"`
 }
 
 // DisplayPollInterval returns the interval for polling PR display status.

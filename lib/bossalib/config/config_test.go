@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -123,6 +124,73 @@ func TestDisplayPollInterval(t *testing.T) {
 				t.Errorf("DisplayPollInterval() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestPluginsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	original := Settings{
+		WorktreeBaseDir: "/test",
+		Plugins: []PluginConfig{
+			{
+				Name:    "github-issues",
+				Path:    "/usr/local/bin/boss-plugin-github",
+				Enabled: true,
+				Config:  map[string]string{"token": "abc123"},
+			},
+			{
+				Name:    "linear",
+				Path:    "/usr/local/bin/boss-plugin-linear",
+				Enabled: false,
+			},
+		},
+	}
+
+	if err := SaveTo(path, original); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if len(loaded.Plugins) != 2 {
+		t.Fatalf("Plugins: got %d, want 2", len(loaded.Plugins))
+	}
+	if loaded.Plugins[0].Name != "github-issues" {
+		t.Errorf("Plugins[0].Name: got %q, want %q", loaded.Plugins[0].Name, "github-issues")
+	}
+	if !loaded.Plugins[0].Enabled {
+		t.Error("Plugins[0].Enabled: got false, want true")
+	}
+	if loaded.Plugins[0].Config["token"] != "abc123" {
+		t.Errorf("Plugins[0].Config[token]: got %q, want %q", loaded.Plugins[0].Config["token"], "abc123")
+	}
+	if loaded.Plugins[1].Enabled {
+		t.Error("Plugins[1].Enabled: got true, want false")
+	}
+	if loaded.Plugins[1].Config != nil {
+		t.Errorf("Plugins[1].Config: got %v, want nil", loaded.Plugins[1].Config)
+	}
+}
+
+func TestPluginsOmittedWhenEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	original := Settings{WorktreeBaseDir: "/test"}
+
+	if err := SaveTo(path, original); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// With omitempty, "plugins" should not appear in the JSON.
+	if bytes.Contains(data, []byte(`"plugins"`)) {
+		t.Error("expected plugins to be omitted from JSON when empty")
 	}
 }
 

@@ -41,10 +41,12 @@ type App struct {
 	repoSettings RepoSettingsModel
 	trash        TrashModel
 	settings     SettingsModel
-	attach       AttachModel
-	width        int
-	height       int
-	quitting     bool
+	attach           AttachModel
+	attachOrigin     View   // remembers how the user entered the attach view
+	attachSessionID  string // remembers which session to highlight on return
+	width            int
+	height           int
+	quitting         bool
 
 	// heartbeatStop signals the background heartbeat goroutine to exit.
 	// The goroutine runs independently of the Bubbletea event loop so that
@@ -126,6 +128,7 @@ type switchViewMsg struct {
 	view      View
 	sessionID string // used for ViewAttach and ViewChatPicker
 	resumeID  string // Claude Code session UUID to resume (ViewAttach only)
+	origin    View   // tracks where navigation came from (for back-routing)
 }
 
 const heartbeatInterval = 3 * time.Second
@@ -229,6 +232,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.settings.width = a.width
 			return a, a.settings.Init()
 		case ViewAttach:
+			a.attachOrigin = msg.origin
+			a.attachSessionID = msg.sessionID
 			a.attach = NewAttachModel(a.client, a.ctx, a.manager, msg.sessionID, msg.resumeID)
 			return a, a.attach.Init()
 		case ViewHome:
@@ -254,6 +259,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.newSession.Done() {
 			sess := a.newSession.CreatedSession()
 			if sess != nil {
+				a.attachOrigin = ViewHome
+				a.attachSessionID = sess.Id
 				a.attach = NewAttachModel(a.client, a.ctx, a.manager, sess.Id, "")
 				a.activeView = ViewAttach
 				return a, a.attach.Init()
@@ -319,6 +326,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.attach.Update(msg)
 		a.attach = updated.(AttachModel)
 		if a.attach.Detached() {
+			if a.attachOrigin == ViewHome {
+				a.activeView = ViewHome
+				a.home = NewHomeModel(a.client, a.ctx, a.manager)
+				a.home.highlightSessionID = a.attachSessionID
+				a.home.width = a.width
+				a.home.height = a.height
+				return a, tea.Batch(cmd, a.home.Init())
+			}
 			sessionID := a.attach.SessionID()
 			claudeID := a.attach.ClaudeID()
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, sessionID, claudeID)

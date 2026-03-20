@@ -360,6 +360,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return switchViewMsg{
 					view:      ViewAttach,
 					sessionID: m.sessionID,
+					origin:    ViewChatPicker,
 				}
 			}
 		case "d":
@@ -375,6 +376,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						view:      ViewAttach,
 						sessionID: m.sessionID,
 						resumeID:  resumeID,
+						origin:    ViewChatPicker,
 					}
 				}
 			}

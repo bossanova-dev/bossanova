@@ -75,7 +75,11 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 	return ch
 }
 
+// DependabotAuthor is the GitHub login for dependabot PRs.
+const DependabotAuthor = "dependabot[bot]"
+
 // poll checks all sessions in AwaitingChecks state and emits events.
+// It also checks for mergeable dependabot PRs.
 func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 	// List all repos to find sessions across all repos.
 	repos, err := p.repos.List(ctx)
@@ -100,6 +104,11 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 			}
 
 			p.checkSession(ctx, ch, repo, sess)
+		}
+
+		// Check for dependabot PRs if auto-merge is enabled.
+		if repo.CanAutoMergeDependabot {
+			p.checkDependabotPRs(ctx, ch, repo)
 		}
 	}
 }
@@ -164,6 +173,67 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 		p.emit(ctx, ch, sess.ID, vcs.ChecksFailed{PRID: prID, FailedChecks: failed})
 	default:
 		// ChecksOverallPending — do nothing, wait for next poll.
+	}
+}
+
+// checkDependabotPRs looks for open dependabot PRs with passing checks and
+// emits DependabotReady events for each one.
+func (p *Poller) checkDependabotPRs(ctx context.Context, ch chan<- SessionEvent, repo *models.Repo) {
+	prs, err := p.provider.ListOpenPRs(ctx, repo.OriginURL)
+	if err != nil {
+		p.logger.Warn().Err(err).Str("repo", repo.ID).Msg("poller: list open PRs for dependabot check")
+		return
+	}
+
+	for _, pr := range prs {
+		if pr.Author != DependabotAuthor {
+			continue
+		}
+
+		p.logger.Debug().
+			Str("repo", repo.ID).
+			Int("pr", pr.Number).
+			Str("title", pr.Title).
+			Msg("found dependabot PR, checking status")
+
+		// Check if checks have passed.
+		checks, err := p.provider.GetCheckResults(ctx, repo.OriginURL, pr.Number)
+		if err != nil {
+			p.logger.Warn().Err(err).Int("pr", pr.Number).Msg("poller: get checks for dependabot PR")
+			continue
+		}
+
+		if len(checks) == 0 {
+			continue
+		}
+
+		if aggregateChecks(checks) != vcs.ChecksOverallPassed {
+			continue
+		}
+
+		// Check mergeable status.
+		prStatus, err := p.provider.GetPRStatus(ctx, repo.OriginURL, pr.Number)
+		if err != nil {
+			p.logger.Warn().Err(err).Int("pr", pr.Number).Msg("poller: get PR status for dependabot PR")
+			continue
+		}
+
+		if prStatus.Mergeable != nil && !*prStatus.Mergeable {
+			continue
+		}
+
+		p.logger.Info().
+			Str("repo", repo.ID).
+			Int("pr", pr.Number).
+			Str("title", pr.Title).
+			Msg("dependabot PR ready to merge")
+
+		// Emit with empty session ID — this event is repo-level, not session-level.
+		p.emit(ctx, ch, "", vcs.DependabotReady{
+			PRID:     pr.Number,
+			RepoID:   repo.ID,
+			RepoPath: repo.OriginURL,
+		})
 	}
 }
 

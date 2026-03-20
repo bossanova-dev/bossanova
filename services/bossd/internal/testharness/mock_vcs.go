@@ -17,6 +17,7 @@ type MockVCSProvider struct {
 
 	CreateDraftPRCalls      []vcs.CreatePROpts
 	MarkReadyForReviewCalls []markReadyCall
+	MergePRCalls            []mergePRCall
 	prCounter               atomic.Int32
 
 	// PRStatus is returned by GetPRStatus. Defaults to open.
@@ -36,9 +37,17 @@ type MockVCSProvider struct {
 
 	// CreateDraftPRFunc overrides the default CreateDraftPR behavior when set.
 	CreateDraftPRFunc func(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error)
+
+	// MergePRErr is returned by MergePR when set.
+	MergePRErr error
 }
 
 type markReadyCall struct {
+	RepoPath string
+	PRID     int
+}
+
+type mergePRCall struct {
 	RepoPath string
 	PRID     int
 }
@@ -97,6 +106,9 @@ func (m *MockVCSProvider) ListOpenPRs(ctx context.Context, repoPath string) ([]v
 	return m.OpenPRs, nil
 }
 
-func (m *MockVCSProvider) UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error {
-	return nil
+func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int) error {
+	m.mu.Lock()
+	m.MergePRCalls = append(m.MergePRCalls, mergePRCall{RepoPath: repoPath, PRID: prID})
+	m.mu.Unlock()
+	return m.MergePRErr
 }

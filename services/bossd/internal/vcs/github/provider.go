@@ -218,7 +218,7 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 		"pr", "list",
 		"--repo", repoFlag(repoPath),
 		"--state", "open",
-		"--json", "number,title,headRefName,state",
+		"--json", "number,title,headRefName,state,author",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list open PRs: %w", err)
@@ -229,6 +229,9 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
 		State       string `json:"state"`
+		Author      struct {
+			Login string `json:"login"`
+		} `json:"author"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parse PRs: %w", err)
@@ -241,27 +244,28 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 			Title:      r.Title,
 			HeadBranch: r.HeadRefName,
 			State:      parsePRState(r.State),
+			Author:     r.Author.Login,
 		}
 	}
 
 	return prs, nil
 }
 
-// UpdatePRTitle updates the title of an existing pull request.
-func (p *Provider) UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error {
+// MergePR merges a pull request using rebase strategy.
+func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int) error {
 	_, err := p.runGH(ctx,
-		"pr", "edit", strconv.Itoa(prID),
+		"pr", "merge", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--title", title,
+		"--rebase",
+		"--delete-branch",
 	)
 	if err != nil {
-		return fmt.Errorf("update PR title: %w", err)
+		return fmt.Errorf("merge PR: %w", err)
 	}
 
 	p.logger.Info().
 		Int("number", prID).
-		Str("title", title).
-		Msg("updated PR title")
+		Msg("merged PR via rebase")
 
 	return nil
 }

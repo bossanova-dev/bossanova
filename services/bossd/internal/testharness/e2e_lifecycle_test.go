@@ -36,6 +36,15 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 		t.Fatal("expected non-empty repo ID")
 	}
 
+	// Enable auto-merge so the dispatcher will mark PRs ready for review.
+	autoMerge := true
+	if _, err := h.Client.UpdateRepo(ctx, connect.NewRequest(&pb.UpdateRepoRequest{
+		Id:           repoID,
+		CanAutoMerge: &autoMerge,
+	})); err != nil {
+		t.Fatalf("update repo: %v", err)
+	}
+
 	// --- Step 2: Create a session ---
 	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
 		RepoId: repoID,
@@ -396,6 +405,15 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("register repo: %v", err)
+	}
+
+	// Enable auto-merge so the dispatcher will mark PRs ready for review.
+	autoMerge := true
+	if _, err := h.Client.UpdateRepo(ctx, connect.NewRequest(&pb.UpdateRepoRequest{
+		Id:           repoResp.Msg.Repo.Id,
+		CanAutoMerge: &autoMerge,
+	})); err != nil {
+		t.Fatalf("update repo: %v", err)
 	}
 
 	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{

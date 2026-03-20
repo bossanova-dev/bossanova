@@ -247,6 +247,25 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 	return prs, nil
 }
 
+// UpdatePRTitle updates the title of an existing pull request.
+func (p *Provider) UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error {
+	_, err := p.runGH(ctx,
+		"pr", "edit", strconv.Itoa(prID),
+		"--repo", repoFlag(repoPath),
+		"--title", title,
+	)
+	if err != nil {
+		return fmt.Errorf("update PR title: %w", err)
+	}
+
+	p.logger.Info().
+		Int("number", prID).
+		Str("title", title).
+		Msg("updated PR title")
+
+	return nil
+}
+
 // parseReviewState converts a GitHub API review state string to vcs.ReviewState.
 func parseReviewState(s string) vcs.ReviewState {
 	switch strings.ToUpper(s) {

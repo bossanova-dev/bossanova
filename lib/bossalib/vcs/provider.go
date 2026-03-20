@@ -27,4 +27,7 @@ type Provider interface {
 
 	// ListOpenPRs returns all open pull/merge requests for a repository.
 	ListOpenPRs(ctx context.Context, repoPath string) ([]PRSummary, error)
+
+	// UpdatePRTitle updates the title of an existing pull/merge request.
+	UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error
 }

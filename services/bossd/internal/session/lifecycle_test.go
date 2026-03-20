@@ -348,6 +348,10 @@ func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSumm
 	return nil, nil
 }
 
+func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
+
 // --- Tests ---
 
 func TestStartSession(t *testing.T) {

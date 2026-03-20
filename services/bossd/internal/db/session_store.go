@@ -76,6 +76,10 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	sets := []string{"updated_at = ?"}
 	args := []any{now}
 
+	if params.Title != nil {
+		sets = append(sets, "title = ?")
+		args = append(args, *params.Title)
+	}
 	if params.State != nil {
 		sets = append(sets, "state = ?")
 		args = append(args, *params.State)

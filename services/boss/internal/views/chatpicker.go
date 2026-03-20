@@ -363,6 +363,13 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					origin:    ViewChatPicker,
 				}
 			}
+		case "s":
+			return m, func() tea.Msg {
+				return switchViewMsg{
+					view:      ViewSessionSettings,
+					sessionID: m.sessionID,
+				}
+			}
 		case "d":
 			if chat := m.selectedChat(); chat != nil {
 				m.confirming = true
@@ -458,9 +465,9 @@ func (m ChatPickerModel) View() tea.View {
 			b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 		}
 	} else {
-		actionBar := "[n]ew chat  [esc] back"
+		actionBar := "[n]ew chat  [s]ettings  [esc] back"
 		if m.selectedChat() != nil {
-			actionBar = "[enter] select  [n]ew chat  [d] remove  [esc] back"
+			actionBar = "[enter] select  [n]ew chat  [d] remove  [s]ettings  [esc] back"
 		}
 		b.WriteString(styleActionBar.Render(actionBar))
 	}

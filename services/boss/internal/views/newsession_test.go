@@ -52,6 +52,9 @@ func (s *stubClient) RemoveRepo(context.Context, string) error { panic("unused")
 func (s *stubClient) UpdateRepo(context.Context, *pb.UpdateRepoRequest) (*pb.Repo, error) {
 	panic("unused")
 }
+func (s *stubClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *stubClient) GetSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *stubClient) ListSessions(context.Context, *pb.ListSessionsRequest) ([]*pb.Session, error) {
 	panic("unused")

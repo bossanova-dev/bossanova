@@ -20,6 +20,8 @@ import (
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/plugin"
+	"github.com/recurser/bossd/internal/plugin/eventbus"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
@@ -101,6 +103,15 @@ func run() error {
 		sessions, repos, ghProvider, prDisplayTracker,
 		settings.DisplayPollInterval(), log.Logger,
 	)
+
+	// --- Plugin Host ---
+
+	pluginBus := eventbus.New(log.Logger)
+	pluginHost := plugin.New(pluginBus, log.Logger)
+	if err := pluginHost.Start(context.Background(), settings.Plugins); err != nil {
+		pluginBus.Close()
+		return fmt.Errorf("plugin host: %w", err)
+	}
 
 	// --- Server ---
 
@@ -193,6 +204,12 @@ func run() error {
 	if upstreamMgr != nil {
 		upstreamMgr.Stop()
 	}
+
+	// Stop plugin host.
+	if err := pluginHost.Stop(); err != nil {
+		log.Warn().Err(err).Msg("plugin host stop error")
+	}
+	pluginBus.Close()
 
 	// Stop poller and dispatcher.
 	pollerCancel()

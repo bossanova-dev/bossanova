@@ -1,0 +1,233 @@
+syntax = "proto3";
+
+package bossanova.v1;
+
+option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
+
+import "google/protobuf/timestamp.proto";
+
+// TaskSourceService pulls tasks from external systems (eg. Linear, GitHub Issues)
+// and converts them into session-creation requests.
+service TaskSourceService {
+  // GetInfo returns the plugin's name, version, and capabilities.
+  rpc GetInfo(TaskSourceServiceGetInfoRequest) returns (TaskSourceServiceGetInfoResponse);
+
+  // PollTasks returns tasks that are ready to become sessions.
+  rpc PollTasks(PollTasksRequest) returns (PollTasksResponse);
+
+  // UpdateTaskStatus reports the outcome of a session back to the source.
+  rpc UpdateTaskStatus(UpdateTaskStatusRequest) returns (UpdateTaskStatusResponse);
+}
+
+// EventSourceService streams events from external systems (eg. webhooks, polls)
+// into the daemon's event bus.
+service EventSourceService {
+  // GetInfo returns the plugin's name, version, and capabilities.
+  rpc GetInfo(EventSourceServiceGetInfoRequest) returns (EventSourceServiceGetInfoResponse);
+
+  // StreamEvents opens a server-streaming RPC that pushes events to the daemon.
+  rpc StreamEvents(StreamEventsRequest) returns (stream StreamEventsResponse);
+}
+
+// SchedulerService triggers time-based jobs (eg. cron-style recurring tasks).
+service SchedulerService {
+  // GetInfo returns the plugin's name, version, and capabilities.
+  rpc GetInfo(SchedulerServiceGetInfoRequest) returns (SchedulerServiceGetInfoResponse);
+
+  // GetSchedule returns the set of scheduled jobs this plugin manages.
+  rpc GetSchedule(GetScheduleRequest) returns (GetScheduleResponse);
+
+  // ExecuteJob runs a scheduled job and returns the action to take.
+  rpc ExecuteJob(ExecuteJobRequest) returns (ExecuteJobResponse);
+}
+
+// --- Plugin Identity ---
+
+// PluginInfo describes a plugin's identity and capabilities.
+message PluginInfo {
+  string name = 1;
+  string version = 2;
+  repeated string capabilities = 3;
+}
+
+// Per-service GetInfo request/response types to satisfy buf lint uniqueness.
+
+message TaskSourceServiceGetInfoRequest {}
+
+message TaskSourceServiceGetInfoResponse {
+  PluginInfo info = 1;
+}
+
+message EventSourceServiceGetInfoRequest {}
+
+message EventSourceServiceGetInfoResponse {
+  PluginInfo info = 1;
+}
+
+message SchedulerServiceGetInfoRequest {}
+
+message SchedulerServiceGetInfoResponse {
+  PluginInfo info = 1;
+}
+
+// --- TaskSource Messages ---
+
+message PollTasksRequest {
+  // Optional filter by repo origin URL.
+  optional string repo_origin_url = 1;
+}
+
+message PollTasksResponse {
+  repeated TaskItem tasks = 1;
+}
+
+// TaskItem is a task from an external system ready to become a session.
+message TaskItem {
+  // External system's unique ID for this task.
+  string external_id = 1;
+  // Human-readable title for the session.
+  string title = 2;
+  // The plan / instructions for Claude.
+  string plan = 3;
+  // Repo origin URL to match against registered repos.
+  string repo_origin_url = 4;
+  // Base branch to create the session from.
+  string base_branch = 5;
+  // Priority (lower = higher priority).
+  int32 priority = 6;
+  // Labels / tags from the external system.
+  repeated string labels = 7;
+}
+
+message UpdateTaskStatusRequest {
+  // The external ID of the task to update.
+  string external_id = 1;
+  // The new status to report.
+  TaskItemStatus status = 2;
+  // Optional details (eg. PR URL, error message).
+  string details = 3;
+}
+
+message UpdateTaskStatusResponse {}
+
+// TaskItemStatus represents the lifecycle of a task sourced from an external system.
+enum TaskItemStatus {
+  TASK_ITEM_STATUS_UNSPECIFIED = 0;
+  TASK_ITEM_STATUS_IN_PROGRESS = 1;
+  TASK_ITEM_STATUS_COMPLETED = 2;
+  TASK_ITEM_STATUS_FAILED = 3;
+}
+
+// --- EventSource Messages ---
+
+message StreamEventsRequest {
+  // Optional filter: only stream events for these repo origin URLs.
+  repeated string repo_origin_urls = 1;
+}
+
+// StreamEventsResponse wraps a single event notification from a plugin.
+message StreamEventsResponse {
+  EventNotification notification = 1;
+}
+
+// EventNotification wraps all possible plugin events in a oneof.
+message EventNotification {
+  // When this event occurred.
+  google.protobuf.Timestamp timestamp = 1;
+  // The source plugin name.
+  string source = 2;
+
+  oneof event {
+    TaskReadyEvent task_ready = 10;
+    TaskUpdatedEvent task_updated = 11;
+    ExternalCheckEvent external_check = 12;
+    CustomEvent custom = 20;
+  }
+}
+
+// TaskReadyEvent signals that a new task is available for session creation.
+message TaskReadyEvent {
+  TaskItem task = 1;
+}
+
+// TaskUpdatedEvent signals that an external task was updated (eg. re-prioritized).
+message TaskUpdatedEvent {
+  string external_id = 1;
+  // The updated fields.
+  optional string title = 2;
+  optional int32 priority = 3;
+  repeated string labels = 4;
+}
+
+// ExternalCheckEvent signals an external check result (eg. from a non-GitHub CI).
+message ExternalCheckEvent {
+  string repo_origin_url = 1;
+  int32 pr_id = 2;
+  string check_name = 3;
+  bool passed = 4;
+  string details = 5;
+}
+
+// CustomEvent is an extensibility point for plugin-specific events.
+message CustomEvent {
+  string event_type = 1;
+  // JSON-encoded payload.
+  string payload = 2;
+}
+
+// --- Scheduler Messages ---
+
+message GetScheduleRequest {}
+
+message GetScheduleResponse {
+  repeated ScheduledJob jobs = 1;
+}
+
+// ScheduledJob describes a recurring job managed by the scheduler plugin.
+message ScheduledJob {
+  // Unique ID for this job within the plugin.
+  string id = 1;
+  // Human-readable name.
+  string name = 2;
+  // Cron expression (eg. "0 9 * * MON").
+  string cron_expr = 3;
+  // Repo origin URL this job targets.
+  string repo_origin_url = 4;
+  // Whether this job is currently enabled.
+  bool enabled = 5;
+  // When this job last ran.
+  optional google.protobuf.Timestamp last_run = 6;
+  // When this job is next scheduled to run.
+  optional google.protobuf.Timestamp next_run = 7;
+}
+
+message ExecuteJobRequest {
+  // The job ID to execute.
+  string job_id = 1;
+}
+
+message ExecuteJobResponse {
+  // The action the daemon should take.
+  JobAction action = 1;
+}
+
+// JobAction wraps the possible outcomes of a scheduled job execution.
+message JobAction {
+  oneof action {
+    CreateSessionAction create_session = 1;
+    NoOpAction no_op = 2;
+  }
+}
+
+// CreateSessionAction tells the daemon to create a new session.
+message CreateSessionAction {
+  string title = 1;
+  string plan = 2;
+  string repo_origin_url = 3;
+  string base_branch = 4;
+}
+
+// NoOpAction indicates the job ran but no action is needed.
+message NoOpAction {
+  string reason = 1;
+}

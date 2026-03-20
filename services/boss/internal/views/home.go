@@ -479,7 +479,7 @@ func (h HomeModel) resolveAutoEnter(sessionID string) tea.Cmd {
 			}
 			daemon := statuses[chat.ClaudeId]
 			merged := mergeStatus(local, daemon)
-			if merged == bosspty.StatusWorking || merged == bosspty.StatusIdle {
+			if merged == bosspty.StatusWorking || merged == bosspty.StatusIdle || merged == bosspty.StatusQuestion {
 				activeID = chat.ClaudeId
 				activeCount++
 			}

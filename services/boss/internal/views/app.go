@@ -165,6 +165,8 @@ func statusToProto(s string) pb.ChatStatus {
 		return pb.ChatStatus_CHAT_STATUS_WORKING
 	case bosspty.StatusIdle:
 		return pb.ChatStatus_CHAT_STATUS_IDLE
+	case bosspty.StatusQuestion:
+		return pb.ChatStatus_CHAT_STATUS_QUESTION
 	default:
 		return pb.ChatStatus_CHAT_STATUS_STOPPED
 	}

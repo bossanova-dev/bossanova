@@ -58,6 +58,59 @@ func TestRingBuffer_DefaultSize(t *testing.T) {
 	}
 }
 
+func TestRingBuffer_Tail_Basic(t *testing.T) {
+	rb := NewRingBuffer(8)
+	_, _ = rb.Write([]byte("hello"))
+
+	got := rb.Tail(3)
+	if !bytes.Equal(got, []byte("llo")) {
+		t.Fatalf("expected %q, got %q", "llo", got)
+	}
+}
+
+func TestRingBuffer_Tail_MoreThanWritten(t *testing.T) {
+	rb := NewRingBuffer(8)
+	_, _ = rb.Write([]byte("hi"))
+
+	got := rb.Tail(10)
+	if !bytes.Equal(got, []byte("hi")) {
+		t.Fatalf("expected %q, got %q", "hi", got)
+	}
+}
+
+func TestRingBuffer_Tail_Empty(t *testing.T) {
+	rb := NewRingBuffer(8)
+	got := rb.Tail(5)
+	if got != nil {
+		t.Fatalf("expected nil, got %q", got)
+	}
+}
+
+func TestRingBuffer_Tail_AfterWrap(t *testing.T) {
+	rb := NewRingBuffer(8)
+	_, _ = rb.Write([]byte("abcdefgh")) // fills exactly
+	_, _ = rb.Write([]byte("ij"))       // wraps: buffer is "ijcdefgh", pos=2
+
+	got := rb.Tail(4)
+	want := []byte("ghij")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestRingBuffer_Tail_EntireBuffer(t *testing.T) {
+	rb := NewRingBuffer(8)
+	_, _ = rb.Write([]byte("abcdefgh"))
+	_, _ = rb.Write([]byte("ij"))
+
+	// Tail of full buffer size should return all content in order.
+	got := rb.Tail(8)
+	want := []byte("cdefghij")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestRingBuffer_MultipleSmallWrites(t *testing.T) {
 	rb := NewRingBuffer(8)
 

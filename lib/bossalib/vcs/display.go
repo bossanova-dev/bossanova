@@ -14,6 +14,7 @@ const (
 	PRDisplayStatusPassing     PRDisplayStatus = 6
 	PRDisplayStatusMerged      PRDisplayStatus = 7
 	PRDisplayStatusClosed      PRDisplayStatus = 8
+	PRDisplayStatusDraft       PRDisplayStatus = 9
 )
 
 // PRDisplayInfo holds the computed display status and metadata for a PR.
@@ -35,6 +36,11 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	}
 	if pr.State == PRStateClosed {
 		return PRDisplayInfo{Status: PRDisplayStatusClosed}
+	}
+
+	// Draft PRs are not ready for review — other statuses become noise.
+	if pr.Draft {
+		return PRDisplayInfo{Status: PRDisplayStatusDraft}
 	}
 
 	// Conflict detection.

@@ -31,6 +31,19 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus: PRDisplayStatusClosed,
 		},
 		{
+			name:       "draft PR",
+			pr:         &PRStatus{State: PRStateOpen, Draft: true, Mergeable: boolPtr(true)},
+			wantStatus: PRDisplayStatusDraft,
+		},
+		{
+			name: "draft takes priority over passing checks",
+			pr:   &PRStatus{State: PRStateOpen, Draft: true, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			wantStatus: PRDisplayStatusDraft,
+		},
+		{
 			name:       "conflict (not mergeable)",
 			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(false)},
 			wantStatus: PRDisplayStatusConflict,

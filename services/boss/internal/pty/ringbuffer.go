@@ -2,7 +2,7 @@ package pty
 
 import "sync"
 
-const defaultBufSize = 64 * 1024 // 64KB
+const defaultBufSize = 512 * 1024 // 512KB
 
 // RingBuffer is a fixed-size circular buffer for storing recent PTY output.
 type RingBuffer struct {

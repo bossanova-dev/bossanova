@@ -117,7 +117,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Exec(ptycmd, func(err error) tea.Msg {
 			// Clear the primary screen buffer so Claude's logo/intro
 			// text doesn't linger in scrollback when boss exits alt screen.
-			fmt.Print("\033[2J\033[H\033[3J")
+			fmt.Print("\033[2J\033[H")
 			return claudeFinishedMsg{err: err, detached: ptycmd.Detached}
 		})
 

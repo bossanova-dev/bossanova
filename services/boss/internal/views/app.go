@@ -23,30 +23,32 @@ const (
 	ViewRepoAdd
 	ViewRepoList
 	ViewRepoSettings
+	ViewSessionSettings
 	ViewTrash
 	ViewSettings
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
 type App struct {
-	client       client.BossClient
-	ctx          context.Context
-	manager      *bosspty.Manager
-	activeView   View
-	home         HomeModel
-	newSession   NewSessionModel
-	chatPicker   ChatPickerModel
-	repoAdd      RepoAddModel
-	repoList     RepoListModel
-	repoSettings RepoSettingsModel
-	trash        TrashModel
-	settings     SettingsModel
-	attach           AttachModel
-	attachOrigin     View   // remembers how the user entered the attach view
-	attachSessionID  string // remembers which session to highlight on return
-	width            int
-	height           int
-	quitting         bool
+	client          client.BossClient
+	ctx             context.Context
+	manager         *bosspty.Manager
+	activeView      View
+	home            HomeModel
+	newSession      NewSessionModel
+	chatPicker      ChatPickerModel
+	repoAdd         RepoAddModel
+	repoList        RepoListModel
+	repoSettings    RepoSettingsModel
+	sessionSettings SessionSettingsModel
+	trash           TrashModel
+	settings        SettingsModel
+	attach          AttachModel
+	attachOrigin    View   // remembers how the user entered the attach view
+	attachSessionID string // remembers which session to highlight on return
+	width           int
+	height          int
+	quitting        bool
 
 	// heartbeatStop signals the background heartbeat goroutine to exit.
 	// The goroutine runs independently of the Bubbletea event loop so that
@@ -180,6 +182,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoList.width = msg.Width
 		a.repoList.height = msg.Height
 		a.repoSettings.width = msg.Width
+		a.sessionSettings.width = msg.Width
 		a.trash.width = msg.Width
 		a.trash.height = msg.Height
 		a.chatPicker.width = msg.Width
@@ -222,6 +225,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoSettings = NewRepoSettingsModel(a.client, a.ctx, msg.sessionID)
 			a.repoSettings.width = a.width
 			return a, a.repoSettings.Init()
+		case ViewSessionSettings:
+			a.sessionSettings = NewSessionSettingsModel(a.client, a.ctx, msg.sessionID)
+			a.sessionSettings.width = a.width
+			return a, a.sessionSettings.Init()
 		case ViewTrash:
 			a.trash = NewTrashModel(a.client, a.ctx)
 			a.trash.width = a.width
@@ -308,6 +315,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.repoList.Init()
 		}
 		return a, cmd
+	case ViewSessionSettings:
+		updated, cmd := a.sessionSettings.Update(msg)
+		a.sessionSettings = updated.(SessionSettingsModel)
+		if a.sessionSettings.Cancelled() || a.sessionSettings.Done() {
+			// Return to chat picker, re-fetching the session to reflect any name change.
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, a.sessionSettings.sessionID, "")
+			a.chatPicker.width = a.width
+			a.chatPicker.height = a.height
+			a.activeView = ViewChatPicker
+			return a, a.chatPicker.Init()
+		}
+		return a, cmd
 	case ViewTrash:
 		updated, cmd := a.trash.Update(msg)
 		a.trash = updated.(TrashModel)
@@ -376,6 +395,8 @@ func (a App) View() tea.View {
 		v = a.repoList.View()
 	case ViewRepoSettings:
 		v = a.repoSettings.View()
+	case ViewSessionSettings:
+		v = a.sessionSettings.View()
 	case ViewTrash:
 		v = a.trash.View()
 	case ViewSettings:
@@ -396,6 +417,8 @@ func (a App) View() tea.View {
 			opts.spinner = a.chatPicker.spinner
 		case ViewRepoSettings:
 			opts.repo = a.repoSettings.repo
+		case ViewSessionSettings:
+			opts.session = a.sessionSettings.session
 		}
 		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}

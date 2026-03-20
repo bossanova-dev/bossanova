@@ -47,6 +47,7 @@ type BossClient interface {
 	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
 
 	// Session lifecycle
+	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error)
 	GetSession(ctx context.Context, id string) (*pb.Session, error)
 	ListSessions(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error)

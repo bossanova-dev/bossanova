@@ -96,3 +96,7 @@ func (m *MockVCSProvider) GetReviewComments(ctx context.Context, repoPath string
 func (m *MockVCSProvider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
 	return m.OpenPRs, nil
 }
+
+func (m *MockVCSProvider) UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error {
+	return nil
+}

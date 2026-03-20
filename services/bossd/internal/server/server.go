@@ -731,6 +731,37 @@ func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.Close
 	return connect.NewResponse(&pb.CloseSessionResponse{Session: sessionToProto(session)}), nil
 }
 
+func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
+	msg := req.Msg
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	params := db.UpdateSessionParams{}
+	if msg.Title != nil {
+		params.Title = msg.Title
+	}
+
+	sess, err := s.sessions.Update(ctx, msg.Id, params)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update session: %w", err))
+	}
+
+	// If the title was updated and the session has an associated PR, rename the PR too.
+	if msg.Title != nil && sess.PRNumber != nil {
+		repo, repoErr := s.repos.Get(ctx, sess.RepoID)
+		if repoErr != nil {
+			s.logger.Warn().Err(repoErr).Str("repo_id", sess.RepoID).Msg("failed to look up repo for PR title update")
+		} else {
+			if prErr := s.provider.UpdatePRTitle(ctx, repo.OriginURL, *sess.PRNumber, *msg.Title); prErr != nil {
+				s.logger.Warn().Err(prErr).Int("pr_number", *sess.PRNumber).Msg("failed to update PR title")
+			}
+		}
+	}
+
+	return connect.NewResponse(&pb.UpdateSessionResponse{Session: sessionToProto(sess)}), nil
+}
+
 func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
 	if req.Msg.Id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))

@@ -38,9 +38,17 @@ type PRClosed struct {
 	PRID int
 }
 
+// DependabotReady indicates a dependabot PR has all checks passing and is mergeable.
+type DependabotReady struct {
+	PRID     int
+	RepoID   string
+	RepoPath string
+}
+
 func (ChecksPassed) vcsEvent()     {}
 func (ChecksFailed) vcsEvent()     {}
 func (ConflictDetected) vcsEvent() {}
 func (ReviewSubmitted) vcsEvent()  {}
 func (PRMerged) vcsEvent()         {}
 func (PRClosed) vcsEvent()         {}
+func (DependabotReady) vcsEvent()  {}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image/color"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,12 +79,50 @@ func (h HomeModel) Init() tea.Cmd {
 	return tea.Batch(fetchSessions(h.client, h.ctx), tickCmd(), h.spinner.Tick)
 }
 
+// renderAttentionIndicator returns a colored "!" for sessions needing attention,
+// or an empty string otherwise.
+func renderAttentionIndicator(sess *pb.Session) string {
+	if sess.AttentionStatus == nil || !sess.AttentionStatus.NeedsAttention {
+		return ""
+	}
+	switch sess.AttentionStatus.Reason {
+	case pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS:
+		return styleStatusDanger.Render("!")
+	case pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8C00")).Render("!")
+	default:
+		return styleStatusWarning.Render("!")
+	}
+}
+
+// sessionNeedsAttention returns true if the session has a non-nil AttentionStatus
+// with NeedsAttention set.
+func sessionNeedsAttention(sess *pb.Session) bool {
+	return sess.AttentionStatus != nil && sess.AttentionStatus.NeedsAttention
+}
+
+// sortSessionsByAttention sorts sessions so needs-attention sessions appear first,
+// preserving relative order within each group.
+func sortSessionsByAttention(sessions []*pb.Session) {
+	sort.SliceStable(sessions, func(i, j int) bool {
+		ai := sessionNeedsAttention(sessions[i])
+		aj := sessionNeedsAttention(sessions[j])
+		if ai != aj {
+			return ai
+		}
+		return false
+	})
+}
+
 // buildTableRows rebuilds the table columns and rows from h.sessions.
 func (h *HomeModel) buildTableRows() {
 	if len(h.sessions) == 0 {
 		h.table.SetRows(nil)
 		return
 	}
+
+	// Sort: needs-attention sessions float to top.
+	sortSessionsByAttention(h.sessions)
 
 	repos := make([]string, len(h.sessions))
 	names := make([]string, len(h.sessions))
@@ -107,6 +146,7 @@ func (h *HomeModel) buildTableRows() {
 
 	cols := []table.Column{
 		cursorColumn,
+		{Title: " ", Width: 1},
 		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
 		{Title: "NAME", Width: maxColWidth("NAME", names, 60) + tableColumnSep},
 		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
@@ -123,6 +163,7 @@ func (h *HomeModel) buildTableRows() {
 		claudeStatus := mergeStatus(local, daemon)
 		statusStyled := renderPRDisplayStatus(sess, claudeStatus, h.spinner)
 
+		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], names[i], prs[i]
 		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED {
 			repo = mutedStrike.Render(repos[i])
@@ -134,7 +175,7 @@ func (h *HomeModel) buildTableRows() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, repo, name, pr, statusStyled}
+		rows[i] = table.Row{indicator, attn, repo, name, pr, statusStyled}
 	}
 
 	h.table.SetColumns(cols)
@@ -444,6 +485,14 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
+		// Show attention summary for selected session if it needs attention.
+		if cursor := h.table.Cursor(); cursor < len(h.sessions) {
+			if sess := h.sessions[cursor]; sessionNeedsAttention(sess) {
+				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+					"⚠ " + sess.AttentionStatus.Summary))
+				b.WriteString("\n")
+			}
+		}
 		b.WriteString(styleActionBar.Render("[enter] select  [n]ew session  [h]istory  [a]rchive  [r]epos  [s]ettings  [t]rash  [q]uit"))
 	}
 
@@ -479,7 +528,7 @@ func (h HomeModel) resolveAutoEnter(sessionID string) tea.Cmd {
 			}
 			daemon := statuses[chat.ClaudeId]
 			merged := mergeStatus(local, daemon)
-			if merged == bosspty.StatusWorking || merged == bosspty.StatusIdle || merged == bosspty.StatusQuestion {
+			if merged == bosspty.StatusWorking || merged == bosspty.StatusIdle {
 				activeID = chat.ClaudeId
 				activeCount++
 			}

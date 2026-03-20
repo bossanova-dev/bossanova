@@ -23,7 +23,6 @@ const (
 	ViewRepoAdd
 	ViewRepoList
 	ViewRepoSettings
-	ViewSessionSettings
 	ViewTrash
 	ViewSettings
 )
@@ -40,7 +39,6 @@ type App struct {
 	repoAdd         RepoAddModel
 	repoList        RepoListModel
 	repoSettings    RepoSettingsModel
-	sessionSettings SessionSettingsModel
 	trash           TrashModel
 	settings        SettingsModel
 	attach          AttachModel
@@ -165,8 +163,6 @@ func statusToProto(s string) pb.ChatStatus {
 		return pb.ChatStatus_CHAT_STATUS_WORKING
 	case bosspty.StatusIdle:
 		return pb.ChatStatus_CHAT_STATUS_IDLE
-	case bosspty.StatusQuestion:
-		return pb.ChatStatus_CHAT_STATUS_QUESTION
 	default:
 		return pb.ChatStatus_CHAT_STATUS_STOPPED
 	}
@@ -184,7 +180,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoList.width = msg.Width
 		a.repoList.height = msg.Height
 		a.repoSettings.width = msg.Width
-		a.sessionSettings.width = msg.Width
 		a.trash.width = msg.Width
 		a.trash.height = msg.Height
 		a.chatPicker.width = msg.Width
@@ -227,10 +222,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoSettings = NewRepoSettingsModel(a.client, a.ctx, msg.sessionID)
 			a.repoSettings.width = a.width
 			return a, a.repoSettings.Init()
-		case ViewSessionSettings:
-			a.sessionSettings = NewSessionSettingsModel(a.client, a.ctx, msg.sessionID)
-			a.sessionSettings.width = a.width
-			return a, a.sessionSettings.Init()
 		case ViewTrash:
 			a.trash = NewTrashModel(a.client, a.ctx)
 			a.trash.width = a.width
@@ -317,18 +308,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.repoList.Init()
 		}
 		return a, cmd
-	case ViewSessionSettings:
-		updated, cmd := a.sessionSettings.Update(msg)
-		a.sessionSettings = updated.(SessionSettingsModel)
-		if a.sessionSettings.Cancelled() || a.sessionSettings.Done() {
-			// Return to chat picker, re-fetching the session to reflect any name change.
-			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, a.sessionSettings.sessionID, "")
-			a.chatPicker.width = a.width
-			a.chatPicker.height = a.height
-			a.activeView = ViewChatPicker
-			return a, a.chatPicker.Init()
-		}
-		return a, cmd
 	case ViewTrash:
 		updated, cmd := a.trash.Update(msg)
 		a.trash = updated.(TrashModel)
@@ -397,8 +376,6 @@ func (a App) View() tea.View {
 		v = a.repoList.View()
 	case ViewRepoSettings:
 		v = a.repoSettings.View()
-	case ViewSessionSettings:
-		v = a.sessionSettings.View()
 	case ViewTrash:
 		v = a.trash.View()
 	case ViewSettings:
@@ -419,8 +396,6 @@ func (a App) View() tea.View {
 			opts.spinner = a.chatPicker.spinner
 		case ViewRepoSettings:
 			opts.repo = a.repoSettings.repo
-		case ViewSessionSettings:
-			opts.session = a.sessionSettings.session
 		}
 		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}

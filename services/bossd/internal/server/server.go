@@ -464,6 +464,12 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 
 	p := sessionToProto(session)
 
+	// Hydrate attention status from session state and repo flags.
+	if repo, err := s.repos.Get(ctx, session.RepoID); err == nil {
+		p.RepoDisplayName = repo.DisplayName
+		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
+	}
+
 	// Hydrate PR display status from the in-memory tracker.
 	if s.prDisplay != nil {
 		if e := s.prDisplay.Get(session.ID); e != nil {
@@ -506,12 +512,12 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		sessions = filtered
 	}
 
-	// Build repo name lookup for denormalization.
-	repoNames := make(map[string]string)
+	// Build repo lookup for denormalization and attention hydration.
+	repoCache := make(map[string]*models.Repo)
 	for _, sess := range sessions {
-		if _, ok := repoNames[sess.RepoID]; !ok {
+		if _, ok := repoCache[sess.RepoID]; !ok {
 			if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil {
-				repoNames[sess.RepoID] = repo.DisplayName
+				repoCache[sess.RepoID] = repo
 			}
 		}
 	}
@@ -519,7 +525,10 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	pbSessions := make([]*pb.Session, len(sessions))
 	for i, sess := range sessions {
 		p := sessionToProto(sess)
-		p.RepoDisplayName = repoNames[sess.RepoID]
+		if repo, ok := repoCache[sess.RepoID]; ok {
+			p.RepoDisplayName = repo.DisplayName
+			p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(sess, repo))
+		}
 		pbSessions[i] = p
 	}
 
@@ -729,37 +738,6 @@ func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.Close
 	}
 
 	return connect.NewResponse(&pb.CloseSessionResponse{Session: sessionToProto(session)}), nil
-}
-
-func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
-	msg := req.Msg
-	if msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
-	}
-
-	params := db.UpdateSessionParams{}
-	if msg.Title != nil {
-		params.Title = msg.Title
-	}
-
-	sess, err := s.sessions.Update(ctx, msg.Id, params)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update session: %w", err))
-	}
-
-	// If the title was updated and the session has an associated PR, rename the PR too.
-	if msg.Title != nil && sess.PRNumber != nil {
-		repo, repoErr := s.repos.Get(ctx, sess.RepoID)
-		if repoErr != nil {
-			s.logger.Warn().Err(repoErr).Str("repo_id", sess.RepoID).Msg("failed to look up repo for PR title update")
-		} else {
-			if prErr := s.provider.UpdatePRTitle(ctx, repo.OriginURL, *sess.PRNumber, *msg.Title); prErr != nil {
-				s.logger.Warn().Err(prErr).Int("pr_number", *sess.PRNumber).Msg("failed to update PR title")
-			}
-		}
-	}
-
-	return connect.NewResponse(&pb.UpdateSessionResponse{Session: sessionToProto(sess)}), nil
 }
 
 func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
@@ -1019,17 +997,14 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 		}
 		entries := s.chatStatus.GetBatch(claudeIDs)
 
-		// Compute best status: question > working > idle > stopped.
+		// Compute best status: working > idle > stopped.
 		best := pb.ChatStatus_CHAT_STATUS_STOPPED
 		for _, e := range entries {
-			if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
-				best = pb.ChatStatus_CHAT_STATUS_QUESTION
+			if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
+				best = pb.ChatStatus_CHAT_STATUS_WORKING
 				break
 			}
-			if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && best != pb.ChatStatus_CHAT_STATUS_QUESTION {
-				best = pb.ChatStatus_CHAT_STATUS_WORKING
-			}
-			if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best == pb.ChatStatus_CHAT_STATUS_STOPPED {
+			if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best != pb.ChatStatus_CHAT_STATUS_WORKING {
 				best = pb.ChatStatus_CHAT_STATUS_IDLE
 			}
 		}

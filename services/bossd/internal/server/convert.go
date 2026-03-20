@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -107,6 +108,20 @@ func constructPRURL(originURL string, prNumber int) string {
 		return ""
 	}
 	return fmt.Sprintf("https://%s/%s/pull/%d", parts[0], parts[1], prNumber)
+}
+
+// attentionStatusToProto converts a vcs.AttentionStatus to its protobuf representation.
+// Returns nil if the session does not need attention.
+func attentionStatusToProto(a vcs.AttentionStatus) *pb.AttentionStatus {
+	if !a.NeedsAttention {
+		return nil
+	}
+	return &pb.AttentionStatus{
+		NeedsAttention: true,
+		Reason:         pb.AttentionReason(a.Reason),
+		Summary:        a.Summary,
+		Since:          timestamppb.New(a.Since),
+	}
 }
 
 // protoToTimestamp converts an optional protobuf Timestamp to *time.Time.

@@ -108,10 +108,6 @@ func (c *RemoteClient) ListRepoPRs(_ context.Context, _ string) ([]*pb.PRSummary
 
 // --- Session Lifecycle ---
 
-func (c *RemoteClient) UpdateSession(_ context.Context, _ *pb.UpdateSessionRequest) (*pb.Session, error) {
-	return nil, errLocalOnly("UpdateSession")
-}
-
 func (c *RemoteClient) CreateSession(_ context.Context, _ *pb.CreateSessionRequest) (*pb.Session, error) {
 	return nil, errLocalOnly("CreateSession")
 }

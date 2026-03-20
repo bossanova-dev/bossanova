@@ -21,8 +21,6 @@ func chatStatusString(s pb.ChatStatus) string {
 		return bosspty.StatusWorking
 	case pb.ChatStatus_CHAT_STATUS_IDLE:
 		return bosspty.StatusIdle
-	case pb.ChatStatus_CHAT_STATUS_QUESTION:
-		return bosspty.StatusQuestion
 	default:
 		return bosspty.StatusStopped
 	}
@@ -68,11 +66,8 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 }
 
 // renderPRDisplayStatus returns a styled status string for the unified STATUS column.
-// Question status has highest priority, then working overrides PR statuses.
+// Claude working status overrides all PR display statuses.
 func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Model) string {
-	if claudeStatus == bosspty.StatusQuestion {
-		return styleStatusWarning.Render("? question")
-	}
 	if claudeStatus == bosspty.StatusWorking {
 		return styleStatusSuccess.Render(sp.View() + "working")
 	}
@@ -93,11 +88,9 @@ func renderSessionPRStatus(sess *pb.Session, sp spinner.Model) string {
 }
 
 // renderClaudeStatus returns a styled status string for a Claude process
-// (working/idle/question/stopped) without PR display context.
+// (working/idle/stopped) without PR display context.
 func renderClaudeStatus(status string, sp spinner.Model) string {
 	switch status {
-	case bosspty.StatusQuestion:
-		return styleStatusWarning.Render("? question")
 	case bosspty.StatusWorking:
 		return styleStatusSuccess.Render(sp.View() + "working")
 	case bosspty.StatusIdle:

@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	creackpty "github.com/creack/pty/v2"
@@ -38,15 +37,14 @@ func (m *Manager) RegisterSession(claudeID, sessionID string) {
 
 // Status constants returned by SessionStatus and ProcessStatus.
 const (
-	StatusWorking  = "working"  // process alive, recent output
-	StatusIdle     = "idle"     // process alive, no recent output
-	StatusStopped  = "stopped"  // process exited or never started
-	StatusQuestion = "question" // process idle, question prompt detected in PTY
+	StatusWorking = "working" // process alive, recent output
+	StatusIdle    = "idle"    // process alive, no recent output
+	StatusStopped = "stopped" // process exited or never started
 )
 
 // SessionStatus returns the aggregate status for a session.
 // It checks all claude processes registered to the session and returns the
-// highest-priority status found: question > working > idle > stopped.
+// most active status found.
 func (m *Manager) SessionStatus(sessionID string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -65,29 +63,18 @@ func (m *Manager) SessionStatus(sessionID string) string {
 			continue
 		default:
 		}
-		// Process is alive — check question first (overrides working/idle).
-		if p.HasQuestionPrompt() {
-			best = StatusQuestion
-			continue
-		}
+		// Process is alive — at least idle.
 		lw := p.LastWrite()
 		if !lw.IsZero() && time.Since(lw) < activeThreshold {
-			if best != StatusQuestion {
-				best = StatusWorking
-			}
-			continue
+			return StatusWorking // can't do better than this
 		}
-		if best == StatusStopped {
-			best = StatusIdle
-		}
+		best = StatusIdle
 	}
 	return best
 }
 
 // GetOrStart returns an existing process for the given ID, or starts a new one.
-// If ws is non-nil and a new process is being started, the PTY is created at
-// the given size so the child process renders correctly from the first frame.
-func (m *Manager) GetOrStart(id string, cmd *exec.Cmd, ws *creackpty.Winsize) (*Process, error) {
+func (m *Manager) GetOrStart(id string, cmd *exec.Cmd) (*Process, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -101,15 +88,7 @@ func (m *Manager) GetOrStart(id string, cmd *exec.Cmd, ws *creackpty.Winsize) (*
 		}
 	}
 
-	var (
-		ptmx *os.File
-		err  error
-	)
-	if ws != nil {
-		ptmx, err = creackpty.StartWithSize(cmd, ws)
-	} else {
-		ptmx, err = creackpty.Start(cmd)
-	}
+	ptmx, err := creackpty.Start(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +141,6 @@ func (m *Manager) ProcessStatus(claudeID string) string {
 		return StatusStopped
 	default:
 	}
-	if p.HasQuestionPrompt() {
-		return StatusQuestion
-	}
 	lw := p.LastWrite()
 	if !lw.IsZero() && time.Since(lw) < activeThreshold {
 		return StatusWorking
@@ -202,15 +178,11 @@ func (m *Manager) AllStatuses() map[string]ProcessInfo {
 		case <-p.done:
 			status = StatusStopped
 		default:
-			if p.HasQuestionPrompt() {
-				status = StatusQuestion
+			lw := p.LastWrite()
+			if !lw.IsZero() && time.Since(lw) < activeThreshold {
+				status = StatusWorking
 			} else {
-				lw := p.LastWrite()
-				if !lw.IsZero() && time.Since(lw) < activeThreshold {
-					status = StatusWorking
-				} else {
-					status = StatusIdle
-				}
+				status = StatusIdle
 			}
 		}
 		result[id] = ProcessInfo{
@@ -287,12 +259,6 @@ func (p *Process) LastWrite() time.Time {
 	return p.lastWrite
 }
 
-// HasQuestionPrompt checks if the PTY ring buffer ends with a Claude Code
-// question prompt (AskUserQuestion or permission UI).
-func (p *Process) HasQuestionPrompt() bool {
-	return hasQuestionPrompt(p.buf.Tail(2048))
-}
-
 // WriteInput sends user input to the PTY.
 func (p *Process) WriteInput(data []byte) error {
 	_, err := p.ptyFile.Write(data)
@@ -305,15 +271,6 @@ func (p *Process) Resize(rows, cols uint16) error {
 		Rows: rows,
 		Cols: cols,
 	})
-}
-
-// ForceRedraw sends SIGWINCH directly to the child process, bypassing
-// Setsize's same-size deduplication. This forces a full-screen redraw
-// which is needed on reattach when terminal dimensions haven't changed.
-func (p *Process) ForceRedraw() {
-	if p.cmd != nil && p.cmd.Process != nil {
-		_ = p.cmd.Process.Signal(syscall.SIGWINCH)
-	}
 }
 
 // ReplayBuffer writes the buffered output to the given writer.

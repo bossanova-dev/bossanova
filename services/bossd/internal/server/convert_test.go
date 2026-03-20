@@ -4,8 +4,10 @@ import (
 	"testing"
 	"time"
 
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -237,6 +239,59 @@ func TestProtoToTimestamp(t *testing.T) {
 		}
 		if !got.Equal(now) {
 			t.Errorf("got %v, want %v", *got, now)
+		}
+	})
+}
+
+func TestAttentionStatusToProto(t *testing.T) {
+	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	t.Run("no attention needed returns nil", func(t *testing.T) {
+		a := vcs.AttentionStatus{NeedsAttention: false}
+		got := attentionStatusToProto(a)
+		if got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+
+	t.Run("blocked max attempts", func(t *testing.T) {
+		a := vcs.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         vcs.AttentionReasonBlockedMaxAttempts,
+			Summary:        "fix loop exhausted",
+			Since:          now,
+		}
+		got := attentionStatusToProto(a)
+		if got == nil {
+			t.Fatal("expected non-nil")
+		}
+		if !got.NeedsAttention {
+			t.Error("NeedsAttention should be true")
+		}
+		if got.Reason != pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS {
+			t.Errorf("Reason = %v, want BLOCKED_MAX_ATTEMPTS", got.Reason)
+		}
+		if got.Summary != "fix loop exhausted" {
+			t.Errorf("Summary = %q", got.Summary)
+		}
+		if got.Since == nil {
+			t.Error("Since should not be nil")
+		}
+	})
+
+	t.Run("review requested", func(t *testing.T) {
+		a := vcs.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         vcs.AttentionReasonReviewRequested,
+			Summary:        "PR ready for human review",
+			Since:          now,
+		}
+		got := attentionStatusToProto(a)
+		if got == nil {
+			t.Fatal("expected non-nil")
+		}
+		if got.Reason != pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED {
+			t.Errorf("Reason = %v, want REVIEW_REQUESTED", got.Reason)
 		}
 	})
 }

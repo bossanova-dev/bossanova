@@ -12,6 +12,46 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
+// --- Mock FixHandler ---
+
+type mockFixHandler struct {
+	checkFailureCalls []string
+	conflictCalls     []string
+	reviewCalls       []string
+	done              chan struct{} // closed after a handler call, to sync with async goroutine
+}
+
+func newMockFixHandler() *mockFixHandler {
+	return &mockFixHandler{done: make(chan struct{}, 1)}
+}
+
+func (m *mockFixHandler) HandleCheckFailure(_ context.Context, sessionID string, _ []vcs.CheckResult) error {
+	m.checkFailureCalls = append(m.checkFailureCalls, sessionID)
+	select {
+	case m.done <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (m *mockFixHandler) HandleConflict(_ context.Context, sessionID string) error {
+	m.conflictCalls = append(m.conflictCalls, sessionID)
+	select {
+	case m.done <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (m *mockFixHandler) HandleReviewFeedback(_ context.Context, sessionID string, _ []vcs.ReviewComment) error {
+	m.reviewCalls = append(m.reviewCalls, sessionID)
+	select {
+	case m.done <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
 func TestDispatcherChecksPassed(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -21,8 +61,9 @@ func TestDispatcherChecksPassed(t *testing.T) {
 
 	prNum := 42
 	repos.repos["repo-1"] = &models.Repo{
-		ID:        "repo-1",
-		OriginURL: "owner/repo",
+		ID:           "repo-1",
+		OriginURL:    "owner/repo",
+		CanAutoMerge: true,
 	}
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:       "sess-1",
@@ -219,5 +260,328 @@ func TestDispatcherContextCancellation(t *testing.T) {
 		// Expected.
 	case <-time.After(time.Second):
 		t.Fatal("dispatcher did not stop on context cancellation")
+	}
+}
+
+func TestDispatcherChecksPassedAutoMergeDisabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{
+		ID:           "repo-1",
+		OriginURL:    "owner/repo",
+		CanAutoMerge: false,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		State:    machine.AwaitingChecks,
+		PRNumber: &prNum,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	// Should stop at GreenDraft — not transition to ReadyForReview.
+	if sess.State != machine.GreenDraft {
+		t.Errorf("state = %v, want GreenDraft", sess.State)
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Errorf("markReadyCalls = %v, want none", vp.markReadyCalls)
+	}
+}
+
+func TestDispatcherChecksFailedAutomationDisabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	fh := newMockFixHandler()
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:                "sess-1",
+		RepoID:            "repo-1",
+		State:             machine.AwaitingChecks,
+		AutomationEnabled: false,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, fh, logger)
+
+	failure := vcs.CheckConclusionFailure
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
+	}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	// State should still transition to FixingChecks (state machine doesn't check automation).
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.FixingChecks {
+		t.Errorf("state = %v, want FixingChecks", sess.State)
+	}
+	// But fix loop should NOT have been called.
+	if len(fh.checkFailureCalls) != 0 {
+		t.Errorf("expected 0 check failure calls, got %d", len(fh.checkFailureCalls))
+	}
+}
+
+func TestDispatcherChecksFailedAutomationEnabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	fh := newMockFixHandler()
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:                "sess-1",
+		RepoID:            "repo-1",
+		State:             machine.AwaitingChecks,
+		AutomationEnabled: true,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, fh, logger)
+
+	failure := vcs.CheckConclusionFailure
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
+	}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	// Wait for async fix loop goroutine.
+	select {
+	case <-fh.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fix loop was not invoked within timeout")
+	}
+
+	if len(fh.checkFailureCalls) != 1 {
+		t.Errorf("expected 1 check failure call, got %d", len(fh.checkFailureCalls))
+	}
+}
+
+func TestDispatcherConflictAutoResolveDisabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	fh := newMockFixHandler()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                      "repo-1",
+		CanAutoResolveConflicts: false,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, fh, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.FixingChecks {
+		t.Errorf("state = %v, want FixingChecks", sess.State)
+	}
+	if len(fh.conflictCalls) != 0 {
+		t.Errorf("expected 0 conflict calls, got %d", len(fh.conflictCalls))
+	}
+}
+
+func TestDispatcherConflictAutoResolveEnabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	fh := newMockFixHandler()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                      "repo-1",
+		CanAutoResolveConflicts: true,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, fh, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	select {
+	case <-fh.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fix loop was not invoked within timeout")
+	}
+
+	if len(fh.conflictCalls) != 1 {
+		t.Errorf("expected 1 conflict call, got %d", len(fh.conflictCalls))
+	}
+}
+
+func TestDispatcherReviewAutoAddressDisabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	fh := newMockFixHandler()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                    "repo-1",
+		CanAutoAddressReviews: false,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.ReadyForReview,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, fh, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ReviewSubmitted{PRID: 42, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
+	}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.FixingChecks {
+		t.Errorf("state = %v, want FixingChecks", sess.State)
+	}
+	if len(fh.reviewCalls) != 0 {
+		t.Errorf("expected 0 review calls, got %d", len(fh.reviewCalls))
+	}
+}
+
+func TestDispatcherReviewAutoAddressEnabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	fh := newMockFixHandler()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                    "repo-1",
+		CanAutoAddressReviews: true,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.ReadyForReview,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, fh, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ReviewSubmitted{PRID: 42, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
+	}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	select {
+	case <-fh.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fix loop was not invoked within timeout")
+	}
+
+	if len(fh.reviewCalls) != 1 {
+		t.Errorf("expected 1 review call, got %d", len(fh.reviewCalls))
+	}
+}
+
+func TestDispatcherDependabotReadyAutoMergeEnabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                     "repo-1",
+		OriginURL:              "owner/repo",
+		CanAutoMergeDependabot: true,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "",
+		Event:     vcs.DependabotReady{PRID: 10, RepoID: "repo-1", RepoPath: "owner/repo"},
+	}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if len(vp.mergePRCalls) != 1 || vp.mergePRCalls[0] != 10 {
+		t.Errorf("mergePRCalls = %v, want [10]", vp.mergePRCalls)
+	}
+}
+
+func TestDispatcherDependabotReadyAutoMergeDisabled(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                     "repo-1",
+		OriginURL:              "owner/repo",
+		CanAutoMergeDependabot: false,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "",
+		Event:     vcs.DependabotReady{PRID: 10, RepoID: "repo-1", RepoPath: "owner/repo"},
+	}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if len(vp.mergePRCalls) != 0 {
+		t.Errorf("mergePRCalls = %v, want none", vp.mergePRCalls)
 	}
 }

@@ -149,6 +149,9 @@ message Session {
   // PR display status, hydrated server-side from the PR display tracker.
   PRDisplayStatus pr_display_status = 20;
   bool pr_display_has_failures = 21;
+
+  // Attention status, hydrated server-side from session state.
+  optional AttentionStatus attention_status = 22;
 }
 
 // Attempt represents a fix attempt within a session.
@@ -254,6 +257,23 @@ message PRClosedEvent {
   int32 pr_id = 1;
 }
 
+// AttentionReason represents why a session needs human attention.
+enum AttentionReason {
+  ATTENTION_REASON_UNSPECIFIED = 0;
+  ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS = 1;
+  ATTENTION_REASON_AWAITING_HUMAN_INPUT = 2;
+  ATTENTION_REASON_REVIEW_REQUESTED = 3;
+  ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE = 4;
+}
+
+// AttentionStatus represents whether and why a session needs human attention.
+message AttentionStatus {
+  bool needs_attention = 1;
+  AttentionReason reason = 2;
+  string summary = 3;
+  google.protobuf.Timestamp since = 4;
+}
+
 // PRDisplayStatus represents the unified display status for a PR in the TUI.
 enum PRDisplayStatus {
   PR_DISPLAY_STATUS_UNSPECIFIED = 0;
@@ -274,7 +294,6 @@ enum ChatStatus {
   CHAT_STATUS_WORKING = 1;
   CHAT_STATUS_IDLE = 2;
   CHAT_STATUS_STOPPED = 3;
-  CHAT_STATUS_QUESTION = 4;
 }
 
 // ClaudeChat represents a Claude Code conversation associated with a session.

@@ -73,6 +73,7 @@ type PRSummary struct {
 	Title      string
 	HeadBranch string
 	State      PRState
+	Author     string
 }
 
 // CreatePROpts contains options for creating a new pull/merge request.

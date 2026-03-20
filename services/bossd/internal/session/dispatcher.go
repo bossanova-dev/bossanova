@@ -76,6 +76,11 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Handle repo-level events that don't require a session.
+	if event, ok := ev.Event.(vcs.DependabotReady); ok {
+		return d.handleDependabotReady(ctx, event)
+	}
+
 	sess, err := d.sessions.Get(ctx, ev.SessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -133,6 +138,10 @@ func (d *Dispatcher) handleChecksPassed(ctx context.Context, sm *machine.Machine
 			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to get repo for mark ready")
 			return nil
 		}
+		if !repo.CanAutoMerge {
+			d.logger.Info().Str("session", sess.ID).Msg("auto-merge disabled, skipping mark ready for review")
+			return nil
+		}
 		if err := d.provider.MarkReadyForReview(ctx, repo.OriginURL, *sess.PRNumber); err != nil {
 			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to mark ready for review")
 		} else {
@@ -184,6 +193,10 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
+		if !sess.AutomationEnabled {
+			d.logger.Info().Str("session", sess.ID).Msg("automation disabled, skipping fix loop for check failure")
+			return nil
+		}
 		safego.Go(d.logger, func() {
 			if err := d.fixLoop.HandleCheckFailure(ctx, sess.ID, event.FailedChecks); err != nil {
 				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: check failure handler failed")
@@ -223,6 +236,15 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
+		repo, err := d.repos.Get(ctx, sess.RepoID)
+		if err != nil {
+			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to get repo for conflict automation check")
+			return nil
+		}
+		if !repo.CanAutoResolveConflicts {
+			d.logger.Info().Str("session", sess.ID).Msg("auto-resolve conflicts disabled, skipping fix loop")
+			return nil
+		}
 		safego.Go(d.logger, func() {
 			if err := d.fixLoop.HandleConflict(ctx, sess.ID); err != nil {
 				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: conflict handler failed")
@@ -263,6 +285,15 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
+		repo, err := d.repos.Get(ctx, sess.RepoID)
+		if err != nil {
+			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to get repo for review automation check")
+			return nil
+		}
+		if !repo.CanAutoAddressReviews {
+			d.logger.Info().Str("session", sess.ID).Msg("auto-address reviews disabled, skipping fix loop")
+			return nil
+		}
 		safego.Go(d.logger, func() {
 			if err := d.fixLoop.HandleReviewFeedback(ctx, sess.ID, event.Comments); err != nil {
 				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: review handler failed")
@@ -302,5 +333,36 @@ func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, se
 	}
 
 	d.logger.Info().Str("session", sess.ID).Msg("PR closed")
+	return nil
+}
+
+func (d *Dispatcher) handleDependabotReady(ctx context.Context, event vcs.DependabotReady) error {
+	repo, err := d.repos.Get(ctx, event.RepoID)
+	if err != nil {
+		return fmt.Errorf("get repo: %w", err)
+	}
+
+	if !repo.CanAutoMergeDependabot {
+		d.logger.Info().
+			Str("repo", event.RepoID).
+			Int("pr", event.PRID).
+			Msg("dependabot auto-merge disabled, skipping")
+		return nil
+	}
+
+	d.logger.Info().
+		Str("repo", event.RepoID).
+		Int("pr", event.PRID).
+		Msg("auto-merging dependabot PR")
+
+	if err := d.provider.MergePR(ctx, event.RepoPath, event.PRID); err != nil {
+		return fmt.Errorf("merge dependabot PR #%d: %w", event.PRID, err)
+	}
+
+	d.logger.Info().
+		Str("repo", event.RepoID).
+		Int("pr", event.PRID).
+		Msg("dependabot PR merged successfully")
+
 	return nil
 }

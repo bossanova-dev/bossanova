@@ -130,14 +130,6 @@ func (c *LocalClient) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRS
 
 // --- Session Lifecycle ---
 
-func (c *LocalClient) UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error) {
-	resp, err := c.rpc.UpdateSession(ctx, connect.NewRequest(req))
-	if err != nil {
-		return nil, err
-	}
-	return resp.Msg.Session, nil
-}
-
 func (c *LocalClient) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
 	resp, err := c.rpc.CreateSession(ctx, connect.NewRequest(req))
 	if err != nil {

@@ -300,12 +300,15 @@ func (m *mockClaudeRunner) History(_ string) []claude.OutputLine {
 type mockVCSProvider struct {
 	createPRCalls      []vcs.CreatePROpts
 	markReadyCalls     []int
+	mergePRCalls       []int
 	nextPRInfo         *vcs.PRInfo
 	nextPRStatus       *vcs.PRStatus
 	nextCheckResults   []vcs.CheckResult
 	nextReviewComments []vcs.ReviewComment
+	nextOpenPRs        []vcs.PRSummary
 	checkResultsErr    error
 	reviewCommentsErr  error
+	mergePRErr         error
 }
 
 func newMockVCSProvider() *mockVCSProvider {
@@ -345,11 +348,12 @@ func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) 
 }
 
 func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
-	return nil, nil
+	return m.nextOpenPRs, nil
 }
 
-func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
-	return nil
+func (m *mockVCSProvider) MergePR(_ context.Context, _ string, prID int) error {
+	m.mergePRCalls = append(m.mergePRCalls, prID)
+	return m.mergePRErr
 }
 
 // --- Tests ---

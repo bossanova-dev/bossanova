@@ -64,30 +64,21 @@ func (c *PTYCommand) Run() error {
 	}
 	defer term.Restore(fd, oldState) //nolint:errcheck // best-effort restore on exit
 
-	// Detect real terminal size before starting/reattaching so the child
-	// process renders at the correct dimensions from the first frame.
-	var ws *creackpty.Winsize
-	if f, ok := c.stdout.(*os.File); ok {
-		if rows, cols, sizeErr := creackpty.Getsize(f); sizeErr == nil {
-			ws = &creackpty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}
-		}
-	}
-
-	proc, err := c.manager.GetOrStart(c.claudeID, c.cmd, ws)
+	proc, err := c.manager.GetOrStart(c.claudeID, c.cmd)
 	if err != nil {
 		return err
-	}
-
-	// Resize BEFORE Attach: if the terminal changed while detached, the
-	// child re-renders into the ring buffer (writer is still nil), not
-	// directly to stdout.
-	if ws != nil {
-		_ = proc.Resize(ws.Rows, ws.Cols)
 	}
 
 	// Connect output.
 	proc.Attach(c.stdout)
 	defer proc.Detach()
+
+	// Set initial PTY size from the real terminal.
+	if f, ok := c.stdout.(*os.File); ok {
+		if rows, cols, sizeErr := creackpty.Getsize(f); sizeErr == nil {
+			_ = proc.Resize(uint16(rows), uint16(cols))
+		}
+	}
 
 	// Relay SIGWINCH to resize the PTY.
 	sigch := make(chan os.Signal, 1)
@@ -105,11 +96,6 @@ func (c *PTYCommand) Run() error {
 
 	// Replay any buffered output from a previous attach.
 	proc.ReplayBuffer(c.stdout)
-
-	// Force a full-screen redraw: sends SIGWINCH directly to the child,
-	// bypassing Setsize's same-size dedup. The child re-renders and the
-	// output flows through readLoop → the now-attached stdout.
-	proc.ForceRedraw()
 
 	// Create a cancel pipe for interrupting the stdin read goroutine.
 	cancelR, cancelW, err := os.Pipe()

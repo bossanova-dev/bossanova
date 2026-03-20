@@ -265,6 +265,7 @@ enum PRDisplayStatus {
   PR_DISPLAY_STATUS_PASSING = 6;
   PR_DISPLAY_STATUS_MERGED = 7;
   PR_DISPLAY_STATUS_CLOSED = 8;
+  PR_DISPLAY_STATUS_DRAFT = 9;
 }
 
 // ChatStatus represents the live status of a Claude Code chat process.

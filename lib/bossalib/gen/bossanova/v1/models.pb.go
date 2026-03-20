@@ -587,6 +587,7 @@ const (
 	PRDisplayStatus_PR_DISPLAY_STATUS_PASSING     PRDisplayStatus = 6
 	PRDisplayStatus_PR_DISPLAY_STATUS_MERGED      PRDisplayStatus = 7
 	PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED      PRDisplayStatus = 8
+	PRDisplayStatus_PR_DISPLAY_STATUS_DRAFT       PRDisplayStatus = 9
 )
 
 // Enum value maps for PRDisplayStatus.
@@ -601,6 +602,7 @@ var (
 		6: "PR_DISPLAY_STATUS_PASSING",
 		7: "PR_DISPLAY_STATUS_MERGED",
 		8: "PR_DISPLAY_STATUS_CLOSED",
+		9: "PR_DISPLAY_STATUS_DRAFT",
 	}
 	PRDisplayStatus_value = map[string]int32{
 		"PR_DISPLAY_STATUS_UNSPECIFIED": 0,
@@ -612,6 +614,7 @@ var (
 		"PR_DISPLAY_STATUS_PASSING":     6,
 		"PR_DISPLAY_STATUS_MERGED":      7,
 		"PR_DISPLAY_STATUS_CLOSED":      8,
+		"PR_DISPLAY_STATUS_DRAFT":       9,
 	}
 )
 
@@ -2296,7 +2299,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1aATTEMPT_RESULT_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16ATTEMPT_RESULT_SUCCESS\x10\x01\x12\x19\n" +
 	"\x15ATTEMPT_RESULT_FAILED\x10\x02\x12\x1d\n" +
-	"\x19ATTEMPT_RESULT_INCOMPLETE\x10\x03*\xaa\x02\n" +
+	"\x19ATTEMPT_RESULT_INCOMPLETE\x10\x03*\xc7\x02\n" +
 	"\x0fPRDisplayStatus\x12!\n" +
 	"\x1dPR_DISPLAY_STATUS_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16PR_DISPLAY_STATUS_IDLE\x10\x01\x12\x1e\n" +
@@ -2306,7 +2309,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1aPR_DISPLAY_STATUS_REVIEWED\x10\x05\x12\x1d\n" +
 	"\x19PR_DISPLAY_STATUS_PASSING\x10\x06\x12\x1c\n" +
 	"\x18PR_DISPLAY_STATUS_MERGED\x10\a\x12\x1c\n" +
-	"\x18PR_DISPLAY_STATUS_CLOSED\x10\b*q\n" +
+	"\x18PR_DISPLAY_STATUS_CLOSED\x10\b\x12\x1b\n" +
+	"\x17PR_DISPLAY_STATUS_DRAFT\x10\t*q\n" +
 	"\n" +
 	"ChatStatus\x12\x1b\n" +
 	"\x17CHAT_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +

@@ -77,7 +77,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 	out, err := p.runGH(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,title,headRefName,baseRefName",
+		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get PR status: %w", err)
@@ -86,6 +86,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 	var raw struct {
 		State       string `json:"state"`
 		Mergeable   string `json:"mergeable"`
+		IsDraft     bool   `json:"isDraft"`
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
 		BaseRefName string `json:"baseRefName"`
@@ -96,6 +97,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 
 	status := &vcs.PRStatus{
 		State:      parsePRState(raw.State),
+		Draft:      raw.IsDraft,
 		Title:      raw.Title,
 		HeadBranch: raw.HeadRefName,
 		BaseBranch: raw.BaseRefName,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	creackpty "github.com/creack/pty/v2"
@@ -74,7 +75,9 @@ func (m *Manager) SessionStatus(sessionID string) string {
 }
 
 // GetOrStart returns an existing process for the given ID, or starts a new one.
-func (m *Manager) GetOrStart(id string, cmd *exec.Cmd) (*Process, error) {
+// If ws is non-nil and a new process is being started, the PTY is created at
+// the given size so the child process renders correctly from the first frame.
+func (m *Manager) GetOrStart(id string, cmd *exec.Cmd, ws *creackpty.Winsize) (*Process, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -88,7 +91,15 @@ func (m *Manager) GetOrStart(id string, cmd *exec.Cmd) (*Process, error) {
 		}
 	}
 
-	ptmx, err := creackpty.Start(cmd)
+	var (
+		ptmx *os.File
+		err  error
+	)
+	if ws != nil {
+		ptmx, err = creackpty.StartWithSize(cmd, ws)
+	} else {
+		ptmx, err = creackpty.Start(cmd)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -271,6 +282,15 @@ func (p *Process) Resize(rows, cols uint16) error {
 		Rows: rows,
 		Cols: cols,
 	})
+}
+
+// ForceRedraw sends SIGWINCH directly to the child process, bypassing
+// Setsize's same-size deduplication. This forces a full-screen redraw
+// which is needed on reattach when terminal dimensions haven't changed.
+func (p *Process) ForceRedraw() {
+	if p.cmd != nil && p.cmd.Process != nil {
+		_ = p.cmd.Process.Signal(syscall.SIGWINCH)
+	}
 }
 
 // ReplayBuffer writes the buffered output to the given writer.

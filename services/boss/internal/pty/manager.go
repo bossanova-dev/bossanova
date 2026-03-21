@@ -37,14 +37,15 @@ func (m *Manager) RegisterSession(claudeID, sessionID string) {
 
 // Status constants returned by SessionStatus and ProcessStatus.
 const (
-	StatusWorking = "working" // process alive, recent output
-	StatusIdle    = "idle"    // process alive, no recent output
-	StatusStopped = "stopped" // process exited or never started
+	StatusWorking  = "working"  // process alive, recent output
+	StatusIdle     = "idle"     // process alive, no recent output
+	StatusStopped  = "stopped"  // process exited or never started
+	StatusQuestion = "question" // process idle, question prompt detected in PTY
 )
 
 // SessionStatus returns the aggregate status for a session.
 // It checks all claude processes registered to the session and returns the
-// most active status found.
+// highest-priority status found: question > working > idle > stopped.
 func (m *Manager) SessionStatus(sessionID string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -63,12 +64,21 @@ func (m *Manager) SessionStatus(sessionID string) string {
 			continue
 		default:
 		}
-		// Process is alive — at least idle.
+		// Process is alive — check question first (overrides working/idle).
+		if p.HasQuestionPrompt() {
+			best = StatusQuestion
+			continue
+		}
 		lw := p.LastWrite()
 		if !lw.IsZero() && time.Since(lw) < activeThreshold {
-			return StatusWorking // can't do better than this
+			if best != StatusQuestion {
+				best = StatusWorking
+			}
+			continue
 		}
-		best = StatusIdle
+		if best == StatusStopped {
+			best = StatusIdle
+		}
 	}
 	return best
 }
@@ -141,6 +151,9 @@ func (m *Manager) ProcessStatus(claudeID string) string {
 		return StatusStopped
 	default:
 	}
+	if p.HasQuestionPrompt() {
+		return StatusQuestion
+	}
 	lw := p.LastWrite()
 	if !lw.IsZero() && time.Since(lw) < activeThreshold {
 		return StatusWorking
@@ -178,11 +191,15 @@ func (m *Manager) AllStatuses() map[string]ProcessInfo {
 		case <-p.done:
 			status = StatusStopped
 		default:
-			lw := p.LastWrite()
-			if !lw.IsZero() && time.Since(lw) < activeThreshold {
-				status = StatusWorking
+			if p.HasQuestionPrompt() {
+				status = StatusQuestion
 			} else {
-				status = StatusIdle
+				lw := p.LastWrite()
+				if !lw.IsZero() && time.Since(lw) < activeThreshold {
+					status = StatusWorking
+				} else {
+					status = StatusIdle
+				}
 			}
 		}
 		result[id] = ProcessInfo{
@@ -257,6 +274,18 @@ func (p *Process) LastWrite() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastWrite
+}
+
+// questionTailSize is the number of trailing PTY bytes scanned for question
+// prompts. Must be large enough to capture the full AskUserQuestion UI
+// including wide-terminal border lines (each ─ is 3 UTF-8 bytes).
+// 4096 covers terminals up to ~400 columns with multi-option prompts.
+const questionTailSize = 4096
+
+// HasQuestionPrompt checks if the PTY ring buffer ends with a Claude Code
+// question prompt (AskUserQuestion or permission UI).
+func (p *Process) HasQuestionPrompt() bool {
+	return hasQuestionPrompt(p.buf.Tail(questionTailSize))
 }
 
 // WriteInput sends user input to the PTY.

@@ -997,14 +997,17 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 		}
 		entries := s.chatStatus.GetBatch(claudeIDs)
 
-		// Compute best status: working > idle > stopped.
+		// Compute best status: question > working > idle > stopped.
 		best := pb.ChatStatus_CHAT_STATUS_STOPPED
 		for _, e := range entries {
-			if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
-				best = pb.ChatStatus_CHAT_STATUS_WORKING
+			if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
+				best = pb.ChatStatus_CHAT_STATUS_QUESTION
 				break
 			}
-			if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best != pb.ChatStatus_CHAT_STATUS_WORKING {
+			if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && best != pb.ChatStatus_CHAT_STATUS_QUESTION {
+				best = pb.ChatStatus_CHAT_STATUS_WORKING
+			}
+			if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best == pb.ChatStatus_CHAT_STATUS_STOPPED {
 				best = pb.ChatStatus_CHAT_STATUS_IDLE
 			}
 		}

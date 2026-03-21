@@ -294,6 +294,7 @@ enum ChatStatus {
   CHAT_STATUS_WORKING = 1;
   CHAT_STATUS_IDLE = 2;
   CHAT_STATUS_STOPPED = 3;
+  CHAT_STATUS_QUESTION = 4;
 }
 
 // ClaudeChat represents a Claude Code conversation associated with a session.

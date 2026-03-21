@@ -288,6 +288,9 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				i,
 			)
 		}
+		if m.fd == nil {
+			m.fd = &formData{}
+		}
 		m.fd.selectedPRIdx = 0
 		m.form = huh.NewForm(
 			huh.NewGroup(

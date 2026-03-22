@@ -2,22 +2,25 @@ package plugin
 
 import (
 	goplugin "github.com/hashicorp/go-plugin"
+
+	sharedplugin "github.com/recurser/bossalib/plugin"
 )
 
 // Handshake is the magic cookie configuration that plugin clients and
-// servers must agree on. It prevents accidental execution of non-plugin
-// binaries.
+// servers must agree on. Values are sourced from the shared library.
 var Handshake = goplugin.HandshakeConfig{
-	ProtocolVersion:  1,
-	MagicCookieKey:   "BOSSANOVA_PLUGIN",
-	MagicCookieValue: "bossanova",
+	ProtocolVersion:  sharedplugin.ProtocolVersion,
+	MagicCookieKey:   sharedplugin.MagicCookieKey,
+	MagicCookieValue: sharedplugin.MagicCookieValue,
 }
 
-// PluginMap is the set of plugin types the host knows how to dispense.
-// Each key maps to a GRPCPlugin implementation that bridges go-plugin
-// to the generated proto service clients.
-var PluginMap = goplugin.PluginSet{
-	"task_source":  &TaskSourceGRPCPlugin{},
-	"event_source": &EventSourceGRPCPlugin{},
-	"scheduler":    &SchedulerGRPCPlugin{},
+// NewPluginMap builds a plugin set with the given HostServiceServer injected
+// into plugins that need it (TaskSource). This allows the plugin subprocess
+// to call back to the host via the go-plugin broker.
+func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
+	return goplugin.PluginSet{
+		sharedplugin.PluginTypeTaskSource:  &TaskSourceGRPCPlugin{HostService: hostService},
+		sharedplugin.PluginTypeEventSource: &EventSourceGRPCPlugin{},
+		sharedplugin.PluginTypeScheduler:   &SchedulerGRPCPlugin{},
+	}
 }

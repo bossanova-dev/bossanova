@@ -34,16 +34,26 @@ type Scheduler interface {
 // --- GRPCPlugin implementations ---
 
 // TaskSourceGRPCPlugin implements go-plugin's GRPCPlugin interface for
-// the TaskSourceService.
+// the TaskSourceService. When HostService is set, GRPCClient registers it
+// on broker ID 1 so the plugin subprocess can call back to the host.
 type TaskSourceGRPCPlugin struct {
 	goplugin.NetRPCUnsupportedPlugin
+	HostService *HostServiceServer
 }
 
 func (p *TaskSourceGRPCPlugin) GRPCServer(*goplugin.GRPCBroker, *grpc.Server) error {
 	return nil
 }
 
-func (p *TaskSourceGRPCPlugin) GRPCClient(_ context.Context, _ *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
+func (p *TaskSourceGRPCPlugin) GRPCClient(_ context.Context, broker *goplugin.GRPCBroker, conn *grpc.ClientConn) (any, error) {
+	if p.HostService != nil {
+		serverFunc := func(opts []grpc.ServerOption) *grpc.Server {
+			srv := grpc.NewServer(opts...)
+			p.HostService.Register(srv)
+			return srv
+		}
+		go broker.AcceptAndServe(1, serverFunc)
+	}
 	return &taskSourceGRPCClient{conn: conn}, nil
 }
 

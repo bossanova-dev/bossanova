@@ -27,6 +27,7 @@ type UpdateRepoParams struct {
 	CanAutoMergeDependabot  *bool
 	CanAutoAddressReviews   *bool
 	CanAutoResolveConflicts *bool
+	MergeStrategy           *models.MergeStrategy
 }
 
 // RepoStore defines the interface for repo persistence.
@@ -37,6 +38,31 @@ type RepoStore interface {
 	List(ctx context.Context) ([]*models.Repo, error)
 	Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error)
 	Delete(ctx context.Context, id string) error
+}
+
+// CreateTaskMappingParams holds the parameters for creating a new task mapping.
+type CreateTaskMappingParams struct {
+	ExternalID string
+	PluginName string
+	RepoID     string
+}
+
+// UpdateTaskMappingParams holds the fields that can be updated on a task mapping.
+// Nil fields are not updated.
+type UpdateTaskMappingParams struct {
+	SessionID            **string // double pointer: nil = don't update, *nil = set to NULL
+	Status               *models.TaskMappingStatus
+	PendingUpdateStatus  **models.TaskMappingStatus // double pointer: nil = don't update, *nil = clear
+	PendingUpdateDetails **string                   // double pointer: nil = don't update, *nil = clear
+}
+
+// TaskMappingStore defines the interface for task mapping persistence.
+type TaskMappingStore interface {
+	Create(ctx context.Context, params CreateTaskMappingParams) (*models.TaskMapping, error)
+	GetByExternalID(ctx context.Context, externalID string) (*models.TaskMapping, error)
+	GetBySessionID(ctx context.Context, sessionID string) (*models.TaskMapping, error)
+	Update(ctx context.Context, id string, params UpdateTaskMappingParams) (*models.TaskMapping, error)
+	ListPending(ctx context.Context) ([]*models.TaskMapping, error)
 }
 
 // CreateSessionParams holds the parameters for creating a new session.

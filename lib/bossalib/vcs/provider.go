@@ -28,6 +28,9 @@ type Provider interface {
 	// ListOpenPRs returns all open pull/merge requests for a repository.
 	ListOpenPRs(ctx context.Context, repoPath string) ([]PRSummary, error)
 
+	// ListClosedPRs returns recently-closed (not merged) pull/merge requests.
+	ListClosedPRs(ctx context.Context, repoPath string) ([]PRSummary, error)
+
 	// MergePR merges a pull/merge request using the given strategy
 	// ("merge", "rebase", or "squash"). An empty strategy defaults to "merge".
 	MergePR(ctx context.Context, repoPath string, prID int, strategy string) error

@@ -46,6 +46,9 @@ func (p *testVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) 
 func (p *testVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
 	return p.prs, nil
 }
+func (p *testVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
 func (p *testVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
 
 // taskSourceWithBroker is a host-side GRPCPlugin that registers the HostService

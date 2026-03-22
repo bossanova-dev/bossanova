@@ -175,6 +175,10 @@ func (m *mockProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary
 	return nil, nil
 }
 
+func (m *mockProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
+
 func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
 	if m.mergeFn != nil {
 		return m.mergeFn(ctx, repoPath, prID)
@@ -331,7 +335,7 @@ func TestProcessTask_DedupSkipsExisting(t *testing.T) {
 		ExternalId: "dependabot:pr:repo:123",
 		Title:      "Bump lodash",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"})
+	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"}, "dependabot")
 }
 
 // --- routing tests ---
@@ -355,7 +359,7 @@ func TestRouteTask_AutoMerge(t *testing.T) {
 		ExternalId: "dependabot:pr:https://github.com/org/repo:42",
 		Title:      "Bump lodash",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"})
+	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"}, "dependabot")
 
 	if mergedRepo != "https://github.com/org/repo" {
 		t.Errorf("expected repo URL, got %q", mergedRepo)
@@ -389,7 +393,7 @@ func TestRouteTask_AutoMerge_MergeError(t *testing.T) {
 		ExternalId: "dependabot:pr:repo:99",
 		Title:      "Bump express",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if updatedStatus != models.TaskMappingStatusFailed {
 		t.Errorf("expected status Failed, got %d", updatedStatus)
@@ -416,7 +420,7 @@ func TestRouteTask_CreateSession(t *testing.T) {
 		BaseBranch:     "develop",
 		ExistingBranch: "dependabot/npm/react-18.3.0",
 		Action:         bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
-	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"})
+	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"}, "dependabot")
 
 	if capturedOpts.RepoID != "r1" {
 		t.Errorf("expected repo r1, got %q", capturedOpts.RepoID)
@@ -453,7 +457,7 @@ func TestRouteTask_CreateSession_DefaultBaseBranch(t *testing.T) {
 		Title:      "Fix bug",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
 		// BaseBranch intentionally empty
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if capturedOpts.BaseBranch != "main" {
 		t.Errorf("expected default base branch 'main', got %q", capturedOpts.BaseBranch)
@@ -479,7 +483,7 @@ func TestRouteTask_NotifyUser(t *testing.T) {
 		ExternalId: "task:notify:1",
 		Title:      "Previously rejected library",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER,
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if updatedStatus != models.TaskMappingStatusSkipped {
 		t.Errorf("expected status Skipped, got %d", updatedStatus)
@@ -503,7 +507,7 @@ func TestRouteTask_UnspecifiedDefaultsToCreateSession(t *testing.T) {
 		ExternalId: "task:unspec:1",
 		Title:      "Unspecified action",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_UNSPECIFIED,
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if !sessionCreated {
 		t.Error("UNSPECIFIED action should default to CREATE_SESSION")
@@ -537,7 +541,7 @@ func TestQueue_TasksProcessedInOrder(t *testing.T) {
 		ExternalId: "dep:pr:repo:2",
 		Title:      "Second",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	// Verify it's queued, not processed.
 	orch.mu.Lock()
@@ -717,7 +721,7 @@ func TestProcessTask_NewTaskPassesThrough(t *testing.T) {
 		ExternalId: "dependabot:pr:repo:999",
 		Title:      "Bump new-pkg",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if !createdMapping {
 		t.Error("expected new task to create a mapping (not be deduped)")
@@ -746,7 +750,7 @@ func TestRouteTask_CreateMappingError(t *testing.T) {
 		ExternalId: "dep:pr:repo:50",
 		Title:      "Should not merge",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if mergedCalled {
 		t.Error("merge should not be called when task mapping creation fails")
@@ -775,13 +779,13 @@ func TestQueue_DifferentReposProcessIndependently(t *testing.T) {
 		ExternalId: "dep:pr:repo-a:1",
 		Title:      "Repo A task",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "repo-a"})
+	}, repoInfo{id: "r1", originURL: "repo-a"}, "dependabot")
 
 	orch.enqueue(ctx, &bossanovav1.TaskItem{
 		ExternalId: "dep:pr:repo-b:2",
 		Title:      "Repo B task",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r2", originURL: "repo-b"})
+	}, repoInfo{id: "r2", originURL: "repo-b"}, "dependabot")
 
 	if len(processed) != 2 {
 		t.Fatalf("expected 2 tasks processed (one per repo), got %d: %v", len(processed), processed)
@@ -911,10 +915,112 @@ func TestRouteTask_CreateSession_Error(t *testing.T) {
 		ExternalId: "dep:pr:repo:77",
 		Title:      "Bump failing-pkg",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
-	}, repoInfo{id: "r1", originURL: "repo"})
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if updatedStatus != models.TaskMappingStatusFailed {
 		t.Errorf("expected status Failed when session creation fails, got %d", updatedStatus)
+	}
+}
+
+func TestRouteTask_CreateSession_Error_DequeuesNext(t *testing.T) {
+	dequeued := false
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, _ CreateSessionOpts) (*models.Session, error) {
+				return nil, errors.New("lifecycle busy")
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				dequeued = true
+				return nil
+			},
+		}
+	})
+
+	ctx := context.Background()
+
+	// Mark repo active and queue a second task.
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.queues["r1"] = []queuedTask{{
+		task: &bossanovav1.TaskItem{
+			ExternalId: "dep:pr:repo:2",
+			Title:      "Queued task",
+			Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		},
+		repo:       repoInfo{id: "r1", originURL: "repo"},
+		pluginName: "dependabot",
+	}}
+	orch.mu.Unlock()
+
+	// This will fail to create session and should dequeue the next task.
+	orch.routeTask(ctx, &bossanovav1.TaskItem{
+		ExternalId: "dep:pr:repo:1",
+		Title:      "Failing session",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if !dequeued {
+		t.Error("expected dequeueNext to process queued task after session creation failure")
+	}
+}
+
+func TestRouteTask_MappingError_DequeuesNext(t *testing.T) {
+	dequeued := false
+	createCalls := 0
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				createCalls++
+				if createCalls == 1 {
+					return nil, errors.New("db constraint violation")
+				}
+				return &models.TaskMapping{
+					ID:         "tm-" + params.ExternalID,
+					ExternalID: params.ExternalID,
+					PluginName: params.PluginName,
+					RepoID:     params.RepoID,
+				}, nil
+			},
+		}
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				dequeued = true
+				return nil
+			},
+		}
+	})
+
+	ctx := context.Background()
+
+	// Mark repo active and queue a second task.
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.queues["r1"] = []queuedTask{{
+		task: &bossanovav1.TaskItem{
+			ExternalId: "dep:pr:repo:2",
+			Title:      "Queued task",
+			Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		},
+		repo:       repoInfo{id: "r1", originURL: "repo"},
+		pluginName: "dependabot",
+	}}
+	orch.mu.Unlock()
+
+	// This will fail to create mapping and should dequeue the next task.
+	orch.routeTask(ctx, &bossanovav1.TaskItem{
+		ExternalId: "dep:pr:repo:1",
+		Title:      "Mapping fail",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if !dequeued {
+		t.Error("expected dequeueNext to process queued task after mapping creation failure")
 	}
 }
 

@@ -82,9 +82,7 @@ func libraryFromTitle(title string) string {
 // of recently-closed PRs for a matching library name with CLOSED state.
 //
 // closedPRs should contain recently-closed dependabot PRs for the same
-// repo. The caller is responsible for providing this list (currently the
-// HostService only supports open PRs; closed PR history can be added to
-// the API surface when needed).
+// repo, fetched via ListClosedDependabotPRs.
 func isPreviouslyRejected(pr *bossanovav1.PRSummary, closedPRs []*bossanovav1.PRSummary) bool {
 	lib := parseDependabotLibrary(pr)
 	if lib == "" {

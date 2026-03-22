@@ -50,6 +50,12 @@ func (m *mockVCSProvider) MarkReadyForReview(_ context.Context, _ string, _ int)
 func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {
 	return nil, nil
 }
+func (m *mockVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return nil, nil
+}
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
 
 func TestHostServiceListOpenPRs(t *testing.T) {

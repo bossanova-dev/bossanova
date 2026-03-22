@@ -351,6 +351,10 @@ func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSumm
 	return m.nextOpenPRs, nil
 }
 
+func (m *mockVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+	return nil, nil
+}
+
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, prID int, _ string) error {
 	m.mergePRCalls = append(m.mergePRCalls, prID)
 	return m.mergePRErr

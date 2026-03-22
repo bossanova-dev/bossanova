@@ -35,6 +35,9 @@ type MockVCSProvider struct {
 	// OpenPRs is returned by ListOpenPRs.
 	OpenPRs []vcs.PRSummary
 
+	// ClosedPRs is returned by ListClosedPRs.
+	ClosedPRs []vcs.PRSummary
+
 	// CreateDraftPRFunc overrides the default CreateDraftPR behavior when set.
 	CreateDraftPRFunc func(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error)
 
@@ -104,6 +107,10 @@ func (m *MockVCSProvider) GetReviewComments(ctx context.Context, repoPath string
 
 func (m *MockVCSProvider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
 	return m.OpenPRs, nil
+}
+
+func (m *MockVCSProvider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	return m.ClosedPRs, nil
 }
 
 func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {

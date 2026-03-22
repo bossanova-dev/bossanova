@@ -41,6 +41,10 @@ var hostServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetPRStatus",
 			Handler:    hostServiceGetPRStatusHandler,
 		},
+		{
+			MethodName: "ListClosedPRs",
+			Handler:    hostServiceListClosedPRsHandler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "bossanova/v1/host_service.proto",
@@ -52,6 +56,7 @@ type hostServiceHandler interface {
 	ListOpenPRs(context.Context, *bossanovav1.ListOpenPRsRequest) (*bossanovav1.ListOpenPRsResponse, error)
 	GetCheckResults(context.Context, *bossanovav1.GetCheckResultsRequest) (*bossanovav1.GetCheckResultsResponse, error)
 	GetPRStatus(context.Context, *bossanovav1.GetPRStatusRequest) (*bossanovav1.GetPRStatusResponse, error)
+	ListClosedPRs(context.Context, *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error)
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -82,6 +87,14 @@ func hostServiceGetPRStatusHandler(srv any, ctx context.Context, dec func(any) e
 		return nil, err
 	}
 	return srv.(hostServiceHandler).GetPRStatus(ctx, req)
+}
+
+func hostServiceListClosedPRsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.ListClosedPRsRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).ListClosedPRs(ctx, req)
 }
 
 func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.ListOpenPRsRequest) (*bossanovav1.ListOpenPRsResponse, error) {
@@ -144,6 +157,26 @@ func (s *HostServiceServer) GetPRStatus(ctx context.Context, req *bossanovav1.Ge
 	}
 
 	return &bossanovav1.GetPRStatusResponse{Status: pbStatus}, nil
+}
+
+func (s *HostServiceServer) ListClosedPRs(ctx context.Context, req *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error) {
+	prs, err := s.provider.ListClosedPRs(ctx, req.GetRepoOriginUrl())
+	if err != nil {
+		return nil, err
+	}
+
+	pbPRs := make([]*bossanovav1.PRSummary, len(prs))
+	for i, pr := range prs {
+		pbPRs[i] = &bossanovav1.PRSummary{
+			Number:     int32(pr.Number),
+			Title:      pr.Title,
+			HeadBranch: pr.HeadBranch,
+			State:      vcsPRStateToProto(pr.State),
+			Author:     pr.Author,
+		}
+	}
+
+	return &bossanovav1.ListClosedPRsResponse{Prs: pbPRs}, nil
 }
 
 // --- VCS domain type → proto enum converters ---

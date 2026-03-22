@@ -77,6 +77,14 @@ func (c *lazyHostServiceClient) GetPRStatus(ctx context.Context, repoOriginURL s
 	return client.GetPRStatus(ctx, repoOriginURL, prNumber)
 }
 
+func (c *lazyHostServiceClient) ListClosedDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.ListClosedDependabotPRs(ctx, repoOriginURL)
+}
+
 // ListDependabotPRs calls ListOpenPRs and filters for dependabot-authored PRs.
 func (c *hostServiceClient) ListDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
 	prs, err := c.ListOpenPRs(ctx, repoOriginURL)
@@ -114,6 +122,32 @@ func (c *hostServiceClient) GetCheckResults(ctx context.Context, repoOriginURL s
 		return nil, err
 	}
 	return resp.GetChecks(), nil
+}
+
+// ListClosedDependabotPRs calls ListClosedPRs and filters for dependabot-authored PRs.
+func (c *hostServiceClient) ListClosedDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	prs, err := c.ListClosedPRs(ctx, repoOriginURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var filtered []*bossanovav1.PRSummary
+	for _, pr := range prs {
+		if pr.GetAuthor() == dependabotAuthor {
+			filtered = append(filtered, pr)
+		}
+	}
+	return filtered, nil
+}
+
+func (c *hostServiceClient) ListClosedPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+	req := &bossanovav1.ListClosedPRsRequest{RepoOriginUrl: repoOriginURL}
+	resp := &bossanovav1.ListClosedPRsResponse{}
+	err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/ListClosedPRs", req, resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetPrs(), nil
 }
 
 func (c *hostServiceClient) GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error) {

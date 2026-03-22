@@ -40,6 +40,9 @@ const (
 	HostServiceGetCheckResultsProcedure = "/bossanova.v1.HostService/GetCheckResults"
 	// HostServiceGetPRStatusProcedure is the fully-qualified name of the HostService's GetPRStatus RPC.
 	HostServiceGetPRStatusProcedure = "/bossanova.v1.HostService/GetPRStatus"
+	// HostServiceListClosedPRsProcedure is the fully-qualified name of the HostService's ListClosedPRs
+	// RPC.
+	HostServiceListClosedPRsProcedure = "/bossanova.v1.HostService/ListClosedPRs"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -50,6 +53,8 @@ type HostServiceClient interface {
 	GetCheckResults(context.Context, *connect.Request[v1.GetCheckResultsRequest]) (*connect.Response[v1.GetCheckResultsResponse], error)
 	// GetPRStatus returns the current status of a pull request.
 	GetPRStatus(context.Context, *connect.Request[v1.GetPRStatusRequest]) (*connect.Response[v1.GetPRStatusResponse], error)
+	// ListClosedPRs returns recently-closed (not merged) pull requests.
+	ListClosedPRs(context.Context, *connect.Request[v1.ListClosedPRsRequest]) (*connect.Response[v1.ListClosedPRsResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -81,6 +86,12 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("GetPRStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		listClosedPRs: connect.NewClient[v1.ListClosedPRsRequest, v1.ListClosedPRsResponse](
+			httpClient,
+			baseURL+HostServiceListClosedPRsProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("ListClosedPRs")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -89,6 +100,7 @@ type hostServiceClient struct {
 	listOpenPRs     *connect.Client[v1.ListOpenPRsRequest, v1.ListOpenPRsResponse]
 	getCheckResults *connect.Client[v1.GetCheckResultsRequest, v1.GetCheckResultsResponse]
 	getPRStatus     *connect.Client[v1.GetPRStatusRequest, v1.GetPRStatusResponse]
+	listClosedPRs   *connect.Client[v1.ListClosedPRsRequest, v1.ListClosedPRsResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -106,6 +118,11 @@ func (c *hostServiceClient) GetPRStatus(ctx context.Context, req *connect.Reques
 	return c.getPRStatus.CallUnary(ctx, req)
 }
 
+// ListClosedPRs calls bossanova.v1.HostService.ListClosedPRs.
+func (c *hostServiceClient) ListClosedPRs(ctx context.Context, req *connect.Request[v1.ListClosedPRsRequest]) (*connect.Response[v1.ListClosedPRsResponse], error) {
+	return c.listClosedPRs.CallUnary(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
 type HostServiceHandler interface {
 	// ListOpenPRs returns all open pull requests for a repository.
@@ -114,6 +131,8 @@ type HostServiceHandler interface {
 	GetCheckResults(context.Context, *connect.Request[v1.GetCheckResultsRequest]) (*connect.Response[v1.GetCheckResultsResponse], error)
 	// GetPRStatus returns the current status of a pull request.
 	GetPRStatus(context.Context, *connect.Request[v1.GetPRStatusRequest]) (*connect.Response[v1.GetPRStatusResponse], error)
+	// ListClosedPRs returns recently-closed (not merged) pull requests.
+	ListClosedPRs(context.Context, *connect.Request[v1.ListClosedPRsRequest]) (*connect.Response[v1.ListClosedPRsResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -141,6 +160,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("GetPRStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceListClosedPRsHandler := connect.NewUnaryHandler(
+		HostServiceListClosedPRsProcedure,
+		svc.ListClosedPRs,
+		connect.WithSchema(hostServiceMethods.ByName("ListClosedPRs")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceListOpenPRsProcedure:
@@ -149,6 +174,8 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceGetCheckResultsHandler.ServeHTTP(w, r)
 		case HostServiceGetPRStatusProcedure:
 			hostServiceGetPRStatusHandler.ServeHTTP(w, r)
+		case HostServiceListClosedPRsProcedure:
+			hostServiceListClosedPRsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -168,4 +195,8 @@ func (UnimplementedHostServiceHandler) GetCheckResults(context.Context, *connect
 
 func (UnimplementedHostServiceHandler) GetPRStatus(context.Context, *connect.Request[v1.GetPRStatusRequest]) (*connect.Response[v1.GetPRStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.GetPRStatus is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) ListClosedPRs(context.Context, *connect.Request[v1.ListClosedPRsRequest]) (*connect.Response[v1.ListClosedPRsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.ListClosedPRs is not implemented"))
 }

@@ -18,6 +18,9 @@ service HostService {
 
   // GetPRStatus returns the current status of a pull request.
   rpc GetPRStatus(GetPRStatusRequest) returns (GetPRStatusResponse);
+
+  // ListClosedPRs returns recently-closed (not merged) pull requests.
+  rpc ListClosedPRs(ListClosedPRsRequest) returns (ListClosedPRsResponse);
 }
 
 // --- ListOpenPRs ---
@@ -55,4 +58,15 @@ message GetPRStatusRequest {
 
 message GetPRStatusResponse {
   PRStatus status = 1;
+}
+
+// --- ListClosedPRs ---
+
+message ListClosedPRsRequest {
+  // Repository origin URL (eg. "https://github.com/owner/repo").
+  string repo_origin_url = 1;
+}
+
+message ListClosedPRsResponse {
+  repeated PRSummary prs = 1;
 }

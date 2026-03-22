@@ -14,10 +14,11 @@ import (
 // mockHostService is a test double for hostServiceClient that returns
 // preconfigured responses without making gRPC calls.
 type mockHostService struct {
-	prs    []*bossanovav1.PRSummary
-	checks map[int32][]*bossanovav1.CheckResult
-	status map[int32]*bossanovav1.PRStatus
-	prErr  error
+	prs       []*bossanovav1.PRSummary
+	closedPRs []*bossanovav1.PRSummary
+	checks    map[int32][]*bossanovav1.CheckResult
+	status    map[int32]*bossanovav1.PRStatus
+	prErr     error
 }
 
 func (m *mockHostService) ListDependabotPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
@@ -25,6 +26,10 @@ func (m *mockHostService) ListDependabotPRs(_ context.Context, _ string) ([]*bos
 		return nil, m.prErr
 	}
 	return m.prs, nil
+}
+
+func (m *mockHostService) ListClosedDependabotPRs(_ context.Context, _ string) ([]*bossanovav1.PRSummary, error) {
+	return m.closedPRs, nil
 }
 
 func (m *mockHostService) GetCheckResults(_ context.Context, _ string, prNumber int32) ([]*bossanovav1.CheckResult, error) {
@@ -125,6 +130,27 @@ func TestAggregateCheckResults(t *testing.T) {
 				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SKIPPED)},
 			},
 			want: checksOverallPassed,
+		},
+		{
+			name: "cancelled conclusion counts as failure",
+			checks: []*bossanovav1.CheckResult{
+				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_CANCELLED)},
+			},
+			want: checksOverallFailed,
+		},
+		{
+			name: "timed out conclusion counts as failure",
+			checks: []*bossanovav1.CheckResult{
+				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_TIMED_OUT)},
+			},
+			want: checksOverallFailed,
+		},
+		{
+			name: "nil conclusion on completed check counts as failure",
+			checks: []*bossanovav1.CheckResult{
+				{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED},
+			},
+			want: checksOverallFailed,
 		},
 	}
 
@@ -467,5 +493,50 @@ func TestPollTasksAutoMergeLabels(t *testing.T) {
 	}
 	if labels[1] != "lodash" {
 		t.Errorf("labels[1] = %q, want %q", labels[1], "lodash")
+	}
+}
+
+func TestPollTasksPreviouslyRejectedLibrary(t *testing.T) {
+	repoURL := "https://github.com/foo/bar"
+	mock := &mockHostService{
+		prs: []*bossanovav1.PRSummary{
+			// Open PR for prisma — checks passed, mergeable.
+			{Number: 100, Title: "Bump @prisma/client from 6.0.0 to 7.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-7.0.0", Author: dependabotAuthor},
+			// Open PR for lodash — checks passed, mergeable (not rejected).
+			{Number: 101, Title: "Bump lodash from 4.17.20 to 4.17.21", HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.21", Author: dependabotAuthor},
+		},
+		closedPRs: []*bossanovav1.PRSummary{
+			// Previously closed (rejected) prisma PR.
+			{Number: 90, Title: "Bump @prisma/client from 5.0.0 to 6.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-6.0.0", State: bossanovav1.PRState_PR_STATE_CLOSED, Author: dependabotAuthor},
+		},
+		checks: map[int32][]*bossanovav1.CheckResult{
+			100: {{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)}},
+			101: {{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)}},
+		},
+		status: map[int32]*bossanovav1.PRStatus{
+			100: {Mergeable: boolPtr(true)},
+			101: {Mergeable: boolPtr(true)},
+		},
+	}
+
+	tasks, err := pollTasksWithMock(t, mock, repoURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(tasks))
+	}
+
+	// Prisma should be NOTIFY_USER (previously rejected).
+	if tasks[0].GetAction() != bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER {
+		t.Errorf("tasks[0] action = %v, want NOTIFY_USER", tasks[0].GetAction())
+	}
+	if tasks[0].GetTitle() != "Bump @prisma/client from 6.0.0 to 7.0.0" {
+		t.Errorf("tasks[0] title = %q, want prisma PR", tasks[0].GetTitle())
+	}
+
+	// Lodash should be AUTO_MERGE (not rejected).
+	if tasks[1].GetAction() != bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
+		t.Errorf("tasks[1] action = %v, want AUTO_MERGE", tasks[1].GetAction())
 	}
 }

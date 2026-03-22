@@ -13,6 +13,7 @@ import (
 // Both hostServiceClient and lazyHostServiceClient implement this interface.
 type hostClient interface {
 	ListDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
+	ListClosedDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
 	GetCheckResults(ctx context.Context, repoOriginURL string, prNumber int32) ([]*bossanovav1.CheckResult, error)
 	GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error)
 }
@@ -57,8 +58,34 @@ func (s *server) PollTasks(ctx context.Context, req *bossanovav1.PollTasksReques
 		return &bossanovav1.PollTasksResponse{}, nil
 	}
 
+	// Fetch recently-closed dependabot PRs to detect previously-rejected libraries.
+	closedPRs, err := s.host.ListClosedDependabotPRs(ctx, repoURL)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("failed to list closed PRs, skipping rejection check")
+		closedPRs = nil
+	}
+
 	var tasks []*bossanovav1.TaskItem
 	for _, pr := range prs {
+		// Check if a previous version of this library's PR was rejected.
+		if isPreviouslyRejected(pr, closedPRs) {
+			s.logger.Info().
+				Int32("pr", pr.GetNumber()).
+				Str("title", pr.GetTitle()).
+				Msg("previously rejected library, notifying user")
+			externalID := fmt.Sprintf("dependabot:pr:%s:%d", repoURL, pr.GetNumber())
+			tasks = append(tasks, &bossanovav1.TaskItem{
+				ExternalId:     externalID,
+				Title:          pr.GetTitle(),
+				RepoOriginUrl:  repoURL,
+				BaseBranch:     "main",
+				ExistingBranch: pr.GetHeadBranch(),
+				Labels:         []string{"dependabot", parseDependabotLibrary(pr)},
+				Action:         bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER,
+			})
+			continue
+		}
+
 		task, err := s.classifyPR(ctx, repoURL, pr)
 		if err != nil {
 			s.logger.Warn().Err(err).
@@ -159,7 +186,7 @@ const (
 )
 
 // aggregateCheckResults determines the overall status of a set of checks.
-// Any failure → failed. All completed without failure → passed.
+// Any failure/cancellation/timeout → failed. All completed with success/neutral/skipped → passed.
 // Otherwise → pending.
 func aggregateCheckResults(checks []*bossanovav1.CheckResult) checksOverall {
 	allCompleted := true
@@ -168,7 +195,13 @@ func aggregateCheckResults(checks []*bossanovav1.CheckResult) checksOverall {
 			allCompleted = false
 			continue
 		}
-		if c.Conclusion != nil && *c.Conclusion == bossanovav1.CheckConclusion_CHECK_CONCLUSION_FAILURE {
+		if c.Conclusion == nil {
+			return checksOverallFailed
+		}
+		switch *c.Conclusion {
+		case bossanovav1.CheckConclusion_CHECK_CONCLUSION_FAILURE,
+			bossanovav1.CheckConclusion_CHECK_CONCLUSION_CANCELLED,
+			bossanovav1.CheckConclusion_CHECK_CONCLUSION_TIMED_OUT:
 			return checksOverallFailed
 		}
 	}

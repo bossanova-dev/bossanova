@@ -306,6 +306,95 @@ func (x *GetPRStatusResponse) GetStatus() *PRStatus {
 	return nil
 }
 
+type ListClosedPRsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Repository origin URL (eg. "https://github.com/owner/repo").
+	RepoOriginUrl string `protobuf:"bytes,1,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListClosedPRsRequest) Reset() {
+	*x = ListClosedPRsRequest{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListClosedPRsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListClosedPRsRequest) ProtoMessage() {}
+
+func (x *ListClosedPRsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListClosedPRsRequest.ProtoReflect.Descriptor instead.
+func (*ListClosedPRsRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListClosedPRsRequest) GetRepoOriginUrl() string {
+	if x != nil {
+		return x.RepoOriginUrl
+	}
+	return ""
+}
+
+type ListClosedPRsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Prs           []*PRSummary           `protobuf:"bytes,1,rep,name=prs,proto3" json:"prs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListClosedPRsResponse) Reset() {
+	*x = ListClosedPRsResponse{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListClosedPRsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListClosedPRsResponse) ProtoMessage() {}
+
+func (x *ListClosedPRsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListClosedPRsResponse.ProtoReflect.Descriptor instead.
+func (*ListClosedPRsResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ListClosedPRsResponse) GetPrs() []*PRSummary {
+	if x != nil {
+		return x.Prs
+	}
+	return nil
+}
+
 var File_bossanova_v1_host_service_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_host_service_proto_rawDesc = "" +
@@ -324,11 +413,16 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x1b\n" +
 	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\"E\n" +
 	"\x13GetPRStatusResponse\x12.\n" +
-	"\x06status\x18\x01 \x01(\v2\x16.bossanova.v1.PRStatusR\x06status2\x95\x02\n" +
+	"\x06status\x18\x01 \x01(\v2\x16.bossanova.v1.PRStatusR\x06status\">\n" +
+	"\x14ListClosedPRsRequest\x12&\n" +
+	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\"B\n" +
+	"\x15ListClosedPRsResponse\x12)\n" +
+	"\x03prs\x18\x01 \x03(\v2\x17.bossanova.v1.PRSummaryR\x03prs2\xef\x02\n" +
 	"\vHostService\x12R\n" +
 	"\vListOpenPRs\x12 .bossanova.v1.ListOpenPRsRequest\x1a!.bossanova.v1.ListOpenPRsResponse\x12^\n" +
 	"\x0fGetCheckResults\x12$.bossanova.v1.GetCheckResultsRequest\x1a%.bossanova.v1.GetCheckResultsResponse\x12R\n" +
-	"\vGetPRStatus\x12 .bossanova.v1.GetPRStatusRequest\x1a!.bossanova.v1.GetPRStatusResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\vGetPRStatus\x12 .bossanova.v1.GetPRStatusRequest\x1a!.bossanova.v1.GetPRStatusResponse\x12X\n" +
+	"\rListClosedPRs\x12\".bossanova.v1.ListClosedPRsRequest\x1a#.bossanova.v1.ListClosedPRsResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_host_service_proto_rawDescOnce sync.Once
@@ -342,7 +436,7 @@ func file_bossanova_v1_host_service_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_host_service_proto_rawDescData
 }
 
-var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*ListOpenPRsRequest)(nil),      // 0: bossanova.v1.ListOpenPRsRequest
 	(*ListOpenPRsResponse)(nil),     // 1: bossanova.v1.ListOpenPRsResponse
@@ -350,25 +444,30 @@ var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*GetCheckResultsResponse)(nil), // 3: bossanova.v1.GetCheckResultsResponse
 	(*GetPRStatusRequest)(nil),      // 4: bossanova.v1.GetPRStatusRequest
 	(*GetPRStatusResponse)(nil),     // 5: bossanova.v1.GetPRStatusResponse
-	(*PRSummary)(nil),               // 6: bossanova.v1.PRSummary
-	(*CheckResult)(nil),             // 7: bossanova.v1.CheckResult
-	(*PRStatus)(nil),                // 8: bossanova.v1.PRStatus
+	(*ListClosedPRsRequest)(nil),    // 6: bossanova.v1.ListClosedPRsRequest
+	(*ListClosedPRsResponse)(nil),   // 7: bossanova.v1.ListClosedPRsResponse
+	(*PRSummary)(nil),               // 8: bossanova.v1.PRSummary
+	(*CheckResult)(nil),             // 9: bossanova.v1.CheckResult
+	(*PRStatus)(nil),                // 10: bossanova.v1.PRStatus
 }
 var file_bossanova_v1_host_service_proto_depIdxs = []int32{
-	6, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	7, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
-	8, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
-	0, // 3: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
-	2, // 4: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
-	4, // 5: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
-	1, // 6: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
-	3, // 7: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
-	5, // 8: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
-	6, // [6:9] is the sub-list for method output_type
-	3, // [3:6] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	8,  // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	9,  // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
+	10, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
+	8,  // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	0,  // 4: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
+	2,  // 5: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
+	4,  // 6: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
+	6,  // 7: bossanova.v1.HostService.ListClosedPRs:input_type -> bossanova.v1.ListClosedPRsRequest
+	1,  // 8: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
+	3,  // 9: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
+	5,  // 10: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
+	7,  // 11: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
+	8,  // [8:12] is the sub-list for method output_type
+	4,  // [4:8] is the sub-list for method input_type
+	4,  // [4:4] is the sub-list for extension type_name
+	4,  // [4:4] is the sub-list for extension extendee
+	0,  // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_host_service_proto_init() }
@@ -383,7 +482,7 @@ func file_bossanova_v1_host_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_host_service_proto_rawDesc), len(file_bossanova_v1_host_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

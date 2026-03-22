@@ -17,6 +17,7 @@ CREATE TABLE task_mappings (
 
 CREATE INDEX idx_task_mappings_external_id ON task_mappings(external_id);
 CREATE INDEX idx_task_mappings_repo_id ON task_mappings(repo_id);
+CREATE INDEX idx_task_mappings_session_id ON task_mappings(session_id);
 
 -- +goose Down
 

@@ -251,6 +251,46 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 	return prs, nil
 }
 
+// ListClosedPRs returns recently-closed (not merged) pull requests.
+func (p *Provider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	out, err := p.runGH(ctx,
+		"pr", "list",
+		"--repo", repoFlag(repoPath),
+		"--state", "closed",
+		"--json", "number,title,headRefName,state,author",
+		"--limit", "50",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list closed PRs: %w", err)
+	}
+
+	var raw []struct {
+		Number      int    `json:"number"`
+		Title       string `json:"title"`
+		HeadRefName string `json:"headRefName"`
+		State       string `json:"state"`
+		Author      struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parse PRs: %w", err)
+	}
+
+	prs := make([]vcs.PRSummary, len(raw))
+	for i, r := range raw {
+		prs[i] = vcs.PRSummary{
+			Number:     r.Number,
+			Title:      r.Title,
+			HeadBranch: r.HeadRefName,
+			State:      parsePRState(r.State),
+			Author:     r.Author.Login,
+		}
+	}
+
+	return prs, nil
+}
+
 // MergePR merges a pull request using the given strategy.
 // Valid strategies are "rebase", "squash", and "merge". An empty string
 // defaults to "merge" (GitHub's default).

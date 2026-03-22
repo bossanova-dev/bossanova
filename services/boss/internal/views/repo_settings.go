@@ -26,12 +26,28 @@ type repoSettingsSavedMsg struct {
 
 const (
 	repoSettingsRowName                    = 0
-	repoSettingsRowCanAutoMerge            = 1
-	repoSettingsRowCanAutoMergeDependabot  = 2
-	repoSettingsRowCanAutoAddressReviews   = 3
-	repoSettingsRowCanAutoResolveConflicts = 4
-	repoSettingsRowCount                   = 5
+	repoSettingsRowMergeStrategy           = 1
+	repoSettingsRowCanAutoMerge            = 2
+	repoSettingsRowCanAutoMergeDependabot  = 3
+	repoSettingsRowCanAutoAddressReviews   = 4
+	repoSettingsRowCanAutoResolveConflicts = 5
+	repoSettingsRowCount                   = 6
 )
+
+// mergeStrategies is the cycle order for the merge strategy setting.
+var mergeStrategies = []string{"merge", "rebase", "squash"}
+
+// mergeStrategyLabel returns a human-readable label for a merge strategy.
+func mergeStrategyLabel(s string) string {
+	switch s {
+	case "rebase":
+		return "Rebase"
+	case "squash":
+		return "Squash"
+	default:
+		return "Merge commit"
+	}
+}
 
 // RepoSettingsModel is the TUI view for editing per-repo settings.
 type RepoSettingsModel struct {
@@ -168,6 +184,21 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	case repoSettingsRowName:
 		m.editing = true
 		return m, m.nameInput.Focus()
+	case repoSettingsRowMergeStrategy:
+		// Cycle through merge strategies.
+		current := m.repo.MergeStrategy
+		next := mergeStrategies[0]
+		for i, s := range mergeStrategies {
+			if s == current {
+				next = mergeStrategies[(i+1)%len(mergeStrategies)]
+				break
+			}
+		}
+		m.repo.MergeStrategy = next
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:            m.repoID,
+			MergeStrategy: &next,
+		})
 	case repoSettingsRowCanAutoMerge:
 		v := !m.repo.CanAutoMerge
 		m.repo.CanAutoMerge = v
@@ -244,6 +275,20 @@ func (m RepoSettingsModel) View() tea.View {
 		}
 		line := fmt.Sprintf("%sName: %s", cursor, m.repo.DisplayName)
 		if m.cursor == repoSettingsRowName {
+			line = styleSelected.Render(line)
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString("\n")
+	}
+
+	// Row 1: Merge strategy
+	{
+		cursor := "  "
+		if m.cursor == repoSettingsRowMergeStrategy {
+			cursor = cursorChevron + " "
+		}
+		line := fmt.Sprintf("%sMerge strategy: %s", cursor, mergeStrategyLabel(m.repo.MergeStrategy))
+		if m.cursor == repoSettingsRowMergeStrategy {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))

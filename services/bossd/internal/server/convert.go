@@ -25,6 +25,7 @@ func repoToProto(r *models.Repo) *pb.Repo {
 		CanAutoMergeDependabot:  r.CanAutoMergeDependabot,
 		CanAutoAddressReviews:   r.CanAutoAddressReviews,
 		CanAutoResolveConflicts: r.CanAutoResolveConflicts,
+		MergeStrategy:           string(r.MergeStrategy),
 		CreatedAt:               timestamppb.New(r.CreatedAt),
 		UpdatedAt:               timestamppb.New(r.UpdatedAt),
 	}

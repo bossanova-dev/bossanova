@@ -325,6 +325,10 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.CanAutoResolveConflicts != nil {
 		params.CanAutoResolveConflicts = msg.CanAutoResolveConflicts
 	}
+	if msg.MergeStrategy != nil {
+		ms := models.MergeStrategy(*msg.MergeStrategy)
+		params.MergeStrategy = &ms
+	}
 
 	repo, err := s.repos.Update(ctx, msg.Id, params)
 	if err != nil {

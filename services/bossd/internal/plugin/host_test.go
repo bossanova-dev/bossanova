@@ -12,7 +12,7 @@ import (
 
 func testHost() *Host {
 	bus := eventbus.New(zerolog.Nop())
-	return New(bus, zerolog.Nop())
+	return New(bus, nil, zerolog.Nop())
 }
 
 func TestStartEmptyPlugins(t *testing.T) {
@@ -170,5 +170,48 @@ func TestStartMixedEnabledDisabled(t *testing.T) {
 
 	if err := h.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestGetTaskSourcesEmptyBeforeStart(t *testing.T) {
+	h := testHost()
+
+	sources := h.GetTaskSources()
+	if len(sources) != 0 {
+		t.Errorf("expected 0 task sources before start, got %d", len(sources))
+	}
+}
+
+func TestGetTaskSourcesEmptyWithNoPlugins(t *testing.T) {
+	h := testHost()
+
+	if err := h.Start(t.Context(), nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = h.Stop() }()
+
+	sources := h.GetTaskSources()
+	if len(sources) != 0 {
+		t.Errorf("expected 0 task sources with no plugins, got %d", len(sources))
+	}
+}
+
+func TestGetTaskSourcesEmptyWithDisabledPlugins(t *testing.T) {
+	h := testHost()
+
+	cfgs := []config.PluginConfig{
+		{Name: "disabled-a", Path: "/nonexistent/a", Enabled: false},
+		{Name: "disabled-b", Path: "/nonexistent/b", Enabled: false},
+	}
+
+	if err := h.Start(t.Context(), cfgs); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = h.Stop() }()
+
+	// Disabled plugins are never started, so no task sources.
+	sources := h.GetTaskSources()
+	if len(sources) != 0 {
+		t.Errorf("expected 0 task sources with disabled plugins, got %d", len(sources))
 	}
 }

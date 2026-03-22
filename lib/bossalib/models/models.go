@@ -9,6 +9,16 @@ import (
 	"github.com/recurser/bossalib/machine"
 )
 
+// MergeStrategy represents the merge method used when auto-merging PRs.
+// Default is MergeStrategyMerge, matching GitHub's default.
+type MergeStrategy string
+
+const (
+	MergeStrategyMerge  MergeStrategy = "merge"
+	MergeStrategyRebase MergeStrategy = "rebase"
+	MergeStrategySquash MergeStrategy = "squash"
+)
+
 // Repo represents a registered Git repository.
 type Repo struct {
 	ID                      string
@@ -22,6 +32,7 @@ type Repo struct {
 	CanAutoMergeDependabot  bool
 	CanAutoAddressReviews   bool
 	CanAutoResolveConflicts bool
+	MergeStrategy           MergeStrategy
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }
@@ -67,6 +78,32 @@ type ClaudeChat struct {
 	Title     string
 	DaemonID  string // Originating daemon (empty = local)
 	CreatedAt time.Time
+}
+
+// TaskMappingStatus represents the state of a task mapping.
+type TaskMappingStatus int
+
+const (
+	TaskMappingStatusPending    TaskMappingStatus = iota // Discovered, not yet acted on
+	TaskMappingStatusInProgress                          // Session created or merge in progress
+	TaskMappingStatusCompleted                           // Successfully completed
+	TaskMappingStatusFailed                              // Failed (session failed, merge rejected, etc.)
+	TaskMappingStatusSkipped                             // Skipped (e.g. previously-rejected)
+)
+
+// TaskMapping tracks the relationship between an external task (e.g. a
+// dependabot PR) and a bossanova session. Used for dedup and status tracking.
+type TaskMapping struct {
+	ID                   string
+	ExternalID           string
+	PluginName           string
+	SessionID            *string
+	RepoID               string
+	Status               TaskMappingStatus
+	PendingUpdateStatus  *TaskMappingStatus
+	PendingUpdateDetails *string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // AttemptTrigger represents what triggered a fix attempt.

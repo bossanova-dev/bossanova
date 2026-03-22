@@ -81,6 +81,14 @@ message PollTasksResponse {
   repeated TaskItem tasks = 1;
 }
 
+// TaskAction specifies what the daemon should do with a task.
+enum TaskAction {
+  TASK_ACTION_UNSPECIFIED = 0;    // Daemon treats as CREATE_SESSION.
+  TASK_ACTION_AUTO_MERGE = 1;     // Merge PR directly (no Claude session).
+  TASK_ACTION_CREATE_SESSION = 2; // Create Claude Code session with plan.
+  TASK_ACTION_NOTIFY_USER = 3;    // Skip action, notify user (eg. previously-rejected).
+}
+
 // TaskItem is a task from an external system ready to become a session.
 message TaskItem {
   // External system's unique ID for this task.
@@ -97,6 +105,10 @@ message TaskItem {
   int32 priority = 6;
   // Labels / tags from the external system.
   repeated string labels = 7;
+  // What the daemon should do with this task.
+  TaskAction action = 8;
+  // Existing branch to check out (eg. dependabot's PR branch).
+  string existing_branch = 9;
 }
 
 message UpdateTaskStatusRequest {

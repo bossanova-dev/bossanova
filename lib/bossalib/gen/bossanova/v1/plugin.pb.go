@@ -22,6 +22,59 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// TaskAction specifies what the daemon should do with a task.
+type TaskAction int32
+
+const (
+	TaskAction_TASK_ACTION_UNSPECIFIED    TaskAction = 0 // Daemon treats as CREATE_SESSION.
+	TaskAction_TASK_ACTION_AUTO_MERGE     TaskAction = 1 // Merge PR directly (no Claude session).
+	TaskAction_TASK_ACTION_CREATE_SESSION TaskAction = 2 // Create Claude Code session with plan.
+	TaskAction_TASK_ACTION_NOTIFY_USER    TaskAction = 3 // Skip action, notify user (eg. previously-rejected).
+)
+
+// Enum value maps for TaskAction.
+var (
+	TaskAction_name = map[int32]string{
+		0: "TASK_ACTION_UNSPECIFIED",
+		1: "TASK_ACTION_AUTO_MERGE",
+		2: "TASK_ACTION_CREATE_SESSION",
+		3: "TASK_ACTION_NOTIFY_USER",
+	}
+	TaskAction_value = map[string]int32{
+		"TASK_ACTION_UNSPECIFIED":    0,
+		"TASK_ACTION_AUTO_MERGE":     1,
+		"TASK_ACTION_CREATE_SESSION": 2,
+		"TASK_ACTION_NOTIFY_USER":    3,
+	}
+)
+
+func (x TaskAction) Enum() *TaskAction {
+	p := new(TaskAction)
+	*p = x
+	return p
+}
+
+func (x TaskAction) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TaskAction) Descriptor() protoreflect.EnumDescriptor {
+	return file_bossanova_v1_plugin_proto_enumTypes[0].Descriptor()
+}
+
+func (TaskAction) Type() protoreflect.EnumType {
+	return &file_bossanova_v1_plugin_proto_enumTypes[0]
+}
+
+func (x TaskAction) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TaskAction.Descriptor instead.
+func (TaskAction) EnumDescriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{0}
+}
+
 // TaskItemStatus represents the lifecycle of a task sourced from an external system.
 type TaskItemStatus int32
 
@@ -59,11 +112,11 @@ func (x TaskItemStatus) String() string {
 }
 
 func (TaskItemStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_bossanova_v1_plugin_proto_enumTypes[0].Descriptor()
+	return file_bossanova_v1_plugin_proto_enumTypes[1].Descriptor()
 }
 
 func (TaskItemStatus) Type() protoreflect.EnumType {
-	return &file_bossanova_v1_plugin_proto_enumTypes[0]
+	return &file_bossanova_v1_plugin_proto_enumTypes[1]
 }
 
 func (x TaskItemStatus) Number() protoreflect.EnumNumber {
@@ -72,7 +125,7 @@ func (x TaskItemStatus) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TaskItemStatus.Descriptor instead.
 func (TaskItemStatus) EnumDescriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{0}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{1}
 }
 
 // PluginInfo describes a plugin's identity and capabilities.
@@ -481,9 +534,13 @@ type TaskItem struct {
 	// Priority (lower = higher priority).
 	Priority int32 `protobuf:"varint,6,opt,name=priority,proto3" json:"priority,omitempty"`
 	// Labels / tags from the external system.
-	Labels        []string `protobuf:"bytes,7,rep,name=labels,proto3" json:"labels,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Labels []string `protobuf:"bytes,7,rep,name=labels,proto3" json:"labels,omitempty"`
+	// What the daemon should do with this task.
+	Action TaskAction `protobuf:"varint,8,opt,name=action,proto3,enum=bossanova.v1.TaskAction" json:"action,omitempty"`
+	// Existing branch to check out (eg. dependabot's PR branch).
+	ExistingBranch string `protobuf:"bytes,9,opt,name=existing_branch,json=existingBranch,proto3" json:"existing_branch,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *TaskItem) Reset() {
@@ -563,6 +620,20 @@ func (x *TaskItem) GetLabels() []string {
 		return x.Labels
 	}
 	return nil
+}
+
+func (x *TaskItem) GetAction() TaskAction {
+	if x != nil {
+		return x.Action
+	}
+	return TaskAction_TASK_ACTION_UNSPECIFIED
+}
+
+func (x *TaskItem) GetExistingBranch() string {
+	if x != nil {
+		return x.ExistingBranch
+	}
+	return ""
 }
 
 type UpdateTaskStatusRequest struct {
@@ -1623,7 +1694,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tH\x00R\rrepoOriginUrl\x88\x01\x01B\x12\n" +
 	"\x10_repo_origin_url\"A\n" +
 	"\x11PollTasksResponse\x12,\n" +
-	"\x05tasks\x18\x01 \x03(\v2\x16.bossanova.v1.TaskItemR\x05tasks\"\xd2\x01\n" +
+	"\x05tasks\x18\x01 \x03(\v2\x16.bossanova.v1.TaskItemR\x05tasks\"\xad\x02\n" +
 	"\bTaskItem\x12\x1f\n" +
 	"\vexternal_id\x18\x01 \x01(\tR\n" +
 	"externalId\x12\x14\n" +
@@ -1633,7 +1704,9 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\vbase_branch\x18\x05 \x01(\tR\n" +
 	"baseBranch\x12\x1a\n" +
 	"\bpriority\x18\x06 \x01(\x05R\bpriority\x12\x16\n" +
-	"\x06labels\x18\a \x03(\tR\x06labels\"\x8a\x01\n" +
+	"\x06labels\x18\a \x03(\tR\x06labels\x120\n" +
+	"\x06action\x18\b \x01(\x0e2\x18.bossanova.v1.TaskActionR\x06action\x12'\n" +
+	"\x0fexisting_branch\x18\t \x01(\tR\x0eexistingBranch\"\x8a\x01\n" +
 	"\x17UpdateTaskStatusRequest\x12\x1f\n" +
 	"\vexternal_id\x18\x01 \x01(\tR\n" +
 	"externalId\x124\n" +
@@ -1704,7 +1777,13 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"baseBranch\"$\n" +
 	"\n" +
 	"NoOpAction\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason*\x91\x01\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason*\x82\x01\n" +
+	"\n" +
+	"TaskAction\x12\x1b\n" +
+	"\x17TASK_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16TASK_ACTION_AUTO_MERGE\x10\x01\x12\x1e\n" +
+	"\x1aTASK_ACTION_CREATE_SESSION\x10\x02\x12\x1b\n" +
+	"\x17TASK_ACTION_NOTIFY_USER\x10\x03*\x91\x01\n" +
 	"\x0eTaskItemStatus\x12 \n" +
 	"\x1cTASK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cTASK_ITEM_STATUS_IN_PROGRESS\x10\x01\x12\x1e\n" +
@@ -1735,79 +1814,81 @@ func file_bossanova_v1_plugin_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_plugin_proto_rawDescData
 }
 
-var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_bossanova_v1_plugin_proto_goTypes = []any{
-	(TaskItemStatus)(0),                       // 0: bossanova.v1.TaskItemStatus
-	(*PluginInfo)(nil),                        // 1: bossanova.v1.PluginInfo
-	(*TaskSourceServiceGetInfoRequest)(nil),   // 2: bossanova.v1.TaskSourceServiceGetInfoRequest
-	(*TaskSourceServiceGetInfoResponse)(nil),  // 3: bossanova.v1.TaskSourceServiceGetInfoResponse
-	(*EventSourceServiceGetInfoRequest)(nil),  // 4: bossanova.v1.EventSourceServiceGetInfoRequest
-	(*EventSourceServiceGetInfoResponse)(nil), // 5: bossanova.v1.EventSourceServiceGetInfoResponse
-	(*SchedulerServiceGetInfoRequest)(nil),    // 6: bossanova.v1.SchedulerServiceGetInfoRequest
-	(*SchedulerServiceGetInfoResponse)(nil),   // 7: bossanova.v1.SchedulerServiceGetInfoResponse
-	(*PollTasksRequest)(nil),                  // 8: bossanova.v1.PollTasksRequest
-	(*PollTasksResponse)(nil),                 // 9: bossanova.v1.PollTasksResponse
-	(*TaskItem)(nil),                          // 10: bossanova.v1.TaskItem
-	(*UpdateTaskStatusRequest)(nil),           // 11: bossanova.v1.UpdateTaskStatusRequest
-	(*UpdateTaskStatusResponse)(nil),          // 12: bossanova.v1.UpdateTaskStatusResponse
-	(*StreamEventsRequest)(nil),               // 13: bossanova.v1.StreamEventsRequest
-	(*StreamEventsResponse)(nil),              // 14: bossanova.v1.StreamEventsResponse
-	(*EventNotification)(nil),                 // 15: bossanova.v1.EventNotification
-	(*TaskReadyEvent)(nil),                    // 16: bossanova.v1.TaskReadyEvent
-	(*TaskUpdatedEvent)(nil),                  // 17: bossanova.v1.TaskUpdatedEvent
-	(*ExternalCheckEvent)(nil),                // 18: bossanova.v1.ExternalCheckEvent
-	(*CustomEvent)(nil),                       // 19: bossanova.v1.CustomEvent
-	(*GetScheduleRequest)(nil),                // 20: bossanova.v1.GetScheduleRequest
-	(*GetScheduleResponse)(nil),               // 21: bossanova.v1.GetScheduleResponse
-	(*ScheduledJob)(nil),                      // 22: bossanova.v1.ScheduledJob
-	(*ExecuteJobRequest)(nil),                 // 23: bossanova.v1.ExecuteJobRequest
-	(*ExecuteJobResponse)(nil),                // 24: bossanova.v1.ExecuteJobResponse
-	(*JobAction)(nil),                         // 25: bossanova.v1.JobAction
-	(*CreateSessionAction)(nil),               // 26: bossanova.v1.CreateSessionAction
-	(*NoOpAction)(nil),                        // 27: bossanova.v1.NoOpAction
-	(*timestamppb.Timestamp)(nil),             // 28: google.protobuf.Timestamp
+	(TaskAction)(0),                           // 0: bossanova.v1.TaskAction
+	(TaskItemStatus)(0),                       // 1: bossanova.v1.TaskItemStatus
+	(*PluginInfo)(nil),                        // 2: bossanova.v1.PluginInfo
+	(*TaskSourceServiceGetInfoRequest)(nil),   // 3: bossanova.v1.TaskSourceServiceGetInfoRequest
+	(*TaskSourceServiceGetInfoResponse)(nil),  // 4: bossanova.v1.TaskSourceServiceGetInfoResponse
+	(*EventSourceServiceGetInfoRequest)(nil),  // 5: bossanova.v1.EventSourceServiceGetInfoRequest
+	(*EventSourceServiceGetInfoResponse)(nil), // 6: bossanova.v1.EventSourceServiceGetInfoResponse
+	(*SchedulerServiceGetInfoRequest)(nil),    // 7: bossanova.v1.SchedulerServiceGetInfoRequest
+	(*SchedulerServiceGetInfoResponse)(nil),   // 8: bossanova.v1.SchedulerServiceGetInfoResponse
+	(*PollTasksRequest)(nil),                  // 9: bossanova.v1.PollTasksRequest
+	(*PollTasksResponse)(nil),                 // 10: bossanova.v1.PollTasksResponse
+	(*TaskItem)(nil),                          // 11: bossanova.v1.TaskItem
+	(*UpdateTaskStatusRequest)(nil),           // 12: bossanova.v1.UpdateTaskStatusRequest
+	(*UpdateTaskStatusResponse)(nil),          // 13: bossanova.v1.UpdateTaskStatusResponse
+	(*StreamEventsRequest)(nil),               // 14: bossanova.v1.StreamEventsRequest
+	(*StreamEventsResponse)(nil),              // 15: bossanova.v1.StreamEventsResponse
+	(*EventNotification)(nil),                 // 16: bossanova.v1.EventNotification
+	(*TaskReadyEvent)(nil),                    // 17: bossanova.v1.TaskReadyEvent
+	(*TaskUpdatedEvent)(nil),                  // 18: bossanova.v1.TaskUpdatedEvent
+	(*ExternalCheckEvent)(nil),                // 19: bossanova.v1.ExternalCheckEvent
+	(*CustomEvent)(nil),                       // 20: bossanova.v1.CustomEvent
+	(*GetScheduleRequest)(nil),                // 21: bossanova.v1.GetScheduleRequest
+	(*GetScheduleResponse)(nil),               // 22: bossanova.v1.GetScheduleResponse
+	(*ScheduledJob)(nil),                      // 23: bossanova.v1.ScheduledJob
+	(*ExecuteJobRequest)(nil),                 // 24: bossanova.v1.ExecuteJobRequest
+	(*ExecuteJobResponse)(nil),                // 25: bossanova.v1.ExecuteJobResponse
+	(*JobAction)(nil),                         // 26: bossanova.v1.JobAction
+	(*CreateSessionAction)(nil),               // 27: bossanova.v1.CreateSessionAction
+	(*NoOpAction)(nil),                        // 28: bossanova.v1.NoOpAction
+	(*timestamppb.Timestamp)(nil),             // 29: google.protobuf.Timestamp
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
-	1,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	1,  // 1: bossanova.v1.EventSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	1,  // 2: bossanova.v1.SchedulerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	10, // 3: bossanova.v1.PollTasksResponse.tasks:type_name -> bossanova.v1.TaskItem
-	0,  // 4: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
-	15, // 5: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
-	28, // 6: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
-	16, // 7: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
-	17, // 8: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
-	18, // 9: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
-	19, // 10: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
-	10, // 11: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
-	22, // 12: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
-	28, // 13: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
-	28, // 14: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
-	25, // 15: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
-	26, // 16: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
-	27, // 17: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
-	2,  // 18: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
-	8,  // 19: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
-	11, // 20: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
-	4,  // 21: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
-	13, // 22: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
-	6,  // 23: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
-	20, // 24: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
-	23, // 25: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
-	3,  // 26: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
-	9,  // 27: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
-	12, // 28: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
-	5,  // 29: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
-	14, // 30: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
-	7,  // 31: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
-	21, // 32: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
-	24, // 33: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
-	26, // [26:34] is the sub-list for method output_type
-	18, // [18:26] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	2,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	2,  // 1: bossanova.v1.EventSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	2,  // 2: bossanova.v1.SchedulerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	11, // 3: bossanova.v1.PollTasksResponse.tasks:type_name -> bossanova.v1.TaskItem
+	0,  // 4: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
+	1,  // 5: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
+	16, // 6: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
+	29, // 7: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
+	17, // 8: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
+	18, // 9: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
+	19, // 10: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
+	20, // 11: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
+	11, // 12: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
+	23, // 13: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
+	29, // 14: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
+	29, // 15: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
+	26, // 16: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
+	27, // 17: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
+	28, // 18: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
+	3,  // 19: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
+	9,  // 20: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
+	12, // 21: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
+	5,  // 22: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
+	14, // 23: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
+	7,  // 24: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
+	21, // 25: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
+	24, // 26: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
+	4,  // 27: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
+	10, // 28: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
+	13, // 29: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
+	6,  // 30: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
+	15, // 31: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
+	8,  // 32: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
+	22, // 33: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
+	25, // 34: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
+	27, // [27:35] is the sub-list for method output_type
+	19, // [19:27] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_plugin_proto_init() }
@@ -1833,7 +1914,7 @@ func file_bossanova_v1_plugin_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_plugin_proto_rawDesc), len(file_bossanova_v1_plugin_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   3,

@@ -773,6 +773,7 @@ type Repo struct {
 	CanAutoMergeDependabot  bool                   `protobuf:"varint,11,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3" json:"can_auto_merge_dependabot,omitempty"`
 	CanAutoAddressReviews   bool                   `protobuf:"varint,12,opt,name=can_auto_address_reviews,json=canAutoAddressReviews,proto3" json:"can_auto_address_reviews,omitempty"`
 	CanAutoResolveConflicts bool                   `protobuf:"varint,13,opt,name=can_auto_resolve_conflicts,json=canAutoResolveConflicts,proto3" json:"can_auto_resolve_conflicts,omitempty"`
+	MergeStrategy           string                 `protobuf:"bytes,14,opt,name=merge_strategy,json=mergeStrategy,proto3" json:"merge_strategy,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -896,6 +897,13 @@ func (x *Repo) GetCanAutoResolveConflicts() bool {
 		return x.CanAutoResolveConflicts
 	}
 	return false
+}
+
+func (x *Repo) GetMergeStrategy() string {
+	if x != nil {
+		return x.MergeStrategy
+	}
+	return ""
 }
 
 // Session represents a Claude coding session.
@@ -1437,6 +1445,7 @@ type PRSummary struct {
 	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
 	HeadBranch    string                 `protobuf:"bytes,3,opt,name=head_branch,json=headBranch,proto3" json:"head_branch,omitempty"`
 	State         PRState                `protobuf:"varint,4,opt,name=state,proto3,enum=bossanova.v1.PRState" json:"state,omitempty"`
+	Author        string                 `protobuf:"bytes,5,opt,name=author,proto3" json:"author,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1497,6 +1506,13 @@ func (x *PRSummary) GetState() PRState {
 		return x.State
 	}
 	return PRState_PR_STATE_UNSPECIFIED
+}
+
+func (x *PRSummary) GetAuthor() string {
+	if x != nil {
+		return x.Author
+	}
+	return ""
 }
 
 // CreatePROpts contains options for creating a new pull request.
@@ -2222,7 +2238,7 @@ var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd9\x04\n" +
+	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x80\x05\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -2241,7 +2257,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	" \x01(\bR\fcanAutoMerge\x129\n" +
 	"\x19can_auto_merge_dependabot\x18\v \x01(\bR\x16canAutoMergeDependabot\x127\n" +
 	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
-	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflictsB\x0f\n" +
+	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
+	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategyB\x0f\n" +
 	"\r_setup_script\"\xc7\b\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
@@ -2316,13 +2333,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x04path\x18\x04 \x01(\tH\x00R\x04path\x88\x01\x01\x12\x17\n" +
 	"\x04line\x18\x05 \x01(\x05H\x01R\x04line\x88\x01\x01B\a\n" +
 	"\x05_pathB\a\n" +
-	"\x05_line\"\x87\x01\n" +
+	"\x05_line\"\x9f\x01\n" +
 	"\tPRSummary\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\x05R\x06number\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1f\n" +
 	"\vhead_branch\x18\x03 \x01(\tR\n" +
 	"headBranch\x12+\n" +
-	"\x05state\x18\x04 \x01(\x0e2\x15.bossanova.v1.PRStateR\x05state\"\xad\x01\n" +
+	"\x05state\x18\x04 \x01(\x0e2\x15.bossanova.v1.PRStateR\x05state\x12\x16\n" +
+	"\x06author\x18\x05 \x01(\tR\x06author\"\xad\x01\n" +
 	"\fCreatePROpts\x12\x1b\n" +
 	"\trepo_path\x18\x01 \x01(\tR\brepoPath\x12\x1f\n" +
 	"\vhead_branch\x18\x02 \x01(\tR\n" +

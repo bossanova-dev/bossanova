@@ -25,6 +25,7 @@ import (
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/taskorchestrator"
 	"github.com/recurser/bossd/internal/upstream"
 	"github.com/recurser/bossd/internal/vcs/github"
 	"github.com/recurser/bossd/migrations"
@@ -77,6 +78,7 @@ func run() error {
 	sessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
 	claudeChats := db.NewClaudeChatStore(database)
+	taskMappings := db.NewTaskMappingStore(database)
 
 	// --- Lifecycle ---
 
@@ -107,11 +109,19 @@ func run() error {
 	// --- Plugin Host ---
 
 	pluginBus := eventbus.New(log.Logger)
-	pluginHost := plugin.New(pluginBus, log.Logger)
+	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
 	if err := pluginHost.Start(context.Background(), settings.Plugins); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)
 	}
+
+	// --- Task Orchestrator ---
+
+	sessionCreator := taskorchestrator.NewSessionCreator(sessions, lifecycle, log.Logger)
+	orchestrator := taskorchestrator.New(
+		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
+		taskorchestrator.DefaultPollInterval, log.Logger,
+	)
 
 	// --- Server ---
 
@@ -163,6 +173,9 @@ func run() error {
 	events := poller.Run(pollerCtx)
 	safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
 
+	// Start task orchestrator (polls plugin task sources).
+	orchestrator.Start(pollerCtx)
+
 	// Start display status poller.
 	displayPoller.Run(pollerCtx)
 
@@ -200,6 +213,11 @@ func run() error {
 		return fmt.Errorf("server: %w", err)
 	}
 
+	// Stop poller, dispatcher, and task orchestrator (all use pollerCtx).
+	// Must cancel before stopping plugin host, since the orchestrator
+	// calls into plugins.
+	pollerCancel()
+
 	// Stop upstream heartbeat.
 	if upstreamMgr != nil {
 		upstreamMgr.Stop()
@@ -210,9 +228,6 @@ func run() error {
 		log.Warn().Err(err).Msg("plugin host stop error")
 	}
 	pluginBus.Close()
-
-	// Stop poller and dispatcher.
-	pollerCancel()
 
 	// Graceful shutdown with 5-second timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

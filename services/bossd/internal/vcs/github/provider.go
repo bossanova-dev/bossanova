@@ -251,12 +251,22 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 	return prs, nil
 }
 
-// MergePR merges a pull request using rebase strategy.
-func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int) error {
+// MergePR merges a pull request using the given strategy.
+// Valid strategies are "rebase", "squash", and "merge". An empty string
+// defaults to "merge" (GitHub's default).
+func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
+	flag := "--merge"
+	switch strategy {
+	case "rebase":
+		flag = "--rebase"
+	case "squash":
+		flag = "--squash"
+	}
+
 	_, err := p.runGH(ctx,
 		"pr", "merge", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--rebase",
+		flag,
 		"--delete-branch",
 	)
 	if err != nil {
@@ -265,7 +275,8 @@ func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int) error
 
 	p.logger.Info().
 		Int("number", prID).
-		Msg("merged PR via rebase")
+		Str("strategy", strategy).
+		Msg("merged PR")
 
 	return nil
 }

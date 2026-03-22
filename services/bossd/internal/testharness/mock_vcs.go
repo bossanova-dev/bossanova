@@ -106,7 +106,7 @@ func (m *MockVCSProvider) ListOpenPRs(ctx context.Context, repoPath string) ([]v
 	return m.OpenPRs, nil
 }
 
-func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int) error {
+func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
 	m.mu.Lock()
 	m.MergePRCalls = append(m.MergePRCalls, mergePRCall{RepoPath: repoPath, PRID: prID})
 	m.mu.Unlock()

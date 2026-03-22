@@ -76,11 +76,6 @@ func (d *Dispatcher) dispatch(ctx context.Context, ev SessionEvent) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Handle repo-level events that don't require a session.
-	if event, ok := ev.Event.(vcs.DependabotReady); ok {
-		return d.handleDependabotReady(ctx, event)
-	}
-
 	sess, err := d.sessions.Get(ctx, ev.SessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -333,36 +328,5 @@ func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, se
 	}
 
 	d.logger.Info().Str("session", sess.ID).Msg("PR closed")
-	return nil
-}
-
-func (d *Dispatcher) handleDependabotReady(ctx context.Context, event vcs.DependabotReady) error {
-	repo, err := d.repos.Get(ctx, event.RepoID)
-	if err != nil {
-		return fmt.Errorf("get repo: %w", err)
-	}
-
-	if !repo.CanAutoMergeDependabot {
-		d.logger.Info().
-			Str("repo", event.RepoID).
-			Int("pr", event.PRID).
-			Msg("dependabot auto-merge disabled, skipping")
-		return nil
-	}
-
-	d.logger.Info().
-		Str("repo", event.RepoID).
-		Int("pr", event.PRID).
-		Msg("auto-merging dependabot PR")
-
-	if err := d.provider.MergePR(ctx, event.RepoPath, event.PRID); err != nil {
-		return fmt.Errorf("merge dependabot PR #%d: %w", event.PRID, err)
-	}
-
-	d.logger.Info().
-		Str("repo", event.RepoID).
-		Int("pr", event.PRID).
-		Msg("dependabot PR merged successfully")
-
 	return nil
 }

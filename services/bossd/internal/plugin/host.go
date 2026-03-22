@@ -15,6 +15,8 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
+	sharedplugin "github.com/recurser/bossalib/plugin"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 )
 
@@ -31,26 +33,36 @@ type PluginStatus struct {
 
 // managedPlugin tracks a single running plugin process.
 type managedPlugin struct {
-	cfg       config.PluginConfig
-	client    *goplugin.Client
-	startedAt time.Time
+	cfg        config.PluginConfig
+	client     *goplugin.Client
+	taskSource TaskSource // cached dispensed interface, nil if not a task source
+	startedAt  time.Time
 }
 
 // Host manages the lifecycle of all configured plugins.
 type Host struct {
-	mu       sync.Mutex
-	plugins  []managedPlugin
-	eventBus *eventbus.Bus
-	logger   zerolog.Logger
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	mu          sync.Mutex
+	plugins     []managedPlugin
+	eventBus    *eventbus.Bus
+	hostService *HostServiceServer
+	logger      zerolog.Logger
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
-// New creates a plugin host. Call Start to launch plugins.
-func New(eventBus *eventbus.Bus, logger zerolog.Logger) *Host {
+// New creates a plugin host. The VCS provider is used to create a
+// HostServiceServer that plugins can call back to via the broker.
+// If provider is nil, plugins will not have access to host services.
+// Call Start to launch plugins.
+func New(eventBus *eventbus.Bus, provider vcs.Provider, logger zerolog.Logger) *Host {
+	var hostService *HostServiceServer
+	if provider != nil {
+		hostService = NewHostServiceServer(provider)
+	}
 	return &Host{
-		eventBus: eventBus,
-		logger:   logger.With().Str("component", "plugin-host").Logger(),
+		eventBus:    eventBus,
+		hostService: hostService,
+		logger:      logger.With().Str("component", "plugin-host").Logger(),
 	}
 }
 
@@ -68,7 +80,7 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 
 		client := goplugin.NewClient(&goplugin.ClientConfig{
 			HandshakeConfig: Handshake,
-			Plugins:         PluginMap,
+			Plugins:         NewPluginMap(h.hostService),
 			Cmd:             exec.Command(cfg.Path),
 			AllowedProtocols: []goplugin.Protocol{
 				goplugin.ProtocolGRPC,
@@ -89,11 +101,26 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 			Str("id", client.ID()).
 			Msg("plugin started")
 
-		h.plugins = append(h.plugins, managedPlugin{
+		mp := managedPlugin{
 			cfg:       cfg,
 			client:    client,
 			startedAt: time.Now(),
-		})
+		}
+
+		// Try to dispense the TaskSource interface. Not all plugins
+		// implement it, so we silently skip on failure.
+		rpcClient, err := client.Client()
+		if err == nil {
+			raw, err := rpcClient.Dispense(sharedplugin.PluginTypeTaskSource)
+			if err == nil {
+				if ts, ok := raw.(TaskSource); ok {
+					mp.taskSource = ts
+					h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed TaskSource interface")
+				}
+			}
+		}
+
+		h.plugins = append(h.plugins, mp)
 	}
 
 	// Start health-check loop.
@@ -149,6 +176,22 @@ func (h *Host) Plugins() []PluginStatus {
 		}
 	}
 	return statuses
+}
+
+// GetTaskSources returns the cached TaskSource interfaces for all plugins
+// that implement it. The interfaces are dispensed once at startup and
+// reused for each poll cycle.
+func (h *Host) GetTaskSources() []TaskSource {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var sources []TaskSource
+	for _, p := range h.plugins {
+		if p.taskSource != nil {
+			sources = append(sources, p.taskSource)
+		}
+	}
+	return sources
 }
 
 // healthCheckLoop periodically pings each plugin and logs failures.

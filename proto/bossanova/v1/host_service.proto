@@ -1,0 +1,58 @@
+syntax = "proto3";
+
+package bossanova.v1;
+
+option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
+
+import "bossanova/v1/models.proto";
+
+// HostService is served by the daemon and called by plugins to access VCS data.
+// This enables the bidirectional gRPC pattern where the plugin can query the
+// daemon's VCS provider without needing direct GitHub/GitLab credentials.
+service HostService {
+  // ListOpenPRs returns all open pull requests for a repository.
+  rpc ListOpenPRs(ListOpenPRsRequest) returns (ListOpenPRsResponse);
+
+  // GetCheckResults returns CI check results for a pull request.
+  rpc GetCheckResults(GetCheckResultsRequest) returns (GetCheckResultsResponse);
+
+  // GetPRStatus returns the current status of a pull request.
+  rpc GetPRStatus(GetPRStatusRequest) returns (GetPRStatusResponse);
+}
+
+// --- ListOpenPRs ---
+
+message ListOpenPRsRequest {
+  // Repository origin URL (eg. "https://github.com/owner/repo").
+  string repo_origin_url = 1;
+}
+
+message ListOpenPRsResponse {
+  repeated PRSummary prs = 1;
+}
+
+// --- GetCheckResults ---
+
+message GetCheckResultsRequest {
+  // Repository origin URL.
+  string repo_origin_url = 1;
+  // Pull request number.
+  int32 pr_number = 2;
+}
+
+message GetCheckResultsResponse {
+  repeated CheckResult checks = 1;
+}
+
+// --- GetPRStatus ---
+
+message GetPRStatusRequest {
+  // Repository origin URL.
+  string repo_origin_url = 1;
+  // Pull request number.
+  int32 pr_number = 2;
+}
+
+message GetPRStatusResponse {
+  PRStatus status = 1;
+}

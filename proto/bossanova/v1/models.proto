@@ -120,6 +120,7 @@ message Repo {
   bool can_auto_merge_dependabot = 11;
   bool can_auto_address_reviews = 12;
   bool can_auto_resolve_conflicts = 13;
+  string merge_strategy = 14;
 }
 
 // Session represents a Claude coding session.
@@ -199,6 +200,7 @@ message PRSummary {
   string title = 2;
   string head_branch = 3;
   PRState state = 4;
+  string author = 5;
 }
 
 // CreatePROpts contains options for creating a new pull request.

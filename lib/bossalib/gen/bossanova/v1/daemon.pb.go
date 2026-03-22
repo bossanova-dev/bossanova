@@ -657,6 +657,7 @@ type UpdateRepoRequest struct {
 	CanAutoMergeDependabot  *bool                  `protobuf:"varint,4,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3,oneof" json:"can_auto_merge_dependabot,omitempty"`
 	CanAutoAddressReviews   *bool                  `protobuf:"varint,5,opt,name=can_auto_address_reviews,json=canAutoAddressReviews,proto3,oneof" json:"can_auto_address_reviews,omitempty"`
 	CanAutoResolveConflicts *bool                  `protobuf:"varint,6,opt,name=can_auto_resolve_conflicts,json=canAutoResolveConflicts,proto3,oneof" json:"can_auto_resolve_conflicts,omitempty"`
+	MergeStrategy           *string                `protobuf:"bytes,7,opt,name=merge_strategy,json=mergeStrategy,proto3,oneof" json:"merge_strategy,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -731,6 +732,13 @@ func (x *UpdateRepoRequest) GetCanAutoResolveConflicts() bool {
 		return *x.CanAutoResolveConflicts
 	}
 	return false
+}
+
+func (x *UpdateRepoRequest) GetMergeStrategy() string {
+	if x != nil && x.MergeStrategy != nil {
+		return *x.MergeStrategy
+	}
+	return ""
 }
 
 type UpdateRepoResponse struct {
@@ -3216,19 +3224,21 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05repos\x18\x01 \x03(\v2\x12.bossanova.v1.RepoR\x05repos\"#\n" +
 	"\x11RemoveRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12RemoveRepoResponse\"\xb4\x03\n" +
+	"\x12RemoveRepoResponse\"\xf3\x03\n" +
 	"\x11UpdateRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12)\n" +
 	"\x0ecan_auto_merge\x18\x03 \x01(\bH\x01R\fcanAutoMerge\x88\x01\x01\x12>\n" +
 	"\x19can_auto_merge_dependabot\x18\x04 \x01(\bH\x02R\x16canAutoMergeDependabot\x88\x01\x01\x12<\n" +
 	"\x18can_auto_address_reviews\x18\x05 \x01(\bH\x03R\x15canAutoAddressReviews\x88\x01\x01\x12@\n" +
-	"\x1acan_auto_resolve_conflicts\x18\x06 \x01(\bH\x04R\x17canAutoResolveConflicts\x88\x01\x01B\x0f\n" +
+	"\x1acan_auto_resolve_conflicts\x18\x06 \x01(\bH\x04R\x17canAutoResolveConflicts\x88\x01\x01\x12*\n" +
+	"\x0emerge_strategy\x18\a \x01(\tH\x05R\rmergeStrategy\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x11\n" +
 	"\x0f_can_auto_mergeB\x1c\n" +
 	"\x1a_can_auto_merge_dependabotB\x1b\n" +
 	"\x19_can_auto_address_reviewsB\x1d\n" +
-	"\x1b_can_auto_resolve_conflicts\"<\n" +
+	"\x1b_can_auto_resolve_conflictsB\x11\n" +
+	"\x0f_merge_strategy\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
 	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"-\n" +
 	"\x12ListRepoPRsRequest\x12\x17\n" +

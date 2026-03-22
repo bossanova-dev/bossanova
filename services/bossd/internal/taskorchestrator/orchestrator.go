@@ -29,8 +29,9 @@ type TaskSourceProvider interface {
 
 // queuedTask pairs a task item with its repo info for the FIFO queue.
 type queuedTask struct {
-	task *bossanovav1.TaskItem
-	repo repoInfo
+	task       *bossanovav1.TaskItem
+	repo       repoInfo
+	pluginName string
 }
 
 // Orchestrator polls task source plugins for new tasks and routes
@@ -162,6 +163,15 @@ func (o *Orchestrator) poll(ctx context.Context) {
 // pollSource calls PollTasks on a single source for a single repo
 // and processes the returned tasks.
 func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, repo repoInfo) {
+	info, err := src.GetInfo(ctx)
+	if err != nil {
+		o.logger.Warn().Err(err).
+			Str("repo", repo.displayName).
+			Msg("get plugin info failed")
+		return
+	}
+	pluginName := info.GetName()
+
 	tasks, err := src.PollTasks(ctx, repo.originURL)
 	if err != nil {
 		o.logger.Warn().Err(err).
@@ -172,11 +182,12 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, re
 
 	o.logger.Info().
 		Str("repo", repo.displayName).
+		Str("plugin", pluginName).
 		Int("tasks", len(tasks)).
 		Msg("poll complete")
 
 	for _, task := range tasks {
-		o.processTask(ctx, task, repo)
+		o.processTask(ctx, task, repo, pluginName)
 	}
 }
 
@@ -184,7 +195,7 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, re
 // duplicates via the task mapping store and enqueues new tasks into
 // the per-repo FIFO queue. If no task is currently active for this
 // repo, the task is processed immediately.
-func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo) {
+func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	externalID := task.GetExternalId()
 
 	// Dedup: skip if we've already seen this external ID.
@@ -197,16 +208,16 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 		return
 	}
 
-	o.enqueue(ctx, task, repo)
+	o.enqueue(ctx, task, repo, pluginName)
 }
 
 // enqueue adds a task to the per-repo FIFO queue and processes it
 // immediately if no other task is active for that repo.
-func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo) {
+func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	o.mu.Lock()
 	if o.active[repo.id] {
 		// Another task is being processed for this repo — queue it.
-		o.queues[repo.id] = append(o.queues[repo.id], queuedTask{task: task, repo: repo})
+		o.queues[repo.id] = append(o.queues[repo.id], queuedTask{task: task, repo: repo, pluginName: pluginName})
 		o.logger.Debug().
 			Str("repo", repo.displayName).
 			Str("external_id", task.GetExternalId()).
@@ -218,7 +229,7 @@ func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, 
 	o.active[repo.id] = true
 	o.mu.Unlock()
 
-	o.routeTask(ctx, task, repo)
+	o.routeTask(ctx, task, repo, pluginName)
 }
 
 // dequeueNext processes the next queued task for a repo, if any.
@@ -235,7 +246,7 @@ func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
 	o.queues[repoID] = queue[1:]
 	o.mu.Unlock()
 
-	o.routeTask(ctx, next.task, next.repo)
+	o.routeTask(ctx, next.task, next.repo, next.pluginName)
 }
 
 // HandleSessionCompleted is called when a session finishes (merged,
@@ -274,7 +285,9 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 			}); err != nil {
 				o.logger.Error().Err(err).Str("mapping", mapping.ID).Msg("store pending update failed")
 			}
+			continue
 		}
+		break
 	}
 
 	// Process the next queued task for this repo.
@@ -320,6 +333,7 @@ func (o *Orchestrator) RetryPendingUpdates(ctx context.Context) {
 			}); err != nil {
 				o.logger.Error().Err(err).Str("mapping", mapping.ID).Msg("clear pending update failed")
 			}
+			break
 		}
 	}
 }
@@ -341,7 +355,7 @@ func taskMappingStatusToProto(s models.TaskMappingStatus) bossanovav1.TaskItemSt
 
 // routeTask dispatches a task based on its action, creates a task
 // mapping for dedup, and performs the action.
-func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo) {
+func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	action := task.GetAction()
 	externalID := task.GetExternalId()
 
@@ -360,13 +374,14 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 	// Create task mapping to prevent duplicate processing.
 	mapping, err := o.taskMappings.Create(ctx, db.CreateTaskMappingParams{
 		ExternalID: externalID,
-		PluginName: "task-source", // generic; could use plugin name from GetInfo
+		PluginName: pluginName,
 		RepoID:     repo.id,
 	})
 	if err != nil {
 		o.logger.Error().Err(err).
 			Str("external_id", externalID).
 			Msg("create task mapping failed")
+		o.dequeueNext(ctx, repo.id)
 		return
 	}
 
@@ -381,7 +396,7 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 		o.handleNotifyUser(ctx, task, repo, mapping)
 
 	case bossanovav1.TaskAction_TASK_ACTION_UNSPECIFIED:
-		o.logger.Warn().Str("external_id", externalID).Msg("task has unspecified action, skipping")
+		// Unreachable: UNSPECIFIED is converted to CREATE_SESSION above.
 	}
 }
 
@@ -440,6 +455,7 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 			Str("title", task.GetTitle()).
 			Msg("create session failed")
 		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+		o.dequeueNext(ctx, repo.id)
 		return
 	}
 

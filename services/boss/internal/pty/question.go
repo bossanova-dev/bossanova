@@ -68,9 +68,8 @@ var optionRe = regexp.MustCompile(`(?m)^[ ]{2,}\S`)
 //  1. AskUserQuestion/permission prompt: ❯ selector cursor + indented options
 //  2. Conversational question: Claude response (⏺) ending with ?
 //
-// questionRe matches a ⏺ response marker followed by text ending with "?"
-// within ~500 chars. Uses non-greedy match to handle line wrapping.
-var questionRe = regexp.MustCompile(`⏺[\s\S]{0,500}\?[\s]*(?:\n|$)`)
+// trailingQuestionRe matches a line ending with "?" (optional trailing whitespace).
+var trailingQuestionRe = regexp.MustCompile(`\?[\s]*(?:\n|$)`)
 
 func hasQuestionPrompt(data []byte) bool {
 	if len(data) == 0 {
@@ -91,10 +90,12 @@ func hasQuestionPrompt(data []byte) bool {
 	}
 
 	// Pattern 2: Claude response ending with a question mark.
-	// Search the entire cleaned output because the question can be anywhere
-	// on screen (the prompt and status bar render below it).
-	if questionRe.Match(clean) {
-		return true
+	// Find the last ⏺ marker (handles multiple response sections from tool calls)
+	// and check if the text from there to the end contains a trailing "?".
+	if idx := bytes.LastIndex(clean, []byte("⏺")); idx >= 0 {
+		if trailingQuestionRe.Match(clean[idx:]) {
+			return true
+		}
 	}
 
 	return false

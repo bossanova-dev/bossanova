@@ -143,6 +143,44 @@ func TestHasQuestionPrompt(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "long response with squash commits question",
+			data: "⏺ Here are the recent commits on this branch:\n\n" +
+				"  - c09500f chore: [skip ci] create pull request\n" +
+				"  - 26131cc chore(global): gitignore .beads/issues.jsonl\n" +
+				"  - b889553 feat(plugin): [#18] wire previously-rejected PR detection into PollTasks\n" +
+				"  - 2d73d9e docs(plugin): [#18] add implementation plan and flight leg handoffs\n" +
+				"  - ff8498a test(plugin): [#18] add comprehensive test coverage for task source plugin\n" +
+				"  - a1b2c3d feat(plugin): [#18] implement task source plugin with GitHub PR polling\n" +
+				"  - d4e5f6a chore(deps): update go.mod dependencies to latest versions\n" +
+				"  - 1234567 fix(pty): handle edge case in ANSI strip for cursor-position sequences\n" +
+				"  - 89abcde refactor(boss): extract ring buffer into dedicated package with tests\n" +
+				"  - fedcba9 feat(boss): add configurable poll interval for task source plugins\n" +
+				"  - 0011223 docs(README): update architecture diagram with new plugin system\n" +
+				"  - 4455667 test(integration): add end-to-end test for PR review workflow\n\n" +
+				"  There are 12 commits total since the branch diverged from main. Several of these are small fixups that could\n" +
+				"  be combined. Would you like me to squash some of these commits before creating the PR?\n",
+			want: true,
+		},
+		{
+			name: "long response with flight plan question",
+			data: "⏺ I've analyzed the codebase and here's the implementation plan:\n\n" +
+				"  ## Flight Plan\n\n" +
+				"  **Leg 1: Core Data Model**\n" +
+				"  - Add new `QuestionDetector` interface in `question.go`\n" +
+				"  - Implement `RegexDetector` with configurable patterns\n" +
+				"  - Add unit tests for all pattern types\n\n" +
+				"  **Leg 2: Integration Layer**\n" +
+				"  - Wire detector into the PTY monitor loop\n" +
+				"  - Add timeout handling for stale question detection\n" +
+				"  - Integration test with mock PTY output\n\n" +
+				"  **Leg 3: Configuration & Polish**\n" +
+				"  - Add YAML config for custom question patterns\n" +
+				"  - Documentation updates for the new detection system\n" +
+				"  - Performance benchmarks comparing old vs new approach\n\n" +
+				"  This plan has 3 legs with handoff checkpoints between each. Does this look like the right approach for the refactor?\n",
+			want: true,
+		},
+		{
 			name: "office-hours Demand question (user reported miss)",
 			data: "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n" +
 				" ☐ Demand\n" +

@@ -198,14 +198,27 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, re
 func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	externalID := task.GetExternalId()
 
-	// Dedup: skip if we've already seen this external ID.
+	// Dedup: skip if we've already seen this external ID (unless it failed).
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
 	if err == nil && existing != nil {
-		o.logger.Info().
-			Str("external_id", externalID).
-			Int("status", int(existing.Status)).
-			Msg("task already tracked, skipping")
-		return
+		if existing.Status == models.TaskMappingStatusFailed {
+			o.logger.Info().
+				Str("external_id", externalID).
+				Str("mapping_id", existing.ID).
+				Msg("retrying previously failed task")
+			if err := o.taskMappings.Delete(ctx, existing.ID); err != nil {
+				o.logger.Error().Err(err).
+					Str("mapping_id", existing.ID).
+					Msg("delete failed task mapping")
+				return
+			}
+		} else {
+			o.logger.Info().
+				Str("external_id", externalID).
+				Int("status", int(existing.Status)).
+				Msg("task already tracked, skipping")
+			return
+		}
 	}
 
 	o.enqueue(ctx, task, repo, pluginName)

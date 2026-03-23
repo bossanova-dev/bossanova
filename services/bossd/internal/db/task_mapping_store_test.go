@@ -49,6 +49,40 @@ func TestTaskMappingStore_CreateAndGetByExternalID(t *testing.T) {
 	}
 }
 
+func TestTaskMappingStore_Delete(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewTaskMappingStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	m, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:https://github.com/foo/bar:99",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Delete the mapping.
+	if err := store.Delete(ctx, m.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	// GetByExternalID should now return not-found.
+	got, err := store.GetByExternalID(ctx, m.ExternalID)
+	if err == nil && got != nil {
+		t.Error("expected not-found after delete, but got a result")
+	}
+
+	// Deleting a non-existent ID should return an error.
+	if err := store.Delete(ctx, "nonexistent-id"); err == nil {
+		t.Error("expected error when deleting non-existent mapping")
+	}
+}
+
 func TestTaskMappingStore_DuplicateExternalID(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

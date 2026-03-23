@@ -80,6 +80,7 @@ type mockTaskMappingStore struct {
 	bySession     map[string]*models.TaskMapping // keyed by session_id
 	createFn      func(ctx context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error)
 	updateFn      func(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error)
+	deleteFn      func(ctx context.Context, id string) error
 	listPendingFn func(ctx context.Context) ([]*models.TaskMapping, error)
 	nextID        int
 }
@@ -123,6 +124,20 @@ func (m *mockTaskMappingStore) Update(ctx context.Context, id string, params db.
 		return m.updateFn(ctx, id, params)
 	}
 	return &models.TaskMapping{ID: id}, nil
+}
+
+func (m *mockTaskMappingStore) Delete(ctx context.Context, id string) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, id)
+	}
+	// Remove from mappings by scanning for the ID.
+	for k, v := range m.mappings {
+		if v.ID == id {
+			delete(m.mappings, k)
+			break
+		}
+	}
+	return nil
 }
 
 func (m *mockTaskMappingStore) ListPending(ctx context.Context) ([]*models.TaskMapping, error) {
@@ -336,6 +351,88 @@ func TestProcessTask_DedupSkipsExisting(t *testing.T) {
 		Title:      "Bump lodash",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
 	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"}, "dependabot")
+}
+
+func TestProcessTask_RetriesFailedTask(t *testing.T) {
+	var deletedID string
+	var createdMapping bool
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{
+				"dependabot:pr:repo:123": {
+					ID:         "tm-old",
+					ExternalID: "dependabot:pr:repo:123",
+					Status:     models.TaskMappingStatusFailed,
+					RepoID:     "r1",
+				},
+			},
+			deleteFn: func(_ context.Context, id string) error {
+				deletedID = id
+				return nil
+			},
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				createdMapping = true
+				return &models.TaskMapping{
+					ID:         "tm-new",
+					ExternalID: params.ExternalID,
+					PluginName: params.PluginName,
+					RepoID:     params.RepoID,
+					Status:     models.TaskMappingStatusPending,
+				}, nil
+			},
+		}
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error { return nil },
+		}
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:123",
+		Title:      "Bump lodash (retry)",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if deletedID != "tm-old" {
+		t.Errorf("expected old mapping tm-old to be deleted, got %q", deletedID)
+	}
+	if !createdMapping {
+		t.Error("expected a new mapping to be created after deleting the failed one")
+	}
+}
+
+func TestProcessTask_DeleteErrorPreventsRetry(t *testing.T) {
+	var createdMapping bool
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{
+				"dependabot:pr:repo:123": {
+					ID:         "tm-old",
+					ExternalID: "dependabot:pr:repo:123",
+					Status:     models.TaskMappingStatusFailed,
+					RepoID:     "r1",
+				},
+			},
+			deleteFn: func(_ context.Context, _ string) error {
+				return errors.New("database locked")
+			},
+			createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				createdMapping = true
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:123",
+		Title:      "Bump lodash (retry)",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if createdMapping {
+		t.Error("expected no new mapping when delete fails")
+	}
 }
 
 // --- routing tests ---

@@ -123,6 +123,44 @@ func TestIsPreviouslyRejected(t *testing.T) {
 			closedPRs: nil,
 			want:      false,
 		},
+		{
+			name: "closed then merged → not rejected",
+			pr: &bossanovav1.PRSummary{
+				HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.23",
+			},
+			closedPRs: []*bossanovav1.PRSummary{
+				{
+					Number:     80,
+					HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.21",
+					State:      bossanovav1.PRState_PR_STATE_CLOSED,
+				},
+				{
+					Number:     90,
+					HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.22",
+					State:      bossanovav1.PRState_PR_STATE_MERGED,
+				},
+			},
+			want: false,
+		},
+		{
+			name: "merged then closed → rejected",
+			pr: &bossanovav1.PRSummary{
+				HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.23",
+			},
+			closedPRs: []*bossanovav1.PRSummary{
+				{
+					Number:     80,
+					HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.21",
+					State:      bossanovav1.PRState_PR_STATE_MERGED,
+				},
+				{
+					Number:     90,
+					HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.22",
+					State:      bossanovav1.PRState_PR_STATE_CLOSED,
+				},
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {

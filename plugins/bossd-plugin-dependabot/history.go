@@ -78,8 +78,11 @@ func libraryFromTitle(title string) string {
 }
 
 // isPreviouslyRejected checks whether a dependabot PR for the same library
-// was previously closed without merging (i.e. rejected). It scans a list
-// of recently-closed PRs for a matching library name with CLOSED state.
+// was previously closed without merging (i.e. rejected). Among all closed
+// or merged PRs matching the same library, it finds the most recent one
+// (highest PR number) and returns true only if that PR was closed without
+// merging. If the most recent matching PR was merged, the library is
+// considered accepted.
 //
 // closedPRs should contain recently-closed dependabot PRs for the same
 // repo, fetched via ListClosedDependabotPRs.
@@ -89,13 +92,21 @@ func isPreviouslyRejected(pr *bossanovav1.PRSummary, closedPRs []*bossanovav1.PR
 		return false
 	}
 
+	// Find the most recent closed/merged PR for this library (highest PR number).
+	var mostRecent *bossanovav1.PRSummary
 	for _, closed := range closedPRs {
-		if closed.GetState() != bossanovav1.PRState_PR_STATE_CLOSED {
+		if closed.GetState() != bossanovav1.PRState_PR_STATE_CLOSED &&
+			closed.GetState() != bossanovav1.PRState_PR_STATE_MERGED {
 			continue
 		}
-		if parseDependabotLibrary(closed) == lib {
-			return true
+		if parseDependabotLibrary(closed) != lib {
+			continue
+		}
+		if mostRecent == nil || closed.GetNumber() > mostRecent.GetNumber() {
+			mostRecent = closed
 		}
 	}
-	return false
+
+	// Only rejected if the most recent PR for this lib was closed (not merged).
+	return mostRecent != nil && mostRecent.GetState() == bossanovav1.PRState_PR_STATE_CLOSED
 }

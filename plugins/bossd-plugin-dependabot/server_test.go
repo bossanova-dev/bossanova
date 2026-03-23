@@ -498,45 +498,82 @@ func TestPollTasksAutoMergeLabels(t *testing.T) {
 
 func TestPollTasksPreviouslyRejectedLibrary(t *testing.T) {
 	repoURL := "https://github.com/foo/bar"
-	mock := &mockHostService{
-		prs: []*bossanovav1.PRSummary{
-			// Open PR for prisma — checks passed, mergeable.
-			{Number: 100, Title: "Bump @prisma/client from 6.0.0 to 7.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-7.0.0", Author: dependabotAuthor},
-			// Open PR for lodash — checks passed, mergeable (not rejected).
-			{Number: 101, Title: "Bump lodash from 4.17.20 to 4.17.21", HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.21", Author: dependabotAuthor},
-		},
-		closedPRs: []*bossanovav1.PRSummary{
-			// Previously closed (rejected) prisma PR.
-			{Number: 90, Title: "Bump @prisma/client from 5.0.0 to 6.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-6.0.0", State: bossanovav1.PRState_PR_STATE_CLOSED, Author: dependabotAuthor},
-		},
-		checks: map[int32][]*bossanovav1.CheckResult{
-			100: {{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)}},
-			101: {{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)}},
-		},
-		status: map[int32]*bossanovav1.PRStatus{
-			100: {Mergeable: boolPtr(true)},
-			101: {Mergeable: boolPtr(true)},
-		},
-	}
 
-	tasks, err := pollTasksWithMock(t, mock, repoURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tasks) != 2 {
-		t.Fatalf("expected 2 tasks, got %d", len(tasks))
-	}
+	t.Run("most recent closed → rejected", func(t *testing.T) {
+		mock := &mockHostService{
+			prs: []*bossanovav1.PRSummary{
+				// Open PR for prisma — checks passed, mergeable.
+				{Number: 100, Title: "Bump @prisma/client from 6.0.0 to 7.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-7.0.0", Author: dependabotAuthor},
+				// Open PR for lodash — checks passed, mergeable (not rejected).
+				{Number: 101, Title: "Bump lodash from 4.17.20 to 4.17.21", HeadBranch: "dependabot/npm_and_yarn/lodash-4.17.21", Author: dependabotAuthor},
+			},
+			closedPRs: []*bossanovav1.PRSummary{
+				// Previously closed (rejected) prisma PR.
+				{Number: 90, Title: "Bump @prisma/client from 5.0.0 to 6.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-6.0.0", State: bossanovav1.PRState_PR_STATE_CLOSED, Author: dependabotAuthor},
+			},
+			checks: map[int32][]*bossanovav1.CheckResult{
+				100: {{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)}},
+				101: {{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)}},
+			},
+			status: map[int32]*bossanovav1.PRStatus{
+				100: {Mergeable: boolPtr(true)},
+				101: {Mergeable: boolPtr(true)},
+			},
+		}
 
-	// Prisma should be NOTIFY_USER (previously rejected).
-	if tasks[0].GetAction() != bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER {
-		t.Errorf("tasks[0] action = %v, want NOTIFY_USER", tasks[0].GetAction())
-	}
-	if tasks[0].GetTitle() != "Bump @prisma/client from 6.0.0 to 7.0.0" {
-		t.Errorf("tasks[0] title = %q, want prisma PR", tasks[0].GetTitle())
-	}
+		tasks, err := pollTasksWithMock(t, mock, repoURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 2 {
+			t.Fatalf("expected 2 tasks, got %d", len(tasks))
+		}
 
-	// Lodash should be AUTO_MERGE (not rejected).
-	if tasks[1].GetAction() != bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
-		t.Errorf("tasks[1] action = %v, want AUTO_MERGE", tasks[1].GetAction())
-	}
+		// Prisma should be NOTIFY_USER (previously rejected).
+		if tasks[0].GetAction() != bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER {
+			t.Errorf("tasks[0] action = %v, want NOTIFY_USER", tasks[0].GetAction())
+		}
+		if tasks[0].GetTitle() != "Bump @prisma/client from 6.0.0 to 7.0.0" {
+			t.Errorf("tasks[0] title = %q, want prisma PR", tasks[0].GetTitle())
+		}
+
+		// Lodash should be AUTO_MERGE (not rejected).
+		if tasks[1].GetAction() != bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
+			t.Errorf("tasks[1] action = %v, want AUTO_MERGE", tasks[1].GetAction())
+		}
+	})
+
+	t.Run("closed then merged → not rejected", func(t *testing.T) {
+		mock := &mockHostService{
+			prs: []*bossanovav1.PRSummary{
+				// Open PR for prisma — checks passed, mergeable.
+				{Number: 100, Title: "Bump @prisma/client from 7.0.0 to 8.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-8.0.0", Author: dependabotAuthor},
+			},
+			closedPRs: []*bossanovav1.PRSummary{
+				// Older: closed (rejected) prisma PR.
+				{Number: 80, Title: "Bump @prisma/client from 5.0.0 to 6.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-6.0.0", State: bossanovav1.PRState_PR_STATE_CLOSED, Author: dependabotAuthor},
+				// Newer: merged prisma PR — user accepted a later version.
+				{Number: 90, Title: "Bump @prisma/client from 6.0.0 to 7.0.0", HeadBranch: "dependabot/npm_and_yarn/@prisma/client-7.0.0", State: bossanovav1.PRState_PR_STATE_MERGED, Author: dependabotAuthor},
+			},
+			checks: map[int32][]*bossanovav1.CheckResult{
+				100: {{Status: bossanovav1.CheckStatus_CHECK_STATUS_COMPLETED, Conclusion: conclusionPtr(bossanovav1.CheckConclusion_CHECK_CONCLUSION_SUCCESS)}},
+			},
+			status: map[int32]*bossanovav1.PRStatus{
+				100: {Mergeable: boolPtr(true)},
+			},
+		}
+
+		tasks, err := pollTasksWithMock(t, mock, repoURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 1 {
+			t.Fatalf("expected 1 task, got %d", len(tasks))
+		}
+
+		// Prisma should be AUTO_MERGE (most recent PR was merged, not rejected).
+		if tasks[0].GetAction() != bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
+			t.Errorf("tasks[0] action = %v, want AUTO_MERGE", tasks[0].GetAction())
+		}
+	})
 }

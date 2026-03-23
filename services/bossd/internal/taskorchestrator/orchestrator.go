@@ -442,13 +442,23 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 		baseBranch = "main"
 	}
 
-	sess, err := o.sessionCreator.CreateSession(ctx, CreateSessionOpts{
+	opts := CreateSessionOpts{
 		RepoID:     repo.id,
 		Title:      task.GetTitle(),
 		Plan:       task.GetPlan(),
 		BaseBranch: baseBranch,
 		HeadBranch: task.GetExistingBranch(),
-	})
+	}
+
+	// Extract PR number from the external ID so the session displays
+	// a clickable PR link in the TUI session list.
+	if prNumber, err := parsePRNumberFromExternalID(task.GetExternalId()); err == nil {
+		opts.PRNumber = &prNumber
+		prURL := fmt.Sprintf("%s/pull/%d", task.GetRepoOriginUrl(), prNumber)
+		opts.PRURL = &prURL
+	}
+
+	sess, err := o.sessionCreator.CreateSession(ctx, opts)
 	if err != nil {
 		o.logger.Error().Err(err).
 			Str("external_id", task.GetExternalId()).

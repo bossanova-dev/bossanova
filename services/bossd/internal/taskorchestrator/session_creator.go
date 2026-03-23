@@ -21,6 +21,8 @@ type CreateSessionOpts struct {
 	Plan       string
 	BaseBranch string
 	HeadBranch string // if non-empty, checks out existing branch (e.g. dependabot PR branch)
+	PRNumber   *int
+	PRURL      *string
 }
 
 // SessionStarter abstracts the lifecycle's StartSession method for testability.
@@ -64,6 +66,8 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		Title:      opts.Title,
 		Plan:       opts.Plan,
 		BaseBranch: opts.BaseBranch,
+		PRNumber:   opts.PRNumber,
+		PRURL:      opts.PRURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)

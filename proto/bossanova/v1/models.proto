@@ -290,6 +290,28 @@ enum PRDisplayStatus {
   PR_DISPLAY_STATUS_DRAFT = 9;
 }
 
+// WorkflowStatus represents the lifecycle state of an autopilot workflow.
+enum WorkflowStatus {
+  WORKFLOW_STATUS_UNSPECIFIED = 0;
+  WORKFLOW_STATUS_PENDING = 1;
+  WORKFLOW_STATUS_RUNNING = 2;
+  WORKFLOW_STATUS_PAUSED = 3;
+  WORKFLOW_STATUS_COMPLETED = 4;
+  WORKFLOW_STATUS_FAILED = 5;
+  WORKFLOW_STATUS_CANCELLED = 6;
+}
+
+// WorkflowStep represents the current step in the autopilot skill sequence.
+enum WorkflowStep {
+  WORKFLOW_STEP_UNSPECIFIED = 0;
+  WORKFLOW_STEP_PLAN = 1;
+  WORKFLOW_STEP_IMPLEMENT = 2;
+  WORKFLOW_STEP_HANDOFF = 3;
+  WORKFLOW_STEP_RESUME = 4;
+  WORKFLOW_STEP_VERIFY = 5;
+  WORKFLOW_STEP_LAND = 6;
+}
+
 // ChatStatus represents the live status of a Claude Code chat process.
 enum ChatStatus {
   CHAT_STATUS_UNSPECIFIED = 0;

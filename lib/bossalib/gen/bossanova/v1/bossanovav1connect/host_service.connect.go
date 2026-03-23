@@ -43,6 +43,26 @@ const (
 	// HostServiceListClosedPRsProcedure is the fully-qualified name of the HostService's ListClosedPRs
 	// RPC.
 	HostServiceListClosedPRsProcedure = "/bossanova.v1.HostService/ListClosedPRs"
+	// HostServiceCreateWorkflowProcedure is the fully-qualified name of the HostService's
+	// CreateWorkflow RPC.
+	HostServiceCreateWorkflowProcedure = "/bossanova.v1.HostService/CreateWorkflow"
+	// HostServiceUpdateWorkflowProcedure is the fully-qualified name of the HostService's
+	// UpdateWorkflow RPC.
+	HostServiceUpdateWorkflowProcedure = "/bossanova.v1.HostService/UpdateWorkflow"
+	// HostServiceGetWorkflowProcedure is the fully-qualified name of the HostService's GetWorkflow RPC.
+	HostServiceGetWorkflowProcedure = "/bossanova.v1.HostService/GetWorkflow"
+	// HostServiceListWorkflowsProcedure is the fully-qualified name of the HostService's ListWorkflows
+	// RPC.
+	HostServiceListWorkflowsProcedure = "/bossanova.v1.HostService/ListWorkflows"
+	// HostServiceCreateAttemptProcedure is the fully-qualified name of the HostService's CreateAttempt
+	// RPC.
+	HostServiceCreateAttemptProcedure = "/bossanova.v1.HostService/CreateAttempt"
+	// HostServiceGetAttemptStatusProcedure is the fully-qualified name of the HostService's
+	// GetAttemptStatus RPC.
+	HostServiceGetAttemptStatusProcedure = "/bossanova.v1.HostService/GetAttemptStatus"
+	// HostServiceStreamAttemptOutputProcedure is the fully-qualified name of the HostService's
+	// StreamAttemptOutput RPC.
+	HostServiceStreamAttemptOutputProcedure = "/bossanova.v1.HostService/StreamAttemptOutput"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -55,6 +75,20 @@ type HostServiceClient interface {
 	GetPRStatus(context.Context, *connect.Request[v1.GetPRStatusRequest]) (*connect.Response[v1.GetPRStatusResponse], error)
 	// ListClosedPRs returns recently-closed (not merged) pull requests.
 	ListClosedPRs(context.Context, *connect.Request[v1.ListClosedPRsRequest]) (*connect.Response[v1.ListClosedPRsResponse], error)
+	// CreateWorkflow creates a new workflow record.
+	CreateWorkflow(context.Context, *connect.Request[v1.CreateWorkflowRequest]) (*connect.Response[v1.CreateWorkflowResponse], error)
+	// UpdateWorkflow updates a workflow's status, step, or error.
+	UpdateWorkflow(context.Context, *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error)
+	// GetWorkflow reads a single workflow by ID.
+	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
+	// ListWorkflows lists workflows with optional status filter.
+	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
+	// CreateAttempt starts a Claude process for a workflow flight leg.
+	CreateAttempt(context.Context, *connect.Request[v1.CreateAttemptRequest]) (*connect.Response[v1.CreateAttemptResponse], error)
+	// GetAttemptStatus checks whether a Claude attempt is still running.
+	GetAttemptStatus(context.Context, *connect.Request[v1.GetAttemptStatusRequest]) (*connect.Response[v1.GetAttemptStatusResponse], error)
+	// StreamAttemptOutput streams real-time output from a running Claude attempt.
+	StreamAttemptOutput(context.Context, *connect.Request[v1.StreamAttemptOutputRequest]) (*connect.ServerStreamForClient[v1.StreamAttemptOutputResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -92,15 +126,64 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("ListClosedPRs")),
 			connect.WithClientOptions(opts...),
 		),
+		createWorkflow: connect.NewClient[v1.CreateWorkflowRequest, v1.CreateWorkflowResponse](
+			httpClient,
+			baseURL+HostServiceCreateWorkflowProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("CreateWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		updateWorkflow: connect.NewClient[v1.UpdateWorkflowRequest, v1.UpdateWorkflowResponse](
+			httpClient,
+			baseURL+HostServiceUpdateWorkflowProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("UpdateWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		getWorkflow: connect.NewClient[v1.GetWorkflowRequest, v1.GetWorkflowResponse](
+			httpClient,
+			baseURL+HostServiceGetWorkflowProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("GetWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		listWorkflows: connect.NewClient[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse](
+			httpClient,
+			baseURL+HostServiceListWorkflowsProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("ListWorkflows")),
+			connect.WithClientOptions(opts...),
+		),
+		createAttempt: connect.NewClient[v1.CreateAttemptRequest, v1.CreateAttemptResponse](
+			httpClient,
+			baseURL+HostServiceCreateAttemptProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("CreateAttempt")),
+			connect.WithClientOptions(opts...),
+		),
+		getAttemptStatus: connect.NewClient[v1.GetAttemptStatusRequest, v1.GetAttemptStatusResponse](
+			httpClient,
+			baseURL+HostServiceGetAttemptStatusProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("GetAttemptStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		streamAttemptOutput: connect.NewClient[v1.StreamAttemptOutputRequest, v1.StreamAttemptOutputResponse](
+			httpClient,
+			baseURL+HostServiceStreamAttemptOutputProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("StreamAttemptOutput")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // hostServiceClient implements HostServiceClient.
 type hostServiceClient struct {
-	listOpenPRs     *connect.Client[v1.ListOpenPRsRequest, v1.ListOpenPRsResponse]
-	getCheckResults *connect.Client[v1.GetCheckResultsRequest, v1.GetCheckResultsResponse]
-	getPRStatus     *connect.Client[v1.GetPRStatusRequest, v1.GetPRStatusResponse]
-	listClosedPRs   *connect.Client[v1.ListClosedPRsRequest, v1.ListClosedPRsResponse]
+	listOpenPRs         *connect.Client[v1.ListOpenPRsRequest, v1.ListOpenPRsResponse]
+	getCheckResults     *connect.Client[v1.GetCheckResultsRequest, v1.GetCheckResultsResponse]
+	getPRStatus         *connect.Client[v1.GetPRStatusRequest, v1.GetPRStatusResponse]
+	listClosedPRs       *connect.Client[v1.ListClosedPRsRequest, v1.ListClosedPRsResponse]
+	createWorkflow      *connect.Client[v1.CreateWorkflowRequest, v1.CreateWorkflowResponse]
+	updateWorkflow      *connect.Client[v1.UpdateWorkflowRequest, v1.UpdateWorkflowResponse]
+	getWorkflow         *connect.Client[v1.GetWorkflowRequest, v1.GetWorkflowResponse]
+	listWorkflows       *connect.Client[v1.ListWorkflowsRequest, v1.ListWorkflowsResponse]
+	createAttempt       *connect.Client[v1.CreateAttemptRequest, v1.CreateAttemptResponse]
+	getAttemptStatus    *connect.Client[v1.GetAttemptStatusRequest, v1.GetAttemptStatusResponse]
+	streamAttemptOutput *connect.Client[v1.StreamAttemptOutputRequest, v1.StreamAttemptOutputResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -123,6 +206,41 @@ func (c *hostServiceClient) ListClosedPRs(ctx context.Context, req *connect.Requ
 	return c.listClosedPRs.CallUnary(ctx, req)
 }
 
+// CreateWorkflow calls bossanova.v1.HostService.CreateWorkflow.
+func (c *hostServiceClient) CreateWorkflow(ctx context.Context, req *connect.Request[v1.CreateWorkflowRequest]) (*connect.Response[v1.CreateWorkflowResponse], error) {
+	return c.createWorkflow.CallUnary(ctx, req)
+}
+
+// UpdateWorkflow calls bossanova.v1.HostService.UpdateWorkflow.
+func (c *hostServiceClient) UpdateWorkflow(ctx context.Context, req *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error) {
+	return c.updateWorkflow.CallUnary(ctx, req)
+}
+
+// GetWorkflow calls bossanova.v1.HostService.GetWorkflow.
+func (c *hostServiceClient) GetWorkflow(ctx context.Context, req *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error) {
+	return c.getWorkflow.CallUnary(ctx, req)
+}
+
+// ListWorkflows calls bossanova.v1.HostService.ListWorkflows.
+func (c *hostServiceClient) ListWorkflows(ctx context.Context, req *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error) {
+	return c.listWorkflows.CallUnary(ctx, req)
+}
+
+// CreateAttempt calls bossanova.v1.HostService.CreateAttempt.
+func (c *hostServiceClient) CreateAttempt(ctx context.Context, req *connect.Request[v1.CreateAttemptRequest]) (*connect.Response[v1.CreateAttemptResponse], error) {
+	return c.createAttempt.CallUnary(ctx, req)
+}
+
+// GetAttemptStatus calls bossanova.v1.HostService.GetAttemptStatus.
+func (c *hostServiceClient) GetAttemptStatus(ctx context.Context, req *connect.Request[v1.GetAttemptStatusRequest]) (*connect.Response[v1.GetAttemptStatusResponse], error) {
+	return c.getAttemptStatus.CallUnary(ctx, req)
+}
+
+// StreamAttemptOutput calls bossanova.v1.HostService.StreamAttemptOutput.
+func (c *hostServiceClient) StreamAttemptOutput(ctx context.Context, req *connect.Request[v1.StreamAttemptOutputRequest]) (*connect.ServerStreamForClient[v1.StreamAttemptOutputResponse], error) {
+	return c.streamAttemptOutput.CallServerStream(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
 type HostServiceHandler interface {
 	// ListOpenPRs returns all open pull requests for a repository.
@@ -133,6 +251,20 @@ type HostServiceHandler interface {
 	GetPRStatus(context.Context, *connect.Request[v1.GetPRStatusRequest]) (*connect.Response[v1.GetPRStatusResponse], error)
 	// ListClosedPRs returns recently-closed (not merged) pull requests.
 	ListClosedPRs(context.Context, *connect.Request[v1.ListClosedPRsRequest]) (*connect.Response[v1.ListClosedPRsResponse], error)
+	// CreateWorkflow creates a new workflow record.
+	CreateWorkflow(context.Context, *connect.Request[v1.CreateWorkflowRequest]) (*connect.Response[v1.CreateWorkflowResponse], error)
+	// UpdateWorkflow updates a workflow's status, step, or error.
+	UpdateWorkflow(context.Context, *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error)
+	// GetWorkflow reads a single workflow by ID.
+	GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error)
+	// ListWorkflows lists workflows with optional status filter.
+	ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error)
+	// CreateAttempt starts a Claude process for a workflow flight leg.
+	CreateAttempt(context.Context, *connect.Request[v1.CreateAttemptRequest]) (*connect.Response[v1.CreateAttemptResponse], error)
+	// GetAttemptStatus checks whether a Claude attempt is still running.
+	GetAttemptStatus(context.Context, *connect.Request[v1.GetAttemptStatusRequest]) (*connect.Response[v1.GetAttemptStatusResponse], error)
+	// StreamAttemptOutput streams real-time output from a running Claude attempt.
+	StreamAttemptOutput(context.Context, *connect.Request[v1.StreamAttemptOutputRequest], *connect.ServerStream[v1.StreamAttemptOutputResponse]) error
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -166,6 +298,48 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("ListClosedPRs")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceCreateWorkflowHandler := connect.NewUnaryHandler(
+		HostServiceCreateWorkflowProcedure,
+		svc.CreateWorkflow,
+		connect.WithSchema(hostServiceMethods.ByName("CreateWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceUpdateWorkflowHandler := connect.NewUnaryHandler(
+		HostServiceUpdateWorkflowProcedure,
+		svc.UpdateWorkflow,
+		connect.WithSchema(hostServiceMethods.ByName("UpdateWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceGetWorkflowHandler := connect.NewUnaryHandler(
+		HostServiceGetWorkflowProcedure,
+		svc.GetWorkflow,
+		connect.WithSchema(hostServiceMethods.ByName("GetWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceListWorkflowsHandler := connect.NewUnaryHandler(
+		HostServiceListWorkflowsProcedure,
+		svc.ListWorkflows,
+		connect.WithSchema(hostServiceMethods.ByName("ListWorkflows")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceCreateAttemptHandler := connect.NewUnaryHandler(
+		HostServiceCreateAttemptProcedure,
+		svc.CreateAttempt,
+		connect.WithSchema(hostServiceMethods.ByName("CreateAttempt")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceGetAttemptStatusHandler := connect.NewUnaryHandler(
+		HostServiceGetAttemptStatusProcedure,
+		svc.GetAttemptStatus,
+		connect.WithSchema(hostServiceMethods.ByName("GetAttemptStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceStreamAttemptOutputHandler := connect.NewServerStreamHandler(
+		HostServiceStreamAttemptOutputProcedure,
+		svc.StreamAttemptOutput,
+		connect.WithSchema(hostServiceMethods.ByName("StreamAttemptOutput")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceListOpenPRsProcedure:
@@ -176,6 +350,20 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceGetPRStatusHandler.ServeHTTP(w, r)
 		case HostServiceListClosedPRsProcedure:
 			hostServiceListClosedPRsHandler.ServeHTTP(w, r)
+		case HostServiceCreateWorkflowProcedure:
+			hostServiceCreateWorkflowHandler.ServeHTTP(w, r)
+		case HostServiceUpdateWorkflowProcedure:
+			hostServiceUpdateWorkflowHandler.ServeHTTP(w, r)
+		case HostServiceGetWorkflowProcedure:
+			hostServiceGetWorkflowHandler.ServeHTTP(w, r)
+		case HostServiceListWorkflowsProcedure:
+			hostServiceListWorkflowsHandler.ServeHTTP(w, r)
+		case HostServiceCreateAttemptProcedure:
+			hostServiceCreateAttemptHandler.ServeHTTP(w, r)
+		case HostServiceGetAttemptStatusProcedure:
+			hostServiceGetAttemptStatusHandler.ServeHTTP(w, r)
+		case HostServiceStreamAttemptOutputProcedure:
+			hostServiceStreamAttemptOutputHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -199,4 +387,32 @@ func (UnimplementedHostServiceHandler) GetPRStatus(context.Context, *connect.Req
 
 func (UnimplementedHostServiceHandler) ListClosedPRs(context.Context, *connect.Request[v1.ListClosedPRsRequest]) (*connect.Response[v1.ListClosedPRsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.ListClosedPRs is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) CreateWorkflow(context.Context, *connect.Request[v1.CreateWorkflowRequest]) (*connect.Response[v1.CreateWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.CreateWorkflow is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) UpdateWorkflow(context.Context, *connect.Request[v1.UpdateWorkflowRequest]) (*connect.Response[v1.UpdateWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.UpdateWorkflow is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) GetWorkflow(context.Context, *connect.Request[v1.GetWorkflowRequest]) (*connect.Response[v1.GetWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.GetWorkflow is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) ListWorkflows(context.Context, *connect.Request[v1.ListWorkflowsRequest]) (*connect.Response[v1.ListWorkflowsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.ListWorkflows is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) CreateAttempt(context.Context, *connect.Request[v1.CreateAttemptRequest]) (*connect.Response[v1.CreateAttemptResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.CreateAttempt is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) GetAttemptStatus(context.Context, *connect.Request[v1.GetAttemptStatusRequest]) (*connect.Response[v1.GetAttemptStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.GetAttemptStatus is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) StreamAttemptOutput(context.Context, *connect.Request[v1.StreamAttemptOutputRequest], *connect.ServerStream[v1.StreamAttemptOutputResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.StreamAttemptOutput is not implemented"))
 }

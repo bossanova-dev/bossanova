@@ -1671,11 +1671,670 @@ func (x *NoOpAction) GetReason() string {
 	return ""
 }
 
+type WorkflowServiceGetInfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowServiceGetInfoRequest) Reset() {
+	*x = WorkflowServiceGetInfoRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowServiceGetInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowServiceGetInfoRequest) ProtoMessage() {}
+
+func (x *WorkflowServiceGetInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowServiceGetInfoRequest.ProtoReflect.Descriptor instead.
+func (*WorkflowServiceGetInfoRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{27}
+}
+
+type WorkflowServiceGetInfoResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Info          *PluginInfo            `protobuf:"bytes,1,opt,name=info,proto3" json:"info,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowServiceGetInfoResponse) Reset() {
+	*x = WorkflowServiceGetInfoResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowServiceGetInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowServiceGetInfoResponse) ProtoMessage() {}
+
+func (x *WorkflowServiceGetInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowServiceGetInfoResponse.ProtoReflect.Descriptor instead.
+func (*WorkflowServiceGetInfoResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *WorkflowServiceGetInfoResponse) GetInfo() *PluginInfo {
+	if x != nil {
+		return x.Info
+	}
+	return nil
+}
+
+type StartWorkflowRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Path to the plan file (relative to repo root).
+	PlanPath string `protobuf:"bytes,1,opt,name=plan_path,json=planPath,proto3" json:"plan_path,omitempty"`
+	// The session this workflow belongs to.
+	SessionId string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// The repo this workflow operates on.
+	RepoId string `protobuf:"bytes,3,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	// Override max flight legs (0 = use default).
+	MaxLegs int32 `protobuf:"varint,4,opt,name=max_legs,json=maxLegs,proto3" json:"max_legs,omitempty"`
+	// Pause for user confirmation before landing.
+	ConfirmLand bool `protobuf:"varint,5,opt,name=confirm_land,json=confirmLand,proto3" json:"confirm_land,omitempty"`
+	// JSON-encoded config overrides.
+	ConfigJson    string `protobuf:"bytes,6,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartWorkflowRequest) Reset() {
+	*x = StartWorkflowRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartWorkflowRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartWorkflowRequest) ProtoMessage() {}
+
+func (x *StartWorkflowRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartWorkflowRequest.ProtoReflect.Descriptor instead.
+func (*StartWorkflowRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *StartWorkflowRequest) GetPlanPath() string {
+	if x != nil {
+		return x.PlanPath
+	}
+	return ""
+}
+
+func (x *StartWorkflowRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *StartWorkflowRequest) GetRepoId() string {
+	if x != nil {
+		return x.RepoId
+	}
+	return ""
+}
+
+func (x *StartWorkflowRequest) GetMaxLegs() int32 {
+	if x != nil {
+		return x.MaxLegs
+	}
+	return 0
+}
+
+func (x *StartWorkflowRequest) GetConfirmLand() bool {
+	if x != nil {
+		return x.ConfirmLand
+	}
+	return false
+}
+
+func (x *StartWorkflowRequest) GetConfigJson() string {
+	if x != nil {
+		return x.ConfigJson
+	}
+	return ""
+}
+
+type StartWorkflowResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	Status        *WorkflowStatusInfo    `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartWorkflowResponse) Reset() {
+	*x = StartWorkflowResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartWorkflowResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartWorkflowResponse) ProtoMessage() {}
+
+func (x *StartWorkflowResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartWorkflowResponse.ProtoReflect.Descriptor instead.
+func (*StartWorkflowResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *StartWorkflowResponse) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *StartWorkflowResponse) GetStatus() *WorkflowStatusInfo {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+type PauseWorkflowRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PauseWorkflowRequest) Reset() {
+	*x = PauseWorkflowRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PauseWorkflowRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PauseWorkflowRequest) ProtoMessage() {}
+
+func (x *PauseWorkflowRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PauseWorkflowRequest.ProtoReflect.Descriptor instead.
+func (*PauseWorkflowRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *PauseWorkflowRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+type PauseWorkflowResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *WorkflowStatusInfo    `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PauseWorkflowResponse) Reset() {
+	*x = PauseWorkflowResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PauseWorkflowResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PauseWorkflowResponse) ProtoMessage() {}
+
+func (x *PauseWorkflowResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PauseWorkflowResponse.ProtoReflect.Descriptor instead.
+func (*PauseWorkflowResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *PauseWorkflowResponse) GetStatus() *WorkflowStatusInfo {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+type ResumeWorkflowRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResumeWorkflowRequest) Reset() {
+	*x = ResumeWorkflowRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResumeWorkflowRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResumeWorkflowRequest) ProtoMessage() {}
+
+func (x *ResumeWorkflowRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResumeWorkflowRequest.ProtoReflect.Descriptor instead.
+func (*ResumeWorkflowRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ResumeWorkflowRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+type ResumeWorkflowResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *WorkflowStatusInfo    `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResumeWorkflowResponse) Reset() {
+	*x = ResumeWorkflowResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResumeWorkflowResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResumeWorkflowResponse) ProtoMessage() {}
+
+func (x *ResumeWorkflowResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResumeWorkflowResponse.ProtoReflect.Descriptor instead.
+func (*ResumeWorkflowResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ResumeWorkflowResponse) GetStatus() *WorkflowStatusInfo {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+type CancelWorkflowRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelWorkflowRequest) Reset() {
+	*x = CancelWorkflowRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelWorkflowRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelWorkflowRequest) ProtoMessage() {}
+
+func (x *CancelWorkflowRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelWorkflowRequest.ProtoReflect.Descriptor instead.
+func (*CancelWorkflowRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *CancelWorkflowRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+type CancelWorkflowResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *WorkflowStatusInfo    `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelWorkflowResponse) Reset() {
+	*x = CancelWorkflowResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelWorkflowResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelWorkflowResponse) ProtoMessage() {}
+
+func (x *CancelWorkflowResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelWorkflowResponse.ProtoReflect.Descriptor instead.
+func (*CancelWorkflowResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *CancelWorkflowResponse) GetStatus() *WorkflowStatusInfo {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+type GetWorkflowStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId    string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkflowStatusRequest) Reset() {
+	*x = GetWorkflowStatusRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkflowStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkflowStatusRequest) ProtoMessage() {}
+
+func (x *GetWorkflowStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkflowStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetWorkflowStatusRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *GetWorkflowStatusRequest) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+type GetWorkflowStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        *WorkflowStatusInfo    `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetWorkflowStatusResponse) Reset() {
+	*x = GetWorkflowStatusResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetWorkflowStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetWorkflowStatusResponse) ProtoMessage() {}
+
+func (x *GetWorkflowStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetWorkflowStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetWorkflowStatusResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *GetWorkflowStatusResponse) GetStatus() *WorkflowStatusInfo {
+	if x != nil {
+		return x.Status
+	}
+	return nil
+}
+
+// WorkflowStatusInfo is the status snapshot returned by the plugin.
+type WorkflowStatusInfo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Status        WorkflowStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=bossanova.v1.WorkflowStatus" json:"status,omitempty"`
+	CurrentStep   WorkflowStep           `protobuf:"varint,3,opt,name=current_step,json=currentStep,proto3,enum=bossanova.v1.WorkflowStep" json:"current_step,omitempty"`
+	FlightLeg     int32                  `protobuf:"varint,4,opt,name=flight_leg,json=flightLeg,proto3" json:"flight_leg,omitempty"`
+	LastError     string                 `protobuf:"bytes,5,opt,name=last_error,json=lastError,proto3" json:"last_error,omitempty"`
+	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowStatusInfo) Reset() {
+	*x = WorkflowStatusInfo{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowStatusInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowStatusInfo) ProtoMessage() {}
+
+func (x *WorkflowStatusInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowStatusInfo.ProtoReflect.Descriptor instead.
+func (*WorkflowStatusInfo) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *WorkflowStatusInfo) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *WorkflowStatusInfo) GetStatus() WorkflowStatus {
+	if x != nil {
+		return x.Status
+	}
+	return WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED
+}
+
+func (x *WorkflowStatusInfo) GetCurrentStep() WorkflowStep {
+	if x != nil {
+		return x.CurrentStep
+	}
+	return WorkflowStep_WORKFLOW_STEP_UNSPECIFIED
+}
+
+func (x *WorkflowStatusInfo) GetFlightLeg() int32 {
+	if x != nil {
+		return x.FlightLeg
+	}
+	return 0
+}
+
+func (x *WorkflowStatusInfo) GetLastError() string {
+	if x != nil {
+		return x.LastError
+	}
+	return ""
+}
+
+func (x *WorkflowStatusInfo) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
 var File_bossanova_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/plugin.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"^\n" +
+	"\x19bossanova/v1/plugin.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/models.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"^\n" +
 	"\n" +
 	"PluginInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
@@ -1777,7 +2436,53 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"baseBranch\"$\n" +
 	"\n" +
 	"NoOpAction\x12\x16\n" +
-	"\x06reason\x18\x01 \x01(\tR\x06reason*\x82\x01\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\"\x1f\n" +
+	"\x1dWorkflowServiceGetInfoRequest\"N\n" +
+	"\x1eWorkflowServiceGetInfoResponse\x12,\n" +
+	"\x04info\x18\x01 \x01(\v2\x18.bossanova.v1.PluginInfoR\x04info\"\xca\x01\n" +
+	"\x14StartWorkflowRequest\x12\x1b\n" +
+	"\tplan_path\x18\x01 \x01(\tR\bplanPath\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x17\n" +
+	"\arepo_id\x18\x03 \x01(\tR\x06repoId\x12\x19\n" +
+	"\bmax_legs\x18\x04 \x01(\x05R\amaxLegs\x12!\n" +
+	"\fconfirm_land\x18\x05 \x01(\bR\vconfirmLand\x12\x1f\n" +
+	"\vconfig_json\x18\x06 \x01(\tR\n" +
+	"configJson\"r\n" +
+	"\x15StartWorkflowResponse\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\x128\n" +
+	"\x06status\x18\x02 \x01(\v2 .bossanova.v1.WorkflowStatusInfoR\x06status\"7\n" +
+	"\x14PauseWorkflowRequest\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\"Q\n" +
+	"\x15PauseWorkflowResponse\x128\n" +
+	"\x06status\x18\x01 \x01(\v2 .bossanova.v1.WorkflowStatusInfoR\x06status\"8\n" +
+	"\x15ResumeWorkflowRequest\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\"R\n" +
+	"\x16ResumeWorkflowResponse\x128\n" +
+	"\x06status\x18\x01 \x01(\v2 .bossanova.v1.WorkflowStatusInfoR\x06status\"8\n" +
+	"\x15CancelWorkflowRequest\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\"R\n" +
+	"\x16CancelWorkflowResponse\x128\n" +
+	"\x06status\x18\x01 \x01(\v2 .bossanova.v1.WorkflowStatusInfoR\x06status\";\n" +
+	"\x18GetWorkflowStatusRequest\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\"U\n" +
+	"\x19GetWorkflowStatusResponse\x128\n" +
+	"\x06status\x18\x01 \x01(\v2 .bossanova.v1.WorkflowStatusInfoR\x06status\"\x92\x02\n" +
+	"\x12WorkflowStatusInfo\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x124\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1c.bossanova.v1.WorkflowStatusR\x06status\x12=\n" +
+	"\fcurrent_step\x18\x03 \x01(\x0e2\x1a.bossanova.v1.WorkflowStepR\vcurrentStep\x12\x1d\n" +
+	"\n" +
+	"flight_leg\x18\x04 \x01(\x05R\tflightLeg\x12\x1d\n" +
+	"\n" +
+	"last_error\x18\x05 \x01(\tR\tlastError\x129\n" +
+	"\n" +
+	"started_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt*\x82\x01\n" +
 	"\n" +
 	"TaskAction\x12\x1b\n" +
 	"\x17TASK_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
@@ -1800,7 +2505,14 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\aGetInfo\x12,.bossanova.v1.SchedulerServiceGetInfoRequest\x1a-.bossanova.v1.SchedulerServiceGetInfoResponse\x12R\n" +
 	"\vGetSchedule\x12 .bossanova.v1.GetScheduleRequest\x1a!.bossanova.v1.GetScheduleResponse\x12O\n" +
 	"\n" +
-	"ExecuteJob\x12\x1f.bossanova.v1.ExecuteJobRequest\x1a .bossanova.v1.ExecuteJobResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"ExecuteJob\x12\x1f.bossanova.v1.ExecuteJobRequest\x1a .bossanova.v1.ExecuteJobResponse2\xcb\x04\n" +
+	"\x0fWorkflowService\x12d\n" +
+	"\aGetInfo\x12+.bossanova.v1.WorkflowServiceGetInfoRequest\x1a,.bossanova.v1.WorkflowServiceGetInfoResponse\x12X\n" +
+	"\rStartWorkflow\x12\".bossanova.v1.StartWorkflowRequest\x1a#.bossanova.v1.StartWorkflowResponse\x12X\n" +
+	"\rPauseWorkflow\x12\".bossanova.v1.PauseWorkflowRequest\x1a#.bossanova.v1.PauseWorkflowResponse\x12[\n" +
+	"\x0eResumeWorkflow\x12#.bossanova.v1.ResumeWorkflowRequest\x1a$.bossanova.v1.ResumeWorkflowResponse\x12[\n" +
+	"\x0eCancelWorkflow\x12#.bossanova.v1.CancelWorkflowRequest\x1a$.bossanova.v1.CancelWorkflowResponse\x12d\n" +
+	"\x11GetWorkflowStatus\x12&.bossanova.v1.GetWorkflowStatusRequest\x1a'.bossanova.v1.GetWorkflowStatusResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_plugin_proto_rawDescOnce sync.Once
@@ -1815,7 +2527,7 @@ func file_bossanova_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
 var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(TaskAction)(0),                           // 0: bossanova.v1.TaskAction
 	(TaskItemStatus)(0),                       // 1: bossanova.v1.TaskItemStatus
@@ -1846,7 +2558,22 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(*JobAction)(nil),                         // 26: bossanova.v1.JobAction
 	(*CreateSessionAction)(nil),               // 27: bossanova.v1.CreateSessionAction
 	(*NoOpAction)(nil),                        // 28: bossanova.v1.NoOpAction
-	(*timestamppb.Timestamp)(nil),             // 29: google.protobuf.Timestamp
+	(*WorkflowServiceGetInfoRequest)(nil),     // 29: bossanova.v1.WorkflowServiceGetInfoRequest
+	(*WorkflowServiceGetInfoResponse)(nil),    // 30: bossanova.v1.WorkflowServiceGetInfoResponse
+	(*StartWorkflowRequest)(nil),              // 31: bossanova.v1.StartWorkflowRequest
+	(*StartWorkflowResponse)(nil),             // 32: bossanova.v1.StartWorkflowResponse
+	(*PauseWorkflowRequest)(nil),              // 33: bossanova.v1.PauseWorkflowRequest
+	(*PauseWorkflowResponse)(nil),             // 34: bossanova.v1.PauseWorkflowResponse
+	(*ResumeWorkflowRequest)(nil),             // 35: bossanova.v1.ResumeWorkflowRequest
+	(*ResumeWorkflowResponse)(nil),            // 36: bossanova.v1.ResumeWorkflowResponse
+	(*CancelWorkflowRequest)(nil),             // 37: bossanova.v1.CancelWorkflowRequest
+	(*CancelWorkflowResponse)(nil),            // 38: bossanova.v1.CancelWorkflowResponse
+	(*GetWorkflowStatusRequest)(nil),          // 39: bossanova.v1.GetWorkflowStatusRequest
+	(*GetWorkflowStatusResponse)(nil),         // 40: bossanova.v1.GetWorkflowStatusResponse
+	(*WorkflowStatusInfo)(nil),                // 41: bossanova.v1.WorkflowStatusInfo
+	(*timestamppb.Timestamp)(nil),             // 42: google.protobuf.Timestamp
+	(WorkflowStatus)(0),                       // 43: bossanova.v1.WorkflowStatus
+	(WorkflowStep)(0),                         // 44: bossanova.v1.WorkflowStep
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
@@ -1856,39 +2583,60 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	0,  // 4: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
 	1,  // 5: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
 	16, // 6: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
-	29, // 7: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
+	42, // 7: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
 	17, // 8: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
 	18, // 9: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
 	19, // 10: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
 	20, // 11: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
 	11, // 12: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
 	23, // 13: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
-	29, // 14: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
-	29, // 15: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
+	42, // 14: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
+	42, // 15: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
 	26, // 16: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
 	27, // 17: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
 	28, // 18: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
-	3,  // 19: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
-	9,  // 20: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
-	12, // 21: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
-	5,  // 22: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
-	14, // 23: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
-	7,  // 24: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
-	21, // 25: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
-	24, // 26: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
-	4,  // 27: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
-	10, // 28: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
-	13, // 29: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
-	6,  // 30: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
-	15, // 31: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
-	8,  // 32: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
-	22, // 33: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
-	25, // 34: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
-	27, // [27:35] is the sub-list for method output_type
-	19, // [19:27] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	2,  // 19: bossanova.v1.WorkflowServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	41, // 20: bossanova.v1.StartWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	41, // 21: bossanova.v1.PauseWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	41, // 22: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	41, // 23: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	41, // 24: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	43, // 25: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
+	44, // 26: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
+	42, // 27: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
+	3,  // 28: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
+	9,  // 29: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
+	12, // 30: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
+	5,  // 31: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
+	14, // 32: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
+	7,  // 33: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
+	21, // 34: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
+	24, // 35: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
+	29, // 36: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
+	31, // 37: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
+	33, // 38: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
+	35, // 39: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
+	37, // 40: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
+	39, // 41: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
+	4,  // 42: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
+	10, // 43: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
+	13, // 44: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
+	6,  // 45: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
+	15, // 46: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
+	8,  // 47: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
+	22, // 48: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
+	25, // 49: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
+	30, // 50: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
+	32, // 51: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
+	34, // 52: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
+	36, // 53: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
+	38, // 54: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
+	40, // 55: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
+	42, // [42:56] is the sub-list for method output_type
+	28, // [28:42] is the sub-list for method input_type
+	28, // [28:28] is the sub-list for extension type_name
+	28, // [28:28] is the sub-list for extension extendee
+	0,  // [0:28] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_plugin_proto_init() }
@@ -1896,6 +2644,7 @@ func file_bossanova_v1_plugin_proto_init() {
 	if File_bossanova_v1_plugin_proto != nil {
 		return
 	}
+	file_bossanova_v1_models_proto_init()
 	file_bossanova_v1_plugin_proto_msgTypes[7].OneofWrappers = []any{}
 	file_bossanova_v1_plugin_proto_msgTypes[14].OneofWrappers = []any{
 		(*EventNotification_TaskReady)(nil),
@@ -1915,9 +2664,9 @@ func file_bossanova_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_plugin_proto_rawDesc), len(file_bossanova_v1_plugin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   27,
+			NumMessages:   40,
 			NumExtensions: 0,
-			NumServices:   3,
+			NumServices:   4,
 		},
 		GoTypes:           file_bossanova_v1_plugin_proto_goTypes,
 		DependencyIndexes: file_bossanova_v1_plugin_proto_depIdxs,

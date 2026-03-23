@@ -51,6 +51,29 @@ service DaemonService {
 
   // VCS event delivery (orchestrator → daemon via webhook routing)
   rpc DeliverVCSEvent(DeliverVCSEventRequest) returns (DeliverVCSEventResponse);
+
+  // --- Autopilot ---
+
+  // StartAutopilot begins a new autopilot workflow for a plan file.
+  rpc StartAutopilot(StartAutopilotRequest) returns (StartAutopilotResponse);
+
+  // PauseAutopilot gracefully pauses a running workflow.
+  rpc PauseAutopilot(PauseAutopilotRequest) returns (PauseAutopilotResponse);
+
+  // ResumeAutopilot resumes a paused workflow.
+  rpc ResumeAutopilot(ResumeAutopilotRequest) returns (ResumeAutopilotResponse);
+
+  // CancelAutopilot cancels a workflow.
+  rpc CancelAutopilot(CancelAutopilotRequest) returns (CancelAutopilotResponse);
+
+  // GetAutopilotStatus returns the status of a specific workflow.
+  rpc GetAutopilotStatus(GetAutopilotStatusRequest) returns (GetAutopilotStatusResponse);
+
+  // ListAutopilotWorkflows lists recent autopilot workflows.
+  rpc ListAutopilotWorkflows(ListAutopilotWorkflowsRequest) returns (ListAutopilotWorkflowsResponse);
+
+  // StreamAutopilotOutput streams real-time output from a running workflow.
+  rpc StreamAutopilotOutput(StreamAutopilotOutputRequest) returns (stream StreamAutopilotOutputResponse);
 }
 
 // --- Context Resolution ---
@@ -374,3 +397,89 @@ message DeliverVCSEventRequest {
 }
 
 message DeliverVCSEventResponse {}
+
+// --- Autopilot ---
+
+message StartAutopilotRequest {
+  // Path to the plan file (relative to repo root).
+  string plan_path = 1;
+  // Override max flight legs (0 = use default).
+  int32 max_legs = 2;
+  // Pause for user confirmation before landing.
+  bool confirm_land = 3;
+  // Working directory (used to resolve repo context).
+  string working_directory = 4;
+}
+
+message StartAutopilotResponse {
+  AutopilotWorkflow workflow = 1;
+}
+
+message PauseAutopilotRequest {
+  string workflow_id = 1;
+}
+
+message PauseAutopilotResponse {
+  AutopilotWorkflow workflow = 1;
+}
+
+message ResumeAutopilotRequest {
+  string workflow_id = 1;
+}
+
+message ResumeAutopilotResponse {
+  AutopilotWorkflow workflow = 1;
+}
+
+message CancelAutopilotRequest {
+  string workflow_id = 1;
+}
+
+message CancelAutopilotResponse {
+  AutopilotWorkflow workflow = 1;
+}
+
+message GetAutopilotStatusRequest {
+  string workflow_id = 1;
+}
+
+message GetAutopilotStatusResponse {
+  AutopilotWorkflow workflow = 1;
+}
+
+message ListAutopilotWorkflowsRequest {
+  // If true, include completed and cancelled workflows.
+  bool include_all = 1;
+}
+
+message ListAutopilotWorkflowsResponse {
+  repeated AutopilotWorkflow workflows = 1;
+}
+
+message StreamAutopilotOutputRequest {
+  string workflow_id = 1;
+}
+
+message StreamAutopilotOutputResponse {
+  oneof event {
+    // A line of output from the Claude process.
+    OutputLine output_line = 1;
+    // Workflow status changed.
+    AutopilotWorkflow status_update = 2;
+  }
+}
+
+// AutopilotWorkflow is the daemon-facing view of an autopilot workflow.
+message AutopilotWorkflow {
+  string id = 1;
+  WorkflowStatus status = 2;
+  WorkflowStep current_step = 3;
+  int32 flight_leg = 4;
+  int32 max_legs = 5;
+  string plan_path = 6;
+  string last_error = 7;
+  string session_id = 8;
+  string repo_id = 9;
+  google.protobuf.Timestamp started_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+}

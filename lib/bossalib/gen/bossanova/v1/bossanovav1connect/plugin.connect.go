@@ -27,6 +27,8 @@ const (
 	EventSourceServiceName = "bossanova.v1.EventSourceService"
 	// SchedulerServiceName is the fully-qualified name of the SchedulerService service.
 	SchedulerServiceName = "bossanova.v1.SchedulerService"
+	// WorkflowServiceName is the fully-qualified name of the WorkflowService service.
+	WorkflowServiceName = "bossanova.v1.WorkflowService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -61,6 +63,23 @@ const (
 	// SchedulerServiceExecuteJobProcedure is the fully-qualified name of the SchedulerService's
 	// ExecuteJob RPC.
 	SchedulerServiceExecuteJobProcedure = "/bossanova.v1.SchedulerService/ExecuteJob"
+	// WorkflowServiceGetInfoProcedure is the fully-qualified name of the WorkflowService's GetInfo RPC.
+	WorkflowServiceGetInfoProcedure = "/bossanova.v1.WorkflowService/GetInfo"
+	// WorkflowServiceStartWorkflowProcedure is the fully-qualified name of the WorkflowService's
+	// StartWorkflow RPC.
+	WorkflowServiceStartWorkflowProcedure = "/bossanova.v1.WorkflowService/StartWorkflow"
+	// WorkflowServicePauseWorkflowProcedure is the fully-qualified name of the WorkflowService's
+	// PauseWorkflow RPC.
+	WorkflowServicePauseWorkflowProcedure = "/bossanova.v1.WorkflowService/PauseWorkflow"
+	// WorkflowServiceResumeWorkflowProcedure is the fully-qualified name of the WorkflowService's
+	// ResumeWorkflow RPC.
+	WorkflowServiceResumeWorkflowProcedure = "/bossanova.v1.WorkflowService/ResumeWorkflow"
+	// WorkflowServiceCancelWorkflowProcedure is the fully-qualified name of the WorkflowService's
+	// CancelWorkflow RPC.
+	WorkflowServiceCancelWorkflowProcedure = "/bossanova.v1.WorkflowService/CancelWorkflow"
+	// WorkflowServiceGetWorkflowStatusProcedure is the fully-qualified name of the WorkflowService's
+	// GetWorkflowStatus RPC.
+	WorkflowServiceGetWorkflowStatusProcedure = "/bossanova.v1.WorkflowService/GetWorkflowStatus"
 )
 
 // TaskSourceServiceClient is a client for the bossanova.v1.TaskSourceService service.
@@ -417,4 +436,218 @@ func (UnimplementedSchedulerServiceHandler) GetSchedule(context.Context, *connec
 
 func (UnimplementedSchedulerServiceHandler) ExecuteJob(context.Context, *connect.Request[v1.ExecuteJobRequest]) (*connect.Response[v1.ExecuteJobResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.SchedulerService.ExecuteJob is not implemented"))
+}
+
+// WorkflowServiceClient is a client for the bossanova.v1.WorkflowService service.
+type WorkflowServiceClient interface {
+	// GetInfo returns the plugin's name, version, and capabilities.
+	GetInfo(context.Context, *connect.Request[v1.WorkflowServiceGetInfoRequest]) (*connect.Response[v1.WorkflowServiceGetInfoResponse], error)
+	// StartWorkflow begins a new autopilot workflow for a plan file.
+	StartWorkflow(context.Context, *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error)
+	// PauseWorkflow gracefully pauses a running workflow after the current flight leg.
+	PauseWorkflow(context.Context, *connect.Request[v1.PauseWorkflowRequest]) (*connect.Response[v1.PauseWorkflowResponse], error)
+	// ResumeWorkflow resumes a paused workflow from where it left off.
+	ResumeWorkflow(context.Context, *connect.Request[v1.ResumeWorkflowRequest]) (*connect.Response[v1.ResumeWorkflowResponse], error)
+	// CancelWorkflow terminates a workflow. If a flight leg is running, waits for
+	// it to finish then marks the workflow as cancelled.
+	CancelWorkflow(context.Context, *connect.Request[v1.CancelWorkflowRequest]) (*connect.Response[v1.CancelWorkflowResponse], error)
+	// GetWorkflowStatus returns the current status of a workflow.
+	GetWorkflowStatus(context.Context, *connect.Request[v1.GetWorkflowStatusRequest]) (*connect.Response[v1.GetWorkflowStatusResponse], error)
+}
+
+// NewWorkflowServiceClient constructs a client for the bossanova.v1.WorkflowService service. By
+// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
+// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
+// connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) WorkflowServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	workflowServiceMethods := v1.File_bossanova_v1_plugin_proto.Services().ByName("WorkflowService").Methods()
+	return &workflowServiceClient{
+		getInfo: connect.NewClient[v1.WorkflowServiceGetInfoRequest, v1.WorkflowServiceGetInfoResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetInfoProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetInfo")),
+			connect.WithClientOptions(opts...),
+		),
+		startWorkflow: connect.NewClient[v1.StartWorkflowRequest, v1.StartWorkflowResponse](
+			httpClient,
+			baseURL+WorkflowServiceStartWorkflowProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("StartWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		pauseWorkflow: connect.NewClient[v1.PauseWorkflowRequest, v1.PauseWorkflowResponse](
+			httpClient,
+			baseURL+WorkflowServicePauseWorkflowProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("PauseWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		resumeWorkflow: connect.NewClient[v1.ResumeWorkflowRequest, v1.ResumeWorkflowResponse](
+			httpClient,
+			baseURL+WorkflowServiceResumeWorkflowProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("ResumeWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		cancelWorkflow: connect.NewClient[v1.CancelWorkflowRequest, v1.CancelWorkflowResponse](
+			httpClient,
+			baseURL+WorkflowServiceCancelWorkflowProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("CancelWorkflow")),
+			connect.WithClientOptions(opts...),
+		),
+		getWorkflowStatus: connect.NewClient[v1.GetWorkflowStatusRequest, v1.GetWorkflowStatusResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetWorkflowStatusProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowStatus")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// workflowServiceClient implements WorkflowServiceClient.
+type workflowServiceClient struct {
+	getInfo           *connect.Client[v1.WorkflowServiceGetInfoRequest, v1.WorkflowServiceGetInfoResponse]
+	startWorkflow     *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
+	pauseWorkflow     *connect.Client[v1.PauseWorkflowRequest, v1.PauseWorkflowResponse]
+	resumeWorkflow    *connect.Client[v1.ResumeWorkflowRequest, v1.ResumeWorkflowResponse]
+	cancelWorkflow    *connect.Client[v1.CancelWorkflowRequest, v1.CancelWorkflowResponse]
+	getWorkflowStatus *connect.Client[v1.GetWorkflowStatusRequest, v1.GetWorkflowStatusResponse]
+}
+
+// GetInfo calls bossanova.v1.WorkflowService.GetInfo.
+func (c *workflowServiceClient) GetInfo(ctx context.Context, req *connect.Request[v1.WorkflowServiceGetInfoRequest]) (*connect.Response[v1.WorkflowServiceGetInfoResponse], error) {
+	return c.getInfo.CallUnary(ctx, req)
+}
+
+// StartWorkflow calls bossanova.v1.WorkflowService.StartWorkflow.
+func (c *workflowServiceClient) StartWorkflow(ctx context.Context, req *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error) {
+	return c.startWorkflow.CallUnary(ctx, req)
+}
+
+// PauseWorkflow calls bossanova.v1.WorkflowService.PauseWorkflow.
+func (c *workflowServiceClient) PauseWorkflow(ctx context.Context, req *connect.Request[v1.PauseWorkflowRequest]) (*connect.Response[v1.PauseWorkflowResponse], error) {
+	return c.pauseWorkflow.CallUnary(ctx, req)
+}
+
+// ResumeWorkflow calls bossanova.v1.WorkflowService.ResumeWorkflow.
+func (c *workflowServiceClient) ResumeWorkflow(ctx context.Context, req *connect.Request[v1.ResumeWorkflowRequest]) (*connect.Response[v1.ResumeWorkflowResponse], error) {
+	return c.resumeWorkflow.CallUnary(ctx, req)
+}
+
+// CancelWorkflow calls bossanova.v1.WorkflowService.CancelWorkflow.
+func (c *workflowServiceClient) CancelWorkflow(ctx context.Context, req *connect.Request[v1.CancelWorkflowRequest]) (*connect.Response[v1.CancelWorkflowResponse], error) {
+	return c.cancelWorkflow.CallUnary(ctx, req)
+}
+
+// GetWorkflowStatus calls bossanova.v1.WorkflowService.GetWorkflowStatus.
+func (c *workflowServiceClient) GetWorkflowStatus(ctx context.Context, req *connect.Request[v1.GetWorkflowStatusRequest]) (*connect.Response[v1.GetWorkflowStatusResponse], error) {
+	return c.getWorkflowStatus.CallUnary(ctx, req)
+}
+
+// WorkflowServiceHandler is an implementation of the bossanova.v1.WorkflowService service.
+type WorkflowServiceHandler interface {
+	// GetInfo returns the plugin's name, version, and capabilities.
+	GetInfo(context.Context, *connect.Request[v1.WorkflowServiceGetInfoRequest]) (*connect.Response[v1.WorkflowServiceGetInfoResponse], error)
+	// StartWorkflow begins a new autopilot workflow for a plan file.
+	StartWorkflow(context.Context, *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error)
+	// PauseWorkflow gracefully pauses a running workflow after the current flight leg.
+	PauseWorkflow(context.Context, *connect.Request[v1.PauseWorkflowRequest]) (*connect.Response[v1.PauseWorkflowResponse], error)
+	// ResumeWorkflow resumes a paused workflow from where it left off.
+	ResumeWorkflow(context.Context, *connect.Request[v1.ResumeWorkflowRequest]) (*connect.Response[v1.ResumeWorkflowResponse], error)
+	// CancelWorkflow terminates a workflow. If a flight leg is running, waits for
+	// it to finish then marks the workflow as cancelled.
+	CancelWorkflow(context.Context, *connect.Request[v1.CancelWorkflowRequest]) (*connect.Response[v1.CancelWorkflowResponse], error)
+	// GetWorkflowStatus returns the current status of a workflow.
+	GetWorkflowStatus(context.Context, *connect.Request[v1.GetWorkflowStatusRequest]) (*connect.Response[v1.GetWorkflowStatusResponse], error)
+}
+
+// NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
+// path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	workflowServiceMethods := v1.File_bossanova_v1_plugin_proto.Services().ByName("WorkflowService").Methods()
+	workflowServiceGetInfoHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetInfoProcedure,
+		svc.GetInfo,
+		connect.WithSchema(workflowServiceMethods.ByName("GetInfo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceStartWorkflowHandler := connect.NewUnaryHandler(
+		WorkflowServiceStartWorkflowProcedure,
+		svc.StartWorkflow,
+		connect.WithSchema(workflowServiceMethods.ByName("StartWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServicePauseWorkflowHandler := connect.NewUnaryHandler(
+		WorkflowServicePauseWorkflowProcedure,
+		svc.PauseWorkflow,
+		connect.WithSchema(workflowServiceMethods.ByName("PauseWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceResumeWorkflowHandler := connect.NewUnaryHandler(
+		WorkflowServiceResumeWorkflowProcedure,
+		svc.ResumeWorkflow,
+		connect.WithSchema(workflowServiceMethods.ByName("ResumeWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceCancelWorkflowHandler := connect.NewUnaryHandler(
+		WorkflowServiceCancelWorkflowProcedure,
+		svc.CancelWorkflow,
+		connect.WithSchema(workflowServiceMethods.ByName("CancelWorkflow")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceGetWorkflowStatusHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetWorkflowStatusProcedure,
+		svc.GetWorkflowStatus,
+		connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/bossanova.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case WorkflowServiceGetInfoProcedure:
+			workflowServiceGetInfoHandler.ServeHTTP(w, r)
+		case WorkflowServiceStartWorkflowProcedure:
+			workflowServiceStartWorkflowHandler.ServeHTTP(w, r)
+		case WorkflowServicePauseWorkflowProcedure:
+			workflowServicePauseWorkflowHandler.ServeHTTP(w, r)
+		case WorkflowServiceResumeWorkflowProcedure:
+			workflowServiceResumeWorkflowHandler.ServeHTTP(w, r)
+		case WorkflowServiceCancelWorkflowProcedure:
+			workflowServiceCancelWorkflowHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetWorkflowStatusProcedure:
+			workflowServiceGetWorkflowStatusHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedWorkflowServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedWorkflowServiceHandler struct{}
+
+func (UnimplementedWorkflowServiceHandler) GetInfo(context.Context, *connect.Request[v1.WorkflowServiceGetInfoRequest]) (*connect.Response[v1.WorkflowServiceGetInfoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.GetInfo is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) StartWorkflow(context.Context, *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.StartWorkflow is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) PauseWorkflow(context.Context, *connect.Request[v1.PauseWorkflowRequest]) (*connect.Response[v1.PauseWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.PauseWorkflow is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) ResumeWorkflow(context.Context, *connect.Request[v1.ResumeWorkflowRequest]) (*connect.Response[v1.ResumeWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.ResumeWorkflow is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) CancelWorkflow(context.Context, *connect.Request[v1.CancelWorkflowRequest]) (*connect.Response[v1.CancelWorkflowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.CancelWorkflow is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) GetWorkflowStatus(context.Context, *connect.Request[v1.GetWorkflowStatusRequest]) (*connect.Response[v1.GetWorkflowStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.GetWorkflowStatus is not implemented"))
 }

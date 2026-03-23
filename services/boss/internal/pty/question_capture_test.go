@@ -165,7 +165,7 @@ Do nothing else. Just ask the question.`
 				t.Log("Pattern 1 (selector ❯): no match")
 			}
 
-			if questionRe.Match(clean) {
+			if idx := bytes.LastIndex(clean, []byte("⏺")); idx >= 0 && trailingQuestionRe.Match(clean[idx:]) {
 				t.Log("Pattern 2 (⏺...?): MATCHED")
 			} else {
 				t.Log("Pattern 2 (⏺...?): no match")

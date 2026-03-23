@@ -121,7 +121,7 @@ func parseWorkflowConfig(configJSON string) (*workflowConfig, error) {
 
 // --- WorkflowService RPC implementations ---
 
-func (o *orchestrator) GetInfo(_ context.Context, _ *bossanovav1.WorkflowServiceGetInfoRequest) (*bossanovav1.WorkflowServiceGetInfoResponse, error) {
+func (o *orchestrator) GetInfo(_ context.Context, _ *bossanovav1.WorkflowServiceGetInfoRequest) (*bossanovav1.WorkflowServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.WorkflowServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         "autopilot",

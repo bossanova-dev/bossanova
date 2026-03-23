@@ -16,7 +16,7 @@ Use file-a-flight-plan when:
 - You have a rough task plan, feature request, or design document
 - You need to produce a detailed implementation plan before coding
 - The plan needs post-flight checks (the agent should be able to verify its own work)
-- You want bd tasks with handoff checkpoints ready for `/take-off`
+- You want bd tasks with handoff checkpoints ready for `/boss-implement`
 
 ---
 
@@ -37,12 +37,12 @@ This skill produces:
 
 1. **A comprehensive plan file** saved to `docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` (e.g., `docs/plans/2026-02-06-1229-user-profile.md`)
 2. **A Flight ID** for task isolation across parallel work streams
-3. **Post-flight checks** embedded in the plan so the agent can verify its own work via `/post-flight-checks`
+3. **Post-flight checks** embedded in the plan so the agent can verify its own work via `/boss-verify`
 
-This skill does **NOT** create bd tasks. That is `/pre-flight-checks`'s job. The workflow is:
+This skill does **NOT** create bd tasks. That is `/boss-plan`'s job. The workflow is:
 
 ```
-/file-a-flight-plan → human approves → /pre-flight-checks → /take-off
+/boss-flight-plan → human approves → /boss-plan → /boss-implement
 ```
 
 ---
@@ -64,9 +64,9 @@ The Flight ID is `fp-` followed by the plan filename (without extension).
 
 The Flight ID is embedded in the plan document header and used by subsequent skills:
 
-- `/pre-flight-checks` uses it to label all created tasks with `--labels "flight:fp-..."`
-- `/take-off` and `/resume-handoff` use it to filter tasks with `--label "flight:fp-..."`
-- `/handoff-task` includes it in handoff documents for continuity
+- `/boss-plan` uses it to label all created tasks with `--labels "flight:fp-..."`
+- `/boss-implement` and `/boss-resume` use it to filter tasks with `--label "flight:fp-..."`
+- `/boss-handoff` includes it in handoff documents for continuity
 
 ---
 
@@ -218,13 +218,13 @@ make format
 
 ### Post-Flight Checks Guidance
 
-Each flight leg's Post-Flight Checks section should describe what the agent needs to verify when it runs `/post-flight-checks` at the end of the leg. The checks should be:
+Each flight leg's Post-Flight Checks section should describe what the agent needs to verify when it runs `/boss-verify` at the end of the leg. The checks should be:
 
 - **Spec-driven**: Derived from what the flight leg is supposed to build
 - **Concrete**: Exact commands, URLs, or steps — not vague "verify it works"
 - **Automatable**: Prefer curl, Playwright, `make test`, CLI commands over manual inspection
 
-The agent will use these checks during `/post-flight-checks` to plan and execute verification tests in a fix-and-retry loop before handing off.
+The agent will use these checks during `/boss-verify` to plan and execute verification tests in a fix-and-retry loop before handing off.
 
 ---
 
@@ -382,8 +382,8 @@ The plan is saved at `docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md`.
 
 To proceed with implementation:
 1. Review and approve this plan
-2. Run `/pre-flight-checks docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` to create bd tasks (will use Flight ID: fp-<YYYY-MM-DD-HHmm>-<feature-name>)
-3. Run `/take-off docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` to begin execution
+2. Run `/boss-plan docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` to create bd tasks (will use Flight ID: fp-<YYYY-MM-DD-HHmm>-<feature-name>)
+3. Run `/boss-implement docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` to begin execution
 
 Please review the plan. Would you like any changes before we proceed?
 ```
@@ -412,7 +412,7 @@ Please review the plan. Would you like any changes before we proceed?
 
 - [ ] Complete plan presented
 - [ ] Test strategy summarized
-- [ ] Next steps include `/pre-flight-checks` then `/take-off`
+- [ ] Next steps include `/boss-plan` then `/boss-implement`
 - [ ] User approval requested
 - [ ] NOT proceeding until approved
 
@@ -435,19 +435,19 @@ Please review the plan. Would you like any changes before we proceed?
 
 ## Related Skills
 
-| Skill                 | Relationship                                          |
-| --------------------- | ----------------------------------------------------- |
-| `/pre-flight-checks`  | Next step: creates bd tasks from the plan             |
-| `/take-off`           | Executes the bd tasks created by `/pre-flight-checks` |
-| `/handoff-task`       | Handoff format used at checkpoints during `/take-off` |
-| `/resume-handoff`     | Resume work from a previous handoff checkpoint        |
-| `/post-flight-checks` | Runs verification tests at end of each flight leg     |
-| `/land-the-plane`     | End session with commit and push                      |
+| Skill             | Relationship                                                |
+| ----------------- | ----------------------------------------------------------- |
+| `/boss-plan`      | Next step: creates bd tasks from the plan                   |
+| `/boss-implement` | Executes the bd tasks created by `/boss-plan`               |
+| `/boss-handoff`   | Handoff format used at checkpoints during `/boss-implement` |
+| `/boss-resume`    | Resume work from a previous handoff checkpoint              |
+| `/boss-verify`    | Runs verification tests at end of each flight leg           |
+| `/boss-land`      | End session with commit and push                            |
 
 ### Typical Flow
 
 ```
-/file-a-flight-plan          ← YOU ARE HERE
+/boss-flight-plan          ← YOU ARE HERE
   ├── Read preliminary plan
   ├── Identify affected areas
   ├── Read design skills for each area
@@ -458,13 +458,13 @@ Please review the plan. Would you like any changes before we proceed?
 
 Human approves plan
 
-/pre-flight-checks            ← Next step
+/boss-plan            ← Next step
   ├── Create bd tasks from the plan
   ├── Set up dependencies
   └── Add [HANDOFF] checkpoints
 
-/take-off                     ← Execution
+/boss-implement                     ← Execution
   ├── Execute tasks flight leg by flight leg
-  ├── Run /post-flight-checks
+  ├── Run /boss-verify
   └── STOP at each [HANDOFF] for human review
 ```

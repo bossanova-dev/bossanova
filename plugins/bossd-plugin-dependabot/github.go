@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	goplugin "github.com/hashicorp/go-plugin"
-	"github.com/rs/zerolog"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 )
 

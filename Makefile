@@ -1,16 +1,17 @@
-.PHONY: all generate build test lint clean split format build-all \
-	test-bossalib test-boss test-bossd test-bosso \
-	lint-bossalib lint-boss lint-bossd lint-bosso lint-proto \
-	build-boss build-bossd build-bosso
+.PHONY: all generate build plugins test lint clean split format build-all \
+	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot \
+	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-proto \
+	build-boss build-bossd build-bosso build-autopilot build-dependabot
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
-all: clean generate format build build-all
+all: clean generate format build plugins build-all
 
 # Binaries output to bin/
 BIN_DIR := bin
 
 # All Go modules in the workspace
-MODULES := lib/bossalib services/boss services/bossd services/bosso
+MODULES := lib/bossalib services/boss services/bossd services/bosso \
+	plugins/bossd-plugin-autopilot plugins/bossd-plugin-dependabot
 
 # Suppress clang deployment-version warnings from CGO dependencies
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
@@ -45,7 +46,7 @@ $(GEN_STAMP): $(PROTO_SOURCES) $(WEB_DEPS_STAMP)
 	buf generate
 	@touch $(GEN_STAMP)
 
-## build: Build all three binaries (generates protos first if needed)
+## build: Build service binaries (generates protos first if needed)
 build: $(BIN_DIR)/boss $(BIN_DIR)/bossd $(BIN_DIR)/bosso
 
 $(BIN_DIR)/boss: $(GEN_STAMP)
@@ -56,6 +57,15 @@ $(BIN_DIR)/bossd: $(GEN_STAMP)
 
 $(BIN_DIR)/bosso: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
+
+$(BIN_DIR)/bossd-plugin-autopilot: $(GEN_STAMP)
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-autopilot ./plugins/bossd-plugin-autopilot
+
+$(BIN_DIR)/bossd-plugin-dependabot: $(GEN_STAMP)
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
+
+## plugins: Build all plugin binaries
+plugins: $(BIN_DIR)/bossd-plugin-autopilot $(BIN_DIR)/bossd-plugin-dependabot
 
 ## test: Run tests across all modules (generates protos first if needed)
 test: $(GEN_STAMP)
@@ -76,6 +86,12 @@ test-bossd:
 
 test-bosso:
 	$(MAKE) -C services/bosso test
+
+test-autopilot:
+	$(MAKE) -C plugins/bossd-plugin-autopilot test
+
+test-dependabot:
+	$(MAKE) -C plugins/bossd-plugin-dependabot test
 
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
 lint: $(GEN_STAMP)
@@ -101,6 +117,12 @@ lint-bossd:
 lint-bosso:
 	cd services/bosso && golangci-lint run ./...
 
+lint-autopilot:
+	cd plugins/bossd-plugin-autopilot && golangci-lint run ./...
+
+lint-dependabot:
+	cd plugins/bossd-plugin-dependabot && golangci-lint run ./...
+
 ## Per-module build targets (no generate dep — CI uses committed gen code)
 build-boss:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
@@ -110,6 +132,12 @@ build-bossd:
 
 build-bosso:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
+
+build-autopilot:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-autopilot ./plugins/bossd-plugin-autopilot
+
+build-dependabot:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
 
 ## format: Format Go code, web code, package.json files, and markdown
 format:

@@ -19,8 +19,10 @@ func TestScanHandoffDir(t *testing.T) {
 			name: "no files returns empty string",
 			setup: func(t *testing.T) (string, time.Time) {
 				dir := "testdata_handoff_empty"
-				os.MkdirAll(dir, 0o755)
-				t.Cleanup(func() { os.RemoveAll(dir) })
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(dir) })
 				return dir, time.Now().Add(-1 * time.Hour)
 			},
 			wantEmpty: true,
@@ -29,17 +31,23 @@ func TestScanHandoffDir(t *testing.T) {
 			name: "one new file returns its path",
 			setup: func(t *testing.T) (string, time.Time) {
 				dir := "testdata_handoff_one"
-				os.MkdirAll(dir, 0o755)
-				t.Cleanup(func() { os.RemoveAll(dir) })
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(dir) })
 				since := time.Now()
 				f, err := os.Create(filepath.Join(dir, "handoff-001.md"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				f.Close()
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
 				// Set mtime to future.
 				futureTime := since.Add(1 * time.Hour)
-				os.Chtimes(f.Name(), futureTime, futureTime)
+				if err := os.Chtimes(f.Name(), futureTime, futureTime); err != nil {
+					t.Fatal(err)
+				}
 				return dir, since
 			},
 			wantFile: true,
@@ -48,8 +56,10 @@ func TestScanHandoffDir(t *testing.T) {
 			name: "multiple files picks newest by mtime",
 			setup: func(t *testing.T) (string, time.Time) {
 				dir := "testdata_handoff_multi"
-				os.MkdirAll(dir, 0o755)
-				t.Cleanup(func() { os.RemoveAll(dir) })
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(dir) })
 				since := time.Now()
 
 				// Older file.
@@ -57,16 +67,24 @@ func TestScanHandoffDir(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				f1.Close()
-				os.Chtimes(f1.Name(), since.Add(1*time.Hour), since.Add(1*time.Hour))
+				if err := f1.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(f1.Name(), since.Add(1*time.Hour), since.Add(1*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
 
 				// Newer file.
 				f2, err := os.Create(filepath.Join(dir, "handoff-new.md"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				f2.Close()
-				os.Chtimes(f2.Name(), since.Add(2*time.Hour), since.Add(2*time.Hour))
+				if err := f2.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(f2.Name(), since.Add(2*time.Hour), since.Add(2*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
 
 				return dir, since
 			},
@@ -76,17 +94,23 @@ func TestScanHandoffDir(t *testing.T) {
 			name: "old files only returns empty string",
 			setup: func(t *testing.T) (string, time.Time) {
 				dir := "testdata_handoff_old"
-				os.MkdirAll(dir, 0o755)
-				t.Cleanup(func() { os.RemoveAll(dir) })
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 				f, err := os.Create(filepath.Join(dir, "handoff-ancient.md"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				f.Close()
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
 				// Set mtime to the past.
 				pastTime := time.Now().Add(-2 * time.Hour)
-				os.Chtimes(f.Name(), pastTime, pastTime)
+				if err := os.Chtimes(f.Name(), pastTime, pastTime); err != nil {
+					t.Fatal(err)
+				}
 
 				// Since is after the file's mtime.
 				return dir, time.Now().Add(-1 * time.Hour)
@@ -118,8 +142,10 @@ func TestScanHandoffDir(t *testing.T) {
 			name: "mixed old and new files returns only new",
 			setup: func(t *testing.T) (string, time.Time) {
 				dir := "testdata_handoff_mixed"
-				os.MkdirAll(dir, 0o755)
-				t.Cleanup(func() { os.RemoveAll(dir) })
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 				since := time.Now()
 
@@ -128,16 +154,24 @@ func TestScanHandoffDir(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				f1.Close()
-				os.Chtimes(f1.Name(), since.Add(-1*time.Hour), since.Add(-1*time.Hour))
+				if err := f1.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(f1.Name(), since.Add(-1*time.Hour), since.Add(-1*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
 
 				// New file (after since).
 				f2, err := os.Create(filepath.Join(dir, "handoff-after.md"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				f2.Close()
-				os.Chtimes(f2.Name(), since.Add(1*time.Hour), since.Add(1*time.Hour))
+				if err := f2.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(f2.Name(), since.Add(1*time.Hour), since.Add(1*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
 
 				return dir, since
 			},
@@ -147,8 +181,10 @@ func TestScanHandoffDir(t *testing.T) {
 			name: "subdirectories are skipped",
 			setup: func(t *testing.T) (string, time.Time) {
 				dir := "testdata_handoff_subdir"
-				os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
-				t.Cleanup(func() { os.RemoveAll(dir) })
+				if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(dir) })
 				return dir, time.Now().Add(-1 * time.Hour)
 			},
 			wantEmpty: true,
@@ -192,8 +228,10 @@ func TestScanHandoffDir(t *testing.T) {
 
 func TestScanHandoffDirPicksNewest(t *testing.T) {
 	dir := "testdata_handoff_newest"
-	os.MkdirAll(dir, 0o755)
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	since := time.Now()
 
@@ -213,9 +251,13 @@ func TestScanHandoffDirPicksNewest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		file.Close()
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
 		mtime := since.Add(f.offset)
-		os.Chtimes(path, mtime, mtime)
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	result, err := scanHandoffDir(dir, since)

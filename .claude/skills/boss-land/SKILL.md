@@ -126,7 +126,7 @@ git log origin/main..HEAD --oneline
 
 ```bash
 # Run from repo root - automatically detects PR number
-.claude/skills/land-the-plane/add-pr-numbers.sh
+.claude/skills/boss-land/add-pr-numbers.sh
 ```
 
 **DO NOT skip this step.** Even if the branch is "up to date with origin", the commits still need PR numbers. The script compares against origin/main, not the feature branch.
@@ -329,7 +329,7 @@ Before saying "done", verify ALL items:
 | Dismissed failure as "pre-existing"  | Failure was fixable    | Verify on origin/main before dismissing. Missing generated code is NOT pre-existing — run `make`     |
 | Missing dependencies in worktree     | Generate/format fails  | Run `cd services/web && pnpm install` before `make` if node_modules is missing                       |
 | Pushed without asking                | User didn't approve    | ALWAYS ask "Do I have permission to push?" and WAIT for explicit "yes"                               |
-| Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/land-the-plane/add-pr-numbers.sh` to fix ALL commits                             |
+| Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/boss-land/add-pr-numbers.sh` to fix ALL commits                                  |
 | Reported issue but didn't fix        | Commits still broken   | You MUST run the script, not just report that commits need fixing                                    |
 | Used `origin/HEAD` not `origin/main` | Wrong comparison       | Always compare to `origin/main` to find all branch commits                                           |
 | Branch "up to date" so skipped       | Commits still need PR# | Even pushed commits need PR numbers - compare to main, not feature branch                            |
@@ -345,11 +345,11 @@ Before saying "done", verify ALL items:
 
 ## Related Skills
 
-| Skill                 | Relationship                            |
-| --------------------- | --------------------------------------- |
-| `/file-a-flight-plan` | Create plan before implementation       |
-| `/pre-flight-checks`  | Create bd tasks from plan               |
-| `/post-flight-checks` | Verify flight leg before handoff        |
-| `/take-off`           | Execute tasks, stopping at handoffs     |
-| `/handoff-task`       | Create handoff documents at checkpoints |
-| `/resume-handoff`     | Resume work from a previous handoff     |
+| Skill               | Relationship                            |
+| ------------------- | --------------------------------------- |
+| `/boss-flight-plan` | Create plan before implementation       |
+| `/boss-plan`        | Create bd tasks from plan               |
+| `/boss-verify`      | Verify flight leg before handoff        |
+| `/boss-implement`   | Execute tasks, stopping at handoffs     |
+| `/boss-handoff`     | Create handoff documents at checkpoints |
+| `/boss-resume`      | Resume work from a previous handoff     |

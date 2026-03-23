@@ -20,6 +20,7 @@ import (
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog"
@@ -46,12 +47,14 @@ type Server struct {
 	sessions    db.SessionStore
 	attempts    db.AttemptStore
 	claudeChats db.ClaudeChatStore
+	workflows   db.WorkflowStore
 	chatStatus  *status.Tracker
 	prDisplay   *status.PRTracker
 	lifecycle   *session.Lifecycle
 	claude      claude.ClaudeRunner
 	worktrees   gitpkg.WorktreeManager
 	provider    vcs.Provider
+	pluginHost  *plugin.Host
 	logger      zerolog.Logger
 	listener    net.Listener
 	srv         *http.Server
@@ -65,12 +68,14 @@ type Config struct {
 	Sessions    db.SessionStore
 	Attempts    db.AttemptStore
 	ClaudeChats db.ClaudeChatStore
+	Workflows   db.WorkflowStore
 	ChatStatus  *status.Tracker
 	PRDisplay   *status.PRTracker
 	Lifecycle   *session.Lifecycle
 	Claude      claude.ClaudeRunner
 	Worktrees   gitpkg.WorktreeManager
 	Provider    vcs.Provider
+	PluginHost  *plugin.Host
 	Logger      zerolog.Logger
 }
 
@@ -81,12 +86,14 @@ func New(cfg Config) *Server {
 		sessions:    cfg.Sessions,
 		attempts:    cfg.Attempts,
 		claudeChats: cfg.ClaudeChats,
+		workflows:   cfg.Workflows,
 		chatStatus:  cfg.ChatStatus,
 		prDisplay:   cfg.PRDisplay,
 		lifecycle:   cfg.Lifecycle,
 		claude:      cfg.Claude,
 		worktrees:   cfg.Worktrees,
 		provider:    cfg.Provider,
+		pluginHost:  cfg.PluginHost,
 		logger:      cfg.Logger,
 	}
 }
@@ -1080,6 +1087,303 @@ func (s *Server) ResolveContext(ctx context.Context, req *connect.Request[pb.Res
 
 	// Not inside any registered repo or worktree.
 	return connect.NewResponse(resp), nil
+}
+
+// --- Autopilot ---
+
+func (s *Server) StartAutopilot(ctx context.Context, req *connect.Request[pb.StartAutopilotRequest]) (*connect.Response[pb.StartAutopilotResponse], error) {
+	msg := req.Msg
+	if msg.PlanPath == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("plan_path is required"))
+	}
+
+	// Resolve repo and session context from working directory.
+	repoID, sessionID, err := s.resolveAutopilotContext(ctx, msg.WorkingDirectory)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Find the workflow service plugin.
+	wfService := s.getWorkflowService()
+	if wfService == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
+	}
+
+	// Delegate to the plugin.
+	resp, err := wfService.StartWorkflow(ctx, &pb.StartWorkflowRequest{
+		PlanPath:    msg.PlanPath,
+		SessionId:   sessionID,
+		RepoId:      repoID,
+		MaxLegs:     msg.MaxLegs,
+		ConfirmLand: msg.ConfirmLand,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start workflow: %w", err))
+	}
+
+	// Read the created workflow from the store.
+	w, err := s.workflows.Get(ctx, resp.GetWorkflowId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
+	}
+
+	return connect.NewResponse(&pb.StartAutopilotResponse{
+		Workflow: autopilotWorkflowToProto(w),
+	}), nil
+}
+
+func (s *Server) PauseAutopilot(ctx context.Context, req *connect.Request[pb.PauseAutopilotRequest]) (*connect.Response[pb.PauseAutopilotResponse], error) {
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
+	}
+
+	wfService := s.getWorkflowService()
+	if wfService == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
+	}
+
+	if _, err := wfService.PauseWorkflow(ctx, req.Msg.WorkflowId); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pause workflow: %w", err))
+	}
+
+	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
+	}
+
+	return connect.NewResponse(&pb.PauseAutopilotResponse{
+		Workflow: autopilotWorkflowToProto(w),
+	}), nil
+}
+
+func (s *Server) ResumeAutopilot(ctx context.Context, req *connect.Request[pb.ResumeAutopilotRequest]) (*connect.Response[pb.ResumeAutopilotResponse], error) {
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
+	}
+
+	wfService := s.getWorkflowService()
+	if wfService == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
+	}
+
+	if _, err := wfService.ResumeWorkflow(ctx, req.Msg.WorkflowId); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resume workflow: %w", err))
+	}
+
+	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
+	}
+
+	return connect.NewResponse(&pb.ResumeAutopilotResponse{
+		Workflow: autopilotWorkflowToProto(w),
+	}), nil
+}
+
+func (s *Server) CancelAutopilot(ctx context.Context, req *connect.Request[pb.CancelAutopilotRequest]) (*connect.Response[pb.CancelAutopilotResponse], error) {
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
+	}
+
+	wfService := s.getWorkflowService()
+	if wfService == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
+	}
+
+	if _, err := wfService.CancelWorkflow(ctx, req.Msg.WorkflowId); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("cancel workflow: %w", err))
+	}
+
+	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
+	}
+
+	return connect.NewResponse(&pb.CancelAutopilotResponse{
+		Workflow: autopilotWorkflowToProto(w),
+	}), nil
+}
+
+func (s *Server) GetAutopilotStatus(ctx context.Context, req *connect.Request[pb.GetAutopilotStatusRequest]) (*connect.Response[pb.GetAutopilotStatusResponse], error) {
+	if req.Msg.WorkflowId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
+	}
+
+	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workflow not found: %w", err))
+	}
+
+	return connect.NewResponse(&pb.GetAutopilotStatusResponse{
+		Workflow: autopilotWorkflowToProto(w),
+	}), nil
+}
+
+func (s *Server) ListAutopilotWorkflows(ctx context.Context, req *connect.Request[pb.ListAutopilotWorkflowsRequest]) (*connect.Response[pb.ListAutopilotWorkflowsResponse], error) {
+	var workflows []*models.Workflow
+	var err error
+
+	if req.Msg.IncludeAll {
+		workflows, err = s.workflows.List(ctx)
+	} else {
+		// Show only active workflows (running + paused) by default.
+		running, runErr := s.workflows.ListByStatus(ctx, string(models.WorkflowStatusRunning))
+		if runErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list running workflows: %w", runErr))
+		}
+		paused, pauseErr := s.workflows.ListByStatus(ctx, string(models.WorkflowStatusPaused))
+		if pauseErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list paused workflows: %w", pauseErr))
+		}
+		pending, pendErr := s.workflows.ListByStatus(ctx, string(models.WorkflowStatusPending))
+		if pendErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list pending workflows: %w", pendErr))
+		}
+		workflows = append(workflows, running...)
+		workflows = append(workflows, paused...)
+		workflows = append(workflows, pending...)
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workflows: %w", err))
+	}
+
+	pbWorkflows := make([]*pb.AutopilotWorkflow, len(workflows))
+	for i, w := range workflows {
+		pbWorkflows[i] = autopilotWorkflowToProto(w)
+	}
+
+	return connect.NewResponse(&pb.ListAutopilotWorkflowsResponse{
+		Workflows: pbWorkflows,
+	}), nil
+}
+
+func (s *Server) StreamAutopilotOutput(ctx context.Context, req *connect.Request[pb.StreamAutopilotOutputRequest], stream *connect.ServerStream[pb.StreamAutopilotOutputResponse]) error {
+	if req.Msg.WorkflowId == "" {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
+	}
+
+	// Get the workflow to find its session.
+	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
+	if err != nil {
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("workflow not found: %w", err))
+	}
+
+	// Send initial status.
+	if err := stream.Send(&pb.StreamAutopilotOutputResponse{
+		Event: &pb.StreamAutopilotOutputResponse_StatusUpdate{
+			StatusUpdate: autopilotWorkflowToProto(w),
+		},
+	}); err != nil {
+		return err
+	}
+
+	// Find the Claude session for this workflow's boss session.
+	sess, err := s.sessions.Get(ctx, w.SessionID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+	}
+
+	if sess.ClaudeSessionID == nil || !s.claude.IsRunning(*sess.ClaudeSessionID) {
+		// No active Claude process — send final status and return.
+		w, _ = s.workflows.Get(ctx, req.Msg.WorkflowId)
+		return stream.Send(&pb.StreamAutopilotOutputResponse{
+			Event: &pb.StreamAutopilotOutputResponse_StatusUpdate{
+				StatusUpdate: autopilotWorkflowToProto(w),
+			},
+		})
+	}
+
+	claudeSessionID := *sess.ClaudeSessionID
+
+	// Send existing ring buffer contents as initial burst.
+	history := s.claude.History(claudeSessionID)
+	for _, line := range history {
+		if err := stream.Send(&pb.StreamAutopilotOutputResponse{
+			Event: &pb.StreamAutopilotOutputResponse_OutputLine{
+				OutputLine: &pb.OutputLine{
+					Text:      line.Text,
+					Timestamp: timestamppb.New(line.Timestamp),
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	// Subscribe to new output lines.
+	ch, err := s.claude.Subscribe(ctx, claudeSessionID)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe: %w", err))
+	}
+
+	// Stream new lines until process exits or client disconnects.
+	for line := range ch {
+		if err := stream.Send(&pb.StreamAutopilotOutputResponse{
+			Event: &pb.StreamAutopilotOutputResponse_OutputLine{
+				OutputLine: &pb.OutputLine{
+					Text:      line.Text,
+					Timestamp: timestamppb.New(line.Timestamp),
+				},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	// Process exited — send final workflow status.
+	w, _ = s.workflows.Get(ctx, req.Msg.WorkflowId)
+	return stream.Send(&pb.StreamAutopilotOutputResponse{
+		Event: &pb.StreamAutopilotOutputResponse_StatusUpdate{
+			StatusUpdate: autopilotWorkflowToProto(w),
+		},
+	})
+}
+
+// resolveAutopilotContext resolves a working directory into a repo ID and session ID.
+func (s *Server) resolveAutopilotContext(ctx context.Context, workingDir string) (repoID, sessionID string, err error) {
+	if workingDir == "" {
+		return "", "", fmt.Errorf("working_directory is required")
+	}
+
+	absWD, err := filepath.Abs(workingDir)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve path: %w", err)
+	}
+
+	// Check repos and sessions for a match.
+	repos, err := s.repos.List(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("list repos: %w", err)
+	}
+
+	for _, repo := range repos {
+		sessions, err := s.sessions.List(ctx, repo.ID)
+		if err != nil {
+			continue
+		}
+		for _, sess := range sessions {
+			if sess.WorktreePath != "" && isSubdirOf(absWD, sess.WorktreePath) {
+				return repo.ID, sess.ID, nil
+			}
+		}
+		if isSubdirOf(absWD, repo.LocalPath) {
+			return repo.ID, "", nil
+		}
+	}
+
+	return "", "", fmt.Errorf("working directory not inside any registered repo: %s", workingDir)
+}
+
+// getWorkflowService returns the first available workflow service plugin.
+func (s *Server) getWorkflowService() plugin.WorkflowService {
+	if s.pluginHost == nil {
+		return nil
+	}
+	services := s.pluginHost.GetWorkflowServices()
+	if len(services) == 0 {
+		return nil
+	}
+	return services[0]
 }
 
 // isSubdirOf checks if child is the same as or a subdirectory of parent.

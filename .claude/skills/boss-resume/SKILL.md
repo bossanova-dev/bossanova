@@ -127,12 +127,12 @@ bd close <id>
 
 ### 3.6 Post-Flight Checks (Before Handoff)
 
-Before proceeding to a `[HANDOFF]` task, run `/post-flight-checks` to verify the flight leg's work. This runs quality gates, plans and executes verification tests based on the plan, and iterates until all checks pass.
+Before proceeding to a `[HANDOFF]` task, run `/boss-verify` to verify the flight leg's work. This runs quality gates, plans and executes verification tests based on the plan, and iterates until all checks pass.
 
 ### 3.7 Repeat Within Flight Leg or Handoff
 
 - **Regular task next (same flight leg)** -> Return to 3.1
-- **`[HANDOFF]` task next** -> Use `/handoff-task` to write the handoff to a file in `docs/handoffs/`, then output the continue command and run `/clear`
+- **`[HANDOFF]` task next** -> Use `/boss-handoff` to write the handoff to a file in `docs/handoffs/`, then output the continue command and run `/clear`
 
 ---
 
@@ -232,11 +232,11 @@ During execution:
 
 ## Related Skills
 
-| Skill                 | Relationship                            |
-| --------------------- | --------------------------------------- |
-| `/file-a-flight-plan` | Create plan before implementation       |
-| `/pre-flight-checks`  | Create bd tasks from plan               |
-| `/post-flight-checks` | Verify flight leg before handoff        |
-| `/take-off`           | Execute tasks, stopping at handoffs     |
-| `/handoff-task`       | Create handoff documents at checkpoints |
-| `/land-the-plane`     | End session with commit and push        |
+| Skill               | Relationship                            |
+| ------------------- | --------------------------------------- |
+| `/boss-flight-plan` | Create plan before implementation       |
+| `/boss-plan`        | Create bd tasks from plan               |
+| `/boss-verify`      | Verify flight leg before handoff        |
+| `/boss-implement`   | Execute tasks, stopping at handoffs     |
+| `/boss-handoff`     | Create handoff documents at checkpoints |
+| `/boss-land`        | End session with commit and push        |

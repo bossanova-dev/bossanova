@@ -91,6 +91,27 @@ func (s *stubClient) GetChatStatuses(context.Context, string) ([]*pb.ChatStatusE
 func (s *stubClient) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
 	panic("unused")
 }
+func (s *stubClient) StartAutopilot(context.Context, *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {
+	panic("unused")
+}
+func (s *stubClient) PauseAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
+	panic("unused")
+}
+func (s *stubClient) ResumeAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
+	panic("unused")
+}
+func (s *stubClient) CancelAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
+	panic("unused")
+}
+func (s *stubClient) GetAutopilotStatus(context.Context, string) (*pb.AutopilotWorkflow, error) {
+	panic("unused")
+}
+func (s *stubClient) ListAutopilotWorkflows(context.Context, *pb.ListAutopilotWorkflowsRequest) ([]*pb.AutopilotWorkflow, error) {
+	panic("unused")
+}
+func (s *stubClient) StreamAutopilotOutput(context.Context, string) (client.AutopilotOutputStream, error) {
+	panic("unused")
+}
 
 // --- Helpers ---
 

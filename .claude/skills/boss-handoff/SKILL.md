@@ -8,7 +8,7 @@ description: Writes a structured handoff document to docs/handoffs/ for flight l
 > **THIS SKILL ENDS WITH A FILE WRITE, CONTINUE COMMAND, AND /CLEAR**
 >
 > After completing this skill, you write the handoff to `docs/handoffs/`, output a continue command, and run `/clear`.
-> The next flight leg will be picked up via `/resume-handoff` in a fresh context.
+> The next flight leg will be picked up via `/boss-resume` in a fresh context.
 
 "Handoff" is the checkpoint process that happens at the end of each flight leg. Like a pilot's handoff between control towers, this ensures clean transitions with full context preservation.
 
@@ -41,19 +41,19 @@ bd close beads-xxx   # WRONG - skips post-flight checks and documentation
 **✅ CORRECT - Always invoke the skill:**
 
 ```
-/handoff-task
+/boss-handoff
 ```
 
 ---
 
 ## MANDATORY: Post-Flight Checks FIRST
 
-> **You MUST run `/post-flight-checks` BEFORE creating the handoff document.**
+> **You MUST run `/boss-verify` BEFORE creating the handoff document.**
 > Do NOT skip this step. Do NOT proceed if checks fail.
 
 ### Step 0: Run Post-Flight Checks
 
-Before ANY other handoff steps, invoke `/post-flight-checks`. This will:
+Before ANY other handoff steps, invoke `/boss-verify`. This will:
 
 1. Read the plan/spec for the current flight leg
 2. Run quality gates (`make format && make test`)
@@ -61,7 +61,7 @@ Before ANY other handoff steps, invoke `/post-flight-checks`. This will:
 4. Fix issues and iterate until all checks pass
 5. Declare confidence that the flight leg matches the spec
 
-**Do NOT proceed** to the handoff document until `/post-flight-checks` passes.
+**Do NOT proceed** to the handoff document until `/boss-verify` passes.
 
 ---
 
@@ -234,7 +234,7 @@ After generating the handoff content:
 
 4. **Output the continue command** to the user:
    ```
-   continue with: /resume-handoff docs/handoffs/YYYY-MM-DD-HHMM-descriptive-title.md
+   continue with: /boss-resume docs/handoffs/YYYY-MM-DD-HHMM-descriptive-title.md
    ```
 5. **Run `/clear`** to clear the context window
 
@@ -245,12 +245,12 @@ Flight Leg 1 complete.
 
 **Post-flight checks passed:** quality gates ✓, spec verification ✓
 
-continue with: /resume-handoff docs/handoffs/2026-02-09-1131-core-types-implementation.md
+continue with: /boss-resume docs/handoffs/2026-02-09-1131-core-types-implementation.md
 ```
 
 Then run `/clear`.
 
-**Do NOT continue executing tasks.** The next flight leg will be picked up by `/resume-handoff` in a fresh context.
+**Do NOT continue executing tasks.** The next flight leg will be picked up by `/boss-resume` in a fresh context.
 
 ---
 
@@ -309,7 +309,7 @@ To continue this work:
 Then output:
 
 ```
-continue with: /resume-handoff docs/handoffs/2026-02-06-1430-core-implementation.md
+continue with: /boss-resume docs/handoffs/2026-02-06-1430-core-implementation.md
 ```
 
 Then run `/clear`.
@@ -320,7 +320,7 @@ Then run `/clear`.
 
 Before completing a handoff:
 
-- [ ] **Post-flight checks passed** (`/post-flight-checks` — quality gates + spec verification)
+- [ ] **Post-flight checks passed** (`/boss-verify` — quality gates + spec verification)
 - [ ] **Flight ID included** (REQUIRED — must survive across all handoffs)
 - [ ] **Planning doc path from `docs/plans/` included** (REQUIRED — must survive across all handoffs)
 - [ ] All flight leg tasks closed in bd
@@ -330,7 +330,7 @@ Before completing a handoff:
 - [ ] Next steps pulled from bd (use `--label` filter)
 - [ ] Handoff task itself closed
 - [ ] **Handoff written to `docs/handoffs/YYYY-MM-DD-HHMM-title.md`**
-- [ ] **Output `continue with: /resume-handoff <path>`**
+- [ ] **Output `continue with: /boss-resume <path>`**
 - [ ] **Run `/clear`**
 
 ---
@@ -339,7 +339,7 @@ Before completing a handoff:
 
 | Anti-Pattern                    | Problem                           | Fix                                                 |
 | ------------------------------- | --------------------------------- | --------------------------------------------------- |
-| **Skipping post-flight checks** | **Broken code at handoff**        | **Run `/post-flight-checks` FIRST, fix until pass** |
+| **Skipping post-flight checks** | **Broken code at handoff**        | **Run `/boss-verify` FIRST, fix until pass**        |
 | **Not writing to file**         | **Lost context across clears**    | **Write to `docs/handoffs/` ALWAYS**                |
 | **Not running /clear**          | **Context bloat**                 | **ALWAYS /clear after writing handoff**             |
 | **Continuing past handoff**     | **Context bloat, lost structure** | **Write file, output continue, /clear — that's it** |
@@ -354,11 +354,11 @@ Before completing a handoff:
 
 ## Related Skills
 
-| Skill                 | Relationship                        |
-| --------------------- | ----------------------------------- |
-| `/file-a-flight-plan` | Create plan before implementation   |
-| `/pre-flight-checks`  | Create bd tasks from plan           |
-| `/post-flight-checks` | Verify flight leg before handoff    |
-| `/take-off`           | Execute tasks, stopping at handoffs |
-| `/resume-handoff`     | Resume work from this handoff       |
-| `/land-the-plane`     | End session with commit and push    |
+| Skill               | Relationship                        |
+| ------------------- | ----------------------------------- |
+| `/boss-flight-plan` | Create plan before implementation   |
+| `/boss-plan`        | Create bd tasks from plan           |
+| `/boss-verify`      | Verify flight leg before handoff    |
+| `/boss-implement`   | Execute tasks, stopping at handoffs |
+| `/boss-resume`      | Resume work from this handoff       |
+| `/boss-land`        | End session with commit and push    |

@@ -16,9 +16,9 @@ Use post-flight-checks when:
 - You've completed all implementation tasks in a flight leg
 - You're about to reach a `[HANDOFF]` task
 - You need to verify that the flight leg's work matches the spec
-- Called from `/take-off`, `/handoff-task`, `/resume-handoff`, or `/pre-flight-checks`
+- Called from `/boss-implement`, `/boss-handoff`, `/boss-resume`, or `/boss-plan`
 
-This skill does **NOT** write the handoff document. After post-flight checks pass, the calling skill proceeds to `/handoff-task`.
+This skill does **NOT** write the handoff document. After post-flight checks pass, the calling skill proceeds to `/boss-handoff`.
 
 ---
 
@@ -28,7 +28,7 @@ This skill does **NOT** write the handoff document. After post-flight checks pas
 Implementation tasks complete
         │
         ▼
-/post-flight-checks        ← YOU ARE HERE
+/boss-verify        ← YOU ARE HERE
   ├── 1. Read the spec/plan
   ├── 2. Run quality gates (format, lint, test)
   ├── 3. Plan verification tests from the spec
@@ -37,7 +37,7 @@ Implementation tasks complete
   └── 6. Return control to caller
         │
         ▼
-/handoff-task              ← Caller proceeds here
+/boss-handoff              ← Caller proceeds here
 ```
 
 ---
@@ -50,8 +50,8 @@ Read the plan document for the current flight leg to understand what was suppose
 
 The plan path should be available from:
 
-- The handoff document (if resuming via `/resume-handoff`)
-- The plan file passed to `/take-off`
+- The handoff document (if resuming via `/boss-resume`)
+- The plan file passed to `/boss-implement`
 - The `docs/plans/` directory
 
 ```bash
@@ -241,10 +241,10 @@ If you cannot reach confidence:
 
 Post-flight checks are complete. Return control to the calling skill:
 
-- `/take-off` → proceeds to write the handoff via `/handoff-task`
-- `/handoff-task` → proceeds to write the handoff document
-- `/resume-handoff` → proceeds to write the handoff via `/handoff-task`
-- `/pre-flight-checks` → proceeds to write the handoff via `/handoff-task`
+- `/boss-implement` → proceeds to write the handoff via `/boss-handoff`
+- `/boss-handoff` → proceeds to write the handoff document
+- `/boss-resume` → proceeds to write the handoff via `/boss-handoff`
+- `/boss-plan` → proceeds to write the handoff via `/boss-handoff`
 
 ---
 
@@ -277,11 +277,11 @@ Post-flight checks are complete. Return control to the calling skill:
 
 ## Related Skills
 
-| Skill                 | Relationship                                                |
-| --------------------- | ----------------------------------------------------------- |
-| `/file-a-flight-plan` | Creates the plan with Post-Flight Checks sections           |
-| `/pre-flight-checks`  | Creates bd tasks; invokes post-flight-checks before handoff |
-| `/take-off`           | Invokes post-flight-checks before handoff                   |
-| `/handoff-task`       | Invokes post-flight-checks; then writes the handoff         |
-| `/resume-handoff`     | Invokes post-flight-checks before handoff                   |
-| `/land-the-plane`     | End-of-session checks (separate from flight-leg checks)     |
+| Skill               | Relationship                                                |
+| ------------------- | ----------------------------------------------------------- |
+| `/boss-flight-plan` | Creates the plan with Post-Flight Checks sections           |
+| `/boss-plan`        | Creates bd tasks; invokes post-flight-checks before handoff |
+| `/boss-implement`   | Invokes post-flight-checks before handoff                   |
+| `/boss-handoff`     | Invokes post-flight-checks; then writes the handoff         |
+| `/boss-resume`      | Invokes post-flight-checks before handoff                   |
+| `/boss-land`        | End-of-session checks (separate from flight-leg checks)     |

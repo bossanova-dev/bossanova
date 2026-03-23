@@ -324,7 +324,7 @@ func TestClassifyPR(t *testing.T) {
 
 // pollTasksWithMock exercises the full PollTasks path using the mock
 // injected directly into the server via the hostClient interface.
-func pollTasksWithMock(t *testing.T, mock *mockHostService, repoURL string) ([]*bossanovav1.TaskItem, error) {
+func pollTasksWithMock(t *testing.T, mock *mockHostService, repoURL string) ([]*bossanovav1.TaskItem, error) { //nolint:unparam // test helper
 	t.Helper()
 	srv := newTestServer(mock)
 	req := &bossanovav1.PollTasksRequest{}

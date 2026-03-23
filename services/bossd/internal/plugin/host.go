@@ -17,6 +17,8 @@ import (
 	"github.com/recurser/bossalib/config"
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 )
 
@@ -202,6 +204,14 @@ func (h *Host) GetTaskSources() []TaskSource {
 		}
 	}
 	return sources
+}
+
+// SetWorkflowDeps injects workflow and attempt dependencies into the host
+// service so that plugins can create/manage workflows and Claude attempts.
+func (h *Host) SetWorkflowDeps(store db.WorkflowStore, runner claude.ClaudeRunner) {
+	if h.hostService != nil {
+		h.hostService.SetWorkflowDeps(store, runner)
+	}
 }
 
 // GetWorkflowServices returns the cached WorkflowService interfaces for all

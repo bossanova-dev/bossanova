@@ -29,7 +29,9 @@ node_modules/
 
 # Build artifacts (binaries outside bin/)
 /bossd-plugin-autopilot
+/bossd-plugin-dependabot
 /plugins/bossd-plugin-autopilot/bossd-plugin-autopilot
+/plugins/bossd-plugin-dependabot/bossd-plugin-dependabot
 /services/bossd/main
 
 # Misc

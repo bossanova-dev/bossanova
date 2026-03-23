@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	goplugin "github.com/hashicorp/go-plugin"
-	"github.com/rs/zerolog"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 )
 
@@ -170,7 +170,7 @@ func (c *hostServiceClient) GetAttemptStatus(ctx context.Context, attemptID stri
 func (c *hostServiceClient) StreamAttemptOutput(ctx context.Context, attemptID string) (AttemptOutputStream, error) {
 	req := &bossanovav1.StreamAttemptOutputRequest{AttemptId: attemptID}
 	streamDesc := &grpc.StreamDesc{
-		StreamName:   "StreamAttemptOutput",
+		StreamName:    "StreamAttemptOutput",
 		ServerStreams: true,
 	}
 	stream, err := c.conn.NewStream(ctx, streamDesc, "/bossanova.v1.HostService/StreamAttemptOutput")

@@ -3,10 +3,18 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/db"
 )
 
 // mockVCSProvider is a minimal mock for vcs.Provider used in host_service tests.
@@ -181,5 +189,480 @@ func TestHostServiceProviderErrorPropagates(t *testing.T) {
 	_, err = srv.GetPRStatus(ctx, &bossanovav1.GetPRStatusRequest{RepoOriginUrl: "https://github.com/foo/bar", PrNumber: 1})
 	if err == nil {
 		t.Fatal("expected error from GetPRStatus")
+	}
+}
+
+// --- Mock ClaudeRunner for attempt tests ---
+
+type mockClaudeRunner struct {
+	mu       sync.Mutex
+	sessions map[string]bool // sessionID → running
+	history  map[string][]claude.OutputLine
+	nextID   int
+	startErr error
+}
+
+var _ claude.ClaudeRunner = (*mockClaudeRunner)(nil)
+
+func newMockClaudeRunner() *mockClaudeRunner {
+	return &mockClaudeRunner{
+		sessions: make(map[string]bool),
+		history:  make(map[string][]claude.OutputLine),
+	}
+}
+
+func (m *mockClaudeRunner) Start(_ context.Context, _, _ string, _ *string) (string, error) {
+	if m.startErr != nil {
+		return "", m.startErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextID++
+	id := fmt.Sprintf("mock-session-%d", m.nextID)
+	m.sessions[id] = true
+	m.history[id] = []claude.OutputLine{
+		{Text: "Starting..."},
+		{Text: "Working on plan..."},
+	}
+	return id, nil
+}
+
+func (m *mockClaudeRunner) Stop(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[sessionID] = false
+	return nil
+}
+
+func (m *mockClaudeRunner) IsRunning(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sessions[sessionID]
+}
+
+func (m *mockClaudeRunner) Subscribe(_ context.Context, sessionID string) (<-chan claude.OutputLine, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[sessionID]; !ok {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+	ch := make(chan claude.OutputLine)
+	close(ch)
+	return ch, nil
+}
+
+func (m *mockClaudeRunner) History(sessionID string) []claude.OutputLine {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.history[sessionID]
+}
+
+// --- Test helpers for workflow tests ---
+
+func migrationsDir() string {
+	_, filename, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
+}
+
+// setupWorkflowTestServer creates a HostServiceServer backed by a real
+// in-memory SQLite WorkflowStore and a mock ClaudeRunner. It also creates
+// a repo and session for foreign key satisfaction, returning their IDs.
+func setupWorkflowTestServer(t *testing.T) (srv *HostServiceServer, runner *mockClaudeRunner, sessionID, repoID string) {
+	t.Helper()
+
+	sqlDB, err := db.OpenInMemory()
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	if err := migrate.Run(sqlDB, os.DirFS(migrationsDir())); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	// Create repo and session for foreign key constraints.
+	repoStore := db.NewRepoStore(sqlDB)
+	repo, err := repoStore.Create(context.Background(), db.CreateRepoParams{
+		DisplayName:       "test-repo",
+		LocalPath:         "/tmp/test-repo",
+		OriginURL:         "https://github.com/test/repo.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	sessionStore := db.NewSessionStore(sqlDB)
+	sess, err := sessionStore.Create(context.Background(), db.CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Workflow test session",
+		WorktreePath: "/tmp/wt/workflow-test",
+		BranchName:   "feat/workflow-test",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	workflowStore := db.NewWorkflowStore(sqlDB)
+	runner = newMockClaudeRunner()
+
+	srv = NewHostServiceServer(&mockVCSProvider{})
+	srv.SetWorkflowDeps(workflowStore, runner)
+
+	return srv, runner, sess.ID, repo.ID
+}
+
+// --- Workflow RPC tests ---
+
+func TestHostServiceCreateWorkflow(t *testing.T) {
+	srv, _, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	resp, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId:      sessionID,
+		RepoId:         repoID,
+		PlanPath:       "docs/plans/test-plan.md",
+		MaxLegs:        10,
+		StartCommitSha: "abc123",
+		ConfigJson:     `{"confirm_land": true}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+
+	w := resp.GetWorkflow()
+	if w.GetId() == "" {
+		t.Error("workflow ID should not be empty")
+	}
+	if w.GetSessionId() != sessionID {
+		t.Errorf("session_id = %q, want %q", w.GetSessionId(), sessionID)
+	}
+	if w.GetRepoId() != repoID {
+		t.Errorf("repo_id = %q, want %q", w.GetRepoId(), repoID)
+	}
+	if w.GetPlanPath() != "docs/plans/test-plan.md" {
+		t.Errorf("plan_path = %q, want %q", w.GetPlanPath(), "docs/plans/test-plan.md")
+	}
+	if w.GetStatus() != "pending" {
+		t.Errorf("status = %q, want %q", w.GetStatus(), "pending")
+	}
+	if w.GetCurrentStep() != "plan" {
+		t.Errorf("current_step = %q, want %q", w.GetCurrentStep(), "plan")
+	}
+	if w.GetMaxLegs() != 10 {
+		t.Errorf("max_legs = %d, want 10", w.GetMaxLegs())
+	}
+	if w.GetStartCommitSha() != "abc123" {
+		t.Errorf("start_commit_sha = %q, want %q", w.GetStartCommitSha(), "abc123")
+	}
+	if w.GetConfigJson() != `{"confirm_land": true}` {
+		t.Errorf("config_json = %q, want %q", w.GetConfigJson(), `{"confirm_land": true}`)
+	}
+}
+
+func TestHostServiceGetWorkflow(t *testing.T) {
+	srv, _, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	created, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		PlanPath:  "docs/plans/get-test.md",
+		MaxLegs:   20,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+
+	resp, err := srv.GetWorkflow(ctx, &bossanovav1.GetWorkflowRequest{
+		Id: created.GetWorkflow().GetId(),
+	})
+	if err != nil {
+		t.Fatalf("GetWorkflow: %v", err)
+	}
+
+	w := resp.GetWorkflow()
+	if w.GetId() != created.GetWorkflow().GetId() {
+		t.Errorf("ID = %q, want %q", w.GetId(), created.GetWorkflow().GetId())
+	}
+	if w.GetPlanPath() != "docs/plans/get-test.md" {
+		t.Errorf("plan_path = %q, want %q", w.GetPlanPath(), "docs/plans/get-test.md")
+	}
+}
+
+func TestHostServiceUpdateWorkflow(t *testing.T) {
+	srv, _, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	created, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		PlanPath:  "docs/plans/update-test.md",
+		MaxLegs:   20,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	wID := created.GetWorkflow().GetId()
+
+	// Update status, step, and leg.
+	newStatus := "running"
+	newStep := "implement"
+	var newLeg int32 = 1
+	resp, err := srv.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+		Id:          wID,
+		Status:      &newStatus,
+		CurrentStep: &newStep,
+		FlightLeg:   &newLeg,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkflow: %v", err)
+	}
+
+	w := resp.GetWorkflow()
+	if w.GetStatus() != "running" {
+		t.Errorf("status = %q, want %q", w.GetStatus(), "running")
+	}
+	if w.GetCurrentStep() != "implement" {
+		t.Errorf("current_step = %q, want %q", w.GetCurrentStep(), "implement")
+	}
+	if w.GetFlightLeg() != 1 {
+		t.Errorf("flight_leg = %d, want 1", w.GetFlightLeg())
+	}
+
+	// Update with error message.
+	errMsg := "plan validation failed"
+	resp, err = srv.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+		Id:        wID,
+		LastError: &errMsg,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkflow with error: %v", err)
+	}
+	if resp.GetWorkflow().GetLastError() != "plan validation failed" {
+		t.Errorf("last_error = %q, want %q", resp.GetWorkflow().GetLastError(), "plan validation failed")
+	}
+}
+
+func TestHostServiceListWorkflows(t *testing.T) {
+	srv, _, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// Empty list.
+	resp, err := srv.ListWorkflows(ctx, &bossanovav1.ListWorkflowsRequest{})
+	if err != nil {
+		t.Fatalf("ListWorkflows empty: %v", err)
+	}
+	if len(resp.GetWorkflows()) != 0 {
+		t.Errorf("expected 0 workflows, got %d", len(resp.GetWorkflows()))
+	}
+
+	// Create two workflows.
+	_, err = srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID, RepoId: repoID,
+		PlanPath: "docs/plans/plan-1.md", MaxLegs: 20,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow 1: %v", err)
+	}
+	w2, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID, RepoId: repoID,
+		PlanPath: "docs/plans/plan-2.md", MaxLegs: 10,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow 2: %v", err)
+	}
+
+	// List all.
+	resp, err = srv.ListWorkflows(ctx, &bossanovav1.ListWorkflowsRequest{})
+	if err != nil {
+		t.Fatalf("ListWorkflows: %v", err)
+	}
+	if len(resp.GetWorkflows()) != 2 {
+		t.Fatalf("expected 2 workflows, got %d", len(resp.GetWorkflows()))
+	}
+
+	// Update w2 to running and filter.
+	runningStatus := "running"
+	_, err = srv.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+		Id: w2.GetWorkflow().GetId(), Status: &runningStatus,
+	})
+	if err != nil {
+		t.Fatalf("UpdateWorkflow: %v", err)
+	}
+
+	resp, err = srv.ListWorkflows(ctx, &bossanovav1.ListWorkflowsRequest{
+		StatusFilter: "running",
+	})
+	if err != nil {
+		t.Fatalf("ListWorkflows filtered: %v", err)
+	}
+	if len(resp.GetWorkflows()) != 1 {
+		t.Fatalf("expected 1 running workflow, got %d", len(resp.GetWorkflows()))
+	}
+	if resp.GetWorkflows()[0].GetId() != w2.GetWorkflow().GetId() {
+		t.Errorf("filtered workflow ID = %q, want %q", resp.GetWorkflows()[0].GetId(), w2.GetWorkflow().GetId())
+	}
+}
+
+func TestHostServiceWorkflowNilStore(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	// Don't call SetWorkflowDeps — store is nil.
+	ctx := context.Background()
+
+	_, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: "s1", RepoId: "r1", PlanPath: "plan.md", MaxLegs: 10,
+	})
+	if err == nil {
+		t.Fatal("expected error when workflow store not configured")
+	}
+
+	_, err = srv.GetWorkflow(ctx, &bossanovav1.GetWorkflowRequest{Id: "any"})
+	if err == nil {
+		t.Fatal("expected error when workflow store not configured")
+	}
+
+	_, err = srv.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{Id: "any"})
+	if err == nil {
+		t.Fatal("expected error when workflow store not configured")
+	}
+
+	_, err = srv.ListWorkflows(ctx, &bossanovav1.ListWorkflowsRequest{})
+	if err == nil {
+		t.Fatal("expected error when workflow store not configured")
+	}
+}
+
+// --- Attempt RPC tests ---
+
+func TestHostServiceCreateAttempt(t *testing.T) {
+	srv, runner, _, _ := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	resp, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: "wf-1",
+		SkillName:  "boss-plan",
+		Input:      "/boss-plan docs/plans/test.md",
+		WorkDir:    "/tmp/workdir",
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	attemptID := resp.GetAttemptId()
+	if attemptID == "" {
+		t.Fatal("attempt ID should not be empty")
+	}
+
+	// Verify the runner started a session.
+	if !runner.IsRunning(attemptID) {
+		t.Error("runner should report session as running")
+	}
+}
+
+func TestHostServiceGetAttemptStatus_Running(t *testing.T) {
+	srv, _, _, _ := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// Create an attempt first.
+	createResp, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: "wf-1",
+		Input:      "test input",
+		WorkDir:    "/tmp/workdir",
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	// Get status — should be running with history lines.
+	resp, err := srv.GetAttemptStatus(ctx, &bossanovav1.GetAttemptStatusRequest{
+		AttemptId: createResp.GetAttemptId(),
+	})
+	if err != nil {
+		t.Fatalf("GetAttemptStatus: %v", err)
+	}
+	if resp.GetStatus() != bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_RUNNING {
+		t.Errorf("status = %v, want RUNNING", resp.GetStatus())
+	}
+	if len(resp.GetOutputLines()) != 2 {
+		t.Errorf("output_lines count = %d, want 2", len(resp.GetOutputLines()))
+	}
+	if resp.GetOutputLines()[0] != "Starting..." {
+		t.Errorf("output_lines[0] = %q, want %q", resp.GetOutputLines()[0], "Starting...")
+	}
+}
+
+func TestHostServiceGetAttemptStatus_Completed(t *testing.T) {
+	srv, runner, _, _ := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	createResp, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: "wf-1",
+		Input:      "test input",
+		WorkDir:    "/tmp/workdir",
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	// Stop the session to simulate completion.
+	_ = runner.Stop(createResp.GetAttemptId())
+
+	resp, err := srv.GetAttemptStatus(ctx, &bossanovav1.GetAttemptStatusRequest{
+		AttemptId: createResp.GetAttemptId(),
+	})
+	if err != nil {
+		t.Fatalf("GetAttemptStatus: %v", err)
+	}
+	if resp.GetStatus() != bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED {
+		t.Errorf("status = %v, want COMPLETED", resp.GetStatus())
+	}
+}
+
+func TestHostServiceCreateAttemptNilRunner(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	// Don't call SetWorkflowDeps — runner is nil.
+	ctx := context.Background()
+
+	_, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: "wf-1",
+		Input:      "test",
+		WorkDir:    "/tmp",
+	})
+	if err == nil {
+		t.Fatal("expected error when claude runner not configured")
+	}
+}
+
+func TestHostServiceCreateAttemptStartError(t *testing.T) {
+	srv, runner, _, _ := setupWorkflowTestServer(t)
+	runner.startErr = errors.New("claude binary not found")
+	ctx := context.Background()
+
+	_, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: "wf-1",
+		Input:      "test",
+		WorkDir:    "/tmp",
+	})
+	if err == nil {
+		t.Fatal("expected error when claude start fails")
+	}
+}
+
+func TestHostServiceGetAttemptStatusUnknownSession(t *testing.T) {
+	srv, _, _, _ := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// GetAttemptStatus for a nonexistent session should return COMPLETED
+	// (since IsRunning returns false for unknown sessions).
+	resp, err := srv.GetAttemptStatus(ctx, &bossanovav1.GetAttemptStatusRequest{
+		AttemptId: "nonexistent-session",
+	})
+	if err != nil {
+		t.Fatalf("GetAttemptStatus: %v", err)
+	}
+	if resp.GetStatus() != bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED {
+		t.Errorf("status = %v, want COMPLETED (unknown sessions report as completed)", resp.GetStatus())
 	}
 }

@@ -13,7 +13,7 @@ description: Executes pre-existing bd tasks from a plan file, writing handoffs t
 
 Use take-off when:
 
-- bd tasks have already been created (via `/pre-flight-checks` or manually)
+- bd tasks have already been created (via `/boss-plan` or manually)
 - You have a plan file path to reference
 - You're ready to start executing tasks
 - You need structured execution with mandatory human checkpoints
@@ -38,7 +38,7 @@ Flight ID: fp-2026-02-06-1229-user-profile
 
 This Flight ID is used to filter tasks with `--label "flight:fp-..."`.
 
-If bd tasks don't exist, use `/pre-flight-checks` first to create them.
+If bd tasks don't exist, use `/boss-plan` first to create them.
 
 ---
 
@@ -50,7 +50,7 @@ When you reach a `[HANDOFF]` task, you **MUST**:
 
 1. **STOP all implementation work immediately**
 2. **Write the handoff to a file** in `docs/handoffs/`
-3. **Output the continue command** for `/resume-handoff`
+3. **Output the continue command** for `/boss-resume`
 4. **Run `/clear`** to free context for the next flight leg
 
 **This is non-negotiable.** Do NOT:
@@ -177,7 +177,7 @@ bd close <id>
 
 ### 2.7 Post-Flight Checks (Before Handoff)
 
-Before proceeding to a `[HANDOFF]` task, run `/post-flight-checks` to verify the flight leg's work. This runs quality gates, plans and executes verification tests based on the plan, and iterates until all checks pass.
+Before proceeding to a `[HANDOFF]` task, run `/boss-verify` to verify the flight leg's work. This runs quality gates, plans and executes verification tests based on the plan, and iterates until all checks pass.
 
 ### 2.8 Repeat
 
@@ -259,19 +259,19 @@ bd close <handoff-task-id>
 After writing the handoff file, output the continue command and run `/clear`:
 
 ```
-continue with: /resume-handoff docs/handoffs/YYYY-MM-DD-HHMM-descriptive-title.md
+continue with: /boss-resume docs/handoffs/YYYY-MM-DD-HHMM-descriptive-title.md
 ```
 
 Then run `/clear` to clear the context window, freeing up context for the next flight leg.
 
-**Do NOT continue executing tasks.** The next flight leg will be picked up by `/resume-handoff` in a fresh context.
+**Do NOT continue executing tasks.** The next flight leg will be picked up by `/boss-resume` in a fresh context.
 
 ---
 
 ## Complete Example
 
 ```
-User: /take-off docs/plans/2026-02-06-1430-user-profile.md
+User: /boss-implement docs/plans/2026-02-06-1430-user-profile.md
 
 Agent: Let me check the current state...
 
@@ -302,7 +302,7 @@ Starting Flight Leg 1 now.
 [Writes handoff to docs/handoffs/2026-02-06-1045-core-types.md]
 [Closes handoff task beads-003]
 
-continue with: /resume-handoff docs/handoffs/2026-02-06-1045-core-types.md
+continue with: /boss-resume docs/handoffs/2026-02-06-1045-core-types.md
 
 [Runs /clear]
 ```
@@ -331,7 +331,7 @@ continue with: /resume-handoff docs/handoffs/2026-02-06-1045-core-types.md
 - [ ] Planning doc path included
 - [ ] Files changed listed
 - [ ] Handoff task closed
-- [ ] Output `continue with: /resume-handoff <handoff-file-path>`
+- [ ] Output `continue with: /boss-resume <handoff-file-path>`
 - [ ] Run `/clear` to free context
 
 ---
@@ -353,10 +353,10 @@ continue with: /resume-handoff docs/handoffs/2026-02-06-1045-core-types.md
 
 ## Related Skills
 
-| Skill                 | When to Use                         |
-| --------------------- | ----------------------------------- |
-| `/pre-flight-checks`  | Create bd tasks if they don't exist |
-| `/post-flight-checks` | Verify flight leg before handoff    |
-| `/handoff-task`       | Detailed handoff document format    |
-| `/resume-handoff`     | Resume from a handoff file          |
-| `/land-the-plane`     | End session with commit and push    |
+| Skill           | When to Use                         |
+| --------------- | ----------------------------------- |
+| `/boss-plan`    | Create bd tasks if they don't exist |
+| `/boss-verify`  | Verify flight leg before handoff    |
+| `/boss-handoff` | Detailed handoff document format    |
+| `/boss-resume`  | Resume from a handoff file          |
+| `/boss-land`    | End session with commit and push    |

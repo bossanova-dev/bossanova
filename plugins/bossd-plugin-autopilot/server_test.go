@@ -23,8 +23,6 @@ type mockHostClient struct {
 
 	// Attempt tracking.
 	attemptID     string
-	attemptPolls  int // number of polls before completing
-	attemptError  string
 	pollCount     int
 	createErr     error
 	attemptCreErr error
@@ -248,10 +246,10 @@ func TestGetInfo(t *testing.T) {
 
 func TestParseWorkflowConfig(t *testing.T) {
 	tests := []struct {
-		name       string
-		json       string
-		wantErr    bool
-		checkFunc  func(*testing.T, *workflowConfig)
+		name      string
+		json      string
+		wantErr   bool
+		checkFunc func(*testing.T, *workflowConfig)
 	}{
 		{
 			name: "empty string returns defaults",
@@ -718,17 +716,23 @@ func TestRunWorkflowMaxLegs(t *testing.T) {
 
 	// scanHandoffDir requires a relative path, so create a relative temp dir.
 	handoffDir := "testdata_handoffs_maxlegs"
-	os.MkdirAll(handoffDir, 0o755)
-	t.Cleanup(func() { os.RemoveAll(handoffDir) })
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(handoffDir) })
 
 	// Create a handoff file with a future mtime so it's after legStart.
 	f, err := os.CreateTemp(handoffDir, "handoff-*.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 	futureTime := time.Now().Add(1 * time.Hour)
-	os.Chtimes(f.Name(), futureTime, futureTime)
+	if err := os.Chtimes(f.Name(), futureTime, futureTime); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := &workflowConfig{
 		PollIntervalSeconds: 1,
@@ -943,9 +947,9 @@ func TestWorkflowToStatusInfo(t *testing.T) {
 
 func TestSmartRetryPrompt(t *testing.T) {
 	tests := []struct {
-		name          string
-		lastError     string
-		wantContains  string
+		name           string
+		lastError      string
+		wantContains   string
 		wantNotContain string
 	}{
 		{
@@ -954,21 +958,21 @@ func TestSmartRetryPrompt(t *testing.T) {
 			wantContains: "file not found: plan.md",
 		},
 		{
-			name:          "timeout uses generic prompt",
-			lastError:     "connection timeout",
-			wantContains:  "Previous attempt failed unexpectedly",
+			name:           "timeout uses generic prompt",
+			lastError:      "connection timeout",
+			wantContains:   "Previous attempt failed unexpectedly",
 			wantNotContain: "connection timeout",
 		},
 		{
-			name:          "crash uses generic prompt",
-			lastError:     "process crashed",
-			wantContains:  "Previous attempt failed unexpectedly",
+			name:           "crash uses generic prompt",
+			lastError:      "process crashed",
+			wantContains:   "Previous attempt failed unexpectedly",
 			wantNotContain: "process crashed",
 		},
 		{
-			name:          "empty error uses generic prompt",
-			lastError:     "",
-			wantContains:  "Previous attempt failed unexpectedly",
+			name:         "empty error uses generic prompt",
+			lastError:    "",
+			wantContains: "Previous attempt failed unexpectedly",
 		},
 	}
 

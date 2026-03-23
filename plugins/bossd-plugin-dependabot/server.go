@@ -30,7 +30,7 @@ func newServer(host hostClient, logger zerolog.Logger) *server {
 	return &server{host: host, logger: logger}
 }
 
-func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) {
+func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.TaskSourceServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         "dependabot",
@@ -166,7 +166,7 @@ func (s *server) classifyPR(ctx context.Context, repoURL string, pr *bossanovav1
 	return base, nil
 }
 
-func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTaskStatusRequest) (*bossanovav1.UpdateTaskStatusResponse, error) {
+func (s *server) UpdateTaskStatus(_ context.Context, req *bossanovav1.UpdateTaskStatusRequest) (*bossanovav1.UpdateTaskStatusResponse, error) { //nolint:unparam // interface implementation
 	s.logger.Info().
 		Str("external_id", req.GetExternalId()).
 		Str("status", req.GetStatus().String()).
@@ -203,6 +203,8 @@ func aggregateCheckResults(checks []*bossanovav1.CheckResult) checksOverall {
 			bossanovav1.CheckConclusion_CHECK_CONCLUSION_CANCELLED,
 			bossanovav1.CheckConclusion_CHECK_CONCLUSION_TIMED_OUT:
 			return checksOverallFailed
+		default:
+			// SUCCESS, NEUTRAL, SKIPPED, UNSPECIFIED — not failures.
 		}
 	}
 	if allCompleted {

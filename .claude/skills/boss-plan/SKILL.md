@@ -15,7 +15,7 @@ description: Creates a structured task breakdown using bd before starting implem
 > **NEVER close a `[HANDOFF]` task directly with `bd close`.**
 > When you reach a `[HANDOFF]` task during execution:
 >
-> 1. **INVOKE** the `/handoff-task` skill (it runs post-flight checks and creates documentation)
+> 1. **INVOKE** the `/boss-handoff` skill (it runs post-flight checks and creates documentation)
 > 2. **STOP** and wait for explicit user approval
 > 3. **DO NOT CONTINUE** until the user says "yes", "continue", or similar
 
@@ -116,7 +116,7 @@ bd create --title="Add UserProfile type to types file" --type=task --priority=2 
 bd create --title="Create UserProfile component skeleton" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
 bd create --title="Implement UserProfile display logic" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
 bd create --title="Add UserProfile to exports" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
-bd create --title="[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
+bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
 ```
 
 **CRITICAL: Handoff Task Format**
@@ -124,12 +124,12 @@ bd create --title="[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE"
 All handoff tasks MUST use this exact title format:
 
 ```
-[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE
+[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE
 ```
 
 This ensures the agent knows to:
 
-1. Invoke the `/handoff-task` skill
+1. Invoke the `/boss-handoff` skill
 2. **STOP completely** after the handoff
 3. **NOT continue** to the next flight leg without user approval
 
@@ -195,10 +195,10 @@ When you reach a `[HANDOFF]` task:
 
 1. **STOP ALL WORK IMMEDIATELY** - Do NOT start the next flight leg under ANY circumstances
 2. **Mark the handoff task in_progress** - `bd update <id> --status=in_progress`
-3. **RUN POST-FLIGHT CHECKS (MANDATORY)** - Run `/post-flight-checks` to verify the flight leg's work before creating the handoff document. This runs quality gates, plans and executes spec-driven verification tests, and iterates until all checks pass.
+3. **RUN POST-FLIGHT CHECKS (MANDATORY)** - Run `/boss-verify` to verify the flight leg's work before creating the handoff document. This runs quality gates, plans and executes spec-driven verification tests, and iterates until all checks pass.
    - **Do NOT proceed to handoff until all post-flight checks pass**
 
-4. **Create handoff document** - Use `/handoff-task` skill to generate a structured handoff with:
+4. **Create handoff document** - Use `/boss-handoff` skill to generate a structured handoff with:
    - Completed tasks with bd issue IDs
    - Files changed with `file:line` references
    - Quality gate results (format/test pass status)
@@ -227,7 +227,7 @@ May I continue with the next flight leg, or would you like to review the changes
 >
 > Once you complete a handoff and present it to the user, your current execution is **DONE**.
 > You have completed **one flight leg**. Do NOT start the next one.
-> The user will invoke `/resume-handoff` or tell you to continue when they are ready.
+> The user will invoke `/boss-resume` or tell you to continue when they are ready.
 > **There is no scenario where you should execute more than one flight leg in a single run.**
 
 ---
@@ -243,7 +243,7 @@ May I continue with the next flight leg, or would you like to review the changes
 bd create --title="Add UserProfile type" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 bd create --title="Create UserProfile component" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 bd create --title="Add profile fetch hook" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
+bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 ```
 
 **Flight Leg 2: Testing**
@@ -252,7 +252,7 @@ bd create --title="[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE"
 bd create --title="Add UserProfile type tests" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 bd create --title="Add UserProfile component tests" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 bd create --title="Add hook tests" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
+bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 ```
 
 **Flight Leg 3: Integration**
@@ -260,7 +260,7 @@ bd create --title="[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE"
 ```bash
 bd create --title="Add UserProfile route" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 bd create --title="Add navigation link" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="[HANDOFF] Run /handoff-task skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
+bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
 ```
 
 **Working with this flight:**
@@ -302,27 +302,27 @@ Before starting implementation:
 
 ## Anti-Patterns
 
-| Anti-Pattern                    | Problem                                     | Fix                                               |
-| ------------------------------- | ------------------------------------------- | ------------------------------------------------- |
-| Starting work immediately       | Bypasses user approval                      | ALWAYS stop after planning, wait for approval     |
-| Tasks too large                 | Context bloat, lost focus                   | Split into <2 minute chunks                       |
-| No handoffs                     | Runaway agent, no checkpoints               | Add handoff every 3-5 tasks                       |
-| **Skipping handoff**            | **CRITICAL VIOLATION - User loses control** | **ALWAYS stop at handoff tasks - NO EXCEPTIONS**  |
-| **Multiple flight legs**        | **Agent runs too long, user loses control** | **Execute ONE flight leg, then STOP and wait**    |
-| **Skipping post-flight checks** | **Broken code at handoff**                  | **Run `/post-flight-checks`, fix until all pass** |
-| Serial execution without bd     | No tracking, lost on compaction             | Use bd for ALL task tracking                      |
-| Starting without pre-flight     | No clear plan, scope creep                  | Always decompose first                            |
-| Missing flight label            | Tasks mix with other flights                | ALWAYS add `--labels "flight:fp-..."`             |
+| Anti-Pattern                    | Problem                                     | Fix                                              |
+| ------------------------------- | ------------------------------------------- | ------------------------------------------------ |
+| Starting work immediately       | Bypasses user approval                      | ALWAYS stop after planning, wait for approval    |
+| Tasks too large                 | Context bloat, lost focus                   | Split into <2 minute chunks                      |
+| No handoffs                     | Runaway agent, no checkpoints               | Add handoff every 3-5 tasks                      |
+| **Skipping handoff**            | **CRITICAL VIOLATION - User loses control** | **ALWAYS stop at handoff tasks - NO EXCEPTIONS** |
+| **Multiple flight legs**        | **Agent runs too long, user loses control** | **Execute ONE flight leg, then STOP and wait**   |
+| **Skipping post-flight checks** | **Broken code at handoff**                  | **Run `/boss-verify`, fix until all pass**       |
+| Serial execution without bd     | No tracking, lost on compaction             | Use bd for ALL task tracking                     |
+| Starting without pre-flight     | No clear plan, scope creep                  | Always decompose first                           |
+| Missing flight label            | Tasks mix with other flights                | ALWAYS add `--labels "flight:fp-..."`            |
 
 ---
 
 ## Related Skills
 
-| Skill                 | Relationship                                       |
-| --------------------- | -------------------------------------------------- |
-| `/file-a-flight-plan` | Create comprehensive plan before pre-flight checks |
-| `/post-flight-checks` | Verify flight leg before handoff                   |
-| `/take-off`           | Execute bd tasks after pre-flight checks           |
-| `/handoff-task`       | Handle handoff checkpoints during execution        |
-| `/resume-handoff`     | Resume work from a previous handoff                |
-| `/land-the-plane`     | End session with commit and push                   |
+| Skill               | Relationship                                       |
+| ------------------- | -------------------------------------------------- |
+| `/boss-flight-plan` | Create comprehensive plan before pre-flight checks |
+| `/boss-verify`      | Verify flight leg before handoff                   |
+| `/boss-implement`   | Execute bd tasks after pre-flight checks           |
+| `/boss-handoff`     | Handle handoff checkpoints during execution        |
+| `/boss-resume`      | Resume work from a previous handoff                |
+| `/boss-land`        | End session with commit and push                   |

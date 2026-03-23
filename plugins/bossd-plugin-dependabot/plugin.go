@@ -18,7 +18,7 @@ type taskSourcePlugin struct {
 	logger zerolog.Logger
 }
 
-func (p *taskSourcePlugin) GRPCServer(broker *goplugin.GRPCBroker, srv *grpc.Server) error {
+func (p *taskSourcePlugin) GRPCServer(broker *goplugin.GRPCBroker, srv *grpc.Server) error { //nolint:unparam // interface implementation
 	// Create a lazy host client that defers broker.Dial(1) until first use.
 	// GRPCServer runs during plugin init, before the host has called
 	// AcceptAndServe on broker ID 1. The connection is established lazily

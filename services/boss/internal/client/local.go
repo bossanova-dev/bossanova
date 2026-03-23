@@ -301,6 +301,85 @@ func (c *LocalClient) GetSessionStatuses(ctx context.Context, sessionIDs []strin
 	return resp.Msg.Statuses, nil
 }
 
+// --- Autopilot Workflows ---
+
+func (c *LocalClient) StartAutopilot(ctx context.Context, req *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {
+	resp, err := c.rpc.StartAutopilot(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Workflow, nil
+}
+
+func (c *LocalClient) PauseAutopilot(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error) {
+	resp, err := c.rpc.PauseAutopilot(ctx, connect.NewRequest(&pb.PauseAutopilotRequest{WorkflowId: workflowID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Workflow, nil
+}
+
+func (c *LocalClient) ResumeAutopilot(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error) {
+	resp, err := c.rpc.ResumeAutopilot(ctx, connect.NewRequest(&pb.ResumeAutopilotRequest{WorkflowId: workflowID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Workflow, nil
+}
+
+func (c *LocalClient) CancelAutopilot(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error) {
+	resp, err := c.rpc.CancelAutopilot(ctx, connect.NewRequest(&pb.CancelAutopilotRequest{WorkflowId: workflowID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Workflow, nil
+}
+
+func (c *LocalClient) GetAutopilotStatus(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error) {
+	resp, err := c.rpc.GetAutopilotStatus(ctx, connect.NewRequest(&pb.GetAutopilotStatusRequest{WorkflowId: workflowID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Workflow, nil
+}
+
+func (c *LocalClient) ListAutopilotWorkflows(ctx context.Context, req *pb.ListAutopilotWorkflowsRequest) ([]*pb.AutopilotWorkflow, error) {
+	resp, err := c.rpc.ListAutopilotWorkflows(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Workflows, nil
+}
+
+func (c *LocalClient) StreamAutopilotOutput(ctx context.Context, workflowID string) (AutopilotOutputStream, error) {
+	stream, err := c.rpc.StreamAutopilotOutput(ctx, connect.NewRequest(&pb.StreamAutopilotOutputRequest{WorkflowId: workflowID}))
+	if err != nil {
+		return nil, err
+	}
+	return &localAutopilotStream{stream: stream}, nil
+}
+
+// localAutopilotStream wraps the DaemonService StreamAutopilotOutput stream.
+type localAutopilotStream struct {
+	stream *connect.ServerStreamForClient[pb.StreamAutopilotOutputResponse]
+}
+
+func (s *localAutopilotStream) Receive() bool {
+	return s.stream.Receive()
+}
+
+func (s *localAutopilotStream) Msg() *pb.StreamAutopilotOutputResponse {
+	return s.stream.Msg()
+}
+
+func (s *localAutopilotStream) Err() error {
+	return s.stream.Err()
+}
+
+func (s *localAutopilotStream) Close() error {
+	return s.stream.Close()
+}
+
 // localAttachStream wraps the DaemonService AttachSession stream.
 type localAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.AttachSessionResponse]

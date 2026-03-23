@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 
 	"github.com/recurser/bossalib/models"
@@ -330,5 +331,216 @@ func TestWorkflowStore_CreateWithNilOptionals(t *testing.T) {
 	}
 	if w.LastError != nil {
 		t.Errorf("last_error = %v, want nil", w.LastError)
+	}
+}
+
+func TestWorkflowStore_FullLifecycle(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewWorkflowStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess := createTestSession(t, sessionStore, repo.ID)
+
+	// 1. Create — starts as pending/plan/leg 0.
+	w, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID,
+		RepoID:    repo.ID,
+		PlanPath:  "docs/plans/lifecycle.md",
+		MaxLegs:   20,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if w.Status != models.WorkflowStatusPending {
+		t.Fatalf("initial status = %q, want pending", w.Status)
+	}
+
+	// 2. Transition to running/plan/leg 1.
+	running := string(models.WorkflowStatusRunning)
+	planStep := string(models.WorkflowStepPlan)
+	leg1 := 1
+	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
+		Status: &running, CurrentStep: &planStep, FlightLeg: &leg1,
+	})
+	if err != nil {
+		t.Fatalf("update to running: %v", err)
+	}
+	if w.Status != models.WorkflowStatusRunning || w.FlightLeg != 1 {
+		t.Fatalf("after running: status=%q leg=%d", w.Status, w.FlightLeg)
+	}
+
+	// 3. Progress through implement/leg 2.
+	implStep := string(models.WorkflowStepImplement)
+	leg2 := 2
+	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
+		CurrentStep: &implStep, FlightLeg: &leg2,
+	})
+	if err != nil {
+		t.Fatalf("update to implement: %v", err)
+	}
+	if w.CurrentStep != models.WorkflowStepImplement || w.FlightLeg != 2 {
+		t.Fatalf("after implement: step=%q leg=%d", w.CurrentStep, w.FlightLeg)
+	}
+
+	// 4. Handoff loop: resume/leg 3.
+	resumeStep := string(models.WorkflowStepResume)
+	leg3 := 3
+	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
+		CurrentStep: &resumeStep, FlightLeg: &leg3,
+	})
+	if err != nil {
+		t.Fatalf("update to resume: %v", err)
+	}
+
+	// 5. Verify step/leg 4.
+	verifyStep := string(models.WorkflowStepVerify)
+	leg4 := 4
+	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
+		CurrentStep: &verifyStep, FlightLeg: &leg4,
+	})
+	if err != nil {
+		t.Fatalf("update to verify: %v", err)
+	}
+
+	// 6. Land step/leg 5.
+	landStep := string(models.WorkflowStepLand)
+	leg5 := 5
+	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
+		CurrentStep: &landStep, FlightLeg: &leg5,
+	})
+	if err != nil {
+		t.Fatalf("update to land: %v", err)
+	}
+
+	// 7. Complete.
+	completed := string(models.WorkflowStatusCompleted)
+	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
+		Status: &completed,
+	})
+	if err != nil {
+		t.Fatalf("update to completed: %v", err)
+	}
+	if w.Status != models.WorkflowStatusCompleted {
+		t.Errorf("final status = %q, want completed", w.Status)
+	}
+	if w.CurrentStep != models.WorkflowStepLand {
+		t.Errorf("final step = %q, want land", w.CurrentStep)
+	}
+	if w.FlightLeg != 5 {
+		t.Errorf("final leg = %d, want 5", w.FlightLeg)
+	}
+
+	// Verify it appears in completed list.
+	completedList, err := store.ListByStatus(ctx, string(models.WorkflowStatusCompleted))
+	if err != nil {
+		t.Fatalf("list completed: %v", err)
+	}
+	if len(completedList) != 1 || completedList[0].ID != w.ID {
+		t.Errorf("completed list: got %d entries", len(completedList))
+	}
+}
+
+func TestWorkflowStore_ConcurrentAccess(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewWorkflowStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess := createTestSession(t, sessionStore, repo.ID)
+
+	// Create a workflow.
+	w, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID,
+		RepoID:    repo.ID,
+		PlanPath:  "docs/plans/concurrent.md",
+		MaxLegs:   20,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Concurrent reads should not race.
+	var wg sync.WaitGroup
+	errCh := make(chan error, 20)
+	for range 10 {
+		wg.Go(func() {
+			_, err := store.Get(ctx, w.ID)
+			if err != nil {
+				errCh <- err
+			}
+		})
+	}
+	for range 10 {
+		wg.Go(func() {
+			_, err := store.List(ctx)
+			if err != nil {
+				errCh <- err
+			}
+		})
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent access error: %v", err)
+	}
+}
+
+func TestWorkflowStore_FailureWithError(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewWorkflowStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess := createTestSession(t, sessionStore, repo.ID)
+
+	w, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID,
+		RepoID:    repo.ID,
+		PlanPath:  "docs/plans/failure.md",
+		MaxLegs:   20,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Set to running, then fail with an error.
+	running := string(models.WorkflowStatusRunning)
+	_, err = store.Update(ctx, w.ID, UpdateWorkflowParams{Status: &running})
+	if err != nil {
+		t.Fatalf("update to running: %v", err)
+	}
+
+	failed := string(models.WorkflowStatusFailed)
+	errMsg := "claude process crashed: exit code 1"
+	errPtr := &errMsg
+	w, err = store.Update(ctx, w.ID, UpdateWorkflowParams{
+		Status:    &failed,
+		LastError: &errPtr,
+	})
+	if err != nil {
+		t.Fatalf("update to failed: %v", err)
+	}
+	if w.Status != models.WorkflowStatusFailed {
+		t.Errorf("status = %q, want failed", w.Status)
+	}
+	if w.LastError == nil || *w.LastError != "claude process crashed: exit code 1" {
+		t.Errorf("last_error = %v, want %q", w.LastError, "claude process crashed: exit code 1")
+	}
+
+	// Verify it doesn't appear in running list.
+	runningList, err := store.ListByStatus(ctx, string(models.WorkflowStatusRunning))
+	if err != nil {
+		t.Fatalf("list running: %v", err)
+	}
+	if len(runningList) != 0 {
+		t.Errorf("running list should be empty, got %d", len(runningList))
 	}
 }

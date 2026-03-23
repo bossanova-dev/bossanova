@@ -91,8 +91,8 @@ var hostServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "StreamAttemptOutput",
 			Handler:       hostServiceStreamAttemptOutputHandler,
-			ServerStreams:  true,
-			ClientStreams:  false,
+			ServerStreams: true,
+			ClientStreams: false,
 		},
 	},
 	Metadata: "bossanova/v1/host_service.proto",

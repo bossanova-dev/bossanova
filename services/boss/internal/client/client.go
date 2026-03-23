@@ -73,4 +73,25 @@ type BossClient interface {
 	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
+
+	// Autopilot workflows
+	StartAutopilot(ctx context.Context, req *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error)
+	PauseAutopilot(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error)
+	ResumeAutopilot(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error)
+	CancelAutopilot(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error)
+	GetAutopilotStatus(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error)
+	ListAutopilotWorkflows(ctx context.Context, req *pb.ListAutopilotWorkflowsRequest) ([]*pb.AutopilotWorkflow, error)
+	StreamAutopilotOutput(ctx context.Context, workflowID string) (AutopilotOutputStream, error)
+}
+
+// AutopilotOutputStream abstracts a server-streaming autopilot output response.
+type AutopilotOutputStream interface {
+	// Receive advances the stream. Returns false when done or on error.
+	Receive() bool
+	// Msg returns the most recent message from the stream.
+	Msg() *pb.StreamAutopilotOutputResponse
+	// Err returns the stream error, if any.
+	Err() error
+	// Close closes the stream.
+	Close() error
 }

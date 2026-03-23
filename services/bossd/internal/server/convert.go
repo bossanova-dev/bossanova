@@ -125,6 +125,64 @@ func attentionStatusToProto(a vcs.AttentionStatus) *pb.AttentionStatus {
 	}
 }
 
+// autopilotWorkflowToProto converts a domain Workflow to its daemon-facing protobuf representation.
+func autopilotWorkflowToProto(w *models.Workflow) *pb.AutopilotWorkflow {
+	p := &pb.AutopilotWorkflow{
+		Id:          w.ID,
+		Status:      workflowStatusToProto(w.Status),
+		CurrentStep: workflowStepToProto(w.CurrentStep),
+		FlightLeg:   int32(w.FlightLeg),
+		MaxLegs:     int32(w.MaxLegs),
+		PlanPath:    w.PlanPath,
+		SessionId:   w.SessionID,
+		RepoId:      w.RepoID,
+		StartedAt:   timestamppb.New(w.CreatedAt),
+		UpdatedAt:   timestamppb.New(w.UpdatedAt),
+	}
+	if w.LastError != nil {
+		p.LastError = *w.LastError
+	}
+	return p
+}
+
+func workflowStatusToProto(s models.WorkflowStatus) pb.WorkflowStatus {
+	switch s {
+	case models.WorkflowStatusPending:
+		return pb.WorkflowStatus_WORKFLOW_STATUS_PENDING
+	case models.WorkflowStatusRunning:
+		return pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING
+	case models.WorkflowStatusPaused:
+		return pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED
+	case models.WorkflowStatusCompleted:
+		return pb.WorkflowStatus_WORKFLOW_STATUS_COMPLETED
+	case models.WorkflowStatusFailed:
+		return pb.WorkflowStatus_WORKFLOW_STATUS_FAILED
+	case models.WorkflowStatusCancelled:
+		return pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED
+	default:
+		return pb.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED
+	}
+}
+
+func workflowStepToProto(s models.WorkflowStep) pb.WorkflowStep {
+	switch s {
+	case models.WorkflowStepPlan:
+		return pb.WorkflowStep_WORKFLOW_STEP_PLAN
+	case models.WorkflowStepImplement:
+		return pb.WorkflowStep_WORKFLOW_STEP_IMPLEMENT
+	case models.WorkflowStepHandoff:
+		return pb.WorkflowStep_WORKFLOW_STEP_HANDOFF
+	case models.WorkflowStepResume:
+		return pb.WorkflowStep_WORKFLOW_STEP_RESUME
+	case models.WorkflowStepVerify:
+		return pb.WorkflowStep_WORKFLOW_STEP_VERIFY
+	case models.WorkflowStepLand:
+		return pb.WorkflowStep_WORKFLOW_STEP_LAND
+	default:
+		return pb.WorkflowStep_WORKFLOW_STEP_UNSPECIFIED
+	}
+}
+
 // protoToTimestamp converts an optional protobuf Timestamp to *time.Time.
 func protoToTimestamp(ts *timestamppb.Timestamp) *time.Time {
 	if ts == nil {

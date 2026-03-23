@@ -225,6 +225,36 @@ func (c *RemoteClient) GetSessionStatuses(_ context.Context, _ []string) ([]*pb.
 	return nil, errLocalOnly("GetSessionStatuses")
 }
 
+// --- Autopilot Workflows (local only) ---
+
+func (c *RemoteClient) StartAutopilot(_ context.Context, _ *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {
+	return nil, errLocalOnly("StartAutopilot")
+}
+
+func (c *RemoteClient) PauseAutopilot(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
+	return nil, errLocalOnly("PauseAutopilot")
+}
+
+func (c *RemoteClient) ResumeAutopilot(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
+	return nil, errLocalOnly("ResumeAutopilot")
+}
+
+func (c *RemoteClient) CancelAutopilot(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
+	return nil, errLocalOnly("CancelAutopilot")
+}
+
+func (c *RemoteClient) GetAutopilotStatus(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
+	return nil, errLocalOnly("GetAutopilotStatus")
+}
+
+func (c *RemoteClient) ListAutopilotWorkflows(_ context.Context, _ *pb.ListAutopilotWorkflowsRequest) ([]*pb.AutopilotWorkflow, error) {
+	return nil, errLocalOnly("ListAutopilotWorkflows")
+}
+
+func (c *RemoteClient) StreamAutopilotOutput(_ context.Context, _ string) (AutopilotOutputStream, error) {
+	return nil, errLocalOnly("StreamAutopilotOutput")
+}
+
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.
 type remoteAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.ProxyAttachSessionResponse]

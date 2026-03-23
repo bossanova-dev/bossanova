@@ -69,3 +69,31 @@
 **Depends on:** Phase 3 HostService foundation (bidirectional gRPC via go-plugin broker).
 
 **Added:** 2026-03-21 (eng review of Phase 3 design doc)
+
+---
+
+## Autopilot Deferred: Generic Plugin Preference Store
+
+**What:** Build a generic preferences table (plugin_name, key, value, type) in SQLite with HostService RPCs for typed plugin configuration.
+
+**Why:** Currently plugin config lives in `settings.json` as `map[string]string` (unstructured) or typed structs (autopilot). When a 3rd plugin needs typed config, this unstructured approach won't scale. A DB-backed preference store would support per-repo overrides, history, and concurrent access.
+
+**Approach:** New `plugin_preferences` table: `(plugin_name TEXT, scope TEXT, key TEXT, value TEXT, type TEXT)`. HostService RPCs: `GetPreference`, `SetPreference`, `ListPreferences`. Scope supports global, per-repo, and per-session overrides.
+
+**Depends on:** 3rd plugin requiring typed configuration. Currently only dependabot (unstructured map) and autopilot (typed struct) exist.
+
+**Added:** 2026-03-23 (eng review of autopilot plugin concept)
+
+---
+
+## Autopilot Deferred: Cost Budgets / Spend Limits
+
+**What:** A configurable `max_cost_usd` setting for autopilot workflows that pauses the workflow when the cumulative API spend exceeds the limit.
+
+**Why:** An autopilot run can burn significant tokens (5-20 flight legs at $0.50-$5 each = $2.50-$100). A paid feature should have cost guardrails to prevent runaway spending. Builds user trust.
+
+**Approach:** Add `max_cost_usd` to `AutopilotConfig`. AttemptRunner returns cost per attempt. Plugin tracks cumulative cost in workflow state. When exceeded, pause workflow and notify user: "Autopilot paused: spent $X of $Y budget."
+
+**Depends on:** Autopilot plugin MVP (workflows table, attempt runner must track costs).
+
+**Added:** 2026-03-23 (eng review of autopilot plugin concept)

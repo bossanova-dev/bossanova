@@ -4,6 +4,7 @@ package bossanova.v1;
 
 option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 
+import "bossanova/v1/models.proto";
 import "google/protobuf/timestamp.proto";
 
 // TaskSourceService pulls tasks from external systems (eg. Linear, GitHub Issues)
@@ -242,4 +243,97 @@ message CreateSessionAction {
 // NoOpAction indicates the job ran but no action is needed.
 message NoOpAction {
   string reason = 1;
+}
+
+// --- WorkflowService ---
+
+// WorkflowService orchestrates end-to-end plan execution by sequentially
+// invoking boss- skills (plan → implement → handoff/resume loop → verify → land).
+service WorkflowService {
+  // GetInfo returns the plugin's name, version, and capabilities.
+  rpc GetInfo(WorkflowServiceGetInfoRequest) returns (WorkflowServiceGetInfoResponse);
+
+  // StartWorkflow begins a new autopilot workflow for a plan file.
+  rpc StartWorkflow(StartWorkflowRequest) returns (StartWorkflowResponse);
+
+  // PauseWorkflow gracefully pauses a running workflow after the current flight leg.
+  rpc PauseWorkflow(PauseWorkflowRequest) returns (PauseWorkflowResponse);
+
+  // ResumeWorkflow resumes a paused workflow from where it left off.
+  rpc ResumeWorkflow(ResumeWorkflowRequest) returns (ResumeWorkflowResponse);
+
+  // CancelWorkflow terminates a workflow. If a flight leg is running, waits for
+  // it to finish then marks the workflow as cancelled.
+  rpc CancelWorkflow(CancelWorkflowRequest) returns (CancelWorkflowResponse);
+
+  // GetWorkflowStatus returns the current status of a workflow.
+  rpc GetWorkflowStatus(GetWorkflowStatusRequest) returns (GetWorkflowStatusResponse);
+}
+
+message WorkflowServiceGetInfoRequest {}
+
+message WorkflowServiceGetInfoResponse {
+  PluginInfo info = 1;
+}
+
+message StartWorkflowRequest {
+  // Path to the plan file (relative to repo root).
+  string plan_path = 1;
+  // The session this workflow belongs to.
+  string session_id = 2;
+  // The repo this workflow operates on.
+  string repo_id = 3;
+  // Override max flight legs (0 = use default).
+  int32 max_legs = 4;
+  // Pause for user confirmation before landing.
+  bool confirm_land = 5;
+  // JSON-encoded config overrides.
+  string config_json = 6;
+}
+
+message StartWorkflowResponse {
+  string workflow_id = 1;
+  WorkflowStatusInfo status = 2;
+}
+
+message PauseWorkflowRequest {
+  string workflow_id = 1;
+}
+
+message PauseWorkflowResponse {
+  WorkflowStatusInfo status = 1;
+}
+
+message ResumeWorkflowRequest {
+  string workflow_id = 1;
+}
+
+message ResumeWorkflowResponse {
+  WorkflowStatusInfo status = 1;
+}
+
+message CancelWorkflowRequest {
+  string workflow_id = 1;
+}
+
+message CancelWorkflowResponse {
+  WorkflowStatusInfo status = 1;
+}
+
+message GetWorkflowStatusRequest {
+  string workflow_id = 1;
+}
+
+message GetWorkflowStatusResponse {
+  WorkflowStatusInfo status = 1;
+}
+
+// WorkflowStatusInfo is the status snapshot returned by the plugin.
+message WorkflowStatusInfo {
+  string id = 1;
+  WorkflowStatus status = 2;
+  WorkflowStep current_step = 3;
+  int32 flight_leg = 4;
+  string last_error = 5;
+  google.protobuf.Timestamp started_at = 6;
 }

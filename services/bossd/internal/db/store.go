@@ -141,3 +141,31 @@ type AttemptStore interface {
 	Update(ctx context.Context, id string, params UpdateAttemptParams) (*models.Attempt, error)
 	Delete(ctx context.Context, id string) error
 }
+
+// CreateWorkflowParams holds the parameters for creating a new workflow.
+type CreateWorkflowParams struct {
+	SessionID      string
+	RepoID         string
+	PlanPath       string
+	MaxLegs        int
+	StartCommitSHA *string
+	ConfigJSON     *string
+}
+
+// UpdateWorkflowParams holds the fields that can be updated on a workflow.
+// Nil fields are not updated.
+type UpdateWorkflowParams struct {
+	Status      *string
+	CurrentStep *string
+	FlightLeg   *int
+	LastError   **string // double pointer: nil = don't update, *nil = clear
+}
+
+// WorkflowStore defines the interface for workflow persistence.
+type WorkflowStore interface {
+	Create(ctx context.Context, params CreateWorkflowParams) (*models.Workflow, error)
+	Get(ctx context.Context, id string) (*models.Workflow, error)
+	Update(ctx context.Context, id string, params UpdateWorkflowParams) (*models.Workflow, error)
+	List(ctx context.Context) ([]*models.Workflow, error)
+	ListByStatus(ctx context.Context, status string) ([]*models.Workflow, error)
+}

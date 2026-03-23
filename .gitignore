@@ -27,6 +27,11 @@ node_modules/
 *.tfvars
 !*.tfvars.example
 
+# Build artifacts (binaries outside bin/)
+/bossd-plugin-autopilot
+/plugins/bossd-plugin-autopilot/bossd-plugin-autopilot
+/services/bossd/main
+
 # Misc
 *.log
 .worktrees/

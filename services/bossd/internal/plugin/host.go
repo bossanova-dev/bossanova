@@ -33,10 +33,11 @@ type PluginStatus struct {
 
 // managedPlugin tracks a single running plugin process.
 type managedPlugin struct {
-	cfg        config.PluginConfig
-	client     *goplugin.Client
-	taskSource TaskSource // cached dispensed interface, nil if not a task source
-	startedAt  time.Time
+	cfg             config.PluginConfig
+	client          *goplugin.Client
+	taskSource      TaskSource      // cached dispensed interface, nil if not a task source
+	workflowService WorkflowService // cached dispensed interface, nil if not a workflow service
+	startedAt       time.Time
 }
 
 // Host manages the lifecycle of all configured plugins.
@@ -118,6 +119,15 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 					h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed TaskSource interface")
 				}
 			}
+
+			// Try to dispense the WorkflowService interface.
+			raw, err = rpcClient.Dispense(sharedplugin.PluginTypeWorkflow)
+			if err == nil {
+				if ws, ok := raw.(WorkflowService); ok {
+					mp.workflowService = ws
+					h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed WorkflowService interface")
+				}
+			}
 		}
 
 		h.plugins = append(h.plugins, mp)
@@ -192,6 +202,22 @@ func (h *Host) GetTaskSources() []TaskSource {
 		}
 	}
 	return sources
+}
+
+// GetWorkflowServices returns the cached WorkflowService interfaces for all
+// plugins that implement it. The interfaces are dispensed once at startup
+// and reused.
+func (h *Host) GetWorkflowServices() []WorkflowService {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var services []WorkflowService
+	for _, p := range h.plugins {
+		if p.workflowService != nil {
+			services = append(services, p.workflowService)
+		}
+	}
+	return services
 }
 
 // healthCheckLoop periodically pings each plugin and logs failures.

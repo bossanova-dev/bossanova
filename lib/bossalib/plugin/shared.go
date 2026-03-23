@@ -15,4 +15,5 @@ const (
 	PluginTypeTaskSource  = "task_source"
 	PluginTypeEventSource = "event_source"
 	PluginTypeScheduler   = "scheduler"
+	PluginTypeWorkflow    = "workflow"
 )

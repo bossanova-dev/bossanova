@@ -2,23 +2,40 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/db"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // HostServiceServer implements the HostService gRPC server on the daemon
 // side. Plugins call back to this server via go-plugin's GRPCBroker to
-// query VCS data (open PRs, check results, PR status).
+// query VCS data, manage workflows, and control Claude attempts.
 type HostServiceServer struct {
-	provider vcs.Provider
+	provider      vcs.Provider
+	workflowStore db.WorkflowStore
+	claude        claude.ClaudeRunner
 }
 
 // NewHostServiceServer creates a HostServiceServer that proxies to the
-// given VCS provider.
+// given VCS provider. Workflow and attempt functionality requires
+// SetWorkflowDeps to be called before use.
 func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 	return &HostServiceServer{provider: provider}
+}
+
+// SetWorkflowDeps injects the dependencies needed for workflow and attempt
+// RPCs. This is called after construction so that the existing plugin
+// wiring doesn't need to change until the full wiring is done.
+func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, runner claude.ClaudeRunner) {
+	s.workflowStore = store
+	s.claude = runner
 }
 
 // hostServiceDesc is a manually-built gRPC service descriptor for
@@ -45,8 +62,39 @@ var hostServiceDesc = grpc.ServiceDesc{
 			MethodName: "ListClosedPRs",
 			Handler:    hostServiceListClosedPRsHandler,
 		},
+		{
+			MethodName: "CreateWorkflow",
+			Handler:    hostServiceCreateWorkflowHandler,
+		},
+		{
+			MethodName: "UpdateWorkflow",
+			Handler:    hostServiceUpdateWorkflowHandler,
+		},
+		{
+			MethodName: "GetWorkflow",
+			Handler:    hostServiceGetWorkflowHandler,
+		},
+		{
+			MethodName: "ListWorkflows",
+			Handler:    hostServiceListWorkflowsHandler,
+		},
+		{
+			MethodName: "CreateAttempt",
+			Handler:    hostServiceCreateAttemptHandler,
+		},
+		{
+			MethodName: "GetAttemptStatus",
+			Handler:    hostServiceGetAttemptStatusHandler,
+		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamAttemptOutput",
+			Handler:       hostServiceStreamAttemptOutputHandler,
+			ServerStreams:  true,
+			ClientStreams:  false,
+		},
+	},
 	Metadata: "bossanova/v1/host_service.proto",
 }
 
@@ -57,6 +105,13 @@ type hostServiceHandler interface {
 	GetCheckResults(context.Context, *bossanovav1.GetCheckResultsRequest) (*bossanovav1.GetCheckResultsResponse, error)
 	GetPRStatus(context.Context, *bossanovav1.GetPRStatusRequest) (*bossanovav1.GetPRStatusResponse, error)
 	ListClosedPRs(context.Context, *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error)
+	CreateWorkflow(context.Context, *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error)
+	UpdateWorkflow(context.Context, *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error)
+	GetWorkflow(context.Context, *bossanovav1.GetWorkflowRequest) (*bossanovav1.GetWorkflowResponse, error)
+	ListWorkflows(context.Context, *bossanovav1.ListWorkflowsRequest) (*bossanovav1.ListWorkflowsResponse, error)
+	CreateAttempt(context.Context, *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error)
+	GetAttemptStatus(context.Context, *bossanovav1.GetAttemptStatusRequest) (*bossanovav1.GetAttemptStatusResponse, error)
+	StreamAttemptOutput(*bossanovav1.StreamAttemptOutputRequest, grpc.ServerStream) error
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -96,6 +151,270 @@ func hostServiceListClosedPRsHandler(srv any, ctx context.Context, dec func(any)
 	}
 	return srv.(hostServiceHandler).ListClosedPRs(ctx, req)
 }
+
+// --- Workflow management handler stubs ---
+
+func hostServiceCreateWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.CreateWorkflowRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).CreateWorkflow(ctx, req)
+}
+
+func hostServiceUpdateWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.UpdateWorkflowRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).UpdateWorkflow(ctx, req)
+}
+
+func hostServiceGetWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.GetWorkflowRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).GetWorkflow(ctx, req)
+}
+
+func hostServiceListWorkflowsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.ListWorkflowsRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).ListWorkflows(ctx, req)
+}
+
+func hostServiceCreateAttemptHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.CreateAttemptRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).CreateAttempt(ctx, req)
+}
+
+func hostServiceGetAttemptStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.GetAttemptStatusRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).GetAttemptStatus(ctx, req)
+}
+
+func hostServiceStreamAttemptOutputHandler(srv any, stream grpc.ServerStream) error {
+	req := new(bossanovav1.StreamAttemptOutputRequest)
+	if err := stream.RecvMsg(req); err != nil {
+		return err
+	}
+	return srv.(hostServiceHandler).StreamAttemptOutput(req, stream)
+}
+
+// --- Workflow RPC implementations ---
+
+func (s *HostServiceServer) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
+	if s.workflowStore == nil {
+		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+	}
+
+	var startSHA *string
+	if v := req.GetStartCommitSha(); v != "" {
+		startSHA = &v
+	}
+	var configJSON *string
+	if v := req.GetConfigJson(); v != "" {
+		configJSON = &v
+	}
+
+	w, err := s.workflowStore.Create(ctx, db.CreateWorkflowParams{
+		SessionID:      req.GetSessionId(),
+		RepoID:         req.GetRepoId(),
+		PlanPath:       req.GetPlanPath(),
+		MaxLegs:        int(req.GetMaxLegs()),
+		StartCommitSHA: startSHA,
+		ConfigJSON:     configJSON,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create workflow: %w", err)
+	}
+
+	return &bossanovav1.CreateWorkflowResponse{
+		Workflow: workflowToProto(w),
+	}, nil
+}
+
+func (s *HostServiceServer) UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error) {
+	if s.workflowStore == nil {
+		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+	}
+
+	params := db.UpdateWorkflowParams{}
+	if v := req.GetStatus(); v != "" {
+		params.Status = &v
+	}
+	if v := req.GetCurrentStep(); v != "" {
+		params.CurrentStep = &v
+	}
+	if req.FlightLeg != nil {
+		legInt := int(req.GetFlightLeg())
+		params.FlightLeg = &legInt
+	}
+	if req.LastError != nil {
+		v := req.GetLastError()
+		if v == "" {
+			// Explicitly clear the error: outer pointer set, inner nil.
+			params.LastError = new(*string)
+		} else {
+			errStr := &v
+			params.LastError = &errStr
+		}
+	}
+
+	w, err := s.workflowStore.Update(ctx, req.GetId(), params)
+	if err != nil {
+		return nil, fmt.Errorf("update workflow: %w", err)
+	}
+
+	return &bossanovav1.UpdateWorkflowResponse{
+		Workflow: workflowToProto(w),
+	}, nil
+}
+
+func (s *HostServiceServer) GetWorkflow(ctx context.Context, req *bossanovav1.GetWorkflowRequest) (*bossanovav1.GetWorkflowResponse, error) {
+	if s.workflowStore == nil {
+		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+	}
+
+	w, err := s.workflowStore.Get(ctx, req.GetId())
+	if err != nil {
+		return nil, fmt.Errorf("get workflow: %w", err)
+	}
+
+	return &bossanovav1.GetWorkflowResponse{
+		Workflow: workflowToProto(w),
+	}, nil
+}
+
+func (s *HostServiceServer) ListWorkflows(ctx context.Context, req *bossanovav1.ListWorkflowsRequest) (*bossanovav1.ListWorkflowsResponse, error) {
+	if s.workflowStore == nil {
+		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+	}
+
+	var workflows []*bossanovav1.Workflow
+	if statusFilter := req.GetStatusFilter(); statusFilter != "" {
+		ws, err := s.workflowStore.ListByStatus(ctx, statusFilter)
+		if err != nil {
+			return nil, fmt.Errorf("list workflows: %w", err)
+		}
+		for _, w := range ws {
+			workflows = append(workflows, workflowToProto(w))
+		}
+	} else {
+		ws, err := s.workflowStore.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list workflows: %w", err)
+		}
+		for _, w := range ws {
+			workflows = append(workflows, workflowToProto(w))
+		}
+	}
+
+	return &bossanovav1.ListWorkflowsResponse{
+		Workflows: workflows,
+	}, nil
+}
+
+// --- Attempt RPC implementations ---
+
+func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
+	if s.claude == nil {
+		return nil, status.Error(codes.Unavailable, "claude runner not configured")
+	}
+
+	sessionID, err := s.claude.Start(ctx, req.GetWorkDir(), req.GetInput(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("start claude: %w", err)
+	}
+
+	return &bossanovav1.CreateAttemptResponse{
+		AttemptId: sessionID,
+	}, nil
+}
+
+func (s *HostServiceServer) GetAttemptStatus(_ context.Context, req *bossanovav1.GetAttemptStatusRequest) (*bossanovav1.GetAttemptStatusResponse, error) {
+	if s.claude == nil {
+		return nil, status.Error(codes.Unavailable, "claude runner not configured")
+	}
+
+	attemptID := req.GetAttemptId()
+	running := s.claude.IsRunning(attemptID)
+
+	resp := &bossanovav1.GetAttemptStatusResponse{}
+	if running {
+		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_RUNNING
+	} else {
+		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED
+	}
+
+	history := s.claude.History(attemptID)
+	lines := make([]string, len(history))
+	for i, line := range history {
+		lines[i] = line.Text
+	}
+	resp.OutputLines = lines
+
+	return resp, nil
+}
+
+func (s *HostServiceServer) StreamAttemptOutput(req *bossanovav1.StreamAttemptOutputRequest, stream grpc.ServerStream) error {
+	if s.claude == nil {
+		return status.Error(codes.Unavailable, "claude runner not configured")
+	}
+
+	ch, err := s.claude.Subscribe(stream.Context(), req.GetAttemptId())
+	if err != nil {
+		return fmt.Errorf("subscribe to attempt: %w", err)
+	}
+
+	for line := range ch {
+		if err := stream.SendMsg(&bossanovav1.StreamAttemptOutputResponse{
+			Line: line.Text,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// --- Model converters ---
+
+func workflowToProto(w *models.Workflow) *bossanovav1.Workflow {
+	pb := &bossanovav1.Workflow{
+		Id:          w.ID,
+		SessionId:   w.SessionID,
+		RepoId:      w.RepoID,
+		PlanPath:    w.PlanPath,
+		Status:      string(w.Status),
+		CurrentStep: string(w.CurrentStep),
+		FlightLeg:   int32(w.FlightLeg),
+		MaxLegs:     int32(w.MaxLegs),
+		CreatedAt:   w.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:   w.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if w.LastError != nil {
+		pb.LastError = *w.LastError
+	}
+	if w.StartCommitSHA != nil {
+		pb.StartCommitSha = *w.StartCommitSHA
+	}
+	if w.ConfigJSON != nil {
+		pb.ConfigJson = *w.ConfigJSON
+	}
+	return pb
+}
+
+// --- VCS RPC implementations ---
 
 func (s *HostServiceServer) ListOpenPRs(ctx context.Context, req *bossanovav1.ListOpenPRsRequest) (*bossanovav1.ListOpenPRsResponse, error) {
 	prs, err := s.provider.ListOpenPRs(ctx, req.GetRepoOriginUrl())

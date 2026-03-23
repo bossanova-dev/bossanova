@@ -22,5 +22,6 @@ func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
 		sharedplugin.PluginTypeTaskSource:  &TaskSourceGRPCPlugin{HostService: hostService},
 		sharedplugin.PluginTypeEventSource: &EventSourceGRPCPlugin{},
 		sharedplugin.PluginTypeScheduler:   &SchedulerGRPCPlugin{},
+		sharedplugin.PluginTypeWorkflow:    &WorkflowServiceGRPCPlugin{HostService: hostService},
 	}
 }

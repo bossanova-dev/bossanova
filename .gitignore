@@ -30,3 +30,6 @@ node_modules/
 # Misc
 *.log
 .worktrees/
+
+# Beads
+.beads/issues.jsonl

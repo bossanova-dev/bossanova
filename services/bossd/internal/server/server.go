@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"errors"
@@ -1103,6 +1105,33 @@ func (s *Server) StartAutopilot(ctx context.Context, req *connect.Request[pb.Sta
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
+	// Auto-detect max legs from plan file if not explicitly set.
+	// Resolve the plan path relative to the repo/worktree root (not the
+	// user's cwd) since plan paths are always repo-relative.
+	if msg.MaxLegs == 0 {
+		var rootDir string
+		if sessionID != "" {
+			if sess, err := s.sessions.Get(ctx, sessionID); err == nil && sess.WorktreePath != "" {
+				rootDir = sess.WorktreePath
+			}
+		}
+		if rootDir == "" {
+			if repo, err := s.repos.Get(ctx, repoID); err == nil {
+				rootDir = repo.LocalPath
+			}
+		}
+		if rootDir != "" {
+			planAbs := filepath.Join(rootDir, msg.PlanPath)
+			if count := countPlanFlightLegs(planAbs); count > 0 {
+				msg.MaxLegs = count
+				s.logger.Debug().
+					Str("plan", planAbs).
+					Int32("count", count).
+					Msg("auto-detected flight leg count from plan file")
+			}
+		}
+	}
+
 	// Find the workflow service plugin.
 	wfService := s.getWorkflowService()
 	if wfService == nil {
@@ -1399,4 +1428,24 @@ func isSubdirOf(child, parent string) bool {
 	// Ensure parent ends with separator for prefix matching.
 	parentPrefix := parent + string(filepath.Separator)
 	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
+}
+
+// countPlanFlightLegs counts "## Flight Leg" headings in a plan file.
+// Returns 0 if the file can't be read or contains no flight leg headings.
+func countPlanFlightLegs(planPath string) int32 {
+	f, err := os.Open(planPath)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = f.Close() }()
+
+	var count int32
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(strings.ToLower(line), "## flight leg") {
+			count++
+		}
+	}
+	return count
 }

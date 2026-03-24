@@ -98,6 +98,66 @@ func TestIsRunning(t *testing.T) {
 	}
 }
 
+func TestExitErrorSuccess(t *testing.T) {
+	r := testRunner(t)
+	ctx := context.Background()
+	workDir := t.TempDir()
+
+	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// While running, ExitError should be nil.
+	if exitErr := r.ExitError(sid); exitErr != nil {
+		t.Errorf("expected nil ExitError while running, got %v", exitErr)
+	}
+
+	waitForExit(t, r, sid)
+
+	// After clean exit, ExitError should be nil.
+	if exitErr := r.ExitError(sid); exitErr != nil {
+		t.Errorf("expected nil ExitError after clean exit, got %v", exitErr)
+	}
+}
+
+func TestExitErrorFailure(t *testing.T) {
+	logDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	r := NewRunner(
+		zerolog.Nop(),
+		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			// Exit with non-zero status.
+			return exec.CommandContext(ctx, "sh", "-c", "cat > /dev/null; exit 1")
+		}),
+		WithLogDir(logDir),
+		WithConfigPath(configPath),
+	)
+
+	ctx := context.Background()
+	workDir := t.TempDir()
+
+	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitForExit(t, r, sid)
+
+	// After non-zero exit, ExitError should be non-nil.
+	exitErr := r.ExitError(sid)
+	if exitErr == nil {
+		t.Fatal("expected non-nil ExitError after failed exit")
+	}
+}
+
+func TestExitErrorUnknownSession(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	if exitErr := r.ExitError("nonexistent"); exitErr != nil {
+		t.Errorf("expected nil for unknown session, got %v", exitErr)
+	}
+}
+
 func TestHistory(t *testing.T) {
 	r := testRunner(t)
 	ctx := context.Background()

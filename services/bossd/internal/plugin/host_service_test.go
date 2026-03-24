@@ -195,11 +195,13 @@ func TestHostServiceProviderErrorPropagates(t *testing.T) {
 // --- Mock ClaudeRunner for attempt tests ---
 
 type mockClaudeRunner struct {
-	mu       sync.Mutex
-	sessions map[string]bool // sessionID → running
-	history  map[string][]claude.OutputLine
-	nextID   int
-	startErr error
+	mu          sync.Mutex
+	sessions    map[string]bool // sessionID → running
+	exitErrs    map[string]error
+	history     map[string][]claude.OutputLine
+	lastWorkDir string // captured from most recent Start call
+	nextID      int
+	startErr    error
 }
 
 var _ claude.ClaudeRunner = (*mockClaudeRunner)(nil)
@@ -207,16 +209,18 @@ var _ claude.ClaudeRunner = (*mockClaudeRunner)(nil)
 func newMockClaudeRunner() *mockClaudeRunner {
 	return &mockClaudeRunner{
 		sessions: make(map[string]bool),
+		exitErrs: make(map[string]error),
 		history:  make(map[string][]claude.OutputLine),
 	}
 }
 
-func (m *mockClaudeRunner) Start(_ context.Context, _, _ string, _ *string) (string, error) {
+func (m *mockClaudeRunner) Start(_ context.Context, workDir, _ string, _ *string) (string, error) {
 	if m.startErr != nil {
 		return "", m.startErr
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastWorkDir = workDir
 	m.nextID++
 	id := fmt.Sprintf("mock-session-%d", m.nextID)
 	m.sessions[id] = true
@@ -238,6 +242,12 @@ func (m *mockClaudeRunner) IsRunning(sessionID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sessions[sessionID]
+}
+
+func (m *mockClaudeRunner) ExitError(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.exitErrs[sessionID]
 }
 
 func (m *mockClaudeRunner) Subscribe(_ context.Context, sessionID string) (<-chan claude.OutputLine, error) {
@@ -308,7 +318,7 @@ func setupWorkflowTestServer(t *testing.T) (srv *HostServiceServer, runner *mock
 	runner = newMockClaudeRunner()
 
 	srv = NewHostServiceServer(&mockVCSProvider{})
-	srv.SetWorkflowDeps(workflowStore, runner)
+	srv.SetWorkflowDeps(workflowStore, sessionStore, runner)
 
 	return srv, runner, sess.ID, repo.ID
 }
@@ -561,6 +571,42 @@ func TestHostServiceCreateAttempt(t *testing.T) {
 	}
 }
 
+func TestHostServiceCreateAttemptResolvesWorkDir(t *testing.T) {
+	srv, runner, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// Create a workflow linked to the session.
+	wfResp, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		PlanPath:  "docs/plans/test.md",
+		MaxLegs:   3,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	workflowID := wfResp.GetWorkflow().GetId()
+
+	// CreateAttempt with empty WorkDir — should resolve from session.
+	_, err = srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: workflowID,
+		Input:      "/boss-plan docs/plans/test.md",
+		WorkDir:    "", // should be resolved to session's WorktreePath
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	runner.mu.Lock()
+	got := runner.lastWorkDir
+	runner.mu.Unlock()
+
+	want := "/tmp/wt/workflow-test" // from setupWorkflowTestServer session
+	if got != want {
+		t.Errorf("workDir = %q, want %q (resolved from session)", got, want)
+	}
+}
+
 func TestHostServiceGetAttemptStatus_Running(t *testing.T) {
 	srv, _, _, _ := setupWorkflowTestServer(t)
 	ctx := context.Background()
@@ -617,6 +663,41 @@ func TestHostServiceGetAttemptStatus_Completed(t *testing.T) {
 	}
 	if resp.GetStatus() != bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED {
 		t.Errorf("status = %v, want COMPLETED", resp.GetStatus())
+	}
+}
+
+func TestHostServiceGetAttemptStatus_Failed(t *testing.T) {
+	srv, runner, _, _ := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	createResp, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: "wf-1",
+		Input:      "test input",
+		WorkDir:    "/tmp/workdir",
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	attemptID := createResp.GetAttemptId()
+
+	// Stop the session and set an exit error to simulate a crash.
+	_ = runner.Stop(attemptID)
+	runner.mu.Lock()
+	runner.exitErrs[attemptID] = fmt.Errorf("signal: killed")
+	runner.mu.Unlock()
+
+	resp, err := srv.GetAttemptStatus(ctx, &bossanovav1.GetAttemptStatusRequest{
+		AttemptId: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("GetAttemptStatus: %v", err)
+	}
+	if resp.GetStatus() != bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_FAILED {
+		t.Errorf("status = %v, want FAILED", resp.GetStatus())
+	}
+	if resp.GetError() != "signal: killed" {
+		t.Errorf("error = %q, want %q", resp.GetError(), "signal: killed")
 	}
 }
 

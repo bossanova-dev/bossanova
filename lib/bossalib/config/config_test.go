@@ -318,7 +318,7 @@ func TestAutopilotSkillNameDefaults(t *testing.T) {
 		{"handoff", "boss-handoff"},
 		{"resume", "boss-resume"},
 		{"verify", "boss-verify"},
-		{"land", "boss-land"},
+		{"land", "boss-finalize"},
 		{"unknown", ""},
 	}
 

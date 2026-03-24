@@ -112,7 +112,7 @@ func (m *TrashModel) buildTable() {
 			prs[i] = "-"
 		}
 		if sess.ArchivedAt != nil {
-			archiveds[i] = relativeTime(sess.ArchivedAt.AsTime())
+			archiveds[i] = RelativeTime(sess.ArchivedAt.AsTime())
 		} else {
 			archiveds[i] = "-"
 		}

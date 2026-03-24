@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/views"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -114,9 +116,7 @@ func runLS(cmd *cobra.Command) error {
 		}
 		ids[i] = id
 		t := sess.Title
-		if len(t) > 30 {
-			t = t[:27] + "..."
-		}
+		t = truncateString(t, 30)
 		titles[i] = t
 		stateStrs2[i] = views.StateLabel(sess.State)
 		branchStrs[i] = sess.BranchName
@@ -276,6 +276,10 @@ func runArchive(cmd *cobra.Command, sessionID string) error {
 		return err
 	}
 	ctx := context.Background()
+	sessionID, err = resolveSessionID(c, ctx, sessionID)
+	if err != nil {
+		return err
+	}
 	sess, err := c.ArchiveSession(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("archive session: %w", err)
@@ -290,6 +294,11 @@ func runResurrect(cmd *cobra.Command, sessionID string) error {
 		return err
 	}
 	ctx := context.Background()
+	// Resolve prefix among archived sessions only.
+	sessionID, err = resolveArchivedSessionID(c, ctx, sessionID)
+	if err != nil {
+		return err
+	}
 	sess, err := c.ResurrectSession(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("resurrect session: %w", err)
@@ -381,6 +390,189 @@ func runDaemonStatus(_ *cobra.Command) error {
 	return nil
 }
 
+// resolveSessionID resolves a (possibly prefix) session ID to a full session ID.
+// If the prefix is at least 32 characters (full UUID length), it is used directly.
+// Otherwise, it searches all sessions (including archived) for a unique prefix match.
+func resolveSessionID(c client.BossClient, ctx context.Context, prefix string) (string, error) {
+	if len(prefix) >= 32 {
+		return prefix, nil
+	}
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true})
+	if err != nil {
+		return "", fmt.Errorf("list sessions: %w", err)
+	}
+	var matches []string
+	for _, s := range sessions {
+		if strings.HasPrefix(s.Id, prefix) {
+			matches = append(matches, s.Id)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no session found matching prefix %q", prefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous prefix %q matches %d sessions", prefix, len(matches))
+	}
+}
+
+// resolveArchivedSessionID is like resolveSessionID but only matches archived sessions.
+func resolveArchivedSessionID(c client.BossClient, ctx context.Context, prefix string) (string, error) {
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true})
+	if err != nil {
+		return "", fmt.Errorf("list sessions: %w", err)
+	}
+	var matches []string
+	for _, s := range sessions {
+		if s.ArchivedAt != nil && strings.HasPrefix(s.Id, prefix) {
+			matches = append(matches, s.Id)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no archived session found matching prefix %q", prefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous prefix %q matches %d archived sessions", prefix, len(matches))
+	}
+}
+
+func runShow(cmd *cobra.Command, sessionID string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	sessionID, err = resolveSessionID(c, ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	sess, err := c.GetSession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	// Print key-value header.
+	id := sess.Id
+	if len(id) > 8 {
+		id = id[:8]
+	}
+	fmt.Printf("  ID:       %s\n", id)
+	fmt.Printf("  Title:    %s\n", sess.Title)
+	fmt.Printf("  Repo:     %s\n", sess.RepoDisplayName)
+	fmt.Printf("  Branch:   %s\n", sess.BranchName)
+	fmt.Printf("  State:    %s\n", views.StateLabel(sess.State))
+	if sess.PrNumber != nil {
+		fmt.Printf("  PR:       #%d\n", *sess.PrNumber)
+	}
+	if sess.GetWorktreePath() != "" {
+		fmt.Printf("  Worktree: %s\n", sess.GetWorktreePath())
+	}
+	if sess.CreatedAt != nil {
+		fmt.Printf("  Created:  %s\n", views.RelativeTime(sess.CreatedAt.AsTime()))
+	}
+	if sess.ArchivedAt != nil {
+		fmt.Printf("  Archived: %s\n", views.RelativeTime(sess.ArchivedAt.AsTime()))
+	}
+
+	// List chats as a table.
+	chats, err := c.ListChats(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("list chats: %w", err)
+	}
+	if len(chats) == 0 {
+		fmt.Println("\n  No chats.")
+		return nil
+	}
+
+	fmt.Println()
+	printChatsTable(cmd, chats)
+	return nil
+}
+
+func runChats(cmd *cobra.Command, sessionID string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	sessionID, err = resolveSessionID(c, ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	chats, err := c.ListChats(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("list chats: %w", err)
+	}
+	if len(chats) == 0 {
+		fmt.Println("No chats found.")
+		return nil
+	}
+
+	printChatsTable(cmd, chats)
+	return nil
+}
+
+func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat) {
+	ids := make([]string, len(chats))
+	titles := make([]string, len(chats))
+	createds := make([]string, len(chats))
+	for i, chat := range chats {
+		id := chat.ClaudeId
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		ids[i] = id
+		t := chat.Title
+		if t == "" {
+			t = "New chat"
+		}
+		t = truncateString(t, 50)
+		titles[i] = t
+		if chat.CreatedAt != nil {
+			createds[i] = views.RelativeTime(chat.CreatedAt.AsTime())
+		} else {
+			createds[i] = "-"
+		}
+	}
+
+	cols := []table.Column{
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "TITLE", Width: views.MaxColWidth("TITLE", titles, 50)},
+		{Title: "CREATED", Width: views.MaxColWidth("CREATED", createds, 12)},
+	}
+
+	rows := make([]table.Row, len(chats))
+	for i := range chats {
+		rows[i] = table.Row{ids[i], titles[i], createds[i]}
+	}
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithHeight(len(rows)+1),
+		table.WithWidth(views.CLIColumnsWidth(cols)),
+		table.WithStyles(views.CLITableStyles()),
+		table.WithFocused(false),
+	)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+}
+
+// truncateString truncates a string to maxRunes runes, appending "..." if truncated.
+func truncateString(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes-3]) + "..."
+}
+
 // parseDuration parses a human-friendly duration like "30d", "2w", "1h".
 func parseDuration(s string) (time.Duration, error) {
 	if len(s) < 2 {
@@ -404,4 +596,252 @@ func parseDuration(s string) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("unknown duration unit: %c (use h, d, or w)", unit)
 	}
+}
+
+// --- Trash ---
+
+func runTrashLS(cmd *cobra.Command) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	sessions, err := c.ListSessions(ctx, &pb.ListSessionsRequest{IncludeArchived: true})
+	if err != nil {
+		return fmt.Errorf("list sessions: %w", err)
+	}
+
+	// Filter to archived only.
+	var archived []*pb.Session
+	for _, s := range sessions {
+		if s.ArchivedAt != nil {
+			archived = append(archived, s)
+		}
+	}
+
+	if len(archived) == 0 {
+		fmt.Println("Trash is empty.")
+		return nil
+	}
+
+	ids := make([]string, len(archived))
+	titles := make([]string, len(archived))
+	repos := make([]string, len(archived))
+	prStrs := make([]string, len(archived))
+	archiveds := make([]string, len(archived))
+	for i, sess := range archived {
+		id := sess.Id
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		ids[i] = id
+		t := sess.Title
+		t = truncateString(t, 30)
+		titles[i] = t
+		repos[i] = sess.RepoDisplayName
+		if sess.PrNumber != nil {
+			prStrs[i] = fmt.Sprintf("#%d", *sess.PrNumber)
+		} else {
+			prStrs[i] = "-"
+		}
+		archiveds[i] = views.RelativeTime(sess.ArchivedAt.AsTime())
+	}
+
+	cols := []table.Column{
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "TITLE", Width: views.MaxColWidth("TITLE", titles, 30)},
+		{Title: "REPO", Width: views.MaxColWidth("REPO", repos, 20)},
+		{Title: "PR", Width: views.MaxColWidth("PR", prStrs, 8)},
+		{Title: "ARCHIVED", Width: views.MaxColWidth("ARCHIVED", archiveds, 12)},
+	}
+
+	rows := make([]table.Row, len(archived))
+	for i := range archived {
+		rows[i] = table.Row{ids[i], titles[i], repos[i], prStrs[i], archiveds[i]}
+	}
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithHeight(len(rows)+1),
+		table.WithWidth(views.CLIColumnsWidth(cols)),
+		table.WithStyles(views.CLITableStyles()),
+		table.WithFocused(false),
+	)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+	return nil
+}
+
+func runTrashDelete(cmd *cobra.Command, sessionID string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	sessionID, err = resolveArchivedSessionID(c, ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	yes, _ := cmd.Flags().GetBool("yes")
+	if !yes {
+		id := sessionID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		fmt.Printf("Permanently delete session %s? [y/N] ", id)
+		var answer string
+		if _, err := fmt.Scanln(&answer); err != nil || (answer != "y" && answer != "Y") {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+	}
+
+	if err := c.RemoveSession(ctx, sessionID); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	fmt.Printf("Session %s permanently deleted.\n", sessionID)
+	return nil
+}
+
+// --- Repo Update ---
+
+func runRepoUpdate(cmd *cobra.Command, repoID string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	req := &pb.UpdateRepoRequest{Id: repoID}
+	anyChanged := false
+
+	if cmd.Flags().Changed("name") {
+		v, _ := cmd.Flags().GetString("name")
+		req.DisplayName = &v
+		anyChanged = true
+	}
+	if cmd.Flags().Changed("setup-script") {
+		v, _ := cmd.Flags().GetString("setup-script")
+		req.SetupScript = &v
+		anyChanged = true
+	}
+	if cmd.Flags().Changed("merge-strategy") {
+		v, _ := cmd.Flags().GetString("merge-strategy")
+		switch v {
+		case "merge", "rebase", "squash":
+			req.MergeStrategy = &v
+		default:
+			return fmt.Errorf("invalid merge strategy %q (use merge, rebase, or squash)", v)
+		}
+		anyChanged = true
+	}
+
+	// Boolean flag pairs.
+	boolPairs := []struct {
+		enable, disable string
+		setter          func(v bool)
+	}{
+		{"auto-merge", "no-auto-merge", func(v bool) { req.CanAutoMerge = &v }},
+		{"auto-merge-dependabot", "no-auto-merge-dependabot", func(v bool) { req.CanAutoMergeDependabot = &v }},
+		{"auto-address-reviews", "no-auto-address-reviews", func(v bool) { req.CanAutoAddressReviews = &v }},
+		{"auto-resolve-conflicts", "no-auto-resolve-conflicts", func(v bool) { req.CanAutoResolveConflicts = &v }},
+	}
+	for _, bp := range boolPairs {
+		enableChanged := cmd.Flags().Changed(bp.enable)
+		disableChanged := cmd.Flags().Changed(bp.disable)
+		if enableChanged && disableChanged {
+			return fmt.Errorf("cannot use both --%s and --%s", bp.enable, bp.disable)
+		}
+		if enableChanged {
+			bp.setter(true)
+			anyChanged = true
+		}
+		if disableChanged {
+			bp.setter(false)
+			anyChanged = true
+		}
+	}
+
+	if !anyChanged {
+		return fmt.Errorf("no flags provided — use --name, --setup-script, --merge-strategy, or boolean flags")
+	}
+
+	ctx := context.Background()
+	repo, err := c.UpdateRepo(ctx, req)
+	if err != nil {
+		return fmt.Errorf("update repo: %w", err)
+	}
+
+	fmt.Printf("Repository updated.\n")
+	fmt.Printf("  ID:       %s\n", repo.Id)
+	fmt.Printf("  Name:     %s\n", repo.DisplayName)
+	fmt.Printf("  Strategy: %s\n", repo.MergeStrategy)
+	if repo.SetupScript != nil {
+		fmt.Printf("  Setup:    %s\n", *repo.SetupScript)
+	}
+	fmt.Printf("  Auto-merge:            %v\n", repo.CanAutoMerge)
+	fmt.Printf("  Auto-merge Dependabot: %v\n", repo.CanAutoMergeDependabot)
+	fmt.Printf("  Auto-address reviews:  %v\n", repo.CanAutoAddressReviews)
+	fmt.Printf("  Auto-resolve conflicts: %v\n", repo.CanAutoResolveConflicts)
+	return nil
+}
+
+// --- Settings ---
+
+func runSettings(cmd *cobra.Command) error {
+	s, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+
+	// If no flags provided, display current settings.
+	anyChanged := cmd.Flags().Changed("skip-permissions") ||
+		cmd.Flags().Changed("no-skip-permissions") ||
+		cmd.Flags().Changed("worktree-dir") ||
+		cmd.Flags().Changed("poll-interval")
+
+	if !anyChanged {
+		fmt.Printf("  Skip permissions: %v\n", s.DangerouslySkipPermissions)
+		fmt.Printf("  Worktree dir:     %s\n", s.WorktreeBaseDir)
+		interval := "30 (default)"
+		if s.PollIntervalSeconds > 0 {
+			interval = strconv.Itoa(s.PollIntervalSeconds)
+		}
+		fmt.Printf("  Poll interval:    %s seconds\n", interval)
+		return nil
+	}
+
+	// Apply changes.
+	if cmd.Flags().Changed("skip-permissions") && cmd.Flags().Changed("no-skip-permissions") {
+		return fmt.Errorf("cannot use both --skip-permissions and --no-skip-permissions")
+	}
+	if cmd.Flags().Changed("skip-permissions") {
+		s.DangerouslySkipPermissions = true
+	}
+	if cmd.Flags().Changed("no-skip-permissions") {
+		s.DangerouslySkipPermissions = false
+	}
+	if cmd.Flags().Changed("worktree-dir") {
+		v, _ := cmd.Flags().GetString("worktree-dir")
+		if v == "" {
+			return fmt.Errorf("worktree-dir cannot be empty")
+		}
+		s.WorktreeBaseDir = v
+	}
+	if cmd.Flags().Changed("poll-interval") {
+		v, _ := cmd.Flags().GetInt("poll-interval")
+		if v < 0 {
+			return fmt.Errorf("poll-interval must be non-negative")
+		}
+		s.PollIntervalSeconds = v
+	}
+
+	if err := config.Save(s); err != nil {
+		return fmt.Errorf("save settings: %w", err)
+	}
+
+	fmt.Println("Settings updated.")
+	return nil
 }

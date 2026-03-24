@@ -276,6 +276,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, func() tea.Msg { return switchViewMsg{view: ViewSettings} }
 		case "t":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewTrash} }
+		case "p":
+			return h, func() tea.Msg { return switchViewMsg{view: ViewAutopilot} }
 		case "h":
 			if len(h.sessions) > 0 {
 				sess := h.sessions[h.table.Cursor()]
@@ -463,7 +465,7 @@ func (h HomeModel) View() tea.View {
 	if len(h.sessions) == 0 {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
-				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [t]rash  [q]uit"),
+				styleActionBar.Render("[n]ew session  [p]ilot  [r]epos  [s]ettings  [t]rash  [q]uit"),
 		)
 	}
 
@@ -493,7 +495,7 @@ func (h HomeModel) View() tea.View {
 				b.WriteString("\n")
 			}
 		}
-		b.WriteString(styleActionBar.Render("[enter] select  [n]ew session  [h]istory  [a]rchive  [r]epos  [s]ettings  [t]rash  [q]uit"))
+		b.WriteString(styleActionBar.Render("[enter] select  [n]ew session  [h]istory  [a]rchive  [p]ilot  [r]epos  [s]ettings  [t]rash  [q]uit"))
 	}
 
 	return tea.NewView(b.String())

@@ -56,7 +56,7 @@ func NewLifecycle(
 //
 // If forceBranch is true and a branch with the derived name already exists,
 // it will be removed before creating the new worktree.
-func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool) error {
+func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -83,6 +83,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 		Str("repo", repo.LocalPath).
 		Msg("creating worktree")
 
+	// Determine setup script — skip it when the flag is set (e.g. dependabot PRs).
+	setupScript := repo.SetupScript
+	if skipSetupScript {
+		setupScript = nil
+	}
+
 	// Create worktree: existing branch (PR) or new branch.
 	var result *gitpkg.CreateResult
 	if existingBranch != "" {
@@ -91,7 +97,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			BranchName:      existingBranch,
 			WorktreeBaseDir: repo.WorktreeBaseDir,
 			RepoName:        repo.DisplayName,
-			SetupScript:     repo.SetupScript,
+			SetupScript:     setupScript,
 		})
 	} else {
 		result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
@@ -100,7 +106,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			WorktreeBaseDir: repo.WorktreeBaseDir,
 			RepoName:        repo.DisplayName,
 			Title:           session.Title,
-			SetupScript:     repo.SetupScript,
+			SetupScript:     setupScript,
 			Force:           forceBranch,
 		})
 	}

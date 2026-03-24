@@ -1024,6 +1024,63 @@ func TestRouteTask_MappingError_DequeuesNext(t *testing.T) {
 	}
 }
 
+// --- SkipSetupScript tests ---
+
+func TestRouteTask_CreateSession_DependabotLabel_SetsSkipSetupScript(t *testing.T) {
+	var capturedOpts CreateSessionOpts
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, opts CreateSessionOpts) (*models.Session, error) {
+				capturedOpts = opts
+				return &models.Session{ID: "sess-new"}, nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId:     "dependabot:pr:repo:55",
+		Title:          "Bump react",
+		Plan:           "Fix failing tests",
+		BaseBranch:     "main",
+		ExistingBranch: "dependabot/npm/react-18.3.0",
+		Action:         bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+		Labels:         []string{"dependabot", "npm"},
+	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"}, "dependabot")
+
+	if !capturedOpts.SkipSetupScript {
+		t.Error("expected SkipSetupScript=true for task with dependabot label")
+	}
+}
+
+func TestRouteTask_CreateSession_NoDependabotLabel_NoSkipSetupScript(t *testing.T) {
+	var capturedOpts CreateSessionOpts
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, opts CreateSessionOpts) (*models.Session, error) {
+				capturedOpts = opts
+				return &models.Session{ID: "sess-new"}, nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "linear:issue:ABC-123:7",
+		Title:      "Fix login bug",
+		Plan:       "Debug and fix",
+		BaseBranch: "main",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+		Labels:     []string{"bug", "high-priority"},
+	}, repoInfo{id: "r1", originURL: "https://github.com/org/repo"}, "linear")
+
+	if capturedOpts.SkipSetupScript {
+		t.Error("expected SkipSetupScript=false for task without dependabot label")
+	}
+}
+
 // --- parsePRNumberFromExternalID tests ---
 
 func TestParsePRNumberFromExternalID(t *testing.T) {

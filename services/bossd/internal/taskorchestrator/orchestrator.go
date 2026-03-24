@@ -3,6 +3,7 @@ package taskorchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -443,11 +444,12 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 	}
 
 	opts := CreateSessionOpts{
-		RepoID:     repo.id,
-		Title:      task.GetTitle(),
-		Plan:       task.GetPlan(),
-		BaseBranch: baseBranch,
-		HeadBranch: task.GetExistingBranch(),
+		RepoID:          repo.id,
+		Title:           task.GetTitle(),
+		Plan:            task.GetPlan(),
+		BaseBranch:      baseBranch,
+		HeadBranch:      task.GetExistingBranch(),
+		SkipSetupScript: slices.Contains(task.GetLabels(), "dependabot"),
 	}
 
 	// Extract PR number from the external ID so the session displays

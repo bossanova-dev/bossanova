@@ -323,9 +323,40 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 			}
 
 			if handoffFile == "" {
-				// No new handoff file — proceed to verify.
-				log.Info().Int("leg", leg).Msg("no new handoff file, proceeding to verify")
-				break
+				// No new handoff file — run a recovery step to create one.
+				log.Info().Int("leg", leg).Msg("no handoff file found, running handoff recovery")
+				prompt := fmt.Sprintf("No handoff document was created for the previous flight leg. "+
+					"Review recent work (git log, git diff, bd list) and write a handoff "+
+					"document to %s/ following the /boss-handoff format. Plan: %s",
+					cfg.handoffDirectory(), planPath)
+				if err := o.runFlightLeg(ctx, workflowID, "handoff", prompt, cfg); err != nil {
+					log.Warn().Err(err).Msg("handoff recovery failed, proceeding to verify")
+					break
+				}
+
+				// Re-check for handoff file after recovery.
+				handoffFile, _ = scanHandoffDir(cfg.handoffDirectory(), legStart)
+				if handoffFile == "" {
+					log.Info().Msg("still no handoff after recovery, proceeding to verify")
+					break
+				}
+
+				// Got a handoff — update leg counter and resume normally.
+				legVal := int32(leg)
+				if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+					Id:        workflowID,
+					FlightLeg: &legVal,
+				}); err != nil {
+					log.Warn().Err(err).Int("leg", leg).Msg("failed to update flight leg counter")
+				}
+
+				log.Info().Int("leg", leg).Str("handoff", handoffFile).Msg("recovery created handoff, resuming")
+				legStart = time.Now()
+				if err := o.runFlightLeg(ctx, workflowID, "resume", handoffFile, cfg); err != nil {
+					o.pauseWorkflowOnError(ctx, workflowID, "resume", err)
+					return
+				}
+				continue
 			}
 
 			// Update the flight leg counter in the DB so status commands reflect progress.

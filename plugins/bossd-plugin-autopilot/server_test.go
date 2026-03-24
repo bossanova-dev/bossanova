@@ -38,6 +38,10 @@ type mockHostClient struct {
 	// For retry testing: second attempt for same step can behave differently.
 	retryAttempts map[string]attemptBehavior
 	attemptCounts map[string]int // tracks how many attempts per step
+
+	// onAttemptCreated is called (without lock) after a CreateAttempt call.
+	// It receives the step name so tests can produce side effects (e.g. create files).
+	onAttemptCreated func(step string)
 }
 
 type attemptBehavior struct {
@@ -101,7 +105,6 @@ func (m *mockHostClient) GetWorkflow(_ context.Context, _ string) (*bossanovav1.
 
 func (m *mockHostClient) CreateAttempt(_ context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.createAttemptCalls = append(m.createAttemptCalls, req)
 
 	step := extractStep(req.GetSkillName())
@@ -109,17 +112,26 @@ func (m *mockHostClient) CreateAttempt(_ context.Context, req *bossanovav1.Creat
 
 	if ab, ok := m.stepAttempts[step]; ok && m.attemptCounts[step] == 1 {
 		if ab.createErr != nil {
+			m.mu.Unlock()
 			return nil, ab.createErr
 		}
 	}
 	if ab, ok := m.retryAttempts[step]; ok && m.attemptCounts[step] > 1 {
 		if ab.createErr != nil {
+			m.mu.Unlock()
 			return nil, ab.createErr
 		}
 	}
 
 	if m.attemptCreErr != nil {
+		m.mu.Unlock()
 		return nil, m.attemptCreErr
+	}
+	cb := m.onAttemptCreated
+	m.mu.Unlock()
+
+	if cb != nil {
+		cb(step)
 	}
 	return &bossanovav1.CreateAttemptResponse{AttemptId: m.attemptID}, nil
 }
@@ -625,7 +637,7 @@ func TestGetWorkflowStatus(t *testing.T) {
 // --- Test: runWorkflow orchestration loop ---
 
 func TestRunWorkflowHappyPath(t *testing.T) {
-	// plan → implement → no handoff → verify → land → completed
+	// plan → implement → no handoff → handoff recovery → still no handoff → verify → land → completed
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 	cfg := &workflowConfig{
@@ -806,6 +818,117 @@ func TestRunWorkflowMaxLegs(t *testing.T) {
 	}
 	if legs[1] != 2 {
 		t.Errorf("second flight leg update = %d, want 2", legs[1])
+	}
+}
+
+func TestRunWorkflowHandoffRecovery(t *testing.T) {
+	// Implement succeeds without creating a handoff file. The orchestrator
+	// should run a "handoff" recovery step. During that step, a handoff file
+	// appears, so the orchestrator picks it up and runs a "resume" step.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	// scanHandoffDir requires a relative path, so create a relative temp dir.
+	handoffDir := "testdata_handoffs_recovery"
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(handoffDir) })
+
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          handoffDir,
+		MaxFlightLegs:       3,
+	}
+
+	// When the handoff recovery step runs, create a file in the handoff dir
+	// so scanHandoffDir finds it on the re-check.
+	mock.onAttemptCreated = func(step string) {
+		if step == "handoff" {
+			f, err := os.CreateTemp(handoffDir, "handoff-recovery-*.md")
+			if err != nil {
+				t.Errorf("failed to create handoff file in callback: %v", err)
+				return
+			}
+			// Set mtime to the future so scanHandoffDir picks it up.
+			future := time.Now().Add(1 * time.Hour)
+			_ = os.Chtimes(f.Name(), future, future)
+			_ = f.Close()
+		}
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "")
+
+	// Should have completed successfully.
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed", last)
+	}
+
+	// Verify the steps include "handoff" (recovery) and "resume".
+	steps := mock.getUpdateSteps()
+	if !sliceContains(steps, "handoff") {
+		t.Errorf("expected 'handoff' step (recovery) in steps: %v", steps)
+	}
+	if !sliceContains(steps, "resume") {
+		t.Errorf("expected 'resume' step in steps: %v", steps)
+	}
+
+	// Verify that a handoff recovery attempt was created with the right skill.
+	var foundHandoffAttempt bool
+	for _, call := range mock.createAttemptCalls {
+		if call.GetSkillName() == "boss-handoff" {
+			foundHandoffAttempt = true
+			break
+		}
+	}
+	if !foundHandoffAttempt {
+		t.Error("expected a CreateAttempt call with skill 'boss-handoff' for recovery")
+	}
+
+	// Flight leg counter should show leg 1 (implement) then leg 2 (recovery resume).
+	legs := mock.getFlightLegUpdates()
+	if len(legs) < 2 {
+		t.Fatalf("expected at least 2 flight leg updates, got %d: %v", len(legs), legs)
+	}
+	if legs[0] != 1 {
+		t.Errorf("first flight leg update = %d, want 1", legs[0])
+	}
+	if legs[1] != 2 {
+		t.Errorf("second flight leg update = %d, want 2", legs[1])
+	}
+}
+
+func TestRunWorkflowHandoffRecoveryFails(t *testing.T) {
+	// When handoff recovery fails, the orchestrator should proceed to verify.
+	mock := newMockHostClient()
+	mock.stepAttempts["handoff"] = attemptBehavior{err: "recovery failed"}
+	mock.retryAttempts["handoff"] = attemptBehavior{err: "still failed"}
+	o := newTestOrchestrator(mock)
+
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(),
+		MaxFlightLegs:       3,
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "")
+
+	// Should still complete (handoff failed → break → verify → land → completed).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed", last)
+	}
+
+	// Should have attempted handoff but then proceeded to verify and land.
+	steps := mock.getUpdateSteps()
+	if !sliceContains(steps, "handoff") {
+		t.Errorf("expected 'handoff' step in steps: %v", steps)
+	}
+	if !sliceContains(steps, "verify") {
+		t.Errorf("expected 'verify' step in steps: %v", steps)
 	}
 }
 

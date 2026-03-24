@@ -60,6 +60,19 @@ When you reach a `[HANDOFF]` task, you **MUST**:
 - Output the handoff to chat instead of writing to file
 - Batch multiple handoffs together
 
+> **EVERY `/boss-implement` INVOCATION MUST END WITH A HANDOFF FILE**
+>
+> You **MUST** write a handoff document to `docs/handoffs/` before running
+> `/clear`, even if:
+>
+> - You completed all tasks in the plan in a single pass
+> - There are no more `[HANDOFF]` tasks remaining
+> - The work was trivial
+>
+> The autopilot orchestrator monitors `docs/handoffs/` to detect when a flight
+> leg is done. **If you don't write a handoff file, the orchestrator cannot
+> track progress and will spawn a recovery session to create one.**
+
 ---
 
 ## Phase 1: Initialize

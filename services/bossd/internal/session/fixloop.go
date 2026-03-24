@@ -226,7 +226,7 @@ func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *mo
 		resume = sess.ClaudeSessionID
 	}
 
-	claudeSessionID, err := f.claude.Start(ctx, sess.WorktreePath, plan, resume)
+	claudeSessionID, err := f.claude.Start(ctx, sess.WorktreePath, plan, resume, "")
 	if err != nil {
 		f.recordAttemptFailed(ctx, attempt.ID, fmt.Sprintf("start claude: %v", err))
 		return f.fireFixFailed(ctx, sess, fmt.Errorf("start claude: %w", err))

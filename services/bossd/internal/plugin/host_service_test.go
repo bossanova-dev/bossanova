@@ -214,7 +214,7 @@ func newMockClaudeRunner() *mockClaudeRunner {
 	}
 }
 
-func (m *mockClaudeRunner) Start(_ context.Context, workDir, _ string, _ *string) (string, error) {
+func (m *mockClaudeRunner) Start(_ context.Context, workDir, _ string, _ *string, _ string) (string, error) {
 	if m.startErr != nil {
 		return "", m.startErr
 	}

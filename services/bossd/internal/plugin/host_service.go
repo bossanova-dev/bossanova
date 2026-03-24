@@ -346,7 +346,7 @@ func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.
 	// Use context.Background() so the Claude process outlives this RPC.
 	// The gRPC request context is cancelled when the RPC returns, which
 	// would immediately kill the long-running Claude subprocess.
-	sessionID, err := s.claude.Start(context.Background(), workDir, req.GetInput(), nil)
+	sessionID, err := s.claude.Start(context.Background(), workDir, req.GetInput(), nil, "")
 	if err != nil {
 		return nil, fmt.Errorf("start claude: %w", err)
 	}

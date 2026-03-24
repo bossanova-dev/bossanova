@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sync"
 
 	goplugin "github.com/hashicorp/go-plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -13,7 +12,7 @@ import (
 )
 
 // hostClient defines the methods the orchestrator uses from the host service.
-// Both hostServiceClient and lazyHostServiceClient implement this interface.
+// Both hostServiceClient and eagerHostServiceClient implement this interface.
 type hostClient interface {
 	CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error)
 	UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error)
@@ -38,37 +37,46 @@ func newHostServiceClient(conn *grpc.ClientConn) *hostServiceClient {
 	return &hostServiceClient{conn: conn}
 }
 
-// lazyHostServiceClient defers the broker.Dial(1) until first use. This is
-// necessary because GRPCServer runs before the host has called AcceptAndServe
-// on the broker, so the connection cannot be established during plugin init.
-type lazyHostServiceClient struct {
-	broker *goplugin.GRPCBroker
+// eagerHostServiceClient starts broker.Dial(1) in a background goroutine
+// immediately upon construction. GRPCServer runs before the host has called
+// AcceptAndServe on the broker, but the background goroutine blocks on the
+// broker channel until ConnInfo arrives. The go-plugin broker cleans up
+// pending connection info after 5 seconds, so we must start the Dial
+// eagerly rather than deferring to the first RPC call.
+type eagerHostServiceClient struct {
 	logger zerolog.Logger
-	once   sync.Once
 	inner  *hostServiceClient
 	err    error
+	ready  chan struct{}
 }
 
-func newLazyHostServiceClient(broker *goplugin.GRPCBroker, logger zerolog.Logger) *lazyHostServiceClient {
-	return &lazyHostServiceClient{broker: broker, logger: logger}
-}
-
-func (c *lazyHostServiceClient) connect() (*hostServiceClient, error) {
-	c.once.Do(func() {
-		conn, err := c.broker.Dial(1)
+func newEagerHostServiceClient(broker *goplugin.GRPCBroker, logger zerolog.Logger) *eagerHostServiceClient {
+	c := &eagerHostServiceClient{
+		logger: logger,
+		ready:  make(chan struct{}),
+	}
+	go func() {
+		defer close(c.ready)
+		conn, err := broker.Dial(1)
 		if err != nil {
 			c.err = fmt.Errorf("dial host service: %w", err)
+			c.logger.Error().Err(c.err).Msg("failed to connect to host service via broker")
 			return
 		}
 		c.inner = newHostServiceClient(conn)
 		c.logger.Info().Msg("connected to host service via broker")
-	})
+	}()
+	return c
+}
+
+func (c *eagerHostServiceClient) connect() (*hostServiceClient, error) {
+	<-c.ready
 	return c.inner, c.err
 }
 
 // --- Lazy client methods (delegate to inner after connect) ---
 
-func (c *lazyHostServiceClient) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
+func (c *eagerHostServiceClient) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -76,7 +84,7 @@ func (c *lazyHostServiceClient) CreateWorkflow(ctx context.Context, req *bossano
 	return client.CreateWorkflow(ctx, req)
 }
 
-func (c *lazyHostServiceClient) UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error) {
+func (c *eagerHostServiceClient) UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -84,7 +92,7 @@ func (c *lazyHostServiceClient) UpdateWorkflow(ctx context.Context, req *bossano
 	return client.UpdateWorkflow(ctx, req)
 }
 
-func (c *lazyHostServiceClient) GetWorkflow(ctx context.Context, id string) (*bossanovav1.GetWorkflowResponse, error) {
+func (c *eagerHostServiceClient) GetWorkflow(ctx context.Context, id string) (*bossanovav1.GetWorkflowResponse, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -92,7 +100,7 @@ func (c *lazyHostServiceClient) GetWorkflow(ctx context.Context, id string) (*bo
 	return client.GetWorkflow(ctx, id)
 }
 
-func (c *lazyHostServiceClient) CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
+func (c *eagerHostServiceClient) CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -100,7 +108,7 @@ func (c *lazyHostServiceClient) CreateAttempt(ctx context.Context, req *bossanov
 	return client.CreateAttempt(ctx, req)
 }
 
-func (c *lazyHostServiceClient) GetAttemptStatus(ctx context.Context, attemptID string) (*bossanovav1.GetAttemptStatusResponse, error) {
+func (c *eagerHostServiceClient) GetAttemptStatus(ctx context.Context, attemptID string) (*bossanovav1.GetAttemptStatusResponse, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -108,7 +116,7 @@ func (c *lazyHostServiceClient) GetAttemptStatus(ctx context.Context, attemptID 
 	return client.GetAttemptStatus(ctx, attemptID)
 }
 
-func (c *lazyHostServiceClient) StreamAttemptOutput(ctx context.Context, attemptID string) (AttemptOutputStream, error) {
+func (c *eagerHostServiceClient) StreamAttemptOutput(ctx context.Context, attemptID string) (AttemptOutputStream, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -204,7 +212,7 @@ func (s *attemptOutputStream) Recv() (string, error) {
 
 // Compile-time interface checks.
 var (
-	_ hostClient          = (*lazyHostServiceClient)(nil)
+	_ hostClient          = (*eagerHostServiceClient)(nil)
 	_ hostClient          = (*hostServiceClient)(nil)
 	_ AttemptOutputStream = (*attemptOutputStream)(nil)
 )

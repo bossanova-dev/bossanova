@@ -442,7 +442,7 @@ Please review the plan. Would you like any changes before we proceed?
 | `/boss-handoff`   | Handoff format used at checkpoints during `/boss-implement` |
 | `/boss-resume`    | Resume work from a previous handoff checkpoint              |
 | `/boss-verify`    | Runs verification tests at end of each flight leg           |
-| `/boss-land`      | End session with commit and push                            |
+| `/boss-finalize`  | End session with commit and push                            |
 
 ### Typical Flow
 

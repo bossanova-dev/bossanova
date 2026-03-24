@@ -90,6 +90,10 @@ func (m *MockClaudeRunner) IsRunning(sessionID string) bool {
 	return p.running
 }
 
+func (m *MockClaudeRunner) ExitError(_ string) error {
+	return nil
+}
+
 func (m *MockClaudeRunner) Subscribe(ctx context.Context, sessionID string) (<-chan claude.OutputLine, error) {
 	m.mu.RLock()
 	p, ok := m.sessions[sessionID]

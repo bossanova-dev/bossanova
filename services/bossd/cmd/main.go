@@ -111,7 +111,7 @@ func run() error {
 
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
-	pluginHost.SetWorkflowDeps(workflows, claudeRunner)
+	pluginHost.SetWorkflowDeps(workflows, sessions, claudeRunner)
 	if err := pluginHost.Start(context.Background(), settings.Plugins); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)

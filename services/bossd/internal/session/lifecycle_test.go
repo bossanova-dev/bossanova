@@ -287,6 +287,10 @@ func (m *mockClaudeRunner) IsRunning(sessionID string) bool {
 	return m.running[sessionID]
 }
 
+func (m *mockClaudeRunner) ExitError(_ string) error {
+	return nil
+}
+
 func (m *mockClaudeRunner) Subscribe(_ context.Context, _ string) (<-chan claude.OutputLine, error) {
 	ch := make(chan claude.OutputLine)
 	close(ch)

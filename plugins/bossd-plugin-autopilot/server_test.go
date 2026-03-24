@@ -204,6 +204,20 @@ func (m *mockHostClient) getUpdateSteps() []string {
 	return steps
 }
 
+// getFlightLegUpdates returns the FlightLeg values from all UpdateWorkflow calls
+// that set FlightLeg.
+func (m *mockHostClient) getFlightLegUpdates() []int32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var legs []int32
+	for _, req := range m.updateWorkflowCalls {
+		if req.FlightLeg != nil {
+			legs = append(legs, *req.FlightLeg)
+		}
+	}
+	return legs
+}
+
 // extractStep maps a skill name back to its step name.
 func extractStep(skillName string) string {
 	for step, name := range defaultSkillNames {
@@ -641,6 +655,33 @@ func TestRunWorkflowHappyPath(t *testing.T) {
 			t.Errorf("step %q not found in steps: %v", want, steps)
 		}
 	}
+
+	// On completion, flight leg should be set to maxLegs.
+	legs := mock.getFlightLegUpdates()
+	lastLeg := legs[len(legs)-1]
+	if lastLeg != 20 {
+		t.Errorf("final flight leg = %d, want 20 (maxLegs)", lastLeg)
+	}
+}
+
+func TestRunWorkflowFlightLegUpdatedDuringImplement(t *testing.T) {
+	// Verify that FlightLeg is set to 1 at the start of the implement step.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(),
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "")
+
+	legs := mock.getFlightLegUpdates()
+	if len(legs) == 0 {
+		t.Fatal("expected at least one flight leg update")
+	}
+	if legs[0] != 1 {
+		t.Errorf("first flight leg update = %d, want 1 (implement)", legs[0])
+	}
 }
 
 func TestRunWorkflowConfirmLandPause(t *testing.T) {
@@ -709,8 +750,8 @@ func TestRunWorkflowRetrySuccess(t *testing.T) {
 }
 
 func TestRunWorkflowMaxLegs(t *testing.T) {
-	// With max_legs=1 and handoff files present, should stop the loop
-	// and proceed to verify.
+	// With max_legs=2 and a handoff file present, implement is leg 1 and
+	// the handoff loop runs one resume at leg 2, then proceeds to verify.
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 
@@ -736,11 +777,11 @@ func TestRunWorkflowMaxLegs(t *testing.T) {
 
 	cfg := &workflowConfig{
 		PollIntervalSeconds: 1,
-		MaxFlightLegs:       1,
+		MaxFlightLegs:       2,
 		HandoffDir:          handoffDir,
 	}
 
-	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 2, "")
 
 	// Should still complete (verify + land after max legs).
 	statuses := mock.getUpdateStatuses()
@@ -753,6 +794,18 @@ func TestRunWorkflowMaxLegs(t *testing.T) {
 	steps := mock.getUpdateSteps()
 	if !sliceContains(steps, "resume") {
 		t.Errorf("expected 'resume' step in steps: %v", steps)
+	}
+
+	// Flight leg counter should show leg 1 (implement) then leg 2 (resume).
+	legs := mock.getFlightLegUpdates()
+	if len(legs) < 2 {
+		t.Fatalf("expected at least 2 flight leg updates, got %d: %v", len(legs), legs)
+	}
+	if legs[0] != 1 {
+		t.Errorf("first flight leg update = %d, want 1", legs[0])
+	}
+	if legs[1] != 2 {
+		t.Errorf("second flight leg update = %d, want 2", legs[1])
 	}
 }
 
@@ -1016,7 +1069,7 @@ func TestSkillNameDefaults(t *testing.T) {
 		{"handoff", "boss-handoff"},
 		{"resume", "boss-resume"},
 		{"verify", "boss-verify"},
-		{"land", "boss-land"},
+		{"land", "boss-finalize"},
 		{"unknown-step", "unknown-step"},
 	}
 

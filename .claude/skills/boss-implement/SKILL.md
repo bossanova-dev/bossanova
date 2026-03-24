@@ -359,4 +359,4 @@ continue with: /boss-resume docs/handoffs/2026-02-06-1045-core-types.md
 | `/boss-verify`  | Verify flight leg before handoff    |
 | `/boss-handoff` | Detailed handoff document format    |
 | `/boss-resume`  | Resume from a handoff file          |
-| `/boss-land`    | End session with commit and push    |
+| `/boss-finalize`| End session with commit and push    |

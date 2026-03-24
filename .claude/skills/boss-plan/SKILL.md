@@ -325,4 +325,4 @@ Before starting implementation:
 | `/boss-implement`   | Execute bd tasks after pre-flight checks           |
 | `/boss-handoff`     | Handle handoff checkpoints during execution        |
 | `/boss-resume`      | Resume work from a previous handoff                |
-| `/boss-land`        | End session with commit and push                   |
+| `/boss-finalize`    | End session with commit and push                   |

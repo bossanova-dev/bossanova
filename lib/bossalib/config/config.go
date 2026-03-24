@@ -42,7 +42,7 @@ var defaultSkills = map[string]string{
 	"handoff":   "boss-handoff",
 	"resume":    "boss-resume",
 	"verify":    "boss-verify",
-	"land":      "boss-land",
+	"land":      "boss-finalize",
 }
 
 // HandoffDirectory returns the configured handoff directory or the default.

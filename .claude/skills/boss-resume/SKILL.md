@@ -239,4 +239,4 @@ During execution:
 | `/boss-verify`      | Verify flight leg before handoff        |
 | `/boss-implement`   | Execute tasks, stopping at handoffs     |
 | `/boss-handoff`     | Create handoff documents at checkpoints |
-| `/boss-land`        | End session with commit and push        |
+| `/boss-finalize`    | End session with commit and push        |

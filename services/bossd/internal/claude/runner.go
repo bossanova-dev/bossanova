@@ -40,6 +40,11 @@ type ClaudeRunner interface {
 	// IsRunning reports whether a Claude process is active for the session.
 	IsRunning(sessionID string) bool
 
+	// ExitError returns the exit error for a completed session.
+	// Returns nil if the session is still running, exited successfully,
+	// or is unknown.
+	ExitError(sessionID string) error
+
 	// Subscribe returns a channel that receives output lines for the session.
 	// The channel is closed when the process exits or the caller cancels ctx.
 	Subscribe(ctx context.Context, sessionID string) (<-chan OutputLine, error)
@@ -123,7 +128,7 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	r.mu.Unlock()
 
 	// Build command args.
-	args := []string{"--print", "--output-format", "stream-json"}
+	args := []string{"--print", "--verbose", "--output-format", "stream-json"}
 	if resume != nil {
 		args = append(args, "--resume", *resume)
 	}
@@ -259,6 +264,23 @@ func (r *Runner) IsRunning(sessionID string) bool {
 		return false
 	default:
 		return true
+	}
+}
+
+// ExitError returns the exit error for a completed session.
+func (r *Runner) ExitError(sessionID string) error {
+	r.mu.RLock()
+	p, ok := r.procs[sessionID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	select {
+	case <-p.done:
+		return p.exitErr
+	default:
+		return nil // still running
 	}
 }
 

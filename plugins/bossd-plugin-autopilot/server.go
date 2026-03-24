@@ -51,7 +51,7 @@ var defaultSkillNames = map[string]string{
 	"handoff":   "boss-handoff",
 	"resume":    "boss-resume",
 	"verify":    "boss-verify",
-	"land":      "boss-land",
+	"land":      "boss-finalize",
 }
 
 func (c *workflowConfig) handoffDirectory() string {
@@ -267,6 +267,10 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 	stepOrder := map[string]int{"plan": 1, "implement": 2, "resume": 3, "handoff": 3, "verify": 4, "land": 5}
 	startIdx := stepOrder[startStep] // 0 if startStep is "" (start from beginning)
 
+	// legStart tracks when the current flight leg began, so scanHandoffDir
+	// can detect handoff files created since the leg started.
+	var legStart time.Time
+
 	// Step 1: Plan.
 	if startIdx <= 1 {
 		log.Info().Msg("starting plan step")
@@ -276,8 +280,22 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		}
 	}
 
-	// Step 2: Implement.
+	// Step 2: Implement (= Flight Leg 1).
 	if startIdx <= 2 {
+		// Capture time before implement so handoff files it creates are
+		// detected by scanHandoffDir in the loop below.
+		legStart = time.Now()
+
+		// Implement is the first flight leg — update the counter so status
+		// commands show progress immediately.
+		legVal := int32(1)
+		if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+			Id:        workflowID,
+			FlightLeg: &legVal,
+		}); err != nil {
+			log.Warn().Err(err).Msg("failed to update flight leg counter")
+		}
+
 		log.Info().Msg("starting implement step")
 		if err := o.runFlightLeg(ctx, workflowID, "implement", planPath, cfg); err != nil {
 			o.pauseWorkflowOnError(ctx, workflowID, "implement", err)
@@ -285,14 +303,13 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		}
 	}
 
-	// Step 3: Handoff/resume loop.
+	// Step 3: Handoff/resume loop (Flight Legs 2..maxLegs).
 	if startIdx <= 3 {
-		legStart := time.Now()
 		if startIdx == 3 {
 			// Resuming into the handoff loop — find existing handoff files.
 			legStart = time.Time{}
 		}
-		for leg := 1; leg <= maxLegs; leg++ {
+		for leg := 2; leg <= maxLegs; leg++ {
 			// Check if workflow was paused/cancelled.
 			if o.isStoppedOrDone(ctx, workflowID) {
 				return
@@ -369,10 +386,13 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		return
 	}
 
-	// Done.
+	// Done — set flight leg to maxLegs so the status display shows completion
+	// (e.g. "2/2" instead of "1/2" when the agent finished early).
+	legVal := int32(maxLegs)
 	if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
-		Id:     workflowID,
-		Status: stringPtr("completed"),
+		Id:        workflowID,
+		Status:    stringPtr("completed"),
+		FlightLeg: &legVal,
 	}); err != nil {
 		log.Error().Err(err).Msg("failed to mark workflow completed")
 	}
@@ -414,6 +434,14 @@ func (o *orchestrator) runFlightLeg(ctx context.Context, workflowID, step, input
 	lastError, err := o.pollAttempt(ctx, attemptID, cfg.pollInterval())
 	if err != nil {
 		return fmt.Errorf("poll attempt for %s: %w", step, err)
+	}
+
+	// Check for soft failures: Claude may exit 0 but report an error in its
+	// output (e.g. "Unknown skill: boss-plan"). Inspect the final output lines.
+	if lastError == "" {
+		if softErr := o.checkOutputForSoftFailure(ctx, attemptID); softErr != "" {
+			lastError = softErr
+		}
 	}
 
 	if lastError == "" {
@@ -493,6 +521,28 @@ func (o *orchestrator) smartRetry(ctx context.Context, workflowID, step, input, 
 
 	log.Info().Msg("retry succeeded")
 	return nil
+}
+
+// checkOutputForSoftFailure inspects the final output lines of a completed
+// attempt for known failure patterns that Claude reports with exit code 0
+// (e.g. "Unknown skill: boss-plan"). Returns an error string if detected.
+func (o *orchestrator) checkOutputForSoftFailure(ctx context.Context, attemptID string) string {
+	resp, err := o.host.GetAttemptStatus(ctx, attemptID)
+	if err != nil {
+		return ""
+	}
+	lines := resp.GetOutputLines()
+	// Check the last few lines for known failure patterns in stream-json output.
+	start := len(lines) - 5
+	if start < 0 {
+		start = 0
+	}
+	for _, line := range lines[start:] {
+		if strings.Contains(line, "Unknown skill:") {
+			return "unknown skill (check that boss-* skills are installed in the target worktree)"
+		}
+	}
+	return ""
 }
 
 // pauseWorkflowOnError pauses a workflow after a flight leg failure, preserving

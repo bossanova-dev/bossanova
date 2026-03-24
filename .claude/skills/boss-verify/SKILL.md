@@ -284,4 +284,4 @@ Post-flight checks are complete. Return control to the calling skill:
 | `/boss-implement`   | Invokes post-flight-checks before handoff                   |
 | `/boss-handoff`     | Invokes post-flight-checks; then writes the handoff         |
 | `/boss-resume`      | Invokes post-flight-checks before handoff                   |
-| `/boss-land`        | End-of-session checks (separate from flight-leg checks)     |
+| `/boss-finalize`    | End-of-session checks (separate from flight-leg checks)     |

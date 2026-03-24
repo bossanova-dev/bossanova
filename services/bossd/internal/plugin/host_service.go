@@ -20,6 +20,7 @@ import (
 type HostServiceServer struct {
 	provider      vcs.Provider
 	workflowStore db.WorkflowStore
+	sessionStore  db.SessionStore
 	claude        claude.ClaudeRunner
 }
 
@@ -33,8 +34,9 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 // SetWorkflowDeps injects the dependencies needed for workflow and attempt
 // RPCs. This is called after construction so that the existing plugin
 // wiring doesn't need to change until the full wiring is done.
-func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, runner claude.ClaudeRunner) {
+func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, runner claude.ClaudeRunner) {
 	s.workflowStore = store
+	s.sessionStore = sessions
 	s.claude = runner
 }
 
@@ -331,7 +333,20 @@ func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.
 		return nil, status.Error(codes.Unavailable, "claude runner not configured")
 	}
 
-	sessionID, err := s.claude.Start(ctx, req.GetWorkDir(), req.GetInput(), nil)
+	// Resolve working directory from workflow → session when not provided.
+	workDir := req.GetWorkDir()
+	if workDir == "" && req.GetWorkflowId() != "" && s.workflowStore != nil && s.sessionStore != nil {
+		if wf, err := s.workflowStore.Get(ctx, req.GetWorkflowId()); err == nil {
+			if sess, err := s.sessionStore.Get(ctx, wf.SessionID); err == nil {
+				workDir = sess.WorktreePath
+			}
+		}
+	}
+
+	// Use context.Background() so the Claude process outlives this RPC.
+	// The gRPC request context is cancelled when the RPC returns, which
+	// would immediately kill the long-running Claude subprocess.
+	sessionID, err := s.claude.Start(context.Background(), workDir, req.GetInput(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
@@ -352,6 +367,9 @@ func (s *HostServiceServer) GetAttemptStatus(_ context.Context, req *bossanovav1
 	resp := &bossanovav1.GetAttemptStatusResponse{}
 	if running {
 		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_RUNNING
+	} else if exitErr := s.claude.ExitError(attemptID); exitErr != nil {
+		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_FAILED
+		resp.Error = exitErr.Error()
 	} else {
 		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED
 	}

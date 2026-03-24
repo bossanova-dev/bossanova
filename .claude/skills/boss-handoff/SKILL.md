@@ -361,4 +361,4 @@ Before completing a handoff:
 | `/boss-verify`      | Verify flight leg before handoff    |
 | `/boss-implement`   | Execute tasks, stopping at handoffs |
 | `/boss-resume`      | Resume work from this handoff       |
-| `/boss-land`        | End session with commit and push    |
+| `/boss-finalize`    | End session with commit and push    |

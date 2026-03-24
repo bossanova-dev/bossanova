@@ -19,11 +19,12 @@ type workflowPlugin struct {
 }
 
 func (p *workflowPlugin) GRPCServer(broker *goplugin.GRPCBroker, srv *grpc.Server) error { //nolint:unparam // interface implementation
-	// Create a lazy host client that defers broker.Dial(1) until first use.
-	// GRPCServer runs during plugin init, before the host has called
-	// AcceptAndServe on broker ID 1. The connection is established lazily
-	// on the first RPC call, at which point the host broker is ready.
-	hostClient := newLazyHostServiceClient(broker, p.logger)
+	// Create a host client that eagerly starts broker.Dial(1) in a background
+	// goroutine. The go-plugin broker cleans up pending connection info after
+	// 5 seconds, so we must start the Dial immediately rather than deferring
+	// to the first RPC call. The goroutine blocks until the host calls
+	// AcceptAndServe on broker ID 1 (which happens during Dispense).
+	hostClient := newEagerHostServiceClient(broker, p.logger)
 	server := newOrchestrator(hostClient, p.logger)
 
 	srv.RegisterService(&workflowServiceDesc, server)

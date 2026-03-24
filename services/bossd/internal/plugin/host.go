@@ -110,15 +110,19 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 			startedAt: time.Now(),
 		}
 
-		// Try to dispense the TaskSource interface. Not all plugins
-		// implement it, so we silently skip on failure.
+		// Try to dispense each interface. Because all plugin types share
+		// the same gRPC connection, Dispense succeeds even if the plugin
+		// subprocess doesn't implement the service. We probe with GetInfo
+		// to verify the service is actually registered before caching.
 		rpcClient, err := client.Client()
 		if err == nil {
 			raw, err := rpcClient.Dispense(sharedplugin.PluginTypeTaskSource)
 			if err == nil {
 				if ts, ok := raw.(TaskSource); ok {
-					mp.taskSource = ts
-					h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed TaskSource interface")
+					if _, probeErr := ts.GetInfo(context.Background()); probeErr == nil {
+						mp.taskSource = ts
+						h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed TaskSource interface")
+					}
 				}
 			}
 
@@ -126,8 +130,10 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 			raw, err = rpcClient.Dispense(sharedplugin.PluginTypeWorkflow)
 			if err == nil {
 				if ws, ok := raw.(WorkflowService); ok {
-					mp.workflowService = ws
-					h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed WorkflowService interface")
+					if _, probeErr := ws.GetInfo(context.Background()); probeErr == nil {
+						mp.workflowService = ws
+						h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed WorkflowService interface")
+					}
 				}
 			}
 		}
@@ -208,9 +214,9 @@ func (h *Host) GetTaskSources() []TaskSource {
 
 // SetWorkflowDeps injects workflow and attempt dependencies into the host
 // service so that plugins can create/manage workflows and Claude attempts.
-func (h *Host) SetWorkflowDeps(store db.WorkflowStore, runner claude.ClaudeRunner) {
+func (h *Host) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, runner claude.ClaudeRunner) {
 	if h.hostService != nil {
-		h.hostService.SetWorkflowDeps(store, runner)
+		h.hostService.SetWorkflowDeps(store, sessions, runner)
 	}
 }
 

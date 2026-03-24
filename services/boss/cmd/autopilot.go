@@ -229,7 +229,7 @@ func runAutopilotPause(cmd *cobra.Command, id string) error {
 		return fmt.Errorf("pause autopilot: %w", err)
 	}
 
-	fmt.Printf("Workflow %s paused.\n", shortID(w.Id))
+	fmt.Printf("Workflow %s paused.\n", w.Id)
 	return nil
 }
 
@@ -253,7 +253,7 @@ func runAutopilotResume(cmd *cobra.Command, id string) error {
 		return fmt.Errorf("resume autopilot: %w", err)
 	}
 
-	fmt.Printf("Workflow %s resumed.\n", shortID(w.Id))
+	fmt.Printf("Workflow %s resumed.\n", w.Id)
 	return nil
 }
 
@@ -277,7 +277,7 @@ func runAutopilotCancel(cmd *cobra.Command, id string) error {
 		return fmt.Errorf("cancel autopilot: %w", err)
 	}
 
-	fmt.Printf("Workflow %s cancelled.\n", shortID(w.Id))
+	fmt.Printf("Workflow %s cancelled.\n", w.Id)
 	return nil
 }
 
@@ -313,7 +313,7 @@ func formatWorkflowIDs(workflows []*pb.AutopilotWorkflow) string {
 	lines := make([]string, 0, len(workflows))
 	for _, w := range workflows {
 		lines = append(lines, fmt.Sprintf("  %s  %s  %s",
-			shortID(w.Id),
+			w.Id,
 			workflowStatusLabel(w.Status),
 			w.PlanPath,
 		))
@@ -350,7 +350,7 @@ func streamAutopilotOutput(ctx context.Context, c client.BossClient, workflowID 
 }
 
 func printWorkflowSummary(w *pb.AutopilotWorkflow) {
-	fmt.Printf("  ID:      %s\n", shortID(w.Id))
+	fmt.Printf("  ID:      %s\n", w.Id)
 	fmt.Printf("  Status:  %s\n", workflowStatusLabel(w.Status))
 	fmt.Printf("  Step:    %s\n", workflowStepLabel(w.CurrentStep))
 	fmt.Printf("  Leg:     %d/%d\n", w.FlightLeg, w.MaxLegs)
@@ -373,7 +373,7 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 	durations := make([]string, len(workflows))
 
 	for i, w := range workflows {
-		ids[i] = shortID(w.Id)
+		ids[i] = w.Id
 		statuses[i] = workflowStatusLabel(w.Status)
 		steps[i] = workflowStepLabel(w.CurrentStep)
 		legs[i] = fmt.Sprintf("%d/%d", w.FlightLeg, w.MaxLegs)
@@ -393,7 +393,7 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 	}
 
 	cols := []table.Column{
-		{Title: "ID", Width: views.MaxColWidth("ID", ids, 8)},
+		{Title: "ID", Width: views.MaxColWidth("ID", ids, 18)},
 		{Title: "STATUS", Width: views.MaxColWidth("STATUS", statuses, 12)},
 		{Title: "STEP", Width: views.MaxColWidth("STEP", steps, 12)},
 		{Title: "LEG", Width: views.MaxColWidth("LEG", legs, 8)},
@@ -415,13 +415,6 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 		table.WithFocused(false),
 	)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
-}
-
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
 }
 
 func workflowStatusLabel(s pb.WorkflowStatus) string {

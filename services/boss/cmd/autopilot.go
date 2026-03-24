@@ -314,7 +314,7 @@ func formatWorkflowIDs(workflows []*pb.AutopilotWorkflow) string {
 	for _, w := range workflows {
 		lines = append(lines, fmt.Sprintf("  %s  %s  %s",
 			w.Id,
-			workflowStatusLabel(w.Status),
+			views.WorkflowStatusLabel(w.Status),
 			w.PlanPath,
 		))
 	}
@@ -335,8 +335,8 @@ func streamAutopilotOutput(ctx context.Context, c client.BossClient, workflowID 
 			fmt.Print(e.OutputLine.Text)
 		case *pb.StreamAutopilotOutputResponse_StatusUpdate:
 			fmt.Printf("\n--- Status: %s (step: %s, leg: %d/%d) ---\n",
-				workflowStatusLabel(e.StatusUpdate.Status),
-				workflowStepLabel(e.StatusUpdate.CurrentStep),
+				views.WorkflowStatusLabel(e.StatusUpdate.Status),
+				views.WorkflowStepLabel(e.StatusUpdate.CurrentStep),
 				e.StatusUpdate.FlightLeg,
 				e.StatusUpdate.MaxLegs,
 			)
@@ -351,8 +351,8 @@ func streamAutopilotOutput(ctx context.Context, c client.BossClient, workflowID 
 
 func printWorkflowSummary(w *pb.AutopilotWorkflow) {
 	fmt.Printf("  ID:      %s\n", w.Id)
-	fmt.Printf("  Status:  %s\n", workflowStatusLabel(w.Status))
-	fmt.Printf("  Step:    %s\n", workflowStepLabel(w.CurrentStep))
+	fmt.Printf("  Status:  %s\n", views.WorkflowStatusLabel(w.Status))
+	fmt.Printf("  Step:    %s\n", views.WorkflowStepLabel(w.CurrentStep))
 	legStr := fmt.Sprintf("%d/%d", w.FlightLeg, w.MaxLegs)
 	if w.Status == pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED && w.FlightLeg < w.MaxLegs {
 		legStr += " (incomplete)"
@@ -378,8 +378,8 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 
 	for i, w := range workflows {
 		ids[i] = w.Id
-		statuses[i] = workflowStatusLabel(w.Status)
-		steps[i] = workflowStepLabel(w.CurrentStep)
+		statuses[i] = views.WorkflowStatusLabel(w.Status)
+		steps[i] = views.WorkflowStepLabel(w.CurrentStep)
 		legStr := fmt.Sprintf("%d/%d", w.FlightLeg, w.MaxLegs)
 		if w.Status == pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED && w.FlightLeg < w.MaxLegs {
 			legStr += " (incomplete)"
@@ -387,8 +387,9 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 		legs[i] = legStr
 
 		plan := w.PlanPath
-		if len(plan) > 40 {
-			plan = "..." + plan[len(plan)-37:]
+		runes := []rune(plan)
+		if len(runes) > 40 {
+			plan = "..." + string(runes[len(runes)-37:])
 		}
 		plans[i] = plan
 
@@ -423,42 +424,4 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 		table.WithFocused(false),
 	)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
-}
-
-func workflowStatusLabel(s pb.WorkflowStatus) string {
-	switch s {
-	case pb.WorkflowStatus_WORKFLOW_STATUS_PENDING:
-		return "pending"
-	case pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING:
-		return "running"
-	case pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED:
-		return "paused"
-	case pb.WorkflowStatus_WORKFLOW_STATUS_COMPLETED:
-		return "completed"
-	case pb.WorkflowStatus_WORKFLOW_STATUS_FAILED:
-		return "failed"
-	case pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED:
-		return "cancelled"
-	default:
-		return "unknown"
-	}
-}
-
-func workflowStepLabel(s pb.WorkflowStep) string {
-	switch s {
-	case pb.WorkflowStep_WORKFLOW_STEP_PLAN:
-		return "plan"
-	case pb.WorkflowStep_WORKFLOW_STEP_IMPLEMENT:
-		return "implement"
-	case pb.WorkflowStep_WORKFLOW_STEP_HANDOFF:
-		return "handoff"
-	case pb.WorkflowStep_WORKFLOW_STEP_RESUME:
-		return "resume"
-	case pb.WorkflowStep_WORKFLOW_STEP_VERIFY:
-		return "verify"
-	case pb.WorkflowStep_WORKFLOW_STEP_LAND:
-		return "land"
-	default:
-		return "-"
-	}
 }

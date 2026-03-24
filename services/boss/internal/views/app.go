@@ -25,6 +25,7 @@ const (
 	ViewRepoSettings
 	ViewTrash
 	ViewSettings
+	ViewAutopilot
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
@@ -41,6 +42,7 @@ type App struct {
 	repoSettings    RepoSettingsModel
 	trash           TrashModel
 	settings        SettingsModel
+	autopilot       AutopilotModel
 	attach          AttachModel
 	attachOrigin    View   // remembers how the user entered the attach view
 	attachSessionID string // remembers which session to highlight on return
@@ -187,6 +189,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.chatPicker.width = msg.Width
 		a.chatPicker.height = msg.Height
 		a.settings.width = msg.Width
+		a.autopilot.width = msg.Width
+		a.autopilot.height = msg.Height
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -233,6 +237,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.settings = NewSettingsModel()
 			a.settings.width = a.width
 			return a, a.settings.Init()
+		case ViewAutopilot:
+			a.autopilot = NewAutopilotModel(a.client, a.ctx)
+			a.autopilot.width = a.width
+			a.autopilot.height = a.height
+			return a, a.autopilot.Init()
 		case ViewAttach:
 			a.attachOrigin = msg.origin
 			a.attachSessionID = msg.sessionID
@@ -324,6 +333,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.switchToHome()
 		}
 		return a, cmd
+	case ViewAutopilot:
+		updated, cmd := a.autopilot.Update(msg)
+		a.autopilot = updated.(AutopilotModel)
+		if a.autopilot.Cancelled() {
+			return a, a.switchToHome()
+		}
+		return a, cmd
 	case ViewAttach:
 		updated, cmd := a.attach.Update(msg)
 		a.attach = updated.(AttachModel)
@@ -382,6 +398,8 @@ func (a App) View() tea.View {
 		v = a.trash.View()
 	case ViewSettings:
 		v = a.settings.View()
+	case ViewAutopilot:
+		v = a.autopilot.View()
 	case ViewAttach:
 		v = a.attach.View()
 	default:

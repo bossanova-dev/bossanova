@@ -34,12 +34,15 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(
 		versionCmd(),
 		lsCmd(),
+		showCmd(),
+		chatsCmd(),
 		newCmd(),
 		attachCmd(),
 		repoCmd(),
 		archiveCmd(),
 		resurrectCmd(),
 		trashCmd(),
+		settingsCmd(),
 		loginCmd(),
 		logoutCmd(),
 		authStatusCmd(),
@@ -76,6 +79,28 @@ func lsCmd() *cobra.Command {
 	return cmd
 }
 
+func showCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show <session-id>",
+		Short: "Show session details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runShow(cmd, args[0])
+		},
+	}
+}
+
+func chatsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "chats <session-id>",
+		Short: "List chats in a session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runChats(cmd, args[0])
+		},
+	}
+}
+
 func newCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "new",
@@ -103,6 +128,26 @@ func repoCmd() *cobra.Command {
 		Short: "Manage repositories",
 	}
 
+	update := &cobra.Command{
+		Use:   "update <repo-id>",
+		Short: "Update repository settings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRepoUpdate(cmd, args[0])
+		},
+	}
+	update.Flags().String("name", "", "Set display name")
+	update.Flags().String("setup-script", "", "Set setup script (empty string to clear)")
+	update.Flags().String("merge-strategy", "", "Set merge strategy (merge, rebase, squash)")
+	update.Flags().Bool("auto-merge", false, "Enable auto-merge")
+	update.Flags().Bool("no-auto-merge", false, "Disable auto-merge")
+	update.Flags().Bool("auto-merge-dependabot", false, "Enable auto-merge for Dependabot PRs")
+	update.Flags().Bool("no-auto-merge-dependabot", false, "Disable auto-merge for Dependabot PRs")
+	update.Flags().Bool("auto-address-reviews", false, "Enable auto-address review feedback")
+	update.Flags().Bool("no-auto-address-reviews", false, "Disable auto-address review feedback")
+	update.Flags().Bool("auto-resolve-conflicts", false, "Enable auto-resolve merge conflicts")
+	update.Flags().Bool("no-auto-resolve-conflicts", false, "Disable auto-resolve merge conflicts")
+
 	repo.AddCommand(
 		&cobra.Command{
 			Use:   "add",
@@ -126,6 +171,7 @@ func repoCmd() *cobra.Command {
 				return runRepoRemove(cmd, args[0])
 			},
 		},
+		update,
 	)
 
 	return repo
@@ -144,9 +190,10 @@ func archiveCmd() *cobra.Command {
 
 func resurrectCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "resurrect <session-id>",
-		Short: "Resurrect an archived session",
-		Args:  cobra.ExactArgs(1),
+		Use:        "resurrect <session-id>",
+		Short:      "Resurrect an archived session",
+		Deprecated: "use 'boss trash restore' instead",
+		Args:       cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runResurrect(cmd, args[0])
 		},
@@ -186,21 +233,64 @@ func daemonCmd() *cobra.Command {
 	return d
 }
 
+func settingsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "settings",
+		Short: "View or update global settings",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSettings(cmd)
+		},
+	}
+	cmd.Flags().Bool("skip-permissions", false, "Enable Claude --dangerously-skip-permissions")
+	cmd.Flags().Bool("no-skip-permissions", false, "Disable Claude --dangerously-skip-permissions")
+	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
+	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")
+	return cmd
+}
+
 func trashCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "trash",
 		Short: "Manage archived sessions",
 	}
 
+	ls := &cobra.Command{
+		Use:   "ls",
+		Short: "List archived sessions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runTrashLS(cmd)
+		},
+	}
+
+	restore := &cobra.Command{
+		Use:   "restore <session-id>",
+		Short: "Restore an archived session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runResurrect(cmd, args[0])
+		},
+	}
+
+	del := &cobra.Command{
+		Use:   "delete <session-id>",
+		Short: "Permanently delete an archived session",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runTrashDelete(cmd, args[0])
+		},
+	}
+	del.Flags().BoolP("yes", "y", false, "Skip confirmation prompt")
+
 	empty := &cobra.Command{
 		Use:   "empty",
-		Short: "Permanently delete archived sessions",
+		Short: "Permanently delete all archived sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTrashEmpty(cmd)
 		},
 	}
 	empty.Flags().String("older-than", "", "Only delete sessions archived longer than this duration (e.g. 30d)")
-	cmd.AddCommand(empty)
+
+	cmd.AddCommand(ls, restore, del, empty)
 
 	return cmd
 }

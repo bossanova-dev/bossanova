@@ -198,7 +198,7 @@ func (m *ChatPickerModel) buildTableRows() {
 			t = "New chat"
 		}
 		titles[i] = t
-		actives[i] = relativeTime(m.chatLastActive(chat))
+		actives[i] = RelativeTime(m.chatLastActive(chat))
 	}
 
 	titleWidth := maxColWidth("CHAT", titles, 60)
@@ -484,8 +484,8 @@ func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
 	return chat.CreatedAt.AsTime()
 }
 
-// relativeTime formats a time as a human-readable relative string.
-func relativeTime(t time.Time) string {
+// RelativeTime formats a time as a human-readable relative string.
+func RelativeTime(t time.Time) string {
 	d := time.Since(t)
 
 	switch {

@@ -1,328 +1,470 @@
 ---
-name: pre-flight-checks
-description: Creates a structured task breakdown using bd before starting implementation. Use when planning complex tasks or multi-step features.
+name: file-a-flight-plan
+description: Turns a preliminary task plan into a comprehensive implementation and testing plan with bd tasks and handoff checkpoints. Examines code, applies design skills, and creates self-verifying test steps.
 ---
 
-# Pre-Flight Checks: Task Planning Workflow
+# File a Flight Plan: From Rough Plan to Structured Execution
 
-> ⚠️ **CRITICAL: PLANNING ONLY**
->
-> This skill creates a task breakdown. You **MUST NOT** start implementing tasks.
-> After creating the plan, **STOP** and ask the user to review before proceeding.
-
-> 🛑 **CRITICAL: HANDOFF TASKS REQUIRE SPECIAL HANDLING**
->
-> **NEVER close a `[HANDOFF]` task directly with `bd close`.**
-> When you reach a `[HANDOFF]` task during execution:
->
-> 1. **INVOKE** the `/boss-handoff` skill (it runs post-flight checks and creates documentation)
-> 2. **STOP** and wait for explicit user approval
-> 3. **DO NOT CONTINUE** until the user says "yes", "continue", or similar
-
-"Pre-flight checks" is the task decomposition process that happens BEFORE you start coding. Like a pilot's checklist before takeoff, this ensures you have a clear flight plan with defined checkpoints.
+"Filing a flight plan" is the process of turning a preliminary idea or rough plan into a comprehensive, executable implementation plan with built-in testing and handoff checkpoints. Like a pilot filing their route before takeoff, this ensures every leg of the journey is mapped out — including how to verify you're on course.
 
 ---
 
 ## When to Use This Skill
 
-Use pre-flight checks when:
+Use file-a-flight-plan when:
 
-- Starting a non-trivial implementation
-- A plan has multiple steps or phases
-- Work could take more than 10 minutes
-- You need user approval at key milestones
+- You have a rough task plan, feature request, or design document
+- You need to produce a detailed implementation plan before coding
+- The plan needs post-flight checks (the agent should be able to verify its own work)
+- You want bd tasks with handoff checkpoints ready for `/boss-implement`
 
 ---
 
-## Flight ID Isolation
+## Required Input
 
-When working from a plan file in `docs/plans/`, derive the **Flight ID** from the filename to isolate tasks:
+This skill expects a **preliminary plan** — any of:
+
+- A rough description of what needs to be built
+- A feature request or design document
+- An existing plan file from `docs/plans/`
+- A ticket or issue description
+
+---
+
+## Output
+
+This skill produces:
+
+1. **A comprehensive plan file** saved to `docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` (e.g., `docs/plans/2026-02-06-1229-user-profile.md`)
+2. **A Flight ID** for task isolation across parallel work streams
+3. **Post-flight checks** embedded in the plan so the agent can verify its own work via `/boss-verify`
+
+This skill does **NOT** create bd tasks. That is `/boss-create-tasks`'s job. The workflow is:
+
+```
+/boss-plan → human approves → /boss-create-tasks → /boss-implement
+```
+
+---
+
+## Flight ID
+
+Each flight plan gets a unique **Flight ID** derived from its filename. This ID is used to isolate beads tasks per flight plan, preventing task confusion when running parallel work streams.
+
+### Format
 
 ```
 Plan file: docs/plans/2026-02-06-1229-user-profile.md
 Flight ID: fp-2026-02-06-1229-user-profile
-Label:     flight:fp-2026-02-06-1229-user-profile
 ```
 
-**All tasks created for this plan MUST include the flight label:**
+The Flight ID is `fp-` followed by the plan filename (without extension).
 
-```bash
-bd create --title="Add UserProfile type" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
-```
+### Usage
 
-This ensures tasks from different flight plans don't mix when running `bd ready` or `bd list`.
+The Flight ID is embedded in the plan document header and used by subsequent skills:
+
+- `/boss-create-tasks` uses it to label all created tasks with `--labels "flight:fp-..."`
+- `/boss-implement` and `/boss-resume` use it to filter tasks with `--label "flight:fp-..."`
+- `/boss-handoff` includes it in handoff documents for continuity
 
 ---
 
-## Core Principles
+## Phase 1: Understand the Scope
 
-### 1. Small, Discrete Tasks
+### 1.1 Read the Preliminary Plan
 
-Each task should be completable in under 2 minutes. If it would take longer:
+Read whatever the user provides — a file, a description, or a reference to existing work.
 
-- Split it into sub-tasks
-- Each sub-task should be independently completable
-- Use dependencies (`bd dep add`) to establish order
+### 1.2 Identify Affected Areas
 
-**Why?** Small tasks keep context lightweight and focused. Long-running tasks accumulate context that becomes stale and increases risk of errors.
+Identify which parts of the codebase are affected. For each area, note:
 
-### 2. Logical Groupings with Handoffs (MANDATORY)
+- The directory path
+- Any relevant design conventions or skills
+- How to test it (e.g., `make test`, curl, browser automation)
 
-Group related tasks into "flight legs" - coherent units of work that form natural stopping points. You **MUST** insert a `[HANDOFF]` task at the end of each flight leg that:
+### 1.3 Load Relevant Design Skills
 
-- Pauses development
-- Documents completed work
-- Requests user review before continuing
+Load any project-specific design skills or conventions relevant to the affected code areas. Check `.claude/skills/` for applicable skills and read them to understand:
 
-**MANDATORY RULES:**
+- Required patterns and conventions
+- File structure and naming
+- Type systems and shared code
+- Anti-patterns to avoid
 
-- Every flight leg **MUST** end with a `[HANDOFF]` task
-- A flight leg **CANNOT** have more than 5 tasks (excluding the handoff)
-- The **final task** in any breakdown **MUST** be a `[HANDOFF]`
-
-**Why?** Handoffs prevent runaway agent behavior and keep the user in control. They also create natural checkpoints for context recovery.
-
-### 3. Task Granularity Guidelines
-
-| Task Size    | Example                       | Action                          |
-| ------------ | ----------------------------- | ------------------------------- |
-| ~30 seconds  | Add an import statement       | Single task                     |
-| ~1-2 minutes | Implement a small function    | Single task                     |
-| ~5 minutes   | Create a component with props | Split into 2-3 tasks            |
-| ~10+ minutes | Build a full feature          | Split into multiple flight legs |
+This is not optional. Design skills contain critical patterns that MUST inform the plan.
 
 ---
 
-## Workflow
+## Phase 2: Deep Code Examination
 
-### Step 1: Analyze the Plan
+### 2.1 Map Existing Code
 
-Review the implementation plan and identify:
+For each affected area, examine the relevant code:
 
-- Distinct implementation steps
-- Natural grouping boundaries (flight legs)
-- Dependencies between steps
+- Find related files (search for similar feature names or patterns)
+- Read existing implementations of similar features and mirror their patterns
+- Check shared libraries for reusable code
+- Review test patterns in existing test files
+- Note configuration that needs updating (routes, exports, modules)
 
-### Step 2: Create Task Breakdown
+### 2.2 Identify Dependencies
 
-For each step, create a bd issue **with the flight label**:
+Map out what depends on what:
 
-```bash
-# Derive Flight ID from plan filename (e.g., docs/plans/2026-02-06-1229-user-profile.md)
-# Flight ID: fp-2026-02-06-1229-user-profile
+- **Data flow:** Where does data come from? What data sources are involved?
+- **Type flow:** What types need to be created or modified?
+- **Import flow:** What files need to import the new code?
+- **Test data:** What data exists to test against? What needs to be created?
 
-# Create tasks for first flight leg
-bd create --title="Add UserProfile type to types file" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
-bd create --title="Create UserProfile component skeleton" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
-bd create --title="Implement UserProfile display logic" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
-bd create --title="Add UserProfile to exports" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
-bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1229-user-profile"
-```
+### 2.3 Find Test Data and Endpoints
 
-**CRITICAL: Handoff Task Format**
+**This is critical for self-verification.** Identify:
 
-All handoff tasks MUST use this exact title format:
+- What API endpoints or commands can verify the work?
+- What URLs can be loaded to verify rendering?
+- What test data already exists (mocks, fixtures, seeds)?
+- What queries or commands confirm correct output?
 
-```
-[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE
-```
-
-This ensures the agent knows to:
-
-1. Invoke the `/boss-handoff` skill
-2. **STOP completely** after the handoff
-3. **NOT continue** to the next flight leg without user approval
-
-### Step 3: Set Up Dependencies
-
-Establish the execution order:
-
-```bash
-# Assuming tasks are beads-001 through beads-005
-bd dep add beads-002 beads-001  # Component depends on type
-bd dep add beads-003 beads-002  # Logic depends on skeleton
-bd dep add beads-004 beads-003  # Export depends on implementation
-bd dep add beads-005 beads-004  # Handoff depends on all prior work
-```
-
-### Step 4: STOP - Request User Approval
-
-**DO NOT proceed to execute tasks.** This skill is planning-only.
-
-1. Present the complete task breakdown to the user
-2. Show the handoff points clearly marked
-3. Ask: "Does this flight plan look correct? Ready to begin implementation?"
-4. **Wait for explicit user approval** before any implementation work
+Search for existing test patterns in the codebase to understand how similar features are tested.
 
 ---
 
-## Execution (After User Approval)
+## Phase 3: Design the Test Strategy
 
-> **Note:** The following steps are for AFTER the user approves the plan.
-> Do NOT proceed here until you have explicit approval.
+For each affected area, design how the agent will **verify its own work**. This is the most important phase — every implementation task should have a corresponding way to test it.
 
-> 🛑 **ONE FLIGHT LEG AT A TIME - NO EXCEPTIONS**
->
-> You **MUST** only execute tasks within the **current flight leg** (up to and including the next `[HANDOFF]` task).
-> After completing a flight leg and its handoff, you **MUST STOP** and wait for user approval.
-> You are **FORBIDDEN** from starting the next flight leg without explicit user permission.
-> This applies even if the user previously approved the plan — each flight leg requires its own go-ahead.
+### Testing Pattern Templates
 
-### Step 5: Execute the Current Flight Leg Only
+Use these templates as starting points, adapting them to the project's actual tools and structure.
 
-Work through tasks **only until the next `[HANDOFF]`**, filtering by flight label:
+#### HTTP API Self-Test
 
-```bash
-bd ready --label "flight:fp-2026-02-06-1229-user-profile"  # Find next available task for this flight
-bd update <id> --status=in_progress                        # Claim it
-# ... do the work ...
-bd close <id>                                              # Mark complete
-# Repeat ONLY for tasks in the current flight leg
-# STOP when you reach a [HANDOFF] task
+```markdown
+### Test: Verify [feature] endpoint works
+
+**Method:** curl to API endpoint
+**When:** After implementing the endpoint and restarting the server
+
+\`\`\`bash
+
+# Start server (adapt to project's dev command)
+
+make dev &
+until curl -s http://localhost:<port>/health > /dev/null 2>&1; do sleep 1; done
+
+# Execute test request
+
+curl -X POST http://localhost:<port>/api/<endpoint> \
+ -H "Content-Type: application/json" \
+ -d '{"key": "value"}'
+
+# Expected: 200 OK with expected response shape
+
+# Fail if: error response or unexpected data
+
+\`\`\`
 ```
 
-**DO NOT** look ahead to tasks in subsequent flight legs. Focus exclusively on the current flight leg.
+#### UI Self-Test
 
-### Step 6: Handle Handoff Tasks (MANDATORY STOP)
+```markdown
+### Test: Verify [page] renders correctly
 
-> 🛑 **MANDATORY STOP - NO EXCEPTIONS**
->
-> When you reach a `[HANDOFF]` task, you **MUST STOP COMPLETELY**.
-> You are **FORBIDDEN** from continuing to the next flight leg.
-> This is **NON-NEGOTIABLE** - violation breaks user trust and control.
+**Method:** Playwright browser automation
+**When:** After implementing the component
 
-When you reach a `[HANDOFF]` task:
+1. Navigate: `mcp__playwright__browser_navigate(url: "http://localhost:<port>/my-page")`
+2. Snapshot: `mcp__playwright__browser_snapshot()` — verify key elements present
+3. Console: `mcp__playwright__browser_console_messages(level: "error")` — no errors
+4. Click: `mcp__playwright__browser_click(ref: "<button-ref>")` — verify interaction
+5. Screenshot: `mcp__playwright__browser_take_screenshot()` — visual check
 
-1. **STOP ALL WORK IMMEDIATELY** - Do NOT start the next flight leg under ANY circumstances
-2. **Mark the handoff task in_progress** - `bd update <id> --status=in_progress`
-3. **RUN POST-FLIGHT CHECKS (MANDATORY)** - Run `/boss-verify` to verify the flight leg's work before creating the handoff document. This runs quality gates, plans and executes spec-driven verification tests, and iterates until all checks pass.
-   - **Do NOT proceed to handoff until all post-flight checks pass**
-
-4. **Create handoff document** - Use `/boss-handoff` skill to generate a structured handoff with:
-   - Completed tasks with bd issue IDs
-   - Files changed with `file:line` references
-   - Quality gate results (format/test pass status)
-   - Learnings and issues encountered
-   - Next steps from `bd ready`
-5. **Present to user and ASK FOR REVIEW** - Explicitly ask "May I continue with the next flight leg?"
-6. **WAIT FOR EXPLICIT APPROVAL** - Do NOT proceed until the user says "yes", "continue", "proceed", or similar
-
-**❌ WRONG - Never do this:**
-
-```
-The handoff task is ready. Let me continue with the next phase...
+**Expected:** Page shows [specific content], no console errors, interactions work
 ```
 
-**✅ CORRECT - Always do this:**
+#### Command-Line Self-Test
 
+```markdown
+### Test: Verify [feature] works correctly
+
+**Method:** Run project test suite
+**When:** After implementing the feature
+
+\`\`\`bash
+make test
+
+# Expected: All tests pass
+
+\`\`\`
 ```
-The flight leg is complete. I've created the handoff document.
 
-May I continue with the next flight leg, or would you like to review the changes first?
+#### Linting & Type Checking: Universal Self-Test
+
+```markdown
+### Test: Code passes quality gates
+
+**Method:** make lint / make format / tsc
+**When:** After each flight leg, before handoff
+
+\`\`\`bash
+make lint
+make format
+\`\`\`
+
+**Expected:** No errors. Warnings are acceptable if pre-existing.
 ```
 
-**If you continue past a handoff without user approval, you are violating the core purpose of this workflow.**
+### Post-Flight Checks Guidance
 
-> 🛑 **AFTER THE HANDOFF: YOUR TURN IS OVER**
->
-> Once you complete a handoff and present it to the user, your current execution is **DONE**.
-> You have completed **one flight leg**. Do NOT start the next one.
-> The user will invoke `/boss-resume` or tell you to continue when they are ready.
-> **There is no scenario where you should execute more than one flight leg in a single run.**
+Each flight leg's Post-Flight Checks section should describe what the agent needs to verify when it runs `/boss-verify` at the end of the leg. The checks should be:
+
+- **Spec-driven**: Derived from what the flight leg is supposed to build
+- **Concrete**: Exact commands, URLs, or steps — not vague "verify it works"
+- **Automatable**: Prefer curl, Playwright, `make test`, CLI commands over manual inspection
+
+The agent will use these checks during `/boss-verify` to plan and execute verification tests in a fix-and-retry loop before handing off.
 
 ---
 
-## Example: Full Pre-Flight Breakdown
+## Phase 4: Write the Plan Document
 
-**Plan:** `docs/plans/2026-02-06-1430-user-profile.md`
-**Flight ID:** `fp-2026-02-06-1430-user-profile`
+Create a comprehensive plan file at `docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md`.
 
-**Flight Leg 1: Core Implementation**
+The filename MUST include a timestamp with date, hours, and minutes. Generate it with:
 
 ```bash
-bd create --title="Add UserProfile type" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="Create UserProfile component" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="Add profile fetch hook" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
+date +"%Y-%m-%d-%H%M"
+# Example output: 2026-02-06-1229
 ```
 
-**Flight Leg 2: Testing**
+Example filenames:
 
-```bash
-bd create --title="Add UserProfile type tests" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="Add UserProfile component tests" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="Add hook tests" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-```
+- `docs/plans/2026-02-06-1229-user-profile.md`
+- `docs/plans/2026-02-06-1430-daily-report-retention.md`
 
-**Flight Leg 3: Integration**
+### Plan Document Template
 
-```bash
-bd create --title="Add UserProfile route" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="Add navigation link" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-bd create --title="[HANDOFF] Run /boss-handoff skill and STOP - DO NOT CONTINUE" --type=task --priority=2 --labels "flight:fp-2026-02-06-1430-user-profile"
-```
+```markdown
+# [Feature Name] Implementation Plan
 
-**Working with this flight:**
+**Flight ID:** fp-<YYYY-MM-DD-HHmm>-<feature-name>
 
-```bash
-bd ready --label "flight:fp-2026-02-06-1430-user-profile"        # See tasks for this flight only
-bd list --status=open --label "flight:fp-2026-02-06-1430-user-profile"  # All open tasks for this flight
+## Overview
+
+[1-2 sentences describing the feature and its purpose]
+
+## Affected Areas
+
+- [ ] `<directory1>/` — [what changes]
+- [ ] `<directory2>/` — [what changes]
+
+## Design References
+
+- Relevant design skills for affected areas
+- Existing similar feature: `path/to/similar/code.ts`
+
+---
+
+## Flight Leg 1: [Phase Name]
+
+### Tasks
+
+- [ ] [Task 1 description]
+  - Files: `path/to/file.ts`
+  - Pattern: Follow [existing pattern] from `path/to/example.ts`
+- [ ] [Task 2 description]
+  - Files: `path/to/file.ts`
+  - Details: [specific implementation notes]
+- [ ] [Task 3 description]
+
+### Post-Flight Checks for Flight Leg 1
+
+- [ ] **Quality gates:** `make format && make test` — all pass
+- [ ] **[Behavior verification]:** [curl command / Playwright steps / CLI check]
+  - Expected: [specific expected outcome]
+  - How to test: [exact commands or steps]
+  - Fail if: [what failure looks like]
+
+### [HANDOFF] Review Flight Leg 1
+
+Human reviews: [what to look for]
+
+---
+
+## Flight Leg 2: [Phase Name]
+
+### Tasks
+
+- [ ] [Task 4 description]
+- [ ] [Task 5 description]
+
+### Post-Flight Checks for Flight Leg 2
+
+- [ ] **[Behavior verification]:** [exact commands or steps]
+  - Expected: [outcome]
+  - How to test: [curl, Playwright, make test, etc.]
+
+### [HANDOFF] Review Flight Leg 2
+
+Human reviews: [what to look for]
+
+---
+
+## Flight Leg N: Final Verification
+
+### Tasks
+
+- [ ] Run full test suite: `make test`
+- [ ] Run linter: `make lint`
+- [ ] Verify no unused exports or dead code
+
+### Post-Flight Checks for Final Verification
+
+- [ ] **End-to-end test:** [comprehensive test that verifies the whole feature]
+  - Steps: [detailed steps]
+  - Expected: [complete expected outcome]
+
+### [HANDOFF] Final Review
+
+Human reviews: Complete feature before merge
+
+---
+
+## Rollback Plan
+
+[How to undo these changes if needed]
+
+## Notes
+
+- [Important decisions made during planning]
+- [Risks or concerns]
+- [Dependencies on external systems]
 ```
 
 ---
 
-## Validation (REQUIRED)
+## Phase 5: Present the Flight Plan
 
-Before presenting the plan to the user, verify **ALL** conditions:
+Present the complete plan to the user for approval:
 
-- [ ] Every flight leg ends with a `[HANDOFF]` task
-- [ ] No flight leg exceeds 5 tasks (excluding the handoff)
-- [ ] The final task in the entire breakdown is a `[HANDOFF]`
-- [ ] NO implementation work has been started
+```
+## Flight Plan Filed: [Feature Name]
 
-**If any check fails, fix the breakdown before proceeding.**
+**Plan Document:** docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md
+**Flight ID:** fp-<YYYY-MM-DD-HHmm>-<feature-name>
+**Branch:** [current branch]
+**Total Flight Legs:** [N]
+**Total Tasks:** [N] (including [N] handoffs)
+
+### Summary
+
+**Flight Leg 1: [Phase Name]** — [N] tasks
+[Brief description of what gets built and how it's tested]
+
+**Flight Leg 2: [Phase Name]** — [N] tasks
+[Brief description]
+
+...
+
+### Test Strategy
+
+| Area      | Method                | Tool           |
+| --------- | --------------------- | -------------- |
+| [area 1]  | [test method]         | [tool]         |
+| [area 2]  | [test method]         | [tool]         |
+| All       | Lint + type check     | make lint      |
+
+### Next Steps
+
+The plan is saved at `docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md`.
+
+To proceed with implementation:
+1. Review and approve this plan
+2. Run `/boss-create-tasks docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` to create bd tasks (will use Flight ID: fp-<YYYY-MM-DD-HHmm>-<feature-name>)
+3. Run `/boss-implement docs/plans/<YYYY-MM-DD-HHmm>-<feature-name>.md` to begin execution
+
+Please review the plan. Would you like any changes before we proceed?
+```
+
+**Wait for approval.** Do NOT proceed to implementation.
 
 ---
 
 ## Checklist
 
-Before starting implementation:
+### Before Starting
 
-- [ ] Derived Flight ID from plan filename (fp-<timestamp>-<name>)
-- [ ] Analyzed plan and identified steps
-- [ ] Created bd tasks for each discrete step **with `--labels "flight:fp-..."`**
-- [ ] Each task is <2 minutes of work
-- [ ] Tasks grouped into logical flight legs
-- [ ] Handoff task added at end of each flight leg
-- [ ] Dependencies set up with `bd dep add`
-- [ ] User informed of the flight plan
+- [ ] Preliminary plan received from user
+- [ ] Affected areas identified
+
+### During Planning
+
+- [ ] Design skills read for each affected area
+- [ ] Existing code examined for patterns
+- [ ] Dependencies mapped
+- [ ] Test data and endpoints identified
+- [ ] Post-flight checks written for every flight leg
+- [ ] Plan document written to `docs/plans/`
+
+### Handoff to User
+
+- [ ] Complete plan presented
+- [ ] Test strategy summarized
+- [ ] Next steps include `/boss-create-tasks` then `/boss-implement`
+- [ ] User approval requested
+- [ ] NOT proceeding until approved
 
 ---
 
 ## Anti-Patterns
 
-| Anti-Pattern                    | Problem                                     | Fix                                              |
-| ------------------------------- | ------------------------------------------- | ------------------------------------------------ |
-| Starting work immediately       | Bypasses user approval                      | ALWAYS stop after planning, wait for approval    |
-| Tasks too large                 | Context bloat, lost focus                   | Split into <2 minute chunks                      |
-| No handoffs                     | Runaway agent, no checkpoints               | Add handoff every 3-5 tasks                      |
-| **Skipping handoff**            | **CRITICAL VIOLATION - User loses control** | **ALWAYS stop at handoff tasks - NO EXCEPTIONS** |
-| **Multiple flight legs**        | **Agent runs too long, user loses control** | **Execute ONE flight leg, then STOP and wait**   |
-| **Skipping post-flight checks** | **Broken code at handoff**                  | **Run `/boss-verify`, fix until all pass**       |
-| Serial execution without bd     | No tracking, lost on compaction             | Use bd for ALL task tracking                     |
-| Starting without pre-flight     | No clear plan, scope creep                  | Always decompose first                           |
-| Missing flight label            | Tasks mix with other flights                | ALWAYS add `--labels "flight:fp-..."`            |
+| Anti-Pattern              | Problem                       | Fix                                          |
+| ------------------------- | ----------------------------- | -------------------------------------------- |
+| Skipping design skills    | Misses required patterns      | ALWAYS read design skills for affected areas |
+| No post-flight checks     | Agent can't verify its work   | Every flight leg needs testable verification |
+| Vague test steps          | Agent won't know if it passed | Write exact commands with expected output    |
+| Manual-only testing       | Agent can't test autonomously | Prefer curl, Playwright MCP, make test       |
+| Too few handoffs          | Runaway implementation        | One handoff per logical phase                |
+| Too many tasks per leg    | Long gaps between reviews     | Keep flight legs to 3-5 tasks max            |
+| Not reading existing code | Plan doesn't match reality    | Examine code BEFORE writing the plan         |
+| Giant tasks               | Context bloat, errors         | Split to under 2 minutes each                |
 
 ---
 
 ## Related Skills
 
-| Skill               | Relationship                                       |
-| ------------------- | -------------------------------------------------- |
-| `/boss-flight-plan` | Create comprehensive plan before pre-flight checks |
-| `/boss-verify`      | Verify flight leg before handoff                   |
-| `/boss-implement`   | Execute bd tasks after pre-flight checks           |
-| `/boss-handoff`     | Handle handoff checkpoints during execution        |
-| `/boss-resume`      | Resume work from a previous handoff                |
-| `/boss-finalize`    | End session with commit and push                   |
+| Skill                | Relationship                                                |
+| -------------------- | ----------------------------------------------------------- |
+| `/boss-create-tasks` | Next step: creates bd tasks from the plan                   |
+| `/boss-implement`    | Executes the bd tasks created by `/boss-create-tasks`       |
+| `/boss-handoff`      | Handoff format used at checkpoints during `/boss-implement` |
+| `/boss-resume`       | Resume work from a previous handoff checkpoint              |
+| `/boss-verify`       | Runs verification tests at end of each flight leg           |
+| `/boss-finalize`     | End session with commit and push                            |
+
+### Typical Flow
+
+```
+/boss-plan                ← YOU ARE HERE
+  ├── Read preliminary plan
+  ├── Identify affected areas
+  ├── Read design skills for each area
+  ├── Examine existing code deeply
+  ├── Design post-flight checks for each leg
+  ├── Write plan to docs/plans/
+  └── Present flight plan for approval
+
+Human approves plan
+
+/boss-create-tasks    ← Next step
+  ├── Create bd tasks from the plan
+  ├── Set up dependencies
+  └── Add [HANDOFF] checkpoints
+
+/boss-implement                     ← Execution
+  ├── Execute tasks flight leg by flight leg
+  ├── Run /boss-verify
+  └── STOP at each [HANDOFF] for human review
+```

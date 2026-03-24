@@ -13,7 +13,7 @@ description: Executes pre-existing bd tasks from a plan file, writing handoffs t
 
 Use take-off when:
 
-- bd tasks have already been created (via `/boss-plan` or manually)
+- bd tasks have already been created (via `/boss-create-tasks` or manually)
 - You have a plan file path to reference
 - You're ready to start executing tasks
 - You need structured execution with mandatory human checkpoints
@@ -38,7 +38,7 @@ Flight ID: fp-2026-02-06-1229-user-profile
 
 This Flight ID is used to filter tasks with `--label "flight:fp-..."`.
 
-If bd tasks don't exist, use `/boss-plan` first to create them.
+If bd tasks don't exist, use `/boss-create-tasks` first to create them.
 
 ---
 
@@ -353,10 +353,10 @@ continue with: /boss-resume docs/handoffs/2026-02-06-1045-core-types.md
 
 ## Related Skills
 
-| Skill           | When to Use                         |
-| --------------- | ----------------------------------- |
-| `/boss-plan`    | Create bd tasks if they don't exist |
-| `/boss-verify`  | Verify flight leg before handoff    |
-| `/boss-handoff` | Detailed handoff document format    |
-| `/boss-resume`  | Resume from a handoff file          |
-| `/boss-finalize`| End session with commit and push    |
+| Skill                | When to Use                         |
+| -------------------- | ----------------------------------- |
+| `/boss-create-tasks` | Create bd tasks if they don't exist |
+| `/boss-verify`       | Verify flight leg before handoff    |
+| `/boss-handoff`      | Detailed handoff document format    |
+| `/boss-resume`       | Resume from a handoff file          |
+| `/boss-finalize`     | End session with commit and push    |

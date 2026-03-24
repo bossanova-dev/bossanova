@@ -1064,7 +1064,7 @@ func TestSkillNameDefaults(t *testing.T) {
 		step string
 		want string
 	}{
-		{"plan", "boss-plan"},
+		{"plan", "boss-create-tasks"},
 		{"implement", "boss-implement"},
 		{"handoff", "boss-handoff"},
 		{"resume", "boss-resume"},

@@ -37,7 +37,7 @@ type AutopilotConfig struct {
 }
 
 var defaultSkills = map[string]string{
-	"plan":      "boss-plan",
+	"plan":      "boss-create-tasks",
 	"implement": "boss-implement",
 	"handoff":   "boss-handoff",
 	"resume":    "boss-resume",

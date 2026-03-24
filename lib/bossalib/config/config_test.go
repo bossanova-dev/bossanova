@@ -313,7 +313,7 @@ func TestAutopilotSkillNameDefaults(t *testing.T) {
 		step     string
 		expected string
 	}{
-		{"plan", "boss-plan"},
+		{"plan", "boss-create-tasks"},
 		{"implement", "boss-implement"},
 		{"handoff", "boss-handoff"},
 		{"resume", "boss-resume"},

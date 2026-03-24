@@ -354,11 +354,11 @@ Before completing a handoff:
 
 ## Related Skills
 
-| Skill               | Relationship                        |
-| ------------------- | ----------------------------------- |
-| `/boss-flight-plan` | Create plan before implementation   |
-| `/boss-plan`        | Create bd tasks from plan           |
-| `/boss-verify`      | Verify flight leg before handoff    |
-| `/boss-implement`   | Execute tasks, stopping at handoffs |
-| `/boss-resume`      | Resume work from this handoff       |
-| `/boss-finalize`    | End session with commit and push    |
+| Skill                | Relationship                        |
+| -------------------- | ----------------------------------- |
+| `/boss-plan`         | Create plan before implementation   |
+| `/boss-create-tasks` | Create bd tasks from plan           |
+| `/boss-verify`       | Verify flight leg before handoff    |
+| `/boss-implement`    | Execute tasks, stopping at handoffs |
+| `/boss-resume`       | Resume work from this handoff       |
+| `/boss-finalize`     | End session with commit and push    |

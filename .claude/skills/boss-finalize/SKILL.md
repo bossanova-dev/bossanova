@@ -319,7 +319,7 @@ Before saying "done", verify ALL items:
 | Dismissed failure as "pre-existing"  | Failure was fixable    | Verify on origin/main before dismissing. Missing generated code is NOT pre-existing — run `make`     |
 | Missing dependencies in worktree     | Generate/format fails  | Run `cd services/web && pnpm install` before `make` if node_modules is missing                       |
 | Stopped to ask permission to push    | Blocked automation     | Just push — do NOT ask for permission. Force-push is expected and authorized.                        |
-| Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/boss-finalize/add-pr-numbers.sh` to fix ALL commits                                  |
+| Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/boss-finalize/add-pr-numbers.sh` to fix ALL commits                              |
 | Reported issue but didn't fix        | Commits still broken   | You MUST run the script, not just report that commits need fixing                                    |
 | Used `origin/HEAD` not `origin/main` | Wrong comparison       | Always compare to `origin/main` to find all branch commits                                           |
 | Branch "up to date" so skipped       | Commits still need PR# | Even pushed commits need PR numbers - compare to main, not feature branch                            |
@@ -335,11 +335,11 @@ Before saying "done", verify ALL items:
 
 ## Related Skills
 
-| Skill               | Relationship                            |
-| ------------------- | --------------------------------------- |
-| `/boss-flight-plan` | Create plan before implementation       |
-| `/boss-plan`        | Create bd tasks from plan               |
-| `/boss-verify`      | Verify flight leg before handoff        |
-| `/boss-implement`   | Execute tasks, stopping at handoffs     |
-| `/boss-handoff`     | Create handoff documents at checkpoints |
-| `/boss-resume`      | Resume work from a previous handoff     |
+| Skill                | Relationship                            |
+| -------------------- | --------------------------------------- |
+| `/boss-plan`         | Create plan before implementation       |
+| `/boss-create-tasks` | Create bd tasks from plan               |
+| `/boss-verify`       | Verify flight leg before handoff        |
+| `/boss-implement`    | Execute tasks, stopping at handoffs     |
+| `/boss-handoff`      | Create handoff documents at checkpoints |
+| `/boss-resume`       | Resume work from a previous handoff     |

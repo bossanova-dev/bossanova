@@ -277,11 +277,11 @@ Post-flight checks are complete. Return control to the calling skill:
 
 ## Related Skills
 
-| Skill               | Relationship                                                |
-| ------------------- | ----------------------------------------------------------- |
-| `/boss-flight-plan` | Creates the plan with Post-Flight Checks sections           |
-| `/boss-plan`        | Creates bd tasks; invokes post-flight-checks before handoff |
-| `/boss-implement`   | Invokes post-flight-checks before handoff                   |
-| `/boss-handoff`     | Invokes post-flight-checks; then writes the handoff         |
-| `/boss-resume`      | Invokes post-flight-checks before handoff                   |
-| `/boss-finalize`    | End-of-session checks (separate from flight-leg checks)     |
+| Skill                | Relationship                                                |
+| -------------------- | ----------------------------------------------------------- |
+| `/boss-plan`         | Creates the plan with Post-Flight Checks sections           |
+| `/boss-create-tasks` | Creates bd tasks; invokes post-flight-checks before handoff |
+| `/boss-implement`    | Invokes post-flight-checks before handoff                   |
+| `/boss-handoff`      | Invokes post-flight-checks; then writes the handoff         |
+| `/boss-resume`       | Invokes post-flight-checks before handoff                   |
+| `/boss-finalize`     | End-of-session checks (separate from flight-leg checks)     |

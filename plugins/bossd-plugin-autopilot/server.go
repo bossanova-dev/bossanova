@@ -46,7 +46,7 @@ type skillOverrides struct {
 }
 
 var defaultSkillNames = map[string]string{
-	"plan":      "boss-plan",
+	"plan":      "boss-create-tasks",
 	"implement": "boss-implement",
 	"handoff":   "boss-handoff",
 	"resume":    "boss-resume",

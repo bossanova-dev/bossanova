@@ -353,7 +353,11 @@ func printWorkflowSummary(w *pb.AutopilotWorkflow) {
 	fmt.Printf("  ID:      %s\n", w.Id)
 	fmt.Printf("  Status:  %s\n", workflowStatusLabel(w.Status))
 	fmt.Printf("  Step:    %s\n", workflowStepLabel(w.CurrentStep))
-	fmt.Printf("  Leg:     %d/%d\n", w.FlightLeg, w.MaxLegs)
+	legStr := fmt.Sprintf("%d/%d", w.FlightLeg, w.MaxLegs)
+	if w.Status == pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED && w.FlightLeg < w.MaxLegs {
+		legStr += " (incomplete)"
+	}
+	fmt.Printf("  Leg:     %s\n", legStr)
 	fmt.Printf("  Plan:    %s\n", w.PlanPath)
 	if w.LastError != "" {
 		fmt.Printf("  Error:   %s\n", w.LastError)
@@ -376,7 +380,11 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 		ids[i] = w.Id
 		statuses[i] = workflowStatusLabel(w.Status)
 		steps[i] = workflowStepLabel(w.CurrentStep)
-		legs[i] = fmt.Sprintf("%d/%d", w.FlightLeg, w.MaxLegs)
+		legStr := fmt.Sprintf("%d/%d", w.FlightLeg, w.MaxLegs)
+		if w.Status == pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED && w.FlightLeg < w.MaxLegs {
+			legStr += " (incomplete)"
+		}
+		legs[i] = legStr
 
 		plan := w.PlanPath
 		if len(plan) > 40 {

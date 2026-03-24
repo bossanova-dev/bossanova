@@ -26,12 +26,13 @@ type repoSettingsSavedMsg struct {
 
 const (
 	repoSettingsRowName                    = 0
-	repoSettingsRowMergeStrategy           = 1
-	repoSettingsRowCanAutoMerge            = 2
-	repoSettingsRowCanAutoMergeDependabot  = 3
-	repoSettingsRowCanAutoAddressReviews   = 4
-	repoSettingsRowCanAutoResolveConflicts = 5
-	repoSettingsRowCount                   = 6
+	repoSettingsRowSetupCommand            = 1
+	repoSettingsRowMergeStrategy           = 2
+	repoSettingsRowCanAutoMerge            = 3
+	repoSettingsRowCanAutoMergeDependabot  = 4
+	repoSettingsRowCanAutoAddressReviews   = 5
+	repoSettingsRowCanAutoResolveConflicts = 6
+	repoSettingsRowCount                   = 7
 )
 
 // mergeStrategies is the cycle order for the merge strategy setting.
@@ -60,9 +61,10 @@ type RepoSettingsModel struct {
 	done   bool
 	err    error
 
-	// Name inline editing
-	editing   bool
-	nameInput textinput.Model
+	// Inline editing (-1 = not editing, otherwise the row being edited)
+	editingField int
+	nameInput    textinput.Model
+	setupInput   textinput.Model
 
 	width int
 }
@@ -73,11 +75,17 @@ func NewRepoSettingsModel(c client.BossClient, ctx context.Context, repoID strin
 	ni.Placeholder = "Repository name"
 	ni.SetWidth(60)
 
+	si := textinput.New()
+	si.Placeholder = "Optional, e.g. make setup"
+	si.SetWidth(60)
+
 	return RepoSettingsModel{
-		client:    c,
-		ctx:       ctx,
-		repoID:    repoID,
-		nameInput: ni,
+		client:       c,
+		ctx:          ctx,
+		repoID:       repoID,
+		editingField: -1,
+		nameInput:    ni,
+		setupInput:   si,
 	}
 }
 
@@ -109,6 +117,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.repo = msg.repo
 		m.nameInput.SetValue(m.repo.DisplayName)
+		m.setupInput.SetValue(m.repo.GetSetupScript())
 		return m, nil
 
 	case repoSettingsSavedMsg:
@@ -121,7 +130,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.editing {
+		if m.editingField >= 0 {
 			return m.updateEditing(msg)
 		}
 
@@ -148,31 +157,66 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m RepoSettingsModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
+		return m.commitEdit()
+	case "esc":
+		return m.cancelEdit(), nil
+	}
+
+	var cmd tea.Cmd
+	switch m.editingField {
+	case repoSettingsRowName:
+		m.nameInput, cmd = m.nameInput.Update(msg)
+	case repoSettingsRowSetupCommand:
+		m.setupInput, cmd = m.setupInput.Update(msg)
+	}
+	return m, cmd
+}
+
+func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
+	switch m.editingField {
+	case repoSettingsRowName:
 		name := strings.TrimSpace(m.nameInput.Value())
 		if name == "" {
 			m.err = fmt.Errorf("name cannot be empty")
 			return m, nil
 		}
-		m.editing = false
+		m.editingField = -1
 		m.err = nil
 		m.nameInput.Blur()
 		return m, m.saveSettings(&pb.UpdateRepoRequest{
 			Id:          m.repoID,
 			DisplayName: &name,
 		})
-	case "esc":
-		m.editing = false
+	case repoSettingsRowSetupCommand:
+		val := strings.TrimSpace(m.setupInput.Value())
+		m.editingField = -1
 		m.err = nil
+		m.setupInput.Blur()
+		// Empty string clears the setup command.
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:          m.repoID,
+			SetupScript: &val,
+		})
+	}
+	return m, nil
+}
+
+func (m RepoSettingsModel) cancelEdit() RepoSettingsModel {
+	switch m.editingField {
+	case repoSettingsRowName:
 		m.nameInput.Blur()
 		if m.repo != nil {
 			m.nameInput.SetValue(m.repo.DisplayName)
 		}
-		return m, nil
+	case repoSettingsRowSetupCommand:
+		m.setupInput.Blur()
+		if m.repo != nil {
+			m.setupInput.SetValue(m.repo.GetSetupScript())
+		}
 	}
-
-	var cmd tea.Cmd
-	m.nameInput, cmd = m.nameInput.Update(msg)
-	return m, cmd
+	m.editingField = -1
+	m.err = nil
+	return m
 }
 
 func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
@@ -182,8 +226,11 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 
 	switch m.cursor {
 	case repoSettingsRowName:
-		m.editing = true
+		m.editingField = repoSettingsRowName
 		return m, m.nameInput.Focus()
+	case repoSettingsRowSetupCommand:
+		m.editingField = repoSettingsRowSetupCommand
+		return m, m.setupInput.Focus()
 	case repoSettingsRowMergeStrategy:
 		// Cycle through merge strategies.
 		current := m.repo.MergeStrategy
@@ -263,7 +310,7 @@ func (m RepoSettingsModel) View() tea.View {
 	}
 
 	// Row 0: Name
-	if m.editing && m.cursor == repoSettingsRowName {
+	if m.editingField == repoSettingsRowName {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Name:"))
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.nameInput.View()))
@@ -281,7 +328,30 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	// Row 1: Merge strategy
+	// Row 1: Setup command
+	if m.editingField == repoSettingsRowSetupCommand {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Setup command:"))
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.setupInput.View()))
+		b.WriteString("\n")
+	} else {
+		cursor := "  "
+		if m.cursor == repoSettingsRowSetupCommand {
+			cursor = cursorChevron + " "
+		}
+		val := m.repo.GetSetupScript()
+		if val == "" {
+			val = "(none)"
+		}
+		line := fmt.Sprintf("%sSetup command: %s", cursor, val)
+		if m.cursor == repoSettingsRowSetupCommand {
+			line = styleSelected.Render(line)
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString("\n")
+	}
+
+	// Row 2: Merge strategy
 	{
 		cursor := "  "
 		if m.cursor == repoSettingsRowMergeStrategy {
@@ -315,18 +385,18 @@ func (m RepoSettingsModel) View() tea.View {
 			check = "x"
 		}
 		cursor := "  "
-		if m.cursor == cb.row && !m.editing {
+		if m.cursor == cb.row && m.editingField < 0 {
 			cursor = cursorChevron + " "
 		}
 		line := fmt.Sprintf("%s[%s] %s", cursor, check, cb.label)
-		if m.cursor == cb.row && !m.editing {
+		if m.cursor == cb.row && m.editingField < 0 {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
 		b.WriteString("\n")
 	}
 
-	if m.editing {
+	if m.editingField >= 0 {
 		b.WriteString(styleActionBar.Render("[enter] save  [esc] cancel"))
 	} else {
 		b.WriteString(styleActionBar.Render("[enter/space] toggle/edit  [esc] back"))

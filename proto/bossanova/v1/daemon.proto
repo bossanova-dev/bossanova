@@ -128,6 +128,7 @@ message UpdateRepoRequest {
   optional bool can_auto_address_reviews = 5;
   optional bool can_auto_resolve_conflicts = 6;
   optional string merge_strategy = 7;
+  optional string setup_script = 8;
 }
 
 message UpdateRepoResponse {

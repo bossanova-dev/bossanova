@@ -50,7 +50,7 @@ func TestStartStop(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	sid, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestIsRunning(t *testing.T) {
 		t.Error("expected IsRunning=false for unknown session")
 	}
 
-	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	sid, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestExitErrorSuccess(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	sid, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestExitErrorFailure(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	sid, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestHistory(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	sid, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestLogFileWritten(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	sid, err := r.Start(ctx, workDir, "test", nil)
+	sid, err := r.Start(ctx, workDir, "test", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestDefaultLogPath(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	sid, err := r.Start(ctx, workDir, "test", nil)
+	sid, err := r.Start(ctx, workDir, "test", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestSubscriber(t *testing.T) {
 	defer cancel()
 	workDir := t.TempDir()
 
-	sid, err := r.Start(ctx, workDir, "test plan", nil)
+	sid, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestStartWithDangerouslySkipPermissions(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	_, err := r.Start(ctx, workDir, "test plan", nil)
+	_, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestStartWithoutDangerouslySkipPermissions(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	_, err := r.Start(ctx, workDir, "test plan", nil)
+	_, err := r.Start(ctx, workDir, "test plan", nil, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestStartWithResume(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 
-	_, err := r.Start(ctx, workDir, "continue work", &resumeID)
+	_, err := r.Start(ctx, workDir, "continue work", &resumeID, "")
 	if err != nil {
 		t.Fatalf("Start with resume: %v", err)
 	}
@@ -524,5 +524,47 @@ func TestStartWithResume(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected --resume %s in args, got %v", resumeID, capturedArgs)
+	}
+}
+
+func TestStartWithSessionID(t *testing.T) {
+	logDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	providedSessionID := "test-session-uuid-123"
+	var capturedArgs []string
+
+	r := NewRunner(
+		zerolog.Nop(),
+		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			capturedArgs = args
+			return exec.CommandContext(ctx, "sh", "-c", "cat > /dev/null; echo ok")
+		}),
+		WithLogDir(logDir),
+		WithConfigPath(configPath),
+	)
+
+	ctx := context.Background()
+	workDir := t.TempDir()
+
+	returnedID, err := r.Start(ctx, workDir, "test plan", nil, providedSessionID)
+	if err != nil {
+		t.Fatalf("Start with session ID: %v", err)
+	}
+
+	// Verify the returned ID matches the provided ID.
+	if returnedID != providedSessionID {
+		t.Errorf("expected session ID %s, got %s", providedSessionID, returnedID)
+	}
+
+	// Verify the --session-id flag was passed to Claude CLI.
+	found := false
+	for i, arg := range capturedArgs {
+		if arg == "--session-id" && i+1 < len(capturedArgs) && capturedArgs[i+1] == providedSessionID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --session-id %s in args, got %v", providedSessionID, capturedArgs)
 	}
 }

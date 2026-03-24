@@ -270,7 +270,7 @@ func newMockClaudeRunner() *mockClaudeRunner {
 	}
 }
 
-func (m *mockClaudeRunner) Start(_ context.Context, workDir, plan string, resume *string) (string, error) {
+func (m *mockClaudeRunner) Start(_ context.Context, workDir, plan string, resume *string, _ string) (string, error) {
 	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume})
 	id := m.nextID
 	m.running[id] = true

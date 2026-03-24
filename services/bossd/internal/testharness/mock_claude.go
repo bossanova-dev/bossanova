@@ -19,7 +19,7 @@ type MockClaudeRunner struct {
 	counter  atomic.Int64
 
 	// StartFunc overrides the default Start behavior when set.
-	StartFunc func(ctx context.Context, workDir, plan string, resume *string) (string, error)
+	StartFunc func(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error)
 }
 
 type mockProcess struct {
@@ -39,12 +39,15 @@ func NewMockClaudeRunner() *MockClaudeRunner {
 	}
 }
 
-func (m *MockClaudeRunner) Start(ctx context.Context, workDir, plan string, resume *string) (string, error) {
+func (m *MockClaudeRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error) {
 	if m.StartFunc != nil {
-		return m.StartFunc(ctx, workDir, plan, resume)
+		return m.StartFunc(ctx, workDir, plan, resume, sessionID)
 	}
 
-	id := fmt.Sprintf("claude-mock-%d", m.counter.Add(1))
+	id := sessionID
+	if id == "" {
+		id = fmt.Sprintf("claude-mock-%d", m.counter.Add(1))
+	}
 
 	m.mu.Lock()
 	m.sessions[id] = &mockProcess{

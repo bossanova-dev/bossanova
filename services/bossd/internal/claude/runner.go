@@ -31,8 +31,10 @@ type OutputLine struct {
 type ClaudeRunner interface {
 	// Start spawns a Claude CLI process in workDir with the given plan.
 	// If resume is non-nil, it resumes an existing Claude session.
+	// If sessionID is non-empty, it is passed via --session-id and used as the tracking key.
+	// When sessionID is empty, a generated claude-<timestamp> ID is used instead.
 	// Returns the session ID assigned to this process.
-	Start(ctx context.Context, workDir, plan string, resume *string) (sessionID string, err error)
+	Start(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error)
 
 	// Stop terminates the Claude process for the given session.
 	Stop(sessionID string) error
@@ -116,9 +118,14 @@ func NewRunner(logger zerolog.Logger, opts ...RunnerOption) *Runner {
 
 // Start spawns a Claude CLI process. It runs `claude --print --output-format=stream-json`
 // in the given workDir, piping the plan to stdin.
-func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string) (string, error) {
-	// Generate a session ID from timestamp + short random suffix.
-	sessionID := fmt.Sprintf("claude-%d", time.Now().UnixNano())
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error) {
+	// Determine whether the caller provided a session ID.
+	providedSessionID := sessionID != ""
+
+	// If no session ID provided, generate one from timestamp.
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("claude-%d", time.Now().UnixNano())
+	}
 
 	r.mu.Lock()
 	if _, exists := r.procs[sessionID]; exists {
@@ -131,6 +138,11 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	args := []string{"--print", "--verbose", "--output-format", "stream-json"}
 	if resume != nil {
 		args = append(args, "--resume", *resume)
+	}
+	// When sessionID was explicitly provided by the caller, pass it to Claude CLI.
+	// This makes the Claude Code session use the provided ID instead of generating its own.
+	if providedSessionID {
+		args = append(args, "--session-id", sessionID)
 	}
 
 	// Read global config for optional flags.

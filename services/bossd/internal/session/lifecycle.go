@@ -140,7 +140,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 		Msg("starting claude")
 
 	// Start Claude process.
-	claudeSessionID, err := l.claude.Start(ctx, result.WorktreePath, session.Plan, nil)
+	claudeSessionID, err := l.claude.Start(ctx, result.WorktreePath, session.Plan, nil, "")
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}
@@ -458,7 +458,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		resume = session.ClaudeSessionID
 	}
 
-	claudeSessionID, err := l.claude.Start(ctx, session.WorktreePath, session.Plan, resume)
+	claudeSessionID, err := l.claude.Start(ctx, session.WorktreePath, session.Plan, resume, "")
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}

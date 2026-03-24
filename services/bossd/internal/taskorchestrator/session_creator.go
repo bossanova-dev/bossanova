@@ -16,18 +16,19 @@ import (
 // CreateSessionOpts holds the parameters for creating a new session
 // from a plugin-discovered task.
 type CreateSessionOpts struct {
-	RepoID     string
-	Title      string
-	Plan       string
-	BaseBranch string
-	HeadBranch string // if non-empty, checks out existing branch (e.g. dependabot PR branch)
-	PRNumber   *int
-	PRURL      *string
+	RepoID          string
+	Title           string
+	Plan            string
+	BaseBranch      string
+	HeadBranch      string // if non-empty, checks out existing branch (e.g. dependabot PR branch)
+	SkipSetupScript bool   // if true, skip running the repo's setup script (e.g. for dependabot PRs)
+	PRNumber        *int
+	PRURL           *string
 }
 
 // SessionStarter abstracts the lifecycle's StartSession method for testability.
 type SessionStarter interface {
-	StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool) error
+	StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool) error
 }
 
 // SessionCreator abstracts session creation so the orchestrator can
@@ -79,7 +80,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		Str("title", opts.Title).
 		Msg("created session, starting lifecycle")
 
-	if err := c.lifecycle.StartSession(ctx, sess.ID, opts.HeadBranch, false); err != nil {
+	if err := c.lifecycle.StartSession(ctx, sess.ID, opts.HeadBranch, false, opts.SkipSetupScript); err != nil {
 		return nil, fmt.Errorf("start session %s: %w", sess.ID, err)
 	}
 

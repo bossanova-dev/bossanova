@@ -186,10 +186,11 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 // --- Mock WorktreeManager ---
 
 type mockWorktreeManager struct {
-	created     []gitpkg.CreateOpts
-	archived    []string
-	resurrected []gitpkg.ResurrectOpts
-	pushed      []string
+	created             []gitpkg.CreateOpts
+	createdFromExisting []gitpkg.CreateFromExistingBranchOpts
+	archived            []string
+	resurrected         []gitpkg.ResurrectOpts
+	pushed              []string
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -240,6 +241,7 @@ func (m *mockWorktreeManager) DetectDefaultBranch(_ context.Context, _ string) (
 }
 
 func (m *mockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
+	m.createdFromExisting = append(m.createdFromExisting, opts)
 	return &gitpkg.CreateResult{
 		WorktreePath: "/tmp/worktrees/" + opts.BranchName,
 		BranchName:   opts.BranchName,
@@ -388,7 +390,7 @@ func TestStartSession(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1", "", false); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", "", false, false); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -731,5 +733,127 @@ func TestSubmitPRWrongState(t *testing.T) {
 	err := lc.SubmitPR(ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected error for wrong state")
+	}
+}
+
+func TestStartSession_SkipSetupScript_NilsSetupScript(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	setupCmd := "npm install"
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+		DisplayName:     "test-repo",
+		SetupScript:     &setupCmd,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Bump lodash",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	// skipSetupScript = true with an existing branch (dependabot PR path).
+	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, true); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Verify CreateFromExistingBranch was called with nil SetupScript.
+	if len(wt.createdFromExisting) != 1 {
+		t.Fatalf("expected 1 CreateFromExistingBranch call, got %d", len(wt.createdFromExisting))
+	}
+	if wt.createdFromExisting[0].SetupScript != nil {
+		t.Errorf("expected nil SetupScript when skipSetupScript=true, got %q", *wt.createdFromExisting[0].SetupScript)
+	}
+}
+
+func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	setupCmd := "npm install"
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+		DisplayName:     "test-repo",
+		SetupScript:     &setupCmd,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Bump lodash",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	// skipSetupScript = true with no existing branch (new branch path).
+	if err := lc.StartSession(ctx, "sess-1", "", false, true); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Verify Create was called with nil SetupScript.
+	if len(wt.created) != 1 {
+		t.Fatalf("expected 1 Create call, got %d", len(wt.created))
+	}
+	if wt.created[0].SetupScript != nil {
+		t.Errorf("expected nil SetupScript when skipSetupScript=true, got %q", *wt.created[0].SetupScript)
+	}
+}
+
+func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	setupCmd := "npm install"
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+		DisplayName:     "test-repo",
+		SetupScript:     &setupCmd,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Bump lodash",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	// skipSetupScript = false with existing branch.
+	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, false); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Verify CreateFromExistingBranch was called WITH SetupScript.
+	if len(wt.createdFromExisting) != 1 {
+		t.Fatalf("expected 1 CreateFromExistingBranch call, got %d", len(wt.createdFromExisting))
+	}
+	if wt.createdFromExisting[0].SetupScript == nil {
+		t.Error("expected non-nil SetupScript when skipSetupScript=false")
+	} else if *wt.createdFromExisting[0].SetupScript != "npm install" {
+		t.Errorf("expected SetupScript 'npm install', got %q", *wt.createdFromExisting[0].SetupScript)
 	}
 }

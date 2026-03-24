@@ -329,6 +329,14 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 		ms := models.MergeStrategy(*msg.MergeStrategy)
 		params.MergeStrategy = &ms
 	}
+	if msg.SetupScript != nil {
+		if *msg.SetupScript == "" {
+			// Empty string clears the setup command (set DB to NULL).
+			params.SetupScript = new(*string)
+		} else {
+			params.SetupScript = &msg.SetupScript
+		}
+	}
 
 	repo, err := s.repos.Update(ctx, msg.Id, params)
 	if err != nil {

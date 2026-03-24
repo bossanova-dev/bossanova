@@ -204,8 +204,8 @@ func (m *RepoAddModel) buildDetailsForm() {
 					return nil
 				}),
 			huh.NewInput().
-				Title("Setup script").
-				Placeholder("Optional, e.g. ./setup.sh").
+				Title("Setup command").
+				Placeholder("Optional, e.g. make setup").
 				Value(&m.fd.setup),
 			huh.NewConfirm().
 				Title("Add this repository?").

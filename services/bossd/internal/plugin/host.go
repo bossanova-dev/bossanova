@@ -214,9 +214,9 @@ func (h *Host) GetTaskSources() []TaskSource {
 
 // SetWorkflowDeps injects workflow and attempt dependencies into the host
 // service so that plugins can create/manage workflows and Claude attempts.
-func (h *Host) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, runner claude.ClaudeRunner) {
+func (h *Host) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, chats db.ClaudeChatStore, runner claude.ClaudeRunner) {
 	if h.hostService != nil {
-		h.hostService.SetWorkflowDeps(store, sessions, runner)
+		h.hostService.SetWorkflowDeps(store, sessions, chats, runner)
 	}
 }
 

@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
@@ -315,10 +317,11 @@ func setupWorkflowTestServer(t *testing.T) (srv *HostServiceServer, runner *mock
 	}
 
 	workflowStore := db.NewWorkflowStore(sqlDB)
+	chatStore := db.NewClaudeChatStore(sqlDB)
 	runner = newMockClaudeRunner()
 
 	srv = NewHostServiceServer(&mockVCSProvider{})
-	srv.SetWorkflowDeps(workflowStore, sessionStore, runner)
+	srv.SetWorkflowDeps(workflowStore, sessionStore, chatStore, runner)
 
 	return srv, runner, sess.ID, repo.ID
 }
@@ -745,5 +748,137 @@ func TestHostServiceGetAttemptStatusUnknownSession(t *testing.T) {
 	}
 	if resp.GetStatus() != bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED {
 		t.Errorf("status = %v, want COMPLETED (unknown sessions report as completed)", resp.GetStatus())
+	}
+}
+
+// --- Chat registration tests ---
+
+func TestCreateAttemptRegistersChat(t *testing.T) {
+	// CreateAttempt with a workflowID should create a claude_chats record
+	// with the correct session_id, claude_id, and "autopilot:" title prefix.
+	srv, runner, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// Create a workflow linked to the session.
+	wfResp, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		PlanPath:  "docs/plans/test.md",
+		MaxLegs:   3,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	workflowID := wfResp.GetWorkflow().GetId()
+
+	resp, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: workflowID,
+		SkillName:  "boss-implement",
+		Input:      "/boss-implement docs/plans/test.md",
+		WorkDir:    "/tmp/workdir",
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	// The mock runner should have been called and returned a session ID.
+	attemptID := resp.GetAttemptId()
+	if !runner.IsRunning(attemptID) {
+		t.Error("runner should report session as running")
+	}
+
+	// Verify a chat was registered.
+	chats, err := srv.claudeChats.ListBySession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("ListBySession: %v", err)
+	}
+	if len(chats) != 1 {
+		t.Fatalf("expected 1 chat, got %d", len(chats))
+	}
+	chat := chats[0]
+	if chat.SessionID != sessionID {
+		t.Errorf("chat.SessionID = %q, want %q", chat.SessionID, sessionID)
+	}
+	if chat.ClaudeID == "" {
+		t.Error("chat.ClaudeID should not be empty")
+	}
+	if !strings.HasPrefix(chat.Title, "autopilot:") {
+		t.Errorf("chat.Title = %q, want prefix 'autopilot:'", chat.Title)
+	}
+}
+
+func TestCreateAttemptNoChatWithoutWorkflow(t *testing.T) {
+	// CreateAttempt without a workflowID should NOT create a chat record.
+	srv, _, sessionID, _ := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	_, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		// No WorkflowId — bare attempt.
+		Input:   "test input",
+		WorkDir: "/tmp/workdir",
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt: %v", err)
+	}
+
+	// No chat should have been registered.
+	chats, err := srv.claudeChats.ListBySession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("ListBySession: %v", err)
+	}
+	if len(chats) != 0 {
+		t.Errorf("expected 0 chats (no workflow), got %d", len(chats))
+	}
+}
+
+// mockClaudeChatStore is a mock that can be configured to return errors.
+type mockClaudeChatStore struct {
+	createErr error
+}
+
+func (m *mockClaudeChatStore) Create(_ context.Context, _ db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
+	return nil, m.createErr
+}
+func (m *mockClaudeChatStore) ListBySession(_ context.Context, _ string) ([]*models.ClaudeChat, error) {
+	return nil, nil
+}
+func (m *mockClaudeChatStore) UpdateTitle(_ context.Context, _, _ string) error           { return nil }
+func (m *mockClaudeChatStore) UpdateTitleByClaudeID(_ context.Context, _, _ string) error { return nil }
+func (m *mockClaudeChatStore) DeleteByClaudeID(_ context.Context, _ string) error         { return nil }
+
+func TestCreateAttemptChatErrorBestEffort(t *testing.T) {
+	// When claudeChats.Create() fails, CreateAttempt should still succeed.
+	srv, runner, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// Replace the chat store with one that returns an error.
+	srv.claudeChats = &mockClaudeChatStore{createErr: errors.New("db write failed")}
+
+	// Create a workflow linked to the session.
+	wfResp, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		PlanPath:  "docs/plans/test.md",
+		MaxLegs:   3,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow: %v", err)
+	}
+	workflowID := wfResp.GetWorkflow().GetId()
+
+	// CreateAttempt should succeed even though chat creation fails.
+	resp, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
+		WorkflowId: workflowID,
+		SkillName:  "boss-implement",
+		Input:      "/boss-implement docs/plans/test.md",
+		WorkDir:    "/tmp/workdir",
+	})
+	if err != nil {
+		t.Fatalf("CreateAttempt should succeed on chat error, got: %v", err)
+	}
+
+	// The runner should have been called (Claude started successfully).
+	if !runner.IsRunning(resp.GetAttemptId()) {
+		t.Error("runner should report session as running")
 	}
 }

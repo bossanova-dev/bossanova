@@ -280,6 +280,10 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		}
 	}
 
+	// completedLeg tracks the last flight leg that actually ran to
+	// completion so we can report honestly when the loop exits early.
+	var completedLeg int32
+
 	// Step 2: Implement (= Flight Leg 1).
 	if startIdx <= 2 {
 		// Capture time before implement so handoff files it creates are
@@ -301,6 +305,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 			o.pauseWorkflowOnError(ctx, workflowID, "implement", err)
 			return
 		}
+		completedLeg = 1
 	}
 
 	// Step 3: Handoff/resume loop (Flight Legs 2..maxLegs).
@@ -308,6 +313,13 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		if startIdx == 3 {
 			// Resuming into the handoff loop — find existing handoff files.
 			legStart = time.Time{}
+
+			// Seed completedLeg from persisted state so the incomplete-legs
+			// guard works correctly when the loop exits without completing
+			// any legs in this execution.
+			if resp, err := o.host.GetWorkflow(ctx, workflowID); err == nil {
+				completedLeg = resp.GetWorkflow().GetFlightLeg()
+			}
 		}
 		for leg := 2; leg <= maxLegs; leg++ {
 			// Check if workflow was paused/cancelled.
@@ -356,6 +368,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 					o.pauseWorkflowOnError(ctx, workflowID, "resume", err)
 					return
 				}
+				completedLeg = int32(leg)
 				continue
 			}
 
@@ -375,11 +388,30 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				o.pauseWorkflowOnError(ctx, workflowID, "resume", err)
 				return
 			}
+			completedLeg = int32(leg)
 
 			if leg == maxLegs {
 				log.Warn().Int("max_legs", maxLegs).Msg("max flight legs reached, proceeding to verify")
 			}
 		}
+	}
+
+	// If fewer legs completed than expected, pause for human review.
+	if completedLeg > 0 && completedLeg < int32(maxLegs) {
+		log.Warn().
+			Int32("completed", completedLeg).
+			Int("expected", maxLegs).
+			Msg("fewer legs completed than expected, pausing for review")
+		if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+			Id:          workflowID,
+			Status:      stringPtr("paused"),
+			CurrentStep: stringPtr("verify"),
+			FlightLeg:   &completedLeg,
+			LastError:   stringPtr(fmt.Sprintf("only %d of %d legs completed — handoff loop exited early", completedLeg, maxLegs)),
+		}); err != nil {
+			log.Error().Err(err).Msg("failed to pause for incomplete legs")
+		}
+		return
 	}
 
 	// Step 4: Verify.
@@ -417,13 +449,16 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		return
 	}
 
-	// Done — set flight leg to maxLegs so the status display shows completion
-	// (e.g. "2/2" instead of "1/2" when the agent finished early).
-	legVal := int32(maxLegs)
+	// Done — report the actual last completed leg so the status display is
+	// honest (e.g. "1/3" when the agent only finished leg 1).
+	finalLeg := completedLeg
+	if finalLeg == 0 {
+		finalLeg = int32(maxLegs)
+	}
 	if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
 		Id:        workflowID,
 		Status:    stringPtr("completed"),
-		FlightLeg: &legVal,
+		FlightLeg: &finalLeg,
 	}); err != nil {
 		log.Error().Err(err).Msg("failed to mark workflow completed")
 	}

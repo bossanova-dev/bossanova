@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -637,19 +638,18 @@ func TestGetWorkflowStatus(t *testing.T) {
 // --- Test: runWorkflow orchestration loop ---
 
 func TestRunWorkflowHappyPath(t *testing.T) {
-	// plan → implement → no handoff → handoff recovery → still no handoff → verify → land → completed
+	// With maxLegs=1 the handoff loop is skipped entirely:
+	// plan → implement → verify → land → completed
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 	cfg := &workflowConfig{
 		PollIntervalSeconds: 1,
-		// Use an empty temp dir so scanHandoffDir returns "" (no new handoffs).
-		HandoffDir: t.TempDir(),
+		HandoffDir:          t.TempDir(),
 	}
 
-	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 20, "")
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
 
 	// runWorkflow sets status to "completed" at the end.
-	// The "running" transition happens in StartWorkflow (before runWorkflow).
 	statuses := mock.getUpdateStatuses()
 	if len(statuses) == 0 {
 		t.Fatal("expected at least one status update")
@@ -668,16 +668,17 @@ func TestRunWorkflowHappyPath(t *testing.T) {
 		}
 	}
 
-	// On completion, flight leg should be set to maxLegs.
+	// On completion with maxLegs=1, flight leg should be 1.
 	legs := mock.getFlightLegUpdates()
 	lastLeg := legs[len(legs)-1]
-	if lastLeg != 20 {
-		t.Errorf("final flight leg = %d, want 20 (maxLegs)", lastLeg)
+	if lastLeg != 1 {
+		t.Errorf("final flight leg = %d, want 1 (maxLegs)", lastLeg)
 	}
 }
 
 func TestRunWorkflowFlightLegUpdatedDuringImplement(t *testing.T) {
-	// Verify that FlightLeg is set to 1 at the start of the implement step.
+	// Verify that FlightLeg is set to 1 at the start of the implement step,
+	// and that the final update reflects the actual completed leg (not maxLegs).
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 	cfg := &workflowConfig{
@@ -694,10 +695,18 @@ func TestRunWorkflowFlightLegUpdatedDuringImplement(t *testing.T) {
 	if legs[0] != 1 {
 		t.Errorf("first flight leg update = %d, want 1 (implement)", legs[0])
 	}
+
+	// With no handoff files and maxLegs=3, workflow should pause with FlightLeg=1.
+	lastLeg := legs[len(legs)-1]
+	if lastLeg != 1 {
+		t.Errorf("final flight leg = %d, want 1 (only implement completed)", lastLeg)
+	}
 }
 
 func TestRunWorkflowConfirmLandPause(t *testing.T) {
 	// After verify, workflow pauses for landing confirmation.
+	// Use maxLegs=1 so the handoff loop is skipped entirely and we test
+	// the confirm-land pause path (not incomplete-legs pause).
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 	cfg := &workflowConfig{
@@ -706,7 +715,7 @@ func TestRunWorkflowConfirmLandPause(t *testing.T) {
 		HandoffDir:          t.TempDir(),
 	}
 
-	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 20, "")
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
 
 	statuses := mock.getUpdateStatuses()
 	// Should end with "paused" (not "completed").
@@ -718,7 +727,10 @@ func TestRunWorkflowConfirmLandPause(t *testing.T) {
 	// The confirm_land sets current_step to "land" in the update that pauses,
 	// but the land flight leg itself should not have run (no attempt created for land).
 	steps := mock.getUpdateSteps()
-	_ = steps // "land" may appear as step in the pause update; that's expected.
+	lastStep := steps[len(steps)-1]
+	if lastStep != "land" {
+		t.Errorf("last step = %q, want land (confirm_land pause)", lastStep)
+	}
 }
 
 func TestRunWorkflowPlanFailure(t *testing.T) {
@@ -743,6 +755,7 @@ func TestRunWorkflowPlanFailure(t *testing.T) {
 
 func TestRunWorkflowRetrySuccess(t *testing.T) {
 	// Plan fails on first attempt but retry succeeds → continues normally.
+	// Use maxLegs=1 so the handoff loop is skipped and we reach completion.
 	mock := newMockHostClient()
 	mock.stepAttempts["plan"] = attemptBehavior{err: "temporary error"}
 	// No retryAttempts entry for "plan" → retry defaults to success.
@@ -752,7 +765,7 @@ func TestRunWorkflowRetrySuccess(t *testing.T) {
 		HandoffDir:          t.TempDir(),
 	}
 
-	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 20, "")
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
 
 	statuses := mock.getUpdateStatuses()
 	last := statuses[len(statuses)-1]
@@ -901,7 +914,8 @@ func TestRunWorkflowHandoffRecovery(t *testing.T) {
 }
 
 func TestRunWorkflowHandoffRecoveryFails(t *testing.T) {
-	// When handoff recovery fails, the orchestrator should proceed to verify.
+	// When handoff recovery fails and legs are incomplete, the orchestrator
+	// should pause for human review instead of silently completing.
 	mock := newMockHostClient()
 	mock.stepAttempts["handoff"] = attemptBehavior{err: "recovery failed"}
 	mock.retryAttempts["handoff"] = attemptBehavior{err: "still failed"}
@@ -915,20 +929,77 @@ func TestRunWorkflowHandoffRecoveryFails(t *testing.T) {
 
 	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "")
 
-	// Should still complete (handoff failed → break → verify → land → completed).
+	// Should pause (not complete) because only 1 of 3 legs ran.
 	statuses := mock.getUpdateStatuses()
 	last := statuses[len(statuses)-1]
-	if last != "completed" {
-		t.Errorf("last status = %q, want completed", last)
+	if last != "paused" {
+		t.Errorf("last status = %q, want paused (incomplete legs)", last)
 	}
 
-	// Should have attempted handoff but then proceeded to verify and land.
+	// Should have attempted handoff.
 	steps := mock.getUpdateSteps()
 	if !sliceContains(steps, "handoff") {
 		t.Errorf("expected 'handoff' step in steps: %v", steps)
 	}
-	if !sliceContains(steps, "verify") {
-		t.Errorf("expected 'verify' step in steps: %v", steps)
+
+	// "verify" appears as CurrentStep in the pause update (where to resume from),
+	// but verify should NOT have actually run as a flight leg.
+	if sliceContains(steps, "land") {
+		t.Errorf("should not have reached 'land' step: %v", steps)
+	}
+
+	// FlightLeg should be 1 (only implement completed), not 3 (maxLegs).
+	legs := mock.getFlightLegUpdates()
+	lastLeg := legs[len(legs)-1]
+	if lastLeg != 1 {
+		t.Errorf("final flight leg = %d, want 1 (only implement completed)", lastLeg)
+	}
+
+	// LastError should explain the incomplete state.
+	if mock.workflow.LastError == "" {
+		t.Error("expected LastError to be set for incomplete legs")
+	}
+}
+
+func TestRunWorkflowPartialCompletionPauses(t *testing.T) {
+	// With maxLegs=3 and no handoff files, the workflow should pause after
+	// implement (leg 1) with an honest FlightLeg=1 and a descriptive error.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(),
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "")
+
+	// Should pause, not complete.
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "paused" {
+		t.Errorf("last status = %q, want paused", last)
+	}
+
+	// FlightLeg should be 1 (only implement completed).
+	legs := mock.getFlightLegUpdates()
+	lastLeg := legs[len(legs)-1]
+	if lastLeg != 1 {
+		t.Errorf("final flight leg = %d, want 1", lastLeg)
+	}
+
+	// LastError should mention the incomplete leg count.
+	if mock.workflow.LastError == "" {
+		t.Error("expected LastError to be set")
+	}
+	if !strings.Contains(mock.workflow.LastError, "1 of 3") {
+		t.Errorf("LastError = %q, want it to contain '1 of 3'", mock.workflow.LastError)
+	}
+
+	// Current step should be set to "verify" (ready for user to resume).
+	steps := mock.getUpdateSteps()
+	lastStep := steps[len(steps)-1]
+	if lastStep != "verify" {
+		t.Errorf("last step = %q, want verify", lastStep)
 	}
 }
 
@@ -995,6 +1066,7 @@ func TestRunWorkflowCancelledDuringExecution(t *testing.T) {
 
 func TestRunWorkflowVerifyFailure(t *testing.T) {
 	// Verify step fails (both attempts) → workflow pauses (user can resume).
+	// Use maxLegs=1 so the handoff loop is skipped and we reach verify.
 	mock := newMockHostClient()
 	mock.stepAttempts["verify"] = attemptBehavior{err: "tests failed"}
 	mock.retryAttempts["verify"] = attemptBehavior{err: "tests still failing"}
@@ -1004,7 +1076,7 @@ func TestRunWorkflowVerifyFailure(t *testing.T) {
 		HandoffDir:          t.TempDir(),
 	}
 
-	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 20, "")
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
 
 	statuses := mock.getUpdateStatuses()
 	last := statuses[len(statuses)-1]
@@ -1015,6 +1087,7 @@ func TestRunWorkflowVerifyFailure(t *testing.T) {
 
 func TestRunWorkflowLandFailure(t *testing.T) {
 	// Land step fails → workflow pauses (user can resume).
+	// Use maxLegs=1 so the handoff loop is skipped and we reach land.
 	mock := newMockHostClient()
 	mock.stepAttempts["land"] = attemptBehavior{err: "push rejected"}
 	mock.retryAttempts["land"] = attemptBehavior{err: "still rejected"}
@@ -1024,7 +1097,7 @@ func TestRunWorkflowLandFailure(t *testing.T) {
 		HandoffDir:          t.TempDir(),
 	}
 
-	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 20, "")
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
 
 	statuses := mock.getUpdateStatuses()
 	last := statuses[len(statuses)-1]
@@ -1339,5 +1412,47 @@ func TestRunWorkflowResumeFromLand(t *testing.T) {
 	last := statuses[len(statuses)-1]
 	if last != "completed" {
 		t.Errorf("last status = %q, want completed", last)
+	}
+}
+
+func TestRunWorkflowResumeFromHandoffNoLegsComplete(t *testing.T) {
+	// When resuming from "resume" (startIdx=3) and the handoff loop exits
+	// early without completing any legs, the workflow should pause with the
+	// persisted FlightLeg value — not silently complete with maxLegs.
+	mock := newMockHostClient()
+	// Simulate a previous execution that completed leg 1 and paused.
+	mock.workflow.FlightLeg = 1
+	mock.workflow.CurrentStep = "resume"
+	o := newTestOrchestrator(mock)
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(), // Empty — no handoff files.
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "resume")
+
+	// Should pause (not complete) because no additional legs ran.
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "paused" {
+		t.Errorf("last status = %q, want paused (incomplete legs on resume)", last)
+	}
+
+	// FlightLeg should be 1 (seeded from persisted state), not 3.
+	legs := mock.getFlightLegUpdates()
+	lastLeg := legs[len(legs)-1]
+	if lastLeg != 1 {
+		t.Errorf("final flight leg = %d, want 1 (seeded from persisted state)", lastLeg)
+	}
+
+	// LastError should mention the incomplete count.
+	if !strings.Contains(mock.workflow.LastError, "1 of 3") {
+		t.Errorf("LastError = %q, want it to contain '1 of 3'", mock.workflow.LastError)
+	}
+
+	// Should NOT have run verify or land.
+	steps := mock.getUpdateSteps()
+	if sliceContains(steps, "land") {
+		t.Errorf("should not have reached 'land' step: %v", steps)
 	}
 }

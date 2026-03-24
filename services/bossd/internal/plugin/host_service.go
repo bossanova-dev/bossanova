@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -21,6 +23,7 @@ type HostServiceServer struct {
 	provider      vcs.Provider
 	workflowStore db.WorkflowStore
 	sessionStore  db.SessionStore
+	claudeChats   db.ClaudeChatStore
 	claude        claude.ClaudeRunner
 }
 
@@ -34,9 +37,10 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 // SetWorkflowDeps injects the dependencies needed for workflow and attempt
 // RPCs. This is called after construction so that the existing plugin
 // wiring doesn't need to change until the full wiring is done.
-func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, runner claude.ClaudeRunner) {
+func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, chats db.ClaudeChatStore, runner claude.ClaudeRunner) {
 	s.workflowStore = store
 	s.sessionStore = sessions
+	s.claudeChats = chats
 	s.claude = runner
 }
 
@@ -333,21 +337,47 @@ func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.
 		return nil, status.Error(codes.Unavailable, "claude runner not configured")
 	}
 
-	// Resolve working directory from workflow → session when not provided.
+	// Resolve the workflow once (used for both workDir resolution and chat
+	// registration below).
 	workDir := req.GetWorkDir()
-	if workDir == "" && req.GetWorkflowId() != "" && s.workflowStore != nil && s.sessionStore != nil {
-		if wf, err := s.workflowStore.Get(ctx, req.GetWorkflowId()); err == nil {
-			if sess, err := s.sessionStore.Get(ctx, wf.SessionID); err == nil {
-				workDir = sess.WorktreePath
-			}
+	var wf *models.Workflow
+	if req.GetWorkflowId() != "" && s.workflowStore != nil {
+		wf, _ = s.workflowStore.Get(ctx, req.GetWorkflowId())
+	}
+
+	// Resolve working directory from workflow → session when not provided.
+	if workDir == "" && wf != nil && s.sessionStore != nil {
+		if sess, err := s.sessionStore.Get(ctx, wf.SessionID); err == nil {
+			workDir = sess.WorktreePath
+		}
+	}
+
+	// When this attempt is tied to a workflow, generate a UUID and register
+	// a claude_chats record so the chat appears in the session's chat picker.
+	// The UUID is also passed to Claude via --session-id, creating a real
+	// Claude Code session file for title backfill and potential resume.
+	var chatID string
+	if wf != nil && s.claudeChats != nil {
+		chatID = uuid.New().String()
+		if _, err := s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
+			SessionID: wf.SessionID,
+			ClaudeID:  chatID,
+			Title:     fmt.Sprintf("autopilot: %s", req.GetSkillName()),
+		}); err != nil {
+			log.Warn().Err(err).Str("workflow_id", req.GetWorkflowId()).Msg("chat registration failed")
+			chatID = "" // fall back to auto-generated ID
 		}
 	}
 
 	// Use context.Background() so the Claude process outlives this RPC.
 	// The gRPC request context is cancelled when the RPC returns, which
 	// would immediately kill the long-running Claude subprocess.
-	sessionID, err := s.claude.Start(context.Background(), workDir, req.GetInput(), nil, "")
+	sessionID, err := s.claude.Start(context.Background(), workDir, req.GetInput(), nil, chatID)
 	if err != nil {
+		// Clean up orphaned chat record if Claude failed to start.
+		if chatID != "" && s.claudeChats != nil {
+			_ = s.claudeChats.DeleteByClaudeID(ctx, chatID)
+		}
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 

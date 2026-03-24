@@ -342,14 +342,14 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 					"document to %s/ following the /boss-handoff format. Plan: %s",
 					cfg.handoffDirectory(), planPath)
 				if err := o.runFlightLeg(ctx, workflowID, "handoff", prompt, cfg); err != nil {
-					log.Warn().Err(err).Msg("handoff recovery failed, proceeding to verify")
+					log.Warn().Err(err).Msg("handoff recovery failed, exiting handoff loop")
 					break
 				}
 
 				// Re-check for handoff file after recovery.
 				handoffFile, _ = scanHandoffDir(cfg.handoffDirectory(), legStart)
 				if handoffFile == "" {
-					log.Info().Msg("still no handoff after recovery, proceeding to verify")
+					log.Info().Msg("still no handoff after recovery, exiting handoff loop")
 					break
 				}
 

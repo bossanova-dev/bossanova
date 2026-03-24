@@ -552,8 +552,8 @@ func TestHostServiceCreateAttempt(t *testing.T) {
 
 	resp, err := srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
 		WorkflowId: "wf-1",
-		SkillName:  "boss-plan",
-		Input:      "/boss-plan docs/plans/test.md",
+		SkillName:  "boss-create-tasks",
+		Input:      "/boss-create-tasks docs/plans/test.md",
 		WorkDir:    "/tmp/workdir",
 	})
 	if err != nil {
@@ -590,7 +590,7 @@ func TestHostServiceCreateAttemptResolvesWorkDir(t *testing.T) {
 	// CreateAttempt with empty WorkDir — should resolve from session.
 	_, err = srv.CreateAttempt(ctx, &bossanovav1.CreateAttemptRequest{
 		WorkflowId: workflowID,
-		Input:      "/boss-plan docs/plans/test.md",
+		Input:      "/boss-create-tasks docs/plans/test.md",
 		WorkDir:    "", // should be resolved to session's WorktreePath
 	})
 	if err != nil {

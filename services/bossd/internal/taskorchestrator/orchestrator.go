@@ -199,14 +199,28 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, re
 func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	externalID := task.GetExternalId()
 
-	// Dedup: skip if we've already seen this external ID.
+	// Dedup: skip if we've already seen this external ID, unless the
+	// previous attempt failed — in that case delete the old mapping so
+	// the task is retried.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
 	if err == nil && existing != nil {
-		o.logger.Info().
-			Str("external_id", externalID).
-			Int("status", int(existing.Status)).
-			Msg("task already tracked, skipping")
-		return
+		if existing.Status == models.TaskMappingStatusFailed {
+			o.logger.Info().
+				Str("external_id", externalID).
+				Msg("previous attempt failed, retrying task")
+			if err := o.taskMappings.Delete(ctx, existing.ID); err != nil {
+				o.logger.Error().Err(err).
+					Str("external_id", externalID).
+					Msg("delete failed task mapping")
+				return
+			}
+		} else {
+			o.logger.Info().
+				Str("external_id", externalID).
+				Int("status", int(existing.Status)).
+				Msg("task already tracked, skipping")
+			return
+		}
 	}
 
 	o.enqueue(ctx, task, repo, pluginName)
@@ -217,6 +231,17 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	o.mu.Lock()
 	if o.active[repo.id] {
+		// Deduplicate: skip if a task with the same external ID is already queued.
+		for _, q := range o.queues[repo.id] {
+			if q.task.GetExternalId() == task.GetExternalId() {
+				o.logger.Debug().
+					Str("repo", repo.displayName).
+					Str("external_id", task.GetExternalId()).
+					Msg("task already queued, skipping duplicate")
+				o.mu.Unlock()
+				return
+			}
+		}
 		// Another task is being processed for this repo — queue it.
 		o.queues[repo.id] = append(o.queues[repo.id], queuedTask{task: task, repo: repo, pluginName: pluginName})
 		o.logger.Debug().
@@ -437,6 +462,9 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 }
 
 // handleCreateSession creates a Claude Code session to fix a failing PR.
+// The session runs asynchronously — HandleSessionCompleted dequeues the
+// next task when it finishes. We only dequeue here on the error path so
+// the queue advances if session creation fails.
 func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
 	baseBranch := task.GetBaseBranch()
 	if baseBranch == "" {

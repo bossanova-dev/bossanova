@@ -100,6 +100,15 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 		return
 	}
 
+	// Skip checks and reviews for draft PRs — they aren't ready for review
+	// so CI results and review comments are not actionable. This saves 2 API
+	// calls per draft PR per poll cycle.
+	if prStatus.Draft {
+		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
+		p.tracker.Set(sessionID, info)
+		return
+	}
+
 	var checks []vcs.CheckResult
 	if results, err := p.provider.GetCheckResults(ctx, repoPath, prNumber); err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get check results")

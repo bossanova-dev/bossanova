@@ -292,4 +292,50 @@ func TestDisplayPoller_GracefulDegradation_ReviewCommentsError(t *testing.T) {
 	}
 }
 
+func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewPRTracker()
+	logger := zerolog.Nop()
+
+	prNum := 10
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	// PR is draft — checks and reviews should NOT be fetched.
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
+	poller.Run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	e := tracker.Get("sess-1")
+	if e == nil {
+		t.Fatal("expected tracker entry, got nil")
+	}
+	if e.Status != vcs.PRDisplayStatusDraft {
+		t.Errorf("Status = %d, want %d (Draft)", e.Status, vcs.PRDisplayStatusDraft)
+	}
+
+	// Verify no check or review API calls were made.
+	if vp.getCheckResultsCalls != 0 {
+		t.Errorf("GetCheckResults called %d times, want 0 for draft PR", vp.getCheckResultsCalls)
+	}
+	if vp.getReviewCommentsCalls != 0 {
+		t.Errorf("GetReviewComments called %d times, want 0 for draft PR", vp.getReviewCommentsCalls)
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }

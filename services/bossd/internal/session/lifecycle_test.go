@@ -317,6 +317,9 @@ type mockVCSProvider struct {
 	checkResultsErr    error
 	reviewCommentsErr  error
 	mergePRErr         error
+
+	getCheckResultsCalls   int
+	getReviewCommentsCalls int
 }
 
 func newMockVCSProvider() *mockVCSProvider {
@@ -342,6 +345,7 @@ func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.
 }
 
 func (m *mockVCSProvider) GetCheckResults(_ context.Context, _ string, _ int) ([]vcs.CheckResult, error) {
+	m.getCheckResultsCalls++
 	return m.nextCheckResults, m.checkResultsErr
 }
 
@@ -355,6 +359,7 @@ func (m *mockVCSProvider) MarkReadyForReview(_ context.Context, _ string, prID i
 }
 
 func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {
+	m.getReviewCommentsCalls++
 	return m.nextReviewComments, m.reviewCommentsErr
 }
 

@@ -20,7 +20,7 @@ import (
 )
 
 // DefaultPollInterval is the default interval between task source polls.
-const DefaultPollInterval = 60 * time.Second
+const DefaultPollInterval = 2 * time.Minute
 
 // TaskSourceProvider returns the currently active task source plugins.
 // This is typically backed by plugin.Host.GetTaskSources().

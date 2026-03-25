@@ -276,7 +276,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.chatPicker.Update(msg)
 		a.chatPicker = updated.(ChatPickerModel)
 		if a.chatPicker.Cancelled() {
-			return a, a.switchToHome()
+			a.activeView = ViewHome
+			a.home = NewHomeModel(a.client, a.ctx, a.manager)
+			a.home.highlightSessionID = a.chatPicker.sessionID
+			a.home.width = a.width
+			a.home.height = a.height
+			return a, a.home.Init()
 		}
 		return a, cmd
 	case ViewRepoAdd:
@@ -304,8 +309,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.repoSettings.Update(msg)
 		a.repoSettings = updated.(RepoSettingsModel)
 		if a.repoSettings.Cancelled() || a.repoSettings.Done() {
-			// Return to repo list.
+			// Return to repo list, highlighting the repo we came from.
 			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.repoList.highlightRepoID = a.repoSettings.repoID
 			a.repoList.width = a.width
 			a.repoList.height = a.height
 			a.activeView = ViewRepoList

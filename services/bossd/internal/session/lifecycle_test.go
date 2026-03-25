@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -312,6 +313,7 @@ type mockVCSProvider struct {
 	nextCheckResults   []vcs.CheckResult
 	nextReviewComments []vcs.ReviewComment
 	nextOpenPRs        []vcs.PRSummary
+	createPRErr        error
 	checkResultsErr    error
 	reviewCommentsErr  error
 	mergePRErr         error
@@ -326,6 +328,9 @@ func newMockVCSProvider() *mockVCSProvider {
 
 func (m *mockVCSProvider) CreateDraftPR(_ context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	m.createPRCalls = append(m.createPRCalls, opts)
+	if m.createPRErr != nil {
+		return nil, m.createPRErr
+	}
 	return m.nextPRInfo, nil
 }
 
@@ -737,6 +742,46 @@ func TestSubmitPRWrongState(t *testing.T) {
 	err := lc.SubmitPR(ctx, "sess-1")
 	if err == nil {
 		t.Fatal("expected error for wrong state")
+	}
+}
+
+func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "", // no plan → triggers immediate PR creation
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	// Make CreateDraftPR return ErrRepoNotReady.
+	vp.nextPRInfo = nil
+	vp.createPRErr = vcs.ErrRepoNotReady
+
+	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+
+	err := lc.StartSession(ctx, "sess-1", "", false, false)
+	if err == nil {
+		t.Fatal("expected error for repo not ready")
+	}
+	if !errors.Is(err, vcs.ErrRepoNotReady) {
+		t.Errorf("expected ErrRepoNotReady, got: %v", err)
 	}
 }
 

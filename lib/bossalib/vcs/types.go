@@ -1,5 +1,12 @@
 package vcs
 
+import "errors"
+
+// ErrRepoNotReady is returned when a repository does not have enough commit
+// history to support pull request creation (e.g. the repo only contains an
+// --allow-empty initial commit with no real content).
+var ErrRepoNotReady = errors.New("repository is not ready for pull requests: push at least one commit with content before creating a session")
+
 // PRState represents the state of a pull/merge request.
 type PRState int
 

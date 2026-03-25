@@ -11,6 +11,7 @@ func TestCountPlanFlightLegs(t *testing.T) {
 		name    string
 		content string
 		want    int32
+		missing bool // if true, test with a nonexistent path
 	}{
 		{
 			name:    "three flight legs",
@@ -18,9 +19,9 @@ func TestCountPlanFlightLegs(t *testing.T) {
 			want:    3,
 		},
 		{
-			name:    "no flight legs",
+			name:    "no flight legs returns 1 (single-leg plan)",
 			content: "# Plan\n\nJust some notes\n## Other heading\n",
-			want:    0,
+			want:    1,
 		},
 		{
 			name:    "case insensitive",
@@ -28,20 +29,50 @@ func TestCountPlanFlightLegs(t *testing.T) {
 			want:    3,
 		},
 		{
-			name:    "empty file",
+			name:    "empty file returns 1 (single-leg plan)",
 			content: "",
-			want:    0,
+			want:    1,
 		},
 		{
-			name:    "missing file",
-			content: "", // won't be written
-			want:    0,
+			name:    "missing file returns -1",
+			missing: true,
+			want:    -1,
+		},
+		{
+			name:    "handoff markers only (h3)",
+			content: "# Plan\n\n### [HANDOFF] Phase 1 complete\n\n### [HANDOFF] Phase 2 complete\n\n### [HANDOFF] Phase 3 complete\n",
+			want:    3,
+		},
+		{
+			name:    "handoff markers only (h4)",
+			content: "# Plan\n\n#### [HANDOFF] Done\n\n#### [HANDOFF] Also done\n",
+			want:    2,
+		},
+		{
+			name:    "handoff case insensitive",
+			content: "# Plan\n\n### [Handoff] Phase 1\n### [handoff] Phase 2\n### [HANDOFF] Phase 3\n",
+			want:    3,
+		},
+		{
+			name:    "both flight legs and handoff markers (takes max)",
+			content: "## Flight Leg 1: Setup\n### [HANDOFF]\n\n## Flight Leg 2: Build\n### [HANDOFF]\n",
+			want:    2,
+		},
+		{
+			name:    "more handoff markers than flight legs",
+			content: "## Flight Leg 1: All\n### [HANDOFF] First\n### [HANDOFF] Second\n### [HANDOFF] Third\n",
+			want:    3,
+		},
+		{
+			name:    "handoff in non-heading line ignored",
+			content: "# Plan\n\nThis line mentions [HANDOFF] but is not a heading\n",
+			want:    1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.name == "missing file" {
+			if tt.missing {
 				got := countPlanFlightLegs("/nonexistent/path/plan.md")
 				if got != tt.want {
 					t.Errorf("countPlanFlightLegs() = %d, want %d", got, tt.want)

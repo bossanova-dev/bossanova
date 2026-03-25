@@ -1105,32 +1105,33 @@ func (s *Server) StartAutopilot(ctx context.Context, req *connect.Request[pb.Sta
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	// Auto-detect max legs from plan file if not explicitly set.
-	// Resolve the plan path relative to the repo/worktree root (not the
-	// user's cwd) since plan paths are always repo-relative.
-	if msg.MaxLegs == 0 {
-		var rootDir string
-		if sessionID != "" {
-			if sess, err := s.sessions.Get(ctx, sessionID); err == nil && sess.WorktreePath != "" {
-				rootDir = sess.WorktreePath
-			}
-		}
-		if rootDir == "" {
-			if repo, err := s.repos.Get(ctx, repoID); err == nil {
-				rootDir = repo.LocalPath
-			}
-		}
-		if rootDir != "" {
-			planAbs := filepath.Join(rootDir, msg.PlanPath)
-			if count := countPlanFlightLegs(planAbs); count > 0 {
-				msg.MaxLegs = count
-				s.logger.Debug().
-					Str("plan", planAbs).
-					Int32("count", count).
-					Msg("auto-detected flight leg count from plan file")
-			}
+	// Resolve worktree root (needed for both leg counting and config).
+	var rootDir string
+	if sessionID != "" {
+		if sess, err := s.sessions.Get(ctx, sessionID); err == nil && sess.WorktreePath != "" {
+			rootDir = sess.WorktreePath
 		}
 	}
+	if rootDir == "" {
+		if repo, err := s.repos.Get(ctx, repoID); err == nil {
+			rootDir = repo.LocalPath
+		}
+	}
+
+	// Auto-detect max legs from plan file if not explicitly set.
+	if msg.MaxLegs == 0 && rootDir != "" {
+		planAbs := filepath.Join(rootDir, msg.PlanPath)
+		if count := countPlanFlightLegs(planAbs); count > 0 {
+			msg.MaxLegs = count
+			s.logger.Debug().
+				Str("plan", planAbs).
+				Int32("count", count).
+				Msg("auto-detected flight leg count from plan file")
+		}
+	}
+
+	// Build config JSON with work_dir for the plugin.
+	configJSON := fmt.Sprintf(`{"work_dir":%q}`, rootDir)
 
 	// Find the workflow service plugin.
 	wfService := s.getWorkflowService()
@@ -1145,6 +1146,7 @@ func (s *Server) StartAutopilot(ctx context.Context, req *connect.Request[pb.Sta
 		RepoId:      repoID,
 		MaxLegs:     msg.MaxLegs,
 		ConfirmLand: msg.ConfirmLand,
+		ConfigJson:  configJSON,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start workflow: %w", err))
@@ -1430,22 +1432,37 @@ func isSubdirOf(child, parent string) bool {
 	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
 }
 
-// countPlanFlightLegs counts "## Flight Leg" headings in a plan file.
-// Returns 0 if the file can't be read or contains no flight leg headings.
+// countPlanFlightLegs counts "## Flight Leg" headings and [HANDOFF] markers
+// in a plan file. Returns -1 if the file can't be read, 1 if the file is
+// readable but contains no markers (single-leg plan), or N for N markers.
+// [HANDOFF] markers are heading lines (starting with #) that contain
+// "[handoff]" (case-insensitive). The result is max(flightLegs, handoffs).
 func countPlanFlightLegs(planPath string) int32 {
 	f, err := os.Open(planPath)
 	if err != nil {
-		return 0
+		return -1
 	}
 	defer func() { _ = f.Close() }()
 
-	var count int32
+	var flightLegCount, handoffCount int32
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(strings.ToLower(line), "## flight leg") {
-			count++
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "## flight leg") {
+			flightLegCount++
 		}
+		if strings.HasPrefix(line, "#") && strings.Contains(lower, "[handoff]") {
+			handoffCount++
+		}
+	}
+
+	count := flightLegCount
+	if handoffCount > count {
+		count = handoffCount
+	}
+	if count == 0 {
+		return 1
 	}
 	return count
 }

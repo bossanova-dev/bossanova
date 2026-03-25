@@ -125,11 +125,24 @@ func TestScanHandoffDir(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "absolute directory path returns error",
+			name: "absolute directory path works",
 			setup: func(t *testing.T) (string, time.Time) {
-				return "/tmp/absolute-handoff-dir", time.Now()
+				dir := t.TempDir()
+				since := time.Now()
+				f, err := os.Create(filepath.Join(dir, "handoff-abs.md"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
+				futureTime := since.Add(1 * time.Hour)
+				if err := os.Chtimes(f.Name(), futureTime, futureTime); err != nil {
+					t.Fatal(err)
+				}
+				return dir, since
 			},
-			wantErr: true,
+			wantFile: true,
 		},
 		{
 			name: "directory with .. returns error",

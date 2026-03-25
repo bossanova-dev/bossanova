@@ -267,6 +267,11 @@ Example filenames:
 
 ---
 
+> **IMPORTANT — Machine-Parsed Headers:** The `## Flight Leg N:` headings and
+> `### [HANDOFF]` markers are parsed by the autopilot to count flight legs.
+> Plans MUST use exactly this heading format. Without them, the autopilot cannot
+> determine how many legs the plan has.
+
 ## Flight Leg 1: [Phase Name]
 
 ### Tasks
@@ -420,16 +425,17 @@ Please review the plan. Would you like any changes before we proceed?
 
 ## Anti-Patterns
 
-| Anti-Pattern              | Problem                       | Fix                                          |
-| ------------------------- | ----------------------------- | -------------------------------------------- |
-| Skipping design skills    | Misses required patterns      | ALWAYS read design skills for affected areas |
-| No post-flight checks     | Agent can't verify its work   | Every flight leg needs testable verification |
-| Vague test steps          | Agent won't know if it passed | Write exact commands with expected output    |
-| Manual-only testing       | Agent can't test autonomously | Prefer curl, Playwright MCP, make test       |
-| Too few handoffs          | Runaway implementation        | One handoff per logical phase                |
-| Too many tasks per leg    | Long gaps between reviews     | Keep flight legs to 3-5 tasks max            |
-| Not reading existing code | Plan doesn't match reality    | Examine code BEFORE writing the plan         |
-| Giant tasks               | Context bloat, errors         | Split to under 2 minutes each                |
+| Anti-Pattern               | Problem                       | Fix                                              |
+| -------------------------- | ----------------------------- | ------------------------------------------------ |
+| Skipping design skills     | Misses required patterns      | ALWAYS read design skills for affected areas     |
+| No post-flight checks      | Agent can't verify its work   | Every flight leg needs testable verification     |
+| Vague test steps           | Agent won't know if it passed | Write exact commands with expected output        |
+| Manual-only testing        | Agent can't test autonomously | Prefer curl, Playwright MCP, make test           |
+| Too few handoffs           | Runaway implementation        | One handoff per logical phase                    |
+| Too many tasks per leg     | Long gaps between reviews     | Keep flight legs to 3-5 tasks max                |
+| Not reading existing code  | Plan doesn't match reality    | Examine code BEFORE writing the plan             |
+| Giant tasks                | Context bloat, errors         | Split to under 2 minutes each                    |
+| Missing Flight Leg headers | Autopilot defaults to 1 leg   | Every plan MUST have `## Flight Leg N:` headings |
 
 ---
 

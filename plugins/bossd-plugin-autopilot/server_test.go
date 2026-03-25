@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -332,6 +333,38 @@ func TestParseWorkflowConfig(t *testing.T) {
 				}
 				if cfg.skillName("land") != "my-land" {
 					t.Errorf("skillName(land) = %q, want my-land", cfg.skillName("land"))
+				}
+			},
+		},
+		{
+			name: "work_dir round-trip",
+			json: `{"work_dir":"/abs/worktree"}`,
+			checkFunc: func(t *testing.T, cfg *workflowConfig) {
+				if cfg.WorkDir != "/abs/worktree" {
+					t.Errorf("WorkDir = %q, want /abs/worktree", cfg.WorkDir)
+				}
+				want := filepath.Join("/abs/worktree", "docs/handoffs")
+				if cfg.resolvedHandoffDir() != want {
+					t.Errorf("resolvedHandoffDir = %q, want %q", cfg.resolvedHandoffDir(), want)
+				}
+			},
+		},
+		{
+			name: "work_dir with custom handoff_dir",
+			json: `{"work_dir":"/abs/worktree","handoff_dir":"custom/handoffs"}`,
+			checkFunc: func(t *testing.T, cfg *workflowConfig) {
+				want := filepath.Join("/abs/worktree", "custom/handoffs")
+				if cfg.resolvedHandoffDir() != want {
+					t.Errorf("resolvedHandoffDir = %q, want %q", cfg.resolvedHandoffDir(), want)
+				}
+			},
+		},
+		{
+			name: "no work_dir falls back to relative",
+			json: `{}`,
+			checkFunc: func(t *testing.T, cfg *workflowConfig) {
+				if cfg.resolvedHandoffDir() != "docs/handoffs" {
+					t.Errorf("resolvedHandoffDir = %q, want docs/handoffs", cfg.resolvedHandoffDir())
 				}
 			},
 		},
@@ -789,12 +822,12 @@ func TestRunWorkflowMaxLegs(t *testing.T) {
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 
-	// scanHandoffDir requires a relative path, so create a relative temp dir.
-	handoffDir := "testdata_handoffs_maxlegs"
+	// Use t.TempDir() for an absolute handoff dir with WorkDir set.
+	workDir := t.TempDir()
+	handoffDir := filepath.Join(workDir, "docs", "handoffs")
 	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(handoffDir) })
 
 	// Create a handoff file with a future mtime so it's after legStart.
 	f, err := os.CreateTemp(handoffDir, "handoff-*.md")
@@ -810,9 +843,9 @@ func TestRunWorkflowMaxLegs(t *testing.T) {
 	}
 
 	cfg := &workflowConfig{
+		WorkDir:             workDir,
 		PollIntervalSeconds: 1,
 		MaxFlightLegs:       2,
-		HandoffDir:          handoffDir,
 	}
 
 	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 2, "")
@@ -850,16 +883,16 @@ func TestRunWorkflowHandoffRecovery(t *testing.T) {
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 
-	// scanHandoffDir requires a relative path, so create a relative temp dir.
-	handoffDir := "testdata_handoffs_recovery"
+	// Use t.TempDir() for an absolute handoff dir with WorkDir set.
+	workDir := t.TempDir()
+	handoffDir := filepath.Join(workDir, "docs", "handoffs")
 	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(handoffDir) })
 
 	cfg := &workflowConfig{
+		WorkDir:             workDir,
 		PollIntervalSeconds: 1,
-		HandoffDir:          handoffDir,
 		MaxFlightLegs:       3,
 	}
 

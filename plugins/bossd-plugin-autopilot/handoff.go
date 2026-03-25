@@ -10,11 +10,8 @@ import (
 
 // scanHandoffDir reads the handoff directory and returns the path to the
 // newest file modified after `since`. Returns an empty string if no new
-// files are found. The directory path must be relative and not contain "..".
+// files are found. The directory path must not contain "..".
 func scanHandoffDir(dir string, since time.Time) (string, error) {
-	if filepath.IsAbs(dir) {
-		return "", fmt.Errorf("handoff directory must be relative, got: %s", dir)
-	}
 	if strings.Contains(dir, "..") {
 		return "", fmt.Errorf("handoff directory must not contain '..': %s", dir)
 	}

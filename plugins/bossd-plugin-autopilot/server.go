@@ -29,6 +29,7 @@ func newOrchestrator(host hostClient, logger zerolog.Logger) *orchestrator {
 // config.AutopilotConfig but are local to the plugin to avoid importing
 // the config package.
 type workflowConfig struct {
+	WorkDir             string         `json:"work_dir,omitempty"`
 	Skills              skillOverrides `json:"skills,omitempty"`
 	HandoffDir          string         `json:"handoff_dir,omitempty"`
 	PollIntervalSeconds int            `json:"poll_interval_seconds,omitempty"`
@@ -59,6 +60,16 @@ func (c *workflowConfig) handoffDirectory() string {
 		return c.HandoffDir
 	}
 	return "docs/handoffs"
+}
+
+// resolvedHandoffDir returns the handoff directory as an absolute path when
+// WorkDir is set. This ensures scanHandoffDir reads the correct worktree
+// directory rather than resolving relative to the plugin process's cwd.
+func (c *workflowConfig) resolvedHandoffDir() string {
+	if c.WorkDir != "" {
+		return filepath.Join(c.WorkDir, c.handoffDirectory())
+	}
+	return c.handoffDirectory()
 }
 
 func (c *workflowConfig) pollInterval() time.Duration {
@@ -327,7 +338,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				return
 			}
 
-			handoffFile, err := scanHandoffDir(cfg.handoffDirectory(), legStart)
+			handoffFile, err := scanHandoffDir(cfg.resolvedHandoffDir(), legStart)
 			if err != nil {
 				log.Warn().Err(err).Msg("failed to scan handoff directory")
 				// If the handoff dir doesn't exist, proceed to verify.
@@ -340,14 +351,14 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				prompt := fmt.Sprintf("No handoff document was created for the previous flight leg. "+
 					"Review recent work (git log, git diff, bd list) and write a handoff "+
 					"document to %s/ following the /boss-handoff format. Plan: %s",
-					cfg.handoffDirectory(), planPath)
+					cfg.resolvedHandoffDir(), planPath)
 				if err := o.runFlightLeg(ctx, workflowID, "handoff", prompt, cfg); err != nil {
 					log.Warn().Err(err).Msg("handoff recovery failed, exiting handoff loop")
 					break
 				}
 
 				// Re-check for handoff file after recovery.
-				handoffFile, _ = scanHandoffDir(cfg.handoffDirectory(), legStart)
+				handoffFile, _ = scanHandoffDir(cfg.resolvedHandoffDir(), legStart)
 				if handoffFile == "" {
 					log.Info().Msg("still no handoff after recovery, exiting handoff loop")
 					break

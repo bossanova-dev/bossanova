@@ -219,6 +219,7 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 		"--repo", repoFlag(repoPath),
 		"--state", "open",
 		"--json", "number,title,headRefName,state,author",
+		"--limit", "300",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list open PRs: %w", err)

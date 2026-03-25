@@ -89,6 +89,17 @@ func (s *SQLiteTaskMappingStore) Update(ctx context.Context, id string, params U
 	return s.get(ctx, id)
 }
 
+func (s *SQLiteTaskMappingStore) Delete(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, "DELETE FROM task_mappings WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete task mapping: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *SQLiteTaskMappingStore) ListPending(ctx context.Context) ([]*models.TaskMapping, error) {
 	rows, err := s.db.QueryContext(ctx, taskMappingSelectSQL+" WHERE pending_update_status IS NOT NULL ORDER BY created_at ASC")
 	if err != nil {

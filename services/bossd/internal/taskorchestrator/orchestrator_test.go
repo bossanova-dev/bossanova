@@ -80,6 +80,7 @@ type mockTaskMappingStore struct {
 	bySession     map[string]*models.TaskMapping // keyed by session_id
 	createFn      func(ctx context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error)
 	updateFn      func(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error)
+	deleteFn      func(ctx context.Context, id string) error
 	listPendingFn func(ctx context.Context) ([]*models.TaskMapping, error)
 	nextID        int
 }
@@ -123,6 +124,19 @@ func (m *mockTaskMappingStore) Update(ctx context.Context, id string, params db.
 		return m.updateFn(ctx, id, params)
 	}
 	return &models.TaskMapping{ID: id}, nil
+}
+
+func (m *mockTaskMappingStore) Delete(ctx context.Context, id string) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, id)
+	}
+	for k, tm := range m.mappings {
+		if tm.ID == id {
+			delete(m.mappings, k)
+			return nil
+		}
+	}
+	return nil
 }
 
 func (m *mockTaskMappingStore) ListPending(ctx context.Context) ([]*models.TaskMapping, error) {
@@ -1078,6 +1092,116 @@ func TestRouteTask_CreateSession_NoDependabotLabel_NoSkipSetupScript(t *testing.
 
 	if capturedOpts.SkipSetupScript {
 		t.Error("expected SkipSetupScript=false for task without dependabot label")
+	}
+}
+
+// --- failed task mapping retry tests ---
+
+func TestProcessTask_FailedMappingIsRetried(t *testing.T) {
+	createCalls := 0
+
+	store := &mockTaskMappingStore{
+		mappings: map[string]*models.TaskMapping{
+			"dep:pr:repo:99": {
+				ID:         "tm-failed",
+				ExternalID: "dep:pr:repo:99",
+				PluginName: "dependabot",
+				RepoID:     "r1",
+				Status:     models.TaskMappingStatusFailed,
+			},
+		},
+		createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			createCalls++
+			return &models.TaskMapping{
+				ID:         "tm-retry",
+				ExternalID: params.ExternalID,
+				PluginName: params.PluginName,
+				RepoID:     params.RepoID,
+			}, nil
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = store
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error { return nil },
+		}
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dep:pr:repo:99",
+		Title:      "Bump retry-pkg",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if createCalls == 0 {
+		t.Error("expected failed task mapping to be deleted and task re-enqueued")
+	}
+}
+
+func TestProcessTask_CompletedMappingStillSkipped(t *testing.T) {
+	createCalls := 0
+
+	store := &mockTaskMappingStore{
+		mappings: map[string]*models.TaskMapping{
+			"dep:pr:repo:88": {
+				ID:         "tm-done",
+				ExternalID: "dep:pr:repo:88",
+				PluginName: "dependabot",
+				RepoID:     "r1",
+				Status:     models.TaskMappingStatusCompleted,
+			},
+		},
+		createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+			createCalls++
+			return &models.TaskMapping{}, nil
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = store
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dep:pr:repo:88",
+		Title:      "Bump completed-pkg",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if createCalls != 0 {
+		t.Error("expected completed task mapping to still be skipped (not retried)")
+	}
+}
+
+// --- queue deduplication tests ---
+
+func TestQueue_DuplicateExternalIDNotQueued(t *testing.T) {
+	orch := newTestOrchestrator()
+
+	ctx := context.Background()
+
+	// Mark repo active so tasks go to the queue rather than being processed.
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.mu.Unlock()
+
+	task := &bossanovav1.TaskItem{
+		ExternalId: "dep:pr:repo:42",
+		Title:      "Bump some-pkg",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}
+	repo := repoInfo{id: "r1", displayName: "org/repo", originURL: "repo"}
+
+	// Enqueue the same task twice.
+	orch.enqueue(ctx, task, repo, "dependabot")
+	orch.enqueue(ctx, task, repo, "dependabot")
+
+	orch.mu.Lock()
+	queueLen := len(orch.queues["r1"])
+	orch.mu.Unlock()
+
+	if queueLen != 1 {
+		t.Errorf("expected queue length 1 after duplicate enqueue, got %d", queueLen)
 	}
 }
 

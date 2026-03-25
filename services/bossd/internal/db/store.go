@@ -62,6 +62,7 @@ type TaskMappingStore interface {
 	GetByExternalID(ctx context.Context, externalID string) (*models.TaskMapping, error)
 	GetBySessionID(ctx context.Context, sessionID string) (*models.TaskMapping, error)
 	Update(ctx context.Context, id string, params UpdateTaskMappingParams) (*models.TaskMapping, error)
+	Delete(ctx context.Context, id string) error
 	ListPending(ctx context.Context) ([]*models.TaskMapping, error)
 }
 

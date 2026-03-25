@@ -2,6 +2,7 @@ package pty
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -179,6 +180,29 @@ func TestHasQuestionPrompt(t *testing.T) {
 				"  - Performance benchmarks comparing old vs new approach\n\n" +
 				"  This plan has 3 legs with handoff checkpoints between each. Does this look like the right approach for the refactor?\n",
 			want: true,
+		},
+		{
+			name: "force-push permission question",
+			data: "⏺ 31 files, 4,538+/321-. The diff is intact. Do I have permission to force-push?\n",
+			want: true,
+		},
+		{
+			name: "force-push question with ⏺ outside tail buffer",
+			data: "4,538+/321-. The diff is intact. Do I have permission to force-push?\n" +
+				strings.Repeat("─", 80) + "\n" +
+				strings.Repeat("─", 80) + "\n" +
+				"  Opus 4.6 | Context: 89% remaining | /Users/dave/Documents/Code/boss\n" +
+				"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n" +
+				"\n" +
+				"❯\n",
+			want: true,
+		},
+		{
+			name: "non-question with ⏺ outside tail buffer",
+			data: "I've fixed the bug in main.go by correcting the off-by-one error on line 42.\n" +
+				strings.Repeat("─", 80) + "\n" +
+				"  Opus 4.6 | Context: 89% remaining\n",
+			want: false,
 		},
 		{
 			name: "office-hours Demand question (user reported miss)",

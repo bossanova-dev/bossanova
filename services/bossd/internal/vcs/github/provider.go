@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -18,14 +19,40 @@ import (
 // Compile-time interface check.
 var _ vcs.Provider = (*Provider)(nil)
 
+// ghFunc is the signature for executing gh CLI commands.
+type ghFunc func(ctx context.Context, args ...string) (string, error)
+
 // Provider implements vcs.Provider by shelling out to the gh CLI.
 type Provider struct {
-	logger zerolog.Logger
+	logger  zerolog.Logger
+	runGH   ghFunc
+	sleepFn func(time.Duration)
+}
+
+// ProviderOption configures a Provider.
+type ProviderOption func(*Provider)
+
+// WithRunGH overrides the gh CLI executor (for testing).
+func WithRunGH(f ghFunc) ProviderOption {
+	return func(p *Provider) { p.runGH = f }
+}
+
+// WithSleepFunc overrides the sleep function used between retries (for testing).
+func WithSleepFunc(f func(time.Duration)) ProviderOption {
+	return func(p *Provider) { p.sleepFn = f }
 }
 
 // New creates a new GitHub provider.
-func New(logger zerolog.Logger) *Provider {
-	return &Provider{logger: logger}
+func New(logger zerolog.Logger, opts ...ProviderOption) *Provider {
+	p := &Provider{
+		logger:  logger,
+		runGH:   defaultRunGH,
+		sleepFn: time.Sleep,
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // repoFlag converts a git origin URL to the owner/repo format expected by gh.
@@ -37,6 +64,8 @@ func repoFlag(repoPath string) string {
 }
 
 // CreateDraftPR pushes the head branch and creates a draft pull request.
+// It retries up to 3 times with exponential backoff when GitHub's API hasn't
+// finished indexing the pushed branches (common in newly-created repositories).
 func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	args := []string{
 		"pr", "create",
@@ -50,29 +79,56 @@ func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*v
 		args = append(args, "--draft")
 	}
 
-	out, err := p.runGH(ctx, args...)
-	if err != nil {
-		if isRepoNotReady(err) {
-			return nil, fmt.Errorf("%w", vcs.ErrRepoNotReady)
+	const maxAttempts = 3
+	backoff := 2 * time.Second
+
+	var lastErr error
+	for attempt := range maxAttempts {
+		out, err := p.runGH(ctx, args...)
+		if err == nil {
+			// gh pr create outputs the PR URL on stdout.
+			prURL := strings.TrimSpace(out)
+
+			// Extract PR number from URL (e.g. https://github.com/owner/repo/pull/42).
+			number, parseErr := parsePRNumberFromURL(prURL)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse PR URL %q: %w", prURL, parseErr)
+			}
+
+			p.logger.Info().
+				Int("number", number).
+				Str("url", prURL).
+				Msg("created draft PR")
+
+			return &vcs.PRInfo{Number: number, URL: prURL}, nil
 		}
-		return nil, fmt.Errorf("create PR: %w", err)
+
+		if !isRepoNotReady(err) {
+			return nil, fmt.Errorf("create PR: %w", err)
+		}
+
+		lastErr = err
+
+		// Don't sleep after the last attempt.
+		if attempt < maxAttempts-1 {
+			p.logger.Warn().
+				Int("attempt", attempt+1).
+				Dur("backoff", backoff).
+				Msg("repo not ready, retrying PR creation")
+
+			p.sleepFn(backoff)
+			backoff *= 2
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+		}
 	}
 
-	// gh pr create outputs the PR URL on stdout.
-	prURL := strings.TrimSpace(out)
-
-	// Extract PR number from URL (e.g. https://github.com/owner/repo/pull/42).
-	number, err := parsePRNumberFromURL(prURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse PR URL %q: %w", prURL, err)
-	}
-
-	p.logger.Info().
-		Int("number", number).
-		Str("url", prURL).
-		Msg("created draft PR")
-
-	return &vcs.PRInfo{Number: number, URL: prURL}, nil
+	_ = lastErr // preserve for debugging; sentinel conveys the meaning
+	return nil, fmt.Errorf("%w", vcs.ErrRepoNotReady)
 }
 
 // GetPRStatus returns the current status of a pull request.
@@ -354,8 +410,8 @@ func isRepoNotReady(err error) bool {
 		strings.Contains(msg, "No commits between")
 }
 
-// runGH executes a gh CLI command and returns stdout.
-func (p *Provider) runGH(ctx context.Context, args ...string) (string, error) {
+// defaultRunGH executes a gh CLI command and returns stdout.
+func defaultRunGH(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

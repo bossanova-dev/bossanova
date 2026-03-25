@@ -98,7 +98,7 @@ func constructPRURL(originURL string, prNumber int) string {
 		s = host + "/" + s[idx+1:]
 	}
 	// Strip protocol prefix.
-	for _, prefix := range []string{"https://", "http://", "ssh://"} {
+	for _, prefix := range []string{"https://", "http://", "ssh://", "git://"} {
 		s = strings.TrimPrefix(s, prefix)
 	}
 	// Strip .git suffix.

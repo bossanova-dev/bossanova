@@ -23,6 +23,8 @@ func TestConstructPRURL(t *testing.T) {
 		{"HTTPS no .git suffix", "https://github.com/owner/repo", 1, "https://github.com/owner/repo/pull/1"},
 		{"empty URL", "", 1, ""},
 		{"bare path no slash", "foobar", 1, ""},
+		{"git protocol", "git://github.com/owner/repo.git", 5, "https://github.com/owner/repo/pull/5"},
+		{"git protocol no .git", "git://github.com/owner/repo", 3, "https://github.com/owner/repo/pull/3"},
 	}
 
 	for _, tt := range tests {

@@ -484,8 +484,10 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 	// a clickable PR link in the TUI session list.
 	if prNumber, err := parsePRNumberFromExternalID(task.GetExternalId()); err == nil {
 		opts.PRNumber = &prNumber
-		prURL := fmt.Sprintf("%s/pull/%d", task.GetRepoOriginUrl(), prNumber)
-		opts.PRURL = &prURL
+		if nwo := vcs.GitHubNWO(task.GetRepoOriginUrl()); nwo != "" {
+			prURL := fmt.Sprintf("https://github.com/%s/pull/%d", nwo, prNumber)
+			opts.PRURL = &prURL
+		}
 	}
 
 	sess, err := o.sessionCreator.CreateSession(ctx, opts)

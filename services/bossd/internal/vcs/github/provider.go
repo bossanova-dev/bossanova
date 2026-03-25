@@ -19,6 +19,14 @@ import (
 // Compile-time interface check.
 var _ vcs.Provider = (*Provider)(nil)
 
+// reviewBotUsers lists bot accounts whose COMMENTED reviews should be promoted
+// to CHANGES_REQUESTED so they surface as "rejected" in the TUI. Bot code-review
+// tools cannot submit Request Changes reviews, so they post comments instead.
+var reviewBotUsers = map[string]bool{
+	"cursor[bot]":       true,
+	"cubic-dev-ai[bot]": true,
+}
+
 // ghFunc is the signature for executing gh CLI commands.
 type ghFunc func(ctx context.Context, args ...string) (string, error)
 
@@ -261,10 +269,17 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 
 	comments := make([]vcs.ReviewComment, len(raw))
 	for i, r := range raw {
+		state := parseReviewState(r.State)
+		// Bot code-review tools submit COMMENTED reviews even when they find
+		// issues. Promote those to CHANGES_REQUESTED so they surface as
+		// "rejected" in the TUI.
+		if state == vcs.ReviewStateCommented && reviewBotUsers[r.User.Login] {
+			state = vcs.ReviewStateChangesRequested
+		}
 		comments[i] = vcs.ReviewComment{
 			Author: r.User.Login,
 			Body:   r.Body,
-			State:  parseReviewState(r.State),
+			State:  state,
 		}
 	}
 

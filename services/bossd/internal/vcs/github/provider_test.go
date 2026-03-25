@@ -299,3 +299,29 @@ func TestCreateDraftPR_RespectsContextCancellation(t *testing.T) {
 		t.Errorf("got %d calls, want 1", got)
 	}
 }
+
+func TestGetReviewComments_BotCommentPromotedToChangesRequested(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		return `[
+			{"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"user":{"login":"human-reviewer"},"body":"looks good","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want 2", len(comments))
+	}
+	// Bot COMMENTED should be promoted to ChangesRequested.
+	if comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("bot comment state = %v, want ChangesRequested", comments[0].State)
+	}
+	// Human COMMENTED should stay as-is.
+	if comments[1].State != vcs.ReviewStateCommented {
+		t.Errorf("human comment state = %v, want Commented", comments[1].State)
+	}
+}

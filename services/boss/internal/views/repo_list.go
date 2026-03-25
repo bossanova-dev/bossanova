@@ -41,6 +41,9 @@ type RepoListModel struct {
 	// Remove confirmation
 	confirming bool
 
+	// Navigation
+	highlightRepoID string // repo to auto-highlight after returning from settings
+
 	// Layout
 	width  int
 	height int
@@ -119,6 +122,16 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return strings.Compare(strings.ToLower(a.DisplayName), strings.ToLower(b.DisplayName))
 		})
 		m.buildTable()
+		if m.highlightRepoID != "" {
+			for i, repo := range m.repos {
+				if repo.Id == m.highlightRepoID {
+					m.table.SetCursor(i)
+					updateCursorColumn(&m.table)
+					break
+				}
+			}
+			m.highlightRepoID = ""
+		}
 		return m, nil
 
 	case repoRemovedMsg:

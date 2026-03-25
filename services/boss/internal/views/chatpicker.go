@@ -279,6 +279,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i, chat := range m.chats {
 				if chat.ClaudeId == m.highlightID {
 					m.table.SetCursor(i)
+					updateCursorColumn(&m.table)
 					break
 				}
 			}
@@ -286,6 +287,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i, chat := range m.chats {
 				if m.manager.IsRunning(chat.ClaudeId) {
 					m.table.SetCursor(i)
+					updateCursorColumn(&m.table)
 					break
 				}
 			}

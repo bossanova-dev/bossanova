@@ -56,6 +56,9 @@ type HomeModel struct {
 	width          int
 	height         int
 
+	// Navigation
+	highlightSessionID string // session to auto-highlight after returning from chat picker
+
 	// Archive confirmation / in-progress
 	confirming bool
 	archiving  bool
@@ -198,7 +201,16 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.daemonStatuses = msg.daemonStatuses
 		h.err = msg.err
 		h.buildTableRows()
-		if h.table.Cursor() >= len(h.sessions) && len(h.sessions) > 0 {
+		if h.highlightSessionID != "" {
+			for i, sess := range h.sessions {
+				if sess.Id == h.highlightSessionID {
+					h.table.SetCursor(i)
+					updateCursorColumn(&h.table)
+					break
+				}
+			}
+			h.highlightSessionID = ""
+		} else if h.table.Cursor() >= len(h.sessions) && len(h.sessions) > 0 {
 			h.table.SetCursor(len(h.sessions) - 1)
 		}
 		return h, nil

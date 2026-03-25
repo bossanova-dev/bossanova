@@ -1,5 +1,5 @@
 ---
-name: take-off
+name: boss-implement
 description: Executes pre-existing bd tasks from a plan file, writing handoffs to docs/handoffs/ and clearing context at each checkpoint. Use when bd tasks are already created and ready to work.
 ---
 

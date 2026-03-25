@@ -1,5 +1,5 @@
 ---
-name: pre-flight-checks
+name: boss-create-tasks
 description: Creates a structured task breakdown using bd before starting implementation. Use when planning complex tasks or multi-step features.
 ---
 

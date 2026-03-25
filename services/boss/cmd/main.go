@@ -4,9 +4,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/skilldata"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -21,6 +25,9 @@ func rootCmd() *cobra.Command {
 		Use:   "boss",
 		Short: "Bossanova — autonomous Claude coding sessions",
 		Long:  "Boss manages Claude coding sessions with automatic PR creation, CI fix loops, and code review handling.",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return maybeInstallSkills()
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Default: launch interactive TUI home screen.
 			return runTUI(cmd)
@@ -246,6 +253,40 @@ func settingsCmd() *cobra.Command {
 	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")
 	return cmd
+}
+
+// maybeInstallSkills prompts the user to install boss skills into ~/.claude/skills/
+// on first run. If skills are already installed, this is a no-op (the daemon handles updates).
+func maybeInstallSkills() error {
+	dir, err := skilldata.DefaultSkillsDir()
+	if err != nil {
+		return nil // non-fatal
+	}
+	settings, _ := config.Load()
+	if skilldata.BossSkillsInstalled(dir) || settings.SkillsDeclined {
+		return nil // already installed or user opted out
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil // non-interactive, skip silently
+	}
+
+	fmt.Printf("Install boss skills to %s? [Y/n] ", dir)
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		answer = "" // default to yes on read error
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer == "n" || answer == "no" {
+		settings.SkillsDeclined = true
+		_ = config.Save(settings)
+		return nil
+	}
+	if err := skilldata.ExtractSkills(dir, skilldata.SkillsFS); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to install skills: %v\n", err)
+	} else {
+		fmt.Println("Boss skills installed.")
+	}
+	return nil
 }
 
 func trashCmd() *cobra.Command {

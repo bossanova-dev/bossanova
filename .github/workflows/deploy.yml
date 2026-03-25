@@ -88,6 +88,9 @@ jobs:
         with:
           go-version: "1.25"
 
+      - name: Copy skills for embedding
+        run: make copy-skills
+
       - name: Build boss
         env:
           GOOS: ${{ matrix.goos }}

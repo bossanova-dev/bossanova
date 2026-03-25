@@ -1,7 +1,8 @@
 .PHONY: all generate build plugins test lint clean split format build-all \
 	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot \
 	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-proto \
-	build-boss build-bossd build-bosso build-autopilot build-dependabot
+	build-boss build-bossd build-bosso build-autopilot build-dependabot \
+	copy-skills
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all
@@ -30,6 +31,10 @@ PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml
 GEN_STAMP := .generate.stamp
 WEB_DEPS_STAMP := services/web/node_modules/.package-lock.json
 
+# Skill files destination (shared by boss and bossd via bossalib)
+SKILLS_SRC := .claude/skills
+SKILLS_DST := lib/bossalib/skilldata/skills
+
 claude:
 	claude --dangerously-skip-permissions
 
@@ -49,10 +54,10 @@ $(GEN_STAMP): $(PROTO_SOURCES) $(WEB_DEPS_STAMP)
 ## build: Build service binaries (generates protos first if needed)
 build: $(BIN_DIR)/boss $(BIN_DIR)/bossd $(BIN_DIR)/bosso
 
-$(BIN_DIR)/boss: $(GEN_STAMP)
+$(BIN_DIR)/boss: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 
-$(BIN_DIR)/bossd: $(GEN_STAMP)
+$(BIN_DIR)/bossd: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 
 $(BIN_DIR)/bosso: $(GEN_STAMP)
@@ -68,20 +73,20 @@ $(BIN_DIR)/bossd-plugin-dependabot: $(GEN_STAMP)
 plugins: $(BIN_DIR)/bossd-plugin-autopilot $(BIN_DIR)/bossd-plugin-dependabot
 
 ## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP)
+test: $(GEN_STAMP) copy-skills
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
 		$(MAKE) -C $$mod test; \
 	done
 
 ## Per-module test targets (no generate dep — CI uses committed gen code)
-test-bossalib:
+test-bossalib: copy-skills
 	$(MAKE) -C lib/bossalib test
 
-test-boss:
+test-boss: copy-skills
 	$(MAKE) -C services/boss test
 
-test-bossd:
+test-bossd: copy-skills
 	$(MAKE) -C services/bossd test
 
 test-bosso:
@@ -94,7 +99,7 @@ test-dependabot:
 	$(MAKE) -C plugins/bossd-plugin-dependabot test
 
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
-lint: $(GEN_STAMP)
+lint: $(GEN_STAMP) copy-skills
 	buf lint
 	@for mod in $(MODULES); do \
 		echo "==> Linting $$mod"; \
@@ -105,13 +110,13 @@ lint: $(GEN_STAMP)
 lint-proto:
 	buf lint
 
-lint-bossalib:
+lint-bossalib: copy-skills
 	cd lib/bossalib && golangci-lint run ./...
 
-lint-boss:
+lint-boss: copy-skills
 	cd services/boss && golangci-lint run ./...
 
-lint-bossd:
+lint-bossd: copy-skills
 	cd services/bossd && golangci-lint run ./...
 
 lint-bosso:
@@ -123,11 +128,21 @@ lint-autopilot:
 lint-dependabot:
 	cd plugins/bossd-plugin-dependabot && golangci-lint run ./...
 
+## copy-skills: Copy boss skill files into bossalib for embedding
+copy-skills:
+	rm -rf $(SKILLS_DST)
+	mkdir -p $(SKILLS_DST)
+	for dir in $(SKILLS_SRC)/boss-*; do \
+		name=$$(basename $$dir); \
+		mkdir -p $(SKILLS_DST)/$$name; \
+		cp -R $$dir/* $(SKILLS_DST)/$$name/; \
+	done
+
 ## Per-module build targets (no generate dep — CI uses committed gen code)
-build-boss:
+build-boss: copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 
-build-bossd:
+build-bossd: copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 
 build-bosso:
@@ -155,7 +170,7 @@ PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64
 # Only boss and bossd are distributed (bosso is deployed to Fly.io directly)
 DIST_BINS := boss bossd
 
-build-all: $(GEN_STAMP)
+build-all: $(GEN_STAMP) copy-skills
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%%/*}; \
 		arch=$${platform##*/}; \
@@ -173,6 +188,7 @@ build-all: $(GEN_STAMP)
 clean:
 	rm -rf $(BIN_DIR)
 	rm -f $(GEN_STAMP)
+	rm -rf $(SKILLS_DST)
 	@for mod in $(MODULES); do \
 		$(MAKE) -C $$mod clean; \
 	done

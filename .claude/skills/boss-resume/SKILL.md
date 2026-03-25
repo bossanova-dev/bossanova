@@ -1,5 +1,5 @@
 ---
-name: resume-handoff
+name: boss-resume
 description: Resumes work from a handoff file in docs/handoffs/. Reads context, proceeds automatically to next handoff. Use when continuing work after a previous session's handoff checkpoint.
 ---
 

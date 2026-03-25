@@ -1,5 +1,5 @@
 ---
-name: file-a-flight-plan
+name: boss-plan
 description: Turns a preliminary task plan into a comprehensive implementation and testing plan with bd tasks and handoff checkpoints. Examines code, applies design skills, and creates self-verifying test steps.
 ---
 

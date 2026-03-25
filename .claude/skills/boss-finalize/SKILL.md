@@ -1,5 +1,5 @@
 ---
-name: land-the-plane
+name: boss-finalize
 description: End-of-session workflow ensuring all work is committed and pushed. Use when ending a work session or when asked to "land the plane".
 ---
 

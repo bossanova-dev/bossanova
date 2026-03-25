@@ -1,5 +1,5 @@
 ---
-name: post-flight-checks
+name: boss-verify
 description: Runs spec-driven verification at the end of a flight leg. Plans tests from the spec, runs quality gates, executes tests in a fix-and-retry loop, and confirms confidence before handoff.
 ---
 

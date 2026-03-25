@@ -1,5 +1,5 @@
 ---
-name: handoff-task
+name: boss-handoff
 description: Writes a structured handoff document to docs/handoffs/ for flight leg checkpoints. Use when reaching a [HANDOFF] task during pre-flight-checks workflow.
 ---
 

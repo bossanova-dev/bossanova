@@ -105,6 +105,7 @@ func (c AutopilotConfig) SkillName(step string) string {
 type Settings struct {
 	DangerouslySkipPermissions bool            `json:"dangerously_skip_permissions"`
 	WorktreeBaseDir            string          `json:"worktree_base_dir"`
+	SkillsDeclined             bool            `json:"skills_declined,omitempty"`
 	PollIntervalSeconds        int             `json:"poll_interval_seconds,omitempty"`
 	Plugins                    []PluginConfig  `json:"plugins,omitempty"`
 	Autopilot                  AutopilotConfig `json:"autopilot,omitzero"`

@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/skilldata"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -102,6 +103,14 @@ func run() error {
 
 	prDisplayTracker := status.NewPRTracker()
 	settings, _ := config.Load()
+
+	// Update boss skills if they were previously installed by the CLI.
+	if skillsDir, err := skilldata.DefaultSkillsDir(); err == nil && skilldata.BossSkillsInstalled(skillsDir) {
+		if err := skilldata.ExtractSkills(skillsDir, skilldata.SkillsFS); err != nil {
+			log.Warn().Err(err).Msg("failed to update skills")
+		}
+	}
+
 	displayPoller := session.NewDisplayPoller(
 		sessions, repos, ghProvider, prDisplayTracker,
 		settings.DisplayPollInterval(), log.Logger,

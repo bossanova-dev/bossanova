@@ -155,7 +155,6 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	if cfg.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-
 	procCtx, cancel := context.WithCancel(ctx)
 	cmd := r.cmdFunc(procCtx, "claude", args...)
 	cmd.Dir = workDir

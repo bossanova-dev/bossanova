@@ -8,9 +8,10 @@ format:
 test:
 	go test ./...
 
-## clean: Remove generated code
+## clean: Remove generated code and copied skills
 clean:
 	rm -rf gen
+	rm -rf skilldata/skills
 
 ## generate: Regenerate protobuf code (run from repo root instead)
 generate:

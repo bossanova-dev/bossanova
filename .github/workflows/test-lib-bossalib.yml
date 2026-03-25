@@ -15,7 +15,7 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud
 
     outputs:
       status: ${{ steps.changes.conclusion }}
@@ -37,7 +37,7 @@ jobs:
       run: echo "Library has changed - running CI"
 
   bossalib:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud
 
     needs: check
     if:    needs.check.outputs.status == 'success'

@@ -16,7 +16,7 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud
 
     outputs:
       status: ${{ steps.changes.conclusion }}
@@ -39,7 +39,7 @@ jobs:
       run: echo "Service has changed - running CI"
 
   bossd:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud
 
     needs: check
     if:    needs.check.outputs.status == 'success'

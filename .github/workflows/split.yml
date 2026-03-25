@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   split:
-    runs-on: ubuntu-latest
+    runs-on: ubicloud
     strategy:
       matrix:
         include:

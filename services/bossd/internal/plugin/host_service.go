@@ -6,14 +6,16 @@ import (
 
 	"github.com/google/uuid"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // HostServiceServer implements the HostService gRPC server on the daemon
@@ -25,6 +27,8 @@ type HostServiceServer struct {
 	sessionStore  db.SessionStore
 	claudeChats   db.ClaudeChatStore
 	claude        claude.ClaudeRunner
+	repoStore     db.RepoStore
+	prTracker     *status.PRTracker
 }
 
 // NewHostServiceServer creates a HostServiceServer that proxies to the
@@ -42,6 +46,14 @@ func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, sessions db.
 	s.sessionStore = sessions
 	s.claudeChats = chats
 	s.claude = runner
+}
+
+// SetSessionDeps injects the dependencies needed for session-related RPCs
+// (ListSessions, GetReviewComments, FireSessionEvent).
+func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker) {
+	s.repoStore = repos
+	s.sessionStore = sessions
+	s.prTracker = tracker
 }
 
 // hostServiceDesc is a manually-built gRPC service descriptor for
@@ -92,6 +104,18 @@ var hostServiceDesc = grpc.ServiceDesc{
 			MethodName: "GetAttemptStatus",
 			Handler:    hostServiceGetAttemptStatusHandler,
 		},
+		{
+			MethodName: "ListSessions",
+			Handler:    hostServiceListSessionsHandler,
+		},
+		{
+			MethodName: "GetReviewComments",
+			Handler:    hostServiceGetReviewCommentsHandler,
+		},
+		{
+			MethodName: "FireSessionEvent",
+			Handler:    hostServiceFireSessionEventHandler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -118,6 +142,9 @@ type hostServiceHandler interface {
 	CreateAttempt(context.Context, *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error)
 	GetAttemptStatus(context.Context, *bossanovav1.GetAttemptStatusRequest) (*bossanovav1.GetAttemptStatusResponse, error)
 	StreamAttemptOutput(*bossanovav1.StreamAttemptOutputRequest, grpc.ServerStream) error
+	ListSessions(context.Context, *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error)
+	GetReviewComments(context.Context, *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
+	FireSessionEvent(context.Context, *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -220,7 +247,18 @@ func hostServiceStreamAttemptOutputHandler(srv any, stream grpc.ServerStream) er
 
 func (s *HostServiceServer) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
 	if s.workflowStore == nil {
-		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
+	}
+
+	// Resolve repo_id from session if not provided (e.g. repair plugin only
+	// knows the session ID).
+	repoID := req.GetRepoId()
+	if repoID == "" && s.sessionStore != nil {
+		sess, err := s.sessionStore.Get(ctx, req.GetSessionId())
+		if err != nil {
+			return nil, fmt.Errorf("create workflow: resolve repo from session: %w", err)
+		}
+		repoID = sess.RepoID
 	}
 
 	var startSHA *string
@@ -234,7 +272,7 @@ func (s *HostServiceServer) CreateWorkflow(ctx context.Context, req *bossanovav1
 
 	w, err := s.workflowStore.Create(ctx, db.CreateWorkflowParams{
 		SessionID:      req.GetSessionId(),
-		RepoID:         req.GetRepoId(),
+		RepoID:         repoID,
 		PlanPath:       req.GetPlanPath(),
 		MaxLegs:        int(req.GetMaxLegs()),
 		StartCommitSHA: startSHA,
@@ -251,7 +289,7 @@ func (s *HostServiceServer) CreateWorkflow(ctx context.Context, req *bossanovav1
 
 func (s *HostServiceServer) UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error) {
 	if s.workflowStore == nil {
-		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
 	}
 
 	params := db.UpdateWorkflowParams{}
@@ -288,7 +326,7 @@ func (s *HostServiceServer) UpdateWorkflow(ctx context.Context, req *bossanovav1
 
 func (s *HostServiceServer) GetWorkflow(ctx context.Context, req *bossanovav1.GetWorkflowRequest) (*bossanovav1.GetWorkflowResponse, error) {
 	if s.workflowStore == nil {
-		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
 	}
 
 	w, err := s.workflowStore.Get(ctx, req.GetId())
@@ -303,7 +341,7 @@ func (s *HostServiceServer) GetWorkflow(ctx context.Context, req *bossanovav1.Ge
 
 func (s *HostServiceServer) ListWorkflows(ctx context.Context, req *bossanovav1.ListWorkflowsRequest) (*bossanovav1.ListWorkflowsResponse, error) {
 	if s.workflowStore == nil {
-		return nil, status.Error(codes.Unavailable, "workflow store not configured")
+		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
 	}
 
 	var workflows []*bossanovav1.Workflow
@@ -334,7 +372,7 @@ func (s *HostServiceServer) ListWorkflows(ctx context.Context, req *bossanovav1.
 
 func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
 	if s.claude == nil {
-		return nil, status.Error(codes.Unavailable, "claude runner not configured")
+		return nil, grpcstatus.Error(codes.Unavailable, "claude runner not configured")
 	}
 
 	// Resolve the workflow once (used for both workDir resolution and chat
@@ -362,7 +400,7 @@ func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.
 		if _, err := s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
 			SessionID: wf.SessionID,
 			ClaudeID:  chatID,
-			Title:     fmt.Sprintf("autopilot: %s", req.GetSkillName()),
+			Title:     req.GetSkillName(),
 		}); err != nil {
 			log.Warn().Err(err).Str("workflow_id", req.GetWorkflowId()).Msg("chat registration failed")
 			chatID = "" // fall back to auto-generated ID
@@ -388,7 +426,7 @@ func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.
 
 func (s *HostServiceServer) GetAttemptStatus(_ context.Context, req *bossanovav1.GetAttemptStatusRequest) (*bossanovav1.GetAttemptStatusResponse, error) {
 	if s.claude == nil {
-		return nil, status.Error(codes.Unavailable, "claude runner not configured")
+		return nil, grpcstatus.Error(codes.Unavailable, "claude runner not configured")
 	}
 
 	attemptID := req.GetAttemptId()
@@ -416,7 +454,7 @@ func (s *HostServiceServer) GetAttemptStatus(_ context.Context, req *bossanovav1
 
 func (s *HostServiceServer) StreamAttemptOutput(req *bossanovav1.StreamAttemptOutputRequest, stream grpc.ServerStream) error {
 	if s.claude == nil {
-		return status.Error(codes.Unavailable, "claude runner not configured")
+		return grpcstatus.Error(codes.Unavailable, "claude runner not configured")
 	}
 
 	ch, err := s.claude.Subscribe(stream.Context(), req.GetAttemptId())
@@ -546,6 +584,122 @@ func (s *HostServiceServer) ListClosedPRs(ctx context.Context, req *bossanovav1.
 	return &bossanovav1.ListClosedPRsResponse{Prs: pbPRs}, nil
 }
 
+func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error) {
+	if s.repoStore == nil || s.sessionStore == nil || s.prTracker == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session dependencies not set")
+	}
+
+	// Iterate all repos and collect their active sessions
+	repos, err := s.repoStore.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list repos: %w", err)
+	}
+
+	var pbSessions []*bossanovav1.Session
+	for _, repo := range repos {
+		sessions, err := s.sessionStore.ListActive(ctx, repo.ID)
+		if err != nil {
+			log.Warn().Err(err).Str("repo_id", repo.ID).Msg("Failed to list sessions for repo")
+			continue
+		}
+
+		for _, sess := range sessions {
+			// Hydrate with PRTracker status
+			entry := s.prTracker.Get(sess.ID)
+			var displayStatus vcs.PRDisplayStatus
+			var hasFailures bool
+			if entry != nil {
+				displayStatus = entry.Status
+				hasFailures = entry.HasFailures
+			}
+
+			pbSessions = append(pbSessions, &bossanovav1.Session{
+				Id:                   sess.ID,
+				RepoId:               sess.RepoID,
+				RepoDisplayName:      repo.DisplayName,
+				BranchName:           sess.BranchName,
+				State:                sessionStateToProto(sess.State),
+				PrDisplayStatus:      vcsDisplayStatusToProto(displayStatus),
+				PrDisplayHasFailures: hasFailures,
+			})
+		}
+	}
+
+	return &bossanovav1.HostServiceListSessionsResponse{Sessions: pbSessions}, nil
+}
+
+func (s *HostServiceServer) GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
+	comments, err := s.provider.GetReviewComments(ctx, req.GetRepoOriginUrl(), int(req.GetPrNumber()))
+	if err != nil {
+		return nil, err
+	}
+
+	pbComments := make([]*bossanovav1.ReviewComment, len(comments))
+	for i, comment := range comments {
+		var line *int32
+		if comment.Line != nil {
+			l := int32(*comment.Line)
+			line = &l
+		}
+		pbComments[i] = &bossanovav1.ReviewComment{
+			Author: comment.Author,
+			Body:   comment.Body,
+			State:  vcsReviewStateToProto(comment.State),
+			Path:   comment.Path,
+			Line:   line,
+		}
+	}
+
+	return &bossanovav1.GetReviewCommentsResponse{Comments: pbComments}, nil
+}
+
+func (s *HostServiceServer) FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
+	if s.sessionStore == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session store not set")
+	}
+
+	// Load session
+	session, err := s.sessionStore.Get(ctx, req.GetSessionId())
+	if err != nil {
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+
+	// Create state machine with full session context so guards (fixOrBlock,
+	// retryOrBlock) correctly evaluate AttemptCount and HasPR.
+	hasPR := session.PRNumber != nil
+	sm := machine.NewWithContext(session.State, &machine.SessionContext{
+		AttemptCount: session.AttemptCount,
+		MaxAttempts:  machine.MaxAttempts,
+		HasPR:        hasPR,
+	})
+
+	// Fire event
+	event := protoToSessionEvent(req.GetEvent())
+	if err := sm.Fire(event); err != nil {
+		return nil, fmt.Errorf("fire event %v on state %v: %w", event, session.State, err)
+	}
+
+	// Persist new state and any context mutations (AttemptCount, BlockedReason).
+	newState := sm.State()
+	stateInt := int(newState)
+	attemptCount := sm.Context().AttemptCount
+	update := db.UpdateSessionParams{
+		State:        &stateInt,
+		AttemptCount: &attemptCount,
+	}
+	if sm.State() == machine.Blocked {
+		reason := sm.Context().BlockedReason
+		reasonPtr := &reason
+		update.BlockedReason = &reasonPtr
+	}
+
+	if _, err = s.sessionStore.Update(ctx, session.ID, update); err != nil {
+		return nil, fmt.Errorf("update session: %w", err)
+	}
+
+	return &bossanovav1.FireSessionEventResponse{NewState: newState.String()}, nil
+}
+
 // --- VCS domain type → proto enum converters ---
 
 func vcsPRStateToProto(s vcs.PRState) bossanovav1.PRState {
@@ -591,4 +745,87 @@ func vcsCheckConclusionToProto(c vcs.CheckConclusion) bossanovav1.CheckConclusio
 	default:
 		return bossanovav1.CheckConclusion_CHECK_CONCLUSION_UNSPECIFIED
 	}
+}
+
+func vcsReviewStateToProto(s vcs.ReviewState) bossanovav1.ReviewState {
+	switch s {
+	case vcs.ReviewStateApproved:
+		return bossanovav1.ReviewState_REVIEW_STATE_APPROVED
+	case vcs.ReviewStateChangesRequested:
+		return bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED
+	case vcs.ReviewStateCommented:
+		return bossanovav1.ReviewState_REVIEW_STATE_COMMENTED
+	case vcs.ReviewStateDismissed:
+		return bossanovav1.ReviewState_REVIEW_STATE_DISMISSED
+	default:
+		return bossanovav1.ReviewState_REVIEW_STATE_UNSPECIFIED
+	}
+}
+
+func vcsDisplayStatusToProto(s vcs.PRDisplayStatus) bossanovav1.PRDisplayStatus {
+	return bossanovav1.PRDisplayStatus(s)
+}
+
+func sessionStateToProto(s machine.State) bossanovav1.SessionState {
+	return bossanovav1.SessionState(s)
+}
+
+func protoToSessionEvent(e bossanovav1.SessionEvent) machine.Event {
+	return machine.Event(e)
+}
+
+// --- gRPC handler adapters ---
+
+func hostServiceListSessionsHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(bossanovav1.HostServiceListSessionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(hostServiceHandler).ListSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/bossanova.v1.HostService/ListSessions",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(hostServiceHandler).ListSessions(ctx, req.(*bossanovav1.HostServiceListSessionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func hostServiceGetReviewCommentsHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(bossanovav1.GetReviewCommentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(hostServiceHandler).GetReviewComments(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/bossanova.v1.HostService/GetReviewComments",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(hostServiceHandler).GetReviewComments(ctx, req.(*bossanovav1.GetReviewCommentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func hostServiceFireSessionEventHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(bossanovav1.FireSessionEventRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(hostServiceHandler).FireSessionEvent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/bossanova.v1.HostService/FireSessionEvent",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(hostServiceHandler).FireSessionEvent(ctx, req.(*bossanovav1.FireSessionEventRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }

@@ -6,13 +6,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Type aliases for backwards compatibility with existing autopilot code.
-// The autopilot plugin originally defined these types locally, but now
-// uses the shared hostclient package.
-type (
-	hostClient          = hostclient.Client
-	AttemptOutputStream = hostclient.AttemptOutputStream
-)
+// Type alias so the repair plugin references the shared client interface.
+type hostClient = hostclient.Client
 
 // newEagerHostServiceClient creates an eager host service client that dials
 // the host service in the background via the go-plugin broker.

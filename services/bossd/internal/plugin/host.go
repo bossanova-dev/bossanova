@@ -15,11 +15,13 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/config"
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
+	"github.com/recurser/bossd/internal/status"
 )
 
 // healthCheckInterval is how often the host pings each plugin.
@@ -217,6 +219,27 @@ func (h *Host) GetTaskSources() []TaskSource {
 func (h *Host) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, chats db.ClaudeChatStore, runner claude.ClaudeRunner) {
 	if h.hostService != nil {
 		h.hostService.SetWorkflowDeps(store, sessions, chats, runner)
+	}
+}
+
+// SetSessionDeps injects the dependencies needed for session-related RPCs.
+func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker) {
+	if h.hostService != nil {
+		h.hostService.SetSessionDeps(repos, sessions, tracker)
+	}
+}
+
+// NotifyStatusChange broadcasts a PR status change to all workflow plugins.
+func (h *Host) NotifyStatusChange(ctx context.Context, sessionID string, displayStatus vcs.PRDisplayStatus, hasFailures bool) {
+	services := h.GetWorkflowServices()
+	for _, svc := range services {
+		// Call in goroutine to avoid blocking
+		go func(s WorkflowService) {
+			pbStatus := bossanovav1.PRDisplayStatus(displayStatus)
+			if err := s.NotifyStatusChange(ctx, sessionID, pbStatus, hasFailures); err != nil {
+				h.logger.Warn().Err(err).Str("session_id", sessionID).Msg("failed to notify plugin of status change")
+			}
+		}(svc)
 	}
 }
 

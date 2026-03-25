@@ -201,6 +201,22 @@ func (m *mockHostClient) StreamAttemptOutput(_ context.Context, _ string) (Attem
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
+func (m *mockHostClient) ListWorkflows(_ context.Context, _ string) (*bossanovav1.ListWorkflowsResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+func (m *mockHostClient) ListSessions(_ context.Context) (*bossanovav1.HostServiceListSessionsResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+func (m *mockHostClient) GetReviewComments(_ context.Context, _ *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+func (m *mockHostClient) FireSessionEvent(_ context.Context, _ *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
 // getUpdateStatuses returns the Status values from all UpdateWorkflow calls.
 func (m *mockHostClient) getUpdateStatuses() []string {
 	m.mu.Lock()

@@ -27,11 +27,16 @@ node_modules/
 *.tfvars
 !*.tfvars.example
 
+# Plugin test artifacts
+plugins/bossd-plugin-autopilot/docs/handoffs/
+plugins/bossd-plugin-repair/docs/handoffs/
+
 # Build artifacts (binaries outside bin/)
 /bossd-plugin-autopilot
 /bossd-plugin-dependabot
 /plugins/bossd-plugin-autopilot/bossd-plugin-autopilot
 /plugins/bossd-plugin-dependabot/bossd-plugin-dependabot
+/plugins/bossd-plugin-repair/bossd-plugin-repair
 /services/bossd/main
 
 # Misc

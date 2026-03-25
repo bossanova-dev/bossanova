@@ -268,6 +268,9 @@ service WorkflowService {
 
   // GetWorkflowStatus returns the current status of a workflow.
   rpc GetWorkflowStatus(GetWorkflowStatusRequest) returns (GetWorkflowStatusResponse);
+
+  // NotifyStatusChange is called by the daemon when a PR's display status changes.
+  rpc NotifyStatusChange(NotifyStatusChangeRequest) returns (NotifyStatusChangeResponse);
 }
 
 message WorkflowServiceGetInfoRequest {}
@@ -337,3 +340,14 @@ message WorkflowStatusInfo {
   string last_error = 5;
   google.protobuf.Timestamp started_at = 6;
 }
+
+message NotifyStatusChangeRequest {
+  // Session ID whose PR status changed.
+  string session_id = 1;
+  // New display status.
+  PRDisplayStatus display_status = 2;
+  // Whether the PR has failing checks.
+  bool has_failures = 3;
+}
+
+message NotifyStatusChangeResponse {}

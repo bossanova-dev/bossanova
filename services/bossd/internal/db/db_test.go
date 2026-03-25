@@ -507,3 +507,76 @@ func TestForeignKeyCascade_DeleteSession(t *testing.T) {
 		t.Errorf("attempts should be deleted by cascade: got %d", len(attempts))
 	}
 }
+
+func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	workflowStore := NewWorkflowStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	// Create a session in ImplementingPlan with a running workflow.
+	sessActive, _ := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Active autopilot",
+		WorktreePath: "/tmp/wt/active", BranchName: "feat/active", BaseBranch: "main",
+	})
+	implState := int(machine.ImplementingPlan)
+	if _, err := sessionStore.Update(ctx, sessActive.ID, UpdateSessionParams{State: &implState}); err != nil {
+		t.Fatalf("update active to implementing: %v", err)
+	}
+	wf, _ := workflowStore.Create(ctx, CreateWorkflowParams{
+		SessionID: sessActive.ID, RepoID: repo.ID, PlanPath: "plan.md", MaxLegs: 1,
+	})
+	running := string(models.WorkflowStatusRunning)
+	if _, err := workflowStore.Update(ctx, wf.ID, UpdateWorkflowParams{Status: &running}); err != nil {
+		t.Fatalf("update workflow to running: %v", err)
+	}
+
+	// Create a session in ImplementingPlan with NO running workflow (orphaned).
+	sessOrphan, _ := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Orphaned autopilot",
+		WorktreePath: "/tmp/wt/orphan", BranchName: "feat/orphan", BaseBranch: "main",
+	})
+	if _, err := sessionStore.Update(ctx, sessOrphan.ID, UpdateSessionParams{State: &implState}); err != nil {
+		t.Fatalf("update orphan to implementing: %v", err)
+	}
+
+	// Create a session in AwaitingChecks (should not be affected).
+	sessAwaiting, _ := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "Awaiting checks",
+		WorktreePath: "/tmp/wt/awaiting", BranchName: "feat/awaiting", BaseBranch: "main",
+	})
+	awaitState := int(machine.AwaitingChecks)
+	if _, err := sessionStore.Update(ctx, sessAwaiting.ID, UpdateSessionParams{State: &awaitState}); err != nil {
+		t.Fatalf("update awaiting to awaiting_checks: %v", err)
+	}
+
+	// Advance orphaned sessions.
+	n, err := sessionStore.AdvanceOrphanedSessions(ctx)
+	if err != nil {
+		t.Fatalf("AdvanceOrphanedSessions: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("AdvanceOrphanedSessions affected %d rows, want 1", n)
+	}
+
+	// Orphaned session should now be AwaitingChecks.
+	got, _ := sessionStore.Get(ctx, sessOrphan.ID)
+	if got.State != machine.AwaitingChecks {
+		t.Errorf("orphaned session state = %v, want AwaitingChecks", got.State)
+	}
+
+	// Active session should still be ImplementingPlan (has running workflow).
+	got, _ = sessionStore.Get(ctx, sessActive.ID)
+	if got.State != machine.ImplementingPlan {
+		t.Errorf("active session state = %v, want ImplementingPlan", got.State)
+	}
+
+	// AwaitingChecks session should be unchanged.
+	got, _ = sessionStore.Get(ctx, sessAwaiting.ID)
+	if got.State != machine.AwaitingChecks {
+		t.Errorf("awaiting session state = %v, want AwaitingChecks", got.State)
+	}
+}

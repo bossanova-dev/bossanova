@@ -98,6 +98,21 @@ func (s *SQLiteWorkflowStore) List(ctx context.Context) ([]*models.Workflow, err
 	return workflows, rows.Err()
 }
 
+// FailOrphaned transitions any workflows in "running" or "pending" state to
+// "failed". This should be called on daemon startup to clean up workflows whose
+// driving goroutines were lost due to a daemon restart.
+func (s *SQLiteWorkflowStore) FailOrphaned(ctx context.Context) (int64, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workflows SET status = 'failed', last_error = 'daemon restarted', updated_at = ?
+		 WHERE status IN ('running', 'pending')`, now)
+	if err != nil {
+		return 0, fmt.Errorf("fail orphaned workflows: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (s *SQLiteWorkflowStore) ListByStatus(ctx context.Context, status string) ([]*models.Workflow, error) {
 	rows, err := s.db.QueryContext(ctx, workflowSelectSQL+" WHERE status = ? ORDER BY created_at DESC", status)
 	if err != nil {

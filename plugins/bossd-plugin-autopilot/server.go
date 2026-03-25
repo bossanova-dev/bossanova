@@ -138,7 +138,7 @@ func parseWorkflowConfig(configJSON string) (*workflowConfig, error) {
 
 // --- WorkflowService RPC implementations ---
 
-func (o *orchestrator) GetInfo(_ context.Context, _ *bossanovav1.WorkflowServiceGetInfoRequest) (*bossanovav1.WorkflowServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
+func (o *orchestrator) GetInfo(_ context.Context, _ *bossanovav1.WorkflowServiceGetInfoRequest) (*bossanovav1.WorkflowServiceGetInfoResponse, error) {
 	return &bossanovav1.WorkflowServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
 			Name:         "autopilot",
@@ -287,6 +287,12 @@ func (o *orchestrator) allFlightTasksDone(ctx context.Context, cfg *workflowConf
 		return false
 	}
 	return remaining == 0
+}
+
+func (o *orchestrator) NotifyStatusChange(_ context.Context, _ *bossanovav1.NotifyStatusChangeRequest) (*bossanovav1.NotifyStatusChangeResponse, error) {
+	// Autopilot does not react to status changes; this is a no-op.
+	// The repair plugin will handle status change notifications.
+	return &bossanovav1.NotifyStatusChangeResponse{}, nil
 }
 
 // --- Orchestration loop ---

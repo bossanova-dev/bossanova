@@ -53,6 +53,10 @@ func (m *mockSessionStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *mockSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
 // mockSessionStarter implements SessionStarter for testing.
 type mockSessionStarter struct {
 	startSessionFn func(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool) error

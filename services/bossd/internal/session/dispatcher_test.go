@@ -527,3 +527,106 @@ func TestDispatcherReviewAutoAddressEnabled(t *testing.T) {
 		t.Errorf("expected 1 review call, got %d", len(fh.reviewCalls))
 	}
 }
+
+func TestDispatcherNilFixLoop_ChecksFailed(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:                "sess-1",
+		RepoID:            "repo-1",
+		State:             machine.AwaitingChecks,
+		AutomationEnabled: true,
+	}
+
+	// Pass nil for fixLoop - should not panic
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+
+	failure := vcs.CheckConclusionFailure
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
+	}
+	close(ch)
+
+	// Should not panic despite nil fixLoop
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.FixingChecks {
+		t.Errorf("state = %v, want FixingChecks", sess.State)
+	}
+}
+
+func TestDispatcherNilFixLoop_ConflictDetected(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:                "sess-1",
+		RepoID:            "repo-1",
+		State:             machine.AwaitingChecks,
+		AutomationEnabled: true,
+	}
+
+	// Pass nil for fixLoop - should not panic
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ConflictDetected{PRID: 42},
+	}
+	close(ch)
+
+	// Should not panic despite nil fixLoop
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.FixingChecks {
+		t.Errorf("state = %v, want FixingChecks", sess.State)
+	}
+}
+
+func TestDispatcherNilFixLoop_ReviewSubmitted(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                    "repo-1",
+		CanAutoAddressReviews: true,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.ReadyForReview,
+	}
+
+	// Pass nil for fixLoop - should not panic
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ReviewSubmitted{PRID: 42, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
+	}
+	close(ch)
+
+	// Should not panic despite nil fixLoop
+	d.Run(ctx, ch)
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.FixingChecks {
+		t.Errorf("state = %v, want FixingChecks", sess.State)
+	}
+}

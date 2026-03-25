@@ -270,7 +270,7 @@ func maybeInstallSkills() error {
 		return nil // non-interactive, skip silently
 	}
 
-	fmt.Printf("Install boss skills to %s? [Y/n] ", dir)
+	fmt.Fprintf(os.Stderr, "Install boss skills to %s? [Y/n] ", dir)
 	var answer string
 	if _, err := fmt.Scanln(&answer); err != nil {
 		answer = "" // default to yes on read error
@@ -284,7 +284,7 @@ func maybeInstallSkills() error {
 	if err := skilldata.ExtractSkills(dir, skilldata.SkillsFS); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to install skills: %v\n", err)
 	} else {
-		fmt.Println("Boss skills installed.")
+		fmt.Fprintln(os.Stderr, "Boss skills installed.")
 	}
 	return nil
 }

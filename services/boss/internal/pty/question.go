@@ -64,9 +64,10 @@ var selectorRe = regexp.MustCompile(`(?m)^[^\S\n]*❯ `)
 var optionRe = regexp.MustCompile(`(?m)^[ ]{2,}\S`)
 
 // hasQuestionPrompt checks whether the last portion of PTY output looks like
-// a Claude Code question prompt. It detects two patterns:
+// a Claude Code question prompt. It detects three patterns:
 //  1. AskUserQuestion/permission prompt: ❯ selector cursor + indented options
 //  2. Conversational question: Claude response (⏺) ending with ?
+//  3. Fallback: trailing "?" in recent output when ⏺ is outside the tail
 //
 // trailingQuestionRe matches a line ending with "?" (optional trailing whitespace).
 var trailingQuestionRe = regexp.MustCompile(`\?[\s]*(?:\n|$)`)
@@ -96,6 +97,17 @@ func hasQuestionPrompt(data []byte) bool {
 		if trailingQuestionRe.Match(clean[idx:]) {
 			return true
 		}
+		// ⏺ found but no trailing "?" — definitely not a question.
+		return false
+	}
+
+	// Pattern 3: Fallback when ⏺ is outside the detection tail.
+	// Claude Code's TUI renders dividers, status bars, and cursor positioning
+	// after the response text. With wide terminals or re-renders, this
+	// post-response content can push the ⏺ marker out of the tail buffer.
+	// Check if any line in the last 30 lines ends with "?".
+	if trailingQuestionRe.Match(tail) {
+		return true
 	}
 
 	return false

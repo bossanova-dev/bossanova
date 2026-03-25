@@ -278,9 +278,12 @@ func (p *Process) LastWrite() time.Time {
 
 // questionTailSize is the number of trailing PTY bytes scanned for question
 // prompts. Must be large enough to capture the full AskUserQuestion UI
-// including wide-terminal border lines (each ─ is 3 UTF-8 bytes).
-// 4096 covers terminals up to ~400 columns with multi-option prompts.
-const questionTailSize = 4096
+// including wide-terminal border lines (each ─ is 3 UTF-8 bytes) AND the
+// post-response TUI chrome (dividers, status bars, cursor positioning).
+// Claude Code re-renders this chrome on each TUI update, so the raw byte
+// cost scales with terminal width × number of re-renders.
+// 16384 covers terminals up to ~500 columns with multiple re-renders.
+const questionTailSize = 16384
 
 // HasQuestionPrompt checks if the PTY ring buffer ends with a Claude Code
 // question prompt (AskUserQuestion or permission UI).

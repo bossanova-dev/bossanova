@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	goplugin "github.com/hashicorp/go-plugin"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -25,35 +24,44 @@ func newHostServiceClient(conn *grpc.ClientConn) *hostServiceClient {
 	return &hostServiceClient{conn: conn}
 }
 
-// lazyHostServiceClient defers the broker.Dial(1) until first use. This is
-// necessary because GRPCServer runs before the host has called AcceptAndServe
-// on the broker, so the connection cannot be established during plugin init.
-type lazyHostServiceClient struct {
-	broker *goplugin.GRPCBroker
+// eagerHostServiceClient starts broker.Dial(1) in a background goroutine
+// immediately upon construction. GRPCServer runs before the host has called
+// AcceptAndServe on the broker, but the background goroutine blocks on the
+// broker channel until ConnInfo arrives. The go-plugin broker cleans up
+// pending connection info after 5 seconds, so we must start the Dial
+// eagerly rather than deferring to the first RPC call.
+type eagerHostServiceClient struct {
 	logger zerolog.Logger
-	once   sync.Once
 	inner  *hostServiceClient
 	err    error
+	ready  chan struct{}
 }
 
-func newLazyHostServiceClient(broker *goplugin.GRPCBroker, logger zerolog.Logger) *lazyHostServiceClient {
-	return &lazyHostServiceClient{broker: broker, logger: logger}
-}
-
-func (c *lazyHostServiceClient) connect() (*hostServiceClient, error) {
-	c.once.Do(func() {
-		conn, err := c.broker.Dial(1)
+func newEagerHostServiceClient(broker *goplugin.GRPCBroker, logger zerolog.Logger) *eagerHostServiceClient {
+	c := &eagerHostServiceClient{
+		logger: logger,
+		ready:  make(chan struct{}),
+	}
+	go func() {
+		defer close(c.ready)
+		conn, err := broker.Dial(1)
 		if err != nil {
 			c.err = fmt.Errorf("dial host service: %w", err)
+			c.logger.Error().Err(c.err).Msg("failed to connect to host service via broker")
 			return
 		}
 		c.inner = newHostServiceClient(conn)
 		c.logger.Info().Msg("connected to host service via broker")
-	})
+	}()
+	return c
+}
+
+func (c *eagerHostServiceClient) connect() (*hostServiceClient, error) {
+	<-c.ready
 	return c.inner, c.err
 }
 
-func (c *lazyHostServiceClient) ListDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+func (c *eagerHostServiceClient) ListDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -61,7 +69,7 @@ func (c *lazyHostServiceClient) ListDependabotPRs(ctx context.Context, repoOrigi
 	return client.ListDependabotPRs(ctx, repoOriginURL)
 }
 
-func (c *lazyHostServiceClient) GetCheckResults(ctx context.Context, repoOriginURL string, prNumber int32) ([]*bossanovav1.CheckResult, error) {
+func (c *eagerHostServiceClient) GetCheckResults(ctx context.Context, repoOriginURL string, prNumber int32) ([]*bossanovav1.CheckResult, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -69,7 +77,7 @@ func (c *lazyHostServiceClient) GetCheckResults(ctx context.Context, repoOriginU
 	return client.GetCheckResults(ctx, repoOriginURL, prNumber)
 }
 
-func (c *lazyHostServiceClient) GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error) {
+func (c *eagerHostServiceClient) GetPRStatus(ctx context.Context, repoOriginURL string, prNumber int32) (*bossanovav1.PRStatus, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
@@ -77,7 +85,7 @@ func (c *lazyHostServiceClient) GetPRStatus(ctx context.Context, repoOriginURL s
 	return client.GetPRStatus(ctx, repoOriginURL, prNumber)
 }
 
-func (c *lazyHostServiceClient) ListClosedDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
+func (c *eagerHostServiceClient) ListClosedDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err

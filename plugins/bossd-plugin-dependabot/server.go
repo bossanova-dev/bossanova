@@ -10,7 +10,7 @@ import (
 )
 
 // hostClient defines the methods server uses from the host service client.
-// Both hostServiceClient and lazyHostServiceClient implement this interface.
+// Both hostServiceClient and eagerHostServiceClient implement this interface.
 type hostClient interface {
 	ListDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
 	ListClosedDependabotPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)

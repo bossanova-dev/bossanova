@@ -19,11 +19,11 @@ type taskSourcePlugin struct {
 }
 
 func (p *taskSourcePlugin) GRPCServer(broker *goplugin.GRPCBroker, srv *grpc.Server) error { //nolint:unparam // interface implementation
-	// Create a lazy host client that defers broker.Dial(1) until first use.
-	// GRPCServer runs during plugin init, before the host has called
-	// AcceptAndServe on broker ID 1. The connection is established lazily
-	// on the first PollTasks call, at which point the host broker is ready.
-	hostClient := newLazyHostServiceClient(broker, p.logger)
+	// Create an eager host client that starts broker.Dial(1) immediately in a
+	// background goroutine. The go-plugin broker cleans up ConnInfo after 5s,
+	// so we must begin dialing now rather than deferring to the first RPC call
+	// (which may arrive ~60s later on the first PollTasks cycle).
+	hostClient := newEagerHostServiceClient(broker, p.logger)
 	server := newServer(hostClient, p.logger)
 
 	srv.RegisterService(&taskSourceServiceDesc, server)

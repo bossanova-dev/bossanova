@@ -46,7 +46,7 @@ func (m *mockHostService) GetPRStatus(_ context.Context, _ string, prNumber int3
 // Compile-time check that both real and mock implement the hostClient interface.
 var (
 	_ hostClient = (*hostServiceClient)(nil)
-	_ hostClient = (*lazyHostServiceClient)(nil)
+	_ hostClient = (*eagerHostServiceClient)(nil)
 	_ hostClient = (*mockHostService)(nil)
 )
 

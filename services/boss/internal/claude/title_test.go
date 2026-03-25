@@ -219,6 +219,78 @@ func TestChatTitleInDir_BlockContentSkipsNonText(t *testing.T) {
 	}
 }
 
+func TestChatTitleInDir_XMLTagsStripped(t *testing.T) {
+	tests := []struct {
+		name    string
+		content any // string or []map[string]any for block content
+		want    string
+	}{
+		{
+			name:    "command-message tags",
+			content: "<command-message>take-off</command-message>",
+			want:    "take-off",
+		},
+		{
+			name:    "mixed markup and text",
+			content: "<foo>text</foo> more text",
+			want:    "text more text",
+		},
+		{
+			name:    "plain text unchanged",
+			content: "no tags here",
+			want:    "no tags here",
+		},
+		{
+			name:    "nested tags",
+			content: "<a><b>inner</b></a>",
+			want:    "inner",
+		},
+		{
+			name:    "self-closing tag",
+			content: "<br/> hello",
+			want:    "hello",
+		},
+		{
+			name:    "block content with tags",
+			content: []map[string]any{{"type": "text", "text": "<command-message>take-off</command-message>"}},
+			want:    "take-off",
+		},
+		{
+			name:    "markup-only block skipped for next block",
+			content: []map[string]any{{"type": "text", "text": "<metadata/>"}, {"type": "text", "text": "real title"}},
+			want:    "real title",
+		},
+		{
+			name:    "angle brackets in comparisons preserved",
+			content: "check if x < 10 and y > 5",
+			want:    "check if x < 10 and y > 5",
+		},
+		{
+			name:    "component name in angle brackets stripped",
+			content: "fix the <Header> component",
+			want:    "fix the  component",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			id := "xml-" + tt.name
+			writeJSONL(t, filepath.Join(dir, id+".jsonl"),
+				map[string]any{
+					"type":    "user",
+					"message": map[string]any{"role": "user", "content": tt.content},
+				},
+			)
+
+			got := chatTitleInDir(dir, id)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // writeJSONL writes multiple JSON objects as a JSONL file.
 func writeJSONL(t *testing.T, path string, lines ...any) {
 	t.Helper()

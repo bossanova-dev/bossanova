@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -91,7 +92,7 @@ func extractText(raw json.RawMessage) string {
 	// Try as a plain string first.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return truncate(firstLine(s))
+		return truncate(firstLine(stripXMLTags(s)))
 	}
 
 	// Try as array of content blocks.
@@ -101,13 +102,21 @@ func extractText(raw json.RawMessage) string {
 	}
 	if err := json.Unmarshal(raw, &blocks); err == nil {
 		for _, b := range blocks {
-			if b.Type == "text" && b.Text != "" {
-				return truncate(firstLine(b.Text))
+			if b.Type == "text" {
+				if t := truncate(firstLine(stripXMLTags(b.Text))); t != "" {
+					return t
+				}
 			}
 		}
 	}
 
 	return ""
+}
+
+var xmlTagRe = regexp.MustCompile(`</?[a-zA-Z][^>]*>`)
+
+func stripXMLTags(s string) string {
+	return strings.TrimSpace(xmlTagRe.ReplaceAllString(s, ""))
 }
 
 func firstLine(s string) string {

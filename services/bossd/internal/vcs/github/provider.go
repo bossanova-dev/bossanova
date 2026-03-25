@@ -52,6 +52,9 @@ func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*v
 
 	out, err := p.runGH(ctx, args...)
 	if err != nil {
+		if isRepoNotReady(err) {
+			return nil, fmt.Errorf("%w", vcs.ErrRepoNotReady)
+		}
 		return nil, fmt.Errorf("create PR: %w", err)
 	}
 
@@ -336,6 +339,19 @@ func parseReviewState(s string) vcs.ReviewState {
 	default:
 		return vcs.ReviewStateCommented
 	}
+}
+
+// isRepoNotReady returns true when the gh CLI error indicates the repository
+// lacks enough commit history to create a pull request. This typically happens
+// when a repo only has an --allow-empty initial commit with no real content.
+func isRepoNotReady(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Head sha can't be blank") ||
+		strings.Contains(msg, "Base sha can't be blank") ||
+		strings.Contains(msg, "No commits between")
 }
 
 // runGH executes a gh CLI command and returns stdout.

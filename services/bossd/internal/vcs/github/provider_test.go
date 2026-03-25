@@ -1,6 +1,7 @@
 package github
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/recurser/bossalib/vcs"
@@ -129,6 +130,53 @@ func TestParseReviewState(t *testing.T) {
 		t.Run(tt.input, func(t *testing.T) {
 			if got := parseReviewState(tt.input); got != tt.want {
 				t.Errorf("parseReviewState(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsRepoNotReady(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "unrelated error",
+			err:  fmt.Errorf("network timeout"),
+			want: false,
+		},
+		{
+			name: "head sha blank",
+			err:  fmt.Errorf("gh pr create: exit status 1: pull request create failed: GraphQL: Head sha can't be blank (createPullRequest)"),
+			want: true,
+		},
+		{
+			name: "base sha blank",
+			err:  fmt.Errorf("gh pr create: exit status 1: pull request create failed: GraphQL: Base sha can't be blank (createPullRequest)"),
+			want: true,
+		},
+		{
+			name: "no commits between branches",
+			err:  fmt.Errorf("gh pr create: exit status 1: pull request create failed: GraphQL: No commits between main and my-branch (createPullRequest)"),
+			want: true,
+		},
+		{
+			name: "combined GitHub error",
+			err:  fmt.Errorf("gh pr create: exit status 1: pull request create failed: GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between main and plan-meta-ads-automation, Head ref must be a branch (createPullRequest)"),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRepoNotReady(tt.err); got != tt.want {
+				t.Errorf("isRepoNotReady(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

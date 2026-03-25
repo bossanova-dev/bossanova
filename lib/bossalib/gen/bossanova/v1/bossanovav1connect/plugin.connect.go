@@ -80,6 +80,9 @@ const (
 	// WorkflowServiceGetWorkflowStatusProcedure is the fully-qualified name of the WorkflowService's
 	// GetWorkflowStatus RPC.
 	WorkflowServiceGetWorkflowStatusProcedure = "/bossanova.v1.WorkflowService/GetWorkflowStatus"
+	// WorkflowServiceNotifyStatusChangeProcedure is the fully-qualified name of the WorkflowService's
+	// NotifyStatusChange RPC.
+	WorkflowServiceNotifyStatusChangeProcedure = "/bossanova.v1.WorkflowService/NotifyStatusChange"
 )
 
 // TaskSourceServiceClient is a client for the bossanova.v1.TaskSourceService service.
@@ -453,6 +456,8 @@ type WorkflowServiceClient interface {
 	CancelWorkflow(context.Context, *connect.Request[v1.CancelWorkflowRequest]) (*connect.Response[v1.CancelWorkflowResponse], error)
 	// GetWorkflowStatus returns the current status of a workflow.
 	GetWorkflowStatus(context.Context, *connect.Request[v1.GetWorkflowStatusRequest]) (*connect.Response[v1.GetWorkflowStatusResponse], error)
+	// NotifyStatusChange is called by the daemon when a PR's display status changes.
+	NotifyStatusChange(context.Context, *connect.Request[v1.NotifyStatusChangeRequest]) (*connect.Response[v1.NotifyStatusChangeResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the bossanova.v1.WorkflowService service. By
@@ -502,17 +507,24 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		notifyStatusChange: connect.NewClient[v1.NotifyStatusChangeRequest, v1.NotifyStatusChangeResponse](
+			httpClient,
+			baseURL+WorkflowServiceNotifyStatusChangeProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("NotifyStatusChange")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // workflowServiceClient implements WorkflowServiceClient.
 type workflowServiceClient struct {
-	getInfo           *connect.Client[v1.WorkflowServiceGetInfoRequest, v1.WorkflowServiceGetInfoResponse]
-	startWorkflow     *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
-	pauseWorkflow     *connect.Client[v1.PauseWorkflowRequest, v1.PauseWorkflowResponse]
-	resumeWorkflow    *connect.Client[v1.ResumeWorkflowRequest, v1.ResumeWorkflowResponse]
-	cancelWorkflow    *connect.Client[v1.CancelWorkflowRequest, v1.CancelWorkflowResponse]
-	getWorkflowStatus *connect.Client[v1.GetWorkflowStatusRequest, v1.GetWorkflowStatusResponse]
+	getInfo            *connect.Client[v1.WorkflowServiceGetInfoRequest, v1.WorkflowServiceGetInfoResponse]
+	startWorkflow      *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
+	pauseWorkflow      *connect.Client[v1.PauseWorkflowRequest, v1.PauseWorkflowResponse]
+	resumeWorkflow     *connect.Client[v1.ResumeWorkflowRequest, v1.ResumeWorkflowResponse]
+	cancelWorkflow     *connect.Client[v1.CancelWorkflowRequest, v1.CancelWorkflowResponse]
+	getWorkflowStatus  *connect.Client[v1.GetWorkflowStatusRequest, v1.GetWorkflowStatusResponse]
+	notifyStatusChange *connect.Client[v1.NotifyStatusChangeRequest, v1.NotifyStatusChangeResponse]
 }
 
 // GetInfo calls bossanova.v1.WorkflowService.GetInfo.
@@ -545,6 +557,11 @@ func (c *workflowServiceClient) GetWorkflowStatus(ctx context.Context, req *conn
 	return c.getWorkflowStatus.CallUnary(ctx, req)
 }
 
+// NotifyStatusChange calls bossanova.v1.WorkflowService.NotifyStatusChange.
+func (c *workflowServiceClient) NotifyStatusChange(ctx context.Context, req *connect.Request[v1.NotifyStatusChangeRequest]) (*connect.Response[v1.NotifyStatusChangeResponse], error) {
+	return c.notifyStatusChange.CallUnary(ctx, req)
+}
+
 // WorkflowServiceHandler is an implementation of the bossanova.v1.WorkflowService service.
 type WorkflowServiceHandler interface {
 	// GetInfo returns the plugin's name, version, and capabilities.
@@ -560,6 +577,8 @@ type WorkflowServiceHandler interface {
 	CancelWorkflow(context.Context, *connect.Request[v1.CancelWorkflowRequest]) (*connect.Response[v1.CancelWorkflowResponse], error)
 	// GetWorkflowStatus returns the current status of a workflow.
 	GetWorkflowStatus(context.Context, *connect.Request[v1.GetWorkflowStatusRequest]) (*connect.Response[v1.GetWorkflowStatusResponse], error)
+	// NotifyStatusChange is called by the daemon when a PR's display status changes.
+	NotifyStatusChange(context.Context, *connect.Request[v1.NotifyStatusChangeRequest]) (*connect.Response[v1.NotifyStatusChangeResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -605,6 +624,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceNotifyStatusChangeHandler := connect.NewUnaryHandler(
+		WorkflowServiceNotifyStatusChangeProcedure,
+		svc.NotifyStatusChange,
+		connect.WithSchema(workflowServiceMethods.ByName("NotifyStatusChange")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceGetInfoProcedure:
@@ -619,6 +644,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceCancelWorkflowHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetWorkflowStatusProcedure:
 			workflowServiceGetWorkflowStatusHandler.ServeHTTP(w, r)
+		case WorkflowServiceNotifyStatusChangeProcedure:
+			workflowServiceNotifyStatusChangeHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -650,4 +677,8 @@ func (UnimplementedWorkflowServiceHandler) CancelWorkflow(context.Context, *conn
 
 func (UnimplementedWorkflowServiceHandler) GetWorkflowStatus(context.Context, *connect.Request[v1.GetWorkflowStatusRequest]) (*connect.Response[v1.GetWorkflowStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.GetWorkflowStatus is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) NotifyStatusChange(context.Context, *connect.Request[v1.NotifyStatusChangeRequest]) (*connect.Response[v1.NotifyStatusChangeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.NotifyStatusChange is not implemented"))
 }

@@ -63,6 +63,15 @@ const (
 	// HostServiceStreamAttemptOutputProcedure is the fully-qualified name of the HostService's
 	// StreamAttemptOutput RPC.
 	HostServiceStreamAttemptOutputProcedure = "/bossanova.v1.HostService/StreamAttemptOutput"
+	// HostServiceListSessionsProcedure is the fully-qualified name of the HostService's ListSessions
+	// RPC.
+	HostServiceListSessionsProcedure = "/bossanova.v1.HostService/ListSessions"
+	// HostServiceGetReviewCommentsProcedure is the fully-qualified name of the HostService's
+	// GetReviewComments RPC.
+	HostServiceGetReviewCommentsProcedure = "/bossanova.v1.HostService/GetReviewComments"
+	// HostServiceFireSessionEventProcedure is the fully-qualified name of the HostService's
+	// FireSessionEvent RPC.
+	HostServiceFireSessionEventProcedure = "/bossanova.v1.HostService/FireSessionEvent"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -89,6 +98,12 @@ type HostServiceClient interface {
 	GetAttemptStatus(context.Context, *connect.Request[v1.GetAttemptStatusRequest]) (*connect.Response[v1.GetAttemptStatusResponse], error)
 	// StreamAttemptOutput streams real-time output from a running Claude attempt.
 	StreamAttemptOutput(context.Context, *connect.Request[v1.StreamAttemptOutputRequest]) (*connect.ServerStreamForClient[v1.StreamAttemptOutputResponse], error)
+	// ListSessions returns all active sessions with hydrated display status.
+	ListSessions(context.Context, *connect.Request[v1.HostServiceListSessionsRequest]) (*connect.Response[v1.HostServiceListSessionsResponse], error)
+	// GetReviewComments returns review comments on a pull request.
+	GetReviewComments(context.Context, *connect.Request[v1.GetReviewCommentsRequest]) (*connect.Response[v1.GetReviewCommentsResponse], error)
+	// FireSessionEvent fires a state machine event on a session.
+	FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -168,6 +183,24 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("StreamAttemptOutput")),
 			connect.WithClientOptions(opts...),
 		),
+		listSessions: connect.NewClient[v1.HostServiceListSessionsRequest, v1.HostServiceListSessionsResponse](
+			httpClient,
+			baseURL+HostServiceListSessionsProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("ListSessions")),
+			connect.WithClientOptions(opts...),
+		),
+		getReviewComments: connect.NewClient[v1.GetReviewCommentsRequest, v1.GetReviewCommentsResponse](
+			httpClient,
+			baseURL+HostServiceGetReviewCommentsProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("GetReviewComments")),
+			connect.WithClientOptions(opts...),
+		),
+		fireSessionEvent: connect.NewClient[v1.FireSessionEventRequest, v1.FireSessionEventResponse](
+			httpClient,
+			baseURL+HostServiceFireSessionEventProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("FireSessionEvent")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -184,6 +217,9 @@ type hostServiceClient struct {
 	createAttempt       *connect.Client[v1.CreateAttemptRequest, v1.CreateAttemptResponse]
 	getAttemptStatus    *connect.Client[v1.GetAttemptStatusRequest, v1.GetAttemptStatusResponse]
 	streamAttemptOutput *connect.Client[v1.StreamAttemptOutputRequest, v1.StreamAttemptOutputResponse]
+	listSessions        *connect.Client[v1.HostServiceListSessionsRequest, v1.HostServiceListSessionsResponse]
+	getReviewComments   *connect.Client[v1.GetReviewCommentsRequest, v1.GetReviewCommentsResponse]
+	fireSessionEvent    *connect.Client[v1.FireSessionEventRequest, v1.FireSessionEventResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -241,6 +277,21 @@ func (c *hostServiceClient) StreamAttemptOutput(ctx context.Context, req *connec
 	return c.streamAttemptOutput.CallServerStream(ctx, req)
 }
 
+// ListSessions calls bossanova.v1.HostService.ListSessions.
+func (c *hostServiceClient) ListSessions(ctx context.Context, req *connect.Request[v1.HostServiceListSessionsRequest]) (*connect.Response[v1.HostServiceListSessionsResponse], error) {
+	return c.listSessions.CallUnary(ctx, req)
+}
+
+// GetReviewComments calls bossanova.v1.HostService.GetReviewComments.
+func (c *hostServiceClient) GetReviewComments(ctx context.Context, req *connect.Request[v1.GetReviewCommentsRequest]) (*connect.Response[v1.GetReviewCommentsResponse], error) {
+	return c.getReviewComments.CallUnary(ctx, req)
+}
+
+// FireSessionEvent calls bossanova.v1.HostService.FireSessionEvent.
+func (c *hostServiceClient) FireSessionEvent(ctx context.Context, req *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error) {
+	return c.fireSessionEvent.CallUnary(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
 type HostServiceHandler interface {
 	// ListOpenPRs returns all open pull requests for a repository.
@@ -265,6 +316,12 @@ type HostServiceHandler interface {
 	GetAttemptStatus(context.Context, *connect.Request[v1.GetAttemptStatusRequest]) (*connect.Response[v1.GetAttemptStatusResponse], error)
 	// StreamAttemptOutput streams real-time output from a running Claude attempt.
 	StreamAttemptOutput(context.Context, *connect.Request[v1.StreamAttemptOutputRequest], *connect.ServerStream[v1.StreamAttemptOutputResponse]) error
+	// ListSessions returns all active sessions with hydrated display status.
+	ListSessions(context.Context, *connect.Request[v1.HostServiceListSessionsRequest]) (*connect.Response[v1.HostServiceListSessionsResponse], error)
+	// GetReviewComments returns review comments on a pull request.
+	GetReviewComments(context.Context, *connect.Request[v1.GetReviewCommentsRequest]) (*connect.Response[v1.GetReviewCommentsResponse], error)
+	// FireSessionEvent fires a state machine event on a session.
+	FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -340,6 +397,24 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("StreamAttemptOutput")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceListSessionsHandler := connect.NewUnaryHandler(
+		HostServiceListSessionsProcedure,
+		svc.ListSessions,
+		connect.WithSchema(hostServiceMethods.ByName("ListSessions")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceGetReviewCommentsHandler := connect.NewUnaryHandler(
+		HostServiceGetReviewCommentsProcedure,
+		svc.GetReviewComments,
+		connect.WithSchema(hostServiceMethods.ByName("GetReviewComments")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceFireSessionEventHandler := connect.NewUnaryHandler(
+		HostServiceFireSessionEventProcedure,
+		svc.FireSessionEvent,
+		connect.WithSchema(hostServiceMethods.ByName("FireSessionEvent")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceListOpenPRsProcedure:
@@ -364,6 +439,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceGetAttemptStatusHandler.ServeHTTP(w, r)
 		case HostServiceStreamAttemptOutputProcedure:
 			hostServiceStreamAttemptOutputHandler.ServeHTTP(w, r)
+		case HostServiceListSessionsProcedure:
+			hostServiceListSessionsHandler.ServeHTTP(w, r)
+		case HostServiceGetReviewCommentsProcedure:
+			hostServiceGetReviewCommentsHandler.ServeHTTP(w, r)
+		case HostServiceFireSessionEventProcedure:
+			hostServiceFireSessionEventHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -415,4 +496,16 @@ func (UnimplementedHostServiceHandler) GetAttemptStatus(context.Context, *connec
 
 func (UnimplementedHostServiceHandler) StreamAttemptOutput(context.Context, *connect.Request[v1.StreamAttemptOutputRequest], *connect.ServerStream[v1.StreamAttemptOutputResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.StreamAttemptOutput is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) ListSessions(context.Context, *connect.Request[v1.HostServiceListSessionsRequest]) (*connect.Response[v1.HostServiceListSessionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.ListSessions is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) GetReviewComments(context.Context, *connect.Request[v1.GetReviewCommentsRequest]) (*connect.Response[v1.GetReviewCommentsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.GetReviewComments is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.FireSessionEvent is not implemented"))
 }

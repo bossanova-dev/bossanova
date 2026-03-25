@@ -161,6 +161,28 @@ func (s *SQLiteSessionStore) Resurrect(ctx context.Context, id string) error {
 	return nil
 }
 
+// AdvanceOrphanedSessions moves sessions stuck in ImplementingPlan to
+// AwaitingChecks when there are no running workflows for them. This cleans
+// up sessions whose driving autopilot goroutines were lost during a daemon
+// restart.
+func (s *SQLiteSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET state = ?, updated_at = ?
+		 WHERE state = ?
+		   AND NOT EXISTS (
+		       SELECT 1 FROM workflows
+		       WHERE workflows.session_id = sessions.id
+		         AND workflows.status IN ('running', 'pending')
+		   )`,
+		int(machine.AwaitingChecks), now, int(machine.ImplementingPlan))
+	if err != nil {
+		return 0, fmt.Errorf("advance orphaned sessions: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {

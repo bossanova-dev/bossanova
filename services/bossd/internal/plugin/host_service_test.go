@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 
@@ -802,8 +801,8 @@ func TestCreateAttemptRegistersChat(t *testing.T) {
 	if chat.ClaudeID == "" {
 		t.Error("chat.ClaudeID should not be empty")
 	}
-	if !strings.HasPrefix(chat.Title, "autopilot:") {
-		t.Errorf("chat.Title = %q, want prefix 'autopilot:'", chat.Title)
+	if chat.Title != "boss-implement" {
+		t.Errorf("chat.Title = %q, want %q", chat.Title, "boss-implement")
 	}
 }
 

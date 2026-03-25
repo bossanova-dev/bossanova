@@ -1325,6 +1325,284 @@ func (x *Workflow) GetUpdatedAt() string {
 	return ""
 }
 
+// HostServiceListSessionsRequest is currently empty as it lists all sessions.
+type HostServiceListSessionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostServiceListSessionsRequest) Reset() {
+	*x = HostServiceListSessionsRequest{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostServiceListSessionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostServiceListSessionsRequest) ProtoMessage() {}
+
+func (x *HostServiceListSessionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostServiceListSessionsRequest.ProtoReflect.Descriptor instead.
+func (*HostServiceListSessionsRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{23}
+}
+
+type HostServiceListSessionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Sessions      []*Session             `protobuf:"bytes,1,rep,name=sessions,proto3" json:"sessions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostServiceListSessionsResponse) Reset() {
+	*x = HostServiceListSessionsResponse{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostServiceListSessionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostServiceListSessionsResponse) ProtoMessage() {}
+
+func (x *HostServiceListSessionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostServiceListSessionsResponse.ProtoReflect.Descriptor instead.
+func (*HostServiceListSessionsResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *HostServiceListSessionsResponse) GetSessions() []*Session {
+	if x != nil {
+		return x.Sessions
+	}
+	return nil
+}
+
+type GetReviewCommentsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Repository origin URL.
+	RepoOriginUrl string `protobuf:"bytes,1,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
+	// Pull request number.
+	PrNumber      int32 `protobuf:"varint,2,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetReviewCommentsRequest) Reset() {
+	*x = GetReviewCommentsRequest{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetReviewCommentsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetReviewCommentsRequest) ProtoMessage() {}
+
+func (x *GetReviewCommentsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetReviewCommentsRequest.ProtoReflect.Descriptor instead.
+func (*GetReviewCommentsRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GetReviewCommentsRequest) GetRepoOriginUrl() string {
+	if x != nil {
+		return x.RepoOriginUrl
+	}
+	return ""
+}
+
+func (x *GetReviewCommentsRequest) GetPrNumber() int32 {
+	if x != nil {
+		return x.PrNumber
+	}
+	return 0
+}
+
+type GetReviewCommentsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Comments      []*ReviewComment       `protobuf:"bytes,1,rep,name=comments,proto3" json:"comments,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetReviewCommentsResponse) Reset() {
+	*x = GetReviewCommentsResponse{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetReviewCommentsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetReviewCommentsResponse) ProtoMessage() {}
+
+func (x *GetReviewCommentsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetReviewCommentsResponse.ProtoReflect.Descriptor instead.
+func (*GetReviewCommentsResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *GetReviewCommentsResponse) GetComments() []*ReviewComment {
+	if x != nil {
+		return x.Comments
+	}
+	return nil
+}
+
+type FireSessionEventRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Session ID to fire event on.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Event to fire.
+	Event         SessionEvent `protobuf:"varint,2,opt,name=event,proto3,enum=bossanova.v1.SessionEvent" json:"event,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FireSessionEventRequest) Reset() {
+	*x = FireSessionEventRequest{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FireSessionEventRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FireSessionEventRequest) ProtoMessage() {}
+
+func (x *FireSessionEventRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FireSessionEventRequest.ProtoReflect.Descriptor instead.
+func (*FireSessionEventRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *FireSessionEventRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *FireSessionEventRequest) GetEvent() SessionEvent {
+	if x != nil {
+		return x.Event
+	}
+	return SessionEvent_SESSION_EVENT_UNSPECIFIED
+}
+
+type FireSessionEventResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// New state after firing the event.
+	NewState      string `protobuf:"bytes,1,opt,name=new_state,json=newState,proto3" json:"new_state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FireSessionEventResponse) Reset() {
+	*x = FireSessionEventResponse{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FireSessionEventResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FireSessionEventResponse) ProtoMessage() {}
+
+func (x *FireSessionEventResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FireSessionEventResponse.ProtoReflect.Descriptor instead.
+func (*FireSessionEventResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *FireSessionEventResponse) GetNewState() string {
+	if x != nil {
+		return x.NewState
+	}
+	return ""
+}
+
 var File_bossanova_v1_host_service_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_host_service_proto_rawDesc = "" +
@@ -1423,12 +1701,27 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\f \x01(\tR\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\r \x01(\tR\tupdatedAt*\x97\x01\n" +
+	"updated_at\x18\r \x01(\tR\tupdatedAt\" \n" +
+	"\x1eHostServiceListSessionsRequest\"T\n" +
+	"\x1fHostServiceListSessionsResponse\x121\n" +
+	"\bsessions\x18\x01 \x03(\v2\x15.bossanova.v1.SessionR\bsessions\"_\n" +
+	"\x18GetReviewCommentsRequest\x12&\n" +
+	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x1b\n" +
+	"\tpr_number\x18\x02 \x01(\x05R\bprNumber\"T\n" +
+	"\x19GetReviewCommentsResponse\x127\n" +
+	"\bcomments\x18\x01 \x03(\v2\x1b.bossanova.v1.ReviewCommentR\bcomments\"j\n" +
+	"\x17FireSessionEventRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x120\n" +
+	"\x05event\x18\x02 \x01(\x0e2\x1a.bossanova.v1.SessionEventR\x05event\"7\n" +
+	"\x18FireSessionEventResponse\x12\x1b\n" +
+	"\tnew_state\x18\x01 \x01(\tR\bnewState*\x97\x01\n" +
 	"\x10AttemptRunStatus\x12\"\n" +
 	"\x1eATTEMPT_RUN_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aATTEMPT_RUN_STATUS_RUNNING\x10\x01\x12 \n" +
 	"\x1cATTEMPT_RUN_STATUS_COMPLETED\x10\x02\x12\x1d\n" +
-	"\x19ATTEMPT_RUN_STATUS_FAILED\x10\x032\x82\b\n" +
+	"\x19ATTEMPT_RUN_STATUS_FAILED\x10\x032\xb8\n" +
+	"\n" +
 	"\vHostService\x12R\n" +
 	"\vListOpenPRs\x12 .bossanova.v1.ListOpenPRsRequest\x1a!.bossanova.v1.ListOpenPRsResponse\x12^\n" +
 	"\x0fGetCheckResults\x12$.bossanova.v1.GetCheckResultsRequest\x1a%.bossanova.v1.GetCheckResultsResponse\x12R\n" +
@@ -1440,7 +1733,10 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\rListWorkflows\x12\".bossanova.v1.ListWorkflowsRequest\x1a#.bossanova.v1.ListWorkflowsResponse\x12X\n" +
 	"\rCreateAttempt\x12\".bossanova.v1.CreateAttemptRequest\x1a#.bossanova.v1.CreateAttemptResponse\x12a\n" +
 	"\x10GetAttemptStatus\x12%.bossanova.v1.GetAttemptStatusRequest\x1a&.bossanova.v1.GetAttemptStatusResponse\x12l\n" +
-	"\x13StreamAttemptOutput\x12(.bossanova.v1.StreamAttemptOutputRequest\x1a).bossanova.v1.StreamAttemptOutputResponse0\x01B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x13StreamAttemptOutput\x12(.bossanova.v1.StreamAttemptOutputRequest\x1a).bossanova.v1.StreamAttemptOutputResponse0\x01\x12k\n" +
+	"\fListSessions\x12,.bossanova.v1.HostServiceListSessionsRequest\x1a-.bossanova.v1.HostServiceListSessionsResponse\x12d\n" +
+	"\x11GetReviewComments\x12&.bossanova.v1.GetReviewCommentsRequest\x1a'.bossanova.v1.GetReviewCommentsResponse\x12a\n" +
+	"\x10FireSessionEvent\x12%.bossanova.v1.FireSessionEventRequest\x1a&.bossanova.v1.FireSessionEventResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_host_service_proto_rawDescOnce sync.Once
@@ -1455,73 +1751,91 @@ func file_bossanova_v1_host_service_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_host_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_bossanova_v1_host_service_proto_goTypes = []any{
-	(AttemptRunStatus)(0),               // 0: bossanova.v1.AttemptRunStatus
-	(*ListOpenPRsRequest)(nil),          // 1: bossanova.v1.ListOpenPRsRequest
-	(*ListOpenPRsResponse)(nil),         // 2: bossanova.v1.ListOpenPRsResponse
-	(*GetCheckResultsRequest)(nil),      // 3: bossanova.v1.GetCheckResultsRequest
-	(*GetCheckResultsResponse)(nil),     // 4: bossanova.v1.GetCheckResultsResponse
-	(*GetPRStatusRequest)(nil),          // 5: bossanova.v1.GetPRStatusRequest
-	(*GetPRStatusResponse)(nil),         // 6: bossanova.v1.GetPRStatusResponse
-	(*ListClosedPRsRequest)(nil),        // 7: bossanova.v1.ListClosedPRsRequest
-	(*ListClosedPRsResponse)(nil),       // 8: bossanova.v1.ListClosedPRsResponse
-	(*CreateWorkflowRequest)(nil),       // 9: bossanova.v1.CreateWorkflowRequest
-	(*CreateWorkflowResponse)(nil),      // 10: bossanova.v1.CreateWorkflowResponse
-	(*UpdateWorkflowRequest)(nil),       // 11: bossanova.v1.UpdateWorkflowRequest
-	(*UpdateWorkflowResponse)(nil),      // 12: bossanova.v1.UpdateWorkflowResponse
-	(*GetWorkflowRequest)(nil),          // 13: bossanova.v1.GetWorkflowRequest
-	(*GetWorkflowResponse)(nil),         // 14: bossanova.v1.GetWorkflowResponse
-	(*ListWorkflowsRequest)(nil),        // 15: bossanova.v1.ListWorkflowsRequest
-	(*ListWorkflowsResponse)(nil),       // 16: bossanova.v1.ListWorkflowsResponse
-	(*CreateAttemptRequest)(nil),        // 17: bossanova.v1.CreateAttemptRequest
-	(*CreateAttemptResponse)(nil),       // 18: bossanova.v1.CreateAttemptResponse
-	(*GetAttemptStatusRequest)(nil),     // 19: bossanova.v1.GetAttemptStatusRequest
-	(*GetAttemptStatusResponse)(nil),    // 20: bossanova.v1.GetAttemptStatusResponse
-	(*StreamAttemptOutputRequest)(nil),  // 21: bossanova.v1.StreamAttemptOutputRequest
-	(*StreamAttemptOutputResponse)(nil), // 22: bossanova.v1.StreamAttemptOutputResponse
-	(*Workflow)(nil),                    // 23: bossanova.v1.Workflow
-	(*PRSummary)(nil),                   // 24: bossanova.v1.PRSummary
-	(*CheckResult)(nil),                 // 25: bossanova.v1.CheckResult
-	(*PRStatus)(nil),                    // 26: bossanova.v1.PRStatus
+	(AttemptRunStatus)(0),                   // 0: bossanova.v1.AttemptRunStatus
+	(*ListOpenPRsRequest)(nil),              // 1: bossanova.v1.ListOpenPRsRequest
+	(*ListOpenPRsResponse)(nil),             // 2: bossanova.v1.ListOpenPRsResponse
+	(*GetCheckResultsRequest)(nil),          // 3: bossanova.v1.GetCheckResultsRequest
+	(*GetCheckResultsResponse)(nil),         // 4: bossanova.v1.GetCheckResultsResponse
+	(*GetPRStatusRequest)(nil),              // 5: bossanova.v1.GetPRStatusRequest
+	(*GetPRStatusResponse)(nil),             // 6: bossanova.v1.GetPRStatusResponse
+	(*ListClosedPRsRequest)(nil),            // 7: bossanova.v1.ListClosedPRsRequest
+	(*ListClosedPRsResponse)(nil),           // 8: bossanova.v1.ListClosedPRsResponse
+	(*CreateWorkflowRequest)(nil),           // 9: bossanova.v1.CreateWorkflowRequest
+	(*CreateWorkflowResponse)(nil),          // 10: bossanova.v1.CreateWorkflowResponse
+	(*UpdateWorkflowRequest)(nil),           // 11: bossanova.v1.UpdateWorkflowRequest
+	(*UpdateWorkflowResponse)(nil),          // 12: bossanova.v1.UpdateWorkflowResponse
+	(*GetWorkflowRequest)(nil),              // 13: bossanova.v1.GetWorkflowRequest
+	(*GetWorkflowResponse)(nil),             // 14: bossanova.v1.GetWorkflowResponse
+	(*ListWorkflowsRequest)(nil),            // 15: bossanova.v1.ListWorkflowsRequest
+	(*ListWorkflowsResponse)(nil),           // 16: bossanova.v1.ListWorkflowsResponse
+	(*CreateAttemptRequest)(nil),            // 17: bossanova.v1.CreateAttemptRequest
+	(*CreateAttemptResponse)(nil),           // 18: bossanova.v1.CreateAttemptResponse
+	(*GetAttemptStatusRequest)(nil),         // 19: bossanova.v1.GetAttemptStatusRequest
+	(*GetAttemptStatusResponse)(nil),        // 20: bossanova.v1.GetAttemptStatusResponse
+	(*StreamAttemptOutputRequest)(nil),      // 21: bossanova.v1.StreamAttemptOutputRequest
+	(*StreamAttemptOutputResponse)(nil),     // 22: bossanova.v1.StreamAttemptOutputResponse
+	(*Workflow)(nil),                        // 23: bossanova.v1.Workflow
+	(*HostServiceListSessionsRequest)(nil),  // 24: bossanova.v1.HostServiceListSessionsRequest
+	(*HostServiceListSessionsResponse)(nil), // 25: bossanova.v1.HostServiceListSessionsResponse
+	(*GetReviewCommentsRequest)(nil),        // 26: bossanova.v1.GetReviewCommentsRequest
+	(*GetReviewCommentsResponse)(nil),       // 27: bossanova.v1.GetReviewCommentsResponse
+	(*FireSessionEventRequest)(nil),         // 28: bossanova.v1.FireSessionEventRequest
+	(*FireSessionEventResponse)(nil),        // 29: bossanova.v1.FireSessionEventResponse
+	(*PRSummary)(nil),                       // 30: bossanova.v1.PRSummary
+	(*CheckResult)(nil),                     // 31: bossanova.v1.CheckResult
+	(*PRStatus)(nil),                        // 32: bossanova.v1.PRStatus
+	(*Session)(nil),                         // 33: bossanova.v1.Session
+	(*ReviewComment)(nil),                   // 34: bossanova.v1.ReviewComment
+	(SessionEvent)(0),                       // 35: bossanova.v1.SessionEvent
 }
 var file_bossanova_v1_host_service_proto_depIdxs = []int32{
-	24, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	25, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
-	26, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
-	24, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	30, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	31, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
+	32, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
+	30, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
 	23, // 4: bossanova.v1.CreateWorkflowResponse.workflow:type_name -> bossanova.v1.Workflow
 	23, // 5: bossanova.v1.UpdateWorkflowResponse.workflow:type_name -> bossanova.v1.Workflow
 	23, // 6: bossanova.v1.GetWorkflowResponse.workflow:type_name -> bossanova.v1.Workflow
 	23, // 7: bossanova.v1.ListWorkflowsResponse.workflows:type_name -> bossanova.v1.Workflow
 	0,  // 8: bossanova.v1.GetAttemptStatusResponse.status:type_name -> bossanova.v1.AttemptRunStatus
-	1,  // 9: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
-	3,  // 10: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
-	5,  // 11: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
-	7,  // 12: bossanova.v1.HostService.ListClosedPRs:input_type -> bossanova.v1.ListClosedPRsRequest
-	9,  // 13: bossanova.v1.HostService.CreateWorkflow:input_type -> bossanova.v1.CreateWorkflowRequest
-	11, // 14: bossanova.v1.HostService.UpdateWorkflow:input_type -> bossanova.v1.UpdateWorkflowRequest
-	13, // 15: bossanova.v1.HostService.GetWorkflow:input_type -> bossanova.v1.GetWorkflowRequest
-	15, // 16: bossanova.v1.HostService.ListWorkflows:input_type -> bossanova.v1.ListWorkflowsRequest
-	17, // 17: bossanova.v1.HostService.CreateAttempt:input_type -> bossanova.v1.CreateAttemptRequest
-	19, // 18: bossanova.v1.HostService.GetAttemptStatus:input_type -> bossanova.v1.GetAttemptStatusRequest
-	21, // 19: bossanova.v1.HostService.StreamAttemptOutput:input_type -> bossanova.v1.StreamAttemptOutputRequest
-	2,  // 20: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
-	4,  // 21: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
-	6,  // 22: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
-	8,  // 23: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
-	10, // 24: bossanova.v1.HostService.CreateWorkflow:output_type -> bossanova.v1.CreateWorkflowResponse
-	12, // 25: bossanova.v1.HostService.UpdateWorkflow:output_type -> bossanova.v1.UpdateWorkflowResponse
-	14, // 26: bossanova.v1.HostService.GetWorkflow:output_type -> bossanova.v1.GetWorkflowResponse
-	16, // 27: bossanova.v1.HostService.ListWorkflows:output_type -> bossanova.v1.ListWorkflowsResponse
-	18, // 28: bossanova.v1.HostService.CreateAttempt:output_type -> bossanova.v1.CreateAttemptResponse
-	20, // 29: bossanova.v1.HostService.GetAttemptStatus:output_type -> bossanova.v1.GetAttemptStatusResponse
-	22, // 30: bossanova.v1.HostService.StreamAttemptOutput:output_type -> bossanova.v1.StreamAttemptOutputResponse
-	20, // [20:31] is the sub-list for method output_type
-	9,  // [9:20] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	33, // 9: bossanova.v1.HostServiceListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	34, // 10: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
+	35, // 11: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
+	1,  // 12: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
+	3,  // 13: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
+	5,  // 14: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
+	7,  // 15: bossanova.v1.HostService.ListClosedPRs:input_type -> bossanova.v1.ListClosedPRsRequest
+	9,  // 16: bossanova.v1.HostService.CreateWorkflow:input_type -> bossanova.v1.CreateWorkflowRequest
+	11, // 17: bossanova.v1.HostService.UpdateWorkflow:input_type -> bossanova.v1.UpdateWorkflowRequest
+	13, // 18: bossanova.v1.HostService.GetWorkflow:input_type -> bossanova.v1.GetWorkflowRequest
+	15, // 19: bossanova.v1.HostService.ListWorkflows:input_type -> bossanova.v1.ListWorkflowsRequest
+	17, // 20: bossanova.v1.HostService.CreateAttempt:input_type -> bossanova.v1.CreateAttemptRequest
+	19, // 21: bossanova.v1.HostService.GetAttemptStatus:input_type -> bossanova.v1.GetAttemptStatusRequest
+	21, // 22: bossanova.v1.HostService.StreamAttemptOutput:input_type -> bossanova.v1.StreamAttemptOutputRequest
+	24, // 23: bossanova.v1.HostService.ListSessions:input_type -> bossanova.v1.HostServiceListSessionsRequest
+	26, // 24: bossanova.v1.HostService.GetReviewComments:input_type -> bossanova.v1.GetReviewCommentsRequest
+	28, // 25: bossanova.v1.HostService.FireSessionEvent:input_type -> bossanova.v1.FireSessionEventRequest
+	2,  // 26: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
+	4,  // 27: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
+	6,  // 28: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
+	8,  // 29: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
+	10, // 30: bossanova.v1.HostService.CreateWorkflow:output_type -> bossanova.v1.CreateWorkflowResponse
+	12, // 31: bossanova.v1.HostService.UpdateWorkflow:output_type -> bossanova.v1.UpdateWorkflowResponse
+	14, // 32: bossanova.v1.HostService.GetWorkflow:output_type -> bossanova.v1.GetWorkflowResponse
+	16, // 33: bossanova.v1.HostService.ListWorkflows:output_type -> bossanova.v1.ListWorkflowsResponse
+	18, // 34: bossanova.v1.HostService.CreateAttempt:output_type -> bossanova.v1.CreateAttemptResponse
+	20, // 35: bossanova.v1.HostService.GetAttemptStatus:output_type -> bossanova.v1.GetAttemptStatusResponse
+	22, // 36: bossanova.v1.HostService.StreamAttemptOutput:output_type -> bossanova.v1.StreamAttemptOutputResponse
+	25, // 37: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
+	27, // 38: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
+	29, // 39: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
+	26, // [26:40] is the sub-list for method output_type
+	12, // [12:26] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_host_service_proto_init() }
@@ -1537,7 +1851,7 @@ func file_bossanova_v1_host_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_host_service_proto_rawDesc), len(file_bossanova_v1_host_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   23,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -132,6 +132,10 @@ func (m *mockSessionStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+	return 0, nil
+}
+
 // --- Mock RepoStore ---
 
 type mockRepoStore struct {

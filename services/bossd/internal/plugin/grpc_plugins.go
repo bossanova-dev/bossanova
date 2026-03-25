@@ -39,6 +39,7 @@ type WorkflowService interface {
 	ResumeWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error)
 	CancelWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error)
 	GetWorkflowStatus(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error)
+	NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.PRDisplayStatus, hasFailures bool) error
 }
 
 // --- GRPCPlugin implementations ---
@@ -270,6 +271,16 @@ func (c *workflowServiceGRPCClient) GetWorkflowStatus(ctx context.Context, workf
 		return nil, err
 	}
 	return resp.GetStatus(), nil
+}
+
+func (c *workflowServiceGRPCClient) NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.PRDisplayStatus, hasFailures bool) error {
+	req := &bossanovav1.NotifyStatusChangeRequest{
+		SessionId:     sessionID,
+		DisplayStatus: displayStatus,
+		HasFailures:   hasFailures,
+	}
+	resp := &bossanovav1.NotifyStatusChangeResponse{}
+	return c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/NotifyStatusChange", req, resp)
 }
 
 // Compile-time interface checks.

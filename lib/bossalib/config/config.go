@@ -36,6 +36,18 @@ type AutopilotConfig struct {
 	ConfirmLand         bool            `json:"confirm_land,omitempty"`
 }
 
+// RepairSkills maps repair workflow operations to skill names.
+type RepairSkills struct {
+	Repair string `json:"repair,omitempty"`
+}
+
+// RepairConfig holds configuration for the repair plugin.
+type RepairConfig struct {
+	Skills              RepairSkills `json:"skills,omitzero"`
+	CooldownMinutes     int          `json:"cooldown_minutes,omitempty"`
+	PollIntervalSeconds int          `json:"poll_interval_seconds,omitempty"`
+}
+
 var defaultSkills = map[string]string{
 	"plan":      "boss-create-tasks",
 	"implement": "boss-implement",
@@ -101,6 +113,30 @@ func (c AutopilotConfig) SkillName(step string) string {
 	return defaultSkills[step]
 }
 
+// CooldownDuration returns the configured cooldown or the default of 5 minutes.
+func (c RepairConfig) CooldownDuration() time.Duration {
+	if c.CooldownMinutes > 0 {
+		return time.Duration(c.CooldownMinutes) * time.Minute
+	}
+	return 5 * time.Minute
+}
+
+// PollInterval returns the configured poll interval or the default of 5 seconds.
+func (c RepairConfig) PollInterval() time.Duration {
+	if c.PollIntervalSeconds > 0 {
+		return time.Duration(c.PollIntervalSeconds) * time.Second
+	}
+	return 5 * time.Second
+}
+
+// SkillName returns the configured repair skill name or the default.
+func (c RepairConfig) SkillName() string {
+	if c.Skills.Repair != "" {
+		return c.Skills.Repair
+	}
+	return "boss-repair"
+}
+
 // Settings holds global Bossanova configuration.
 type Settings struct {
 	DangerouslySkipPermissions bool            `json:"dangerously_skip_permissions"`
@@ -109,6 +145,7 @@ type Settings struct {
 	PollIntervalSeconds        int             `json:"poll_interval_seconds,omitempty"`
 	Plugins                    []PluginConfig  `json:"plugins,omitempty"`
 	Autopilot                  AutopilotConfig `json:"autopilot,omitzero"`
+	Repair                     RepairConfig    `json:"repair,omitzero"`
 }
 
 // DisplayPollInterval returns the interval for polling PR display status.

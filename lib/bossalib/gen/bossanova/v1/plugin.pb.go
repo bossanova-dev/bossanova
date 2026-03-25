@@ -2330,6 +2330,105 @@ func (x *WorkflowStatusInfo) GetStartedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+type NotifyStatusChangeRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Session ID whose PR status changed.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// New display status.
+	DisplayStatus PRDisplayStatus `protobuf:"varint,2,opt,name=display_status,json=displayStatus,proto3,enum=bossanova.v1.PRDisplayStatus" json:"display_status,omitempty"`
+	// Whether the PR has failing checks.
+	HasFailures   bool `protobuf:"varint,3,opt,name=has_failures,json=hasFailures,proto3" json:"has_failures,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NotifyStatusChangeRequest) Reset() {
+	*x = NotifyStatusChangeRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NotifyStatusChangeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NotifyStatusChangeRequest) ProtoMessage() {}
+
+func (x *NotifyStatusChangeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NotifyStatusChangeRequest.ProtoReflect.Descriptor instead.
+func (*NotifyStatusChangeRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *NotifyStatusChangeRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *NotifyStatusChangeRequest) GetDisplayStatus() PRDisplayStatus {
+	if x != nil {
+		return x.DisplayStatus
+	}
+	return PRDisplayStatus_PR_DISPLAY_STATUS_UNSPECIFIED
+}
+
+func (x *NotifyStatusChangeRequest) GetHasFailures() bool {
+	if x != nil {
+		return x.HasFailures
+	}
+	return false
+}
+
+type NotifyStatusChangeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NotifyStatusChangeResponse) Reset() {
+	*x = NotifyStatusChangeResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NotifyStatusChangeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NotifyStatusChangeResponse) ProtoMessage() {}
+
+func (x *NotifyStatusChangeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NotifyStatusChangeResponse.ProtoReflect.Descriptor instead.
+func (*NotifyStatusChangeResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{41}
+}
+
 var File_bossanova_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_plugin_proto_rawDesc = "" +
@@ -2482,7 +2581,13 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\x05 \x01(\tR\tlastError\x129\n" +
 	"\n" +
-	"started_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt*\x82\x01\n" +
+	"started_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\"\xa3\x01\n" +
+	"\x19NotifyStatusChangeRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12D\n" +
+	"\x0edisplay_status\x18\x02 \x01(\x0e2\x1d.bossanova.v1.PRDisplayStatusR\rdisplayStatus\x12!\n" +
+	"\fhas_failures\x18\x03 \x01(\bR\vhasFailures\"\x1c\n" +
+	"\x1aNotifyStatusChangeResponse*\x82\x01\n" +
 	"\n" +
 	"TaskAction\x12\x1b\n" +
 	"\x17TASK_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
@@ -2505,14 +2610,15 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\aGetInfo\x12,.bossanova.v1.SchedulerServiceGetInfoRequest\x1a-.bossanova.v1.SchedulerServiceGetInfoResponse\x12R\n" +
 	"\vGetSchedule\x12 .bossanova.v1.GetScheduleRequest\x1a!.bossanova.v1.GetScheduleResponse\x12O\n" +
 	"\n" +
-	"ExecuteJob\x12\x1f.bossanova.v1.ExecuteJobRequest\x1a .bossanova.v1.ExecuteJobResponse2\xcb\x04\n" +
+	"ExecuteJob\x12\x1f.bossanova.v1.ExecuteJobRequest\x1a .bossanova.v1.ExecuteJobResponse2\xb4\x05\n" +
 	"\x0fWorkflowService\x12d\n" +
 	"\aGetInfo\x12+.bossanova.v1.WorkflowServiceGetInfoRequest\x1a,.bossanova.v1.WorkflowServiceGetInfoResponse\x12X\n" +
 	"\rStartWorkflow\x12\".bossanova.v1.StartWorkflowRequest\x1a#.bossanova.v1.StartWorkflowResponse\x12X\n" +
 	"\rPauseWorkflow\x12\".bossanova.v1.PauseWorkflowRequest\x1a#.bossanova.v1.PauseWorkflowResponse\x12[\n" +
 	"\x0eResumeWorkflow\x12#.bossanova.v1.ResumeWorkflowRequest\x1a$.bossanova.v1.ResumeWorkflowResponse\x12[\n" +
 	"\x0eCancelWorkflow\x12#.bossanova.v1.CancelWorkflowRequest\x1a$.bossanova.v1.CancelWorkflowResponse\x12d\n" +
-	"\x11GetWorkflowStatus\x12&.bossanova.v1.GetWorkflowStatusRequest\x1a'.bossanova.v1.GetWorkflowStatusResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x11GetWorkflowStatus\x12&.bossanova.v1.GetWorkflowStatusRequest\x1a'.bossanova.v1.GetWorkflowStatusResponse\x12g\n" +
+	"\x12NotifyStatusChange\x12'.bossanova.v1.NotifyStatusChangeRequest\x1a(.bossanova.v1.NotifyStatusChangeResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_plugin_proto_rawDescOnce sync.Once
@@ -2527,7 +2633,7 @@ func file_bossanova_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(TaskAction)(0),                           // 0: bossanova.v1.TaskAction
 	(TaskItemStatus)(0),                       // 1: bossanova.v1.TaskItemStatus
@@ -2571,9 +2677,12 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(*GetWorkflowStatusRequest)(nil),          // 39: bossanova.v1.GetWorkflowStatusRequest
 	(*GetWorkflowStatusResponse)(nil),         // 40: bossanova.v1.GetWorkflowStatusResponse
 	(*WorkflowStatusInfo)(nil),                // 41: bossanova.v1.WorkflowStatusInfo
-	(*timestamppb.Timestamp)(nil),             // 42: google.protobuf.Timestamp
-	(WorkflowStatus)(0),                       // 43: bossanova.v1.WorkflowStatus
-	(WorkflowStep)(0),                         // 44: bossanova.v1.WorkflowStep
+	(*NotifyStatusChangeRequest)(nil),         // 42: bossanova.v1.NotifyStatusChangeRequest
+	(*NotifyStatusChangeResponse)(nil),        // 43: bossanova.v1.NotifyStatusChangeResponse
+	(*timestamppb.Timestamp)(nil),             // 44: google.protobuf.Timestamp
+	(WorkflowStatus)(0),                       // 45: bossanova.v1.WorkflowStatus
+	(WorkflowStep)(0),                         // 46: bossanova.v1.WorkflowStep
+	(PRDisplayStatus)(0),                      // 47: bossanova.v1.PRDisplayStatus
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
@@ -2583,15 +2692,15 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	0,  // 4: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
 	1,  // 5: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
 	16, // 6: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
-	42, // 7: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
+	44, // 7: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
 	17, // 8: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
 	18, // 9: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
 	19, // 10: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
 	20, // 11: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
 	11, // 12: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
 	23, // 13: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
-	42, // 14: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
-	42, // 15: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
+	44, // 14: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
+	44, // 15: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
 	26, // 16: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
 	27, // 17: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
 	28, // 18: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
@@ -2601,42 +2710,45 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	41, // 22: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
 	41, // 23: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
 	41, // 24: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	43, // 25: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
-	44, // 26: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
-	42, // 27: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
-	3,  // 28: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
-	9,  // 29: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
-	12, // 30: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
-	5,  // 31: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
-	14, // 32: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
-	7,  // 33: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
-	21, // 34: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
-	24, // 35: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
-	29, // 36: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
-	31, // 37: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
-	33, // 38: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
-	35, // 39: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
-	37, // 40: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
-	39, // 41: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
-	4,  // 42: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
-	10, // 43: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
-	13, // 44: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
-	6,  // 45: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
-	15, // 46: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
-	8,  // 47: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
-	22, // 48: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
-	25, // 49: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
-	30, // 50: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
-	32, // 51: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
-	34, // 52: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
-	36, // 53: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
-	38, // 54: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
-	40, // 55: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
-	42, // [42:56] is the sub-list for method output_type
-	28, // [28:42] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	45, // 25: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
+	46, // 26: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
+	44, // 27: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
+	47, // 28: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.PRDisplayStatus
+	3,  // 29: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
+	9,  // 30: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
+	12, // 31: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
+	5,  // 32: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
+	14, // 33: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
+	7,  // 34: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
+	21, // 35: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
+	24, // 36: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
+	29, // 37: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
+	31, // 38: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
+	33, // 39: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
+	35, // 40: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
+	37, // 41: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
+	39, // 42: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
+	42, // 43: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
+	4,  // 44: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
+	10, // 45: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
+	13, // 46: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
+	6,  // 47: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
+	15, // 48: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
+	8,  // 49: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
+	22, // 50: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
+	25, // 51: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
+	30, // 52: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
+	32, // 53: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
+	34, // 54: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
+	36, // 55: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
+	38, // 56: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
+	40, // 57: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
+	43, // 58: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
+	44, // [44:59] is the sub-list for method output_type
+	29, // [29:44] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_plugin_proto_init() }
@@ -2664,7 +2776,7 @@ func file_bossanova_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_plugin_proto_rawDesc), len(file_bossanova_v1_plugin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   40,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

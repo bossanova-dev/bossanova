@@ -544,3 +544,92 @@ func TestWorkflowStore_FailureWithError(t *testing.T) {
 		t.Errorf("running list should be empty, got %d", len(runningList))
 	}
 }
+
+func TestWorkflowStore_FailOrphaned(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewWorkflowStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess := createTestSession(t, sessionStore, repo.ID)
+
+	// Create three workflows: one pending (DB default), one running, one completed.
+	wPending, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "pending.md", MaxLegs: 1,
+	})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+
+	wRunning, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "running.md", MaxLegs: 1,
+	})
+	if err != nil {
+		t.Fatalf("create running: %v", err)
+	}
+	running := string(models.WorkflowStatusRunning)
+	if _, err := store.Update(ctx, wRunning.ID, UpdateWorkflowParams{Status: &running}); err != nil {
+		t.Fatalf("update to running: %v", err)
+	}
+
+	wCompleted, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "completed.md", MaxLegs: 1,
+	})
+	if err != nil {
+		t.Fatalf("create completed: %v", err)
+	}
+	completed := string(models.WorkflowStatusCompleted)
+	if _, err := store.Update(ctx, wCompleted.ID, UpdateWorkflowParams{Status: &completed}); err != nil {
+		t.Fatalf("update to completed: %v", err)
+	}
+
+	// FailOrphaned should affect the pending and running workflows.
+	n, err := store.FailOrphaned(ctx)
+	if err != nil {
+		t.Fatalf("FailOrphaned: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("FailOrphaned affected %d rows, want 2", n)
+	}
+
+	// Verify pending workflow is now failed.
+	got, err := store.Get(ctx, wPending.ID)
+	if err != nil {
+		t.Fatalf("get pending: %v", err)
+	}
+	if got.Status != models.WorkflowStatusFailed {
+		t.Errorf("pending workflow status = %q, want failed", got.Status)
+	}
+	if got.LastError == nil || *got.LastError != "daemon restarted" {
+		t.Errorf("pending workflow last_error = %v, want %q", got.LastError, "daemon restarted")
+	}
+
+	// Verify running workflow is now failed.
+	got, err = store.Get(ctx, wRunning.ID)
+	if err != nil {
+		t.Fatalf("get running: %v", err)
+	}
+	if got.Status != models.WorkflowStatusFailed {
+		t.Errorf("running workflow status = %q, want failed", got.Status)
+	}
+
+	// Verify completed workflow is untouched.
+	got, err = store.Get(ctx, wCompleted.ID)
+	if err != nil {
+		t.Fatalf("get completed: %v", err)
+	}
+	if got.Status != models.WorkflowStatusCompleted {
+		t.Errorf("completed workflow status = %q, want completed", got.Status)
+	}
+
+	// No running workflows remain.
+	runningList, err := store.ListByStatus(ctx, string(models.WorkflowStatusRunning))
+	if err != nil {
+		t.Fatalf("list running: %v", err)
+	}
+	if len(runningList) != 0 {
+		t.Errorf("running list should be empty, got %d", len(runningList))
+	}
+}

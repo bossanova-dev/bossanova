@@ -1,7 +1,7 @@
 .PHONY: all generate build plugins test lint clean split format build-all \
-	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot \
-	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-proto \
-	build-boss build-bossd build-bosso build-autopilot build-dependabot \
+	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot test-repair \
+	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-repair lint-proto \
+	build-boss build-bossd build-bosso build-autopilot build-dependabot build-repair \
 	copy-skills
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
@@ -12,7 +12,7 @@ BIN_DIR := bin
 
 # All Go modules in the workspace
 MODULES := lib/bossalib services/boss services/bossd services/bosso \
-	plugins/bossd-plugin-autopilot plugins/bossd-plugin-dependabot
+	plugins/bossd-plugin-autopilot plugins/bossd-plugin-dependabot plugins/bossd-plugin-repair
 
 # Suppress clang deployment-version warnings from CGO dependencies
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
@@ -69,8 +69,11 @@ $(BIN_DIR)/bossd-plugin-autopilot: $(GEN_STAMP)
 $(BIN_DIR)/bossd-plugin-dependabot: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
 
+$(BIN_DIR)/bossd-plugin-repair: $(GEN_STAMP)
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-repair ./plugins/bossd-plugin-repair
+
 ## plugins: Build all plugin binaries
-plugins: $(BIN_DIR)/bossd-plugin-autopilot $(BIN_DIR)/bossd-plugin-dependabot
+plugins: $(BIN_DIR)/bossd-plugin-autopilot $(BIN_DIR)/bossd-plugin-dependabot $(BIN_DIR)/bossd-plugin-repair
 
 ## test: Run tests across all modules (generates protos first if needed)
 test: $(GEN_STAMP) copy-skills
@@ -97,6 +100,9 @@ test-autopilot:
 
 test-dependabot:
 	$(MAKE) -C plugins/bossd-plugin-dependabot test
+
+test-repair:
+	$(MAKE) -C plugins/bossd-plugin-repair test
 
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
 lint: $(GEN_STAMP) copy-skills
@@ -128,6 +134,9 @@ lint-autopilot:
 lint-dependabot:
 	cd plugins/bossd-plugin-dependabot && golangci-lint run ./...
 
+lint-repair:
+	cd plugins/bossd-plugin-repair && golangci-lint run ./...
+
 ## copy-skills: Copy boss skill files into bossalib for embedding
 copy-skills:
 	rm -rf $(SKILLS_DST)
@@ -153,6 +162,9 @@ build-autopilot:
 
 build-dependabot:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
+
+build-repair:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-repair ./plugins/bossd-plugin-repair
 
 ## format: Format Go code, web code, package.json files, and markdown
 format:

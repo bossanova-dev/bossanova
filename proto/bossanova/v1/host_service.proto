@@ -46,6 +46,17 @@ service HostService {
 
   // StreamAttemptOutput streams real-time output from a running Claude attempt.
   rpc StreamAttemptOutput(StreamAttemptOutputRequest) returns (stream StreamAttemptOutputResponse);
+
+  // --- Session & Event Management (plugin → daemon) ---
+
+  // ListSessions returns all active sessions with hydrated display status.
+  rpc ListSessions(HostServiceListSessionsRequest) returns (HostServiceListSessionsResponse);
+
+  // GetReviewComments returns review comments on a pull request.
+  rpc GetReviewComments(GetReviewCommentsRequest) returns (GetReviewCommentsResponse);
+
+  // FireSessionEvent fires a state machine event on a session.
+  rpc FireSessionEvent(FireSessionEventRequest) returns (FireSessionEventResponse);
 }
 
 // --- ListOpenPRs ---
@@ -201,4 +212,40 @@ message Workflow {
   string config_json = 11;
   string created_at = 12;
   string updated_at = 13;
+}
+
+// --- ListSessions ---
+
+// HostServiceListSessionsRequest is currently empty as it lists all sessions.
+message HostServiceListSessionsRequest {}
+
+message HostServiceListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+// --- GetReviewComments ---
+
+message GetReviewCommentsRequest {
+  // Repository origin URL.
+  string repo_origin_url = 1;
+  // Pull request number.
+  int32 pr_number = 2;
+}
+
+message GetReviewCommentsResponse {
+  repeated ReviewComment comments = 1;
+}
+
+// --- FireSessionEvent ---
+
+message FireSessionEventRequest {
+  // Session ID to fire event on.
+  string session_id = 1;
+  // Event to fire.
+  SessionEvent event = 2;
+}
+
+message FireSessionEventResponse {
+  // New state after firing the event.
+  string new_state = 1;
 }

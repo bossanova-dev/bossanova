@@ -104,6 +104,7 @@ type SessionStore interface {
 	Archive(ctx context.Context, id string) error
 	Resurrect(ctx context.Context, id string) error
 	Delete(ctx context.Context, id string) error
+	AdvanceOrphanedSessions(ctx context.Context) (int64, error)
 }
 
 // CreateClaudeChatParams holds the parameters for creating a new Claude chat record.
@@ -169,4 +170,5 @@ type WorkflowStore interface {
 	Update(ctx context.Context, id string, params UpdateWorkflowParams) (*models.Workflow, error)
 	List(ctx context.Context) ([]*models.Workflow, error)
 	ListByStatus(ctx context.Context, status string) ([]*models.Workflow, error)
+	FailOrphaned(ctx context.Context) (int64, error)
 }

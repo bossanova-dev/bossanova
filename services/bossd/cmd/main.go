@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/rs/zerolog/log"
@@ -82,6 +84,23 @@ func run() error {
 	taskMappings := db.NewTaskMappingStore(database)
 	workflows := db.NewWorkflowStore(database)
 
+	// Fail any workflows left in running/pending state from a previous daemon
+	// instance. Their driving goroutines no longer exist after a restart.
+	if n, err := workflows.FailOrphaned(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to clean up orphaned workflows")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("failed orphaned workflows from previous run")
+	}
+
+	// Advance sessions stuck in ImplementingPlan whose driving workflows are
+	// no longer running. Must run after FailOrphaned so the subquery sees
+	// the updated workflow statuses.
+	if n, err := sessions.AdvanceOrphanedSessions(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to advance orphaned sessions")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("advanced orphaned sessions to awaiting_checks")
+	}
+
 	// --- Lifecycle ---
 
 	worktrees := gitpkg.NewManager(log.Logger)
@@ -89,10 +108,10 @@ func run() error {
 	ghProvider := github.New(log.Logger)
 	lifecycle := session.NewLifecycle(sessions, repos, worktrees, claudeRunner, ghProvider, log.Logger)
 
-	// --- Fix Loop + Dispatcher + Poller ---
+	// --- Dispatcher + Poller ---
+	// Note: FixLoop removed - repair functionality moved to plugin
 
-	fixLoop := session.NewFixLoop(sessions, attempts, repos, ghProvider, claudeRunner, worktrees, log.Logger)
-	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, fixLoop, log.Logger)
+	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, nil, log.Logger)
 	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, log.Logger)
 
 	// --- Chat Status Tracker ---
@@ -121,10 +140,49 @@ func run() error {
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
 	pluginHost.SetWorkflowDeps(workflows, sessions, claudeChats, claudeRunner)
+	pluginHost.SetSessionDeps(repos, sessions, prDisplayTracker)
+
+	// Register PRTracker onChange callback to notify plugins of status changes
+	prDisplayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.PRDisplayEntry) {
+		if newEntry != nil {
+			pluginHost.NotifyStatusChange(context.Background(), sessionID, newEntry.Status, newEntry.HasFailures)
+		}
+	})
+
 	if err := pluginHost.Start(context.Background(), settings.Plugins); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)
 	}
+
+	// Auto-start repair plugin workflows if available
+	safego.Go(log.Logger, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		for _, svc := range pluginHost.GetWorkflowServices() {
+			infoResp, err := svc.GetInfo(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("failed to get plugin info for auto-start")
+				continue
+			}
+			if infoResp == nil {
+				log.Warn().Msg("plugin returned nil info for auto-start")
+				continue
+			}
+
+			// Auto-start repair plugin
+			if infoResp.Name == "repair" {
+				log.Info().Str("plugin_name", infoResp.Name).Msg("auto-starting repair plugin")
+				repairCfgJSON, _ := json.Marshal(settings.Repair)
+				_, err := svc.StartWorkflow(ctx, &bossanovav1.StartWorkflowRequest{
+					ConfigJson: string(repairCfgJSON),
+				})
+				if err != nil {
+					log.Warn().Err(err).Str("plugin_name", infoResp.Name).Msg("failed to auto-start repair plugin")
+				}
+			}
+		}
+	})
 
 	// --- Task Orchestrator ---
 

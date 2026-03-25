@@ -10,7 +10,7 @@ const (
 	PRDisplayStatusChecking    PRDisplayStatus = 2
 	PRDisplayStatusFailing     PRDisplayStatus = 3
 	PRDisplayStatusConflict    PRDisplayStatus = 4
-	PRDisplayStatusReviewed    PRDisplayStatus = 5
+	PRDisplayStatusRejected    PRDisplayStatus = 5
 	PRDisplayStatusPassing     PRDisplayStatus = 6
 	PRDisplayStatusMerged      PRDisplayStatus = 7
 	PRDisplayStatusClosed      PRDisplayStatus = 8
@@ -24,7 +24,7 @@ type PRDisplayInfo struct {
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
-// and review comments. Priority: Merged > Closed > Conflict > Failing > Checking > Reviewed > Passing > Idle.
+// and review comments. Priority: Merged > Closed > Conflict > Failing > Checking > Rejected > Passing > Idle.
 func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewComment) PRDisplayInfo {
 	if pr == nil {
 		return PRDisplayInfo{Status: PRDisplayStatusIdle}
@@ -73,17 +73,21 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		return PRDisplayInfo{Status: PRDisplayStatusChecking, HasFailures: hasFailed}
 	}
 
-	// Review analysis: look for outstanding changes_requested.
-	hasChangesRequested := false
+	// Review analysis: use each author's latest review (reviews arrive chronologically).
+	latestByAuthor := make(map[string]ReviewState)
 	for _, r := range reviews {
-		if r.State == ReviewStateChangesRequested {
+		latestByAuthor[r.Author] = r.State
+	}
+	hasChangesRequested := false
+	for _, state := range latestByAuthor {
+		if state == ReviewStateChangesRequested {
 			hasChangesRequested = true
 			break
 		}
 	}
 
 	if hasChangesRequested {
-		return PRDisplayInfo{Status: PRDisplayStatusReviewed}
+		return PRDisplayInfo{Status: PRDisplayStatusRejected}
 	}
 
 	// All checks green, no conflicts, no outstanding reviews = passing.

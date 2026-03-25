@@ -86,15 +86,39 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantHasFailure: true,
 		},
 		{
-			name: "changes requested (reviewed)",
+			name: "changes requested (rejected)",
 			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
 			reviews: []ReviewComment{
-				{State: ReviewStateChangesRequested},
+				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus: PRDisplayStatusReviewed,
+			wantStatus: PRDisplayStatusRejected,
+		},
+		{
+			name: "changes requested then approved by same author = passing",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateChangesRequested},
+				{Author: "alice", State: ReviewStateApproved},
+			},
+			wantStatus: PRDisplayStatusPassing,
+		},
+		{
+			name: "changes requested by one author, approved by different author = rejected",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateChangesRequested},
+				{Author: "bob", State: ReviewStateApproved},
+			},
+			wantStatus: PRDisplayStatusRejected,
 		},
 		{
 			name: "all checks green, no outstanding reviews = passing",

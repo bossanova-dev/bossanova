@@ -42,7 +42,7 @@ enum PRDisplayStatus {
   PR_DISPLAY_STATUS_CHECKING = 2;
   PR_DISPLAY_STATUS_FAILING = 3;
   PR_DISPLAY_STATUS_CONFLICT = 4;
-  PR_DISPLAY_STATUS_REVIEWED = 5;
+  PR_DISPLAY_STATUS_REJECTED = 5;
   PR_DISPLAY_STATUS_COMPLETE = 6;
   PR_DISPLAY_STATUS_MERGED = 7;
   PR_DISPLAY_STATUS_CLOSED = 8;
@@ -164,7 +164,7 @@ Replace `renderStatus` with `renderPRDisplayStatus(sess *pb.Session, claudeStatu
 - `PR_DISPLAY_STATUS_COMPLETE` -> success color + "✓ passing"
 - `PR_DISPLAY_STATUS_FAILING` -> danger color + "failing"
 - `PR_DISPLAY_STATUS_CONFLICT` -> danger color + "conflict"
-- `PR_DISPLAY_STATUS_REVIEWED` -> info color + "reviewed"
+- `PR_DISPLAY_STATUS_REJECTED` -> danger color + "⨯ rejected"
 - `PR_DISPLAY_STATUS_CHECKING` -> info color (or danger if HasFailures) + spinner + "checking"
 - Default/Idle -> warning "idle" if Claude idle, muted "stopped" otherwise
 

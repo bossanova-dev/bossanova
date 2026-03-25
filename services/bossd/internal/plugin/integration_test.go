@@ -128,6 +128,96 @@ func buildPluginBinary(t *testing.T) string {
 	return binPath
 }
 
+// TestIntegration_NewPluginMapBrokerDial verifies that the production
+// NewPluginMap correctly registers HostService on broker ID 1 for
+// TaskSourceGRPCPlugin. Without this, the dependabot plugin's
+// broker.Dial(1) will timeout because no ConnInfo is sent.
+//
+// This is a regression test for the bug where HostService was
+// accidentally removed from TaskSourceGRPCPlugin, breaking the
+// plugin's ability to call back into the host for VCS data.
+func TestIntegration_NewPluginMapBrokerDial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	binPath := buildPluginBinary(t)
+
+	success := vcs.CheckConclusionSuccess
+	mergeable := true
+
+	provider := &testVCSProvider{
+		prs: []vcs.PRSummary{
+			{
+				Number:     1,
+				Title:      "Bump foo from 1.0 to 2.0",
+				HeadBranch: "dependabot/npm_and_yarn/foo-2.0",
+				State:      vcs.PRStateOpen,
+				Author:     "app/dependabot",
+			},
+		},
+		checks: map[int][]vcs.CheckResult{
+			1: {{ID: "ci", Name: "CI", Status: vcs.CheckStatusCompleted, Conclusion: &success}},
+		},
+		status: map[int]*vcs.PRStatus{
+			1: {State: vcs.PRStateOpen, Mergeable: &mergeable},
+		},
+	}
+
+	hostService := pluginpkg.NewHostServiceServer(provider)
+
+	// Use ONLY the production TaskSourceGRPCPlugin — no WorkflowService.
+	// This isolates the test: if TaskSourceGRPCPlugin doesn't call
+	// AcceptAndServe(1), there's no other plugin to send ConnInfo and
+	// the dependabot plugin's broker.Dial(1) will timeout.
+	pluginMap := goplugin.PluginSet{
+		sharedplugin.PluginTypeTaskSource: pluginpkg.NewTaskSourceGRPCPlugin(hostService),
+	}
+
+	client := goplugin.NewClient(&goplugin.ClientConfig{
+		HandshakeConfig: pluginpkg.Handshake,
+		Plugins:         pluginMap,
+		Cmd:             exec.Command(binPath),
+		AllowedProtocols: []goplugin.Protocol{
+			goplugin.ProtocolGRPC,
+		},
+		Logger: hclog.NewNullLogger(),
+	})
+	defer client.Kill()
+
+	rpcClient, err := client.Client()
+	if err != nil {
+		t.Fatalf("client.Client(): %v", err)
+	}
+
+	raw, err := rpcClient.Dispense(sharedplugin.PluginTypeTaskSource)
+	if err != nil {
+		t.Fatalf("dispense TaskSource: %v", err)
+	}
+	taskSource, ok := raw.(pluginpkg.TaskSource)
+	if !ok {
+		t.Fatalf("dispensed type %T does not implement TaskSource", raw)
+	}
+
+	// PollTasks with a non-empty URL forces the plugin to call back to
+	// the host via broker.Dial(1). If AcceptAndServe(1) was not called,
+	// this will fail with "timeout waiting for connection info".
+	ctx := context.Background()
+	tasks, err := taskSource.PollTasks(ctx, "https://github.com/org/repo")
+	if err != nil {
+		t.Fatalf("PollTasks via production NewPluginMap failed: %v\n"+
+			"This likely means TaskSourceGRPCPlugin is missing AcceptAndServe(1) "+
+			"for the HostService broker connection.", err)
+	}
+
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].GetAction() != bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE {
+		t.Errorf("action = %v, want AUTO_MERGE", tasks[0].GetAction())
+	}
+}
+
 func TestIntegration_PluginGRPCRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

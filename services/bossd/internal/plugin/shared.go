@@ -15,11 +15,12 @@ var Handshake = goplugin.HandshakeConfig{
 }
 
 // NewPluginMap builds a plugin set with the given HostServiceServer injected
-// into the WorkflowService plugin type. This allows the plugin subprocess
-// to call back to the host via the go-plugin broker.
+// into plugin types that need host callbacks (TaskSource, WorkflowService).
+// This allows the plugin subprocess to call back to the host via the
+// go-plugin broker.
 func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
 	return goplugin.PluginSet{
-		sharedplugin.PluginTypeTaskSource:  &TaskSourceGRPCPlugin{},
+		sharedplugin.PluginTypeTaskSource:  &TaskSourceGRPCPlugin{HostService: hostService},
 		sharedplugin.PluginTypeEventSource: &EventSourceGRPCPlugin{},
 		sharedplugin.PluginTypeScheduler:   &SchedulerGRPCPlugin{},
 		sharedplugin.PluginTypeWorkflow:    &WorkflowServiceGRPCPlugin{HostService: hostService},

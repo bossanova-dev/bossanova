@@ -111,12 +111,12 @@ type Settings struct {
 }
 
 // DisplayPollInterval returns the interval for polling PR display status.
-// Defaults to 30 seconds if not configured.
+// Defaults to 2 minutes if not configured.
 func (s Settings) DisplayPollInterval() time.Duration {
 	if s.PollIntervalSeconds > 0 {
 		return time.Duration(s.PollIntervalSeconds) * time.Second
 	}
-	return 30 * time.Second
+	return 2 * time.Minute
 }
 
 // DefaultSettings returns settings with sensible defaults.

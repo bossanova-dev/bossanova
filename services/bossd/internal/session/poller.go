@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultPollInterval is the default interval between CI check polls.
-const DefaultPollInterval = 60 * time.Second
+const DefaultPollInterval = 2 * time.Minute
 
 // SessionEvent pairs a VCS event with the session it belongs to.
 type SessionEvent struct {

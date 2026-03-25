@@ -95,14 +95,14 @@ func TestDisplayPollInterval(t *testing.T) {
 		expected time.Duration
 	}{
 		{
-			name:     "zero returns default 30s",
+			name:     "zero returns default 2m",
 			seconds:  0,
-			expected: 30 * time.Second,
+			expected: 2 * time.Minute,
 		},
 		{
-			name:     "negative returns default 30s",
+			name:     "negative returns default 2m",
 			seconds:  -5,
-			expected: 30 * time.Second,
+			expected: 2 * time.Minute,
 		},
 		{
 			name:     "custom value",

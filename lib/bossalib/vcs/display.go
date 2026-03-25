@@ -15,6 +15,7 @@ const (
 	PRDisplayStatusMerged      PRDisplayStatus = 7
 	PRDisplayStatusClosed      PRDisplayStatus = 8
 	PRDisplayStatusDraft       PRDisplayStatus = 9
+	PRDisplayStatusApproved    PRDisplayStatus = 10
 )
 
 // PRDisplayInfo holds the computed display status and metadata for a PR.
@@ -24,7 +25,7 @@ type PRDisplayInfo struct {
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
-// and review comments. Priority: Merged > Closed > Conflict > Failing > Checking > Rejected > Passing > Idle.
+// and review comments. Priority: Merged > Closed > Conflict > Failing > Checking > Rejected > Approved > Passing > Idle.
 func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewComment) PRDisplayInfo {
 	if pr == nil {
 		return PRDisplayInfo{Status: PRDisplayStatusIdle}
@@ -79,15 +80,23 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		latestByAuthor[r.Author] = r.State
 	}
 	hasChangesRequested := false
+	hasApproval := false
 	for _, state := range latestByAuthor {
 		if state == ReviewStateChangesRequested {
 			hasChangesRequested = true
-			break
+		}
+		if state == ReviewStateApproved {
+			hasApproval = true
 		}
 	}
 
+	// Rejected takes priority — any outstanding changes_requested blocks approval.
 	if hasChangesRequested {
 		return PRDisplayInfo{Status: PRDisplayStatusRejected}
+	}
+
+	if hasApproval {
+		return PRDisplayInfo{Status: PRDisplayStatusApproved}
 	}
 
 	// All checks green, no conflicts, no outstanding reviews = passing.

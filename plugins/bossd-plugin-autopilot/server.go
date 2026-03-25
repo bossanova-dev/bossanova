@@ -581,6 +581,13 @@ func (o *orchestrator) smartRetry(ctx context.Context, workflowID, step, input, 
 		return fmt.Errorf("poll retry attempt for %s: %w", step, err)
 	}
 
+	// Check for soft failures on retry too (e.g. "Unknown skill:" with exit 0).
+	if retryError == "" {
+		if softErr := o.checkOutputForSoftFailure(ctx, attemptID); softErr != "" {
+			retryError = softErr
+		}
+	}
+
 	if retryError != "" {
 		return fmt.Errorf("retry failed for %s: %s", step, retryError)
 	}

@@ -40,6 +40,10 @@ type mockHostClient struct {
 	retryAttempts map[string]attemptBehavior
 	attemptCounts map[string]int // tracks how many attempts per step
 
+	// stepOutputLines lets tests inject OutputLines into GetAttemptStatus
+	// responses for a given step, simulating Claude output (e.g. "Unknown skill:").
+	stepOutputLines map[string][]string
+
 	// onAttemptCreated is called (without lock) after a CreateAttempt call.
 	// It receives the step name so tests can produce side effects (e.g. create files).
 	onAttemptCreated func(step string)
@@ -57,10 +61,11 @@ func newMockHostClient() *mockHostClient {
 			Id:     "wf-test-1",
 			Status: "pending",
 		},
-		attemptID:     "attempt-1",
-		stepAttempts:  make(map[string]attemptBehavior),
-		retryAttempts: make(map[string]attemptBehavior),
-		attemptCounts: make(map[string]int),
+		attemptID:       "attempt-1",
+		stepAttempts:    make(map[string]attemptBehavior),
+		retryAttempts:   make(map[string]attemptBehavior),
+		attemptCounts:   make(map[string]int),
+		stepOutputLines: make(map[string][]string),
 	}
 }
 
@@ -182,9 +187,13 @@ func (m *mockHostClient) GetAttemptStatus(_ context.Context, _ string) (*bossano
 
 	// Default: complete immediately.
 	m.pollCount = 0
-	return &bossanovav1.GetAttemptStatusResponse{
+	resp := &bossanovav1.GetAttemptStatusResponse{
 		Status: bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED,
-	}, nil
+	}
+	if lines, ok := m.stepOutputLines[step]; ok {
+		resp.OutputLines = lines
+	}
+	return resp, nil
 }
 
 func (m *mockHostClient) StreamAttemptOutput(_ context.Context, _ string) (AttemptOutputStream, error) {
@@ -1454,5 +1463,38 @@ func TestRunWorkflowResumeFromHandoffNoLegsComplete(t *testing.T) {
 	steps := mock.getUpdateSteps()
 	if sliceContains(steps, "land") {
 		t.Errorf("should not have reached 'land' step: %v", steps)
+	}
+}
+
+func TestRunWorkflowSoftFailureOnRetryPauses(t *testing.T) {
+	// When Claude exits 0 but outputs "Unknown skill:" on both the initial
+	// attempt AND the retry, the workflow should pause at the plan step
+	// instead of marching through to completion.
+	mock := newMockHostClient()
+	mock.stepOutputLines["plan"] = []string{`Unknown skill: boss-create-tasks`}
+	o := newTestOrchestrator(mock)
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(),
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 20, "")
+
+	// Should have paused (not completed).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "paused" {
+		t.Errorf("last status = %q, want paused (soft failure on retry)", last)
+	}
+
+	// Should never reach implement — the plan step itself should fail.
+	steps := mock.getUpdateSteps()
+	if sliceContains(steps, "implement") {
+		t.Errorf("should not have reached 'implement' step: %v", steps)
+	}
+
+	// LastError should mention the unknown skill.
+	if !strings.Contains(strings.ToLower(mock.workflow.LastError), "unknown skill") {
+		t.Errorf("LastError = %q, want it to contain 'unknown skill'", mock.workflow.LastError)
 	}
 }

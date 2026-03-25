@@ -34,6 +34,7 @@ const (
 	newSessionPhaseLoading    newSessionPhase = iota // Fetching repos
 	newSessionPhaseRepoSelect                        // Table-based repo picker
 	newSessionPhaseTypeSelect                        // Table-based session type picker
+	newSessionPhasePRSelect                          // Table-based PR picker
 	newSessionPhaseForm                              // Main huh form active
 	newSessionPhaseCreating                          // Waiting for CreateSession RPC
 	newSessionPhaseDone                              // Terminal
@@ -72,9 +73,8 @@ var sessionTypeOptions = []struct {
 // formData holds huh form-bound values on the heap so that Value() pointers
 // remain valid across bubbletea value-receiver copies of NewSessionModel.
 type formData struct {
-	selectedPRIdx int
-	title         string
-	plan          string
+	title string
+	plan  string
 }
 
 // NewSessionModel is the multi-step wizard for creating a new coding session.
@@ -104,6 +104,7 @@ type NewSessionModel struct {
 	// Tables
 	repoTable table.Model
 	typeTable table.Model
+	prTable   table.Model
 
 	// Form
 	form *huh.Form
@@ -197,6 +198,41 @@ func (m *NewSessionModel) buildTypeTable() {
 	m.typeTable.SetWidth(columnsWidth(cols))
 }
 
+func (m *NewSessionModel) buildPRTable() {
+	numbers := make([]string, len(m.prs))
+	titles := make([]string, len(m.prs))
+	branches := make([]string, len(m.prs))
+	for i, pr := range m.prs {
+		numbers[i] = fmt.Sprintf("#%d", pr.Number)
+		titles[i] = pr.Title
+		branches[i] = pr.HeadBranch
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "PR", Width: maxColWidth("PR", numbers, 10) + tableColumnSep},
+		{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep},
+		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 30) + tableColumnSep},
+	}
+
+	rows := make([]table.Row, len(m.prs))
+	for i := range m.prs {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, numbers[i], titles[i], styleSubtle.Render(branches[i])}
+	}
+
+	m.prTable = newBossTable(cols, rows, m.prTableHeight())
+	m.prTable.SetWidth(columnsWidth(cols))
+}
+
+// prTableHeight returns the height for the PR selection table.
+func (m NewSessionModel) prTableHeight() int {
+	return clampedTableHeight(len(m.prs), m.height, 6) // header + gaps + action bar
+}
+
 func (m *NewSessionModel) buildForm() {
 	m.fd = &formData{}
 
@@ -249,6 +285,10 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.repoTable.SetHeight(m.repoTableHeight())
 			m.repoTable.SetWidth(msg.Width)
 		}
+		if m.phase == newSessionPhasePRSelect {
+			m.prTable.SetHeight(m.prTableHeight())
+			m.prTable.SetWidth(msg.Width)
+		}
 		return m, nil
 
 	case reposMsg:
@@ -280,28 +320,9 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("no open PRs found")
 			return m, nil
 		}
-		// Build a selection form for PRs.
-		prOpts := make([]huh.Option[int], len(m.prs))
-		for i, pr := range m.prs {
-			prOpts[i] = huh.NewOption(
-				fmt.Sprintf("#%d  %s  %s", pr.Number, pr.Title, styleSubtle.Render(pr.HeadBranch)),
-				i,
-			)
-		}
-		if m.fd == nil {
-			m.fd = &formData{}
-		}
-		m.fd.selectedPRIdx = 0
-		m.form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[int]().
-					Title("Select a PR").
-					Options(prOpts...).
-					Value(&m.fd.selectedPRIdx),
-			),
-		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
-		m.phase = newSessionPhaseForm
-		return m, m.form.Init()
+		m.phase = newSessionPhasePRSelect
+		m.buildPRTable()
+		return m, nil
 
 	case sessionCreatedMsg:
 		if msg.err != nil {
@@ -368,6 +389,25 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.phase == newSessionPhasePRSelect {
+			switch msg.String() {
+			case "esc":
+				m.phase = newSessionPhaseTypeSelect
+				return m, nil
+			case "enter":
+				idx := m.prTable.Cursor()
+				if idx >= 0 && idx < len(m.prs) {
+					return m, m.startCreating()
+				}
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.prTable, cmd = m.prTable.Update(msg)
+			updateCursorColumn(&m.prTable)
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
@@ -400,7 +440,7 @@ func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 		// No form needed — create session directly.
 		return *m, m.startCreating()
 	case sessionTypeExistingPR:
-		// Fetch PRs, then show PR selector form.
+		// Fetch PRs, then show PR selector table.
 		m.phase = newSessionPhaseLoading
 		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
 	case sessionTypeNewPR, sessionTypePlanFeature:
@@ -414,7 +454,7 @@ func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 }
 
 func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
-	// PR selection, title input, or plan input completed — proceed to create.
+	// Title input or plan input completed — proceed to create.
 	return *m, m.startCreating()
 }
 
@@ -462,8 +502,9 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 	case sessionTypeNewPR:
 		req.Title = m.fd.title
 	case sessionTypeExistingPR:
-		if m.fd.selectedPRIdx >= 0 && m.fd.selectedPRIdx < len(m.prs) {
-			pr := m.prs[m.fd.selectedPRIdx]
+		idx := m.prTable.Cursor()
+		if idx >= 0 && idx < len(m.prs) {
+			pr := m.prs[idx]
 			req.Title = pr.Title
 			req.PrNumber = &pr.Number
 		}
@@ -519,6 +560,15 @@ func (m NewSessionModel) View() tea.View {
 		var b strings.Builder
 		b.WriteString(m.headerView())
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.typeTable.View()))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		return tea.NewView(b.String())
+	}
+
+	if m.phase == newSessionPhasePRSelect {
+		var b strings.Builder
+		b.WriteString(m.headerView())
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.prTable.View()))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
 		return tea.NewView(b.String())

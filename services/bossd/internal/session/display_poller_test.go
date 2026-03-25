@@ -204,8 +204,8 @@ func TestDisplayPoller_ChangesRequested(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusReviewed {
-		t.Errorf("Status = %d, want %d (Reviewed)", e.Status, vcs.PRDisplayStatusReviewed)
+	if e.Status != vcs.PRDisplayStatusRejected {
+		t.Errorf("Status = %d, want %d (Rejected)", e.Status, vcs.PRDisplayStatusRejected)
 	}
 }
 

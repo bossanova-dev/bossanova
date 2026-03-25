@@ -348,9 +348,9 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 			if handoffFile == "" {
 				// No new handoff file — run a recovery step to create one.
 				log.Info().Int("leg", leg).Msg("no handoff file found, running handoff recovery")
-				prompt := fmt.Sprintf("No handoff document was created for the previous flight leg. "+
-					"Review recent work (git log, git diff, bd list) and write a handoff "+
-					"document to %s/ following the /boss-handoff format. Plan: %s",
+				prompt := fmt.Sprintf("Your ONLY task is to write a handoff document to %s/ following the /boss-handoff format. "+
+					"Do NOT do extensive code review. Briefly check recent work (git log --oneline -5, bd list) "+
+					"then immediately write the handoff file. Plan: %s",
 					cfg.resolvedHandoffDir(), planPath)
 				if err := o.runFlightLeg(ctx, workflowID, "handoff", prompt, cfg); err != nil {
 					log.Warn().Err(err).Msg("handoff recovery failed, exiting handoff loop")
@@ -360,8 +360,15 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				// Re-check for handoff file after recovery.
 				handoffFile, _ = scanHandoffDir(cfg.resolvedHandoffDir(), legStart)
 				if handoffFile == "" {
-					log.Info().Msg("still no handoff after recovery, exiting handoff loop")
-					break
+					// Recovery succeeded but no file was written — synthesize one.
+					log.Info().Msg("still no handoff after recovery, synthesizing minimal handoff")
+					var synthErr error
+					handoffFile, synthErr = synthesizeHandoff(cfg.resolvedHandoffDir(), planPath, leg)
+					if synthErr != nil {
+						log.Warn().Err(synthErr).Msg("failed to synthesize handoff, exiting handoff loop")
+						break
+					}
+					log.Info().Str("handoff", handoffFile).Msg("synthesized minimal handoff file")
 				}
 
 				// Got a handoff — update leg counter and resume normally.

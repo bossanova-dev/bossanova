@@ -719,8 +719,8 @@ func TestRunWorkflowHappyPath(t *testing.T) {
 }
 
 func TestRunWorkflowFlightLegUpdatedDuringImplement(t *testing.T) {
-	// Verify that FlightLeg is set to 1 at the start of the implement step,
-	// and that the final update reflects the actual completed leg (not maxLegs).
+	// Verify that FlightLeg is set to 1 at the start of the implement step.
+	// With synthesized handoffs, all legs complete so the final leg = maxLegs.
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 	cfg := &workflowConfig{
@@ -738,10 +738,17 @@ func TestRunWorkflowFlightLegUpdatedDuringImplement(t *testing.T) {
 		t.Errorf("first flight leg update = %d, want 1 (implement)", legs[0])
 	}
 
-	// With no handoff files and maxLegs=3, workflow should pause with FlightLeg=1.
+	// With synthesized handoffs, all legs complete so final leg = maxLegs.
 	lastLeg := legs[len(legs)-1]
-	if lastLeg != 1 {
-		t.Errorf("final flight leg = %d, want 1 (only implement completed)", lastLeg)
+	if lastLeg != 3 {
+		t.Errorf("final flight leg = %d, want 3 (all legs completed via synthesis)", lastLeg)
+	}
+
+	// Should have completed (not paused).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed", last)
 	}
 }
 
@@ -1003,9 +1010,62 @@ func TestRunWorkflowHandoffRecoveryFails(t *testing.T) {
 	}
 }
 
-func TestRunWorkflowPartialCompletionPauses(t *testing.T) {
-	// With maxLegs=3 and no handoff files, the workflow should pause after
-	// implement (leg 1) with an honest FlightLeg=1 and a descriptive error.
+func TestRunWorkflowHandoffRecoverySynthesizes(t *testing.T) {
+	// Recovery succeeds (exit 0) but no handoff file is written — the
+	// orchestrator synthesizes a minimal handoff and the workflow completes.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	handoffDir := t.TempDir()
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          handoffDir,
+		MaxFlightLegs:       3,
+	}
+
+	// No onAttemptCreated callback — handoff recovery exits 0 without writing.
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "")
+
+	// Should have completed (not paused).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed", last)
+	}
+
+	// Verify synthesized file exists in the handoff dir.
+	entries, err := os.ReadDir(handoffDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundSynthesized bool
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "synthesized-handoff") {
+			foundSynthesized = true
+			break
+		}
+	}
+	if !foundSynthesized {
+		t.Error("expected a synthesized handoff file in the handoff directory")
+	}
+
+	// Verify handoff recovery was attempted.
+	steps := mock.getUpdateSteps()
+	if !sliceContains(steps, "handoff") {
+		t.Errorf("expected 'handoff' step (recovery) in steps: %v", steps)
+	}
+
+	// All legs should have completed.
+	legs := mock.getFlightLegUpdates()
+	lastLeg := legs[len(legs)-1]
+	if lastLeg != 3 {
+		t.Errorf("final flight leg = %d, want 3", lastLeg)
+	}
+}
+
+func TestRunWorkflowPartialCompletionContinuesWithSynthesizedHandoff(t *testing.T) {
+	// With maxLegs=3 and no handoff files, the orchestrator synthesizes
+	// handoff files so all legs complete and the workflow finishes successfully.
 	mock := newMockHostClient()
 	o := newTestOrchestrator(mock)
 	cfg := &workflowConfig{
@@ -1015,33 +1075,27 @@ func TestRunWorkflowPartialCompletionPauses(t *testing.T) {
 
 	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "")
 
-	// Should pause, not complete.
+	// Should complete (synthesized handoffs keep the loop going).
 	statuses := mock.getUpdateStatuses()
 	last := statuses[len(statuses)-1]
-	if last != "paused" {
-		t.Errorf("last status = %q, want paused", last)
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed", last)
 	}
 
-	// FlightLeg should be 1 (only implement completed).
+	// FlightLeg should be 3 (all legs completed via synthesis).
 	legs := mock.getFlightLegUpdates()
 	lastLeg := legs[len(legs)-1]
-	if lastLeg != 1 {
-		t.Errorf("final flight leg = %d, want 1", lastLeg)
+	if lastLeg != 3 {
+		t.Errorf("final flight leg = %d, want 3", lastLeg)
 	}
 
-	// LastError should mention the incomplete leg count.
-	if mock.workflow.LastError == "" {
-		t.Error("expected LastError to be set")
-	}
-	if !strings.Contains(mock.workflow.LastError, "1 of 3") {
-		t.Errorf("LastError = %q, want it to contain '1 of 3'", mock.workflow.LastError)
-	}
-
-	// Current step should be set to "verify" (ready for user to resume).
+	// Should have gone through verify and land.
 	steps := mock.getUpdateSteps()
-	lastStep := steps[len(steps)-1]
-	if lastStep != "verify" {
-		t.Errorf("last step = %q, want verify", lastStep)
+	if !sliceContains(steps, "verify") {
+		t.Errorf("expected 'verify' step in steps: %v", steps)
+	}
+	if !sliceContains(steps, "land") {
+		t.Errorf("expected 'land' step in steps: %v", steps)
 	}
 }
 
@@ -1457,10 +1511,9 @@ func TestRunWorkflowResumeFromLand(t *testing.T) {
 	}
 }
 
-func TestRunWorkflowResumeFromHandoffNoLegsComplete(t *testing.T) {
-	// When resuming from "resume" (startIdx=3) and the handoff loop exits
-	// early without completing any legs, the workflow should pause with the
-	// persisted FlightLeg value — not silently complete with maxLegs.
+func TestRunWorkflowResumeFromHandoffContinuesWithSynthesizedHandoff(t *testing.T) {
+	// When resuming from "resume" (startIdx=3) with no handoff files, the
+	// orchestrator synthesizes handoffs so the loop continues and completes.
 	mock := newMockHostClient()
 	// Simulate a previous execution that completed leg 1 and paused.
 	mock.workflow.FlightLeg = 1
@@ -1473,29 +1526,27 @@ func TestRunWorkflowResumeFromHandoffNoLegsComplete(t *testing.T) {
 
 	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 3, "resume")
 
-	// Should pause (not complete) because no additional legs ran.
+	// Should complete (synthesized handoffs keep the loop going).
 	statuses := mock.getUpdateStatuses()
 	last := statuses[len(statuses)-1]
-	if last != "paused" {
-		t.Errorf("last status = %q, want paused (incomplete legs on resume)", last)
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed (synthesis keeps loop going)", last)
 	}
 
-	// FlightLeg should be 1 (seeded from persisted state), not 3.
+	// FlightLeg should be 3 (all legs completed via synthesis).
 	legs := mock.getFlightLegUpdates()
 	lastLeg := legs[len(legs)-1]
-	if lastLeg != 1 {
-		t.Errorf("final flight leg = %d, want 1 (seeded from persisted state)", lastLeg)
+	if lastLeg != 3 {
+		t.Errorf("final flight leg = %d, want 3 (all legs completed via synthesis)", lastLeg)
 	}
 
-	// LastError should mention the incomplete count.
-	if !strings.Contains(mock.workflow.LastError, "1 of 3") {
-		t.Errorf("LastError = %q, want it to contain '1 of 3'", mock.workflow.LastError)
-	}
-
-	// Should NOT have run verify or land.
+	// Should have run verify and land.
 	steps := mock.getUpdateSteps()
-	if sliceContains(steps, "land") {
-		t.Errorf("should not have reached 'land' step: %v", steps)
+	if !sliceContains(steps, "verify") {
+		t.Errorf("expected 'verify' step in steps: %v", steps)
+	}
+	if !sliceContains(steps, "land") {
+		t.Errorf("expected 'land' step in steps: %v", steps)
 	}
 }
 

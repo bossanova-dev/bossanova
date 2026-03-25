@@ -288,6 +288,7 @@ enum PRDisplayStatus {
   PR_DISPLAY_STATUS_MERGED = 7;
   PR_DISPLAY_STATUS_CLOSED = 8;
   PR_DISPLAY_STATUS_DRAFT = 9;
+  PR_DISPLAY_STATUS_APPROVED = 10;
 }
 
 // WorkflowStatus represents the lifecycle state of an autopilot workflow.

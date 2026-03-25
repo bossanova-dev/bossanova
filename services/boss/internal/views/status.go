@@ -46,6 +46,8 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 		return styleStatusMuted.Render("✔ merged")
 	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED:
 		return styleStatusMuted.Render("closed")
+	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_APPROVED:
+		return styleStatusSuccess.Render("✓ approved")
 	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING:
 		return styleStatusSuccess.Render("✓ passing")
 	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING:

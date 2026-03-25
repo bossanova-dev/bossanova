@@ -22,6 +22,11 @@ var _ vcs.Provider = (*Provider)(nil)
 // reviewBotUsers lists bot accounts whose COMMENTED reviews should be promoted
 // to CHANGES_REQUESTED so they surface as "rejected" in the TUI. Bot code-review
 // tools cannot submit Request Changes reviews, so they post comments instead.
+//
+// NOTE: This assumes listed bots only post COMMENTED reviews when they find
+// issues. If a bot starts posting "no issues" COMMENTED reviews, those would
+// also be promoted, keeping the PR stuck as "rejected". If that happens, the
+// promotion logic should inspect the review body for issue markers.
 var reviewBotUsers = map[string]bool{
 	"cursor[bot]":       true,
 	"cubic-dev-ai[bot]": true,

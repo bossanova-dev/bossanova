@@ -1,8 +1,14 @@
 package github
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/vcs"
 )
@@ -183,3 +189,113 @@ func TestIsRepoNotReady(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// testPROpts returns a CreatePROpts suitable for testing.
+func testPROpts() vcs.CreatePROpts {
+	return vcs.CreatePROpts{
+		RepoPath:   "https://github.com/owner/repo",
+		HeadBranch: "feature",
+		BaseBranch: "main",
+		Title:      "Test PR",
+		Body:       "body",
+		Draft:      true,
+	}
+}
+
+func TestCreateDraftPR_RetrySuccess(t *testing.T) {
+	var calls atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return "", fmt.Errorf("gh pr create: GraphQL: Head sha can't be blank")
+		}
+		return "https://github.com/owner/repo/pull/1\n", nil
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {}),
+	)
+
+	info, err := p.CreateDraftPR(context.Background(), testPROpts())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Number != 1 {
+		t.Errorf("got PR number %d, want 1", info.Number)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("got %d calls, want 2", got)
+	}
+}
+
+func TestCreateDraftPR_RetriesExhausted(t *testing.T) {
+	var calls atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		calls.Add(1)
+		return "", fmt.Errorf("gh pr create: GraphQL: Head sha can't be blank")
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {}),
+	)
+
+	_, err := p.CreateDraftPR(context.Background(), testPROpts())
+	if !errors.Is(err, vcs.ErrRepoNotReady) {
+		t.Errorf("got error %v, want ErrRepoNotReady", err)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("got %d calls, want 3", got)
+	}
+}
+
+func TestCreateDraftPR_NoRetryForOtherErrors(t *testing.T) {
+	var calls atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		calls.Add(1)
+		return "", fmt.Errorf("gh pr create: exit status 1: HTTP 422")
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {}),
+	)
+
+	_, err := p.CreateDraftPR(context.Background(), testPROpts())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if errors.Is(err, vcs.ErrRepoNotReady) {
+		t.Error("should not be ErrRepoNotReady")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("got %d calls, want 1", got)
+	}
+}
+
+func TestCreateDraftPR_RespectsContextCancellation(t *testing.T) {
+	var calls atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		calls.Add(1)
+		return "", fmt.Errorf("gh pr create: GraphQL: Head sha can't be blank")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {
+			cancel() // cancel during sleep
+		}),
+	)
+
+	_, err := p.CreateDraftPR(ctx, testPROpts())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("got error %v, want context.Canceled", err)
+	}
+	// Should have made 1 call, then attempted to sleep, then seen cancellation.
+	if got := calls.Load(); got != 1 {
+		t.Errorf("got %d calls, want 1", got)
+	}
+}

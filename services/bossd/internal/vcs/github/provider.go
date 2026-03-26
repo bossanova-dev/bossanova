@@ -19,14 +19,14 @@ import (
 // Compile-time interface check.
 var _ vcs.Provider = (*Provider)(nil)
 
-// reviewBotUsers lists bot accounts whose COMMENTED reviews should be promoted
+// reviewBotUsers lists bot accounts whose COMMENTED reviews may be promoted
 // to CHANGES_REQUESTED so they surface as "rejected" in the TUI. Bot code-review
 // tools cannot submit Request Changes reviews, so they post comments instead.
 //
-// NOTE: This assumes listed bots only post COMMENTED reviews when they find
-// issues. If a bot starts posting "no issues" COMMENTED reviews, those would
-// also be promoted, keeping the PR stuck as "rejected". If that happens, the
-// promotion logic should inspect the review body for issue markers.
+// Promotion is conditional: a bot's COMMENTED review is only promoted if the bot
+// has at least one unresolved review thread on the PR. When all threads are
+// resolved, the review stays as COMMENTED (showing as "reviewed" rather than
+// "rejected").
 var reviewBotUsers = map[string]bool{
 	"cursor[bot]":       true,
 	"cubic-dev-ai[bot]": true,
@@ -74,6 +74,96 @@ func repoFlag(repoPath string) string {
 		return nwo
 	}
 	return repoPath
+}
+
+// splitNWO splits a "owner/repo" string into its two components.
+func splitNWO(nwo string) (owner, repo string, ok bool) {
+	parts := strings.SplitN(nwo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// unresolvedThreadAuthors queries GitHub's GraphQL API for review threads on a
+// PR and returns the set of bot authors (from botUsers) that have at least one
+// unresolved thread.
+//
+// On any error it fails open: returns all botUsers so that promotion still
+// fires. A false "rejected" is safer than hiding real issues.
+func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) map[string]bool {
+	nwo := repoFlag(repoPath)
+	owner, repo, ok := splitNWO(nwo)
+	if !ok {
+		p.logger.Warn().Str("nwo", nwo).Msg("cannot split owner/repo for thread query, failing open")
+		return botUsers
+	}
+
+	query := `query($owner:String!, $repo:String!, $pr:Int!) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$pr) {
+      reviewThreads(first:100) {
+        nodes {
+          isResolved
+          comments(first:1) {
+            nodes { author { login } }
+          }
+        }
+      }
+    }
+  }
+}`
+
+	out, err := p.runGH(ctx, "api", "graphql",
+		"-f", "query="+query,
+		"-f", "owner="+owner,
+		"-f", "repo="+repo,
+		"-F", fmt.Sprintf("pr=%d", prID),
+	)
+	if err != nil {
+		p.logger.Warn().Err(err).Msg("GraphQL thread query failed, failing open")
+		return botUsers
+	}
+
+	var result struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						Nodes []struct {
+							IsResolved bool `json:"isResolved"`
+							Comments   struct {
+								Nodes []struct {
+									Author struct {
+										Login string `json:"login"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		p.logger.Warn().Err(err).Msg("failed to parse GraphQL thread response, failing open")
+		return botUsers
+	}
+
+	unresolved := make(map[string]bool)
+	for _, thread := range result.Data.Repository.PullRequest.ReviewThreads.Nodes {
+		if thread.IsResolved {
+			continue
+		}
+		if len(thread.Comments.Nodes) == 0 {
+			continue
+		}
+		author := thread.Comments.Nodes[0].Author.Login
+		if botUsers[author] {
+			unresolved[author] = true
+		}
+	}
+	return unresolved
 }
 
 // CreateDraftPR pushes the head branch and creates a draft pull request.
@@ -272,13 +362,28 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 		return nil, fmt.Errorf("parse reviews: %w", err)
 	}
 
+	// First pass: check if any bot COMMENTED reviews exist. If not, skip the
+	// GraphQL call entirely (zero overhead for non-bot PRs).
+	hasBotCommented := false
+	for _, r := range raw {
+		if parseReviewState(r.State) == vcs.ReviewStateCommented && reviewBotUsers[r.User.Login] {
+			hasBotCommented = true
+			break
+		}
+	}
+
+	var botsWithUnresolved map[string]bool
+	if hasBotCommented {
+		botsWithUnresolved = p.unresolvedThreadAuthors(ctx, repoPath, prID, reviewBotUsers)
+	}
+
 	comments := make([]vcs.ReviewComment, len(raw))
 	for i, r := range raw {
 		state := parseReviewState(r.State)
-		// Bot code-review tools submit COMMENTED reviews even when they find
-		// issues. Promote those to CHANGES_REQUESTED so they surface as
-		// "rejected" in the TUI.
-		if state == vcs.ReviewStateCommented && reviewBotUsers[r.User.Login] {
+		// Promote bot COMMENTED reviews to CHANGES_REQUESTED only when the bot
+		// has unresolved review threads. This avoids false "rejected" status
+		// when all review issues have been addressed.
+		if state == vcs.ReviewStateCommented && reviewBotUsers[r.User.Login] && botsWithUnresolved[r.User.Login] {
 			state = vcs.ReviewStateChangesRequested
 		}
 		comments[i] = vcs.ReviewComment{

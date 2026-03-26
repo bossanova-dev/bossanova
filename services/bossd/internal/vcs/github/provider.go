@@ -150,6 +150,14 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 		return botUsers
 	}
 
+	// GraphQL returns bare logins for bots ("cursor") while REST returns
+	// the suffixed form ("cursor[bot]"). Build a lookup that handles both.
+	graphqlToRest := make(map[string]string, len(botUsers)*2)
+	for login := range botUsers {
+		graphqlToRest[login] = login
+		graphqlToRest[strings.TrimSuffix(login, "[bot]")] = login
+	}
+
 	unresolved := make(map[string]bool)
 	for _, thread := range result.Data.Repository.PullRequest.ReviewThreads.Nodes {
 		if thread.IsResolved {
@@ -159,8 +167,8 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 			continue
 		}
 		author := thread.Comments.Nodes[0].Author.Login
-		if botUsers[author] {
-			unresolved[author] = true
+		if restLogin, ok := graphqlToRest[author]; ok {
+			unresolved[restLogin] = true
 		}
 	}
 	return unresolved

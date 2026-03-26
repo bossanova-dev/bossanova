@@ -68,6 +68,31 @@ func TestCountPlanFlightLegs(t *testing.T) {
 			content: "# Plan\n\nThis line mentions [HANDOFF] but is not a heading\n",
 			want:    1,
 		},
+		{
+			name:    "h3 leg headings (### Leg N)",
+			content: "# Plan\n\n### Leg 1: Scaffold\nDo stuff\n\n### Leg 2: Build\nMore stuff\n\n### Leg 3: Test\nTest stuff\n",
+			want:    3,
+		},
+		{
+			name:    "h4 leg headings",
+			content: "#### Leg 1: A\n#### Leg 2: B\n",
+			want:    2,
+		},
+		{
+			name:    "mixed heading levels for legs",
+			content: "## Flight Leg 1: Setup\n### Leg 2: Build\n#### Leg 3: Polish\n",
+			want:    3,
+		},
+		{
+			name:    "extra whitespace between leg and number",
+			content: "## Leg  1: A\n## Leg   2: B\n",
+			want:    2,
+		},
+		{
+			name:    "section header '## Flight Legs' without number not counted",
+			content: "## Flight Legs\n\n### Leg 1: Scaffold\n### Leg 2: Build\n",
+			want:    2,
+		},
 	}
 
 	for _, tt := range tests {

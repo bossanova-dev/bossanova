@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -1439,6 +1440,14 @@ func isSubdirOf(child, parent string) bool {
 // readable but contains no markers (single-leg plan), or N for N markers.
 // [HANDOFF] markers are heading lines (starting with #) that contain
 // "[handoff]" (case-insensitive). The result is max(flightLegs, handoffs).
+// legHeadingRe matches any markdown heading (#+) that contains "leg" followed
+// by a number, with arbitrary whitespace. This covers variations like:
+//
+//	## Flight Leg 1: Setup
+//	### Leg 2: Build
+//	#### Leg  3 — Polish
+var legHeadingRe = regexp.MustCompile(`(?i)^#{1,6}\s+.*\bleg\s+\d+`)
+
 func countPlanFlightLegs(planPath string) int32 {
 	f, err := os.Open(planPath)
 	if err != nil {
@@ -1451,7 +1460,7 @@ func countPlanFlightLegs(planPath string) int32 {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		lower := strings.ToLower(line)
-		if strings.HasPrefix(lower, "## flight leg") {
+		if legHeadingRe.MatchString(line) {
 			flightLegCount++
 		}
 		if strings.HasPrefix(line, "#") && strings.Contains(lower, "[handoff]") {

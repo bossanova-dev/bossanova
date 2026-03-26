@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/table"
 	"github.com/spf13/cobra"
@@ -363,8 +362,7 @@ func printWorkflowSummary(w *pb.AutopilotWorkflow) {
 		fmt.Printf("  Error:   %s\n", w.LastError)
 	}
 	if w.StartedAt != nil {
-		elapsed := time.Since(w.StartedAt.AsTime()).Truncate(time.Second)
-		fmt.Printf("  Elapsed: %s\n", elapsed)
+		fmt.Printf("  Elapsed: %s\n", views.WorkflowElapsed(w))
 	}
 }
 
@@ -394,8 +392,7 @@ func printWorkflowTable(cmd *cobra.Command, workflows []*pb.AutopilotWorkflow) {
 		plans[i] = plan
 
 		if w.StartedAt != nil {
-			elapsed := time.Since(w.StartedAt.AsTime()).Truncate(time.Second)
-			durations[i] = elapsed.String()
+			durations[i] = views.WorkflowElapsed(w).String()
 		} else {
 			durations[i] = "-"
 		}

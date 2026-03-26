@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -237,69 +236,6 @@ func TestScanHandoffDir(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestSynthesizeHandoff(t *testing.T) {
-	t.Run("creates file with expected content", func(t *testing.T) {
-		dir := t.TempDir()
-		path, err := synthesizeHandoff(dir, "docs/plans/test.md", 2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if path == "" {
-			t.Fatal("expected non-empty path")
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("failed to read synthesized file: %v", err)
-		}
-		content := string(data)
-
-		if !strings.Contains(content, "Synthesized: true") {
-			t.Error("expected 'Synthesized: true' marker in content")
-		}
-		if !strings.Contains(content, "docs/plans/test.md") {
-			t.Error("expected plan path in content")
-		}
-		if !strings.Contains(content, "Leg 2") {
-			t.Error("expected leg number in content")
-		}
-	})
-
-	t.Run("creates nested directories", func(t *testing.T) {
-		base := t.TempDir()
-		dir := filepath.Join(base, "deep", "nested", "handoffs")
-		path, err := synthesizeHandoff(dir, "plan.md", 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			t.Errorf("file does not exist at %q", path)
-		}
-	})
-
-	t.Run("rejects paths with ..", func(t *testing.T) {
-		_, err := synthesizeHandoff("docs/../../../etc", "plan.md", 1)
-		if err == nil {
-			t.Fatal("expected error for path with '..'")
-		}
-	})
-}
-
-func TestSynthesizeHandoffFilename(t *testing.T) {
-	dir := t.TempDir()
-	path, err := synthesizeHandoff(dir, "plan.md", 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := filepath.Base(path)
-	if !strings.Contains(name, "synthesized-handoff-leg-3") {
-		t.Errorf("filename %q does not contain expected pattern", name)
-	}
-	if !strings.HasSuffix(name, ".md") {
-		t.Errorf("filename %q does not end with .md", name)
 	}
 }
 

@@ -275,6 +275,20 @@ func (o *orchestrator) GetWorkflowStatus(ctx context.Context, req *bossanovav1.G
 	}, nil
 }
 
+// allFlightTasksDone returns true when no tasks remain ready for the flight label.
+func (o *orchestrator) allFlightTasksDone(ctx context.Context, cfg *workflowConfig, planPath string, log zerolog.Logger) bool {
+	if cfg.WorkDir == "" {
+		return false
+	}
+	label := flightLabel(planPath)
+	remaining, err := o.checkTasks(ctx, cfg.WorkDir, label)
+	if err != nil {
+		log.Warn().Err(err).Str("label", label).Msg("failed to check remaining tasks in loop")
+		return false
+	}
+	return remaining == 0
+}
+
 // --- Orchestration loop ---
 
 func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath string, cfg *workflowConfig, maxLegs int, startStep string) {
@@ -338,7 +352,6 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				completedLeg = resp.GetWorkflow().GetFlightLeg()
 			}
 		}
-		var consecutiveSynthesized int
 		for leg := 2; leg <= maxLegs; leg++ {
 			// Check if workflow was paused/cancelled.
 			if o.isStoppedOrDone(ctx, workflowID) {
@@ -367,28 +380,21 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				// Re-check for handoff file after recovery.
 				handoffFile, _ = scanHandoffDir(cfg.resolvedHandoffDir(), legStart)
 				if handoffFile == "" {
-					// Recovery succeeded but no file was written — synthesize one.
-					log.Info().Msg("still no handoff after recovery, synthesizing minimal handoff")
-					var synthErr error
-					handoffFile, synthErr = synthesizeHandoff(cfg.resolvedHandoffDir(), planPath, leg)
-					if synthErr != nil {
-						log.Warn().Err(synthErr).Msg("failed to synthesize handoff, exiting handoff loop")
-						break
+					// Recovery ran but produced no handoff — pause for human review.
+					log.Warn().Int("leg", leg).Msg("handoff recovery produced no file, pausing")
+					if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+						Id:          workflowID,
+						Status:      stringPtr("paused"),
+						CurrentStep: stringPtr("resume"),
+						FlightLeg:   &completedLeg,
+						LastError:   stringPtr(fmt.Sprintf("leg %d: handoff recovery produced no file", leg)),
+					}); err != nil {
+						log.Error().Err(err).Msg("failed to pause after missing handoff")
 					}
-					log.Info().Str("handoff", handoffFile).Msg("synthesized minimal handoff file")
-
-					consecutiveSynthesized++
-					if consecutiveSynthesized >= 2 {
-						log.Warn().Int("consecutive", consecutiveSynthesized).
-							Msg("consecutive synthesized handoffs — loop is spinning empty, breaking early")
-						break
-					}
-				} else {
-					// Recovery created a real handoff file — reset counter.
-					consecutiveSynthesized = 0
+					return
 				}
 
-				// Got a handoff — update leg counter and resume normally.
+				// Recovery created a real handoff file — update leg counter and resume.
 				legVal := int32(leg)
 				if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
 					Id:        workflowID,
@@ -404,11 +410,12 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 					return
 				}
 				completedLeg = int32(leg)
+				if o.allFlightTasksDone(ctx, cfg, planPath, log) {
+					log.Info().Int("leg", leg).Msg("all flight tasks done, exiting handoff loop")
+					break
+				}
 				continue
 			}
-
-			// Real handoff file found — reset synthesis counter.
-			consecutiveSynthesized = 0
 
 			// Update the flight leg counter in the DB so status commands reflect progress.
 			legVal := int32(leg)
@@ -427,6 +434,10 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				return
 			}
 			completedLeg = int32(leg)
+			if o.allFlightTasksDone(ctx, cfg, planPath, log) {
+				log.Info().Int("leg", leg).Msg("all flight tasks done, exiting handoff loop")
+				break
+			}
 
 			if leg == maxLegs {
 				log.Warn().Int("max_legs", maxLegs).Msg("max flight legs reached, proceeding to verify")
@@ -434,44 +445,45 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		}
 	}
 
-	// Check ground truth: are there still tasks ready for this flight?
-	if cfg.WorkDir != "" {
-		label := flightLabel(planPath)
-		remaining, err := o.checkTasks(ctx, cfg.WorkDir, label)
-		if err != nil {
-			log.Warn().Err(err).Str("label", label).Msg("failed to check remaining tasks")
-		} else if remaining > 0 {
-			log.Warn().Int("remaining", remaining).Str("label", label).
-				Msg("tasks still ready — pausing for human review instead of proceeding to verify/land")
+	// Check whether tasks are all done. If the loop exited early because
+	// all tasks completed, proceed to verify/land. Otherwise pause for
+	// human review — either tasks remain or the loop exited unexpectedly.
+	allDone := o.allFlightTasksDone(ctx, cfg, planPath, log)
+
+	if !allDone {
+		// Tasks remain (or WorkDir is unset). If fewer legs completed than
+		// expected, or tasks are explicitly remaining, pause for review.
+		var reason string
+		if cfg.WorkDir != "" {
+			label := flightLabel(planPath)
+			remaining, err := o.checkTasks(ctx, cfg.WorkDir, label)
+			if err != nil {
+				log.Warn().Err(err).Str("label", label).Msg("failed to check remaining tasks")
+			}
+			if remaining > 0 {
+				reason = fmt.Sprintf("%d tasks still ready for %s — pausing for review", remaining, label)
+			}
+		}
+		if reason == "" && completedLeg > 0 && completedLeg < int32(maxLegs) {
+			reason = fmt.Sprintf("only %d of %d legs completed — handoff loop exited early", completedLeg, maxLegs)
+		}
+		if reason != "" {
+			log.Warn().
+				Int32("completed", completedLeg).
+				Int("expected", maxLegs).
+				Bool("all_done", allDone).
+				Msg("incomplete legs with tasks remaining, pausing for review")
 			if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
 				Id:          workflowID,
 				Status:      stringPtr("paused"),
 				CurrentStep: stringPtr("resume"),
 				FlightLeg:   &completedLeg,
-				LastError:   stringPtr(fmt.Sprintf("%d tasks still ready for %s — pausing for review", remaining, label)),
+				LastError:   stringPtr(reason),
 			}); err != nil {
-				log.Error().Err(err).Msg("failed to pause for remaining tasks")
+				log.Error().Err(err).Msg("failed to pause for incomplete legs")
 			}
 			return
 		}
-	}
-
-	// If fewer legs completed than expected, pause for human review.
-	if completedLeg > 0 && completedLeg < int32(maxLegs) {
-		log.Warn().
-			Int32("completed", completedLeg).
-			Int("expected", maxLegs).
-			Msg("fewer legs completed than expected, pausing for review")
-		if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
-			Id:          workflowID,
-			Status:      stringPtr("paused"),
-			CurrentStep: stringPtr("resume"),
-			FlightLeg:   &completedLeg,
-			LastError:   stringPtr(fmt.Sprintf("only %d of %d legs completed — handoff loop exited early", completedLeg, maxLegs)),
-		}); err != nil {
-			log.Error().Err(err).Msg("failed to pause for incomplete legs")
-		}
-		return
 	}
 
 	// Step 4: Verify.

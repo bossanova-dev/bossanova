@@ -343,11 +343,11 @@ func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 				struct {
 					resolved bool
 					author   string
-				}{false, "cursor[bot]"},
+				}{false, "cursor"},
 				struct {
 					resolved bool
 					author   string
-				}{true, "cursor[bot]"},
+				}{true, "cursor"},
 			), nil
 		}
 		return `[
@@ -379,11 +379,11 @@ func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
 				struct {
 					resolved bool
 					author   string
-				}{true, "cursor[bot]"},
+				}{true, "cursor"},
 				struct {
 					resolved bool
 					author   string
-				}{true, "cursor[bot]"},
+				}{true, "cursor"},
 			), nil
 		}
 		return `[
@@ -493,16 +493,16 @@ func TestGetReviewComments_NoBotReviews(t *testing.T) {
 func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
-			// cursor[bot] has unresolved thread, cubic-dev-ai[bot] all resolved.
+			// cursor has unresolved thread, cubic-dev-ai all resolved.
 			return graphqlThreadsResponse(
 				struct {
 					resolved bool
 					author   string
-				}{false, "cursor[bot]"},
+				}{false, "cursor"},
 				struct {
 					resolved bool
 					author   string
-				}{true, "cubic-dev-ai[bot]"},
+				}{true, "cubic-dev-ai"},
 			), nil
 		}
 		return `[

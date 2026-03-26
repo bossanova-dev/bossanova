@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,16 +14,21 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
+// taskChecker returns the number of ready tasks for a given flight label.
+// The default implementation shells out to `bd ready --label <label>`.
+type taskChecker func(ctx context.Context, workDir, label string) (int, error)
+
 // orchestrator implements the WorkflowService gRPC server for the autopilot
 // plugin. It drives the plan→implement→handoff/resume→verify→land loop
 // by calling back to the daemon via HostService RPCs.
 type orchestrator struct {
-	host   hostClient
-	logger zerolog.Logger
+	host       hostClient
+	logger     zerolog.Logger
+	checkTasks taskChecker
 }
 
 func newOrchestrator(host hostClient, logger zerolog.Logger) *orchestrator {
-	return &orchestrator{host: host, logger: logger}
+	return &orchestrator{host: host, logger: logger, checkTasks: defaultTaskChecker}
 }
 
 // workflowConfig holds the parsed config for a workflow run. Fields mirror
@@ -332,6 +338,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				completedLeg = resp.GetWorkflow().GetFlightLeg()
 			}
 		}
+		var consecutiveSynthesized int
 		for leg := 2; leg <= maxLegs; leg++ {
 			// Check if workflow was paused/cancelled.
 			if o.isStoppedOrDone(ctx, workflowID) {
@@ -369,6 +376,16 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 						break
 					}
 					log.Info().Str("handoff", handoffFile).Msg("synthesized minimal handoff file")
+
+					consecutiveSynthesized++
+					if consecutiveSynthesized >= 2 {
+						log.Warn().Int("consecutive", consecutiveSynthesized).
+							Msg("consecutive synthesized handoffs — loop is spinning empty, breaking early")
+						break
+					}
+				} else {
+					// Recovery created a real handoff file — reset counter.
+					consecutiveSynthesized = 0
 				}
 
 				// Got a handoff — update leg counter and resume normally.
@@ -389,6 +406,9 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				completedLeg = int32(leg)
 				continue
 			}
+
+			// Real handoff file found — reset synthesis counter.
+			consecutiveSynthesized = 0
 
 			// Update the flight leg counter in the DB so status commands reflect progress.
 			legVal := int32(leg)
@@ -414,6 +434,28 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		}
 	}
 
+	// Check ground truth: are there still tasks ready for this flight?
+	if cfg.WorkDir != "" {
+		label := flightLabel(planPath)
+		remaining, err := o.checkTasks(ctx, cfg.WorkDir, label)
+		if err != nil {
+			log.Warn().Err(err).Str("label", label).Msg("failed to check remaining tasks")
+		} else if remaining > 0 {
+			log.Warn().Int("remaining", remaining).Str("label", label).
+				Msg("tasks still ready — pausing for human review instead of proceeding to verify/land")
+			if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+				Id:          workflowID,
+				Status:      stringPtr("paused"),
+				CurrentStep: stringPtr("resume"),
+				FlightLeg:   &completedLeg,
+				LastError:   stringPtr(fmt.Sprintf("%d tasks still ready for %s — pausing for review", remaining, label)),
+			}); err != nil {
+				log.Error().Err(err).Msg("failed to pause for remaining tasks")
+			}
+			return
+		}
+	}
+
 	// If fewer legs completed than expected, pause for human review.
 	if completedLeg > 0 && completedLeg < int32(maxLegs) {
 		log.Warn().
@@ -423,7 +465,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 		if _, err := o.host.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
 			Id:          workflowID,
 			Status:      stringPtr("paused"),
-			CurrentStep: stringPtr("verify"),
+			CurrentStep: stringPtr("resume"),
 			FlightLeg:   &completedLeg,
 			LastError:   stringPtr(fmt.Sprintf("only %d of %d legs completed — handoff loop exited early", completedLeg, maxLegs)),
 		}); err != nil {
@@ -674,6 +716,30 @@ func validatePlanPath(path string) error {
 		return fmt.Errorf("plan path must not contain '..': %s", path)
 	}
 	return nil
+}
+
+// flightLabel derives the bd label for a flight plan from its file path,
+// matching the convention used by boss-create-tasks (e.g. "flight:fp-my-plan").
+func flightLabel(planPath string) string {
+	base := filepath.Base(planPath)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	return "flight:fp-" + name
+}
+
+// defaultTaskChecker shells out to `bd ready --label <label>` and counts lines.
+func defaultTaskChecker(ctx context.Context, workDir, label string) (int, error) {
+	cmd := exec.CommandContext(ctx, "bd", "ready", "--label", label)
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return 0, nil
+	}
+	return len(lines), nil
 }
 
 func isNonActionableError(errStr string) bool {

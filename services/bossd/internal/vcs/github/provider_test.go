@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -300,8 +301,55 @@ func TestCreateDraftPR_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestGetReviewComments_BotCommentPromotedToChangesRequested(t *testing.T) {
+// graphqlThreadsResponse builds a fake GraphQL response with the given threads.
+// Each thread is (isResolved bool, authorLogin string).
+func graphqlThreadsResponse(threads ...struct {
+	resolved bool
+	author   string
+}) string {
+	nodes := make([]string, len(threads))
+	for i, t := range threads {
+		nodes[i] = fmt.Sprintf(
+			`{"isResolved":%t,"comments":{"nodes":[{"author":{"login":%q}}]}}`,
+			t.resolved, t.author,
+		)
+	}
+	return fmt.Sprintf(
+		`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[%s]}}}}}`,
+		strings.Join(nodes, ","),
+	)
+}
+
+func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			// Verify variables are passed as individual flags, not as a
+			// single JSON "variables=..." string. gh expects -f for strings
+			// and -F for non-string JSON values.
+			argsStr := strings.Join(args, " ")
+			if strings.Contains(argsStr, "variables=") {
+				t.Error("GraphQL variables must be passed as individual -f/-F flags, not as variables=JSON")
+			}
+			if !strings.Contains(argsStr, "owner=owner") {
+				t.Error("expected -f owner=owner in GraphQL args")
+			}
+			if !strings.Contains(argsStr, "repo=repo") {
+				t.Error("expected -f repo=repo in GraphQL args")
+			}
+			if !strings.Contains(argsStr, "pr=1") {
+				t.Error("expected -F pr=1 in GraphQL args")
+			}
+			return graphqlThreadsResponse(
+				struct {
+					resolved bool
+					author   string
+				}{false, "cursor[bot]"},
+				struct {
+					resolved bool
+					author   string
+				}{true, "cursor[bot]"},
+			), nil
+		}
 		return `[
 			{"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"},
 			{"user":{"login":"human-reviewer"},"body":"looks good","state":"COMMENTED"}
@@ -316,12 +364,201 @@ func TestGetReviewComments_BotCommentPromotedToChangesRequested(t *testing.T) {
 	if len(comments) != 2 {
 		t.Fatalf("got %d comments, want 2", len(comments))
 	}
-	// Bot COMMENTED should be promoted to ChangesRequested.
 	if comments[0].State != vcs.ReviewStateChangesRequested {
 		t.Errorf("bot comment state = %v, want ChangesRequested", comments[0].State)
 	}
-	// Human COMMENTED should stay as-is.
 	if comments[1].State != vcs.ReviewStateCommented {
 		t.Errorf("human comment state = %v, want Commented", comments[1].State)
+	}
+}
+
+func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				struct {
+					resolved bool
+					author   string
+				}{true, "cursor[bot]"},
+				struct {
+					resolved bool
+					author   string
+				}{true, "cursor[bot]"},
+			), nil
+		}
+		return `[
+			{"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"user":{"login":"human-reviewer"},"body":"lgtm","state":"APPROVED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want 2", len(comments))
+	}
+	// All threads resolved — should NOT be promoted.
+	if comments[0].State != vcs.ReviewStateCommented {
+		t.Errorf("bot comment state = %v, want Commented (all threads resolved)", comments[0].State)
+	}
+	if comments[1].State != vcs.ReviewStateApproved {
+		t.Errorf("human comment state = %v, want Approved", comments[1].State)
+	}
+}
+
+func TestGetReviewComments_BotNoThreads(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			// No threads at all.
+			return `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`, nil
+		}
+		return `[
+			{"user":{"login":"cursor[bot]"},"body":"no issues found","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("got %d comments, want 1", len(comments))
+	}
+	// No threads — should NOT be promoted.
+	if comments[0].State != vcs.ReviewStateCommented {
+		t.Errorf("bot comment state = %v, want Commented (no threads)", comments[0].State)
+	}
+}
+
+func TestGetReviewComments_GraphQLFailure(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return "", fmt.Errorf("gh api graphql: exit status 1: network error")
+		}
+		return `[
+			{"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 1 {
+		t.Fatalf("got %d comments, want 1", len(comments))
+	}
+	// GraphQL failed — fail-open means promote.
+	if comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("bot comment state = %v, want ChangesRequested (fail-open)", comments[0].State)
+	}
+}
+
+func TestGetReviewComments_NoBotReviews(t *testing.T) {
+	var graphQLCalled bool
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			graphQLCalled = true
+			return "", fmt.Errorf("should not be called")
+		}
+		return `[
+			{"user":{"login":"human-reviewer"},"body":"looks good","state":"APPROVED"},
+			{"user":{"login":"another-human"},"body":"nit","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if graphQLCalled {
+		t.Error("GraphQL should not be called when there are no bot reviews")
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want 2", len(comments))
+	}
+	if comments[0].State != vcs.ReviewStateApproved {
+		t.Errorf("comment[0] state = %v, want Approved", comments[0].State)
+	}
+	if comments[1].State != vcs.ReviewStateCommented {
+		t.Errorf("comment[1] state = %v, want Commented", comments[1].State)
+	}
+}
+
+func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			// cursor[bot] has unresolved thread, cubic-dev-ai[bot] all resolved.
+			return graphqlThreadsResponse(
+				struct {
+					resolved bool
+					author   string
+				}{false, "cursor[bot]"},
+				struct {
+					resolved bool
+					author   string
+				}{true, "cubic-dev-ai[bot]"},
+			), nil
+		}
+		return `[
+			{"user":{"login":"cursor[bot]"},"body":"issue found","state":"COMMENTED"},
+			{"user":{"login":"cubic-dev-ai[bot]"},"body":"issue found","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want 2", len(comments))
+	}
+	// cursor[bot] has unresolved threads — promoted.
+	if comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("cursor[bot] state = %v, want ChangesRequested", comments[0].State)
+	}
+	// cubic-dev-ai[bot] all resolved — NOT promoted.
+	if comments[1].State != vcs.ReviewStateCommented {
+		t.Errorf("cubic-dev-ai[bot] state = %v, want Commented", comments[1].State)
+	}
+}
+
+func TestSplitNWO(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantOwner string
+		wantRepo  string
+		wantOK    bool
+	}{
+		{"standard", "owner/repo", "owner", "repo", true},
+		{"with org", "my-org/my-repo", "my-org", "my-repo", true},
+		{"empty string", "", "", "", false},
+		{"no slash", "ownerrepo", "", "", false},
+		{"empty owner", "/repo", "", "", false},
+		{"empty repo", "owner/", "", "", false},
+		{"multiple slashes", "owner/repo/extra", "owner", "repo/extra", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, repo, ok := splitNWO(tt.input)
+			if ok != tt.wantOK {
+				t.Errorf("splitNWO(%q) ok = %v, want %v", tt.input, ok, tt.wantOK)
+				return
+			}
+			if owner != tt.wantOwner {
+				t.Errorf("splitNWO(%q) owner = %q, want %q", tt.input, owner, tt.wantOwner)
+			}
+			if repo != tt.wantRepo {
+				t.Errorf("splitNWO(%q) repo = %q, want %q", tt.input, repo, tt.wantRepo)
+			}
+		})
 	}
 }

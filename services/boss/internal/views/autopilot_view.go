@@ -110,8 +110,7 @@ func (m *AutopilotModel) buildTable() {
 		plans[i] = plan
 
 		if w.StartedAt != nil {
-			elapsed := time.Since(w.StartedAt.AsTime()).Truncate(time.Second)
-			durations[i] = elapsed.String()
+			durations[i] = workflowElapsed(w).String()
 		} else {
 			durations[i] = "-"
 		}
@@ -367,4 +366,29 @@ func WorkflowStepLabel(s pb.WorkflowStep) string {
 	default:
 		return "-"
 	}
+}
+
+// WorkflowElapsed returns the elapsed duration for a workflow. For terminal
+// statuses (completed, failed, cancelled) it uses updated_at as the end time
+// so the elapsed value stops growing. For active workflows it uses time.Now().
+func WorkflowElapsed(w *pb.AutopilotWorkflow) time.Duration {
+	return workflowElapsed(w)
+}
+
+func workflowElapsed(w *pb.AutopilotWorkflow) time.Duration {
+	if w.StartedAt == nil {
+		return 0
+	}
+	start := w.StartedAt.AsTime()
+	end := time.Now()
+	if isTerminalWorkflowStatus(w.Status) && w.UpdatedAt != nil {
+		end = w.UpdatedAt.AsTime()
+	}
+	return end.Sub(start).Truncate(time.Second)
+}
+
+func isTerminalWorkflowStatus(s pb.WorkflowStatus) bool {
+	return s == pb.WorkflowStatus_WORKFLOW_STATUS_COMPLETED ||
+		s == pb.WorkflowStatus_WORKFLOW_STATUS_FAILED ||
+		s == pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED
 }

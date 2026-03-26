@@ -9,9 +9,10 @@ import (
 
 // PRDisplayEntry is a cached display status for a single session's PR.
 type PRDisplayEntry struct {
-	Status      vcs.PRDisplayStatus
-	HasFailures bool
-	UpdatedAt   time.Time
+	Status              vcs.PRDisplayStatus
+	HasFailures         bool
+	HasChangesRequested bool
+	UpdatedAt           time.Time
 }
 
 // PRTracker is a thread-safe in-memory cache of PR display statuses.
@@ -32,9 +33,10 @@ func (t *PRTracker) Set(sessionID string, info vcs.PRDisplayInfo) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.entries[sessionID] = &PRDisplayEntry{
-		Status:      info.Status,
-		HasFailures: info.HasFailures,
-		UpdatedAt:   time.Now(),
+		Status:              info.Status,
+		HasFailures:         info.HasFailures,
+		HasChangesRequested: info.HasChangesRequested,
+		UpdatedAt:           time.Now(),
 	}
 }
 
@@ -47,9 +49,10 @@ func (t *PRTracker) Get(sessionID string) *PRDisplayEntry {
 		return nil
 	}
 	return &PRDisplayEntry{
-		Status:      e.Status,
-		HasFailures: e.HasFailures,
-		UpdatedAt:   e.UpdatedAt,
+		Status:              e.Status,
+		HasFailures:         e.HasFailures,
+		HasChangesRequested: e.HasChangesRequested,
+		UpdatedAt:           e.UpdatedAt,
 	}
 }
 
@@ -64,9 +67,10 @@ func (t *PRTracker) GetBatch(sessionIDs []string) map[string]*PRDisplayEntry {
 			continue
 		}
 		result[id] = &PRDisplayEntry{
-			Status:      e.Status,
-			HasFailures: e.HasFailures,
-			UpdatedAt:   e.UpdatedAt,
+			Status:              e.Status,
+			HasFailures:         e.HasFailures,
+			HasChangesRequested: e.HasChangesRequested,
+			UpdatedAt:           e.UpdatedAt,
 		}
 	}
 	return result

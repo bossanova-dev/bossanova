@@ -150,6 +150,7 @@ message Session {
   // PR display status, hydrated server-side from the PR display tracker.
   PRDisplayStatus pr_display_status = 20;
   bool pr_display_has_failures = 21;
+  bool pr_display_has_changes_requested = 23;
 
   // Attention status, hydrated server-side from session state.
   optional AttentionStatus attention_status = 22;

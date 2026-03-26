@@ -20,8 +20,9 @@ const (
 
 // PRDisplayInfo holds the computed display status and metadata for a PR.
 type PRDisplayInfo struct {
-	Status      PRDisplayStatus
-	HasFailures bool
+	Status              PRDisplayStatus
+	HasFailures         bool
+	HasChangesRequested bool
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
@@ -69,11 +70,6 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		return PRDisplayInfo{Status: PRDisplayStatusFailing}
 	}
 
-	// If checks are still running, it's checking (with failure flag if some already failed).
-	if hasRunning {
-		return PRDisplayInfo{Status: PRDisplayStatusChecking, HasFailures: hasFailed}
-	}
-
 	// Review analysis: use each author's latest review (reviews arrive chronologically).
 	latestByAuthor := make(map[string]ReviewState)
 	for _, r := range reviews {
@@ -88,6 +84,11 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		if state == ReviewStateApproved {
 			hasApproval = true
 		}
+	}
+
+	// If checks are still running, it's checking (with metadata flags for styling).
+	if hasRunning {
+		return PRDisplayInfo{Status: PRDisplayStatusChecking, HasFailures: hasFailed, HasChangesRequested: hasChangesRequested}
 	}
 
 	// Rejected takes priority — any outstanding changes_requested blocks approval.

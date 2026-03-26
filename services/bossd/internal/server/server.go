@@ -496,6 +496,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		if e := s.prDisplay.Get(session.ID); e != nil {
 			p.PrDisplayStatus = pb.PRDisplayStatus(e.Status)
 			p.PrDisplayHasFailures = e.HasFailures
+			p.PrDisplayHasChangesRequested = e.HasChangesRequested
 		}
 	}
 
@@ -564,6 +565,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 			if e, ok := entries[sess.ID]; ok {
 				pbSessions[i].PrDisplayStatus = pb.PRDisplayStatus(e.Status)
 				pbSessions[i].PrDisplayHasFailures = e.HasFailures
+				pbSessions[i].PrDisplayHasChangesRequested = e.HasChangesRequested
 			}
 		}
 	}

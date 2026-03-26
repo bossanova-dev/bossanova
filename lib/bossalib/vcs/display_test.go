@@ -8,12 +8,13 @@ func conclusionPtr(c CheckConclusion) *CheckConclusion { return &c }
 
 func TestComputeDisplayStatus(t *testing.T) {
 	tests := []struct {
-		name           string
-		pr             *PRStatus
-		checks         []CheckResult
-		reviews        []ReviewComment
-		wantStatus     PRDisplayStatus
-		wantHasFailure bool
+		name                    string
+		pr                      *PRStatus
+		checks                  []CheckResult
+		reviews                 []ReviewComment
+		wantStatus              PRDisplayStatus
+		wantHasFailure          bool
+		wantHasChangesRequested bool
 	}{
 		{
 			name:       "nil PR returns Idle",
@@ -191,6 +192,32 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantHasFailure: false,
 		},
 		{
+			name: "changes requested with checks still running",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusInProgress},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateChangesRequested},
+			},
+			wantStatus:              PRDisplayStatusChecking,
+			wantHasChangesRequested: true,
+		},
+		{
+			name: "changes requested with some failures while checking",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusInProgress},
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateChangesRequested},
+			},
+			wantStatus:              PRDisplayStatusChecking,
+			wantHasFailure:          true,
+			wantHasChangesRequested: true,
+		},
+		{
 			name: "neutral conclusion is not a failure",
 			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
 			checks: []CheckResult{
@@ -218,6 +245,9 @@ func TestComputeDisplayStatus(t *testing.T) {
 			}
 			if got.HasFailures != tt.wantHasFailure {
 				t.Errorf("HasFailures = %v, want %v", got.HasFailures, tt.wantHasFailure)
+			}
+			if got.HasChangesRequested != tt.wantHasChangesRequested {
+				t.Errorf("HasChangesRequested = %v, want %v", got.HasChangesRequested, tt.wantHasChangesRequested)
 			}
 		})
 	}

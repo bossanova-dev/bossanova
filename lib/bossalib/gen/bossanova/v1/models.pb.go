@@ -1057,8 +1057,9 @@ type Session struct {
 	// Denormalized repo display name, populated server-side for convenience.
 	RepoDisplayName string `protobuf:"bytes,19,opt,name=repo_display_name,json=repoDisplayName,proto3" json:"repo_display_name,omitempty"`
 	// PR display status, hydrated server-side from the PR display tracker.
-	PrDisplayStatus      PRDisplayStatus `protobuf:"varint,20,opt,name=pr_display_status,json=prDisplayStatus,proto3,enum=bossanova.v1.PRDisplayStatus" json:"pr_display_status,omitempty"`
-	PrDisplayHasFailures bool            `protobuf:"varint,21,opt,name=pr_display_has_failures,json=prDisplayHasFailures,proto3" json:"pr_display_has_failures,omitempty"`
+	PrDisplayStatus              PRDisplayStatus `protobuf:"varint,20,opt,name=pr_display_status,json=prDisplayStatus,proto3,enum=bossanova.v1.PRDisplayStatus" json:"pr_display_status,omitempty"`
+	PrDisplayHasFailures         bool            `protobuf:"varint,21,opt,name=pr_display_has_failures,json=prDisplayHasFailures,proto3" json:"pr_display_has_failures,omitempty"`
+	PrDisplayHasChangesRequested bool            `protobuf:"varint,23,opt,name=pr_display_has_changes_requested,json=prDisplayHasChangesRequested,proto3" json:"pr_display_has_changes_requested,omitempty"`
 	// Attention status, hydrated server-side from session state.
 	AttentionStatus *AttentionStatus `protobuf:"bytes,22,opt,name=attention_status,json=attentionStatus,proto3,oneof" json:"attention_status,omitempty"`
 	unknownFields   protoimpl.UnknownFields
@@ -1238,6 +1239,13 @@ func (x *Session) GetPrDisplayStatus() PRDisplayStatus {
 func (x *Session) GetPrDisplayHasFailures() bool {
 	if x != nil {
 		return x.PrDisplayHasFailures
+	}
+	return false
+}
+
+func (x *Session) GetPrDisplayHasChangesRequested() bool {
+	if x != nil {
+		return x.PrDisplayHasChangesRequested
 	}
 	return false
 }
@@ -2386,7 +2394,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategyB\x0f\n" +
-	"\r_setup_script\"\xc7\b\n" +
+	"\r_setup_script\"\x8f\t\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -2414,7 +2422,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"updated_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12*\n" +
 	"\x11repo_display_name\x18\x13 \x01(\tR\x0frepoDisplayName\x12I\n" +
 	"\x11pr_display_status\x18\x14 \x01(\x0e2\x1d.bossanova.v1.PRDisplayStatusR\x0fprDisplayStatus\x125\n" +
-	"\x17pr_display_has_failures\x18\x15 \x01(\bR\x14prDisplayHasFailures\x12M\n" +
+	"\x17pr_display_has_failures\x18\x15 \x01(\bR\x14prDisplayHasFailures\x12F\n" +
+	" pr_display_has_changes_requested\x18\x17 \x01(\bR\x1cprDisplayHasChangesRequested\x12M\n" +
 	"\x10attention_status\x18\x16 \x01(\v2\x1d.bossanova.v1.AttentionStatusH\x05R\x0fattentionStatus\x88\x01\x01B\x14\n" +
 	"\x12_claude_session_idB\f\n" +
 	"\n" +

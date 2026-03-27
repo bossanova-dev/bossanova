@@ -491,6 +491,10 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 			}
 		}
 
+		// Close the pipe reader to unblock the goroutine if it's still
+		// writing (e.g. scanner hit MaxScanTokenSize and stopped reading).
+		_ = pr.Close()
+
 		// Pipe closed — lifecycle goroutine is done.
 		result := <-done
 		startErr = result.err

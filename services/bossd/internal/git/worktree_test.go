@@ -209,6 +209,50 @@ func TestArchive(t *testing.T) {
 	}
 }
 
+func TestArchive_CorruptedWorktree(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	logger := zerolog.Nop()
+	mgr := NewManager(logger)
+
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Corrupted test",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Corrupt the worktree by removing its .git file.
+	if err := os.Remove(filepath.Join(result.WorktreePath, ".git")); err != nil {
+		t.Fatalf("remove .git: %v", err)
+	}
+
+	// Archive should succeed via the fallback path.
+	if err := mgr.Archive(context.Background(), result.WorktreePath); err != nil {
+		t.Fatalf("Archive of corrupted worktree should succeed, got: %v", err)
+	}
+
+	// Worktree directory should be gone.
+	if _, err := os.Stat(result.WorktreePath); !os.IsNotExist(err) {
+		t.Errorf("worktree dir still exists after archive of corrupted worktree")
+	}
+}
+
+func TestArchive_MissingWorktree(t *testing.T) {
+	logger := zerolog.Nop()
+	mgr := NewManager(logger)
+
+	// Archive a path that doesn't exist — should succeed (os.RemoveAll is a no-op).
+	nonexistent := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := mgr.Archive(context.Background(), nonexistent); err != nil {
+		t.Fatalf("Archive of non-existent path should succeed, got: %v", err)
+	}
+}
+
 func TestResurrect(t *testing.T) {
 	repoDir := initTestRepo(t)
 	wtBase := filepath.Join(t.TempDir(), "worktrees")

@@ -72,6 +72,9 @@ const (
 	// HostServiceFireSessionEventProcedure is the fully-qualified name of the HostService's
 	// FireSessionEvent RPC.
 	HostServiceFireSessionEventProcedure = "/bossanova.v1.HostService/FireSessionEvent"
+	// HostServiceSetRepairStatusProcedure is the fully-qualified name of the HostService's
+	// SetRepairStatus RPC.
+	HostServiceSetRepairStatusProcedure = "/bossanova.v1.HostService/SetRepairStatus"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -104,6 +107,8 @@ type HostServiceClient interface {
 	GetReviewComments(context.Context, *connect.Request[v1.GetReviewCommentsRequest]) (*connect.Response[v1.GetReviewCommentsResponse], error)
 	// FireSessionEvent fires a state machine event on a session.
 	FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error)
+	// SetRepairStatus sets or clears the is_repairing flag for a session.
+	SetRepairStatus(context.Context, *connect.Request[v1.SetRepairStatusRequest]) (*connect.Response[v1.SetRepairStatusResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -201,6 +206,12 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("FireSessionEvent")),
 			connect.WithClientOptions(opts...),
 		),
+		setRepairStatus: connect.NewClient[v1.SetRepairStatusRequest, v1.SetRepairStatusResponse](
+			httpClient,
+			baseURL+HostServiceSetRepairStatusProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("SetRepairStatus")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -220,6 +231,7 @@ type hostServiceClient struct {
 	listSessions        *connect.Client[v1.HostServiceListSessionsRequest, v1.HostServiceListSessionsResponse]
 	getReviewComments   *connect.Client[v1.GetReviewCommentsRequest, v1.GetReviewCommentsResponse]
 	fireSessionEvent    *connect.Client[v1.FireSessionEventRequest, v1.FireSessionEventResponse]
+	setRepairStatus     *connect.Client[v1.SetRepairStatusRequest, v1.SetRepairStatusResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -292,6 +304,11 @@ func (c *hostServiceClient) FireSessionEvent(ctx context.Context, req *connect.R
 	return c.fireSessionEvent.CallUnary(ctx, req)
 }
 
+// SetRepairStatus calls bossanova.v1.HostService.SetRepairStatus.
+func (c *hostServiceClient) SetRepairStatus(ctx context.Context, req *connect.Request[v1.SetRepairStatusRequest]) (*connect.Response[v1.SetRepairStatusResponse], error) {
+	return c.setRepairStatus.CallUnary(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
 type HostServiceHandler interface {
 	// ListOpenPRs returns all open pull requests for a repository.
@@ -322,6 +339,8 @@ type HostServiceHandler interface {
 	GetReviewComments(context.Context, *connect.Request[v1.GetReviewCommentsRequest]) (*connect.Response[v1.GetReviewCommentsResponse], error)
 	// FireSessionEvent fires a state machine event on a session.
 	FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error)
+	// SetRepairStatus sets or clears the is_repairing flag for a session.
+	SetRepairStatus(context.Context, *connect.Request[v1.SetRepairStatusRequest]) (*connect.Response[v1.SetRepairStatusResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -415,6 +434,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("FireSessionEvent")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceSetRepairStatusHandler := connect.NewUnaryHandler(
+		HostServiceSetRepairStatusProcedure,
+		svc.SetRepairStatus,
+		connect.WithSchema(hostServiceMethods.ByName("SetRepairStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceListOpenPRsProcedure:
@@ -445,6 +470,8 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceGetReviewCommentsHandler.ServeHTTP(w, r)
 		case HostServiceFireSessionEventProcedure:
 			hostServiceFireSessionEventHandler.ServeHTTP(w, r)
+		case HostServiceSetRepairStatusProcedure:
+			hostServiceSetRepairStatusHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -508,4 +535,8 @@ func (UnimplementedHostServiceHandler) GetReviewComments(context.Context, *conne
 
 func (UnimplementedHostServiceHandler) FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.FireSessionEvent is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) SetRepairStatus(context.Context, *connect.Request[v1.SetRepairStatusRequest]) (*connect.Response[v1.SetRepairStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.SetRepairStatus is not implemented"))
 }

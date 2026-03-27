@@ -1062,8 +1062,10 @@ type Session struct {
 	PrDisplayHasChangesRequested bool            `protobuf:"varint,23,opt,name=pr_display_has_changes_requested,json=prDisplayHasChangesRequested,proto3" json:"pr_display_has_changes_requested,omitempty"`
 	// Attention status, hydrated server-side from session state.
 	AttentionStatus *AttentionStatus `protobuf:"bytes,22,opt,name=attention_status,json=attentionStatus,proto3,oneof" json:"attention_status,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Whether this session is currently being repaired by the repair plugin.
+	IsRepairing   bool `protobuf:"varint,24,opt,name=is_repairing,json=isRepairing,proto3" json:"is_repairing,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1255,6 +1257,13 @@ func (x *Session) GetAttentionStatus() *AttentionStatus {
 		return x.AttentionStatus
 	}
 	return nil
+}
+
+func (x *Session) GetIsRepairing() bool {
+	if x != nil {
+		return x.IsRepairing
+	}
+	return false
 }
 
 // Attempt represents a fix attempt within a session.
@@ -2394,7 +2403,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategyB\x0f\n" +
-	"\r_setup_script\"\x8f\t\n" +
+	"\r_setup_script\"\xb2\t\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -2424,7 +2433,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x11pr_display_status\x18\x14 \x01(\x0e2\x1d.bossanova.v1.PRDisplayStatusR\x0fprDisplayStatus\x125\n" +
 	"\x17pr_display_has_failures\x18\x15 \x01(\bR\x14prDisplayHasFailures\x12F\n" +
 	" pr_display_has_changes_requested\x18\x17 \x01(\bR\x1cprDisplayHasChangesRequested\x12M\n" +
-	"\x10attention_status\x18\x16 \x01(\v2\x1d.bossanova.v1.AttentionStatusH\x05R\x0fattentionStatus\x88\x01\x01B\x14\n" +
+	"\x10attention_status\x18\x16 \x01(\v2\x1d.bossanova.v1.AttentionStatusH\x05R\x0fattentionStatus\x88\x01\x01\x12!\n" +
+	"\fis_repairing\x18\x18 \x01(\bR\visRepairingB\x14\n" +
 	"\x12_claude_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

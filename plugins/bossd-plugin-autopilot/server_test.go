@@ -217,6 +217,10 @@ func (m *mockHostClient) FireSessionEvent(_ context.Context, _ *bossanovav1.Fire
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
+func (m *mockHostClient) SetRepairStatus(_ context.Context, _ *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
+	return &bossanovav1.SetRepairStatusResponse{}, nil
+}
+
 // getUpdateStatuses returns the Status values from all UpdateWorkflow calls.
 func (m *mockHostClient) getUpdateStatuses() []string {
 	m.mu.Lock()

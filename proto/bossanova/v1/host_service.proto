@@ -57,6 +57,9 @@ service HostService {
 
   // FireSessionEvent fires a state machine event on a session.
   rpc FireSessionEvent(FireSessionEventRequest) returns (FireSessionEventResponse);
+
+  // SetRepairStatus sets or clears the is_repairing flag for a session.
+  rpc SetRepairStatus(SetRepairStatusRequest) returns (SetRepairStatusResponse);
 }
 
 // --- ListOpenPRs ---
@@ -249,3 +252,14 @@ message FireSessionEventResponse {
   // New state after firing the event.
   string new_state = 1;
 }
+
+// --- SetRepairStatus ---
+
+message SetRepairStatusRequest {
+  // Session ID to set repair status on.
+  string session_id = 1;
+  // Whether the session is currently being repaired.
+  bool is_repairing = 2;
+}
+
+message SetRepairStatusResponse {}

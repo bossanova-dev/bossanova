@@ -141,6 +141,10 @@ func (m *mockHostClient) FireSessionEvent(_ context.Context, _ *bossanovav1.Fire
 	return &bossanovav1.FireSessionEventResponse{}, nil
 }
 
+func (m *mockHostClient) SetRepairStatus(_ context.Context, _ *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
+	return &bossanovav1.SetRepairStatusResponse{}, nil
+}
+
 // --- helpers ---
 
 func testLogger() zerolog.Logger {

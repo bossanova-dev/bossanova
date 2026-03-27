@@ -430,7 +430,25 @@ func (m *repairMonitor) repairSession(ctx context.Context, sessionID, repoName s
 		delete(m.repairing, sessionID)
 		m.cooldowns[sessionID] = time.Now()
 		m.mu.Unlock()
+
+		// Clear repair status so TUI reverts to the underlying PR status.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := m.host.SetRepairStatus(cleanupCtx, &bossanovav1.SetRepairStatusRequest{
+			SessionId:   sessionID,
+			IsRepairing: false,
+		}); err != nil {
+			log.Warn().Err(err).Msg("failed to clear repair status")
+		}
 	}()
+
+	// Notify the daemon that repair is starting so the TUI shows "repairing".
+	if _, err := m.host.SetRepairStatus(ctx, &bossanovav1.SetRepairStatusRequest{
+		SessionId:   sessionID,
+		IsRepairing: true,
+	}); err != nil {
+		log.Warn().Err(err).Msg("failed to set repair status")
+	}
 
 	log.Info().
 		Int32("display_status", int32(displayStatus)).

@@ -218,6 +218,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			if len(m.sessions) > 0 {
 				m.confirming = true
+				m.table.SetHeight(m.tableHeight())
 			}
 			return m, nil
 		}
@@ -237,6 +238,7 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "enter":
 		m.confirming = false
 		m.deleting = true
+		m.table.SetHeight(m.tableHeight())
 		sess := m.sessions[m.table.Cursor()]
 		return m, func() tea.Msg {
 			err := m.client.RemoveSession(m.ctx, sess.Id)
@@ -244,6 +246,7 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n", "esc":
 		m.confirming = false
+		m.table.SetHeight(m.tableHeight())
 	}
 	return m, nil
 }
@@ -253,7 +256,11 @@ func (m TrashModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m TrashModel) tableHeight() int {
-	return clampedTableHeight(len(m.sessions), m.height, 4) // title + blank + blank + action bar
+	overhead := bannerOverhead + 4 // title + blank + blank + action bar
+	if m.confirming {
+		overhead += 3 // confirmation prompt + surrounding blank lines
+	}
+	return clampedTableHeight(len(m.sessions), m.height, overhead)
 }
 
 func (m TrashModel) View() tea.View {

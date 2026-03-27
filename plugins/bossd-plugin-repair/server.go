@@ -14,7 +14,7 @@ import (
 
 const (
 	// defaultCooldownDuration is the minimum time between repair attempts for the same session.
-	defaultCooldownDuration = 5 * time.Minute
+	defaultCooldownDuration = 2 * time.Minute
 	// defaultPollInterval is how often to check attempt status.
 	defaultPollInterval = 5 * time.Second
 	// defaultRepairSkill is the skill invoked for repair attempts.

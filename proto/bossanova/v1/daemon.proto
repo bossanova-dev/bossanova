@@ -177,6 +177,8 @@ message CreateSessionRequest {
   optional int32 pr_number = 5;
   // If true, remove any existing branch with the same name before creating.
   bool force_branch = 6;
+  // If true, run as a quick chat session (no worktree, no branch, no PR).
+  bool quick_chat = 7;
 }
 
 message CreateSessionResponse {

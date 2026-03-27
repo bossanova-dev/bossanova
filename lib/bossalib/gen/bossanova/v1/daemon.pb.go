@@ -890,7 +890,9 @@ type CreateSessionRequest struct {
 	// If set, attach to an existing PR instead of creating a new one.
 	PrNumber *int32 `protobuf:"varint,5,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
 	// If true, remove any existing branch with the same name before creating.
-	ForceBranch   bool `protobuf:"varint,6,opt,name=force_branch,json=forceBranch,proto3" json:"force_branch,omitempty"`
+	ForceBranch bool `protobuf:"varint,6,opt,name=force_branch,json=forceBranch,proto3" json:"force_branch,omitempty"`
+	// If true, run as a quick chat session (no worktree, no branch, no PR).
+	QuickChat     bool `protobuf:"varint,7,opt,name=quick_chat,json=quickChat,proto3" json:"quick_chat,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -963,6 +965,13 @@ func (x *CreateSessionRequest) GetPrNumber() int32 {
 func (x *CreateSessionRequest) GetForceBranch() bool {
 	if x != nil {
 		return x.ForceBranch
+	}
+	return false
+}
+
+func (x *CreateSessionRequest) GetQuickChat() bool {
+	if x != nil {
+		return x.QuickChat
 	}
 	return false
 }
@@ -4064,7 +4073,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x12ListRepoPRsRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"S\n" +
 	"\x13ListRepoPRsResponse\x12<\n" +
-	"\rpull_requests\x18\x01 \x03(\v2\x17.bossanova.v1.PRSummaryR\fpullRequests\"\xcd\x01\n" +
+	"\rpull_requests\x18\x01 \x03(\v2\x17.bossanova.v1.PRSummaryR\fpullRequests\"\xec\x01\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -4072,7 +4081,9 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\vbase_branch\x18\x04 \x01(\tR\n" +
 	"baseBranch\x12 \n" +
 	"\tpr_number\x18\x05 \x01(\x05H\x00R\bprNumber\x88\x01\x01\x12!\n" +
-	"\fforce_branch\x18\x06 \x01(\bR\vforceBranchB\f\n" +
+	"\fforce_branch\x18\x06 \x01(\bR\vforceBranch\x12\x1d\n" +
+	"\n" +
+	"quick_chat\x18\a \x01(\bR\tquickChatB\f\n" +
 	"\n" +
 	"_pr_number\"H\n" +
 	"\x15CreateSessionResponse\x12/\n" +

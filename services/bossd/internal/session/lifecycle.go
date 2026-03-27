@@ -180,6 +180,71 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 	return nil
 }
 
+// StartQuickChatSession starts a Claude process directly in the repo's base
+// directory. No worktree, branch, or PR is created.
+func (l *Lifecycle) StartQuickChatSession(ctx context.Context, sessionID string) error {
+	session, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	repo, err := l.repos.Get(ctx, session.RepoID)
+	if err != nil {
+		return fmt.Errorf("get repo: %w", err)
+	}
+
+	// Set WorktreePath to repo's base directory (no worktree created).
+	worktreePath := repo.LocalPath
+	emptyBranch := ""
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		WorktreePath: &worktreePath,
+		BranchName:   &emptyBranch,
+	}); err != nil {
+		return fmt.Errorf("update worktree path: %w", err)
+	}
+
+	// Skip CreatingWorktree, go straight to StartingClaude.
+	startingState := int(machine.StartingClaude)
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		State: &startingState,
+	}); err != nil {
+		return fmt.Errorf("set starting_claude state: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("repoPath", repo.LocalPath).
+		Msg("starting quick chat claude")
+
+	// Start Claude in the repo's base directory with no plan.
+	claudeSessionID, err := l.claude.Start(ctx, repo.LocalPath, "", nil, "")
+	if err != nil {
+		return fmt.Errorf("start claude: %w", err)
+	}
+
+	// Update session with Claude session ID.
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		ClaudeSessionID: strPtr(claudeSessionID),
+	}); err != nil {
+		return fmt.Errorf("update claude session id: %w", err)
+	}
+
+	// Transition to ImplementingPlan.
+	implementingState := int(machine.ImplementingPlan)
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		State: &implementingState,
+	}); err != nil {
+		return fmt.Errorf("set implementing_plan state: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("claudeSession", claudeSessionID).
+		Msg("quick chat session started")
+
+	return nil
+}
+
 // SubmitPR transitions the session from ImplementingPlan through to
 // AwaitingChecks. If the PR was already created (no-plan sessions), it skips
 // push/create and goes directly to AwaitingChecks. Otherwise it pushes the
@@ -400,7 +465,12 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	}
 
 	// Archive worktree (removes directory, keeps branch).
-	if session.WorktreePath != "" {
+	// Skip for quick chat sessions where WorktreePath is the base repo.
+	repo, err := l.repos.Get(ctx, session.RepoID)
+	if err != nil {
+		return fmt.Errorf("get repo: %w", err)
+	}
+	if session.WorktreePath != "" && session.WorktreePath != repo.LocalPath {
 		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
 			return fmt.Errorf("archive worktree: %w", err)
 		}
@@ -438,13 +508,16 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		Msg("resurrecting session")
 
 	// Resurrect worktree from existing branch.
-	if err := l.worktrees.Resurrect(ctx, gitpkg.ResurrectOpts{
-		RepoPath:     repo.LocalPath,
-		WorktreePath: session.WorktreePath,
-		BranchName:   session.BranchName,
-		SetupScript:  repo.SetupScript,
-	}); err != nil {
-		return fmt.Errorf("resurrect worktree: %w", err)
+	// Skip for quick chat sessions where WorktreePath is the base repo.
+	if session.WorktreePath != repo.LocalPath {
+		if err := l.worktrees.Resurrect(ctx, gitpkg.ResurrectOpts{
+			RepoPath:     repo.LocalPath,
+			WorktreePath: session.WorktreePath,
+			BranchName:   session.BranchName,
+			SetupScript:  repo.SetupScript,
+		}); err != nil {
+			return fmt.Errorf("resurrect worktree: %w", err)
+		}
 	}
 
 	// Clear archived status.

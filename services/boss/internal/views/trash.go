@@ -186,6 +186,8 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionRestoredMsg:
 		m.restoring = false
+		m.confirmingAll = false
+		m.deletingAll = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
@@ -196,6 +198,8 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionDeletedMsg:
 		m.confirming = false
 		m.deleting = false
+		m.confirmingAll = false
+		m.deletingAll = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil

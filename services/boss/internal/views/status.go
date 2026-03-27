@@ -60,7 +60,7 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 		return styleStatusMuted.Render("draft")
 	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CHECKING:
 		if sess.PrDisplayHasChangesRequested {
-			return styleStatusDanger.Render(sp.View() + "rejected")
+			return styleStatusDanger.Render(sp.View() + "checking")
 		}
 		s := styleStatusWarning
 		if sess.PrDisplayHasFailures {

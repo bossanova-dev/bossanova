@@ -496,6 +496,11 @@ func TestArchiveSession(t *testing.T) {
 	cr := newMockClaudeRunner()
 	logger := zerolog.Nop()
 
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+	}
+
 	claudeID := "claude-123"
 	cr.running[claudeID] = true
 
@@ -871,6 +876,164 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 	}
 	if wt.created[0].SetupScript != nil {
 		t.Errorf("expected nil SetupScript when skipSetupScript=true, got %q", *wt.created[0].SetupScript)
+	}
+}
+
+func TestStartQuickChatSession(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Quick chat",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	if err := lc.StartQuickChatSession(ctx, "sess-1"); err != nil {
+		t.Fatalf("StartQuickChatSession: %v", err)
+	}
+
+	// Verify NO worktree was created.
+	if len(wt.created) != 0 {
+		t.Errorf("expected 0 worktrees created, got %d", len(wt.created))
+	}
+	if len(wt.createdFromExisting) != 0 {
+		t.Errorf("expected 0 existing branch worktrees, got %d", len(wt.createdFromExisting))
+	}
+
+	// Verify Claude was started in repo's base directory.
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 claude start, got %d", len(cr.started))
+	}
+	if cr.started[0].workDir != "/tmp/repo" {
+		t.Errorf("claude workDir = %q, want /tmp/repo", cr.started[0].workDir)
+	}
+	if cr.started[0].plan != "" {
+		t.Errorf("claude plan = %q, want empty", cr.started[0].plan)
+	}
+	if cr.started[0].resume != nil {
+		t.Errorf("claude resume = %v, want nil", cr.started[0].resume)
+	}
+
+	// Verify session was updated correctly.
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ImplementingPlan {
+		t.Errorf("session state = %v, want ImplementingPlan", sess.State)
+	}
+	if sess.WorktreePath != "/tmp/repo" {
+		t.Errorf("worktree path = %q, want /tmp/repo", sess.WorktreePath)
+	}
+	if sess.BranchName != "" {
+		t.Errorf("branch name = %q, want empty", sess.BranchName)
+	}
+	if sess.ClaudeSessionID == nil || *sess.ClaudeSessionID != "claude-123" {
+		t.Errorf("claude session id = %v, want claude-123", sess.ClaudeSessionID)
+	}
+}
+
+func TestArchiveQuickChatSession(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+	}
+
+	claudeID := "claude-123"
+	cr.running[claudeID] = true
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:              "sess-1",
+		RepoID:          "repo-1",
+		State:           machine.ImplementingPlan,
+		WorktreePath:    "/tmp/repo", // same as repo.LocalPath → quick chat
+		ClaudeSessionID: &claudeID,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+
+	// Verify Claude was stopped.
+	if len(cr.stopped) != 1 {
+		t.Errorf("expected 1 claude stop, got %d", len(cr.stopped))
+	}
+
+	// Verify worktree was NOT archived (would destroy base repo).
+	if len(wt.archived) != 0 {
+		t.Errorf("expected 0 worktree archives for quick chat, got %d", len(wt.archived))
+	}
+}
+
+func TestResurrectQuickChatSession(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+	}
+
+	archTime := models.Session{}.CreatedAt
+	oldClaudeID := "claude-old"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:              "sess-1",
+		RepoID:          "repo-1",
+		Title:           "Quick chat",
+		WorktreePath:    "/tmp/repo", // same as repo.LocalPath → quick chat
+		BranchName:      "",
+		State:           machine.ImplementingPlan,
+		ArchivedAt:      &archTime,
+		ClaudeSessionID: &oldClaudeID,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
+		t.Fatalf("ResurrectSession: %v", err)
+	}
+
+	// Verify worktree was NOT resurrected (no worktree to recreate).
+	if len(wt.resurrected) != 0 {
+		t.Errorf("expected 0 resurrect calls for quick chat, got %d", len(wt.resurrected))
+	}
+
+	// Verify Claude was started with resume.
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 claude start, got %d", len(cr.started))
+	}
+	if cr.started[0].resume == nil || *cr.started[0].resume != "claude-old" {
+		t.Errorf("expected claude resume with 'claude-old', got %v", cr.started[0].resume)
+	}
+
+	// Verify session state is ImplementingPlan.
+	if sessions.sessions["sess-1"].State != machine.ImplementingPlan {
+		t.Errorf("state = %v, want ImplementingPlan", sessions.sessions["sess-1"].State)
 	}
 }
 

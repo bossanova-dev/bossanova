@@ -450,9 +450,16 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 	}
 
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
-	// Pass the head branch for existing PR sessions so the lifecycle can
-	// check out the existing branch instead of creating a new one.
-	if err := s.lifecycle.StartSession(ctx, sess.ID, headBranch, msg.ForceBranch, false); err != nil {
+	// Quick chat sessions skip worktree/branch/PR creation entirely.
+	var startErr error
+	if msg.QuickChat {
+		startErr = s.lifecycle.StartQuickChatSession(ctx, sess.ID)
+	} else {
+		// Pass the head branch for existing PR sessions so the lifecycle can
+		// check out the existing branch instead of creating a new one.
+		startErr = s.lifecycle.StartSession(ctx, sess.ID, headBranch, msg.ForceBranch, false)
+	}
+	if err := startErr; err != nil {
 		// Clean up the orphaned session record on failure.
 		_ = s.sessions.Delete(ctx, sess.ID)
 		if errors.Is(err, gitpkg.ErrBranchExists) {

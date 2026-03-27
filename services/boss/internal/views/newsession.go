@@ -64,8 +64,8 @@ var sessionTypeOptions = []struct {
 	desc  string
 	typ   sessionType
 }{
-	{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
 	{"Create a new PR", "Start a fresh branch and pull request", sessionTypeNewPR},
+	{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
 	{"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
 	{"Plan a feature", "Describe what to build, then launch Claude", sessionTypePlanFeature},
 }
@@ -499,6 +499,7 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 	switch m.selectedType {
 	case sessionTypeQuickChat:
 		req.Title = "Quick chat"
+		req.QuickChat = true
 	case sessionTypeNewPR:
 		req.Title = m.fd.title
 	case sessionTypeExistingPR:

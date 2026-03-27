@@ -452,9 +452,9 @@ func TestGetReviewComments_GraphQLFailure(t *testing.T) {
 	if len(comments) != 1 {
 		t.Fatalf("got %d comments, want 1", len(comments))
 	}
-	// GraphQL failed — fail-open means promote.
-	if comments[0].State != vcs.ReviewStateChangesRequested {
-		t.Errorf("bot comment state = %v, want ChangesRequested (fail-open)", comments[0].State)
+	// GraphQL failed — fail-closed means no promotion.
+	if comments[0].State != vcs.ReviewStateCommented {
+		t.Errorf("bot comment state = %v, want Commented (fail-closed)", comments[0].State)
 	}
 }
 

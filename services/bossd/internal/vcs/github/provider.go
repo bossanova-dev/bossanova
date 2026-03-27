@@ -89,14 +89,14 @@ func splitNWO(nwo string) (owner, repo string, ok bool) {
 // PR and returns the set of bot authors (from botUsers) that have at least one
 // unresolved thread.
 //
-// On any error it fails open: returns all botUsers so that promotion still
-// fires. A false "rejected" is safer than hiding real issues.
+// On any error it fails closed: returns nil so that no promotions fire.
+// A missed promotion self-corrects on the next successful poll (2 min).
 func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string, prID int, botUsers map[string]bool) map[string]bool {
 	nwo := repoFlag(repoPath)
 	owner, repo, ok := splitNWO(nwo)
 	if !ok {
-		p.logger.Warn().Str("nwo", nwo).Msg("cannot split owner/repo for thread query, failing open")
-		return botUsers
+		p.logger.Warn().Str("nwo", nwo).Msg("cannot split owner/repo for thread query, failing closed")
+		return nil
 	}
 
 	query := `query($owner:String!, $repo:String!, $pr:Int!) {
@@ -121,8 +121,8 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 		"-F", fmt.Sprintf("pr=%d", prID),
 	)
 	if err != nil {
-		p.logger.Warn().Err(err).Msg("GraphQL thread query failed, failing open")
-		return botUsers
+		p.logger.Warn().Err(err).Msg("GraphQL thread query failed, failing closed")
+		return nil
 	}
 
 	var result struct {
@@ -146,8 +146,8 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		p.logger.Warn().Err(err).Msg("failed to parse GraphQL thread response, failing open")
-		return botUsers
+		p.logger.Warn().Err(err).Msg("failed to parse GraphQL thread response, failing closed")
+		return nil
 	}
 
 	// GraphQL returns bare logins for bots ("cursor") while REST returns

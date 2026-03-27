@@ -440,13 +440,13 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 }
 
 // runSetupScript executes a setup script in the given directory with a 5-minute timeout.
-// If output is non-nil, stdout and stderr are written there; otherwise they go to io.Discard.
+// If output is non-nil, stdout and stderr are written there; otherwise they go to os.Stderr (daemon logs).
 func runSetupScript(ctx context.Context, dir, script string, output io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, SetupScriptTimeout)
 	defer cancel()
 
 	if output == nil {
-		output = io.Discard
+		output = os.Stderr
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)

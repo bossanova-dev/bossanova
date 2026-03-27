@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,13 +72,14 @@ type WorktreeManager interface {
 
 // CreateOpts holds the parameters for creating a new worktree.
 type CreateOpts struct {
-	RepoPath        string  // Path to the main repository.
-	BaseBranch      string  // Branch to base the worktree on (e.g. "main").
-	WorktreeBaseDir string  // Directory under which worktrees are created.
-	RepoName        string  // Display name of the repo, used to derive worktree subdirectory.
-	Title           string  // Session title, used to derive branch name.
-	SetupScript     *string // Optional setup script to run after creation.
-	Force           bool    // If true, remove any existing branch with the same name.
+	RepoPath          string    // Path to the main repository.
+	BaseBranch        string    // Branch to base the worktree on (e.g. "main").
+	WorktreeBaseDir   string    // Directory under which worktrees are created.
+	RepoName          string    // Display name of the repo, used to derive worktree subdirectory.
+	Title             string    // Session title, used to derive branch name.
+	SetupScript       *string   // Optional setup script to run after creation.
+	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
+	Force             bool      // If true, remove any existing branch with the same name.
 }
 
 // CreateResult holds the output of a successful worktree creation.
@@ -89,19 +91,21 @@ type CreateResult struct {
 // CreateFromExistingBranchOpts holds the parameters for creating a worktree
 // from an existing remote branch (e.g. a PR head branch).
 type CreateFromExistingBranchOpts struct {
-	RepoPath        string  // Path to the main repository.
-	BranchName      string  // Remote branch to check out (e.g. "feature/foo").
-	WorktreeBaseDir string  // Directory under which worktrees are created.
-	RepoName        string  // Display name of the repo, used to derive worktree subdirectory.
-	SetupScript     *string // Optional setup script to run after creation.
+	RepoPath          string    // Path to the main repository.
+	BranchName        string    // Remote branch to check out (e.g. "feature/foo").
+	WorktreeBaseDir   string    // Directory under which worktrees are created.
+	RepoName          string    // Display name of the repo, used to derive worktree subdirectory.
+	SetupScript       *string   // Optional setup script to run after creation.
+	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
 }
 
 // ResurrectOpts holds the parameters for resurrecting an archived worktree.
 type ResurrectOpts struct {
-	RepoPath     string  // Path to the main repository.
-	WorktreePath string  // Target path for the worktree directory.
-	BranchName   string  // Existing branch to check out.
-	SetupScript  *string // Optional setup script to run after creation.
+	RepoPath          string    // Path to the main repository.
+	WorktreePath      string    // Target path for the worktree directory.
+	BranchName        string    // Existing branch to check out.
+	SetupScript       *string   // Optional setup script to run after creation.
+	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
 }
 
 var _ WorktreeManager = (*Manager)(nil)
@@ -224,7 +228,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 
 	// Run setup script if provided.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, wtPath, *opts.SetupScript); err != nil {
+		if err := runSetupScript(ctx, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
 			return nil, fmt.Errorf("setup script: %w", err)
 		}
 	}
@@ -292,7 +296,7 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 
 	// Run setup script if provided.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, opts.WorktreePath, *opts.SetupScript); err != nil {
+		if err := runSetupScript(ctx, opts.WorktreePath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
 			return fmt.Errorf("setup script: %w", err)
 		}
 	}
@@ -424,7 +428,7 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 
 	// Run setup script if provided.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, wtPath, *opts.SetupScript); err != nil {
+		if err := runSetupScript(ctx, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
 			return nil, fmt.Errorf("setup script: %w", err)
 		}
 	}
@@ -436,14 +440,19 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 }
 
 // runSetupScript executes a setup script in the given directory with a 5-minute timeout.
-func runSetupScript(ctx context.Context, dir, script string) error {
+// If output is non-nil, stdout and stderr are written there; otherwise they go to io.Discard.
+func runSetupScript(ctx context.Context, dir, script string, output io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, SetupScriptTimeout)
 	defer cancel()
 
+	if output == nil {
+		output = io.Discard
+	}
+
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = output
+	cmd.Stderr = output
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

@@ -47,7 +47,7 @@ type BossClient interface {
 	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
 
 	// Session lifecycle
-	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error)
+	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (CreateSessionStream, error)
 	GetSession(ctx context.Context, id string) (*pb.Session, error)
 	ListSessions(ctx context.Context, req *pb.ListSessionsRequest) ([]*pb.Session, error)
 	AttachSession(ctx context.Context, id string) (AttachStream, error)
@@ -90,6 +90,18 @@ type AutopilotOutputStream interface {
 	Receive() bool
 	// Msg returns the most recent message from the stream.
 	Msg() *pb.StreamAutopilotOutputResponse
+	// Err returns the stream error, if any.
+	Err() error
+	// Close closes the stream.
+	Close() error
+}
+
+// CreateSessionStream abstracts a server-streaming create session response.
+type CreateSessionStream interface {
+	// Receive advances the stream. Returns false when done or on error.
+	Receive() bool
+	// Msg returns the most recent message from the stream.
+	Msg() *pb.CreateSessionResponse
 	// Err returns the stream error, if any.
 	Err() error
 	// Close closes the stream.

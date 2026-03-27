@@ -3,6 +3,7 @@ package taskorchestrator
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -59,11 +60,11 @@ func (m *mockSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, 
 
 // mockSessionStarter implements SessionStarter for testing.
 type mockSessionStarter struct {
-	startSessionFn func(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool) error
+	startSessionFn func(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error
 }
 
-func (m *mockSessionStarter) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool) error {
-	return m.startSessionFn(ctx, sessionID, existingBranch, forceBranch, skipSetupScript)
+func (m *mockSessionStarter) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error {
+	return m.startSessionFn(ctx, sessionID, existingBranch, forceBranch, skipSetupScript, setupOutput)
 }
 
 func TestCreateSession_Success(t *testing.T) {
@@ -87,7 +88,7 @@ func TestCreateSession_Success(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, sessionID string, existingBranch string, _ bool, _ bool) error {
+		startSessionFn: func(_ context.Context, sessionID string, existingBranch string, _ bool, _ bool, _ io.Writer) error {
 			capturedSessionID = sessionID
 			capturedBranch = existingBranch
 			return nil
@@ -137,7 +138,7 @@ func TestCreateSession_NoHeadBranch(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, _ string, existingBranch string, _ bool, _ bool) error {
+		startSessionFn: func(_ context.Context, _ string, existingBranch string, _ bool, _ bool, _ io.Writer) error {
 			capturedBranch = existingBranch
 			return nil
 		},
@@ -167,7 +168,7 @@ func TestCreateSession_CreateError(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, _ string, _ string, _ bool, _ bool) error {
+		startSessionFn: func(_ context.Context, _ string, _ string, _ bool, _ bool, _ io.Writer) error {
 			t.Fatal("StartSession should not be called when Create fails")
 			return nil
 		},
@@ -200,7 +201,7 @@ func TestCreateSession_StartSessionError(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, _ string, _ string, _ bool, _ bool) error {
+		startSessionFn: func(_ context.Context, _ string, _ string, _ bool, _ bool, _ io.Writer) error {
 			return errors.New("worktree conflict")
 		},
 	}

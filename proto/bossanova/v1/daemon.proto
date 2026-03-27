@@ -22,7 +22,7 @@ service DaemonService {
   rpc ListRepoPRs(ListRepoPRsRequest) returns (ListRepoPRsResponse);
 
   // Session lifecycle
-  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc CreateSession(CreateSessionRequest) returns (stream CreateSessionResponse);
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc AttachSession(AttachSessionRequest) returns (stream AttachSessionResponse);
@@ -182,6 +182,17 @@ message CreateSessionRequest {
 }
 
 message CreateSessionResponse {
+  oneof event {
+    SetupScriptOutput setup_output = 2;
+    SessionCreated session_created = 3;
+  }
+}
+
+message SetupScriptOutput {
+  string text = 1;
+}
+
+message SessionCreated {
   Session session = 1;
 }
 

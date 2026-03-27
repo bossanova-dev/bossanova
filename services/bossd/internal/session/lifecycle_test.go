@@ -408,7 +408,7 @@ func TestStartSession(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1", "", false, false); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", "", false, false, nil); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -790,7 +790,7 @@ func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
 
-	err := lc.StartSession(ctx, "sess-1", "", false, false)
+	err := lc.StartSession(ctx, "sess-1", "", false, false, nil)
 	if err == nil {
 		t.Fatal("expected error for repo not ready")
 	}
@@ -826,7 +826,7 @@ func TestStartSession_SkipSetupScript_NilsSetupScript(t *testing.T) {
 	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with an existing branch (dependabot PR path).
-	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, true); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, true, nil); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -866,7 +866,7 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with no existing branch (new branch path).
-	if err := lc.StartSession(ctx, "sess-1", "", false, true); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", "", false, true, nil); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -1064,7 +1064,7 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
 
 	// skipSetupScript = false with existing branch.
-	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, false); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, false, nil); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 

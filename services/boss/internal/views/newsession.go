@@ -52,10 +52,25 @@ type prsMsg struct {
 	err error
 }
 
-// sessionCreatedMsg carries the result of a CreateSession RPC call.
-type sessionCreatedMsg struct {
+// createSessionStreamMsg carries the opened stream or error.
+type createSessionStreamMsg struct {
+	stream client.CreateSessionStream
+	err    error
+}
+
+// setupScriptLineMsg carries a single line of setup script output.
+type setupScriptLineMsg struct {
+	text string
+}
+
+// streamSessionCreatedMsg carries the final session from the stream.
+type streamSessionCreatedMsg struct {
 	session *pb.Session
-	err     error
+}
+
+// streamErrorMsg carries an error from the stream.
+type streamErrorMsg struct {
+	err error
 }
 
 // sessionTypeOption defines a row in the session-type selection table.
@@ -101,6 +116,10 @@ type NewSessionModel struct {
 	forceBranch         bool
 	confirmingOverwrite bool
 
+	// Streaming create session
+	createStream client.CreateSessionStream
+	setupLines   []string
+
 	// Tables
 	repoTable table.Model
 	typeTable table.Model
@@ -141,10 +160,30 @@ func fetchPRs(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
 	}
 }
 
-func createSession(c client.BossClient, ctx context.Context, req *pb.CreateSessionRequest) tea.Cmd {
+func openCreateStream(c client.BossClient, ctx context.Context, req *pb.CreateSessionRequest) tea.Cmd {
 	return func() tea.Msg {
-		sess, err := c.CreateSession(ctx, req)
-		return sessionCreatedMsg{session: sess, err: err}
+		stream, err := c.CreateSession(ctx, req)
+		return createSessionStreamMsg{stream: stream, err: err}
+	}
+}
+
+func readNextStreamMsg(stream client.CreateSessionStream) tea.Cmd {
+	return func() tea.Msg {
+		if !stream.Receive() {
+			if err := stream.Err(); err != nil {
+				return streamErrorMsg{err: err}
+			}
+			return streamErrorMsg{err: fmt.Errorf("stream ended unexpectedly")}
+		}
+		msg := stream.Msg()
+		switch e := msg.Event.(type) {
+		case *pb.CreateSessionResponse_SetupOutput:
+			return setupScriptLineMsg{text: e.SetupOutput.GetText()}
+		case *pb.CreateSessionResponse_SessionCreated:
+			return streamSessionCreatedMsg{session: e.SessionCreated.GetSession()}
+		default:
+			return streamErrorMsg{err: fmt.Errorf("unexpected stream event")}
+		}
 	}
 }
 
@@ -324,7 +363,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.buildPRTable()
 		return m, nil
 
-	case sessionCreatedMsg:
+	case createSessionStreamMsg:
 		if msg.err != nil {
 			var connectErr *connect.Error
 			if errors.As(msg.err, &connectErr) && connectErr.Code() == connect.CodeAlreadyExists {
@@ -337,8 +376,34 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.phase = newSessionPhaseForm
 			return m, nil
 		}
+		m.createStream = msg.stream
+		return m, readNextStreamMsg(m.createStream)
+
+	case setupScriptLineMsg:
+		m.setupLines = append(m.setupLines, msg.text)
+		return m, readNextStreamMsg(m.createStream)
+
+	case streamSessionCreatedMsg:
+		if m.createStream != nil {
+			_ = m.createStream.Close()
+		}
 		m.createdSess = msg.session
 		m.done = true
+		return m, nil
+
+	case streamErrorMsg:
+		if m.createStream != nil {
+			_ = m.createStream.Close()
+		}
+		var connectErr *connect.Error
+		if errors.As(msg.err, &connectErr) && connectErr.Code() == connect.CodeAlreadyExists {
+			m.confirmingOverwrite = true
+			m.phase = newSessionPhaseForm
+			m.err = nil
+			return m, nil
+		}
+		m.err = msg.err
+		m.phase = newSessionPhaseForm
 		return m, nil
 
 	case tea.KeyMsg:
@@ -521,7 +586,7 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		req.Title = "New session"
 	}
 
-	return createSession(m.client, m.ctx, req)
+	return openCreateStream(m.client, m.ctx, req)
 }
 
 // Cancelled returns true if the user cancelled the wizard.
@@ -535,10 +600,20 @@ func (m NewSessionModel) CreatedSession() *pb.Session { return m.createdSess }
 
 func (m NewSessionModel) View() tea.View {
 	if m.err != nil && !m.confirmingOverwrite {
-		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
-				styleActionBar.Render("[esc] back"),
-		)
+		var b strings.Builder
+		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
+		if len(m.setupLines) > 0 {
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().PaddingLeft(2).Foreground(colorWarning).Render("Setup script output:"))
+			b.WriteString("\n")
+			for _, line := range m.setupLines {
+				b.WriteString(lipgloss.NewStyle().PaddingLeft(4).Foreground(lipgloss.Color("8")).Render(line))
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[esc] back"))
+		return tea.NewView(b.String())
 	}
 
 	if m.phase == newSessionPhaseLoading {
@@ -576,9 +651,23 @@ func (m NewSessionModel) View() tea.View {
 	}
 
 	if m.phase == newSessionPhaseCreating {
-		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Render("Creating a new session..."),
-		)
+		var b strings.Builder
+		if len(m.setupLines) > 0 {
+			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Running setup script..."))
+			b.WriteString("\n")
+			// Show last 10 lines of setup output.
+			start := 0
+			if len(m.setupLines) > 10 {
+				start = len(m.setupLines) - 10
+			}
+			for _, line := range m.setupLines[start:] {
+				b.WriteString(lipgloss.NewStyle().PaddingLeft(4).Foreground(lipgloss.Color("8")).Render(line))
+				b.WriteString("\n")
+			}
+		} else {
+			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Creating a new session..."))
+		}
+		return tea.NewView(b.String())
 	}
 
 	if m.done && m.createdSess != nil {

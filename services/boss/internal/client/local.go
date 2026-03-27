@@ -130,12 +130,33 @@ func (c *LocalClient) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRS
 
 // --- Session Lifecycle ---
 
-func (c *LocalClient) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
-	resp, err := c.rpc.CreateSession(ctx, connect.NewRequest(req))
+func (c *LocalClient) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (CreateSessionStream, error) {
+	stream, err := c.rpc.CreateSession(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
-	return resp.Msg.Session, nil
+	return &localCreateSessionStream{stream: stream}, nil
+}
+
+// localCreateSessionStream wraps the DaemonService CreateSession stream.
+type localCreateSessionStream struct {
+	stream *connect.ServerStreamForClient[pb.CreateSessionResponse]
+}
+
+func (s *localCreateSessionStream) Receive() bool {
+	return s.stream.Receive()
+}
+
+func (s *localCreateSessionStream) Msg() *pb.CreateSessionResponse {
+	return s.stream.Msg()
+}
+
+func (s *localCreateSessionStream) Err() error {
+	return s.stream.Err()
+}
+
+func (s *localCreateSessionStream) Close() error {
+	return s.stream.Close()
 }
 
 func (c *LocalClient) GetSession(ctx context.Context, id string) (*pb.Session, error) {

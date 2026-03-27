@@ -184,6 +184,22 @@ func (s *SQLiteSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64
 }
 
 func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
+	// Explicitly clean up all dependent records. We don't rely on ON DELETE
+	// CASCADE because the PRAGMA foreign_keys=ON setting is per-connection
+	// and may not persist if database/sql recycles the connection.
+	if _, err := s.db.ExecContext(ctx, `UPDATE task_mappings SET session_id = NULL WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("detach task mappings: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM workflows WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete workflows: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM claude_chats WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete claude chats: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM attempts WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete attempts: %w", err)
+	}
+
 	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete session: %w", err)

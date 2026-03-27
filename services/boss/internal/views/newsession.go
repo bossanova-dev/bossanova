@@ -549,6 +549,7 @@ func (m *NewSessionModel) selectedRepo() *pb.Repo {
 // startCreating builds a CreateSessionRequest and fires the RPC.
 func (m *NewSessionModel) startCreating() tea.Cmd {
 	m.phase = newSessionPhaseCreating
+	m.setupLines = nil // Clear setup output from any previous attempt
 	repo := m.selectedRepo()
 	if repo == nil {
 		m.err = fmt.Errorf("no repository selected")

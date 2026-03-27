@@ -613,9 +613,11 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			entry := s.prTracker.Get(sess.ID)
 			var displayStatus vcs.PRDisplayStatus
 			var hasFailures bool
+			var isRepairing bool
 			if entry != nil {
 				displayStatus = entry.Status
 				hasFailures = entry.HasFailures
+				isRepairing = entry.IsRepairing
 			}
 
 			pbSessions = append(pbSessions, &bossanovav1.Session{
@@ -626,6 +628,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				State:                sessionStateToProto(sess.State),
 				PrDisplayStatus:      vcsDisplayStatusToProto(displayStatus),
 				PrDisplayHasFailures: hasFailures,
+				IsRepairing:          isRepairing,
 			})
 		}
 	}

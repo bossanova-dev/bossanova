@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -391,19 +392,19 @@ func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRe
 
 // --- Session Lifecycle ---
 
-func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.CreateSessionRequest]) (*connect.Response[pb.CreateSessionResponse], error) {
+func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
 	msg := req.Msg
 	if msg.RepoId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
 	}
 	if msg.Title == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
 
 	// Verify repo exists.
 	repo, err := s.repos.Get(ctx, msg.RepoId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
+		return connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 	}
 
 	baseBranch := msg.BaseBranch
@@ -446,7 +447,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 
 	sess, err := s.sessions.Create(ctx, createParams)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
@@ -455,30 +456,71 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 	if msg.QuickChat {
 		startErr = s.lifecycle.StartQuickChatSession(ctx, sess.ID)
 	} else {
-		// Pass the head branch for existing PR sessions so the lifecycle can
-		// check out the existing branch instead of creating a new one.
-		startErr = s.lifecycle.StartSession(ctx, sess.ID, headBranch, msg.ForceBranch, false)
+		// Create a pipe to stream setup script output to the client.
+		pr, pw := io.Pipe()
+		defer pr.Close() //nolint:errcheck // best-effort cleanup
+
+		type lifecycleResult struct {
+			err error
+		}
+		done := make(chan lifecycleResult, 1)
+
+		go func() {
+			defer pw.Close() //nolint:errcheck // best-effort cleanup
+			err := s.lifecycle.StartSession(ctx, sess.ID, headBranch, msg.ForceBranch, false, pw)
+			done <- lifecycleResult{err: err}
+		}()
+
+		// Stream setup script output lines to the client.
+		scanner := bufio.NewScanner(pr)
+		for scanner.Scan() {
+			if err := stream.Send(&pb.CreateSessionResponse{
+				Event: &pb.CreateSessionResponse_SetupOutput{
+					SetupOutput: &pb.SetupScriptOutput{
+						Text: scanner.Text(),
+					},
+				},
+			}); err != nil {
+				// Client disconnected — close the pipe reader to unblock
+				// the goroutine if it's blocked on pw.Write(), then wait
+				// for it to finish so we don't leak.
+				_ = pr.Close()
+				result := <-done
+				_ = result.err
+				return err
+			}
+		}
+
+		// Pipe closed — lifecycle goroutine is done.
+		result := <-done
+		startErr = result.err
 	}
 	if err := startErr; err != nil {
 		// Clean up the orphaned session record on failure.
 		_ = s.sessions.Delete(ctx, sess.ID)
 		if errors.Is(err, gitpkg.ErrBranchExists) {
-			return nil, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
+			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
 		}
 		s.logger.Error().Err(err).
 			Str("session", sess.ID).
 			Str("title", msg.Title).
 			Msg("start session failed")
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
 	}
 
 	// Re-fetch the session to get updated fields from lifecycle.
 	sess, err = s.sessions.Get(ctx, sess.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.CreateSessionResponse{Session: sessionToProto(sess)}), nil
+	return stream.Send(&pb.CreateSessionResponse{
+		Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{
+				Session: sessionToProto(sess),
+			},
+		},
+	})
 }
 
 func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {

@@ -154,7 +154,7 @@ type DaemonServiceClient interface {
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
 	// Session lifecycle
-	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error)
+	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.ServerStreamForClient[v1.CreateSessionResponse], error)
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
 	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
 	AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest]) (*connect.ServerStreamForClient[v1.AttachSessionResponse], error)
@@ -506,8 +506,8 @@ func (c *daemonServiceClient) ListRepoPRs(ctx context.Context, req *connect.Requ
 }
 
 // CreateSession calls bossanova.v1.DaemonService.CreateSession.
-func (c *daemonServiceClient) CreateSession(ctx context.Context, req *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error) {
-	return c.createSession.CallUnary(ctx, req)
+func (c *daemonServiceClient) CreateSession(ctx context.Context, req *connect.Request[v1.CreateSessionRequest]) (*connect.ServerStreamForClient[v1.CreateSessionResponse], error) {
+	return c.createSession.CallServerStream(ctx, req)
 }
 
 // GetSession calls bossanova.v1.DaemonService.GetSession.
@@ -658,7 +658,7 @@ type DaemonServiceHandler interface {
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
 	// Session lifecycle
-	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error)
+	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest], *connect.ServerStream[v1.CreateSessionResponse]) error
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
 	ListSessions(context.Context, *connect.Request[v1.ListSessionsRequest]) (*connect.Response[v1.ListSessionsResponse], error)
 	AttachSession(context.Context, *connect.Request[v1.AttachSessionRequest], *connect.ServerStream[v1.AttachSessionResponse]) error
@@ -754,7 +754,7 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ListRepoPRs")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceCreateSessionHandler := connect.NewUnaryHandler(
+	daemonServiceCreateSessionHandler := connect.NewServerStreamHandler(
 		DaemonServiceCreateSessionProcedure,
 		svc.CreateSession,
 		connect.WithSchema(daemonServiceMethods.ByName("CreateSession")),
@@ -1037,8 +1037,8 @@ func (UnimplementedDaemonServiceHandler) ListRepoPRs(context.Context, *connect.R
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListRepoPRs is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.Response[v1.CreateSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateSession is not implemented"))
+func (UnimplementedDaemonServiceHandler) CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest], *connect.ServerStream[v1.CreateSessionResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateSession is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error) {

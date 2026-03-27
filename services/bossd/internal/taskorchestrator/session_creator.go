@@ -6,6 +6,7 @@ package taskorchestrator
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/rs/zerolog"
 
@@ -28,7 +29,7 @@ type CreateSessionOpts struct {
 
 // SessionStarter abstracts the lifecycle's StartSession method for testability.
 type SessionStarter interface {
-	StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool) error
+	StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error
 }
 
 // SessionCreator abstracts session creation so the orchestrator can
@@ -80,7 +81,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		Str("title", opts.Title).
 		Msg("created session, starting lifecycle")
 
-	if err := c.lifecycle.StartSession(ctx, sess.ID, opts.HeadBranch, false, opts.SkipSetupScript); err != nil {
+	if err := c.lifecycle.StartSession(ctx, sess.ID, opts.HeadBranch, false, opts.SkipSetupScript, nil); err != nil {
 		return nil, fmt.Errorf("start session %s: %w", sess.ID, err)
 	}
 

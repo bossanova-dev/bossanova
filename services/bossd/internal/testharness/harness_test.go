@@ -56,8 +56,8 @@ func TestHarness_CreateSession(t *testing.T) {
 	}
 	repoID := repoResp.Msg.Repo.Id
 
-	// Create a session.
-	sessResp, err := h.Client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
+	// Create a session (streaming RPC).
+	stream, err := h.Client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Fix login bug",
 		Plan:   "Fix the login bug in auth.go",
@@ -65,8 +65,20 @@ func TestHarness_CreateSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	defer stream.Close() //nolint:errcheck // test cleanup
 
-	sess := sessResp.Msg.Session
+	// Read stream messages until we get SessionCreated.
+	var sess *pb.Session
+	for stream.Receive() {
+		msg := stream.Msg()
+		if sc := msg.GetSessionCreated(); sc != nil {
+			sess = sc.GetSession()
+			break
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
 	if sess == nil {
 		t.Fatal("expected session in response")
 	}

@@ -25,13 +25,49 @@ func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
 	return s.repos, s.reposErr
 }
 
-func (s *stubClient) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+func (s *stubClient) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (client.CreateSessionStream, error) {
 	s.createReq = req
-	return s.created, s.createErr
+	if s.createErr != nil {
+		return nil, s.createErr
+	}
+	return &stubCreateStream{session: s.created}, nil
 }
 
 func (s *stubClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	return s.prs, s.prsErr
+}
+
+// stubCreateStream implements client.CreateSessionStream for testing.
+// It yields a single SessionCreated message with the provided session.
+type stubCreateStream struct {
+	session  *pb.Session
+	received bool
+}
+
+func (s *stubCreateStream) Receive() bool {
+	if s.received {
+		return false
+	}
+	s.received = true
+	return true
+}
+
+func (s *stubCreateStream) Msg() *pb.CreateSessionResponse {
+	return &pb.CreateSessionResponse{
+		Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{
+				Session: s.session,
+			},
+		},
+	}
+}
+
+func (s *stubCreateStream) Err() error {
+	return nil
+}
+
+func (s *stubCreateStream) Close() error {
+	return nil
 }
 
 // Unused interface methods — panic if called unexpectedly.
@@ -285,9 +321,9 @@ func TestNewSession_CreateSessionReceivesTitle(t *testing.T) {
 		t.Fatal("startCreating returned nil cmd")
 	}
 	msg := cmd()
-	created := msg.(sessionCreatedMsg)
-	if created.err != nil {
-		t.Fatalf("unexpected error: %v", created.err)
+	streamMsg := msg.(createSessionStreamMsg)
+	if streamMsg.err != nil {
+		t.Fatalf("unexpected error: %v", streamMsg.err)
 	}
 
 	if sc.createReq == nil {

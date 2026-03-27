@@ -6,6 +6,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/rs/zerolog"
 
@@ -56,7 +57,7 @@ func NewLifecycle(
 //
 // If forceBranch is true and a branch with the derived name already exists,
 // it will be removed before creating the new worktree.
-func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool) error {
+func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -93,21 +94,23 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 	var result *gitpkg.CreateResult
 	if existingBranch != "" {
 		result, err = l.worktrees.CreateFromExistingBranch(ctx, gitpkg.CreateFromExistingBranchOpts{
-			RepoPath:        repo.LocalPath,
-			BranchName:      existingBranch,
-			WorktreeBaseDir: repo.WorktreeBaseDir,
-			RepoName:        repo.DisplayName,
-			SetupScript:     setupScript,
+			RepoPath:          repo.LocalPath,
+			BranchName:        existingBranch,
+			WorktreeBaseDir:   repo.WorktreeBaseDir,
+			RepoName:          repo.DisplayName,
+			SetupScript:       setupScript,
+			SetupScriptOutput: setupOutput,
 		})
 	} else {
 		result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
-			RepoPath:        repo.LocalPath,
-			BaseBranch:      session.BaseBranch,
-			WorktreeBaseDir: repo.WorktreeBaseDir,
-			RepoName:        repo.DisplayName,
-			Title:           session.Title,
-			SetupScript:     setupScript,
-			Force:           forceBranch,
+			RepoPath:          repo.LocalPath,
+			BaseBranch:        session.BaseBranch,
+			WorktreeBaseDir:   repo.WorktreeBaseDir,
+			RepoName:          repo.DisplayName,
+			Title:             session.Title,
+			SetupScript:       setupScript,
+			SetupScriptOutput: setupOutput,
+			Force:             forceBranch,
 		})
 	}
 	if err != nil {

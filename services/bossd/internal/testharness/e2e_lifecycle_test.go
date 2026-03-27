@@ -7,12 +7,39 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/testharness"
 	"github.com/rs/zerolog"
 )
+
+// createSessionFromStream is a test helper that opens a CreateSession stream,
+// drains it, and returns the final Session.
+func createSessionFromStream(t *testing.T, client bossanovav1connect.DaemonServiceClient, ctx context.Context, req *pb.CreateSessionRequest) *pb.Session {
+	t.Helper()
+	stream, err := client.CreateSession(ctx, connect.NewRequest(req))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck // test cleanup
+
+	var sess *pb.Session
+	for stream.Receive() {
+		msg := stream.Msg()
+		if sc := msg.GetSessionCreated(); sc != nil {
+			sess = sc.GetSession()
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("create session stream error: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("expected SessionCreated in stream")
+	}
+	return sess
+}
 
 // TestE2E_FullSessionLifecycle exercises the complete session lifecycle:
 // register repo → create session → submit PR → checks pass → ready for review.
@@ -46,15 +73,11 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 	}
 
 	// --- Step 2: Create a session ---
-	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID,
 		Title:  "Add user avatars",
 		Plan:   "Add avatar upload to the user profile page",
-	}))
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	sess := sessResp.Msg.Session
+	})
 	sessionID := sess.Id
 
 	// Verify initial state.
@@ -196,15 +219,12 @@ func TestE2E_ChecksFailedFixLoop(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
-	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Fix flaky test",
 		Plan:   "Fix the flaky integration test",
-	}))
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	sessionID := sessResp.Msg.Session.Id
+	})
+	sessionID := sess.Id
 
 	// Submit PR to move to AwaitingChecks.
 	if err := h.Lifecycle.SubmitPR(ctx, sessionID); err != nil {
@@ -267,15 +287,12 @@ func TestE2E_ArchiveAndResurrect(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
-	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Refactor auth",
 		Plan:   "Refactor the auth module",
-	}))
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	sessionID := sessResp.Msg.Session.Id
+	})
+	sessionID := sess.Id
 
 	// Archive the session.
 	archiveResp, err := h.Client.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: sessionID}))
@@ -342,22 +359,16 @@ func TestE2E_ListSessionsWithStateFilter(t *testing.T) {
 	repoID := repoResp.Msg.Repo.Id
 
 	// Create two sessions.
-	_, err = h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+	createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID, Title: "Session A", Plan: "Plan A",
-	}))
-	if err != nil {
-		t.Fatalf("create session A: %v", err)
-	}
+	})
 
-	sessB, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+	sessB := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoID, Title: "Session B", Plan: "Plan B",
-	}))
-	if err != nil {
-		t.Fatalf("create session B: %v", err)
-	}
+	})
 
 	// Close session B.
-	_, err = h.Client.CloseSession(ctx, connect.NewRequest(&pb.CloseSessionRequest{Id: sessB.Msg.Session.Id}))
+	_, err = h.Client.CloseSession(ctx, connect.NewRequest(&pb.CloseSessionRequest{Id: sessB.Id}))
 	if err != nil {
 		t.Fatalf("close session B: %v", err)
 	}
@@ -416,15 +427,12 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 		t.Fatalf("update repo: %v", err)
 	}
 
-	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Add feature X",
 		Plan:   "Implement feature X",
-	}))
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	sessionID := sessResp.Msg.Session.Id
+	})
+	sessionID := sess.Id
 
 	if err := h.Lifecycle.SubmitPR(ctx, sessionID); err != nil {
 		t.Fatalf("submit PR: %v", err)
@@ -482,15 +490,12 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
-	sessResp, err := h.Client.CreateSession(ctx, connect.NewRequest(&pb.CreateSessionRequest{
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
 		RepoId: repoResp.Msg.Repo.Id,
 		Title:  "Chat tracking test",
 		Plan:   "Test chat tracking",
-	}))
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	sessionID := sessResp.Msg.Session.Id
+	})
+	sessionID := sess.Id
 
 	// Record a chat.
 	chatResp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{

@@ -244,13 +244,29 @@ func (m *Manager) Archive(ctx context.Context, worktreePath string) error {
 	// find it via the .git file in the worktree.
 	repoPath, err := runGit(ctx, worktreePath, "rev-parse", "--git-common-dir")
 	if err != nil {
-		return fmt.Errorf("find repo: %w", err)
+		// Worktree is corrupted or not a valid git repo — fall back to
+		// removing the directory directly. Stale worktree refs will be
+		// cleaned up by `git worktree prune` during EmptyTrash.
+		m.logger.Warn().Err(err).Str("path", worktreePath).
+			Msg("worktree is not a valid git repo, removing directory directly")
+		return removeWorktreeDir(worktreePath)
 	}
 	// --git-common-dir returns the .git dir; we want the repo root.
 	repoPath = filepath.Dir(repoPath)
 
 	if _, err := runGit(ctx, repoPath, "worktree", "remove", "--force", worktreePath); err != nil {
-		return fmt.Errorf("worktree remove: %w", err)
+		// git worktree remove failed — fall back to direct removal.
+		m.logger.Warn().Err(err).Str("path", worktreePath).
+			Msg("git worktree remove failed, removing directory directly")
+		return removeWorktreeDir(worktreePath)
+	}
+	return nil
+}
+
+// removeWorktreeDir removes a worktree directory directly via os.RemoveAll.
+func removeWorktreeDir(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove worktree dir: %w", err)
 	}
 	return nil
 }

@@ -574,6 +574,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 				pbSessions[i].PrDisplayStatus = pb.PRDisplayStatus(e.Status)
 				pbSessions[i].PrDisplayHasFailures = e.HasFailures
 				pbSessions[i].PrDisplayHasChangesRequested = e.HasChangesRequested
+				pbSessions[i].IsRepairing = e.IsRepairing
 			}
 		}
 	}

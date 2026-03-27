@@ -154,6 +154,9 @@ message Session {
 
   // Attention status, hydrated server-side from session state.
   optional AttentionStatus attention_status = 22;
+
+  // Whether this session is currently being repaired by the repair plugin.
+  bool is_repairing = 24;
 }
 
 // Attempt represents a fix attempt within a session.

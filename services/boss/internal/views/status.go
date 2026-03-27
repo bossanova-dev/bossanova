@@ -78,6 +78,9 @@ func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Mod
 	if claudeStatus == bosspty.StatusWorking {
 		return styleStatusSuccess.Render(sp.View() + "working")
 	}
+	if sess.IsRepairing {
+		return styleStatusWarning.Render(sp.View() + "repairing")
+	}
 	if label := styledPRStatus(sess, sp); label != "" {
 		return label
 	}

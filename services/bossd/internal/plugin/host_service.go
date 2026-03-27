@@ -116,6 +116,10 @@ var hostServiceDesc = grpc.ServiceDesc{
 			MethodName: "FireSessionEvent",
 			Handler:    hostServiceFireSessionEventHandler,
 		},
+		{
+			MethodName: "SetRepairStatus",
+			Handler:    hostServiceSetRepairStatusHandler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -145,6 +149,7 @@ type hostServiceHandler interface {
 	ListSessions(context.Context, *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error)
 	GetReviewComments(context.Context, *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
 	FireSessionEvent(context.Context, *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
+	SetRepairStatus(context.Context, *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -810,6 +815,22 @@ func hostServiceGetReviewCommentsHandler(srv interface{}, ctx context.Context, d
 		return srv.(hostServiceHandler).GetReviewComments(ctx, req.(*bossanovav1.GetReviewCommentsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
+}
+
+func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
+	if s.prTracker == nil {
+		return nil, grpcstatus.Error(codes.Internal, "PR tracker not set")
+	}
+	s.prTracker.SetRepairing(req.GetSessionId(), req.GetIsRepairing())
+	return &bossanovav1.SetRepairStatusResponse{}, nil
+}
+
+func hostServiceSetRepairStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.SetRepairStatusRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).SetRepairStatus(ctx, req)
 }
 
 func hostServiceFireSessionEventHandler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {

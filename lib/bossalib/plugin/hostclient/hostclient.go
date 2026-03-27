@@ -34,6 +34,9 @@ type Client interface {
 	ListSessions(ctx context.Context) (*bossanovav1.HostServiceListSessionsResponse, error)
 	GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
 	FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
+
+	// Repair status
+	SetRepairStatus(ctx context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
 }
 
 // AttemptOutputStream reads streamed output lines from a Claude attempt.
@@ -174,6 +177,14 @@ func (c *EagerClient) FireSessionEvent(ctx context.Context, req *bossanovav1.Fir
 	return client.FireSessionEvent(ctx, req)
 }
 
+func (c *EagerClient) SetRepairStatus(ctx context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.SetRepairStatus(ctx, req)
+}
+
 // --- DirectClient methods (gRPC calls) ---
 
 func (c *DirectClient) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
@@ -276,6 +287,15 @@ func (c *DirectClient) GetReviewComments(ctx context.Context, req *bossanovav1.G
 func (c *DirectClient) FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
 	resp := &bossanovav1.FireSessionEventResponse{}
 	err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/FireSessionEvent", req, resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *DirectClient) SetRepairStatus(ctx context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
+	resp := &bossanovav1.SetRepairStatusResponse{}
+	err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/SetRepairStatus", req, resp)
 	if err != nil {
 		return nil, err
 	}

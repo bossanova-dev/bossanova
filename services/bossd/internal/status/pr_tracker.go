@@ -12,6 +12,7 @@ type PRDisplayEntry struct {
 	Status              vcs.PRDisplayStatus
 	HasFailures         bool
 	HasChangesRequested bool
+	IsRepairing         bool
 	UpdatedAt           time.Time
 }
 
@@ -42,11 +43,17 @@ func (t *PRTracker) Set(sessionID string, info vcs.PRDisplayInfo) {
 		oldStatus = oldEntry.Status
 	}
 
-	// Update entry
+	// Update entry, preserving IsRepairing from the old entry so the
+	// display poller doesn't overwrite the repair plugin's flag.
+	var isRepairing bool
+	if existed {
+		isRepairing = oldEntry.IsRepairing
+	}
 	newEntry := &PRDisplayEntry{
 		Status:              info.Status,
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
+		IsRepairing:         isRepairing,
 		UpdatedAt:           time.Now(),
 	}
 	t.entries[sessionID] = newEntry
@@ -69,6 +76,7 @@ func (t *PRTracker) Get(sessionID string) *PRDisplayEntry {
 		Status:              e.Status,
 		HasFailures:         e.HasFailures,
 		HasChangesRequested: e.HasChangesRequested,
+		IsRepairing:         e.IsRepairing,
 		UpdatedAt:           e.UpdatedAt,
 	}
 }
@@ -87,6 +95,7 @@ func (t *PRTracker) GetBatch(sessionIDs []string) map[string]*PRDisplayEntry {
 			Status:              e.Status,
 			HasFailures:         e.HasFailures,
 			HasChangesRequested: e.HasChangesRequested,
+			IsRepairing:         e.IsRepairing,
 			UpdatedAt:           e.UpdatedAt,
 		}
 	}
@@ -98,6 +107,20 @@ func (t *PRTracker) Remove(sessionID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.entries, sessionID)
+}
+
+// SetRepairing sets or clears the IsRepairing flag for a session without
+// touching any other fields. Creates a zero-valued entry if none exists.
+func (t *PRTracker) SetRepairing(sessionID string, repairing bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.entries[sessionID]
+	if !ok {
+		t.entries[sessionID] = &PRDisplayEntry{IsRepairing: repairing, UpdatedAt: time.Now()}
+		return
+	}
+	e.IsRepairing = repairing
+	e.UpdatedAt = time.Now()
 }
 
 // SetOnChange sets the callback function that is called when a PR status changes.

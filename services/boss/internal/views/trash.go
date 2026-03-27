@@ -33,6 +33,11 @@ type sessionDeletedMsg struct {
 	err error
 }
 
+// allSessionsDeletedMsg carries the result of emptying the entire trash.
+type allSessionsDeletedMsg struct {
+	err error
+}
+
 // TrashModel displays archived sessions with restore/delete functionality.
 type TrashModel struct {
 	client  client.BossClient
@@ -46,9 +51,11 @@ type TrashModel struct {
 	loading  bool
 
 	// Delete confirmation / in-progress states
-	confirming bool
-	deleting   bool
-	restoring  bool
+	confirming    bool
+	confirmingAll bool
+	deleting      bool
+	deletingAll   bool
+	restoring     bool
 
 	// Layout
 	width  int
@@ -196,8 +203,22 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.removeSession(msg.id)
 		return m, nil
 
+	case allSessionsDeletedMsg:
+		m.confirming = false
+		m.confirmingAll = false
+		m.deleting = false
+		m.deletingAll = false
+		m.restoring = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.sessions = nil
+		m.buildTable()
+		return m, nil
+
 	case tea.KeyMsg:
-		if m.confirming {
+		if m.confirming || m.confirmingAll {
 			return m.updateDeleteConfirm(msg)
 		}
 
@@ -221,6 +242,12 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.table.SetHeight(m.tableHeight())
 			}
 			return m, nil
+		case "a":
+			if len(m.sessions) > 0 {
+				m.confirmingAll = true
+				m.table.SetHeight(m.tableHeight())
+			}
+			return m, nil
 		}
 
 		// Forward navigation keys to the table.
@@ -236,6 +263,15 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
+		if m.confirmingAll {
+			m.confirmingAll = false
+			m.deletingAll = true
+			m.table.SetHeight(m.tableHeight())
+			return m, func() tea.Msg {
+				_, err := m.client.EmptyTrash(m.ctx, &pb.EmptyTrashRequest{})
+				return allSessionsDeletedMsg{err: err}
+			}
+		}
 		m.confirming = false
 		m.deleting = true
 		m.table.SetHeight(m.tableHeight())
@@ -246,6 +282,7 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n", "esc":
 		m.confirming = false
+		m.confirmingAll = false
 		m.table.SetHeight(m.tableHeight())
 	}
 	return m, nil
@@ -257,7 +294,7 @@ func (m TrashModel) Cancelled() bool { return m.cancel }
 // tableHeight returns the height to pass to table.SetHeight.
 func (m TrashModel) tableHeight() int {
 	overhead := bannerOverhead + 4 // title + blank + blank + action bar
-	if m.confirming {
+	if m.confirming || m.confirmingAll {
 		overhead += 3 // confirmation prompt + surrounding blank lines
 	}
 	return clampedTableHeight(len(m.sessions), m.height, overhead)
@@ -292,9 +329,18 @@ func (m TrashModel) View() tea.View {
 	if m.deleting {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Deleting..."))
+	} else if m.deletingAll {
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
+			m.spinner.View() + "Deleting all..."))
 	} else if m.restoring {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Restoring..."))
+	} else if m.confirmingAll {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
+			fmt.Sprintf("Permanently delete all %d archived sessions?", len(m.sessions))))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else if m.confirming {
 		b.WriteString("\n")
 		sess := m.sessions[m.table.Cursor()]
@@ -303,7 +349,7 @@ func (m TrashModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(styleActionBar.Render("[d]elete  [r]estore  [esc] back"))
+		b.WriteString(styleActionBar.Render("[d]elete  [a] delete all  [r]estore  [esc] back"))
 	}
 
 	return tea.NewView(b.String())

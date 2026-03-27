@@ -417,7 +417,7 @@ func (m ChatPickerModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m ChatPickerModel) tableHeight() int {
-	return clampedTableHeight(len(m.chats), m.height, 4) // title + blank + blank + action bar
+	return clampedTableHeight(len(m.chats), m.height, bannerOverhead+4) // title + blank + blank + action bar
 }
 
 func (m ChatPickerModel) View() tea.View {

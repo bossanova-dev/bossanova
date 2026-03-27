@@ -26,6 +26,7 @@ const (
 	shortIDLen         = 7
 	actionBarPadY      = 1
 	defaultTableHeight = 20
+	bannerOverhead     = bannerHeight + 1 // banner lines + trailing newline added by App.View
 )
 
 // --- TUI Styles ---

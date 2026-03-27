@@ -271,7 +271,7 @@ func (m AutopilotModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m AutopilotModel) tableHeight() int {
-	return clampedTableHeight(len(m.workflows), m.height, 4) // title + blank + blank + action bar
+	return clampedTableHeight(len(m.workflows), m.height, bannerOverhead+4) // title + blank + blank + action bar
 }
 
 func (m AutopilotModel) View() tea.View {

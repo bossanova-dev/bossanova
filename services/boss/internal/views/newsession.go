@@ -177,7 +177,7 @@ func (m *NewSessionModel) buildRepoTable() {
 
 // repoTableHeight returns the height for the repo selection table.
 func (m NewSessionModel) repoTableHeight() int {
-	return clampedTableHeight(len(m.repos), m.height, 6) // header + gaps + action bar
+	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+6) // header + gaps + action bar
 }
 
 func (m *NewSessionModel) buildTypeTable() {
@@ -230,7 +230,7 @@ func (m *NewSessionModel) buildPRTable() {
 
 // prTableHeight returns the height for the PR selection table.
 func (m NewSessionModel) prTableHeight() int {
-	return clampedTableHeight(len(m.prs), m.height, 6) // header + gaps + action bar
+	return clampedTableHeight(len(m.prs), m.height, bannerOverhead+6) // header + gaps + action bar
 }
 
 func (m *NewSessionModel) buildForm() {

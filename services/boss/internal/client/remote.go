@@ -179,6 +179,10 @@ func (c *RemoteClient) RemoveSession(_ context.Context, _ string) error {
 	return errLocalOnly("RemoveSession")
 }
 
+func (c *RemoteClient) UpdateSession(_ context.Context, _ *pb.UpdateSessionRequest) (*pb.Session, error) {
+	return nil, errLocalOnly("UpdateSession")
+}
+
 // --- Archive / Resurrect (local only) ---
 
 func (c *RemoteClient) ArchiveSession(_ context.Context, _ string) (*pb.Session, error) {

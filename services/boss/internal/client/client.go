@@ -57,6 +57,7 @@ type BossClient interface {
 	RetrySession(ctx context.Context, id string) (*pb.Session, error)
 	CloseSession(ctx context.Context, id string) (*pb.Session, error)
 	RemoveSession(ctx context.Context, id string) error
+	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 
 	// Archive / Resurrect
 	ArchiveSession(ctx context.Context, id string) (*pb.Session, error)

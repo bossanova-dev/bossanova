@@ -50,6 +50,9 @@ func (p *testVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSu
 	return nil, nil
 }
 func (p *testVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (p *testVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
 
 // taskSourceWithBroker is a host-side GRPCPlugin that registers the HostService
 // on broker ID 1, which the plugin binary expects when it calls broker.Dial(1).

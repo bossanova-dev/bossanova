@@ -113,6 +113,10 @@ func (m *MockVCSProvider) ListClosedPRs(ctx context.Context, repoPath string) ([
 	return m.ClosedPRs, nil
 }
 
+func (m *MockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
+
 func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
 	m.mu.Lock()
 	m.MergePRCalls = append(m.MergePRCalls, mergePRCall{RepoPath: repoPath, PRID: prID})

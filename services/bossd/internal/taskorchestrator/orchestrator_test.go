@@ -200,6 +200,10 @@ func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, s
 	return nil
 }
 
+func (m *mockProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
+
 // helper to create an orchestrator with defaults
 func newTestOrchestrator(opts ...func(*Orchestrator)) *Orchestrator {
 	o := New(

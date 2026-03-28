@@ -86,6 +86,9 @@ const (
 	// DaemonServiceRemoveSessionProcedure is the fully-qualified name of the DaemonService's
 	// RemoveSession RPC.
 	DaemonServiceRemoveSessionProcedure = "/bossanova.v1.DaemonService/RemoveSession"
+	// DaemonServiceUpdateSessionProcedure is the fully-qualified name of the DaemonService's
+	// UpdateSession RPC.
+	DaemonServiceUpdateSessionProcedure = "/bossanova.v1.DaemonService/UpdateSession"
 	// DaemonServiceArchiveSessionProcedure is the fully-qualified name of the DaemonService's
 	// ArchiveSession RPC.
 	DaemonServiceArchiveSessionProcedure = "/bossanova.v1.DaemonService/ArchiveSession"
@@ -164,6 +167,7 @@ type DaemonServiceClient interface {
 	RetrySession(context.Context, *connect.Request[v1.RetrySessionRequest]) (*connect.Response[v1.RetrySessionResponse], error)
 	CloseSession(context.Context, *connect.Request[v1.CloseSessionRequest]) (*connect.Response[v1.CloseSessionResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
+	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
@@ -314,6 +318,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("RemoveSession")),
 			connect.WithClientOptions(opts...),
 		),
+		updateSession: connect.NewClient[v1.UpdateSessionRequest, v1.UpdateSessionResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateSessionProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateSession")),
+			connect.WithClientOptions(opts...),
+		),
 		archiveSession: connect.NewClient[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse](
 			httpClient,
 			baseURL+DaemonServiceArchiveSessionProcedure,
@@ -445,6 +455,7 @@ type daemonServiceClient struct {
 	retrySession           *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
 	closeSession           *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
 	removeSession          *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
+	updateSession          *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
 	archiveSession         *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
 	resurrectSession       *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
 	emptyTrash             *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
@@ -553,6 +564,11 @@ func (c *daemonServiceClient) CloseSession(ctx context.Context, req *connect.Req
 // RemoveSession calls bossanova.v1.DaemonService.RemoveSession.
 func (c *daemonServiceClient) RemoveSession(ctx context.Context, req *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error) {
 	return c.removeSession.CallUnary(ctx, req)
+}
+
+// UpdateSession calls bossanova.v1.DaemonService.UpdateSession.
+func (c *daemonServiceClient) UpdateSession(ctx context.Context, req *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error) {
+	return c.updateSession.CallUnary(ctx, req)
 }
 
 // ArchiveSession calls bossanova.v1.DaemonService.ArchiveSession.
@@ -668,6 +684,7 @@ type DaemonServiceHandler interface {
 	RetrySession(context.Context, *connect.Request[v1.RetrySessionRequest]) (*connect.Response[v1.RetrySessionResponse], error)
 	CloseSession(context.Context, *connect.Request[v1.CloseSessionRequest]) (*connect.Response[v1.CloseSessionResponse], error)
 	RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error)
+	UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error)
 	// Archive / resurrect
 	ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error)
 	ResurrectSession(context.Context, *connect.Request[v1.ResurrectSessionRequest]) (*connect.Response[v1.ResurrectSessionResponse], error)
@@ -812,6 +829,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceRemoveSessionProcedure,
 		svc.RemoveSession,
 		connect.WithSchema(daemonServiceMethods.ByName("RemoveSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateSessionHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateSessionProcedure,
+		svc.UpdateSession,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateSession")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceArchiveSessionHandler := connect.NewUnaryHandler(
@@ -960,6 +983,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceCloseSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceRemoveSessionProcedure:
 			daemonServiceRemoveSessionHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateSessionProcedure:
+			daemonServiceUpdateSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceArchiveSessionProcedure:
 			daemonServiceArchiveSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceResurrectSessionProcedure:
@@ -1075,6 +1100,10 @@ func (UnimplementedDaemonServiceHandler) CloseSession(context.Context, *connect.
 
 func (UnimplementedDaemonServiceHandler) RemoveSession(context.Context, *connect.Request[v1.RemoveSessionRequest]) (*connect.Response[v1.RemoveSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RemoveSession is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateSession(context.Context, *connect.Request[v1.UpdateSessionRequest]) (*connect.Response[v1.UpdateSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateSession is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ArchiveSession(context.Context, *connect.Request[v1.ArchiveSessionRequest]) (*connect.Response[v1.ArchiveSessionResponse], error) {

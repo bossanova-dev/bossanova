@@ -228,6 +228,14 @@ func (c *LocalClient) RemoveSession(ctx context.Context, id string) error {
 	return err
 }
 
+func (c *LocalClient) UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error) {
+	resp, err := c.rpc.UpdateSession(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Session, nil
+}
+
 // --- Archive / Resurrect ---
 
 func (c *LocalClient) ArchiveSession(ctx context.Context, id string) (*pb.Session, error) {

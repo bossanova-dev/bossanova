@@ -141,7 +141,8 @@ lint-repair:
 copy-skills:
 	rm -rf $(SKILLS_DST)
 	mkdir -p $(SKILLS_DST)
-	for dir in $(SKILLS_SRC)/boss-*; do \
+	for dir in $(SKILLS_SRC)/boss $(SKILLS_SRC)/boss-*; do \
+		[ -d "$$dir" ] || continue; \
 		name=$$(basename $$dir); \
 		mkdir -p $(SKILLS_DST)/$$name; \
 		cp -R $$dir/* $(SKILLS_DST)/$$name/; \

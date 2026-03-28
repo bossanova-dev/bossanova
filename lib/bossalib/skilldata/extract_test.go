@@ -9,6 +9,7 @@ import (
 
 func testFS() fstest.MapFS {
 	return fstest.MapFS{
+		"skills/boss/SKILL.md":           {Data: []byte("# Boss CLI Reference\nAll commands.")},
 		"skills/boss-test/SKILL.md":      {Data: []byte("# Test Skill\nDo the thing.")},
 		"skills/boss-other/SKILL.md":     {Data: []byte("# Other Skill\nDo other thing.")},
 		"skills/boss-finalize/add-pr.sh": {Data: []byte("#!/bin/sh\necho ok")},
@@ -27,6 +28,7 @@ func TestExtractSkills(t *testing.T) {
 		rel     string
 		content string
 	}{
+		{"bossanova/boss/SKILL.md", "# Boss CLI Reference\nAll commands."},
 		{"bossanova/boss-test/SKILL.md", "# Test Skill\nDo the thing."},
 		{"bossanova/boss-other/SKILL.md", "# Other Skill\nDo other thing."},
 		{"bossanova/boss-finalize/SKILL.md", "# Finalize\nLand it."},
@@ -52,8 +54,8 @@ func TestExtractSkillsCreatesSymlinks(t *testing.T) {
 		t.Fatalf("ExtractSkills: %v", err)
 	}
 
-	// Each boss-* skill should have a symlink in the parent dir.
-	for _, name := range []string{"boss-test", "boss-other", "boss-finalize"} {
+	// Each boss skill should have a symlink in the parent dir.
+	for _, name := range []string{"boss", "boss-test", "boss-other", "boss-finalize"} {
 		link := filepath.Join(dest, name)
 		target, err := os.Readlink(link)
 		if err != nil {

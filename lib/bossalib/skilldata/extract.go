@@ -8,6 +8,12 @@ import (
 	"strings"
 )
 
+// isBossSkill returns true for skill directory names that belong to boss
+// (either "boss" exactly or prefixed with "boss-").
+func isBossSkill(name string) bool {
+	return name == "boss" || strings.HasPrefix(name, "boss-")
+}
+
 // Namespace is the subdirectory under ~/.claude/skills/ where boss skill
 // files are stored. Symlinks are created from the parent directory into
 // this namespace, mirroring how gstack organises its skills.
@@ -31,7 +37,7 @@ func BossSkillsInstalled(dir string) bool {
 		return false
 	}
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "boss-") {
+		if e.IsDir() && isBossSkill(e.Name()) {
 			return true
 		}
 	}
@@ -51,7 +57,7 @@ func ExtractSkills(dir string, fsys fs.FS) error {
 	if entries, err := os.ReadDir(dir); err == nil {
 		for _, e := range entries {
 			name := e.Name()
-			if !strings.HasPrefix(name, "boss-") {
+			if !isBossSkill(name) {
 				continue
 			}
 			_ = os.RemoveAll(filepath.Join(dir, name))
@@ -96,7 +102,7 @@ func ExtractSkills(dir string, fsys fs.FS) error {
 		return fmt.Errorf("read namespace dir: %w", err)
 	}
 	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), "boss-") {
+		if !e.IsDir() || !isBossSkill(e.Name()) {
 			continue
 		}
 		// Use a relative target so the symlink works regardless of home dir.

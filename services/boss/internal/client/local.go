@@ -14,8 +14,12 @@ import (
 )
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
+// If BOSS_SOCKET is set, it is returned directly (used by TUI integration tests).
 // On macOS: ~/Library/Application Support/bossanova/bossd.sock
 func DefaultSocketPath() (string, error) {
+	if p := os.Getenv("BOSS_SOCKET"); p != "" {
+		return p, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)

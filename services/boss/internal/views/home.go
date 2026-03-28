@@ -371,7 +371,7 @@ func renderBanner(active View, opts bannerOpts) string {
 
 	var line1, line2 string
 	switch {
-	case active == ViewChatPicker && opts.session != nil:
+	case (active == ViewChatPicker || active == ViewSessionSettings) && opts.session != nil:
 		// PR title with clickable number and colored status.
 		title := opts.session.Title
 		if prLink := renderPRLink(opts.session); prLink != "" {

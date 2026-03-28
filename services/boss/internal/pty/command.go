@@ -13,14 +13,18 @@ import (
 	"golang.org/x/term"
 )
 
-const detachByte = 0x1d // Ctrl+]
+const detachByte = 0x1d      // Ctrl+]
+const detachByteCtrlX = 0x18 // Ctrl+X
 
 // ctrlRBracketCSIu is the kitty keyboard protocol encoding of Ctrl+].
 var ctrlRBracketCSIu = []byte("\x1b[93;5u")
 
+// ctrlXCSIu is the kitty keyboard protocol encoding of Ctrl+X (codepoint 120, modifier 5=Ctrl).
+var ctrlXCSIu = []byte("\x1b[120;5u")
+
 // PTYCommand implements bubbletea's ExecCommand interface.
 // It proxies I/O between the real terminal and a PTY-hosted process,
-// allowing the user to detach (Ctrl+]) while the process keeps running.
+// allowing the user to detach (Ctrl+X or Ctrl+]) while the process keeps running.
 type PTYCommand struct {
 	manager  *Manager
 	claudeID string
@@ -143,16 +147,16 @@ func (c *PTYCommand) Run() error {
 				if n > 0 {
 					data := buf[:n]
 
-					// Check for raw detach byte (0x1d).
+					// Check for raw detach bytes (Ctrl+X or Ctrl+]).
 					for _, b := range data {
-						if b == detachByte {
+						if b == detachByteCtrlX || b == detachByte {
 							close(detachCh)
 							return
 						}
 					}
 
-					// Check for CSI u encoding of Ctrl+] (kitty protocol).
-					if bytes.Contains(data, ctrlRBracketCSIu) {
+					// Check for CSI u encodings (kitty protocol).
+					if bytes.Contains(data, ctrlXCSIu) || bytes.Contains(data, ctrlRBracketCSIu) {
 						close(detachCh)
 						return
 					}

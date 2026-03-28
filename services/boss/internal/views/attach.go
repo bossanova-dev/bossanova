@@ -123,7 +123,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case claudeFinishedMsg:
 		if msg.detached {
-			// User pressed Ctrl+] — process is still running in background.
+			// User pressed Ctrl+X / Ctrl+] — process is still running in background.
 			m.detach = true
 			return m, nil
 		}
@@ -219,7 +219,7 @@ func (m AttachModel) View() tea.View {
 			title = m.session.Title
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render(
-			fmt.Sprintf("Launching Claude Code for %s...  Press Ctrl+] to detach", title)))
+			fmt.Sprintf("Launching Claude Code for %s...  Press Ctrl+X to detach", title)))
 		return tea.NewView(b.String())
 	}
 

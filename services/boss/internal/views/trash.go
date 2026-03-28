@@ -186,8 +186,6 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionRestoredMsg:
 		m.restoring = false
-		m.confirmingAll = false
-		m.deletingAll = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
@@ -198,8 +196,6 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionDeletedMsg:
 		m.confirming = false
 		m.deleting = false
-		m.confirmingAll = false
-		m.deletingAll = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
@@ -231,7 +227,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel = true
 			return m, nil
 		case "r":
-			if len(m.sessions) > 0 {
+			if len(m.sessions) > 0 && !m.deletingAll {
 				m.restoring = true
 				sess := m.sessions[m.table.Cursor()]
 				return m, func() tea.Msg {
@@ -241,13 +237,13 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "d":
-			if len(m.sessions) > 0 {
+			if len(m.sessions) > 0 && !m.deletingAll {
 				m.confirming = true
 				m.table.SetHeight(m.tableHeight())
 			}
 			return m, nil
 		case "a":
-			if len(m.sessions) > 0 {
+			if len(m.sessions) > 0 && !m.deletingAll {
 				m.confirmingAll = true
 				m.table.SetHeight(m.tableHeight())
 			}

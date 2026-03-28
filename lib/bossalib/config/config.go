@@ -43,9 +43,10 @@ type RepairSkills struct {
 
 // RepairConfig holds configuration for the repair plugin.
 type RepairConfig struct {
-	Skills              RepairSkills `json:"skills,omitzero"`
-	CooldownMinutes     int          `json:"cooldown_minutes,omitempty"`
-	PollIntervalSeconds int          `json:"poll_interval_seconds,omitempty"`
+	Skills               RepairSkills `json:"skills,omitzero"`
+	CooldownMinutes      int          `json:"cooldown_minutes,omitempty"`
+	PollIntervalSeconds  int          `json:"poll_interval_seconds,omitempty"`
+	SweepIntervalMinutes int          `json:"sweep_interval_minutes,omitempty"`
 }
 
 var defaultSkills = map[string]string{

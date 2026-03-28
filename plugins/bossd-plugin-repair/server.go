@@ -19,15 +19,18 @@ const (
 	defaultPollInterval = 5 * time.Second
 	// defaultRepairSkill is the skill invoked for repair attempts.
 	defaultRepairSkill = "boss-repair"
+	// defaultSweepInterval is how often the periodic sweep runs.
+	defaultSweepInterval = 5 * time.Minute
 )
 
 // repairConfig holds parsed config for a repair workflow. Fields mirror
 // config.RepairConfig but are local to the plugin to avoid importing
 // the config package.
 type repairConfig struct {
-	Skills              repairSkillOverrides `json:"skills,omitempty"`
-	CooldownMinutes     int                  `json:"cooldown_minutes,omitempty"`
-	PollIntervalSeconds int                  `json:"poll_interval_seconds,omitempty"`
+	Skills               repairSkillOverrides `json:"skills,omitempty"`
+	CooldownMinutes      int                  `json:"cooldown_minutes,omitempty"`
+	PollIntervalSeconds  int                  `json:"poll_interval_seconds,omitempty"`
+	SweepIntervalMinutes int                  `json:"sweep_interval_minutes,omitempty"`
 }
 
 type repairSkillOverrides struct {
@@ -55,6 +58,13 @@ func (c *repairConfig) skillName() string {
 	return defaultRepairSkill
 }
 
+func (c *repairConfig) sweepInterval() time.Duration {
+	if c != nil && c.SweepIntervalMinutes > 0 {
+		return time.Duration(c.SweepIntervalMinutes) * time.Minute
+	}
+	return defaultSweepInterval
+}
+
 func parseRepairConfig(configJSON string) (*repairConfig, error) {
 	cfg := &repairConfig{}
 	if configJSON == "" {
@@ -73,14 +83,15 @@ type repairMonitor struct {
 	host   hostClient
 	logger zerolog.Logger
 
-	mu        sync.Mutex
-	ctx       context.Context      // Workflow context
-	cancel    context.CancelFunc   // Cancel function for the workflow
-	stopped   bool                 // True after CancelWorkflow until next StartWorkflow
-	paused    bool                 // True after PauseWorkflow until ResumeWorkflow
-	config    *repairConfig        // Parsed config from StartWorkflowRequest
-	repairing map[string]bool      // Sessions currently being repaired
-	cooldowns map[string]time.Time // Last repair attempt time per session
+	mu                sync.Mutex
+	ctx               context.Context      // Workflow context
+	cancel            context.CancelFunc   // Cancel function for the workflow
+	stopped           bool                 // True after CancelWorkflow until next StartWorkflow
+	paused            bool                 // True after PauseWorkflow until ResumeWorkflow
+	config            *repairConfig        // Parsed config from StartWorkflowRequest
+	repairing         map[string]bool      // Sessions currently being repaired
+	cooldowns         map[string]time.Time // Last repair attempt time per session
+	testSweepInterval time.Duration        // Override sweep interval for tests
 }
 
 func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
@@ -135,6 +146,10 @@ func (m *repairMonitor) StartWorkflow(ctx context.Context, req *bossanovav1.Star
 	// Sweep existing sessions in a goroutine to catch any that are already
 	// in a repairable state when the plugin starts.
 	go m.sweepExistingSessions(workflowCtx)
+
+	// Periodically re-sweep to catch sessions stuck in a repairable state
+	// after failed repairs or missed edge-triggered notifications.
+	go m.periodicSweep(workflowCtx)
 
 	return &bossanovav1.StartWorkflowResponse{}, nil
 }
@@ -418,6 +433,31 @@ func (m *repairMonitor) sweepExistingSessions(ctx context.Context) {
 	m.logger.Info().
 		Int("session_count", len(resp.GetSessions())).
 		Msg("sweep complete")
+}
+
+// periodicSweep runs sweepExistingSessions at a regular interval to catch
+// sessions stuck in a repairable state that were missed by edge-triggered
+// notifications (e.g. failed repair with no re-notification, or session
+// transitioning to a repairable state after the initial notification).
+func (m *repairMonitor) periodicSweep(ctx context.Context) {
+	m.mu.Lock()
+	interval := m.testSweepInterval
+	if interval == 0 {
+		interval = m.config.sweepInterval()
+	}
+	m.mu.Unlock()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.sweepExistingSessions(ctx)
+		}
+	}
 }
 
 // repairSession performs a repair attempt for a session in the background.

@@ -570,6 +570,92 @@ func TestNotifyStatusChangePassingDoesNotRepair(t *testing.T) {
 	mock.mu.Unlock()
 }
 
+func TestPeriodicSweepTriggersRepair(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, PrDisplayStatus: bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_REJECTED},
+	}
+	rm := newTestMonitor(mock)
+	// Set an expired cooldown so the session is eligible.
+	rm.mu.Lock()
+	rm.cooldowns["s1"] = time.Now().Add(-10 * time.Minute)
+	rm.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rm.mu.Lock()
+	rm.testSweepInterval = 50 * time.Millisecond
+	rm.mu.Unlock()
+
+	go rm.periodicSweep(ctx)
+
+	waitFor(t, func() bool {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.createWfCalls > 0
+	}, "periodic sweep to trigger repair")
+}
+
+func TestPeriodicSweepRespectsCancel(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, PrDisplayStatus: bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_REJECTED},
+	}
+	rm := newTestMonitor(mock)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	rm.mu.Lock()
+	rm.testSweepInterval = 50 * time.Millisecond
+	rm.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		rm.periodicSweep(ctx)
+		close(done)
+	}()
+
+	// Cancel immediately before any tick fires.
+	cancel()
+
+	select {
+	case <-done:
+		// periodicSweep exited as expected.
+	case <-time.After(2 * time.Second):
+		t.Fatal("periodicSweep did not exit after cancel")
+	}
+}
+
+func TestPeriodicSweepRespectsCooldown(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, PrDisplayStatus: bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_REJECTED},
+	}
+	rm := newTestMonitor(mock)
+
+	// Set a very recent cooldown — repair should be skipped.
+	rm.mu.Lock()
+	rm.cooldowns["s1"] = time.Now()
+	rm.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rm.mu.Lock()
+	rm.testSweepInterval = 50 * time.Millisecond
+	rm.mu.Unlock()
+
+	go rm.periodicSweep(ctx)
+
+	// Let a few sweep cycles run.
+	time.Sleep(200 * time.Millisecond)
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.createWfCalls, "should not repair while cooldown is active")
+	mock.mu.Unlock()
+}
+
 func TestStartWorkflowLaunchesSweep(t *testing.T) {
 	mock := newTestMock()
 	mock.sessions = []*bossanovav1.Session{

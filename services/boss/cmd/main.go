@@ -258,6 +258,9 @@ func settingsCmd() *cobra.Command {
 // maybeInstallSkills prompts the user to install boss skills into ~/.claude/skills/
 // on first run. If skills are already installed, this is a no-op (the daemon handles updates).
 func maybeInstallSkills() error {
+	if os.Getenv("BOSS_SKIP_SKILLS") != "" {
+		return nil
+	}
 	dir, err := skilldata.DefaultSkillsDir()
 	if err != nil {
 		return nil // non-fatal

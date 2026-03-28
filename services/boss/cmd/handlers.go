@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -32,9 +33,11 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 		return nil, fmt.Errorf("socket path: %w", err)
 	}
 
-	// Auto-start daemon if not running.
-	if err := daemon.EnsureRunning(socketPath); err != nil {
-		return nil, fmt.Errorf("daemon: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
+	// Skip auto-start when socket is explicitly provided (test mode).
+	if os.Getenv("BOSS_SOCKET") == "" {
+		if err := daemon.EnsureRunning(socketPath); err != nil {
+			return nil, fmt.Errorf("daemon: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
+		}
 	}
 
 	return client.NewLocal(socketPath), nil

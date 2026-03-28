@@ -34,4 +34,7 @@ type Provider interface {
 	// MergePR merges a pull/merge request using the given strategy
 	// ("merge", "rebase", or "squash"). An empty strategy defaults to "merge".
 	MergePR(ctx context.Context, repoPath string, prID int, strategy string) error
+
+	// UpdatePRTitle updates the title of an existing pull/merge request.
+	UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error
 }

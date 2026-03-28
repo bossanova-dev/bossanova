@@ -66,6 +66,9 @@ func (m *mockVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSu
 	return nil, nil
 }
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
 
 func TestHostServiceListOpenPRs(t *testing.T) {
 	mock := &mockVCSProvider{

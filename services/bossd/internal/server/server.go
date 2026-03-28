@@ -846,6 +846,47 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
 }
 
+func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
+	msg := req.Msg
+	if msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	params := db.UpdateSessionParams{}
+	if msg.Title != nil {
+		title := strings.TrimSpace(*msg.Title)
+		if title == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title cannot be empty"))
+		}
+		params.Title = &title
+	}
+
+	sess, err := s.sessions.Update(ctx, msg.Id, params)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update session: %w", err))
+	}
+
+	// Best-effort: update the PR title if this session has a PR.
+	if msg.Title != nil && sess.PRNumber != nil && *sess.PRNumber > 0 {
+		repo, repoErr := s.repos.Get(ctx, sess.RepoID)
+		if repoErr == nil && repo.OriginURL != "" {
+			if prErr := s.provider.UpdatePRTitle(ctx, repo.OriginURL, *sess.PRNumber, *params.Title); prErr != nil {
+				s.logger.Warn().Err(prErr).
+					Str("session", sess.ID).
+					Int("pr", *sess.PRNumber).
+					Msg("failed to update PR title (best-effort)")
+			}
+		}
+	}
+
+	p := sessionToProto(sess)
+	if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil {
+		p.RepoDisplayName = repo.DisplayName
+	}
+
+	return connect.NewResponse(&pb.UpdateSessionResponse{Session: p}), nil
+}
+
 // --- Archive / Resurrect ---
 
 func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {

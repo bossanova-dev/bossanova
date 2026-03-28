@@ -32,6 +32,7 @@ service DaemonService {
   rpc RetrySession(RetrySessionRequest) returns (RetrySessionResponse);
   rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
+  rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
 
   // Archive / resurrect
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
@@ -294,6 +295,15 @@ message RemoveSessionRequest {
 }
 
 message RemoveSessionResponse {}
+
+message UpdateSessionRequest {
+  string id = 1;
+  optional string title = 2;
+}
+
+message UpdateSessionResponse {
+  Session session = 1;
+}
 
 // --- Archive / Resurrect ---
 

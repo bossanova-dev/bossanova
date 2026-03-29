@@ -298,6 +298,37 @@ func TestAttentionStatusToProto(t *testing.T) {
 	})
 }
 
+func TestWorkflowPriority(t *testing.T) {
+	tests := []struct {
+		status models.WorkflowStatus
+		want   int
+	}{
+		{models.WorkflowStatusRunning, 4},
+		{models.WorkflowStatusPending, 3},
+		{models.WorkflowStatusPaused, 2},
+		{models.WorkflowStatusFailed, 1},
+		{models.WorkflowStatusCancelled, 1},
+		{models.WorkflowStatusCompleted, 0},
+		{models.WorkflowStatus("unknown"), 0},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			got := workflowPriority(tt.status)
+			if got != tt.want {
+				t.Errorf("workflowPriority(%q) = %d, want %d", tt.status, got, tt.want)
+			}
+		})
+	}
+
+	// Active statuses must always beat terminal statuses.
+	if workflowPriority(models.WorkflowStatusPaused) <= workflowPriority(models.WorkflowStatusFailed) {
+		t.Error("paused should have higher priority than failed")
+	}
+	if workflowPriority(models.WorkflowStatusRunning) <= workflowPriority(models.WorkflowStatusFailed) {
+		t.Error("running should have higher priority than failed")
+	}
+}
+
 func TestIsSubdirOf(t *testing.T) {
 	tests := []struct {
 		name   string

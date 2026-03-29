@@ -79,6 +79,10 @@ func styledWorkflowStatus(sess *pb.Session, sp spinner.Model) string {
 		return styleStatusInfo.Render(sp.View() + "pending")
 	case pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED:
 		return styleStatusWarning.Render(fmt.Sprintf("paused %d/%d", sess.WorkflowDisplayLeg, sess.WorkflowDisplayMaxLegs))
+	case pb.WorkflowStatus_WORKFLOW_STATUS_FAILED:
+		return styleStatusDanger.Render(fmt.Sprintf("failed %d/%d", sess.WorkflowDisplayLeg, sess.WorkflowDisplayMaxLegs))
+	case pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED:
+		return styleStatusMuted.Render("cancelled")
 	default:
 		return ""
 	}

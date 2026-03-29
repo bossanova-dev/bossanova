@@ -113,6 +113,11 @@ func (s *SQLiteWorkflowStore) FailOrphaned(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// ListActiveBySessionIDs returns workflows with displayable statuses for the
+// given session IDs. This includes active workflows (pending, running, paused)
+// and recently-terminated ones (failed, cancelled) so the session list can
+// show terminal workflow states. Completed workflows are excluded because
+// they represent successful finishes that need no user attention.
 func (s *SQLiteWorkflowStore) ListActiveBySessionIDs(ctx context.Context, sessionIDs []string) ([]*models.Workflow, error) {
 	if len(sessionIDs) == 0 {
 		return nil, nil
@@ -125,7 +130,7 @@ func (s *SQLiteWorkflowStore) ListActiveBySessionIDs(ctx context.Context, sessio
 	}
 	query := workflowSelectSQL +
 		" WHERE session_id IN (" + strings.Join(placeholders, ",") + ")" +
-		" AND status IN ('pending', 'running', 'paused')" +
+		" AND status IN ('pending', 'running', 'paused', 'failed', 'cancelled')" +
 		" ORDER BY created_at DESC"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

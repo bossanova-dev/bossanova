@@ -3,7 +3,7 @@
 	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-repair lint-proto \
 	build-boss build-bossd build-bosso build-autopilot build-dependabot build-repair \
 	copy-skills \
-	mutate mutate-diff mutate-report mutate-survivors mutate-fix \
+	mutate mutate-diff mutate-report mutate-survivors mutate-fix mutate-loop \
 	mutate-bossalib mutate-boss mutate-bossd mutate-bosso \
 	mutate-autopilot mutate-dependabot mutate-repair
 
@@ -304,7 +304,7 @@ mutate-survivors:
 ## mutate-fix: Feed surviving mutants to Claude Code to generate tests
 mutate-fix:
 	@mkdir -p $(MUTATE_DIR)
-	@$(MAKE) mutate-survivors > $(MUTATE_DIR)/survivors.txt 2>/dev/null
+	@$(MAKE) --no-print-directory mutate-survivors > $(MUTATE_DIR)/survivors.txt 2>/dev/null
 	@count=$$(wc -l < $(MUTATE_DIR)/survivors.txt | tr -d ' '); \
 	if [ "$$count" = "0" ]; then \
 		echo "No surviving mutants. Run 'make mutate' first."; \

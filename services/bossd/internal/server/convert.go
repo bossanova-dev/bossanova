@@ -188,10 +188,12 @@ func workflowStepToProto(s models.WorkflowStep) pb.WorkflowStep {
 func workflowPriority(s models.WorkflowStatus) int {
 	switch s {
 	case models.WorkflowStatusRunning:
-		return 3
+		return 4
 	case models.WorkflowStatusPending:
-		return 2
+		return 3
 	case models.WorkflowStatusPaused:
+		return 2
+	case models.WorkflowStatusFailed, models.WorkflowStatusCancelled:
 		return 1
 	default:
 		return 0

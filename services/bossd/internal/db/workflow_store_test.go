@@ -443,6 +443,71 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	}
 }
 
+func TestWorkflowStore_ListActiveBySessionIDsIncludesFailedAndCancelled(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewWorkflowStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess := createTestSession(t, sessionStore, repo.ID)
+
+	// Create workflows in various terminal states.
+	wFailed, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "failed.md", MaxLegs: 1,
+	})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	failedStatus := string(models.WorkflowStatusFailed)
+	if _, err := store.Update(ctx, wFailed.ID, UpdateWorkflowParams{Status: &failedStatus}); err != nil {
+		t.Fatalf("update to failed: %v", err)
+	}
+
+	wCancelled, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "cancelled.md", MaxLegs: 1,
+	})
+	if err != nil {
+		t.Fatalf("create cancelled: %v", err)
+	}
+	cancelledStatus := string(models.WorkflowStatusCancelled)
+	if _, err := store.Update(ctx, wCancelled.ID, UpdateWorkflowParams{Status: &cancelledStatus}); err != nil {
+		t.Fatalf("update to cancelled: %v", err)
+	}
+
+	wCompleted, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "completed.md", MaxLegs: 1,
+	})
+	if err != nil {
+		t.Fatalf("create completed: %v", err)
+	}
+	completedStatus := string(models.WorkflowStatusCompleted)
+	if _, err := store.Update(ctx, wCompleted.ID, UpdateWorkflowParams{Status: &completedStatus}); err != nil {
+		t.Fatalf("update to completed: %v", err)
+	}
+
+	results, err := store.ListActiveBySessionIDs(ctx, []string{sess.ID})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	// Should include failed and cancelled but NOT completed.
+	ids := make(map[string]bool)
+	for _, w := range results {
+		ids[w.ID] = true
+	}
+	if !ids[wFailed.ID] {
+		t.Error("expected failed workflow in results")
+	}
+	if !ids[wCancelled.ID] {
+		t.Error("expected cancelled workflow in results")
+	}
+	if ids[wCompleted.ID] {
+		t.Error("completed workflow should NOT be in results")
+	}
+}
+
 func TestWorkflowStore_ConcurrentAccess(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

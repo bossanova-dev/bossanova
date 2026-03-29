@@ -300,6 +300,33 @@ func (o *orchestrator) NotifyStatusChange(_ context.Context, _ *bossanovav1.Noti
 func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath string, cfg *workflowConfig, maxLegs int, startStep string) {
 	log := o.logger.With().Str("workflow_id", workflowID).Logger()
 
+	// Guard: if the goroutine exits while the workflow is still "running",
+	// transition to "failed" so the session list doesn't show a stale status.
+	// This catches panics, failed RPCs inside pauseWorkflowOnError, and any
+	// other unexpected exit paths.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().Interface("panic", r).Msg("runWorkflow panicked")
+		}
+		resp, err := o.host.GetWorkflow(context.Background(), workflowID)
+		if err != nil {
+			log.Error().Err(err).Msg("defer guard: failed to get workflow status")
+			return
+		}
+		if resp.GetWorkflow().GetStatus() == "running" {
+			errMsg := "workflow goroutine exited unexpectedly"
+			if _, err := o.host.UpdateWorkflow(context.Background(), &bossanovav1.UpdateWorkflowRequest{
+				Id:        workflowID,
+				Status:    stringPtr("failed"),
+				LastError: &errMsg,
+			}); err != nil {
+				log.Error().Err(err).Msg("defer guard: failed to mark workflow as failed")
+			} else {
+				log.Warn().Msg("defer guard: marked orphaned workflow as failed")
+			}
+		}
+	}()
+
 	// Step ordering for resume support. When resuming, skip already-completed steps.
 	stepOrder := map[string]int{"plan": 1, "implement": 2, "resume": 3, "handoff": 3, "verify": 4, "land": 5}
 	startIdx := stepOrder[startStep] // 0 if startStep is "" (start from beginning)

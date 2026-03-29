@@ -48,6 +48,10 @@ type mockHostClient struct {
 	// onAttemptCreated is called (without lock) after a CreateAttempt call.
 	// It receives the step name so tests can produce side effects (e.g. create files).
 	onAttemptCreated func(step string)
+
+	// updateWorkflowErrFn, when non-nil, is called before each UpdateWorkflow.
+	// If it returns a non-nil error, the update is rejected (state not applied).
+	updateWorkflowErrFn func(*bossanovav1.UpdateWorkflowRequest) error
 }
 
 type attemptBehavior struct {
@@ -89,6 +93,11 @@ func (m *mockHostClient) UpdateWorkflow(_ context.Context, req *bossanovav1.Upda
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.updateWorkflowCalls = append(m.updateWorkflowCalls, req)
+	if m.updateWorkflowErrFn != nil {
+		if err := m.updateWorkflowErrFn(req); err != nil {
+			return nil, err
+		}
+	}
 	if req.Status != nil {
 		m.workflow.Status = *req.Status
 	}
@@ -1751,6 +1760,91 @@ func TestRunWorkflowExitsEarlyWhenAllTasksDone(t *testing.T) {
 	}
 	if maxLeg != 3 {
 		t.Errorf("max flight leg = %d, want 3 (early exit after tasks done)", maxLeg)
+	}
+}
+
+// --- Test: runWorkflow defer guard ---
+
+func TestRunWorkflowDeferGuardMarksOrphanedAsFailed(t *testing.T) {
+	// When pauseWorkflowOnError's UpdateWorkflow RPC fails, the goroutine
+	// returns with status still "running". The defer guard should detect this
+	// and transition to "failed".
+	mock := newMockHostClient()
+	mock.workflow.Status = "running" // StartWorkflow sets this before calling runWorkflow.
+	mock.stepAttempts["plan"] = attemptBehavior{err: "plan error"}
+	mock.retryAttempts["plan"] = attemptBehavior{err: "still broken"}
+
+	// Fail UpdateWorkflow when it tries to set "paused" (inside pauseWorkflowOnError),
+	// but allow the defer guard's "failed" update to succeed.
+	mock.updateWorkflowErrFn = func(req *bossanovav1.UpdateWorkflowRequest) error {
+		if req.Status != nil && *req.Status == "paused" {
+			return fmt.Errorf("RPC unavailable")
+		}
+		return nil
+	}
+
+	o := newTestOrchestrator(mock)
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(),
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 20, "")
+
+	// The defer guard should have transitioned to "failed".
+	if mock.workflow.Status != "failed" {
+		t.Errorf("workflow status = %q, want failed (defer guard)", mock.workflow.Status)
+	}
+	if !strings.Contains(mock.workflow.LastError, "unexpectedly") {
+		t.Errorf("LastError = %q, want it to contain 'unexpectedly'", mock.workflow.LastError)
+	}
+}
+
+func TestRunWorkflowDeferGuardRecoversPanic(t *testing.T) {
+	// If the goroutine panics, the defer guard should recover and mark
+	// the workflow as failed (not crash the plugin process).
+	mock := newMockHostClient()
+	mock.workflow.Status = "running" // StartWorkflow sets this before calling runWorkflow.
+	o := newTestOrchestrator(mock)
+
+	// Make checkTasks panic. It's called via allFlightTasksDone after the
+	// handoff loop (which is skipped when maxLegs=1).
+	o.checkTasks = func(_ context.Context, _, _ string) (int, error) {
+		panic("unexpected nil pointer")
+	}
+
+	cfg := &workflowConfig{
+		WorkDir:             t.TempDir(),
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(),
+	}
+
+	// Should not panic — defer guard catches it.
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
+
+	// Defer guard should mark as failed.
+	if mock.workflow.Status != "failed" {
+		t.Errorf("workflow status = %q, want failed (panic recovery)", mock.workflow.Status)
+	}
+	if !strings.Contains(mock.workflow.LastError, "unexpectedly") {
+		t.Errorf("LastError = %q, want it to contain 'unexpectedly'", mock.workflow.LastError)
+	}
+}
+
+func TestRunWorkflowDeferGuardNoOpOnNormalCompletion(t *testing.T) {
+	// The defer guard should not interfere when the workflow completes normally.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+	cfg := &workflowConfig{
+		PollIntervalSeconds: 1,
+		HandoffDir:          t.TempDir(),
+	}
+
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
+
+	// Should still end with "completed" (defer guard is a no-op).
+	if mock.workflow.Status != "completed" {
+		t.Errorf("workflow status = %q, want completed", mock.workflow.Status)
 	}
 }
 

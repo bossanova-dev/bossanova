@@ -26,7 +26,7 @@ type repoSettingsSavedMsg struct {
 
 const (
 	repoSettingsRowName                    = 0
-	repoSettingsRowSetupCommand            = 1
+	repoSettingsRowSetupScript             = 1
 	repoSettingsRowMergeStrategy           = 2
 	repoSettingsRowCanAutoMerge            = 3
 	repoSettingsRowCanAutoMergeDependabot  = 4
@@ -166,7 +166,7 @@ func (m RepoSettingsModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.editingField {
 	case repoSettingsRowName:
 		m.nameInput, cmd = m.nameInput.Update(msg)
-	case repoSettingsRowSetupCommand:
+	case repoSettingsRowSetupScript:
 		m.setupInput, cmd = m.setupInput.Update(msg)
 	}
 	return m, cmd
@@ -187,7 +187,7 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			Id:          m.repoID,
 			DisplayName: &name,
 		})
-	case repoSettingsRowSetupCommand:
+	case repoSettingsRowSetupScript:
 		val := strings.TrimSpace(m.setupInput.Value())
 		m.editingField = -1
 		m.err = nil
@@ -208,7 +208,7 @@ func (m RepoSettingsModel) cancelEdit() RepoSettingsModel {
 		if m.repo != nil {
 			m.nameInput.SetValue(m.repo.DisplayName)
 		}
-	case repoSettingsRowSetupCommand:
+	case repoSettingsRowSetupScript:
 		m.setupInput.Blur()
 		if m.repo != nil {
 			m.setupInput.SetValue(m.repo.GetSetupScript())
@@ -228,8 +228,8 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	case repoSettingsRowName:
 		m.editingField = repoSettingsRowName
 		return m, m.nameInput.Focus()
-	case repoSettingsRowSetupCommand:
-		m.editingField = repoSettingsRowSetupCommand
+	case repoSettingsRowSetupScript:
+		m.editingField = repoSettingsRowSetupScript
 		return m, m.setupInput.Focus()
 	case repoSettingsRowMergeStrategy:
 		// Cycle through merge strategies.
@@ -329,14 +329,14 @@ func (m RepoSettingsModel) View() tea.View {
 	}
 
 	// Row 1: Setup command
-	if m.editingField == repoSettingsRowSetupCommand {
+	if m.editingField == repoSettingsRowSetupScript {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Setup command:"))
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.setupInput.View()))
 		b.WriteString("\n")
 	} else {
 		cursor := "  "
-		if m.cursor == repoSettingsRowSetupCommand {
+		if m.cursor == repoSettingsRowSetupScript {
 			cursor = cursorChevron + " "
 		}
 		val := m.repo.GetSetupScript()
@@ -344,7 +344,7 @@ func (m RepoSettingsModel) View() tea.View {
 			val = "(none)"
 		}
 		line := fmt.Sprintf("%sSetup command: %s", cursor, val)
-		if m.cursor == repoSettingsRowSetupCommand {
+		if m.cursor == repoSettingsRowSetupScript {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))

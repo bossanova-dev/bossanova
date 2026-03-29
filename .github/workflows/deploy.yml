@@ -1,3 +1,4 @@
+# DEPRECATED: Replaced by perform-production-release.yml. Remove after v1.0.0 ships.
 name: Deploy
 
 on:

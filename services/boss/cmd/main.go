@@ -50,6 +50,7 @@ func rootCmd() *cobra.Command {
 		resurrectCmd(),
 		trashCmd(),
 		settingsCmd(),
+		configCmd(),
 		loginCmd(),
 		logoutCmd(),
 		authStatusCmd(),
@@ -253,6 +254,26 @@ func settingsCmd() *cobra.Command {
 	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")
 	return cmd
+}
+
+func configCmd() *cobra.Command {
+	cfg := &cobra.Command{
+		Use:   "config",
+		Short: "Manage configuration",
+	}
+
+	init := &cobra.Command{
+		Use:   "init",
+		Short: "Initialize plugin configuration from a directory",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigInit(cmd)
+		},
+	}
+	init.Flags().String("plugin-dir", "", "Directory containing plugin binaries (required)")
+	_ = init.MarkFlagRequired("plugin-dir")
+
+	cfg.AddCommand(init)
+	return cfg
 }
 
 // maybeInstallSkills prompts the user to install boss skills into ~/.claude/skills/

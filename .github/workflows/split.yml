@@ -1,3 +1,4 @@
+# DEPRECATED: Replaced by mirror-public.yml. Remove after v1.0.0 ships.
 name: Split Mirrors
 
 on:

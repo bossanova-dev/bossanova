@@ -1,3 +1,5 @@
+//go:build darwin
+
 package daemon
 
 import (
@@ -6,9 +8,9 @@ import (
 )
 
 func TestGeneratePlist(t *testing.T) {
-	plist, err := GeneratePlist("/usr/local/bin/bossd")
+	plist, err := generatePlist("/usr/local/bin/bossd")
 	if err != nil {
-		t.Fatalf("GeneratePlist: %v", err)
+		t.Fatalf("generatePlist: %v", err)
 	}
 
 	checks := []string{
@@ -28,13 +30,13 @@ func TestGeneratePlist(t *testing.T) {
 	}
 }
 
-func TestPlistPath(t *testing.T) {
-	path, err := PlistPath()
+func TestServicePath(t *testing.T) {
+	path, err := platformServicePath()
 	if err != nil {
-		t.Fatalf("PlistPath: %v", err)
+		t.Fatalf("platformServicePath: %v", err)
 	}
 
 	if !strings.HasSuffix(path, "Library/LaunchAgents/com.bossanova.bossd.plist") {
-		t.Errorf("unexpected plist path: %s", path)
+		t.Errorf("unexpected service path: %s", path)
 	}
 }

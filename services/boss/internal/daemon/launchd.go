@@ -1,11 +1,11 @@
+//go:build darwin
+
 // Package daemon manages the bossd daemon lifecycle via macOS LaunchAgent.
 package daemon
 
 import (
 	"bytes"
-	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,8 +52,8 @@ type plistData struct {
 	LogDir    string
 }
 
-// PlistPath returns the path to the LaunchAgent plist file.
-func PlistPath() (string, error) {
+// platformServicePath returns the path to the LaunchAgent plist file.
+func platformServicePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
@@ -70,31 +70,8 @@ func logDir() (string, error) {
 	return filepath.Join(home, "Library", "Logs", "bossanova"), nil
 }
 
-// ResolveBossdPath finds the bossd binary. It checks:
-// 1. Next to the boss binary (same directory)
-// 2. In $PATH
-func ResolveBossdPath() (string, error) {
-	// Check next to the current executable.
-	exe, err := os.Executable()
-	if err == nil {
-		exeDir := filepath.Dir(exe)
-		candidate := filepath.Join(exeDir, "bossd")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-	}
-
-	// Check $PATH.
-	path, err := exec.LookPath("bossd")
-	if err == nil {
-		return filepath.Abs(path)
-	}
-
-	return "", fmt.Errorf("bossd not found (install it next to boss or add it to PATH)")
-}
-
-// GeneratePlist renders the LaunchAgent plist XML for bossd.
-func GeneratePlist(bossdPath string) (string, error) {
+// generatePlist renders the LaunchAgent plist XML for bossd.
+func generatePlist(bossdPath string) (string, error) {
 	ld, err := logDir()
 	if err != nil {
 		return "", err
@@ -117,14 +94,14 @@ func GeneratePlist(bossdPath string) (string, error) {
 	return buf.String(), nil
 }
 
-// Install writes the LaunchAgent plist and loads it via launchctl.
-func Install(bossdPath string) error {
-	plist, err := GeneratePlist(bossdPath)
+// platformInstall writes the LaunchAgent plist and loads it via launchctl.
+func platformInstall(bossdPath string) error {
+	plist, err := generatePlist(bossdPath)
 	if err != nil {
 		return err
 	}
 
-	plistPath, err := PlistPath()
+	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
 	}
@@ -157,9 +134,9 @@ func Install(bossdPath string) error {
 	return nil
 }
 
-// Uninstall unloads the LaunchAgent and removes the plist file.
-func Uninstall() error {
-	plistPath, err := PlistPath()
+// platformUninstall unloads the LaunchAgent and removes the plist file.
+func platformUninstall() error {
+	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
 	}
@@ -176,26 +153,21 @@ func Uninstall() error {
 	return nil
 }
 
-// Status checks whether the LaunchAgent is installed and running.
-type Status struct {
-	Installed bool
-	Running   bool
-	PID       int
-	PlistPath string
-}
-
-// GetStatus returns the current daemon status.
-func GetStatus() (*Status, error) {
-	plistPath, err := PlistPath()
+// platformGetStatus returns the current daemon status.
+func platformGetStatus() (*Status, error) {
+	plistPath, err := platformServicePath()
 	if err != nil {
 		return nil, err
 	}
 
-	st := &Status{PlistPath: plistPath}
+	st := &Status{ServicePath: plistPath}
 
 	// Check if plist exists.
-	if _, err := os.Stat(plistPath); os.IsNotExist(err) {
-		return st, nil
+	if _, err := os.Stat(plistPath); err != nil {
+		if os.IsNotExist(err) {
+			return st, nil
+		}
+		return nil, fmt.Errorf("check plist file: %w", err)
 	}
 	st.Installed = true
 
@@ -233,19 +205,12 @@ func GetStatus() (*Status, error) {
 	return st, nil
 }
 
-// EnsureRunning checks if the daemon socket is reachable. If not, it attempts
-// to start bossd as a background process. It waits up to 3 seconds for the
-// socket to become available.
-func EnsureRunning(socketPath string) error {
-	// Try to connect to the existing socket.
-	if isSocketReachable(socketPath) {
-		return nil
-	}
-
+// platformEnsureRunning attempts to start the daemon via LaunchAgent or fallback.
+func platformEnsureRunning(socketPath string) error {
 	// Try the LaunchAgent first (if installed).
-	st, err := GetStatus()
+	st, err := platformGetStatus()
 	if err == nil && st.Installed && !st.Running {
-		plistPath, _ := PlistPath()
+		plistPath, _ := platformServicePath()
 		if cmd := exec.Command("launchctl", "load", plistPath); cmd.Run() == nil {
 			if waitForSocket(socketPath, 3*time.Second) {
 				return nil
@@ -276,34 +241,4 @@ func EnsureRunning(socketPath string) error {
 	}
 
 	return nil
-}
-
-// isSocketReachable checks if a Unix socket is connectable.
-func isSocketReachable(socketPath string) bool {
-	conn, err := net.DialTimeout("unix", socketPath, 500*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
-
-// waitForSocket polls for the socket to become reachable.
-func waitForSocket(socketPath string, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-ticker.C:
-			if isSocketReachable(socketPath) {
-				return true
-			}
-		}
-	}
 }

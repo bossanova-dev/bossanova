@@ -298,6 +298,26 @@ boss settings --skip-permissions --worktree-dir ~/worktrees
 boss settings --poll-interval 30
 ```
 
+### `boss config init`
+
+Initialize plugin configuration by scanning a plugin directory.
+
+**Flags:**
+
+- `--plugin-dir <path>` — Path to directory containing plugin binaries (required)
+
+```bash
+boss config init --plugin-dir /usr/local/bin
+boss config init --plugin-dir ~/.local/share/boss/plugins
+```
+
+This command:
+
+- Scans the directory for plugin binaries (`bossd-plugin-*`)
+- Creates or updates plugin configuration entries with paths and versions
+- Preserves the enabled/disabled state of existing plugins
+- Defaults new plugins to enabled
+
 ### `boss login`
 
 Log in to Bossanova cloud via Auth0 PKCE. Opens a browser for authentication.

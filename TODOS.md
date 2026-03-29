@@ -100,6 +100,20 @@
 
 ---
 
+## Distribution Deferred: Public Repo CI Workflows
+
+**What:** Create minimal CI workflows for the public repo (`bossanova-dev/bossanova`) that run `go test ./...` and `golangci-lint` on PRs from external contributors.
+
+**Why:** The copy-and-strip mirror approach strips `.github/workflows/` from the public repo (private CI references secrets and private repos). Without public CI, there's no automated quality gate for external contributions.
+
+**Approach:** Create a simple `ci.yml` in the public repo: trigger on PRs, run `go test ./...` for boss, bossd, bossalib modules, run `golangci-lint`. No deploy, no plugin builds. This is maintained separately from the private repo's CI.
+
+**Depends on:** Public repo existing with copy-and-strip mirror workflow.
+
+**Added:** 2026-03-28 (eng review of distribution design doc)
+
+---
+
 ## Mutation Testing CI Workflow
 
 **What:** Add `.github/workflows/mutate.yml` that runs `make mutate-diff` on PR branches, enforcing minimum mutation score thresholds.

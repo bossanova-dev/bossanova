@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/views"
+	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -354,10 +356,12 @@ func runDaemonInstall(_ *cobra.Command) error {
 		return fmt.Errorf("install daemon: %w", err)
 	}
 
+	st, _ := daemon.GetStatus()
 	fmt.Printf("Daemon installed and started.\n")
-	fmt.Printf("  bossd: %s\n", bossdPath)
-	plistPath, _ := daemon.PlistPath()
-	fmt.Printf("  plist: %s\n", plistPath)
+	fmt.Printf("  bossd:   %s\n", bossdPath)
+	if st != nil && st.ServicePath != "" {
+		fmt.Printf("  service: %s\n", st.ServicePath)
+	}
 	return nil
 }
 
@@ -377,19 +381,21 @@ func runDaemonStatus(_ *cobra.Command) error {
 
 	if !st.Installed {
 		fmt.Println("Daemon is not installed.")
-		fmt.Println("  Run 'boss daemon install' to set up the LaunchAgent.")
+		fmt.Println("  Run 'boss daemon install' to set up the daemon.")
 		return nil
 	}
 
 	if st.Running {
 		fmt.Println("Daemon is running.")
 		if st.PID > 0 {
-			fmt.Printf("  PID:   %d\n", st.PID)
+			fmt.Printf("  PID:     %d\n", st.PID)
 		}
 	} else {
 		fmt.Println("Daemon is installed but not running.")
 	}
-	fmt.Printf("  Plist: %s\n", st.PlistPath)
+	if st.ServicePath != "" {
+		fmt.Printf("  service: %s\n", st.ServicePath)
+	}
 	return nil
 }
 
@@ -846,5 +852,95 @@ func runSettings(cmd *cobra.Command) error {
 	}
 
 	fmt.Println("Settings updated.")
+	return nil
+}
+
+// --- Config Init ---
+
+func runConfigInit(cmd *cobra.Command) error {
+	pluginDir, _ := cmd.Flags().GetString("plugin-dir")
+	if pluginDir == "" {
+		return fmt.Errorf("--plugin-dir is required")
+	}
+
+	// Validate plugin directory exists
+	info, err := os.Stat(pluginDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("plugin directory not found: %s", pluginDir)
+		}
+		return fmt.Errorf("cannot access plugin directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("plugin-dir must be a directory: %s", pluginDir)
+	}
+
+	// Convert to absolute path
+	absPluginDir, err := filepath.Abs(pluginDir)
+	if err != nil {
+		return fmt.Errorf("resolve plugin directory: %w", err)
+	}
+
+	// Scan for plugin binaries
+	pluginNames := []string{
+		"bossd-plugin-autopilot",
+		"bossd-plugin-dependabot",
+		"bossd-plugin-repair",
+	}
+
+	foundPlugins := make(map[string]string) // name -> path
+	for _, name := range pluginNames {
+		path := filepath.Join(absPluginDir, name)
+		if _, err := os.Stat(path); err == nil {
+			foundPlugins[name] = path
+		}
+	}
+
+	if len(foundPlugins) == 0 {
+		fmt.Fprintf(os.Stderr, "Warning: no plugin binaries found in %s\n", absPluginDir)
+		return nil
+	}
+
+	// Load existing settings
+	s, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+
+	// Create or update plugin entries
+	pluginMap := make(map[string]int)
+	for i := range s.Plugins {
+		pluginMap[s.Plugins[i].Name] = i
+	}
+
+	for name, path := range foundPlugins {
+		// Extract plugin name from binary name (bossd-plugin-autopilot -> autopilot)
+		pluginName := strings.TrimPrefix(name, "bossd-plugin-")
+
+		if idx, ok := pluginMap[pluginName]; ok {
+			// Update existing entry path and version, but preserve Enabled state
+			// so we don't re-enable plugins the user explicitly disabled.
+			s.Plugins[idx].Path = path
+			s.Plugins[idx].Version = buildinfo.Version
+		} else {
+			// Add new entry (default to enabled for newly discovered plugins)
+			newPlugin := config.PluginConfig{
+				Name:    pluginName,
+				Path:    path,
+				Enabled: true,
+				Version: buildinfo.Version,
+			}
+			s.Plugins = append(s.Plugins, newPlugin)
+			pluginMap[pluginName] = len(s.Plugins) - 1
+		}
+	}
+
+	// Save settings
+	if err := config.Save(s); err != nil {
+		return fmt.Errorf("save settings: %w", err)
+	}
+
+	settingsPath, _ := config.Path()
+	fmt.Printf("Configured %d plugins in %s\n", len(foundPlugins), settingsPath)
 	return nil
 }

@@ -157,6 +157,11 @@ message Session {
 
   // Whether this session is currently being repaired by the repair plugin.
   bool is_repairing = 24;
+
+  // Workflow display fields, hydrated server-side from active workflows.
+  WorkflowStatus workflow_display_status = 25;
+  int32 workflow_display_leg = 26;
+  int32 workflow_display_max_legs = 27;
 }
 
 // Attempt represents a fix attempt within a session.

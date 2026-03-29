@@ -171,5 +171,6 @@ type WorkflowStore interface {
 	Update(ctx context.Context, id string, params UpdateWorkflowParams) (*models.Workflow, error)
 	List(ctx context.Context) ([]*models.Workflow, error)
 	ListByStatus(ctx context.Context, status string) ([]*models.Workflow, error)
+	ListActiveBySessionIDs(ctx context.Context, sessionIDs []string) ([]*models.Workflow, error)
 	FailOrphaned(ctx context.Context) (int64, error)
 }

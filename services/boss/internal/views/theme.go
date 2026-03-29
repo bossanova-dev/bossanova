@@ -45,6 +45,7 @@ var (
 	styleStatusSuccess = lipgloss.NewStyle().Foreground(colorSuccess)
 	styleStatusWarning = lipgloss.NewStyle().Foreground(colorWarning)
 	styleStatusDanger  = lipgloss.NewStyle().Foreground(colorDanger)
+	styleStatusInfo    = lipgloss.NewStyle().Foreground(colorInfo)
 	styleStatusMuted   = lipgloss.NewStyle().Foreground(colorMuted)
 )
 

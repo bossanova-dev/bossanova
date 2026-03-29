@@ -69,6 +69,21 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 	}
 }
 
+// styledWorkflowStatus returns a styled label for an active autopilot workflow.
+// Returns "" when no active workflow is present.
+func styledWorkflowStatus(sess *pb.Session, sp spinner.Model) string {
+	switch sess.WorkflowDisplayStatus {
+	case pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING:
+		return styleStatusInfo.Render(fmt.Sprintf("%srunning %d/%d", sp.View(), sess.WorkflowDisplayLeg, sess.WorkflowDisplayMaxLegs))
+	case pb.WorkflowStatus_WORKFLOW_STATUS_PENDING:
+		return styleStatusInfo.Render(sp.View() + "pending")
+	case pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED:
+		return styleStatusWarning.Render(fmt.Sprintf("paused %d/%d", sess.WorkflowDisplayLeg, sess.WorkflowDisplayMaxLegs))
+	default:
+		return ""
+	}
+}
+
 // renderPRDisplayStatus returns a styled status string for the unified STATUS column.
 // Claude working status overrides all PR display statuses.
 func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Model) string {
@@ -77,6 +92,9 @@ func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Mod
 	}
 	if claudeStatus == bosspty.StatusWorking {
 		return styleStatusSuccess.Render(sp.View() + "working")
+	}
+	if label := styledWorkflowStatus(sess, sp); label != "" {
+		return label
 	}
 	if sess.IsRepairing {
 		return styleStatusWarning.Render(sp.View() + "repairing")

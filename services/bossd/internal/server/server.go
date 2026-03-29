@@ -609,11 +609,11 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	}
 
 	// Hydrate PR display statuses from the in-memory tracker.
+	sessionIDs := make([]string, len(sessions))
+	for i, sess := range sessions {
+		sessionIDs[i] = sess.ID
+	}
 	if s.prDisplay != nil {
-		sessionIDs := make([]string, len(sessions))
-		for i, sess := range sessions {
-			sessionIDs[i] = sess.ID
-		}
 		entries := s.prDisplay.GetBatch(sessionIDs)
 		for i, sess := range sessions {
 			if e, ok := entries[sess.ID]; ok {
@@ -621,6 +621,27 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 				pbSessions[i].PrDisplayHasFailures = e.HasFailures
 				pbSessions[i].PrDisplayHasChangesRequested = e.HasChangesRequested
 				pbSessions[i].IsRepairing = e.IsRepairing
+			}
+		}
+	}
+
+	// Hydrate active workflow display fields.
+	if s.workflows != nil {
+		activeWorkflows, err := s.workflows.ListActiveBySessionIDs(ctx, sessionIDs)
+		if err == nil {
+			// Build map: session ID → best (highest-priority) active workflow.
+			best := make(map[string]*models.Workflow, len(activeWorkflows))
+			for _, w := range activeWorkflows {
+				if existing, ok := best[w.SessionID]; !ok || workflowPriority(w.Status) > workflowPriority(existing.Status) {
+					best[w.SessionID] = w
+				}
+			}
+			for i, sess := range sessions {
+				if w, ok := best[sess.ID]; ok {
+					pbSessions[i].WorkflowDisplayStatus = workflowStatusToProto(w.Status)
+					pbSessions[i].WorkflowDisplayLeg = int32(w.FlightLeg)
+					pbSessions[i].WorkflowDisplayMaxLegs = int32(w.MaxLegs)
+				}
 			}
 		}
 	}

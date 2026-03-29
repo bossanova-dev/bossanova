@@ -1063,9 +1063,13 @@ type Session struct {
 	// Attention status, hydrated server-side from session state.
 	AttentionStatus *AttentionStatus `protobuf:"bytes,22,opt,name=attention_status,json=attentionStatus,proto3,oneof" json:"attention_status,omitempty"`
 	// Whether this session is currently being repaired by the repair plugin.
-	IsRepairing   bool `protobuf:"varint,24,opt,name=is_repairing,json=isRepairing,proto3" json:"is_repairing,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	IsRepairing bool `protobuf:"varint,24,opt,name=is_repairing,json=isRepairing,proto3" json:"is_repairing,omitempty"`
+	// Workflow display fields, hydrated server-side from active workflows.
+	WorkflowDisplayStatus  WorkflowStatus `protobuf:"varint,25,opt,name=workflow_display_status,json=workflowDisplayStatus,proto3,enum=bossanova.v1.WorkflowStatus" json:"workflow_display_status,omitempty"`
+	WorkflowDisplayLeg     int32          `protobuf:"varint,26,opt,name=workflow_display_leg,json=workflowDisplayLeg,proto3" json:"workflow_display_leg,omitempty"`
+	WorkflowDisplayMaxLegs int32          `protobuf:"varint,27,opt,name=workflow_display_max_legs,json=workflowDisplayMaxLegs,proto3" json:"workflow_display_max_legs,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1264,6 +1268,27 @@ func (x *Session) GetIsRepairing() bool {
 		return x.IsRepairing
 	}
 	return false
+}
+
+func (x *Session) GetWorkflowDisplayStatus() WorkflowStatus {
+	if x != nil {
+		return x.WorkflowDisplayStatus
+	}
+	return WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED
+}
+
+func (x *Session) GetWorkflowDisplayLeg() int32 {
+	if x != nil {
+		return x.WorkflowDisplayLeg
+	}
+	return 0
+}
+
+func (x *Session) GetWorkflowDisplayMaxLegs() int32 {
+	if x != nil {
+		return x.WorkflowDisplayMaxLegs
+	}
+	return 0
 }
 
 // Attempt represents a fix attempt within a session.
@@ -2403,7 +2428,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategyB\x0f\n" +
-	"\r_setup_script\"\xb2\t\n" +
+	"\r_setup_script\"\xf5\n" +
+	"\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -2434,7 +2460,10 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x17pr_display_has_failures\x18\x15 \x01(\bR\x14prDisplayHasFailures\x12F\n" +
 	" pr_display_has_changes_requested\x18\x17 \x01(\bR\x1cprDisplayHasChangesRequested\x12M\n" +
 	"\x10attention_status\x18\x16 \x01(\v2\x1d.bossanova.v1.AttentionStatusH\x05R\x0fattentionStatus\x88\x01\x01\x12!\n" +
-	"\fis_repairing\x18\x18 \x01(\bR\visRepairingB\x14\n" +
+	"\fis_repairing\x18\x18 \x01(\bR\visRepairing\x12T\n" +
+	"\x17workflow_display_status\x18\x19 \x01(\x0e2\x1c.bossanova.v1.WorkflowStatusR\x15workflowDisplayStatus\x120\n" +
+	"\x14workflow_display_leg\x18\x1a \x01(\x05R\x12workflowDisplayLeg\x129\n" +
+	"\x19workflow_display_max_legs\x18\x1b \x01(\x05R\x16workflowDisplayMaxLegsB\x14\n" +
 	"\x12_claude_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
@@ -2710,31 +2739,32 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	32, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	10, // 7: bossanova.v1.Session.pr_display_status:type_name -> bossanova.v1.PRDisplayStatus
 	30, // 8: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
-	7,  // 9: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
-	8,  // 10: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	32, // 11: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	32, // 12: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
-	5,  // 13: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
-	2,  // 14: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
-	3,  // 15: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
-	6,  // 16: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
-	5,  // 17: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
-	24, // 18: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
-	25, // 19: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
-	26, // 20: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
-	27, // 21: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
-	28, // 22: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
-	29, // 23: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
-	18, // 24: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
-	19, // 25: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
-	9,  // 26: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	32, // 27: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
-	32, // 28: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	29, // [29:29] is the sub-list for method output_type
-	29, // [29:29] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	11, // 9: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
+	7,  // 10: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
+	8,  // 11: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
+	32, // 12: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	32, // 13: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 14: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
+	2,  // 15: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
+	3,  // 16: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
+	6,  // 17: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
+	5,  // 18: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
+	24, // 19: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
+	25, // 20: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
+	26, // 21: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
+	27, // 22: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
+	28, // 23: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
+	29, // 24: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
+	18, // 25: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
+	19, // 26: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
+	9,  // 27: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
+	32, // 28: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	32, // 29: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	30, // [30:30] is the sub-list for method output_type
+	30, // [30:30] is the sub-list for method input_type
+	30, // [30:30] is the sub-list for extension type_name
+	30, // [30:30] is the sub-list for extension extendee
+	0,  // [0:30] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }

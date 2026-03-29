@@ -166,10 +166,11 @@ func (h *HomeModel) buildTableRows() {
 
 		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], names[i], prs[i]
-		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED {
+		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED ||
+			sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED {
 			repo = mutedStrike.Render(repos[i])
 			name = mutedStrike.Render(names[i])
-			pr = renderMergedPRLink(sess)
+			pr = renderMutedPRLink(sess)
 		}
 
 		indicator := ""

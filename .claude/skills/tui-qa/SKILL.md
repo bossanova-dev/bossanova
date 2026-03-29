@@ -52,7 +52,7 @@ Focus testing on views/interactions affected by the diff.
 Read the TUI architecture to understand what to test:
 
 1. **Views**: `services/boss/internal/views/` — every `*.go` file is a view
-2. **Existing tests**: `services/boss/internal/tuitest/integration_test.go`
+2. **Existing tests**: `services/boss/internal/tuitest/*_test.go` (split by view: `home_test.go`, `trash_test.go`, `settings_test.go`, `repolist_test.go`, `reposettings_test.go`, `autopilot_test.go`, `chatpicker_test.go`, `newsession_test.go`, `navigation_test.go`, `main_test.go`)
 3. **Driver API**: `services/boss/internal/tuidriver/driver.go`
 4. **Test harness**: `services/boss/internal/tuitest/harness.go`, `mock_daemon.go`
 
@@ -62,13 +62,14 @@ Build a mental map of views, keybindings, and navigation paths. See the [View Ma
 
 Based on the orient phase, plan which tests to write. Choose a tier:
 
-| Tier | Scope | When to Use |
-|------|-------|-------------|
-| **Quick** | Critical paths only: home view loads, navigation between views, quit | Smoke test after small change |
-| **Standard** | + edge cases, empty states, confirmations, archive/restore/delete | Default for most QA runs |
+| Tier           | Scope                                                                 | When to Use                   |
+| -------------- | --------------------------------------------------------------------- | ----------------------------- |
+| **Quick**      | Critical paths only: home view loads, navigation between views, quit  | Smoke test after small change |
+| **Standard**   | + edge cases, empty states, confirmations, archive/restore/delete     | Default for most QA runs      |
 | **Exhaustive** | + every view interaction, all keybindings, error states, data display | Major refactor or pre-release |
 
 List planned tests before writing any code. Each test should have:
+
 - Name: `TestTUI_ViewName_Behavior`
 - What it verifies
 - Which keys/interactions it exercises
@@ -76,7 +77,7 @@ List planned tests before writing any code. Each test should have:
 
 ### Phase 4: Write Tests
 
-Write tests in `services/boss/internal/tuitest/integration_test.go` (or a new `*_test.go` file in the same package). Follow the patterns in [Test Patterns](#test-patterns) below.
+Write tests in the appropriate per-view test file in `services/boss/internal/tuitest/` (e.g., `home_test.go`, `trash_test.go`, etc.). Follow the patterns in [Test Patterns](#test-patterns) below.
 
 Every test file in `tuitest/` must use the shared `TestMain`:
 
@@ -126,6 +127,7 @@ func TestMain(m *testing.M) {
 **Fix commit format**: `fix(boss/tui): description of what was fixed`
 
 After each fix:
+
 1. Run `make format` (from repo root)
 2. Run `make test` to check for regressions across the full test suite
 3. If a fix causes a regression, revert it and try a different approach
@@ -144,26 +146,30 @@ Produce a structured report:
 
 ### Health Score: XX/100
 
-| Category | Score | Max | Notes |
-|----------|-------|-----|-------|
-| Navigation | /20 | 20 | |
-| Data Display | /20 | 20 | |
-| Interactions | /20 | 20 | |
-| Confirmations | /15 | 15 | |
-| Empty States | /10 | 10 | |
-| Error Handling | /10 | 10 | |
-| Exit Behavior | /5 | 5 | |
+| Category       | Score | Max | Notes |
+| -------------- | ----- | --- | ----- |
+| Navigation     | /20   | 20  |       |
+| Data Display   | /20   | 20  |       |
+| Interactions   | /20   | 20  |       |
+| Confirmations  | /15   | 15  |       |
+| Empty States   | /10   | 10  |       |
+| Error Handling | /10   | 10  |       |
+| Exit Behavior  | /5    | 5   |       |
 
 ### Issues Found
+
 - [ ] ISSUE-1: Description (severity: critical|major|minor)
 
 ### Fixes Applied
+
 - COMMIT-HASH: Description
 
 ### Tests Added
+
 - TestTUI_ViewName_Behavior: What it verifies
 
 ### Known Gaps
+
 - What wasn't tested and why
 ```
 
@@ -188,37 +194,37 @@ type Options struct {
 
 #### Screen Reading
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `Screen` | `() string` | Current terminal screen as plain text (thread-safe) |
-| `ScreenContains` | `(text string) bool` | True if screen contains substring |
+| Method           | Signature            | Description                                         |
+| ---------------- | -------------------- | --------------------------------------------------- |
+| `Screen`         | `() string`          | Current terminal screen as plain text (thread-safe) |
+| `ScreenContains` | `(text string) bool` | True if screen contains substring                   |
 
 #### Input
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `SendKey` | `(b byte) error` | Send single byte (e.g., `'j'`, `'q'`, `'a'`) |
-| `SendString` | `(s string) error` | Send a string |
-| `SendEnter` | `() error` | Send carriage return (`\r`) |
-| `SendEscape` | `() error` | Send escape character (`0x1b`) |
-| `SendCtrlC` | `() error` | Send ETX / Ctrl+C (`0x03`) |
+| Method       | Signature          | Description                                  |
+| ------------ | ------------------ | -------------------------------------------- |
+| `SendKey`    | `(b byte) error`   | Send single byte (e.g., `'j'`, `'q'`, `'a'`) |
+| `SendString` | `(s string) error` | Send a string                                |
+| `SendEnter`  | `() error`         | Send carriage return (`\r`)                  |
+| `SendEscape` | `() error`         | Send escape character (`0x1b`)               |
+| `SendCtrlC`  | `() error`         | Send ETX / Ctrl+C (`0x03`)                   |
 
 #### Waiting
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `WaitFor` | `(timeout time.Duration, pred func(string) bool) error` | Poll screen every 50ms until predicate is true |
-| `WaitForText` | `(timeout time.Duration, text string) error` | Wait until screen contains text |
-| `WaitForNoText` | `(timeout time.Duration, text string) error` | Wait until screen no longer contains text |
+| Method          | Signature                                               | Description                                    |
+| --------------- | ------------------------------------------------------- | ---------------------------------------------- |
+| `WaitFor`       | `(timeout time.Duration, pred func(string) bool) error` | Poll screen every 50ms until predicate is true |
+| `WaitForText`   | `(timeout time.Duration, text string) error`            | Wait until screen contains text                |
+| `WaitForNoText` | `(timeout time.Duration, text string) error`            | Wait until screen no longer contains text      |
 
 All wait methods return an error with the last screen content on timeout.
 
 #### Lifecycle
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `Done` | `() <-chan struct{}` | Channel closed when process exits |
-| `Close` | `() error` | Send Ctrl+C, wait 3s, kill, cleanup |
+| Method  | Signature            | Description                         |
+| ------- | -------------------- | ----------------------------------- |
+| `Done`  | `() <-chan struct{}` | Channel closed when process exits   |
+| `Close` | `() error`           | Send Ctrl+C, wait 3s, kill, cleanup |
 
 ### `tuitest.Harness`
 
@@ -231,51 +237,69 @@ type Harness struct {
 
 #### Setup
 
-| Function | Description |
-|----------|-------------|
-| `BuildBoss() (cleanup func())` | Compile boss binary. Call from `TestMain` only. |
+| Function                                     | Description                                                         |
+| -------------------------------------------- | ------------------------------------------------------------------- |
+| `BuildBoss() (cleanup func())`               | Compile boss binary. Call from `TestMain` only.                     |
 | `New(t *testing.T, opts ...Option) *Harness` | Create harness with mock daemon + driver. Auto-cleanup on test end. |
 
 #### Options
 
-| Option | Description |
-|--------|-------------|
-| `WithRepos(repos ...*pb.Repo)` | Seed mock daemon with repos |
-| `WithSessions(sessions ...*pb.Session)` | Seed mock daemon with sessions |
+| Option                                              | Description                               |
+| --------------------------------------------------- | ----------------------------------------- |
+| `WithRepos(repos ...*pb.Repo)`                      | Seed mock daemon with repos               |
+| `WithSessions(sessions ...*pb.Session)`             | Seed mock daemon with sessions            |
+| `WithWorkflows(workflows ...*pb.AutopilotWorkflow)` | Seed mock daemon with autopilot workflows |
+| `WithChats(chats ...*pb.ClaudeChat)`                | Seed mock daemon with claude chats        |
+| `WithPRs(repoID string, prs ...*pb.PRSummary)`      | Seed mock daemon with PRs for a repo      |
 
 ### `MockDaemon`
 
 #### Methods
 
-| Method | Description |
-|--------|-------------|
-| `SocketPath() string` | Unix socket path |
-| `AddRepo(repo *pb.Repo)` | Add repo at runtime |
-| `AddSession(sess *pb.Session)` | Add session at runtime |
-| `Sessions() []*pb.Session` | Get copy of all sessions (for verification) |
+| Method                                       | Description                                  |
+| -------------------------------------------- | -------------------------------------------- |
+| `SocketPath() string`                        | Unix socket path                             |
+| `AddRepo(repo *pb.Repo)`                     | Add repo at runtime                          |
+| `AddSession(sess *pb.Session)`               | Add session at runtime                       |
+| `AddWorkflow(w *pb.AutopilotWorkflow)`       | Add workflow at runtime                      |
+| `AddChat(c *pb.ClaudeChat)`                  | Add chat at runtime                          |
+| `AddPRs(repoID string, prs []*pb.PRSummary)` | Add PRs for a repo at runtime                |
+| `Sessions() []*pb.Session`                   | Get copy of all sessions (for verification)  |
+| `Repos() []*pb.Repo`                         | Get copy of all repos (for verification)     |
+| `Workflows() []*pb.AutopilotWorkflow`        | Get copy of all workflows (for verification) |
 
-#### Implemented RPCs (12)
+#### Implemented RPCs (23)
 
 These return real responses with in-memory data:
 
-| RPC | Behavior |
-|-----|----------|
-| `ListRepos` | Returns all repos |
-| `ListSessions` | Filters by `IncludeArchived` flag |
-| `GetSession` | Returns by ID (or `NotFound`) |
-| `ArchiveSession` | Sets `ArchivedAt` to now |
-| `ResurrectSession` | Clears `ArchivedAt` |
-| `RemoveSession` | Deletes from memory |
-| `EmptyTrash` | Removes all archived, returns `DeletedCount` |
-| `ListChats` | Returns empty response |
-| `ReportChatStatus` | Returns empty response |
-| `GetChatStatuses` | Returns empty response |
-| `GetSessionStatuses` | Returns empty response |
-| `ListRepoPRs` | Returns empty response |
+| RPC                      | Behavior                                     |
+| ------------------------ | -------------------------------------------- |
+| `ListRepos`              | Returns all repos                            |
+| `ListSessions`           | Filters by `IncludeArchived` flag            |
+| `GetSession`             | Returns by ID (or `NotFound`)                |
+| `ArchiveSession`         | Sets `ArchivedAt` to now                     |
+| `ResurrectSession`       | Clears `ArchivedAt`                          |
+| `RemoveSession`          | Deletes from memory                          |
+| `EmptyTrash`             | Removes all archived, returns `DeletedCount` |
+| `RemoveRepo`             | Removes repo by ID                           |
+| `UpdateRepo`             | Applies field updates to repo                |
+| `ValidateRepoPath`       | Returns success stub (always valid)          |
+| `RegisterRepo`           | Creates and adds new repo                    |
+| `ListAutopilotWorkflows` | Returns all workflows                        |
+| `PauseAutopilot`         | Sets workflow status to PAUSED               |
+| `ResumeAutopilot`        | Sets workflow status to RUNNING              |
+| `CancelAutopilot`        | Sets workflow status to CANCELLED            |
+| `DeleteChat`             | Removes chat by ClaudeId                     |
+| `UpdateChatTitle`        | Returns empty response (stub)                |
+| `ListChats`              | Returns chats filtered by session ID         |
+| `ListRepoPRs`            | Returns PRs for requested repo ID            |
+| `ReportChatStatus`       | Returns empty response                       |
+| `GetChatStatuses`        | Returns empty response                       |
+| `GetSessionStatuses`     | Returns empty response                       |
 
 #### Unimplemented RPCs
 
-All return `connect.CodeUnimplemented`: CreateSession, AttachSession, StopSession, PauseSession, ResumeSession, RetrySession, CloseSession, RegisterRepo, CloneAndRegisterRepo, RemoveRepo, UpdateRepo, ValidateRepoPath, ResolveContext, RecordChat, UpdateChatTitle, DeleteChat, DeliverVCSEvent, StartAutopilot, PauseAutopilot, ResumeAutopilot, CancelAutopilot, GetAutopilotStatus, ListAutopilotWorkflows, StreamAutopilotOutput.
+All return `connect.CodeUnimplemented`: CreateSession (streaming), AttachSession (streaming), StreamAutopilotOutput (streaming), StopSession, PauseSession, ResumeSession, RetrySession, CloseSession, CloneAndRegisterRepo, ResolveContext, RecordChat, DeliverVCSEvent, StartAutopilot, GetAutopilotStatus.
 
 ---
 
@@ -325,6 +349,7 @@ All views return to their parent via `esc` or `q`.
 ### View Details
 
 #### ViewHome
+
 - **Navigate to**: `n`=NewSession, `r`=RepoList, `s`=Settings, `t`=Trash, `p`=Autopilot, `h`/`enter`=ChatPicker/Attach
 - **Actions**: `a`=archive selected session (confirmation), `q`=quit
 - **Navigation**: `j`/`k`/`up`/`down` = move cursor
@@ -332,47 +357,56 @@ All views return to their parent via `esc` or `q`.
 - **Session data**: titles appear directly (e.g., `"Add dark mode"`)
 
 #### ViewTrash
+
 - **Navigate to**: from Home via `t`
 - **Actions**: `r`=restore, `d`=delete (confirmation), `a`=empty trash (confirmation)
 - **Assert text**: `"Archived Sessions"`, `"Trash is empty."`
 - **Confirmations**: `"Permanently delete %q?"`, `"Permanently delete all %d archived sessions?"`
 
 #### ViewSettings
+
 - **Navigate to**: from Home via `s`
 - **Actions**: `enter`/`space`=toggle checkbox or edit field
 - **Assert text**: `"Settings"`, `"Enable Claude --dangerously-skip-permissions"`, `"Worktree base directory"`, `"Poll interval"`
 
 #### ViewRepoList
+
 - **Navigate to**: from Home via `r`
 - **Actions**: `a`=add repo, `d`=remove (confirmation), `s`/`enter`=repo settings
 - **Assert text**: `"No repositories registered."`, `"NAME"`, `"PATH"`
 - **Confirmations**: `"Remove %q?"`
 
 #### ViewRepoAdd
+
 - **Navigate to**: from RepoList via `a`
 - **Phases**: source select → input form → details form → done
 - **Assert text**: `"Add Repository"`, `"Open project"`, `"Clone from URL"`, `"Repository registered!"`
 
 #### ViewRepoSettings
+
 - **Navigate to**: from RepoList via `s`/`enter`
 - **Assert text**: `"Name:"`, `"Setup command:"`, `"Merge strategy:"`, `"Auto-merge PRs"`
 
 #### ViewNewSession
+
 - **Navigate to**: from Home via `n`
 - **Phases**: loading → repo select → type select → PR select/form → creating → done
 - **Assert text**: `"Select a repository"`, `"Create a new PR"`, `"Quick chat"`, `"Creating a new session..."`
 
 #### ViewChatPicker
+
 - **Navigate to**: from Home via `h` or `enter`
 - **Actions**: `n`=new chat, `d`=delete chat (confirmation), `enter`=resume
 - **Assert text**: `"Loading chats for"`, `"New chat"`
 
 #### ViewAutopilot
+
 - **Navigate to**: from Home via `p`
 - **Actions**: `p`=pause, `r`=resume, `c`=cancel (confirmation)
 - **Assert text**: `"Autopilot Workflows"`, `"No workflows."`
 
 #### ViewAttach
+
 - **Navigate to**: from NewSession (success), ChatPicker (new/resume), Home (auto-enter)
 - **Detach**: `Ctrl+X` / `Ctrl+]`
 - **Assert text**: `"Launching Claude Code for"`, `"Press Ctrl+X to detach"`
@@ -391,34 +425,26 @@ Use this for all `WaitFor`/`WaitForText`/`WaitForNoText` calls.
 
 ### Test Data Helpers
 
-```go
-func testRepos() []*pb.Repo {
-    return []*pb.Repo{{
-        Id:                "repo-1",
-        DisplayName:       "my-app",
-        LocalPath:         "/tmp/my-app",
-        DefaultBaseBranch: "main",
-    }}
-}
+All helpers are defined in `main_test.go`. Use these in your tests:
 
-func testSessions() []*pb.Session {
-    return []*pb.Session{
-        {
-            Id:       "sess-aaa-111",
-            Title:    "Add dark mode",
-            RepoId:   "repo-1",
-            Branch:   "boss/add-dark-mode",
-            State:    pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
-        },
-        {
-            Id:       "sess-bbb-222",
-            Title:    "Fix login bug",
-            RepoId:   "repo-1",
-            Branch:   "boss/fix-login-bug",
-            State:    pb.SessionState_SESSION_STATE_AWAITING_CHECKS,
-        },
-    }
-}
+```go
+func testRepos() []*pb.Repo          // 1 repo: "my-app"
+func testMultiRepos() []*pb.Repo     // 2 repos: "my-app", "my-api"
+func testSessions() []*pb.Session    // 2 sessions: "Add dark mode", "Fix login bug"
+func testWorkflows() []*pb.AutopilotWorkflow // 1 running workflow: "wf-001-aaa"
+func testChats() []*pb.ClaudeChat    // 2 chats for sess-aaa-111: "Initial implementation", "Follow-up review"
+func testPRs() []*pb.PRSummary       // 1 open PR: #42 "Add dark mode support"
+```
+
+Example usage:
+
+```go
+h := tuitest.New(t,
+    tuitest.WithRepos(testRepos()...),
+    tuitest.WithSessions(testSessions()...),
+    tuitest.WithWorkflows(testWorkflows()...),
+    tuitest.WithChats(testChats()...),
+)
 ```
 
 ### Basic Test Structure
@@ -545,15 +571,15 @@ For most interactions, prefer `WaitForText` over `time.Sleep` — it's more reli
 
 ## Health Score Rubric
 
-| Category | Weight | What to Test |
-|----------|--------|-------------|
-| **Navigation** | 20% | All views reachable from Home. Back navigation (`esc`) works from every view. `j`/`k`/`up`/`down` move cursor in tables. |
-| **Data Display** | 20% | Sessions show title, repo, branch, state. Repos show name, path. Trash shows archived date. Tables render without visual corruption. |
-| **Interactions** | 20% | Archive, restore, delete, empty trash all modify daemon state correctly. New session wizard flows work. Repo add/remove work. |
-| **Confirmations** | 15% | All destructive actions (archive, delete, remove, empty trash, cancel workflow) show confirmation. Cancelling confirmation preserves state. |
-| **Empty States** | 10% | `"No active sessions."` on Home with no sessions. `"Trash is empty."` with no archived. `"No repositories registered."` with no repos. `"No workflows."` with no autopilot workflows. |
-| **Error Handling** | 10% | Graceful behavior when daemon returns errors. Error text is visible and actionable. |
-| **Exit Behavior** | 5% | `q` quits from Home. `Ctrl+C` quits from any view. Process exits cleanly (Done channel closes). |
+| Category           | Weight | What to Test                                                                                                                                                                          |
+| ------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Navigation**     | 20%    | All views reachable from Home. Back navigation (`esc`) works from every view. `j`/`k`/`up`/`down` move cursor in tables.                                                              |
+| **Data Display**   | 20%    | Sessions show title, repo, branch, state. Repos show name, path. Trash shows archived date. Tables render without visual corruption.                                                  |
+| **Interactions**   | 20%    | Archive, restore, delete, empty trash all modify daemon state correctly. New session wizard flows work. Repo add/remove work.                                                         |
+| **Confirmations**  | 15%    | All destructive actions (archive, delete, remove, empty trash, cancel workflow) show confirmation. Cancelling confirmation preserves state.                                           |
+| **Empty States**   | 10%    | `"No active sessions."` on Home with no sessions. `"Trash is empty."` with no archived. `"No repositories registered."` with no repos. `"No workflows."` with no autopilot workflows. |
+| **Error Handling** | 10%    | Graceful behavior when daemon returns errors. Error text is visible and actionable.                                                                                                   |
+| **Exit Behavior**  | 5%     | `q` quits from Home. `Ctrl+C` quits from any view. Process exits cleanly (Done channel closes).                                                                                       |
 
 ### Scoring
 
@@ -563,12 +589,12 @@ For most interactions, prefer `WaitForText` over `time.Sleep` — it's more reli
 
 ### Interpreting the Score
 
-| Score | Status |
-|-------|--------|
-| 90-100 | Ship it |
-| 75-89 | Minor issues — fix before release |
-| 50-74 | Significant issues — needs work |
-| < 50 | Major problems — do not release |
+| Score  | Status                            |
+| ------ | --------------------------------- |
+| 90-100 | Ship it                           |
+| 75-89  | Minor issues — fix before release |
+| 50-74  | Significant issues — needs work   |
+| < 50   | Major problems — do not release   |
 
 ---
 
@@ -589,6 +615,7 @@ For most interactions, prefer `WaitForText` over `time.Sleep` — it's more reli
 ## Anti-Patterns
 
 ### Asserting on styled text
+
 The VT emulator's `.String()` returns **plain text without ANSI codes**. Never assert on color codes or lipgloss-styled strings. Assert on the raw text content.
 
 ```go
@@ -600,6 +627,7 @@ h.Driver.WaitForText(waitTimeout, "Bossanova")
 ```
 
 ### Forgetting to wait for renders
+
 The TUI renders asynchronously. Always `WaitForText` before interacting with a new view.
 
 ```go
@@ -614,6 +642,7 @@ h.Driver.SendKey('d')
 ```
 
 ### Using exact screen layout for assertions
+
 Screen layout depends on terminal size. Assert on **content presence**, not position.
 
 ```go
@@ -626,6 +655,7 @@ if !h.Driver.ScreenContains("Bossanova") { ... }
 ```
 
 ### Sleeping instead of waiting
+
 `time.Sleep` is unreliable and slow. Use `WaitForText` or `WaitFor` with a predicate.
 
 ```go
@@ -642,26 +672,30 @@ if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
 Exception: brief `time.Sleep(200 * time.Millisecond)` between rapid keypresses in the same view is acceptable when there's no intermediate text to wait for.
 
 ### Duplicating TestMain
+
 `TestMain` with `BuildBoss()` must exist **exactly once** per package. It's already in `main_test.go`. Never add another.
 
 ### Hardcoding socket paths
+
 The harness manages socket paths automatically. Never set `BOSS_SOCKET` manually in tests.
 
 ### Ignoring the Done() channel
+
 When testing quit behavior, always verify the process actually exits via `Done()`. A test that sends `'q'` without checking `Done()` might pass even if quit is broken.
 
 ### Testing unimplemented RPCs
+
 CreateSession, AttachSession, and streaming RPCs return `Unimplemented`. Don't write tests that depend on these — the mock daemon can't handle them. Tests for NewSession and Attach flows need the real daemon or an extended mock.
 
 ---
 
 ## Environment Variables
 
-| Variable | Purpose | Set By |
-|----------|---------|--------|
-| `BOSS_SOCKET` | Override daemon socket path, skip auto-start | Harness |
-| `BOSS_SKIP_SKILLS` | Skip skill prompt on startup (`"1"`) | Harness |
-| `TERM` | Terminal type (`"xterm-256color"`) | Harness |
+| Variable           | Purpose                                      | Set By  |
+| ------------------ | -------------------------------------------- | ------- |
+| `BOSS_SOCKET`      | Override daemon socket path, skip auto-start | Harness |
+| `BOSS_SKIP_SKILLS` | Skip skill prompt on startup (`"1"`)         | Harness |
+| `TERM`             | Terminal type (`"xterm-256color"`)           | Harness |
 
 ---
 
@@ -673,9 +707,9 @@ import (
     "time"
     "strings"
 
-    pb "github.com/anthropics/boss/lib/bossalib/gen/boss/v1"
-    "github.com/anthropics/boss/services/boss/internal/tuidriver"
-    "github.com/anthropics/boss/services/boss/internal/tuitest"
+    "github.com/recurser/boss/internal/tuitest"
+    pb "github.com/recurser/bossalib/gen/bossanova/v1"
+    "google.golang.org/protobuf/types/known/timestamppb"
 )
 ```
 

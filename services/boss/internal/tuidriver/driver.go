@@ -22,13 +22,14 @@ import (
 
 // Driver controls a TUI process running in a PTY.
 type Driver struct {
-	cmd    *exec.Cmd
-	pty    *os.File
-	vt     *vt.Emulator
-	mu     sync.Mutex
-	width  int
-	height int
-	done   chan struct{}
+	cmd      *exec.Cmd
+	pty      *os.File
+	vt       *vt.Emulator
+	mu       sync.Mutex // protects vt.Write, vt.String
+	width    int
+	height   int
+	done     chan struct{} // closed when readLoop exits
+	respDone chan struct{} // closed when responseLoop exits
 }
 
 // Options configures the TUI driver.
@@ -76,12 +77,13 @@ func New(opts Options) (*Driver, error) {
 	em := vt.NewEmulator(opts.Width, opts.Height)
 
 	d := &Driver{
-		cmd:    cmd,
-		pty:    ptmx,
-		vt:     em,
-		width:  opts.Width,
-		height: opts.Height,
-		done:   make(chan struct{}),
+		cmd:      cmd,
+		pty:      ptmx,
+		vt:       em,
+		width:    opts.Width,
+		height:   opts.Height,
+		done:     make(chan struct{}),
+		respDone: make(chan struct{}),
 	}
 
 	// Drain VT emulator responses (DA, mode queries) and feed them back
@@ -115,6 +117,7 @@ func (d *Driver) readLoop() {
 // queries terminal capabilities (DECRQM, DA, etc.) and expects responses.
 // Without draining these, the VT emulator's internal pipe blocks.
 func (d *Driver) responseLoop() {
+	defer close(d.respDone)
 	buf := make([]byte, 256)
 	for {
 		n, err := d.vt.Read(buf)
@@ -209,8 +212,18 @@ func (d *Driver) Close() error {
 		_ = d.cmd.Process.Kill()
 		<-d.done
 	}
-	// Reap the child process to prevent zombies
+	// Reap the child process to prevent zombies.
 	_ = d.cmd.Wait()
+	// Close the PTY — readLoop has already exited (d.done closed).
+	err := d.pty.Close()
+	// Close the VT emulator to unblock responseLoop's vt.Read call.
+	// NOTE: There is a benign data race between vt.Close() and vt.Read()
+	// on the emulator's internal closed bool (charmbracelet/x/vt). The
+	// race is harmless: the underlying io.Pipe operations are thread-safe,
+	// and the bool is only written once (false→true). The worst case is
+	// that Read enters pr.Read after closed is set, which returns EOF
+	// immediately because Close already closed the pipe writer.
 	_ = d.vt.Close()
-	return d.pty.Close()
+	<-d.respDone
+	return err
 }

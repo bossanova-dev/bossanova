@@ -151,7 +151,7 @@ func (h *HomeModel) buildTableRows() {
 		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
 		{Title: "NAME", Width: maxColWidth("NAME", names, 60) + tableColumnSep},
 		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
-		{Title: "STATUS", Width: 14 + tableColumnSep},
+		{Title: "STATUS", Width: 16 + tableColumnSep},
 	}
 
 	mutedStrike := lipgloss.NewStyle().Foreground(colorMuted).Strikethrough(true)

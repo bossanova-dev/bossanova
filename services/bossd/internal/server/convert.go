@@ -183,6 +183,21 @@ func workflowStepToProto(s models.WorkflowStep) pb.WorkflowStep {
 	}
 }
 
+// workflowPriority returns a priority for a workflow status when choosing
+// which active workflow to display. Higher is preferred.
+func workflowPriority(s models.WorkflowStatus) int {
+	switch s {
+	case models.WorkflowStatusRunning:
+		return 3
+	case models.WorkflowStatusPending:
+		return 2
+	case models.WorkflowStatusPaused:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // protoToTimestamp converts an optional protobuf Timestamp to *time.Time.
 func protoToTimestamp(ts *timestamppb.Timestamp) *time.Time {
 	if ts == nil {

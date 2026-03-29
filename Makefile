@@ -2,7 +2,10 @@
 	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot test-repair \
 	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-repair lint-proto \
 	build-boss build-bossd build-bosso build-autopilot build-dependabot build-repair \
-	copy-skills
+	copy-skills \
+	mutate mutate-diff mutate-report mutate-survivors mutate-fix \
+	mutate-bossalib mutate-boss mutate-bossd mutate-bosso \
+	mutate-autopilot mutate-dependabot mutate-repair
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all
@@ -13,6 +16,9 @@ BIN_DIR := bin
 # All Go modules in the workspace
 MODULES := lib/bossalib services/boss services/bossd services/bosso \
 	plugins/bossd-plugin-autopilot plugins/bossd-plugin-dependabot plugins/bossd-plugin-repair
+
+# Mutation testing output directory
+MUTATE_DIR := .mutate
 
 # Suppress clang deployment-version warnings from CGO dependencies
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
@@ -202,6 +208,7 @@ clean:
 	rm -rf $(BIN_DIR)
 	rm -f $(GEN_STAMP)
 	rm -rf $(SKILLS_DST)
+	rm -rf $(MUTATE_DIR)
 	@for mod in $(MODULES); do \
 		$(MAKE) -C $$mod clean; \
 	done
@@ -213,3 +220,145 @@ split:
 	splitsh-lite --prefix=lib/bossalib --target=refs/heads/split/bossalib
 	splitsh-lite --prefix=services/boss --target=refs/heads/split/boss
 	splitsh-lite --prefix=services/bossd --target=refs/heads/split/bossd
+
+# --- Mutation Testing ---------------------------------------------------
+# NOTE: gremlins ./... silently produces no results in Go workspaces.
+# We work around this by iterating over individual packages per module.
+# We also skip packages with no test files to avoid "go: no such tool covdata"
+# errors from gremlins on Go 1.25+ (covdata moved out of GOROOT/pkg/tool/).
+MUTATE_TIMEOUT := 30
+
+## mutate: Run mutation testing across all modules
+mutate: $(GEN_STAMP) copy-skills
+	@mkdir -p $(MUTATE_DIR)
+	@root=$$(git rev-parse --show-toplevel); \
+	failed=0; \
+	for mod in $(MODULES); do \
+		echo "==> Mutating $$mod"; \
+		modname=$$(basename $$mod); \
+		modabs=$$(cd $$mod && pwd); \
+		for pkg in $$(cd $$mod && go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./...); do \
+			pkgdir=$$(cd $$mod && go list -f '{{.Dir}}' "$$pkg"); \
+			reldir=$${pkgdir#$$modabs/}; \
+			[ "$$reldir" = "$$pkgdir" ] && reldir="."; \
+			safename=$$(echo "$$reldir" | tr '/' '-'); \
+			echo "    -> $$modname/$$reldir"; \
+			(cd $$mod && gremlins unleash \
+				-o "$$root/$(MUTATE_DIR)/$$modname--$$safename.json" \
+				--timeout-coefficient $(MUTATE_TIMEOUT) \
+				--workers 0 \
+				"./$$reldir") || failed=1; \
+		done; \
+	done; \
+	echo ""; \
+	echo "==> Reports in $(MUTATE_DIR)/"; \
+	echo "==> Run 'make mutate-report' for summary"; \
+	if [ "$$failed" = "1" ]; then exit 1; fi
+
+## mutate-diff: Mutation testing on changed code only (fast, for PRs)
+mutate-diff: $(GEN_STAMP) copy-skills
+	@mkdir -p $(MUTATE_DIR)
+	@root=$$(git rev-parse --show-toplevel); \
+	for mod in $(MODULES); do \
+		echo "==> Mutating changed code in $$mod"; \
+		modname=$$(basename $$mod); \
+		modabs=$$(cd $$mod && pwd); \
+		for pkg in $$(cd $$mod && go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./...); do \
+			pkgdir=$$(cd $$mod && go list -f '{{.Dir}}' "$$pkg"); \
+			reldir=$${pkgdir#$$modabs/}; \
+			[ "$$reldir" = "$$pkgdir" ] && reldir="."; \
+			safename=$$(echo "$$reldir" | tr '/' '-'); \
+			(cd $$mod && gremlins unleash \
+				--diff main \
+				-o "$$root/$(MUTATE_DIR)/$$modname--$$safename.json" \
+				--timeout-coefficient $(MUTATE_TIMEOUT) \
+				--workers 0 \
+				"./$$reldir") || true; \
+		done; \
+	done
+
+## mutate-report: Summarize mutation testing results
+mutate-report:
+	@echo "=== Mutation Testing Summary ==="
+	@for f in $(MUTATE_DIR)/*.json; do \
+		[ -f "$$f" ] || continue; \
+		name=$$(basename "$$f" .json); \
+		echo ""; \
+		echo "--- $$name ---"; \
+		jq -r '"  Efficacy:     \(.test_efficacy // "n/a")%\n  Coverage:     \(.mutations_coverage // "n/a")%\n  Total:        \(.mutants_total // 0)\n  Killed:       \(.mutants_killed // 0)\n  Lived:        \(.mutants_lived // 0)\n  Not covered:  \(.mutants_not_covered // 0)"' "$$f" 2>/dev/null \
+			|| echo "  (no results)"; \
+	done
+	@echo ""
+	@echo "==> Surviving mutants: make mutate-survivors"
+
+## mutate-survivors: List surviving mutants (for LLM consumption)
+mutate-survivors:
+	@for f in $(MUTATE_DIR)/*.json; do \
+		[ -f "$$f" ] || continue; \
+		name=$$(basename "$$f" .json); \
+		jq -r --arg mod "$$name" \
+			'.files[]? | .file_name as $$file | .mutations[]? | select(.status == "LIVED") | "[\($$mod)] \($$file):\(.line) \(.type)"' \
+			"$$f" 2>/dev/null; \
+	done
+
+## mutate-fix: Feed surviving mutants to Claude Code to generate tests
+mutate-fix:
+	@mkdir -p $(MUTATE_DIR)
+	@$(MAKE) mutate-survivors > $(MUTATE_DIR)/survivors.txt 2>/dev/null
+	@count=$$(wc -l < $(MUTATE_DIR)/survivors.txt | tr -d ' '); \
+	if [ "$$count" = "0" ]; then \
+		echo "No surviving mutants. Run 'make mutate' first."; \
+		exit 0; \
+	fi; \
+	echo "==> $$count surviving mutants found"; \
+	echo "==> Launching Claude Code to generate tests..."; \
+	cat $(MUTATE_DIR)/survivors.txt | claude -p "$$(cat .claude/prompts/mutate-fix.md)"
+
+## mutate-loop: Full cycle — mutate, fix survivors, verify
+mutate-loop:
+	@$(MAKE) mutate
+	@$(MAKE) mutate-fix
+	@echo ""
+	@echo "==> Verifying fixes..."
+	@$(MAKE) mutate
+	@$(MAKE) mutate-report
+
+## Per-module mutation targets
+define run-mutate-module
+	@mkdir -p $(MUTATE_DIR)
+	@root=$$(git rev-parse --show-toplevel); \
+	modabs=$$(cd $(1) && pwd); \
+	for pkg in $$(cd $(1) && go list -f '{{if .TestGoFiles}}{{.ImportPath}}{{end}}' ./...); do \
+		pkgdir=$$(cd $(1) && go list -f '{{.Dir}}' "$$pkg"); \
+		reldir=$${pkgdir#$$modabs/}; \
+		[ "$$reldir" = "$$pkgdir" ] && reldir="."; \
+		safename=$$(echo "$$reldir" | tr '/' '-'); \
+		echo "==> $(2)/$$reldir"; \
+		(cd $(1) && gremlins unleash \
+			-o "$$root/$(MUTATE_DIR)/$(2)--$$safename.json" \
+			--timeout-coefficient $(3) \
+			--workers 0 \
+			"./$$reldir") || true; \
+	done
+endef
+
+mutate-bossalib: copy-skills
+	$(call run-mutate-module,lib/bossalib,bossalib,$(MUTATE_TIMEOUT))
+
+mutate-boss: copy-skills
+	$(call run-mutate-module,services/boss,boss,$(MUTATE_TIMEOUT))
+
+mutate-bossd: copy-skills
+	$(call run-mutate-module,services/bossd,bossd,$(MUTATE_TIMEOUT))
+
+mutate-bosso:
+	$(call run-mutate-module,services/bosso,bosso,$(MUTATE_TIMEOUT))
+
+mutate-autopilot:
+	$(call run-mutate-module,plugins/bossd-plugin-autopilot,bossd-plugin-autopilot,$(MUTATE_TIMEOUT))
+
+mutate-dependabot:
+	$(call run-mutate-module,plugins/bossd-plugin-dependabot,bossd-plugin-dependabot,$(MUTATE_TIMEOUT))
+
+mutate-repair:
+	$(call run-mutate-module,plugins/bossd-plugin-repair,bossd-plugin-repair,$(MUTATE_TIMEOUT))

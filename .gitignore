@@ -43,5 +43,8 @@ plugins/bossd-plugin-repair/docs/handoffs/
 *.log
 .worktrees/
 
+# Mutation testing reports
+.mutate/
+
 # Beads
 .beads/issues.jsonl

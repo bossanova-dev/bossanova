@@ -97,3 +97,17 @@
 **Depends on:** Autopilot plugin MVP (workflows table, attempt runner must track costs).
 
 **Added:** 2026-03-23 (eng review of autopilot plugin concept)
+
+---
+
+## Mutation Testing CI Workflow
+
+**What:** Add `.github/workflows/mutate.yml` that runs `make mutate-diff` on PR branches, enforcing minimum mutation score thresholds.
+
+**Why:** Mutation testing locally establishes a baseline. CI enforcement catches test gaps in changed code before merge. The `--diff main` flag keeps CI runs fast (seconds to minutes, not hours).
+
+**Approach:** GitHub Actions workflow triggered on push to non-main branches. Uses `gremlins unleash --diff main --threshold-efficacy 70 --threshold-mcover 60`. Upload `.mutate/*.json` as artifacts. Optional: post summary as PR comment via `gh pr comment`.
+
+**Depends on:** Establishing baseline mutation scores across all modules by running `make mutate` locally first.
+
+**Added:** 2026-03-29 (eng review of mutation testing plan)

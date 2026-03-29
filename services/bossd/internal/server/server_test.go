@@ -93,6 +93,11 @@ func TestCountPlanFlightLegs(t *testing.T) {
 			content: "## Flight Legs\n\n### Leg 1: Scaffold\n### Leg 2: Build\n",
 			want:    2,
 		},
+		{
+			name:    "sub-headings referencing leg number not counted",
+			content: "## Flight Leg 1: Setup\n### Post-Flight Checks for Flight Leg 1\n### [HANDOFF] Review Flight Leg 1\n\n## Flight Leg 2: Build\n### Post-Flight Checks for Flight Leg 2\n### [HANDOFF] Review Flight Leg 2\n",
+			want:    2,
+		},
 	}
 
 	for _, tt := range tests {

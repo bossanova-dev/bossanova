@@ -306,7 +306,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// cycle (awaiting_checks, fixing_checks, green_draft, ready_for_review).
 	// In earlier states like implementing_plan the checks are expected to fail
 	// because the code isn't finished yet; firing FixComplete would be invalid.
-	repairable, repoName := m.isSessionRepairable(repairCtx, sessionID)
+	repairable, repoName, sessionTitle := m.isSessionRepairable(repairCtx, sessionID)
 	if !repairable {
 		return false
 	}
@@ -328,7 +328,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	m.mu.Unlock()
 
 	// Trigger repair in background.
-	go m.repairSession(repairCtx, sessionID, repoName, displayStatus, hasFailures)
+	go m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures)
 
 	return true
 }
@@ -358,17 +358,17 @@ func (m *repairMonitor) isSessionIdle(ctx context.Context, sessionID string) boo
 }
 
 // isSessionRepairable checks whether the session's state machine is in a state
-// where autonomous repair is appropriate. Returns (false, "") as a fail-safe
+// where autonomous repair is appropriate. Returns (false, "", "") as a fail-safe
 // if the session is in an early state like implementing_plan where check
 // failures are expected, or if the state cannot be determined. On success it
-// also returns the session's repo display name for log enrichment.
-func (m *repairMonitor) isSessionRepairable(ctx context.Context, sessionID string) (bool, string) {
+// also returns the session's repo display name and title for log enrichment.
+func (m *repairMonitor) isSessionRepairable(ctx context.Context, sessionID string) (bool, string, string) {
 	resp, err := m.host.ListSessions(ctx)
 	if err != nil {
 		m.logger.Warn().Err(err).
 			Str("session_id", sessionID).
 			Msg("failed to list sessions, assuming not repairable")
-		return false, ""
+		return false, "", ""
 	}
 
 	for _, sess := range resp.GetSessions() {
@@ -376,27 +376,29 @@ func (m *repairMonitor) isSessionRepairable(ctx context.Context, sessionID strin
 			continue
 		}
 		repoName := sess.GetRepoDisplayName()
+		sessionTitle := sess.GetTitle()
 		state := sess.GetState()
 		switch state {
 		case bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS,
 			bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
 			bossanovav1.SessionState_SESSION_STATE_GREEN_DRAFT,
 			bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW:
-			return true, repoName
+			return true, repoName, sessionTitle
 		default:
 			m.logger.Info().
 				Str("session_id", sessionID).
+				Str("session_name", sessionTitle).
 				Str("repo", repoName).
 				Str("state", state.String()).
 				Msg("session not in repairable state, skipping repair")
-			return false, repoName
+			return false, repoName, sessionTitle
 		}
 	}
 
 	m.logger.Warn().
 		Str("session_id", sessionID).
 		Msg("session not found, assuming not repairable")
-	return false, ""
+	return false, "", ""
 }
 
 // getSessionState returns the current state machine state for a session.
@@ -461,8 +463,8 @@ func (m *repairMonitor) periodicSweep(ctx context.Context) {
 }
 
 // repairSession performs a repair attempt for a session in the background.
-func (m *repairMonitor) repairSession(ctx context.Context, sessionID, repoName string, displayStatus bossanovav1.PRDisplayStatus, hasFailures bool) {
-	log := m.logger.With().Str("session_id", sessionID).Str("repo", repoName).Logger()
+func (m *repairMonitor) repairSession(ctx context.Context, sessionID, repoName, sessionName string, displayStatus bossanovav1.PRDisplayStatus, hasFailures bool) {
+	log := m.logger.With().Str("session_id", sessionID).Str("session_name", sessionName).Str("repo", repoName).Logger()
 
 	// Cleanup on exit.
 	defer func() {

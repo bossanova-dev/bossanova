@@ -403,7 +403,7 @@ func TestIsSessionRepairable(t *testing.T) {
 			{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS},
 		}
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.True(t, ok)
 	})
 
@@ -413,7 +413,7 @@ func TestIsSessionRepairable(t *testing.T) {
 			{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS},
 		}
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.True(t, ok)
 	})
 
@@ -423,7 +423,7 @@ func TestIsSessionRepairable(t *testing.T) {
 			{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_GREEN_DRAFT},
 		}
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.True(t, ok)
 	})
 
@@ -433,7 +433,7 @@ func TestIsSessionRepairable(t *testing.T) {
 			{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW},
 		}
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.True(t, ok)
 	})
 
@@ -443,7 +443,7 @@ func TestIsSessionRepairable(t *testing.T) {
 			{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN},
 		}
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.False(t, ok)
 	})
 
@@ -453,7 +453,7 @@ func TestIsSessionRepairable(t *testing.T) {
 			{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_BLOCKED},
 		}
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.False(t, ok)
 	})
 
@@ -461,7 +461,7 @@ func TestIsSessionRepairable(t *testing.T) {
 		mock := newTestMock()
 		mock.sessions = []*bossanovav1.Session{}
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.False(t, ok)
 	})
 
@@ -469,7 +469,7 @@ func TestIsSessionRepairable(t *testing.T) {
 		mock := newTestMock()
 		mock.listSessErr = fmt.Errorf("connection refused")
 		rm := newTestMonitor(mock)
-		ok, _ := rm.isSessionRepairable(ctx, "s1")
+		ok, _, _ := rm.isSessionRepairable(ctx, "s1")
 		assert.False(t, ok)
 		mock.listSessErr = nil
 	})

@@ -50,16 +50,18 @@ func serviceDir() string {
 type Harness struct {
 	Driver *tuidriver.Driver
 	Daemon *MockDaemon
-	t      *testing.T
 }
 
 // Option configures the test harness.
 type Option func(*harnessConfig)
 
 type harnessConfig struct {
-	repos    []*pb.Repo
-	sessions []*pb.Session
-	args     []string
+	repos     []*pb.Repo
+	sessions  []*pb.Session
+	workflows []*pb.AutopilotWorkflow
+	chats     []*pb.ClaudeChat
+	prs       map[string][]*pb.PRSummary
+	args      []string
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -73,6 +75,30 @@ func WithRepos(repos ...*pb.Repo) Option {
 func WithSessions(sessions ...*pb.Session) Option {
 	return func(c *harnessConfig) {
 		c.sessions = append(c.sessions, sessions...)
+	}
+}
+
+// WithWorkflows seeds the mock daemon with autopilot workflows.
+func WithWorkflows(workflows ...*pb.AutopilotWorkflow) Option {
+	return func(c *harnessConfig) {
+		c.workflows = append(c.workflows, workflows...)
+	}
+}
+
+// WithChats seeds the mock daemon with claude chats.
+func WithChats(chats ...*pb.ClaudeChat) Option {
+	return func(c *harnessConfig) {
+		c.chats = append(c.chats, chats...)
+	}
+}
+
+// WithPRs seeds the mock daemon with pull request summaries for a repo.
+func WithPRs(repoID string, prs ...*pb.PRSummary) Option {
+	return func(c *harnessConfig) {
+		if c.prs == nil {
+			c.prs = make(map[string][]*pb.PRSummary)
+		}
+		c.prs[repoID] = append(c.prs[repoID], prs...)
 	}
 }
 
@@ -99,6 +125,15 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	for _, s := range cfg.sessions {
 		daemon.AddSession(s)
+	}
+	for _, w := range cfg.workflows {
+		daemon.AddWorkflow(w)
+	}
+	for _, c := range cfg.chats {
+		daemon.AddChat(c)
+	}
+	for repoID, prs := range cfg.prs {
+		daemon.AddPRs(repoID, prs)
 	}
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.
@@ -130,6 +165,5 @@ func New(t *testing.T, opts ...Option) *Harness {
 	return &Harness{
 		Driver: driver,
 		Daemon: daemon,
-		t:      t,
 	}
 }

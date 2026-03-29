@@ -17,9 +17,9 @@ LDFLAGS := -s -w \
 format:
 	gofmt -w .
 
-## test: Run tests
+## test: Run tests (timeout covers E2E TUI tests that spawn boss binary)
 test:
-	go test ./...
+	go test -timeout 120s ./...
 
 ## dev: Run the boss CLI TUI in dev mode (generates protos first if needed)
 dev:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -306,7 +307,10 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 	// other unexpected exit paths.
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error().Interface("panic", r).Msg("runWorkflow panicked")
+			log.Error().
+				Interface("panic", r).
+				Str("stack", string(debug.Stack())).
+				Msg("runWorkflow panicked")
 		}
 		resp, err := o.host.GetWorkflow(context.Background(), workflowID)
 		if err != nil {

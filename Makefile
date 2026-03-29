@@ -1,4 +1,4 @@
-.PHONY: all generate build plugins test lint clean split format build-all \
+.PHONY: all generate build plugins test lint clean split format build-all plugins-all \
 	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot test-repair \
 	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-repair lint-proto \
 	build-boss build-bossd build-bosso build-autopilot build-dependabot build-repair \
@@ -8,7 +8,7 @@
 	mutate-autopilot mutate-dependabot mutate-repair
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
-all: clean generate format build plugins build-all
+all: clean generate format build plugins build-all plugins-all
 
 # Binaries output to bin/
 BIN_DIR := bin
@@ -188,6 +188,8 @@ format:
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64
 # Only boss and bossd are distributed (bosso is deployed to Fly.io directly)
 DIST_BINS := boss bossd
+# Plugins for distribution
+DIST_PLUGINS := bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-repair
 
 build-all: $(GEN_STAMP) copy-skills
 	@for platform in $(PLATFORMS); do \
@@ -202,6 +204,18 @@ build-all: $(GEN_STAMP) copy-skills
 	@echo "==> Building bosso (linux/amd64 only)"
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' \
 		-o $(BIN_DIR)/bosso-linux-amd64 ./services/bosso/cmd
+
+## plugins-all: Cross-platform plugin builds for distribution
+plugins-all: $(GEN_STAMP)
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%%/*}; \
+		arch=$${platform##*/}; \
+		for plugin in $(DIST_PLUGINS); do \
+			echo "==> Building $$plugin ($$os/$$arch)"; \
+			GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' \
+				-o $(BIN_DIR)/$$plugin-$$os-$$arch ./plugins/$$plugin; \
+		done; \
+	done
 
 ## clean: Remove build artifacts and generated code
 clean:

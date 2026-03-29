@@ -29,6 +29,12 @@ type sessionListMsg struct {
 	err            error
 }
 
+// repoCountMsg carries the number of registered repos.
+type repoCountMsg struct {
+	count int
+	err   error
+}
+
 // sessionArchivedMsg carries the result of archiving a session.
 type sessionArchivedMsg struct {
 	id  string
@@ -55,6 +61,7 @@ type HomeModel struct {
 	loading        bool
 	width          int
 	height         int
+	repoCount      int // number of registered repos (for empty state guidance)
 
 	// Navigation
 	highlightSessionID string // session to auto-highlight after returning from chat picker
@@ -77,7 +84,7 @@ func NewHomeModel(c client.BossClient, ctx context.Context, manager *bosspty.Man
 }
 
 func (h HomeModel) Init() tea.Cmd {
-	return tea.Batch(fetchSessions(h.client, h.ctx), tickCmd(), h.spinner.Tick)
+	return tea.Batch(fetchSessions(h.client, h.ctx), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick)
 }
 
 // renderAttentionIndicator returns a colored "!" for sessions needing attention,
@@ -194,6 +201,12 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.height = msg.Height
 		h.table.SetHeight(h.tableHeight())
 		h.table.SetWidth(msg.Width)
+		return h, nil
+
+	case repoCountMsg:
+		if msg.err == nil {
+			h.repoCount = msg.count
+		}
 		return h, nil
 
 	case sessionListMsg:
@@ -465,10 +478,27 @@ func (h HomeModel) View() tea.View {
 	}
 
 	if len(h.sessions) == 0 {
-		return tea.NewView(
-			lipgloss.NewStyle().Padding(0, 2).Render("No active sessions.") + "\n" +
-				styleActionBar.Render("[n]ew session  [p]ilot  [r]epos  [s]ettings  [t]rash  [q]uit"),
-		)
+		var content string
+		if h.repoCount == 0 {
+			// No repos configured - show welcome message with setup instructions
+			content = lipgloss.NewStyle().Padding(0, 2).Render(
+				"Welcome to Bossanova!\n\n"+
+					"Add your first repo to get started:\n\n"+
+					"  boss repo add /path/to/your/repo\n\n"+
+					"Then create a session:\n\n"+
+					"  Press 'n' to create a new session\n\n"+
+					"Docs: https://github.com/bossanova-dev/bossanova",
+			) + "\n" +
+				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [q]uit")
+		} else {
+			// Repos exist but no sessions - show simplified guidance
+			content = lipgloss.NewStyle().Padding(0, 2).Render(
+				"No active sessions.\n\n"+
+					"Press 'n' to create a new session, or 'p' for autopilot.",
+			) + "\n" +
+				styleActionBar.Render("[n]ew session  [p]ilot  [r]epos  [s]ettings  [t]rash  [q]uit")
+		}
+		return tea.NewView(content)
 	}
 
 	var b strings.Builder
@@ -568,5 +598,15 @@ func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
 		}
 
 		return sessionListMsg{sessions: sessions, daemonStatuses: daemonStatuses}
+	}
+}
+
+func fetchRepoCount(c client.BossClient, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		repos, err := c.ListRepos(ctx)
+		if err != nil {
+			return repoCountMsg{err: err}
+		}
+		return repoCountMsg{count: len(repos)}
 	}
 }

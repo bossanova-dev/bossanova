@@ -1,6 +1,8 @@
 package views
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"charm.land/lipgloss/v2"
@@ -116,5 +118,63 @@ func TestSessionNeedsAttention(t *testing.T) {
 				t.Errorf("sessionNeedsAttention() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestViewEmptyStateNoRepos(t *testing.T) {
+	// Create a HomeModel with no sessions and no repos
+	h := HomeModel{
+		ctx:       context.Background(),
+		loading:   false,
+		sessions:  []*pb.Session{},
+		repoCount: 0,
+	}
+
+	// Render the view
+	view := h.View()
+	content := view.Content
+
+	// Check for welcome message
+	if !strings.Contains(content, "Welcome to Bossanova") {
+		t.Errorf("expected welcome message in empty state with no repos, got: %s", content)
+	}
+
+	// Check for setup instructions
+	if !strings.Contains(content, "boss repo add /path/to/your/repo") {
+		t.Errorf("expected setup instructions in empty state with no repos, got: %s", content)
+	}
+
+	// Check for documentation link
+	if !strings.Contains(content, "https://github.com/bossanova-dev/bossanova") {
+		t.Errorf("expected documentation link in empty state with no repos, got: %s", content)
+	}
+}
+
+func TestViewEmptyStateWithRepos(t *testing.T) {
+	// Create a HomeModel with no sessions but repos exist
+	h := HomeModel{
+		ctx:       context.Background(),
+		loading:   false,
+		sessions:  []*pb.Session{},
+		repoCount: 2,
+	}
+
+	// Render the view
+	view := h.View()
+	content := view.Content
+
+	// Check for simplified guidance
+	if !strings.Contains(content, "No active sessions") {
+		t.Errorf("expected 'No active sessions' message when repos exist, got: %s", content)
+	}
+
+	// Check for autopilot guidance
+	if !strings.Contains(content, "Press 'n' to create a new session, or 'p' for autopilot") {
+		t.Errorf("expected autopilot guidance when repos exist, got: %s", content)
+	}
+
+	// Should NOT show welcome message when repos exist
+	if strings.Contains(content, "Welcome to Bossanova") {
+		t.Errorf("should not show welcome message when repos exist, got: %s", content)
 	}
 }

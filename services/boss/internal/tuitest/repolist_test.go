@@ -41,7 +41,7 @@ func TestTUI_RepoListView(t *testing.T) {
 func TestTUI_RepoListView_EmptyState(t *testing.T) {
 	h := tuitest.New(t)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Welcome to Bossanova!"); err != nil {
 		t.Fatal(err)
 	}
 

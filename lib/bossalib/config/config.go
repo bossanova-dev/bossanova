@@ -14,6 +14,7 @@ type PluginConfig struct {
 	Name    string            `json:"name"`
 	Path    string            `json:"path"`
 	Enabled bool              `json:"enabled"`
+	Version string            `json:"version,omitempty"`
 	Config  map[string]string `json:"config,omitempty"`
 }
 

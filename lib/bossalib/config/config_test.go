@@ -393,3 +393,79 @@ func TestAutopilotBackwardsCompatible(t *testing.T) {
 		t.Errorf("MaxLegs(): got %d, want 20", got)
 	}
 }
+
+func TestPluginVersionField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	original := Settings{
+		WorktreeBaseDir: "/test",
+		Plugins: []PluginConfig{
+			{
+				Name:    "autopilot",
+				Path:    "/usr/local/bin/bossd-plugin-autopilot",
+				Enabled: true,
+				Version: "1.2.3",
+			},
+			{
+				Name:    "dependabot",
+				Path:    "/usr/local/bin/bossd-plugin-dependabot",
+				Enabled: true,
+				// No version specified (should be omitted)
+			},
+		},
+	}
+
+	if err := SaveTo(path, original); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if len(loaded.Plugins) != 2 {
+		t.Fatalf("Plugins: got %d, want 2", len(loaded.Plugins))
+	}
+	if loaded.Plugins[0].Version != "1.2.3" {
+		t.Errorf("Plugins[0].Version: got %q, want %q", loaded.Plugins[0].Version, "1.2.3")
+	}
+	if loaded.Plugins[1].Version != "" {
+		t.Errorf("Plugins[1].Version: got %q, want empty string", loaded.Plugins[1].Version)
+	}
+}
+
+func TestPluginVersionBackwardsCompatible(t *testing.T) {
+	// Settings JSON without "version" field should load fine (backwards compatibility).
+	path := filepath.Join(t.TempDir(), "settings.json")
+	jsonData := []byte(`{
+		"worktree_base_dir": "/test",
+		"plugins": [
+			{
+				"name": "autopilot",
+				"path": "/usr/local/bin/bossd-plugin-autopilot",
+				"enabled": true
+			}
+		]
+	}`)
+	if err := os.WriteFile(path, jsonData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if len(loaded.Plugins) != 1 {
+		t.Fatalf("Plugins: got %d, want 1", len(loaded.Plugins))
+	}
+	if loaded.Plugins[0].Version != "" {
+		t.Errorf("Plugins[0].Version: got %q, want empty string (omitted field)", loaded.Plugins[0].Version)
+	}
+	if loaded.Plugins[0].Name != "autopilot" {
+		t.Errorf("Plugins[0].Name: got %q, want %q", loaded.Plugins[0].Name, "autopilot")
+	}
+	if !loaded.Plugins[0].Enabled {
+		t.Error("Plugins[0].Enabled: got false, want true")
+	}
+}

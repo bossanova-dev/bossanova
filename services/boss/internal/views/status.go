@@ -128,10 +128,10 @@ func renderPRLink(sess *pb.Session) string {
 	return underlined
 }
 
-// renderMergedPRLink returns a muted, strikethrough, underlined, OSC 8
-// hyperlinked PR label for merged rows. Uses raw ANSI escapes (not lipgloss)
-// to avoid SGR resets that break the OSC 8 hyperlink context.
-func renderMergedPRLink(sess *pb.Session) string {
+// renderMutedPRLink returns a muted, strikethrough, underlined, OSC 8
+// hyperlinked PR label for merged/closed rows. Uses raw ANSI escapes (not
+// lipgloss) to avoid SGR resets that break the OSC 8 hyperlink context.
+func renderMutedPRLink(sess *pb.Session) string {
 	if sess == nil || sess.PrNumber == nil {
 		return ""
 	}

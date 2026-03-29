@@ -466,6 +466,148 @@ func TestStateAndEventStrings(t *testing.T) {
 	}
 }
 
+func TestRetryOrBlock_ExactlyAtMaxAttempts(t *testing.T) {
+	// Tests boundary: AttemptCount+1 >= MaxAttempts when exactly equal.
+	// Catches mutation: AttemptCount+1 >= MaxAttempts changed to AttemptCount+1 > MaxAttempts.
+	m := New(CreatingWorktree)
+	m.ctx.MaxAttempts = 3
+
+	// Get to FixingChecks with AttemptCount = 2
+	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	// First failure: AttemptCount = 1
+	if err := m.Fire(ChecksFailed); err != nil {
+		t.Fatalf("Fire(ChecksFailed): %v", err)
+	}
+	assertState(t, m, FixingChecks)
+	if err := m.Fire(FixComplete); err != nil {
+		t.Fatalf("Fire(FixComplete): %v", err)
+	}
+
+	// Second failure: AttemptCount = 2
+	if err := m.Fire(ChecksFailed); err != nil {
+		t.Fatalf("Fire(ChecksFailed): %v", err)
+	}
+	assertState(t, m, FixingChecks)
+	if m.Context().AttemptCount != 2 {
+		t.Fatalf("AttemptCount = %d, want 2", m.Context().AttemptCount)
+	}
+
+	// FixFailed when AttemptCount = 2, MaxAttempts = 3
+	// AttemptCount+1 = 3 >= 3 → should go to Blocked
+	if err := m.Fire(FixFailed); err != nil {
+		t.Fatalf("Fire(FixFailed): %v", err)
+	}
+	assertState(t, m, Blocked)
+}
+
+func TestRetryOrBlock_JustUnderMaxAttempts(t *testing.T) {
+	// Tests boundary: AttemptCount+1 < MaxAttempts → should retry (AwaitingChecks).
+	// Catches mutation: AttemptCount+1 >= MaxAttempts changed to AttemptCount+1 > MaxAttempts.
+	m := New(CreatingWorktree)
+	m.ctx.MaxAttempts = 5
+
+	// Get to FixingChecks
+	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+
+	// Trigger 2 failures to get AttemptCount = 2
+	for i := 0; i < 2; i++ {
+		if err := m.Fire(ChecksFailed); err != nil {
+			t.Fatalf("Fire(ChecksFailed) #%d: %v", i+1, err)
+		}
+		assertState(t, m, FixingChecks)
+		if err := m.Fire(FixComplete); err != nil {
+			t.Fatalf("Fire(FixComplete) #%d: %v", i+1, err)
+		}
+	}
+
+	// One more failure: AttemptCount = 3
+	if err := m.Fire(ChecksFailed); err != nil {
+		t.Fatalf("Fire(ChecksFailed): %v", err)
+	}
+	if m.Context().AttemptCount != 3 {
+		t.Fatalf("AttemptCount = %d, want 3", m.Context().AttemptCount)
+	}
+
+	// FixFailed when AttemptCount = 3, MaxAttempts = 5
+	// AttemptCount+1 = 4 < 5 → should retry (AwaitingChecks), NOT block
+	if err := m.Fire(FixFailed); err != nil {
+		t.Fatalf("Fire(FixFailed): %v", err)
+	}
+	assertState(t, m, AwaitingChecks)
+}
+
+func TestFixOrBlock_ExactlyAtMaxAttempts(t *testing.T) {
+	// Tests boundary: AttemptCount+1 >= MaxAttempts in fixOrBlock (ChecksFailed path).
+	m := New(CreatingWorktree)
+	m.ctx.MaxAttempts = 2
+
+	// Get to AwaitingChecks
+	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+
+	// First failure: AttemptCount goes from 0 to 1
+	// 1 >= 2 is false, so should go to FixingChecks
+	if err := m.Fire(ChecksFailed); err != nil {
+		t.Fatalf("Fire(ChecksFailed): %v", err)
+	}
+	assertState(t, m, FixingChecks)
+	if m.Context().AttemptCount != 1 {
+		t.Fatalf("AttemptCount = %d, want 1", m.Context().AttemptCount)
+	}
+
+	// Return to awaiting
+	if err := m.Fire(FixComplete); err != nil {
+		t.Fatalf("Fire(FixComplete): %v", err)
+	}
+	assertState(t, m, AwaitingChecks)
+
+	// Second failure: AttemptCount = 1, AttemptCount+1 = 2 >= 2 → Blocked
+	if err := m.Fire(ChecksFailed); err != nil {
+		t.Fatalf("Fire(ChecksFailed): %v", err)
+	}
+	assertState(t, m, Blocked)
+}
+
+func TestNewWithContext_ZeroMaxAttempts(t *testing.T) {
+	// Tests boundary: MaxAttempts == 0 changed to MaxAttempts != 0.
+	// When MaxAttempts is 0, NewWithContext should set it to the default.
+	sctx := &SessionContext{
+		AttemptCount: 0,
+		MaxAttempts:  0, // explicitly zero
+		CheckState:   CheckStateUnspecified,
+	}
+	m := NewWithContext(ImplementingPlan, sctx)
+
+	if m.Context().MaxAttempts != MaxAttempts {
+		t.Fatalf("MaxAttempts = %d, want %d (default)", m.Context().MaxAttempts, MaxAttempts)
+	}
+}
+
+func TestNewWithContext_NonZeroMaxAttempts(t *testing.T) {
+	// Tests boundary: MaxAttempts == 0 should NOT override non-zero values.
+	sctx := &SessionContext{
+		AttemptCount: 0,
+		MaxAttempts:  10, // explicitly non-zero
+		CheckState:   CheckStateUnspecified,
+	}
+	m := NewWithContext(ImplementingPlan, sctx)
+
+	if m.Context().MaxAttempts != 10 {
+		t.Fatalf("MaxAttempts = %d, want 10 (preserved)", m.Context().MaxAttempts)
+	}
+}
+
 func assertState(t *testing.T, m *Machine, want State) {
 	t.Helper()
 	if got := m.State(); got != want {

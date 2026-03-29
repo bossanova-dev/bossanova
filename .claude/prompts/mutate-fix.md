@@ -1,14 +1,16 @@
 You are analyzing surviving mutants from Go mutation testing.
+You MUST use your tools (Read, Edit, Write, Bash) to modify files directly.
+Do NOT just describe changes — actually edit the test files on disk.
 
 Each line of STDIN describes a surviving mutant:
 [module] file:line MUTATION_TYPE
 
 For each surviving mutant:
 
-1. Read the source file at the given line
+1. Use the Read tool to read the source file at the given line
 2. Understand what mutation would survive (see types below)
-3. Read existing tests for that package
-4. Write a test (or extend an existing one) that catches the boundary
+3. Use the Read tool to read existing tests for that package
+4. Use the Edit or Write tool to add a test that catches the boundary
 
 Follow existing test conventions in this repo:
 
@@ -27,4 +29,9 @@ MUTATION TYPES:
 - INVERT_LOGICAL: `&&` changed to `||`, etc.
 
 Prioritize business logic over utility code. Group tests by file.
-Run `go test ./...` in the relevant module after writing each test to verify it passes.
+
+After writing tests for all surviving mutants:
+
+1. Run `go test ./...` in each affected module to confirm all tests pass
+2. If any test fails, fix it and re-run until green
+3. Commit the changes with: `git add -A && git commit -m "test(mutate): add tests to kill surviving mutants"`

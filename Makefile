@@ -241,7 +241,7 @@ mutate: $(GEN_STAMP) copy-skills
 			pkgdir=$$(cd $$mod && go list -f '{{.Dir}}' "$$pkg"); \
 			reldir=$${pkgdir#$$modabs/}; \
 			[ "$$reldir" = "$$pkgdir" ] && reldir="."; \
-			safename=$$(echo "$$reldir" | tr '/' '-'); \
+			if [ "$$reldir" = "." ]; then safename="root"; else safename=$$(echo "$$reldir" | tr '/' '-'); fi; \
 			echo "    -> $$modname/$$reldir"; \
 			(cd $$mod && gremlins unleash \
 				-o "$$root/$(MUTATE_DIR)/$$modname--$$safename.json" \
@@ -267,7 +267,7 @@ mutate-diff: $(GEN_STAMP) copy-skills
 			pkgdir=$$(cd $$mod && go list -f '{{.Dir}}' "$$pkg"); \
 			reldir=$${pkgdir#$$modabs/}; \
 			[ "$$reldir" = "$$pkgdir" ] && reldir="."; \
-			safename=$$(echo "$$reldir" | tr '/' '-'); \
+			if [ "$$reldir" = "." ]; then safename="root"; else safename=$$(echo "$$reldir" | tr '/' '-'); fi; \
 			(cd $$mod && gremlins unleash \
 				--diff main \
 				-o "$$root/$(MUTATE_DIR)/$$modname--$$safename.json" \
@@ -312,7 +312,7 @@ mutate-fix:
 	fi; \
 	echo "==> $$count surviving mutants found"; \
 	echo "==> Launching Claude Code to generate tests..."; \
-	cat $(MUTATE_DIR)/survivors.txt | claude -p "$$(cat .claude/prompts/mutate-fix.md)"
+	cat $(MUTATE_DIR)/survivors.txt | claude -p --dangerously-skip-permissions "$$(cat .claude/prompts/mutate-fix.md)"
 
 ## mutate-loop: Full cycle — mutate, fix survivors, verify
 mutate-loop:
@@ -332,7 +332,7 @@ define run-mutate-module
 		pkgdir=$$(cd $(1) && go list -f '{{.Dir}}' "$$pkg"); \
 		reldir=$${pkgdir#$$modabs/}; \
 		[ "$$reldir" = "$$pkgdir" ] && reldir="."; \
-		safename=$$(echo "$$reldir" | tr '/' '-'); \
+		if [ "$$reldir" = "." ]; then safename="root"; else safename=$$(echo "$$reldir" | tr '/' '-'); fi; \
 		echo "==> $(2)/$$reldir"; \
 		(cd $(1) && gremlins unleash \
 			-o "$$root/$(MUTATE_DIR)/$(2)--$$safename.json" \

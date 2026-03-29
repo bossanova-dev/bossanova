@@ -291,6 +291,173 @@ func TestChatTitleInDir_XMLTagsStripped(t *testing.T) {
 	}
 }
 
+func TestChatTitleInDir_ExactlyMaxScanLines(t *testing.T) {
+	// Tests boundary: user message at exactly line 50 (maxScanLines).
+	// Catches mutation: i < maxScanLines changed to i <= maxScanLines.
+	dir := t.TempDir()
+	id := "boundary-session"
+
+	// Create exactly maxScanLines (50) non-user lines, then user message at line 51.
+	lines := make([]any, 0, maxScanLines+1)
+	for i := 0; i < maxScanLines; i++ {
+		lines = append(lines, map[string]any{"type": "progress"})
+	}
+	lines = append(lines, map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": "Message at line 51"},
+	})
+	writeJSONL(t, filepath.Join(dir, id+".jsonl"), lines...)
+
+	got := chatTitleInDir(dir, id)
+	if got != "" {
+		t.Errorf("got %q, want empty (should stop at line 50)", got)
+	}
+}
+
+func TestChatTitleInDir_JustBeforeMaxScanLines(t *testing.T) {
+	// Tests boundary: user message at line 49 (before maxScanLines).
+	dir := t.TempDir()
+	id := "before-boundary-session"
+
+	lines := make([]any, 0, maxScanLines)
+	for i := 0; i < maxScanLines-2; i++ {
+		lines = append(lines, map[string]any{"type": "progress"})
+	}
+	lines = append(lines, map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": "Message at line 49"},
+	})
+	writeJSONL(t, filepath.Join(dir, id+".jsonl"), lines...)
+
+	got := chatTitleInDir(dir, id)
+	if got != "Message at line 49" {
+		t.Errorf("got %q, want %q", got, "Message at line 49")
+	}
+}
+
+func TestFirstLine_NewlineAtStart(t *testing.T) {
+	// Tests that we correctly handle strings with newlines.
+	// Catches mutation: idx >= 0 changed to idx > 0.
+	// While idx can't be 0 after TrimSpace (it removes leading newlines),
+	// we test that we DO truncate when newlines are present.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "single line no newline",
+			input: "single line",
+			want:  "single line",
+		},
+		{
+			name:  "first line with newline",
+			input: "first\nsecond",
+			want:  "first",
+		},
+		{
+			name:  "empty first line",
+			input: "\nsecond",
+			want:  "second", // TrimSpace removes leading \n
+		},
+		{
+			name:  "multiple newlines",
+			input: "first\nsecond\nthird",
+			want:  "first",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := firstLine(tt.input)
+			if got != tt.want {
+				t.Errorf("firstLine(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncate_ExactlyMaxLength(t *testing.T) {
+	// Tests boundary: string exactly at maxSummaryLen (80).
+	// Catches mutation: len(s) <= maxSummaryLen changed to len(s) < maxSummaryLen.
+	s := strings.Repeat("x", maxSummaryLen)
+	got := truncate(s)
+	if got != s {
+		t.Errorf("truncate() should not modify string of exactly maxSummaryLen")
+	}
+	if len(got) != maxSummaryLen {
+		t.Errorf("length = %d, want %d", len(got), maxSummaryLen)
+	}
+}
+
+func TestTruncate_OneOverMaxLength(t *testing.T) {
+	// Tests boundary: string one character over maxSummaryLen.
+	s := strings.Repeat("x", maxSummaryLen+1)
+	got := truncate(s)
+	if len(got) != maxSummaryLen {
+		t.Errorf("length = %d, want %d", len(got), maxSummaryLen)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("got %q, want suffix '...'", got)
+	}
+	// Should be maxSummaryLen-3 x's plus "..."
+	want := strings.Repeat("x", maxSummaryLen-3) + "..."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestParseSessionMeta_LargeJSONLine(t *testing.T) {
+	// Tests that scanner buffer handles large lines correctly.
+	// Catches mutation: 256*1024 changed to 256+1024 or 256-1024 or 256/1024.
+	dir := t.TempDir()
+	id := "large-line-session"
+
+	// Create a JSONL line larger than default scanner buffer (64KB)
+	// but within our configured buffer (256KB).
+	largeContent := strings.Repeat("x", 128*1024)
+	writeJSONL(t, filepath.Join(dir, id+".jsonl"),
+		map[string]any{
+			"type":    "user",
+			"message": map[string]any{"role": "user", "content": largeContent},
+		},
+	)
+
+	got := chatTitleInDir(dir, id)
+	// Should successfully read and truncate to maxSummaryLen
+	if len(got) != maxSummaryLen {
+		t.Errorf("length = %d, want %d (should successfully scan large line)", len(got), maxSummaryLen)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("should truncate large content with '...'")
+	}
+}
+
+func TestParseSessionMeta_LoopIncrement(t *testing.T) {
+	// Tests that the loop counter increments forward (i++), not backward (i--).
+	// Catches mutation: i++ changed to i--.
+	// If the loop decremented, it would never terminate or behave incorrectly.
+	dir := t.TempDir()
+	id := "loop-increment-session"
+
+	// Create exactly 10 non-user lines followed by a user message at line 11.
+	lines := make([]any, 0, 11)
+	for i := 0; i < 10; i++ {
+		lines = append(lines, map[string]any{"type": "progress"})
+	}
+	lines = append(lines, map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": "Message at line 11"},
+	})
+	writeJSONL(t, filepath.Join(dir, id+".jsonl"), lines...)
+
+	got := chatTitleInDir(dir, id)
+	// Should find the user message because we increment forward through lines
+	if got != "Message at line 11" {
+		t.Errorf("got %q, want %q (loop should increment forward)", got, "Message at line 11")
+	}
+}
+
 // writeJSONL writes multiple JSON objects as a JSONL file.
 func writeJSONL(t *testing.T, path string, lines ...any) {
 	t.Helper()

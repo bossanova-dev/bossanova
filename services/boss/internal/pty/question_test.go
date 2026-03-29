@@ -254,3 +254,102 @@ func TestLastNLines(t *testing.T) {
 		t.Errorf("lastNLines(data, 100) = %q, want %q", got, data)
 	}
 }
+
+func TestHasQuestionPrompt_ExactlyTwoOptions(t *testing.T) {
+	// Tests boundary: selector with exactly 2 indented options.
+	// Catches mutation: len(matches) >= 2 changed to len(matches) > 2.
+	// "Choose one:" must NOT have leading spaces, otherwise it matches optionRe
+	// and gives 3 matches instead of the intended 2.
+	data := `Choose one:
+
+  ❯ First option
+    Second option
+`
+	if !hasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question with exactly 2 options")
+	}
+}
+
+func TestHasQuestionPrompt_OnlyOneOption(t *testing.T) {
+	// Tests boundary: selector with only 1 indented line total.
+	// Catches mutation: len(matches) >= 2 changed to len(matches) > 2.
+	// We need exactly 1 match for optionRe (2+ leading spaces + non-space).
+	// The selector line "  ❯ Only option" itself matches optionRe because it
+	// starts with "  ❯" (2 spaces + non-space character ❯).
+	// So we need NO other lines with 2+ leading spaces.
+	data := `Choose one:
+
+  ❯ Only option
+`
+	if hasQuestionPrompt([]byte(data)) {
+		t.Error("should not detect question with only 1 indented line")
+	}
+}
+
+func TestHasQuestionPrompt_ThreeOptions(t *testing.T) {
+	// Tests boundary: selector with 3 indented options (well over 2).
+	data := `  Choose one:
+
+  ❯ First option
+    Second option
+    Third option
+`
+	if !hasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question with 3 options")
+	}
+}
+
+func TestHasQuestionPrompt_ResponseMarkerAtIndexZero(t *testing.T) {
+	// Tests boundary: ⏺ marker at index 0.
+	// Catches mutation: idx >= 0 changed to idx > 0.
+	data := "⏺ What would you like to do?"
+	if !hasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question when ⏺ is at index 0")
+	}
+}
+
+func TestHasQuestionPrompt_ResponseMarkerAtIndexOne(t *testing.T) {
+	// Tests boundary: ⏺ marker at index 1 (after a newline).
+	data := "\n⏺ What would you like to do?"
+	if !hasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question when ⏺ is at index 1")
+	}
+}
+
+func TestLastNLines_TrailingNewlineAtIndexZero(t *testing.T) {
+	// Tests boundary: i >= 0 changed to i > 0 in lastNLines.
+	// When data is just "\n" (length 1), i starts at 0.
+	// The check `if i >= 0 && data[i] == '\n'` handles i=0 correctly by checking i >= 0.
+	// If mutated to `i > 0`, this check would fail when i=0, breaking the trailing newline skip.
+	data := []byte("\n")
+	got := lastNLines(data, 5)
+	// Returns original data since loop never runs after skipping trailing newline
+	want := []byte("\n")
+	if !bytes.Equal(got, want) {
+		t.Errorf("lastNLines(\"\\n\", 5) = %q, want %q", got, want)
+	}
+}
+
+func TestLastNLines_DataStartingAtIndexZero(t *testing.T) {
+	// Tests boundary: for loop condition `i >= 0`.
+	// When we need to scan all the way to index 0, the condition must allow i=0.
+	// Mutation: i >= 0 changed to i > 0 would skip index 0.
+	data := []byte("x\ny\n")
+	got := lastNLines(data, 2)
+	want := []byte("x\ny\n")
+	if !bytes.Equal(got, want) {
+		t.Errorf("lastNLines(%q, 2) = %q, want %q", data, got, want)
+	}
+}
+
+func TestLastNLines_SingleCharacterBeforeNewline(t *testing.T) {
+	// Tests boundary: i >= 0 in the for loop condition.
+	// If data = "a\n", after skipping trailing newline, i = 0 (the 'a').
+	// The loop should process i=0 and return "a\n".
+	data := []byte("a\n")
+	got := lastNLines(data, 1)
+	want := []byte("a\n")
+	if !bytes.Equal(got, want) {
+		t.Errorf("lastNLines(\"a\\n\", 1) = %q, want %q", got, want)
+	}
+}

@@ -13,6 +13,7 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/plugin/hostclient"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // mockHostClient is a test double that records calls and returns
@@ -50,6 +51,8 @@ type mockHostClient struct {
 
 	// FireSessionEvent tracking.
 	fireEventCalls int
+	fireEventReqs  []*bossanovav1.FireSessionEventRequest
+	fireEventFunc  func(*bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
 }
 
 var _ hostClient = (*mockHostClient)(nil)
@@ -134,10 +137,14 @@ func (m *mockHostClient) GetReviewComments(_ context.Context, _ *bossanovav1.Get
 	return nil, fmt.Errorf("not implemented in mock")
 }
 
-func (m *mockHostClient) FireSessionEvent(_ context.Context, _ *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
+func (m *mockHostClient) FireSessionEvent(_ context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.fireEventCalls++
+	m.fireEventReqs = append(m.fireEventReqs, req)
+	if m.fireEventFunc != nil {
+		return m.fireEventFunc(req)
+	}
 	return &bossanovav1.FireSessionEventResponse{}, nil
 }
 
@@ -675,4 +682,226 @@ func TestStartWorkflowLaunchesSweep(t *testing.T) {
 		defer mock.mu.Unlock()
 		return mock.listSessCalls > 0 && mock.createWfCalls > 0
 	}, "sweep to list sessions and create workflow")
+}
+
+// --- advanceStuckSession tests ---
+
+func TestAdvanceStuckSessionAdvancesWhenStuck(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond // very short for test
+
+	sess := &bossanovav1.Session{
+		Id:        "s1",
+		State:     bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		UpdatedAt: timestamppb.New(time.Now().Add(-1 * time.Hour)),
+	}
+
+	advanced := rm.advanceStuckSession(context.Background(), sess)
+	assert.True(t, advanced)
+
+	mock.mu.Lock()
+	assert.Equal(t, 1, mock.fireEventCalls)
+	require.Len(t, mock.fireEventReqs, 1)
+	assert.Equal(t, "s1", mock.fireEventReqs[0].GetSessionId())
+	assert.Equal(t, bossanovav1.SessionEvent_SESSION_EVENT_PLAN_COMPLETE, mock.fireEventReqs[0].GetEvent())
+	mock.mu.Unlock()
+}
+
+func TestAdvanceStuckSessionSkipsNotStuckLongEnough(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Hour // very long
+
+	sess := &bossanovav1.Session{
+		Id:        "s1",
+		State:     bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		UpdatedAt: timestamppb.Now(), // just now
+	}
+
+	advanced := rm.advanceStuckSession(context.Background(), sess)
+	assert.False(t, advanced)
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.fireEventCalls)
+	mock.mu.Unlock()
+}
+
+func TestAdvanceStuckSessionSkipsNonImplementingPlan(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond
+
+	for _, state := range []bossanovav1.SessionState{
+		bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS,
+		bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+		bossanovav1.SessionState_SESSION_STATE_GREEN_DRAFT,
+		bossanovav1.SessionState_SESSION_STATE_BLOCKED,
+	} {
+		sess := &bossanovav1.Session{
+			Id:        "s1",
+			State:     state,
+			UpdatedAt: timestamppb.New(time.Now().Add(-1 * time.Hour)),
+		}
+		advanced := rm.advanceStuckSession(context.Background(), sess)
+		assert.False(t, advanced, "should not advance session in state %s", state.String())
+	}
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.fireEventCalls)
+	mock.mu.Unlock()
+}
+
+func TestAdvanceStuckSessionSkipsActiveWorkflows(t *testing.T) {
+	mock := newTestMock()
+	mock.workflows = []*bossanovav1.Workflow{
+		{Id: "wf-1", SessionId: "s1", Status: "running"},
+	}
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond
+
+	sess := &bossanovav1.Session{
+		Id:        "s1",
+		State:     bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		UpdatedAt: timestamppb.New(time.Now().Add(-1 * time.Hour)),
+	}
+
+	advanced := rm.advanceStuckSession(context.Background(), sess)
+	assert.False(t, advanced)
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.fireEventCalls)
+	mock.mu.Unlock()
+}
+
+func TestAdvanceStuckSessionSkipsActiveChat(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond
+
+	sess := &bossanovav1.Session{
+		Id:            "s1",
+		State:         bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		UpdatedAt:     timestamppb.New(time.Now().Add(-1 * time.Hour)),
+		HasActiveChat: true,
+	}
+
+	advanced := rm.advanceStuckSession(context.Background(), sess)
+	assert.False(t, advanced)
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.fireEventCalls)
+	mock.mu.Unlock()
+}
+
+func TestAdvanceStuckSessionSkipsStopped(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond
+	rm.mu.Lock()
+	rm.stopped = true
+	rm.mu.Unlock()
+
+	sess := &bossanovav1.Session{
+		Id:        "s1",
+		State:     bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		UpdatedAt: timestamppb.New(time.Now().Add(-1 * time.Hour)),
+	}
+
+	advanced := rm.advanceStuckSession(context.Background(), sess)
+	assert.False(t, advanced)
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.fireEventCalls)
+	mock.mu.Unlock()
+}
+
+func TestAdvanceStuckSessionSkipsPaused(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond
+	rm.mu.Lock()
+	rm.paused = true
+	rm.mu.Unlock()
+
+	sess := &bossanovav1.Session{
+		Id:        "s1",
+		State:     bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		UpdatedAt: timestamppb.New(time.Now().Add(-1 * time.Hour)),
+	}
+
+	advanced := rm.advanceStuckSession(context.Background(), sess)
+	assert.False(t, advanced)
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.fireEventCalls)
+	mock.mu.Unlock()
+}
+
+func TestAdvanceStuckSessionSkipsNilUpdatedAt(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond
+
+	sess := &bossanovav1.Session{
+		Id:    "s1",
+		State: bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+		// UpdatedAt is nil
+	}
+
+	advanced := rm.advanceStuckSession(context.Background(), sess)
+	assert.False(t, advanced)
+
+	mock.mu.Lock()
+	assert.Equal(t, 0, mock.fireEventCalls)
+	mock.mu.Unlock()
+}
+
+func TestSweepAdvancesThenRepairs(t *testing.T) {
+	// Session starts in ImplementingPlan with a failing PR status.
+	// After advancement it transitions to AwaitingChecks and should be
+	// picked up by the repair pass.
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                   "s1",
+			State:                bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			UpdatedAt:            timestamppb.New(time.Now().Add(-1 * time.Hour)),
+			PrDisplayStatus:      bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING,
+			PrDisplayHasFailures: true,
+		},
+	}
+
+	// After FireSessionEvent advances the session, the next ListSessions call
+	// should return the session in AwaitingChecks so maybeRepair can act on it.
+	mock.fireEventFunc = func(req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
+		// Simulate the state transition: update the mock's session list.
+		mock.sessions = []*bossanovav1.Session{
+			{
+				Id:                   "s1",
+				State:                bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS,
+				PrDisplayStatus:      bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING,
+				PrDisplayHasFailures: true,
+			},
+		}
+		return &bossanovav1.FireSessionEventResponse{}, nil
+	}
+
+	rm := newTestMonitor(mock)
+	rm.testStuckTimeout = 1 * time.Millisecond
+
+	rm.sweepExistingSessions(context.Background())
+
+	// The sweep should have:
+	// 1. Advanced the stuck session (FireSessionEvent with PlanComplete)
+	// 2. Triggered repair for the now-AwaitingChecks session
+	waitFor(t, func() bool {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.createWfCalls > 0
+	}, "repair workflow to be created after advancement")
+
+	mock.mu.Lock()
+	assert.Equal(t, 1, mock.fireEventCalls, "should fire PlanComplete once")
+	mock.mu.Unlock()
 }

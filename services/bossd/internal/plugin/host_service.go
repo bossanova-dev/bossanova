@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // HostServiceServer implements the HostService gRPC server on the daemon
@@ -29,6 +30,7 @@ type HostServiceServer struct {
 	claude        claude.ClaudeRunner
 	repoStore     db.RepoStore
 	prTracker     *status.PRTracker
+	chatTracker   *status.Tracker
 }
 
 // NewHostServiceServer creates a HostServiceServer that proxies to the
@@ -50,10 +52,11 @@ func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, sessions db.
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs
 // (ListSessions, GetReviewComments, FireSessionEvent).
-func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker) {
+func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker, chatTracker *status.Tracker) {
 	s.repoStore = repos
 	s.sessionStore = sessions
 	s.prTracker = tracker
+	s.chatTracker = chatTracker
 }
 
 // hostServiceDesc is a manually-built gRPC service descriptor for
@@ -620,16 +623,41 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				isRepairing = entry.IsRepairing
 			}
 
-			pbSessions = append(pbSessions, &bossanovav1.Session{
+			// Check heartbeat tracker for active Claude Code chat processes.
+			// On DB error, assume active (fail closed) to prevent advancing
+			// sessions that may have a live Claude Code process.
+			hasActiveChat := false
+			if s.claudeChats != nil && s.chatTracker != nil {
+				chats, err := s.claudeChats.ListBySession(ctx, sess.ID)
+				if err != nil {
+					log.Warn().Err(err).Str("session_id", sess.ID).Msg("failed to list chats for active chat check, assuming active")
+					hasActiveChat = true
+				} else {
+					for _, chat := range chats {
+						if chatEntry := s.chatTracker.Get(chat.ClaudeID); chatEntry != nil {
+							hasActiveChat = true
+							break
+						}
+					}
+				}
+			}
+
+			pbSess := &bossanovav1.Session{
 				Id:                   sess.ID,
 				RepoId:               sess.RepoID,
 				RepoDisplayName:      repo.DisplayName,
+				Title:                sess.Title,
 				BranchName:           sess.BranchName,
 				State:                sessionStateToProto(sess.State),
 				PrDisplayStatus:      vcsDisplayStatusToProto(displayStatus),
 				PrDisplayHasFailures: hasFailures,
 				IsRepairing:          isRepairing,
-			})
+				HasActiveChat:        hasActiveChat,
+			}
+			if !sess.UpdatedAt.IsZero() {
+				pbSess.UpdatedAt = timestamppb.New(sess.UpdatedAt)
+			}
+			pbSessions = append(pbSessions, pbSess)
 		}
 	}
 

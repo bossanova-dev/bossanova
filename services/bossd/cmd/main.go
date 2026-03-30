@@ -140,7 +140,7 @@ func run() error {
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
 	pluginHost.SetWorkflowDeps(workflows, sessions, claudeChats, claudeRunner)
-	pluginHost.SetSessionDeps(repos, sessions, prDisplayTracker)
+	pluginHost.SetSessionDeps(repos, sessions, prDisplayTracker, chatStatusTracker)
 
 	// Register PRTracker onChange callback to notify plugins of status changes
 	prDisplayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.PRDisplayEntry) {

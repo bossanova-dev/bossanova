@@ -223,9 +223,9 @@ func (h *Host) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore,
 }
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs.
-func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker) {
+func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker, chatTracker *status.Tracker) {
 	if h.hostService != nil {
-		h.hostService.SetSessionDeps(repos, sessions, tracker)
+		h.hostService.SetSessionDeps(repos, sessions, tracker, chatTracker)
 	}
 }
 

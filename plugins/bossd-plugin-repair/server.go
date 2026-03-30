@@ -21,6 +21,9 @@ const (
 	defaultRepairSkill = "boss-repair"
 	// defaultSweepInterval is how often the periodic sweep runs.
 	defaultSweepInterval = 5 * time.Minute
+	// defaultStuckTimeout is how long a session must be in ImplementingPlan
+	// before it is considered stuck and eligible for automatic advancement.
+	defaultStuckTimeout = 10 * time.Minute
 )
 
 // repairConfig holds parsed config for a repair workflow. Fields mirror
@@ -31,6 +34,7 @@ type repairConfig struct {
 	CooldownMinutes      int                  `json:"cooldown_minutes,omitempty"`
 	PollIntervalSeconds  int                  `json:"poll_interval_seconds,omitempty"`
 	SweepIntervalMinutes int                  `json:"sweep_interval_minutes,omitempty"`
+	StuckTimeoutMinutes  int                  `json:"stuck_timeout_minutes,omitempty"`
 }
 
 type repairSkillOverrides struct {
@@ -65,6 +69,13 @@ func (c *repairConfig) sweepInterval() time.Duration {
 	return defaultSweepInterval
 }
 
+func (c *repairConfig) stuckTimeout() time.Duration {
+	if c != nil && c.StuckTimeoutMinutes > 0 {
+		return time.Duration(c.StuckTimeoutMinutes) * time.Minute
+	}
+	return defaultStuckTimeout
+}
+
 func parseRepairConfig(configJSON string) (*repairConfig, error) {
 	cfg := &repairConfig{}
 	if configJSON == "" {
@@ -92,6 +103,7 @@ type repairMonitor struct {
 	repairing         map[string]bool      // Sessions currently being repaired
 	cooldowns         map[string]time.Time // Last repair attempt time per session
 	testSweepInterval time.Duration        // Override sweep interval for tests
+	testStuckTimeout  time.Duration        // Override stuck timeout for tests
 }
 
 func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
@@ -416,6 +428,76 @@ func (m *repairMonitor) getSessionState(ctx context.Context, sessionID string) b
 	return bossanovav1.SessionState_SESSION_STATE_UNSPECIFIED
 }
 
+// advanceStuckSession checks if a session is stuck in ImplementingPlan and
+// should be advanced to the next state. A session is considered stuck when:
+// 1. It is in ImplementingPlan state
+// 2. It has no active Claude Code chat (heartbeat tracker shows no live processes)
+// 3. Its updated_at is older than the configured stuck timeout
+// 4. It has no running workflows (is idle)
+// Returns true if the session was advanced.
+func (m *repairMonitor) advanceStuckSession(ctx context.Context, sess *bossanovav1.Session) bool {
+	if sess.GetState() != bossanovav1.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
+		return false
+	}
+
+	// Do not advance sessions when the workflow is stopped or paused.
+	m.mu.Lock()
+	if m.stopped || m.paused {
+		m.mu.Unlock()
+		return false
+	}
+	m.mu.Unlock()
+
+	// Skip if the session has an active Claude Code chat process.
+	if sess.GetHasActiveChat() {
+		m.logger.Debug().
+			Str("session_id", sess.GetId()).
+			Msg("session has active chat, not advancing")
+		return false
+	}
+
+	// Check the stuck timeout.
+	m.mu.Lock()
+	timeout := m.testStuckTimeout
+	if timeout == 0 {
+		timeout = m.config.stuckTimeout()
+	}
+	m.mu.Unlock()
+
+	updatedAt := sess.GetUpdatedAt()
+	if updatedAt == nil || time.Since(updatedAt.AsTime()) < timeout {
+		return false
+	}
+
+	// Verify the session is idle (no running workflows).
+	if !m.isSessionIdle(ctx, sess.GetId()) {
+		m.logger.Info().
+			Str("session_id", sess.GetId()).
+			Msg("session has active workflow, not advancing stuck session")
+		return false
+	}
+
+	// Fire PlanComplete to advance the state machine.
+	m.logger.Info().
+		Str("session_id", sess.GetId()).
+		Str("title", sess.GetTitle()).
+		Str("repo", sess.GetRepoDisplayName()).
+		Dur("stuck_for", time.Since(updatedAt.AsTime())).
+		Msg("advancing stuck ImplementingPlan session")
+
+	if _, err := m.host.FireSessionEvent(ctx, &bossanovav1.FireSessionEventRequest{
+		SessionId: sess.GetId(),
+		Event:     bossanovav1.SessionEvent_SESSION_EVENT_PLAN_COMPLETE,
+	}); err != nil {
+		m.logger.Warn().Err(err).
+			Str("session_id", sess.GetId()).
+			Msg("failed to advance stuck session")
+		return false
+	}
+
+	return true
+}
+
 // sweepExistingSessions queries all sessions and runs each through the repair
 // logic. This catches sessions that were already in a bad state when the plugin
 // started (or when a race caused the first notification to be dropped).
@@ -428,12 +510,33 @@ func (m *repairMonitor) sweepExistingSessions(ctx context.Context) {
 		return
 	}
 
+	// First pass: advance any sessions stuck in ImplementingPlan.
+	var advanced int
+	for _, sess := range resp.GetSessions() {
+		if m.advanceStuckSession(ctx, sess) {
+			advanced++
+		}
+	}
+
+	// If any sessions were advanced, re-fetch so the second pass sees their
+	// new state (e.g. AwaitingChecks) and can evaluate them for repair.
+	if advanced > 0 {
+		m.logger.Info().Int("advanced", advanced).Msg("re-fetching sessions after advancing stuck sessions")
+		resp, err = m.host.ListSessions(ctx)
+		if err != nil {
+			m.logger.Error().Err(err).Msg("failed to re-list sessions after advancement")
+			return
+		}
+	}
+
+	// Second pass: evaluate each session for repair.
 	for _, sess := range resp.GetSessions() {
 		m.maybeRepair(sess.GetId(), sess.GetPrDisplayStatus(), sess.GetPrDisplayHasFailures())
 	}
 
 	m.logger.Info().
 		Int("session_count", len(resp.GetSessions())).
+		Int("advanced", advanced).
 		Msg("sweep complete")
 }
 

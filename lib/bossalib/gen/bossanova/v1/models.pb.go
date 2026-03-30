@@ -1068,8 +1068,10 @@ type Session struct {
 	WorkflowDisplayStatus  WorkflowStatus `protobuf:"varint,25,opt,name=workflow_display_status,json=workflowDisplayStatus,proto3,enum=bossanova.v1.WorkflowStatus" json:"workflow_display_status,omitempty"`
 	WorkflowDisplayLeg     int32          `protobuf:"varint,26,opt,name=workflow_display_leg,json=workflowDisplayLeg,proto3" json:"workflow_display_leg,omitempty"`
 	WorkflowDisplayMaxLegs int32          `protobuf:"varint,27,opt,name=workflow_display_max_legs,json=workflowDisplayMaxLegs,proto3" json:"workflow_display_max_legs,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Whether the session has an active Claude Code chat process (heartbeat-tracked).
+	HasActiveChat bool `protobuf:"varint,28,opt,name=has_active_chat,json=hasActiveChat,proto3" json:"has_active_chat,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1289,6 +1291,13 @@ func (x *Session) GetWorkflowDisplayMaxLegs() int32 {
 		return x.WorkflowDisplayMaxLegs
 	}
 	return 0
+}
+
+func (x *Session) GetHasActiveChat() bool {
+	if x != nil {
+		return x.HasActiveChat
+	}
+	return false
 }
 
 // Attempt represents a fix attempt within a session.
@@ -2428,8 +2437,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategyB\x0f\n" +
-	"\r_setup_script\"\xf5\n" +
-	"\n" +
+	"\r_setup_script\"\x9d\v\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -2463,7 +2471,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\fis_repairing\x18\x18 \x01(\bR\visRepairing\x12T\n" +
 	"\x17workflow_display_status\x18\x19 \x01(\x0e2\x1c.bossanova.v1.WorkflowStatusR\x15workflowDisplayStatus\x120\n" +
 	"\x14workflow_display_leg\x18\x1a \x01(\x05R\x12workflowDisplayLeg\x129\n" +
-	"\x19workflow_display_max_legs\x18\x1b \x01(\x05R\x16workflowDisplayMaxLegsB\x14\n" +
+	"\x19workflow_display_max_legs\x18\x1b \x01(\x05R\x16workflowDisplayMaxLegs\x12&\n" +
+	"\x0fhas_active_chat\x18\x1c \x01(\bR\rhasActiveChatB\x14\n" +
 	"\x12_claude_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

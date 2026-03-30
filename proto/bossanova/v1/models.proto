@@ -162,6 +162,9 @@ message Session {
   WorkflowStatus workflow_display_status = 25;
   int32 workflow_display_leg = 26;
   int32 workflow_display_max_legs = 27;
+
+  // Whether the session has an active Claude Code chat process (heartbeat-tracked).
+  bool has_active_chat = 28;
 }
 
 // Attempt represents a fix attempt within a session.

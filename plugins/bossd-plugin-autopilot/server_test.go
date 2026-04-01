@@ -1636,10 +1636,13 @@ func TestRunWorkflowTasksRemainingPausesAtResume(t *testing.T) {
 	o := newTestOrchestrator(mock)
 
 	workDir := t.TempDir()
+	handoffDir := filepath.Join(workDir, "docs", "handoffs")
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &workflowConfig{
 		WorkDir:             workDir,
 		PollIntervalSeconds: 1,
-		HandoffDir:          t.TempDir(),
 	}
 
 	// Override checkTasks to report 5 remaining tasks.
@@ -1647,7 +1650,8 @@ func TestRunWorkflowTasksRemainingPausesAtResume(t *testing.T) {
 		return 5, nil
 	}
 
-	// maxLegs=1 → handoff loop doesn't run, but the post-loop check fires.
+	// maxLegs=1 → handoff loop doesn't run. Cleanup leg runs but tasks
+	// remain, so the workflow still pauses.
 	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
 
 	// Should pause (tasks remaining).
@@ -1845,6 +1849,188 @@ func TestRunWorkflowDeferGuardNoOpOnNormalCompletion(t *testing.T) {
 	// Should still end with "completed" (defer guard is a no-op).
 	if mock.workflow.Status != "completed" {
 		t.Errorf("workflow status = %q, want completed", mock.workflow.Status)
+	}
+}
+
+func TestRunWorkflowCleanupLegSucceeds(t *testing.T) {
+	// After the loop exits with remaining tasks, the cleanup leg resolves
+	// them and the workflow proceeds to verify/land.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	workDir := t.TempDir()
+	handoffDir := filepath.Join(workDir, "docs", "handoffs")
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &workflowConfig{
+		WorkDir:             workDir,
+		PollIntervalSeconds: 1,
+	}
+
+	// Track when the cleanup leg runs (it's a "resume" step).
+	var cleanupRan bool
+	var mu sync.Mutex
+	mock.onAttemptCreated = func(step string) {
+		if step == "resume" {
+			mu.Lock()
+			cleanupRan = true
+			mu.Unlock()
+		}
+	}
+
+	// Return 3 remaining tasks until the cleanup leg runs, then 0.
+	o.checkTasks = func(_ context.Context, _, _ string) (int, error) {
+		mu.Lock()
+		done := cleanupRan
+		mu.Unlock()
+		if done {
+			return 0, nil
+		}
+		return 3, nil
+	}
+
+	// maxLegs=1 → loop body doesn't execute. Cleanup leg resolves tasks.
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
+
+	// Should have completed (cleanup resolved all tasks).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed (cleanup resolved tasks)", last)
+	}
+
+	// Should have run verify and land.
+	steps := mock.getUpdateSteps()
+	if !sliceContains(steps, "verify") {
+		t.Errorf("expected 'verify' step in steps: %v", steps)
+	}
+	if !sliceContains(steps, "land") {
+		t.Errorf("expected 'land' step in steps: %v", steps)
+	}
+}
+
+func TestRunWorkflowCleanupLegStillFails(t *testing.T) {
+	// After the loop exits, the cleanup leg runs but tasks still remain.
+	// The workflow should pause.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	workDir := t.TempDir()
+	handoffDir := filepath.Join(workDir, "docs", "handoffs")
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &workflowConfig{
+		WorkDir:             workDir,
+		PollIntervalSeconds: 1,
+	}
+
+	// Always report remaining tasks — cleanup doesn't help.
+	o.checkTasks = func(_ context.Context, _, _ string) (int, error) {
+		return 3, nil
+	}
+
+	// maxLegs=1 → loop body doesn't execute. Cleanup leg runs but fails.
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 1, "")
+
+	// Should have paused (tasks still remaining after cleanup).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "paused" {
+		t.Errorf("last status = %q, want paused (tasks still remaining after cleanup)", last)
+	}
+
+	// Should NOT have run verify or land.
+	steps := mock.getUpdateSteps()
+	if sliceContains(steps, "verify") {
+		t.Errorf("should not have reached 'verify' step: %v", steps)
+	}
+	if sliceContains(steps, "land") {
+		t.Errorf("should not have reached 'land' step: %v", steps)
+	}
+
+	// LastError should mention remaining tasks.
+	if !strings.Contains(mock.workflow.LastError, "tasks still ready") {
+		t.Errorf("LastError = %q, want it to contain 'tasks still ready'", mock.workflow.LastError)
+	}
+}
+
+func TestRunWorkflowStaleProgressBreaksEarly(t *testing.T) {
+	// With maxLegs=6 and no progress, the stale-progress detection should
+	// break the loop after 2 consecutive no-progress legs.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	workDir := t.TempDir()
+	handoffDir := filepath.Join(workDir, "docs", "handoffs")
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &workflowConfig{
+		WorkDir:             workDir,
+		PollIntervalSeconds: 1,
+	}
+
+	// Create handoff files so the loop runs the regular path.
+	mock.onAttemptCreated = func(step string) {
+		if step == "implement" || step == "resume" {
+			f, err := os.CreateTemp(handoffDir, "handoff-*.md")
+			if err != nil {
+				return
+			}
+			future := time.Now().Add(1 * time.Hour)
+			_ = os.Chtimes(f.Name(), future, future)
+			_ = f.Close()
+		}
+	}
+
+	// Always 5 remaining tasks — no progress ever.
+	o.checkTasks = func(_ context.Context, _, _ string) (int, error) {
+		return 5, nil
+	}
+
+	// maxLegs=6. Stale detection should break well before leg 6.
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 6, "")
+
+	// Should pause (tasks remaining after cleanup).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "paused" {
+		t.Errorf("last status = %q, want paused", last)
+	}
+
+	// Stale-progress detection:
+	// Leg 2: prevRemaining=-1 → set to 5, no increment
+	// Leg 3: cur=5 >= prev=5, noProgressCount=1
+	// Leg 4: cur=5 >= prev=5, noProgressCount=2 → break
+	// So max flight leg should be 4 (not 6).
+	legs := mock.getFlightLegUpdates()
+	var maxLeg int32
+	for _, l := range legs {
+		if l > maxLeg {
+			maxLeg = l
+		}
+	}
+	if maxLeg >= 6 {
+		t.Errorf("max flight leg = %d, want < 6 (stale progress should break early)", maxLeg)
+	}
+	if maxLeg != 4 {
+		t.Errorf("max flight leg = %d, want 4 (break after 2 no-progress legs)", maxLeg)
+	}
+
+	// Resume attempts from the loop should be 3 (legs 2,3,4), not 5.
+	// Plus 1 cleanup leg = 4 total resume attempts.
+	var resumeAttempts int
+	mock.mu.Lock()
+	for _, call := range mock.createAttemptCalls {
+		if extractStep(call.GetSkillName()) == "resume" {
+			resumeAttempts++
+		}
+	}
+	mock.mu.Unlock()
+	if resumeAttempts != 4 {
+		t.Errorf("resume attempts = %d, want 4 (3 loop + 1 cleanup)", resumeAttempts)
 	}
 }
 

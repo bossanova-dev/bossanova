@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
@@ -389,6 +390,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				completedLeg = resp.GetWorkflow().GetFlightLeg()
 			}
 		}
+		staleDetector := newStaleProgressDetector()
 		for leg := 2; leg <= maxLegs; leg++ {
 			// Check if workflow was paused/cancelled.
 			if o.isStoppedOrDone(ctx, workflowID) {
@@ -451,6 +453,13 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 					log.Info().Int("leg", leg).Msg("all flight tasks done, exiting handoff loop")
 					break
 				}
+				if cfg.WorkDir != "" {
+					if cur, err := o.checkTasks(ctx, cfg.WorkDir, flightLabel(planPath)); err == nil && staleDetector.record(cur) {
+						log.Warn().Int("leg", leg).Int("remaining", cur).
+							Msg("no progress for 2 legs, exiting loop")
+						break
+					}
+				}
 				continue
 			}
 
@@ -475,6 +484,13 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 				log.Info().Int("leg", leg).Msg("all flight tasks done, exiting handoff loop")
 				break
 			}
+			if cfg.WorkDir != "" {
+				if cur, err := o.checkTasks(ctx, cfg.WorkDir, flightLabel(planPath)); err == nil && staleDetector.record(cur) {
+					log.Warn().Int("leg", leg).Int("remaining", cur).
+						Msg("no progress for 2 legs, exiting loop")
+					break
+				}
+			}
 
 			if leg == maxLegs {
 				log.Warn().Int("max_legs", maxLegs).Msg("max flight legs reached, proceeding to verify")
@@ -486,6 +502,39 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 	// all tasks completed, proceed to verify/land. Otherwise pause for
 	// human review — either tasks remain or the loop exited unexpectedly.
 	allDone := o.allFlightTasksDone(ctx, cfg, planPath, log)
+
+	if !allDone && cfg.WorkDir != "" {
+		label := flightLabel(planPath)
+		remaining, _ := o.checkTasks(ctx, cfg.WorkDir, label)
+		if remaining > 0 {
+			log.Info().Int("remaining", remaining).Str("label", label).
+				Msg("tasks remain after loop, running cleanup leg")
+
+			cleanupFile := filepath.Join(cfg.resolvedHandoffDir(),
+				fmt.Sprintf("cleanup-%s.md", time.Now().Format("20060102-1504")))
+			cleanupContent := fmt.Sprintf(
+				"## Cleanup: Close Remaining Flight Tasks\n\n"+
+					"**Flight ID:** %s\n"+
+					"**Planning Doc:** %s\n\n"+
+					"### CLEANUP MODE\n\n"+
+					"All flight legs have completed but %d tasks remain open.\n"+
+					"Run `bd ready --label \"%s\"` and close every remaining task.\n"+
+					"For each task: `bd update <id> --status=in_progress`, do the work, `bd close <id>`.\n"+
+					"After all tasks are closed, commit any changes.\n"+
+					"Do NOT write another handoff. Do NOT run /clear.\n",
+				label, planPath, remaining, label)
+
+			if err := os.WriteFile(cleanupFile, []byte(cleanupContent), 0o644); err != nil {
+				log.Warn().Err(err).Msg("failed to write cleanup handoff")
+			} else {
+				if err := o.runFlightLeg(ctx, workflowID, "resume", cleanupFile, cfg); err != nil {
+					log.Warn().Err(err).Msg("cleanup leg failed")
+				}
+				_ = os.Remove(cleanupFile)
+				allDone = o.allFlightTasksDone(ctx, cfg, planPath, log)
+			}
+		}
+	}
 
 	if !allDone {
 		// Tasks remain (or WorkDir is unset). If fewer legs completed than
@@ -774,6 +823,32 @@ func flightLabel(planPath string) string {
 	ext := filepath.Ext(base)
 	name := strings.TrimSuffix(base, ext)
 	return "flight:fp-" + name
+}
+
+// staleProgressDetector tracks task counts between flight legs and reports
+// when no progress has been made for a configurable number of consecutive legs.
+type staleProgressDetector struct {
+	prevRemaining   int
+	noProgressCount int
+}
+
+func newStaleProgressDetector() *staleProgressDetector {
+	return &staleProgressDetector{prevRemaining: -1}
+}
+
+// record updates the tracker with the current remaining count and returns
+// true if no progress has been made for 2 consecutive legs.
+func (d *staleProgressDetector) record(cur int) bool {
+	if d.prevRemaining >= 0 && cur >= d.prevRemaining {
+		d.noProgressCount++
+		if d.noProgressCount >= 2 {
+			return true
+		}
+	} else {
+		d.noProgressCount = 0
+	}
+	d.prevRemaining = cur
+	return false
 }
 
 // defaultTaskChecker shells out to `bd ready --label <label>` and counts lines.

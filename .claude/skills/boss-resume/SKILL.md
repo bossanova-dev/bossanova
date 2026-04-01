@@ -133,6 +133,23 @@ Before proceeding to a `[HANDOFF]` task, run `/boss-verify` to verify the flight
 
 - **Regular task next (same flight leg)** -> Return to 3.1
 - **`[HANDOFF]` task next** -> Use `/boss-handoff` to write the handoff to a file in `docs/handoffs/`, then output the continue command and run `/clear`
+- **No [HANDOFF] tasks remaining but regular tasks exist** -> Enter Phase 3b (Cleanup Mode)
+
+### 3b: Cleanup Mode
+
+When the handoff file contains "CLEANUP MODE" or `bd ready` shows tasks but no `[HANDOFF]` tasks remain:
+
+1. Run `bd ready --label "flight:<flight-id>"` to list all remaining tasks
+2. For each remaining task:
+   - `bd update <id> --status=in_progress`
+   - Implement the task
+   - Commit changes
+   - `bd close <id>`
+3. After ALL tasks are closed, commit any final changes
+4. Do NOT write another handoff
+5. Do NOT run `/clear`
+
+Cleanup mode is triggered by the autopilot orchestrator when all flight legs have completed but tasks remain open. Close every remaining task.
 
 ---
 

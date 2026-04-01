@@ -630,3 +630,181 @@ func TestDispatcherNilFixLoop_ReviewSubmitted(t *testing.T) {
 		t.Errorf("state = %v, want FixingChecks", sess.State)
 	}
 }
+
+// --- Mock SessionCompletionNotifier ---
+
+type mockCompletionNotifier struct {
+	calls []completionCall
+}
+
+type completionCall struct {
+	sessionID string
+	outcome   models.TaskMappingStatus
+}
+
+func (m *mockCompletionNotifier) HandleSessionCompleted(_ context.Context, sessionID string, outcome models.TaskMappingStatus) {
+	m.calls = append(m.calls, completionCall{sessionID: sessionID, outcome: outcome})
+}
+
+// --- Completion Notifier Tests ---
+
+func TestDispatcherPRMerged_NotifiesCompletion(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	notifier := &mockCompletionNotifier{}
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d.SetCompletionNotifier(notifier)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].sessionID != "sess-1" {
+		t.Errorf("session = %q, want sess-1", notifier.calls[0].sessionID)
+	}
+	if notifier.calls[0].outcome != models.TaskMappingStatusCompleted {
+		t.Errorf("outcome = %d, want Completed", notifier.calls[0].outcome)
+	}
+}
+
+func TestDispatcherPRClosed_NotifiesCompletion(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	notifier := &mockCompletionNotifier{}
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d.SetCompletionNotifier(notifier)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].outcome != models.TaskMappingStatusFailed {
+		t.Errorf("outcome = %d, want Failed", notifier.calls[0].outcome)
+	}
+}
+
+func TestDispatcherChecksFailedBlocked_NotifiesCompletion(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	notifier := &mockCompletionNotifier{}
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.AwaitingChecks,
+		AttemptCount: machine.MaxAttempts - 1, // will transition to Blocked
+	}
+
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d.SetCompletionNotifier(notifier)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksFailed{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if sessions.sessions["sess-1"].State != machine.Blocked {
+		t.Fatalf("state = %v, want Blocked", sessions.sessions["sess-1"].State)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notifier call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].outcome != models.TaskMappingStatusFailed {
+		t.Errorf("outcome = %d, want Failed", notifier.calls[0].outcome)
+	}
+}
+
+func TestDispatcherChecksFailedNotBlocked_DoesNotNotify(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	notifier := &mockCompletionNotifier{}
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.AwaitingChecks,
+		AttemptCount: 0, // will transition to FixingChecks, not Blocked
+	}
+
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d.SetCompletionNotifier(notifier)
+
+	failure := vcs.CheckConclusionFailure
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{
+		SessionID: "sess-1",
+		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
+	}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if len(notifier.calls) != 0 {
+		t.Errorf("expected 0 notifier calls for non-blocked state, got %d", len(notifier.calls))
+	}
+}
+
+func TestDispatcherNilNotifier_DoesNotPanic(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	// No SetCompletionNotifier call — notifier is nil.
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+
+	// Should not panic.
+	d.Run(ctx, ch)
+
+	if sessions.sessions["sess-1"].State != machine.Merged {
+		t.Errorf("state = %v, want Merged", sessions.sessions["sess-1"].State)
+	}
+}

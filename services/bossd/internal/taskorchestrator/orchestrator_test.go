@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -698,6 +700,155 @@ func TestHandleSessionCompleted_PluginError_StoresPending(t *testing.T) {
 
 	if !storedPending {
 		t.Error("expected pending update to be stored when plugin fails")
+	}
+}
+
+func TestHandleSessionCompleted_AlreadyTerminal_Skips(t *testing.T) {
+	// If a mapping is already in a terminal state (e.g. Completed from a prior
+	// PR merge notification), a duplicate call (e.g. from RemoveSession) must
+	// be a no-op — no status overwrite, no plugin notification, no dequeue.
+	var pluginCalled bool
+
+	sessionID := "sess-dup"
+	captureSrc := &updatingMockTaskSource{
+		mockTaskSource: mockTaskSource{
+			pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
+				return nil, nil
+			},
+		},
+		updateFn: func(_ context.Context, _ string, _ bossanovav1.TaskItemStatus, _ string) error {
+			pluginCalled = true
+			return nil
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-dup",
+					ExternalID: "dep:pr:repo:30",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusCompleted, // already terminal
+				},
+			},
+		}
+	})
+
+	// Second call with Failed should be silently ignored.
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+
+	if pluginCalled {
+		t.Error("plugin should NOT be notified when mapping is already terminal")
+	}
+}
+
+func TestHandleSessionCompleted_DoubleCall_SecondIsNoop(t *testing.T) {
+	// Simulate a PR merge (dispatcher) followed by RemoveSession (server).
+	// Only the first call should update the plugin; the second should be a no-op.
+	var pluginUpdateCount int
+
+	sessionID := "sess-double"
+	mapping := &models.TaskMapping{
+		ID:         "tm-double",
+		ExternalID: "dep:pr:repo:40",
+		RepoID:     "r1",
+		Status:     models.TaskMappingStatusInProgress,
+	}
+
+	captureSrc := &updatingMockTaskSource{
+		mockTaskSource: mockTaskSource{
+			pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
+				return nil, nil
+			},
+		},
+		updateFn: func(_ context.Context, _ string, _ bossanovav1.TaskItemStatus, _ string) error {
+			pluginUpdateCount++
+			return nil
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: mapping,
+			},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					// Simulate the DB update so the second lookup sees the new status.
+					mapping.Status = *params.Status
+				}
+				return mapping, nil
+			},
+		}
+	})
+
+	// First call: Completed from dispatcher (PR merge).
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+
+	// Second call: Failed from server (RemoveSession).
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+
+	if pluginUpdateCount != 1 {
+		t.Errorf("expected plugin to be notified exactly once, got %d", pluginUpdateCount)
+	}
+	// Verify the status wasn't overwritten: mapping should still be Completed.
+	if mapping.Status != models.TaskMappingStatusCompleted {
+		t.Errorf("expected mapping status to remain Completed, got %v", mapping.Status)
+	}
+}
+
+func TestHandleSessionCompleted_ConcurrentCalls_OnlyOneProceeds(t *testing.T) {
+	// Two goroutines call HandleSessionCompleted at the same time for the
+	// same session. The in-memory guard must ensure only one proceeds.
+	var pluginUpdateCount atomic.Int32
+
+	sessionID := "sess-race"
+	captureSrc := &updatingMockTaskSource{
+		mockTaskSource: mockTaskSource{
+			pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
+				return nil, nil
+			},
+		},
+		updateFn: func(_ context.Context, _ string, _ bossanovav1.TaskItemStatus, _ string) error {
+			pluginUpdateCount.Add(1)
+			return nil
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-race",
+					ExternalID: "dep:pr:repo:50",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusInProgress,
+				},
+			},
+		}
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+	}()
+	go func() {
+		defer wg.Done()
+		orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+	}()
+	wg.Wait()
+
+	if count := pluginUpdateCount.Load(); count != 1 {
+		t.Errorf("expected plugin to be notified exactly once, got %d", count)
 	}
 }
 

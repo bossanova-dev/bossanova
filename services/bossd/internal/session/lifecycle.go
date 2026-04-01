@@ -171,7 +171,10 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 	// create a draft PR immediately so the user gets a PR right away.
 	if session.Plan == "" && session.PRNumber == nil {
 		if err := l.createDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName, session, repo); err != nil {
-			return fmt.Errorf("create draft PR: %w", err)
+			l.logger.Warn().Err(err).
+				Str("session", sessionID).
+				Str("branch", result.BranchName).
+				Msg("draft PR creation failed during session start; PR will be created on submit")
 		}
 	}
 

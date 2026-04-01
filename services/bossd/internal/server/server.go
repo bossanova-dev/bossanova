@@ -503,7 +503,16 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		startErr = result.err
 	}
 	if err := startErr; err != nil {
-		// Clean up the orphaned session record on failure.
+		// Re-fetch session to get worktree/branch info set during lifecycle.
+		if failedSess, getErr := s.sessions.Get(ctx, sess.ID); getErr == nil {
+			// Clean up worktree and branch (local + remote).
+			if failedSess.RepoID != "" && failedSess.BranchName != "" {
+				if repo, repoErr := s.repos.Get(ctx, failedSess.RepoID); repoErr == nil {
+					_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{failedSess.BranchName})
+				}
+			}
+		}
+		// Delete the orphaned session record.
 		_ = s.sessions.Delete(ctx, sess.ID)
 		if errors.Is(err, gitpkg.ErrBranchExists) {
 			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))

@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -795,11 +794,20 @@ func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
 	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
 
 	err := lc.StartSession(ctx, "sess-1", "", false, false, nil)
-	if err == nil {
-		t.Fatal("expected error for repo not ready")
+	if err != nil {
+		t.Fatalf("expected session to start successfully despite PR failure, got: %v", err)
 	}
-	if !errors.Is(err, vcs.ErrRepoNotReady) {
-		t.Errorf("expected ErrRepoNotReady, got: %v", err)
+
+	// Session should be in ImplementingPlan state with no PR.
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ImplementingPlan {
+		t.Errorf("expected state ImplementingPlan, got: %v", sess.State)
+	}
+	if sess.PRNumber != nil {
+		t.Errorf("expected PRNumber to be nil, got: %v", *sess.PRNumber)
+	}
+	if sess.PRURL != nil {
+		t.Errorf("expected PRURL to be nil, got: %v", *sess.PRURL)
 	}
 }
 

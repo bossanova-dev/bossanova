@@ -192,6 +192,10 @@ func run() error {
 		taskorchestrator.DefaultPollInterval, log.Logger,
 	)
 
+	// Wire the orchestrator as the completion notifier for the dispatcher
+	// and server so that terminal session states unblock the per-repo task queue.
+	dispatcher.SetCompletionNotifier(orchestrator)
+
 	// --- Server ---
 
 	socketPath, err := server.DefaultSocketPath()
@@ -200,19 +204,20 @@ func run() error {
 	}
 
 	srv := server.New(server.Config{
-		Repos:       repos,
-		Sessions:    sessions,
-		Attempts:    attempts,
-		ClaudeChats: claudeChats,
-		Workflows:   workflows,
-		ChatStatus:  chatStatusTracker,
-		PRDisplay:   prDisplayTracker,
-		Lifecycle:   lifecycle,
-		Claude:      claudeRunner,
-		Worktrees:   worktrees,
-		Provider:    ghProvider,
-		PluginHost:  pluginHost,
-		Logger:      log.Logger,
+		Repos:              repos,
+		Sessions:           sessions,
+		Attempts:           attempts,
+		ClaudeChats:        claudeChats,
+		Workflows:          workflows,
+		ChatStatus:         chatStatusTracker,
+		PRDisplay:          prDisplayTracker,
+		Lifecycle:          lifecycle,
+		Claude:             claudeRunner,
+		Worktrees:          worktrees,
+		Provider:           ghProvider,
+		PluginHost:         pluginHost,
+		CompletionNotifier: orchestrator,
+		Logger:             log.Logger,
 	})
 
 	// --- Upstream (optional, cloud mode) ---

@@ -47,58 +47,61 @@ func DefaultSocketPath() (string, error) {
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
 type Server struct {
-	repos       db.RepoStore
-	sessions    db.SessionStore
-	attempts    db.AttemptStore
-	claudeChats db.ClaudeChatStore
-	workflows   db.WorkflowStore
-	chatStatus  *status.Tracker
-	prDisplay   *status.PRTracker
-	lifecycle   *session.Lifecycle
-	claude      claude.ClaudeRunner
-	worktrees   gitpkg.WorktreeManager
-	provider    vcs.Provider
-	pluginHost  *plugin.Host
-	logger      zerolog.Logger
-	listener    net.Listener
-	srv         *http.Server
+	repos              db.RepoStore
+	sessions           db.SessionStore
+	attempts           db.AttemptStore
+	claudeChats        db.ClaudeChatStore
+	workflows          db.WorkflowStore
+	chatStatus         *status.Tracker
+	prDisplay          *status.PRTracker
+	lifecycle          *session.Lifecycle
+	claude             claude.ClaudeRunner
+	worktrees          gitpkg.WorktreeManager
+	provider           vcs.Provider
+	pluginHost         *plugin.Host
+	completionNotifier session.SessionCompletionNotifier
+	logger             zerolog.Logger
+	listener           net.Listener
+	srv                *http.Server
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
 
 // Config holds all dependencies for creating a new Server.
 type Config struct {
-	Repos       db.RepoStore
-	Sessions    db.SessionStore
-	Attempts    db.AttemptStore
-	ClaudeChats db.ClaudeChatStore
-	Workflows   db.WorkflowStore
-	ChatStatus  *status.Tracker
-	PRDisplay   *status.PRTracker
-	Lifecycle   *session.Lifecycle
-	Claude      claude.ClaudeRunner
-	Worktrees   gitpkg.WorktreeManager
-	Provider    vcs.Provider
-	PluginHost  *plugin.Host
-	Logger      zerolog.Logger
+	Repos              db.RepoStore
+	Sessions           db.SessionStore
+	Attempts           db.AttemptStore
+	ClaudeChats        db.ClaudeChatStore
+	Workflows          db.WorkflowStore
+	ChatStatus         *status.Tracker
+	PRDisplay          *status.PRTracker
+	Lifecycle          *session.Lifecycle
+	Claude             claude.ClaudeRunner
+	Worktrees          gitpkg.WorktreeManager
+	Provider           vcs.Provider
+	PluginHost         *plugin.Host
+	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
+	Logger             zerolog.Logger
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	return &Server{
-		repos:       cfg.Repos,
-		sessions:    cfg.Sessions,
-		attempts:    cfg.Attempts,
-		claudeChats: cfg.ClaudeChats,
-		workflows:   cfg.Workflows,
-		chatStatus:  cfg.ChatStatus,
-		prDisplay:   cfg.PRDisplay,
-		lifecycle:   cfg.Lifecycle,
-		claude:      cfg.Claude,
-		worktrees:   cfg.Worktrees,
-		provider:    cfg.Provider,
-		pluginHost:  cfg.PluginHost,
-		logger:      cfg.Logger,
+		repos:              cfg.Repos,
+		sessions:           cfg.Sessions,
+		attempts:           cfg.Attempts,
+		claudeChats:        cfg.ClaudeChats,
+		workflows:          cfg.Workflows,
+		chatStatus:         cfg.ChatStatus,
+		prDisplay:          cfg.PRDisplay,
+		lifecycle:          cfg.Lifecycle,
+		claude:             cfg.Claude,
+		worktrees:          cfg.Worktrees,
+		provider:           cfg.Provider,
+		pluginHost:         cfg.PluginHost,
+		completionNotifier: cfg.CompletionNotifier,
+		logger:             cfg.Logger,
 	}
 }
 
@@ -745,6 +748,11 @@ func (s *Server) StopSession(ctx context.Context, req *connect.Request[pb.StopSe
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("stop session: %w", err))
 	}
 
+	// Notify the task orchestrator so it can unblock the repo's task queue.
+	if s.completionNotifier != nil {
+		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, models.TaskMappingStatusFailed)
+	}
+
 	sess, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
@@ -831,6 +839,11 @@ func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.Close
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("close session: %w", err))
 	}
 
+	// Notify the task orchestrator so it can unblock the repo's task queue.
+	if s.completionNotifier != nil {
+		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, models.TaskMappingStatusFailed)
+	}
+
 	session, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
@@ -849,6 +862,13 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	if err != nil {
 		// If not found, nothing to delete.
 		return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
+	}
+
+	// Notify the task orchestrator BEFORE deleting, because sessions.Delete
+	// nullifies task_mappings.session_id, making GetBySessionID unable to
+	// find the mapping afterward.
+	if s.completionNotifier != nil {
+		s.completionNotifier.HandleSessionCompleted(ctx, req.Msg.Id, models.TaskMappingStatusFailed)
 	}
 
 	// Best-effort git cleanup: delete branch + prune worktree.

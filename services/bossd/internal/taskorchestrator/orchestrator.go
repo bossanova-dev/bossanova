@@ -48,9 +48,10 @@ type Orchestrator struct {
 	interval       time.Duration
 	logger         zerolog.Logger
 
-	mu     sync.Mutex
-	queues map[string][]queuedTask // keyed by repo ID
-	active map[string]bool         // repo ID → true if a task is being processed
+	mu                sync.Mutex
+	queues            map[string][]queuedTask // keyed by repo ID
+	active            map[string]bool         // repo ID → true if a task is being processed
+	completedSessions map[string]bool         // guards against concurrent HandleSessionCompleted; bounded by daemon lifetime
 }
 
 // New creates a new task orchestrator.
@@ -64,15 +65,16 @@ func New(
 	logger zerolog.Logger,
 ) *Orchestrator {
 	return &Orchestrator{
-		sources:        sources,
-		repos:          repos,
-		taskMappings:   taskMappings,
-		sessionCreator: sessionCreator,
-		provider:       provider,
-		interval:       interval,
-		logger:         logger.With().Str("component", "task-orchestrator").Logger(),
-		queues:         make(map[string][]queuedTask),
-		active:         make(map[string]bool),
+		sources:           sources,
+		repos:             repos,
+		taskMappings:      taskMappings,
+		sessionCreator:    sessionCreator,
+		provider:          provider,
+		interval:          interval,
+		logger:            logger.With().Str("component", "task-orchestrator").Logger(),
+		queues:            make(map[string][]queuedTask),
+		active:            make(map[string]bool),
+		completedSessions: make(map[string]bool),
 	}
 }
 
@@ -107,6 +109,13 @@ func (o *Orchestrator) run(ctx context.Context) {
 // calls each task source plugin's PollTasks for each repo, staggering
 // the calls across the interval to reduce API burst.
 func (o *Orchestrator) poll(ctx context.Context) {
+	// Evict stale completion guards. The concurrent window for
+	// HandleSessionCompleted is milliseconds; by the next poll cycle the
+	// DB status is terminal, so the DB-level guard catches late arrivals.
+	o.mu.Lock()
+	clear(o.completedSessions)
+	o.mu.Unlock()
+
 	// Retry any pending plugin updates from previous cycles.
 	o.RetryPendingUpdates(ctx)
 
@@ -278,11 +287,46 @@ func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
 // HandleSessionCompleted is called when a session finishes (merged,
 // closed, or blocked). It looks up the task mapping by session ID,
 // updates the plugin via UpdateTaskStatus, and dequeues the next task.
+//
+// This method is idempotent: duplicate calls for the same session are
+// no-ops. An in-memory set (guarded by o.mu) prevents the TOCTOU race
+// where two concurrent callers both read InProgress from the DB before
+// either updates it. A secondary DB-level check handles the post-restart
+// case where the in-memory set is empty but the mapping is already terminal.
 func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
 	mapping, err := o.taskMappings.GetBySessionID(ctx, sessionID)
 	if err != nil {
 		// Not all sessions are task-orchestrated; this is expected.
 		return
+	}
+
+	// Fast in-memory guard: serialise concurrent callers for the same session.
+	// This prevents the TOCTOU race where two goroutines both read InProgress
+	// from the DB, both pass the terminal-status check, and both dequeue.
+	o.mu.Lock()
+	if o.completedSessions[sessionID] {
+		o.mu.Unlock()
+		o.logger.Debug().
+			Str("session", sessionID).
+			Msg("session completion already processed (in-memory guard)")
+		return
+	}
+	o.completedSessions[sessionID] = true
+	o.mu.Unlock()
+
+	// Belt-and-suspenders DB guard for post-restart: the in-memory set is
+	// empty after a daemon restart, but the mapping status is already terminal.
+	switch mapping.Status {
+	case models.TaskMappingStatusCompleted, models.TaskMappingStatusFailed, models.TaskMappingStatusSkipped:
+		o.logger.Debug().
+			Str("session", sessionID).
+			Str("external_id", mapping.ExternalID).
+			Int("existing_status", int(mapping.Status)).
+			Int("new_outcome", int(outcome)).
+			Msg("session already completed, skipping duplicate notification")
+		return
+	default:
+		// Pending or InProgress — proceed with completion.
 	}
 
 	o.logger.Info().

@@ -22,15 +22,23 @@ type FixHandler interface {
 	HandleReviewFeedback(ctx context.Context, sessionID string, comments []vcs.ReviewComment) error
 }
 
+// SessionCompletionNotifier is called when a session reaches a terminal state
+// (merged, closed, or blocked). The task orchestrator implements this to
+// unblock its per-repo FIFO queue.
+type SessionCompletionNotifier interface {
+	HandleSessionCompleted(ctx context.Context, sessionID string, outcome models.TaskMappingStatus)
+}
+
 // Dispatcher consumes VCS events from the poller and applies the
 // corresponding state machine transitions and database updates.
 type Dispatcher struct {
-	sessions db.SessionStore
-	repos    db.RepoStore
-	provider vcs.Provider
-	fixLoop  FixHandler
-	logger   zerolog.Logger
-	mu       sync.Mutex // guards concurrent session transitions
+	sessions           db.SessionStore
+	repos              db.RepoStore
+	provider           vcs.Provider
+	fixLoop            FixHandler
+	completionNotifier SessionCompletionNotifier
+	logger             zerolog.Logger
+	mu                 sync.Mutex // guards concurrent session transitions
 }
 
 // NewDispatcher creates a new event dispatcher.
@@ -47,6 +55,20 @@ func NewDispatcher(
 		provider: provider,
 		fixLoop:  fixLoop,
 		logger:   logger,
+	}
+}
+
+// SetCompletionNotifier sets the notifier that is called when sessions
+// reach terminal states. This uses a setter instead of a constructor
+// parameter because the dispatcher is created before the orchestrator.
+func (d *Dispatcher) SetCompletionNotifier(n SessionCompletionNotifier) {
+	d.completionNotifier = n
+}
+
+// notifyCompletion calls the completion notifier if one is set.
+func (d *Dispatcher) notifyCompletion(ctx context.Context, sessionID string, outcome models.TaskMappingStatus) {
+	if d.completionNotifier != nil {
+		d.completionNotifier.HandleSessionCompleted(ctx, sessionID, outcome)
 	}
 }
 
@@ -186,6 +208,11 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 		Int("failedChecks", len(event.FailedChecks)).
 		Msg("checks failed")
 
+	// If blocked, the session is terminal from the orchestrator's perspective.
+	if sm.State() == machine.Blocked {
+		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
+	}
+
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
 		if !sess.AutomationEnabled {
@@ -228,6 +255,11 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 		Str("session", sess.ID).
 		Str("newState", sm.State().String()).
 		Msg("conflict detected")
+
+	// If blocked, the session is terminal from the orchestrator's perspective.
+	if sm.State() == machine.Blocked {
+		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
+	}
 
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
@@ -278,6 +310,11 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 		Int("comments", len(event.Comments)).
 		Msg("review submitted")
 
+	// If blocked, the session is terminal from the orchestrator's perspective.
+	if sm.State() == machine.Blocked {
+		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
+	}
+
 	// Kick off the fix loop if we transitioned to FixingChecks.
 	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
 		repo, err := d.repos.Get(ctx, sess.RepoID)
@@ -312,6 +349,8 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 	}
 
 	d.logger.Info().Str("session", sess.ID).Msg("PR merged")
+
+	d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusCompleted)
 	return nil
 }
 
@@ -328,5 +367,7 @@ func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, se
 	}
 
 	d.logger.Info().Str("session", sess.ID).Msg("PR closed")
+
+	d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
 	return nil
 }

@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/rs/zerolog"
 
@@ -113,25 +112,7 @@ type orphanedSession struct {
 	branchName string
 }
 
-// constructPRURL constructs a GitHub PR URL from an origin URL and PR number.
-// Returns empty string if the origin URL cannot be parsed.
+// constructPRURL is a package-local alias for vcs.ConstructPRURL.
 func constructPRURL(originURL string, prNumber int) string {
-	s := originURL
-	// Handle SSH format: git@github.com:owner/repo.git → github.com/owner/repo.git
-	if idx := strings.Index(s, ":"); idx > 0 && !strings.Contains(s[:idx], "/") && (idx+1 >= len(s) || s[idx+1] != '/') {
-		host := s[:idx]
-		if at := strings.Index(host, "@"); at >= 0 {
-			host = host[at+1:]
-		}
-		s = host + "/" + s[idx+1:]
-	}
-	for _, prefix := range []string{"https://", "http://", "ssh://", "git://"} {
-		s = strings.TrimPrefix(s, prefix)
-	}
-	s = strings.TrimSuffix(s, ".git")
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) != 2 || parts[1] == "" {
-		return ""
-	}
-	return fmt.Sprintf("https://%s/%s/pull/%d", parts[0], parts[1], prNumber)
+	return vcs.ConstructPRURL(originURL, prNumber)
 }

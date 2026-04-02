@@ -159,9 +159,9 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus: PRDisplayStatusIdle,
 		},
 		{
-			name:       "open PR, mergeable unknown, no checks = idle",
+			name:       "open PR, mergeable unknown, no checks = checking",
 			pr:         &PRStatus{State: PRStateOpen},
-			wantStatus: PRDisplayStatusIdle,
+			wantStatus: PRDisplayStatusChecking,
 		},
 		{
 			name: "conflict takes priority over failing checks",
@@ -243,6 +243,14 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
 			wantStatus: PRDisplayStatusPassing,
+		},
+		{
+			name: "mergeable unknown with approval and no checks = checking (not idle)",
+			pr:   &PRStatus{State: PRStateOpen},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateApproved},
+			},
+			wantStatus: PRDisplayStatusChecking,
 		},
 		{
 			name: "mergeable unknown with failing checks = failing (not affected)",

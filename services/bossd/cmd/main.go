@@ -108,6 +108,16 @@ func run() error {
 	ghProvider := github.New(log.Logger)
 	lifecycle := session.NewLifecycle(sessions, repos, worktrees, claudeRunner, ghProvider, log.Logger)
 
+	// Reconcile sessions that were created before their PR existed (or
+	// where PR creation happened out-of-band). Matches by branch name.
+	if n, err := session.ReconcilePRAssociations(
+		context.Background(), sessions, repos, ghProvider, log.Logger,
+	); err != nil {
+		log.Warn().Err(err).Msg("failed to reconcile PR associations")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("reconciled sessions with existing PRs")
+	}
+
 	// --- Dispatcher + Poller ---
 	// Note: FixLoop removed - repair functionality moved to plugin
 

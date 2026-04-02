@@ -108,8 +108,8 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		return PRDisplayInfo{Status: PRDisplayStatusPassing}
 	}
 
-	// Checks are green but mergeability hasn't been confirmed yet.
-	if mergeableUnknown && hasChecks && !hasFailed {
+	// Mergeability hasn't been confirmed — show "checking" until resolved.
+	if mergeableUnknown {
 		return PRDisplayInfo{Status: PRDisplayStatusChecking, HasChangesRequested: hasChangesRequested}
 	}
 

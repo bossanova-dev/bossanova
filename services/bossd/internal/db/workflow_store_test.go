@@ -443,7 +443,7 @@ func TestWorkflowStore_FullLifecycle(t *testing.T) {
 	}
 }
 
-func TestWorkflowStore_ListActiveBySessionIDsIncludesFailedAndCancelled(t *testing.T) {
+func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	sessionStore := NewSessionStore(db)
@@ -492,16 +492,16 @@ func TestWorkflowStore_ListActiveBySessionIDsIncludesFailedAndCancelled(t *testi
 		t.Fatalf("list: %v", err)
 	}
 
-	// Should include failed and cancelled but NOT completed.
+	// All terminal states (failed, cancelled, completed) should be excluded.
 	ids := make(map[string]bool)
 	for _, w := range results {
 		ids[w.ID] = true
 	}
-	if !ids[wFailed.ID] {
-		t.Error("expected failed workflow in results")
+	if ids[wFailed.ID] {
+		t.Error("failed workflow should NOT be in results")
 	}
-	if !ids[wCancelled.ID] {
-		t.Error("expected cancelled workflow in results")
+	if ids[wCancelled.ID] {
+		t.Error("cancelled workflow should NOT be in results")
 	}
 	if ids[wCompleted.ID] {
 		t.Error("completed workflow should NOT be in results")

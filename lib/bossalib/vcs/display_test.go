@@ -218,6 +218,52 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantHasChangesRequested: true,
 		},
 		{
+			name: "mergeable unknown with passing checks = checking (not passing)",
+			pr:   &PRStatus{State: PRStateOpen},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			wantStatus: PRDisplayStatusChecking,
+		},
+		{
+			name: "mergeable unknown with approval = checking (not approved)",
+			pr:   &PRStatus{State: PRStateOpen},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateApproved},
+			},
+			wantStatus: PRDisplayStatusChecking,
+		},
+		{
+			name: "mergeable true with passing checks = passing (unchanged)",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			wantStatus: PRDisplayStatusPassing,
+		},
+		{
+			name: "mergeable unknown with failing checks = failing (not affected)",
+			pr:   &PRStatus{State: PRStateOpen},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
+			},
+			wantStatus: PRDisplayStatusFailing,
+		},
+		{
+			name: "mergeable unknown with changes requested = rejected (not affected)",
+			pr:   &PRStatus{State: PRStateOpen},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateChangesRequested},
+			},
+			wantStatus: PRDisplayStatusRejected,
+		},
+		{
 			name: "neutral conclusion is not a failure",
 			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
 			checks: []CheckResult{

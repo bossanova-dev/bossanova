@@ -625,8 +625,9 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	for i, sess := range sessions {
 		sessionIDs[i] = sess.ID
 	}
+	var entries map[string]*status.PRDisplayEntry
 	if s.prDisplay != nil {
-		entries := s.prDisplay.GetBatch(sessionIDs)
+		entries = s.prDisplay.GetBatch(sessionIDs)
 		for i, sess := range sessions {
 			if e, ok := entries[sess.ID]; ok {
 				pbSessions[i].PrDisplayStatus = pb.PRDisplayStatus(e.Status)
@@ -650,6 +651,11 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 			}
 			for i, sess := range sessions {
 				if w, ok := best[sess.ID]; ok {
+					// Don't show stale workflow status for sessions with merged/closed PRs.
+					if prEntry, hasEntry := entries[sess.ID]; hasEntry &&
+						(prEntry.Status == vcs.PRDisplayStatusMerged || prEntry.Status == vcs.PRDisplayStatusClosed) {
+						continue
+					}
 					pbSessions[i].WorkflowDisplayStatus = workflowStatusToProto(w.Status)
 					pbSessions[i].WorkflowDisplayLeg = int32(w.FlightLeg)
 					pbSessions[i].WorkflowDisplayMaxLegs = int32(w.MaxLegs)

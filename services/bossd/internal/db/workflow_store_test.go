@@ -453,6 +453,18 @@ func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing
 	repo := createTestRepo(t, repoStore)
 	sess := createTestSession(t, sessionStore, repo.ID)
 
+	// Create an active workflow that SHOULD be returned.
+	wRunning, err := store.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "running.md", MaxLegs: 3,
+	})
+	if err != nil {
+		t.Fatalf("create running: %v", err)
+	}
+	runningStatus := string(models.WorkflowStatusRunning)
+	if _, err := store.Update(ctx, wRunning.ID, UpdateWorkflowParams{Status: &runningStatus}); err != nil {
+		t.Fatalf("update to running: %v", err)
+	}
+
 	// Create workflows in various terminal states.
 	wFailed, err := store.Create(ctx, CreateWorkflowParams{
 		SessionID: sess.ID, RepoID: repo.ID, PlanPath: "failed.md", MaxLegs: 1,
@@ -492,10 +504,13 @@ func TestWorkflowStore_ListActiveBySessionIDsExcludesTerminalStatuses(t *testing
 		t.Fatalf("list: %v", err)
 	}
 
-	// All terminal states (failed, cancelled, completed) should be excluded.
+	// Active workflow should be included; all terminal states should be excluded.
 	ids := make(map[string]bool)
 	for _, w := range results {
 		ids[w.ID] = true
+	}
+	if !ids[wRunning.ID] {
+		t.Error("running workflow should be in results")
 	}
 	if ids[wFailed.ID] {
 		t.Error("failed workflow should NOT be in results")

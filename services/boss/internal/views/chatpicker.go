@@ -191,6 +191,7 @@ func (m *ChatPickerModel) buildTableRows() {
 	}
 
 	titles := make([]string, len(m.chats))
+	createds := make([]string, len(m.chats))
 	actives := make([]string, len(m.chats))
 	for i, chat := range m.chats {
 		t := chat.Title
@@ -198,16 +199,19 @@ func (m *ChatPickerModel) buildTableRows() {
 			t = "New chat"
 		}
 		titles[i] = t
+		createds[i] = RelativeTime(chat.CreatedAt.AsTime())
 		actives[i] = RelativeTime(m.chatLastActive(chat))
 	}
 
 	titleWidth := maxColWidth("CHAT", titles, 60)
+	createdWidth := maxColWidth("CREATED", createds, 12)
 	activeWidth := maxColWidth("ACTIVE", actives, 12)
 	statusWidth := 12 // enough for spinner + "working"
 
 	cols := []table.Column{
 		cursorColumn,
 		{Title: "CHAT", Width: titleWidth + tableColumnSep},
+		{Title: "CREATED", Width: createdWidth + tableColumnSep},
 		{Title: "ACTIVE", Width: activeWidth + tableColumnSep},
 		{Title: "STATUS", Width: statusWidth + tableColumnSep},
 	}
@@ -222,12 +226,13 @@ func (m *ChatPickerModel) buildTableRows() {
 		daemon := m.daemonStatuses[chat.ClaudeId]
 		status := mergeStatus(local, daemon)
 		statusStr := renderClaudeStatus(status, m.spinner)
+		createdStr := styleSubtle.Render(createds[i])
 		activeStr := styleSubtle.Render(actives[i])
 		indicator := ""
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, titles[i], activeStr, statusStr}
+		rows[i] = table.Row{indicator, titles[i], createdStr, activeStr, statusStr}
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -269,9 +274,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chats = msg.chats
 		m.daemonStatuses = msg.daemonStatuses
 		m.daemonLastOutput = msg.daemonLastOutput
-		// Sort chats by last activity (most recent first).
+		// Sort chats by creation time (newest first).
 		sort.Slice(m.chats, func(i, j int) bool {
-			return m.chatLastActive(m.chats[i]).After(m.chatLastActive(m.chats[j]))
+			return m.chats[i].CreatedAt.AsTime().After(m.chats[j].CreatedAt.AsTime())
 		})
 		m.buildTableRows()
 		// Auto-highlight the chat the user just left, or the first running chat.

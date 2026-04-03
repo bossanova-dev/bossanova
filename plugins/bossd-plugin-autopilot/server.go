@@ -518,7 +518,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 					"**Planning Doc:** %s\n\n"+
 					"### CLEANUP MODE\n\n"+
 					"All flight legs have completed but %d tasks remain open.\n"+
-					"Run `bd ready --label \"%s\"` and close every remaining task.\n"+
+					"Run `bd list --label \"%s\"` and close every remaining task.\n"+
 					"For each task: `bd update <id> --status=in_progress`, do the work, `bd close <id>`.\n"+
 					"After all tasks are closed, commit any changes.\n"+
 					"Do NOT write another handoff. Do NOT run /clear.\n",
@@ -851,19 +851,36 @@ func (d *staleProgressDetector) record(cur int) bool {
 	return false
 }
 
-// defaultTaskChecker shells out to `bd ready --label <label>` and counts lines.
+// defaultTaskChecker counts non-closed tasks for a flight label by running
+// `bd list --status=open` and `bd list --status=in_progress`. We use `bd list`
+// rather than `bd ready` because `bd ready` includes decorative header/footer
+// lines (e.g. "✨ No ready work found ...") that inflate the count, while
+// `bd list` outputs exactly one line per issue with no decoration.
 func defaultTaskChecker(ctx context.Context, workDir, label string) (int, error) {
-	cmd := exec.CommandContext(ctx, "bd", "ready", "--label", label)
-	cmd.Dir = workDir
-	out, err := cmd.Output()
-	if err != nil {
-		return 0, err
+	total := 0
+	succeeded := 0
+	for _, status := range []string{"open", "in_progress"} {
+		cmd := exec.CommandContext(ctx, "bd", "list", "--status="+status, "--label", label)
+		cmd.Dir = workDir
+		out, err := cmd.Output()
+		if err != nil {
+			// bd list may exit non-zero if beads isn't initialised or the
+			// label doesn't exist — treat as 0 for this status.
+			continue
+		}
+		succeeded++
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed == "" {
+			continue
+		}
+		total += len(strings.Split(trimmed, "\n"))
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) == 1 && lines[0] == "" {
-		return 0, nil
+	// If both commands failed, return an error so the caller knows
+	// we couldn't check tasks rather than falsely reporting "0 tasks".
+	if succeeded == 0 {
+		return 0, fmt.Errorf("both bd list commands failed")
 	}
-	return len(lines), nil
+	return total, nil
 }
 
 func isNonActionableError(errStr string) bool {

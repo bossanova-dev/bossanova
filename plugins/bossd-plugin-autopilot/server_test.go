@@ -2034,6 +2034,93 @@ func TestRunWorkflowStaleProgressBreaksEarly(t *testing.T) {
 	}
 }
 
+func TestDefaultTaskCheckerWithMockBd(t *testing.T) {
+	// Create a mock "bd" script that returns canned output for specific
+	// --status flags, exercising the real defaultTaskChecker parsing.
+	tmpBin := t.TempDir()
+	mockBd := filepath.Join(tmpBin, "bd")
+	// The mock script inspects the --status= argument and returns:
+	//   open          → two task lines
+	//   in_progress   → one task line
+	//   empty         → nothing (for the "all done" case)
+	// When called with --status=open and the label contains "alldone",
+	// return empty output to simulate the "all tasks closed" scenario.
+	script := `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    --status=open)       STATUS=open ;;
+    --status=in_progress) STATUS=in_progress ;;
+  esac
+done
+for arg in "$@"; do
+  case "$arg" in
+    *alldone*) exit 0 ;;
+  esac
+done
+case "$STATUS" in
+  open)
+    printf '%s\n' '○ proj-abc [● P2] [task] - Do something' '○ proj-def [● P2] [task] - Do another'
+    ;;
+  in_progress)
+    printf '%s\n' '○ proj-ghi [● P2] [task] - In progress item'
+    ;;
+esac
+`
+	if err := os.WriteFile(mockBd, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpBin+":"+os.Getenv("PATH"))
+
+	workDir := t.TempDir()
+
+	t.Run("counts open and in_progress tasks", func(t *testing.T) {
+		got, err := defaultTaskChecker(context.Background(), workDir, "flight:fp-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 3 { // 2 open + 1 in_progress
+			t.Errorf("defaultTaskChecker = %d, want 3", got)
+		}
+	})
+
+	t.Run("returns zero when all tasks closed", func(t *testing.T) {
+		got, err := defaultTaskChecker(context.Background(), workDir, "flight:fp-alldone")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != 0 {
+			t.Errorf("defaultTaskChecker = %d, want 0", got)
+		}
+	})
+}
+
+func TestDefaultTaskCheckerOldBdReadyOutputRegression(t *testing.T) {
+	// Guard against regression: if the implementation were accidentally
+	// reverted to use `bd ready`, the decorative output would inflate
+	// the count. This test ensures the "no ready work" message is NOT
+	// counted as a task.
+	tmpBin := t.TempDir()
+	mockBd := filepath.Join(tmpBin, "bd")
+	// Simulate `bd list` returning empty output (as it does when no
+	// tasks match), NOT the decorated `bd ready` output.
+	script := `#!/bin/sh
+# bd list returns empty when no issues match the filter.
+exit 0
+`
+	if err := os.WriteFile(mockBd, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmpBin+":"+os.Getenv("PATH"))
+
+	got, err := defaultTaskChecker(context.Background(), t.TempDir(), "flight:fp-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Errorf("defaultTaskChecker = %d, want 0 (no tasks)", got)
+	}
+}
+
 func TestFlightLabel(t *testing.T) {
 	tests := []struct {
 		planPath string

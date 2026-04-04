@@ -379,6 +379,7 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 
 	// Step 3: Handoff/resume loop (Flight Legs 2..maxLegs).
 	if startIdx <= 3 {
+		startLeg := 2
 		if startIdx == 3 {
 			// Resuming into the handoff loop — find existing handoff files.
 			legStart = time.Time{}
@@ -388,10 +389,16 @@ func (o *orchestrator) runWorkflow(ctx context.Context, workflowID, planPath str
 			// any legs in this execution.
 			if resp, err := o.host.GetWorkflow(ctx, workflowID); err == nil {
 				completedLeg = resp.GetWorkflow().GetFlightLeg()
+				// Resume at the persisted leg. FlightLeg is set at the
+				// start of each leg, so it may represent a leg that was
+				// started but never completed — retrying it is correct.
+				if int(completedLeg) >= 2 {
+					startLeg = int(completedLeg)
+				}
 			}
 		}
 		staleDetector := newStaleProgressDetector()
-		for leg := 2; leg <= maxLegs; leg++ {
+		for leg := startLeg; leg <= maxLegs; leg++ {
 			// Check if workflow was paused/cancelled.
 			if o.isStoppedOrDone(ctx, workflowID) {
 				return

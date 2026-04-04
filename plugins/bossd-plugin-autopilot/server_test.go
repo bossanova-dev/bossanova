@@ -2121,6 +2121,92 @@ exit 0
 	}
 }
 
+func TestRunWorkflowResumeFromHandoffResumesAtPersistedLeg(t *testing.T) {
+	// When resuming from "resume" (startIdx=3) with FlightLeg=4, the handoff
+	// loop should start at leg 4 (not leg 2). The first FlightLeg update
+	// should be 4, and the workflow should progress from there.
+	mock := newMockHostClient()
+	mock.workflow.FlightLeg = 4
+	mock.workflow.CurrentStep = "resume"
+	o := newTestOrchestrator(mock)
+
+	workDir := t.TempDir()
+	handoffDir := filepath.Join(workDir, "docs", "handoffs")
+	if err := os.MkdirAll(handoffDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &workflowConfig{
+		WorkDir:             workDir,
+		PollIntervalSeconds: 1,
+	}
+
+	// Track resume leg runs.
+	var resumeCount int
+	var resumeMu sync.Mutex
+
+	// Create handoff files when resume steps run so the loop can continue.
+	mock.onAttemptCreated = func(step string) {
+		if step == "resume" {
+			resumeMu.Lock()
+			resumeCount++
+			resumeMu.Unlock()
+			f, err := os.CreateTemp(handoffDir, "handoff-*.md")
+			if err != nil {
+				return
+			}
+			future := time.Now().Add(1 * time.Hour)
+			_ = os.Chtimes(f.Name(), future, future)
+			_ = f.Close()
+		}
+	}
+
+	// Seed a handoff file so leg 4 finds one immediately.
+	seedFile, err := os.CreateTemp(handoffDir, "handoff-seed-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = seedFile.Close()
+
+	// Complete all tasks after 2 resume legs so the workflow finishes.
+	o.checkTasks = func(_ context.Context, _, _ string) (int, error) {
+		resumeMu.Lock()
+		count := resumeCount
+		resumeMu.Unlock()
+		if count >= 2 {
+			return 0, nil
+		}
+		return 5, nil
+	}
+
+	// maxLegs=10, startIdx=3 (resume), resumeStep="resume".
+	o.runWorkflow(context.Background(), "wf-1", "docs/plans/test.md", cfg, 10, "resume")
+
+	// The first FlightLeg update should be 4 (not 2).
+	legs := mock.getFlightLegUpdates()
+	if len(legs) == 0 {
+		t.Fatal("expected at least one FlightLeg update")
+	}
+	if legs[0] != 4 {
+		t.Errorf("first FlightLeg update = %d, want 4 (resume at persisted leg)", legs[0])
+	}
+
+	// Should NOT see FlightLeg=2 or FlightLeg=3 in any update.
+	for _, l := range legs {
+		if l == 2 || l == 3 {
+			t.Errorf("unexpected FlightLeg=%d in updates %v (should have skipped legs 2-3)", l, legs)
+			break
+		}
+	}
+
+	// Workflow should have completed (verify + land ran).
+	statuses := mock.getUpdateStatuses()
+	last := statuses[len(statuses)-1]
+	if last != "completed" {
+		t.Errorf("last status = %q, want completed", last)
+	}
+}
+
 func TestFlightLabel(t *testing.T) {
 	tests := []struct {
 		planPath string

@@ -293,7 +293,7 @@ func (m TrashModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m TrashModel) tableHeight() int {
-	overhead := bannerOverhead + 2 // blank + action bar
+	overhead := bannerOverhead + 1 + actionBarPadY + 1 // gap + actionbar padding + actionbar
 	if m.confirming || m.confirmingAll {
 		overhead += 3 // confirmation prompt + surrounding blank lines
 	}

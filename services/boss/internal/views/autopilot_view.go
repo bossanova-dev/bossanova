@@ -96,11 +96,7 @@ func (m *AutopilotModel) buildTable() {
 		statuses[i] = WorkflowStatusLabel(w.Status)
 		steps[i] = WorkflowStepLabel(w.CurrentStep)
 
-		legStr := fmt.Sprintf("%d/%d", w.FlightLeg, w.MaxLegs)
-		if w.Status == pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED && w.FlightLeg < w.MaxLegs {
-			legStr += " (incomplete)"
-		}
-		legs[i] = legStr
+		legs[i] = FormatFlightLeg(w)
 
 		plan := w.PlanPath
 		runes := []rune(plan)
@@ -385,6 +381,21 @@ func workflowElapsed(w *pb.AutopilotWorkflow) time.Duration {
 		end = w.UpdatedAt.AsTime()
 	}
 	return end.Sub(start).Truncate(time.Second)
+}
+
+// FormatFlightLeg returns a display string for a workflow's flight leg progress.
+// For completed workflows where FlightLeg was never updated from its default
+// of 0, it displays MaxLegs/MaxLegs since the workflow ran to completion.
+func FormatFlightLeg(w *pb.AutopilotWorkflow) string {
+	leg := w.FlightLeg
+	if w.Status == pb.WorkflowStatus_WORKFLOW_STATUS_COMPLETED && leg == 0 {
+		leg = w.MaxLegs
+	}
+	legStr := fmt.Sprintf("%d/%d", leg, w.MaxLegs)
+	if w.Status == pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED && w.FlightLeg < w.MaxLegs {
+		legStr += " (incomplete)"
+	}
+	return legStr
 }
 
 func isTerminalWorkflowStatus(s pb.WorkflowStatus) bool {

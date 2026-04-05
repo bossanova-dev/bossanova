@@ -197,7 +197,7 @@ func (m RepoListModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m RepoListModel) tableHeight() int {
-	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+2) // blank + action bar
+	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+1+actionBarPadY+1) // gap + actionbar padding + actionbar
 }
 
 func (m RepoListModel) View() tea.View {

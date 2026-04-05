@@ -430,6 +430,18 @@ func (a App) View() tea.View {
 			opts.repo = a.repoSettings.repo
 		case ViewSessionSettings:
 			opts.session = a.sessionSettings.session
+		case ViewRepoList:
+			opts.line1 = "Repositories"
+		case ViewAutopilot:
+			opts.line1 = "Autopilot"
+		case ViewTrash:
+			opts.line1 = "Archived Sessions"
+		case ViewSettings:
+			opts.line1 = "Settings"
+		case ViewNewSession:
+			opts.line1 = "New Session"
+		case ViewRepoAdd:
+			opts.line1 = "Add Repository"
 		}
 		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}

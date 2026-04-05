@@ -448,7 +448,7 @@ func (m RepoAddModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
 			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
-				styleActionBar.Render("[esc] back"),
+				actionBar([]string{"[esc] back"}),
 		)
 	}
 
@@ -470,11 +470,9 @@ func (m RepoAddModel) View() tea.View {
 
 	if m.phase == repoAddPhaseSource {
 		var b strings.Builder
-		b.WriteString(styleTitle.Render("Add Repository"))
-		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.sourceTable.View()))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 

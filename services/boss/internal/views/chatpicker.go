@@ -359,7 +359,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.cancel = true
 			return m, nil
 		case "n":
@@ -429,7 +429,7 @@ func (m ChatPickerModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m ChatPickerModel) tableHeight() int {
-	return clampedTableHeight(len(m.chats), m.height, bannerOverhead+4) // title + blank + blank + action bar
+	return clampedTableHeight(len(m.chats), m.height, bannerOverhead+2) // blank + action bar
 }
 
 func (m ChatPickerModel) View() tea.View {
@@ -465,16 +465,23 @@ func (m ChatPickerModel) View() tea.View {
 			}
 			b.WriteString("\n")
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-				fmt.Sprintf("Remove %q?", chatTitle)))
+				fmt.Sprintf("Delete %q?", chatTitle)))
 			b.WriteString("\n")
 			b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 		}
 	} else {
-		actionBar := "[n]ew chat  [s]ettings  [esc] back"
 		if m.selectedChat() != nil {
-			actionBar = "[enter] select  [n]ew chat  [d] remove  [s]ettings  [esc] back"
+			b.WriteString(actionBar(
+				[]string{"[enter] select", "[d]elete"},
+				[]string{"[n]ew chat", "[s]ettings"},
+				[]string{"[esc] back"},
+			))
+		} else {
+			b.WriteString(actionBar(
+				[]string{"[n]ew chat", "[s]ettings"},
+				[]string{"[esc] back"},
+			))
 		}
-		b.WriteString(styleActionBar.Render(actionBar))
 	}
 
 	return tea.NewView(b.String())

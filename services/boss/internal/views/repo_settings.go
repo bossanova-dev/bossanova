@@ -135,7 +135,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.cancel = true
 			return m, nil
 		case "up", "k":
@@ -397,9 +397,9 @@ func (m RepoSettingsModel) View() tea.View {
 	}
 
 	if m.editingField >= 0 {
-		b.WriteString(styleActionBar.Render("[enter] save  [esc] cancel"))
+		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
 	} else {
-		b.WriteString(styleActionBar.Render("[enter/space] toggle/edit  [esc] back"))
+		b.WriteString(actionBar([]string{"[enter/space] toggle/edit"}, []string{"[esc] back"}))
 	}
 
 	return tea.NewView(b.String())

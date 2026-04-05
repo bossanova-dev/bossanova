@@ -185,12 +185,12 @@ func TestTUI_SettingsView_BackWithQ(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Press 'q' to go back.
-	if err := h.Driver.SendKey('q'); err != nil {
+	// Press esc to go back (q no longer works on sub-screens).
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatalf("expected to return to home after 'q' from settings; screen:\n%s", h.Driver.Screen())
+		t.Fatalf("expected to return to home after esc from settings; screen:\n%s", h.Driver.Screen())
 	}
 }

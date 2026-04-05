@@ -149,7 +149,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.detach = true
 			return m, nil
 		}
@@ -231,7 +231,7 @@ func (m AttachModel) View() tea.View {
 			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Claude Code session ended."))
 		}
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[q] back"))
+		b.WriteString(actionBar([]string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 

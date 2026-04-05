@@ -3,8 +3,6 @@ package views
 import (
 	"context"
 	"fmt"
-	"image/color"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +13,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
-	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -351,77 +348,6 @@ func renderError(msg string, width int) string {
 	return s.Render(msg)
 }
 
-// bannerGradient defines a horizontal color gradient for the B icon (dawn palette).
-var bannerGradient = []color.Color{
-	lipgloss.Color("#00C6FF"),
-	lipgloss.Color("#00AAFF"),
-	lipgloss.Color("#008EFF"),
-	lipgloss.Color("#0072FF"),
-}
-
-// bannerHeight is the number of lines rendered by renderBanner (including padding).
-// Banner has padding(1,1,1,1) = 1 top + 2 content + 1 bottom = 4 lines.
-const bannerHeight = 4
-
-// bannerOpts carries optional per-screen overrides for the banner.
-type bannerOpts struct {
-	session *pb.Session
-	repo    *pb.Repo
-	spinner spinner.Model
-}
-
-func renderBanner(active View, opts bannerOpts) string {
-	// Logo chars per row, matching `npx oh-my-logo "B" dawn --filled --block-font tiny`.
-	row1 := []string{" ", "█", "▄", "▄"}
-	row2 := []string{" ", "█", "▄", "█"}
-
-	colorize := func(chars []string) string {
-		var b strings.Builder
-		for i, ch := range chars {
-			b.WriteString(lipgloss.NewStyle().Foreground(bannerGradient[i]).Render(ch))
-		}
-		return b.String()
-	}
-
-	var line1, line2 string
-	switch {
-	case (active == ViewChatPicker || active == ViewSessionSettings) && opts.session != nil:
-		// PR title with clickable number and colored status.
-		title := opts.session.Title
-		if prLink := renderPRLink(opts.session); prLink != "" {
-			title = prLink + " " + title
-		}
-		if prStatus := renderSessionPRStatus(opts.session, opts.spinner); prStatus != "" {
-			title += " (" + prStatus + ")"
-		}
-		line1 = title
-
-		// Worktree root path.
-		wt := opts.session.GetWorktreePath()
-		if home, err := os.UserHomeDir(); err == nil {
-			wt = strings.Replace(wt, home, "~", 1)
-		}
-		line2 = styleSubtle.Render(wt)
-
-	case opts.repo != nil:
-		line1 = opts.repo.DisplayName
-		lp := opts.repo.LocalPath
-		if home, err := os.UserHomeDir(); err == nil {
-			lp = strings.Replace(lp, home, "~", 1)
-		}
-		line2 = styleSubtle.Render(lp)
-
-	default:
-		line1 = "Bossanova"
-		line2 = styleSubtle.Render("v" + buildinfo.Version)
-	}
-
-	banner := colorize(row1) + "  " + line1 + "\n" +
-		colorize(row2) + "  " + line2
-
-	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
-}
-
 // StateLabel returns a short human-readable label for a session state.
 func StateLabel(state pb.SessionState) string {
 	switch state {
@@ -489,14 +415,14 @@ func (h HomeModel) View() tea.View {
 					"  Press 'n' to create a new session\n\n"+
 					"Docs: https://github.com/bossanova-dev/bossanova",
 			) + "\n" +
-				styleActionBar.Render("[n]ew session  [r]epos  [s]ettings  [q]uit")
+				actionBar([]string{"[n]ew session", "[r]epos", "[s]ettings"}, []string{"[q]uit"})
 		} else {
 			// Repos exist but no sessions - show simplified guidance
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"No active sessions.\n\n"+
 					"Press 'n' to create a new session, or 'p' for autopilot.",
 			) + "\n" +
-				styleActionBar.Render("[n]ew session  [p]ilot  [r]epos  [s]ettings  [t]rash  [q]uit")
+				actionBar([]string{"[n]ew session", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"}, []string{"[q]uit"})
 		}
 		return tea.NewView(content)
 	}
@@ -527,7 +453,11 @@ func (h HomeModel) View() tea.View {
 				b.WriteString("\n")
 			}
 		}
-		b.WriteString(styleActionBar.Render("[enter] select  [n]ew session  [h]istory  [a]rchive  [p]ilot  [r]epos  [s]ettings  [t]rash  [q]uit"))
+		b.WriteString(actionBar(
+			[]string{"[enter] select", "[h]istory", "[a]rchive"},
+			[]string{"[n]ew", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"},
+			[]string{"[q]uit"},
+		))
 	}
 
 	return tea.NewView(b.String())

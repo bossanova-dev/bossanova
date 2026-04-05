@@ -20,7 +20,7 @@ func TestTUI_HomeView_ShowsSessions(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "[n]ew session"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "[n]ew"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -196,8 +196,8 @@ func TestTUI_HomeView_ActionBar(t *testing.T) {
 
 	screen := h.Driver.Screen()
 	// With sessions present, the action bar should show archive and new session options.
-	if !strings.Contains(screen, "[n]ew session") {
-		t.Fatalf("expected '[n]ew session' in action bar; screen:\n%s", screen)
+	if !strings.Contains(screen, "[n]ew") {
+		t.Fatalf("expected '[n]ew' in action bar; screen:\n%s", screen)
 	}
 	if !strings.Contains(screen, "[a]rchive") {
 		t.Fatalf("expected '[a]rchive' in action bar; screen:\n%s", screen)
@@ -216,7 +216,7 @@ func TestTUI_HomeView_SingleSession(t *testing.T) {
 	}
 
 	screen := h.Driver.Screen()
-	if !strings.Contains(screen, "[n]ew session") {
+	if !strings.Contains(screen, "[n]ew") {
 		t.Fatalf("expected action bar with single session; screen:\n%s", screen)
 	}
 }

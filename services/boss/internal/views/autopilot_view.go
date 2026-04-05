@@ -193,7 +193,7 @@ func (m AutopilotModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.cancel = true
 			return m, nil
 		case "p":
@@ -267,7 +267,7 @@ func (m AutopilotModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m AutopilotModel) tableHeight() int {
-	return clampedTableHeight(len(m.workflows), m.height, bannerOverhead+4) // title + blank + blank + action bar
+	return clampedTableHeight(len(m.workflows), m.height, bannerOverhead+2) // blank + action bar
 }
 
 func (m AutopilotModel) View() tea.View {
@@ -290,13 +290,11 @@ func (m AutopilotModel) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Autopilot Workflows"))
-	b.WriteString("\n\n")
 
 	if len(m.workflows) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No workflows."))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[esc] back"))
+		b.WriteString(actionBar([]string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -316,7 +314,27 @@ func (m AutopilotModel) View() tea.View {
 			b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 		}
 	} else {
-		b.WriteString(styleActionBar.Render("[p]ause  [r]esume  [c]ancel  [esc] back"))
+		// Context-sensitive action bar based on selected workflow status.
+		w := m.selectedWorkflow()
+		var itemActions []string
+		if w != nil {
+			switch w.Status {
+			case pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING, pb.WorkflowStatus_WORKFLOW_STATUS_PENDING:
+				itemActions = []string{"[p]ause", "[c]ancel"}
+			case pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED:
+				itemActions = []string{"[r]esume", "[c]ancel"}
+			case pb.WorkflowStatus_WORKFLOW_STATUS_UNSPECIFIED,
+				pb.WorkflowStatus_WORKFLOW_STATUS_COMPLETED,
+				pb.WorkflowStatus_WORKFLOW_STATUS_FAILED,
+				pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED:
+				// No actions for terminal/unspecified states.
+			}
+		}
+		if len(itemActions) > 0 {
+			b.WriteString(actionBar(itemActions, []string{"[esc] back"}))
+		} else {
+			b.WriteString(actionBar([]string{"[esc] back"}))
+		}
 	}
 
 	return tea.NewView(b.String())

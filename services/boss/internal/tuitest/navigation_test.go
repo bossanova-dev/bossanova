@@ -32,7 +32,7 @@ func TestTUI_ViewNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Trash: t → esc.
+	// Trash: t → esc (title now in banner, not inline).
 	if err := h.Driver.SendKey('t'); err != nil {
 		t.Fatal(err)
 	}
@@ -46,14 +46,14 @@ func TestTUI_ViewNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Repos: r → q.
+	// Repos: r → esc (q no longer works on sub-screens).
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.SendKey('q'); err != nil {
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
@@ -85,7 +85,7 @@ func TestTUI_NavigationRoundTrip_AllViews(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Trash: t → esc.
+	// Trash: t → esc (title now in banner).
 	if err := h.Driver.SendKey('t'); err != nil {
 		t.Fatal(err)
 	}
@@ -99,14 +99,14 @@ func TestTUI_NavigationRoundTrip_AllViews(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Repos: r → q.
+	// Repos: r → esc (q no longer works on sub-screens).
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.SendKey('q'); err != nil {
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
@@ -119,7 +119,7 @@ func TestTUI_NavigationRoundTrip_AllViews(t *testing.T) {
 	}
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "No workflows") ||
-			strings.Contains(screen, "Autopilot Workflows") ||
+			strings.Contains(screen, "Autopilot") ||
 			strings.Contains(screen, "Error")
 	}); err != nil {
 		t.Fatal(err)

@@ -413,7 +413,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.phase == newSessionPhaseRepoSelect {
 			switch msg.String() {
-			case "esc", "q":
+			case "esc":
 				m.cancel = true
 				return m, nil
 			case "enter":
@@ -613,7 +613,7 @@ func (m NewSessionModel) View() tea.View {
 			}
 		}
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[esc] back"))
+		b.WriteString(actionBar([]string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -629,7 +629,7 @@ func (m NewSessionModel) View() tea.View {
 		b.WriteString("\n\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.repoTable.View()))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -638,7 +638,7 @@ func (m NewSessionModel) View() tea.View {
 		b.WriteString(m.headerView())
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.typeTable.View()))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -647,7 +647,7 @@ func (m NewSessionModel) View() tea.View {
 		b.WriteString(m.headerView())
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.prTable.View()))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[enter] select  [esc] back"))
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 

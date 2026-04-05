@@ -102,7 +102,7 @@ func (m SessionSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.cancel = true
 			return m, nil
 		case "up", "k":
@@ -229,9 +229,9 @@ func (m SessionSettingsModel) View() tea.View {
 	}
 
 	if m.editingField >= 0 {
-		b.WriteString(styleActionBar.Render("[enter] save  [esc] cancel"))
+		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
 	} else {
-		b.WriteString(styleActionBar.Render("[enter/space] edit  [esc] back"))
+		b.WriteString(actionBar([]string{"[enter/space] edit"}, []string{"[esc] back"}))
 	}
 
 	return tea.NewView(b.String())

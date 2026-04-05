@@ -1,8 +1,15 @@
 package views
 
 import (
+	"image/color"
+	"os"
+	"strings"
+
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	"charm.land/lipgloss/v2"
+	"github.com/recurser/bossalib/buildinfo"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // --- Colors (semantic names, decoupled from actual color values) ---
@@ -162,4 +169,102 @@ func CLIColumnsWidth(cols []table.Column) int {
 // MaxColWidth is the exported version of maxColWidth for use by cmd/ package.
 func MaxColWidth(header string, values []string, cap int) int {
 	return maxColWidth(header, values, cap)
+}
+
+// --- Action Bar Helper ---
+
+const actionBarSeparator = " · "
+
+// actionBar builds a grouped action bar string. Each group's items are joined
+// with double-space, then groups are joined with " · ". The result is wrapped
+// in styleActionBar.Render().
+func actionBar(groups ...[]string) string {
+	var parts []string
+	for _, g := range groups {
+		if len(g) > 0 {
+			parts = append(parts, strings.Join(g, "  "))
+		}
+	}
+	return styleActionBar.Render(strings.Join(parts, actionBarSeparator))
+}
+
+// --- Banner ---
+
+// bannerGradient defines a horizontal color gradient for the B icon (dawn palette).
+var bannerGradient = []color.Color{
+	lipgloss.Color("#00C6FF"),
+	lipgloss.Color("#00AAFF"),
+	lipgloss.Color("#008EFF"),
+	lipgloss.Color("#0072FF"),
+}
+
+// bannerHeight is the number of lines rendered by renderBanner (including padding).
+// Banner has padding(1,1,1,1) = 1 top + 2 content + 1 bottom = 4 lines.
+const bannerHeight = 4
+
+// bannerOpts carries optional per-screen overrides for the banner.
+type bannerOpts struct {
+	session *pb.Session
+	repo    *pb.Repo
+	spinner spinner.Model
+
+	// Screen-specific overrides (used when session/repo are nil).
+	line1 string
+	line2 string
+}
+
+func renderBanner(active View, opts bannerOpts) string {
+	// Logo chars per row, matching `npx oh-my-logo "B" dawn --filled --block-font tiny`.
+	row1 := []string{" ", "█", "▄", "▄"}
+	row2 := []string{" ", "█", "▄", "█"}
+
+	colorize := func(chars []string) string {
+		var b strings.Builder
+		for i, ch := range chars {
+			b.WriteString(lipgloss.NewStyle().Foreground(bannerGradient[i]).Render(ch))
+		}
+		return b.String()
+	}
+
+	var line1, line2 string
+	switch {
+	case (active == ViewChatPicker || active == ViewSessionSettings) && opts.session != nil:
+		// PR title with clickable number and colored status.
+		title := opts.session.Title
+		if prLink := renderPRLink(opts.session); prLink != "" {
+			title = prLink + " " + title
+		}
+		if prStatus := renderSessionPRStatus(opts.session, opts.spinner); prStatus != "" {
+			title += " (" + prStatus + ")"
+		}
+		line1 = title
+
+		// Worktree root path.
+		wt := opts.session.GetWorktreePath()
+		if home, err := os.UserHomeDir(); err == nil {
+			wt = strings.Replace(wt, home, "~", 1)
+		}
+		line2 = styleSubtle.Render(wt)
+
+	case opts.repo != nil:
+		line1 = opts.repo.DisplayName
+		lp := opts.repo.LocalPath
+		if home, err := os.UserHomeDir(); err == nil {
+			lp = strings.Replace(lp, home, "~", 1)
+		}
+		line2 = styleSubtle.Render(lp)
+
+	case opts.line1 != "":
+		line1 = opts.line1
+		line2 = opts.line2
+
+	default:
+		line1 = "Bossanova"
+		line2 = styleSubtle.Render("v" + buildinfo.Version)
+	}
+
+	banner := colorize(row1) + "  " + line1 + "\n" +
+		colorize(row2) + "  " + line2
+
+	return lipgloss.NewStyle().Padding(1, 1, 1, 1).Render(banner)
 }

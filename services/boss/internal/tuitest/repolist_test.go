@@ -30,7 +30,7 @@ func TestTUI_RepoListView(t *testing.T) {
 		t.Fatalf("expected repo name 'my-app' on screen:\n%s", screen)
 	}
 
-	if err := h.Driver.SendKey('q'); err != nil {
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
@@ -69,11 +69,11 @@ func TestTUI_RepoListView_RemoveConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Press 'd' to remove.
+	// Press 'd' to delete.
 	if err := h.Driver.SendKey('d'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Remove"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Delete"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,7 +116,7 @@ func TestTUI_RepoListView_RemoveCancel(t *testing.T) {
 	if err := h.Driver.SendKey('d'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Remove"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Delete"); err != nil {
 		t.Fatal(err)
 	}
 

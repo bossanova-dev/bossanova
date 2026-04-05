@@ -69,12 +69,12 @@ func TestTUI_ChatPickerView_DeleteConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for the actual confirmation dialog (not the action bar "[d] remove").
+	// Wait for the actual confirmation dialog (not the action bar "[d]elete").
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "[y/enter] confirm") &&
-			strings.Contains(screen, "Remove")
+			strings.Contains(screen, "Delete")
 	}); err != nil {
-		t.Fatalf("expected remove confirmation dialog; screen:\n%s", h.Driver.Screen())
+		t.Fatalf("expected delete confirmation dialog; screen:\n%s", h.Driver.Screen())
 	}
 	time.Sleep(200 * time.Millisecond)
 

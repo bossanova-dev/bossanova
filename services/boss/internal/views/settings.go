@@ -74,7 +74,7 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.cancel = true
 			return m, nil
 		case "up", "k":
@@ -196,8 +196,6 @@ func (m SettingsModel) Cancelled() bool { return m.cancel }
 
 func (m SettingsModel) View() tea.View {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Settings"))
-	b.WriteString("\n\n")
 
 	if m.err != nil {
 		b.WriteString(renderError(fmt.Sprintf("Error: %v", m.err), m.width))
@@ -265,9 +263,9 @@ func (m SettingsModel) View() tea.View {
 	}
 
 	if editing {
-		b.WriteString(styleActionBar.Render("[enter] save  [esc] cancel"))
+		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
 	} else {
-		b.WriteString(styleActionBar.Render("[enter/space] toggle/edit  [esc] back"))
+		b.WriteString(actionBar([]string{"[enter/space] toggle/edit"}, []string{"[esc] back"}))
 	}
 
 	return tea.NewView(b.String())

@@ -150,7 +150,7 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.cancel = true
 			return m, nil
 		case "a":
@@ -160,7 +160,7 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirming = true
 			}
 			return m, nil
-		case "s", "enter":
+		case "enter":
 			if len(m.repos) > 0 {
 				repo := m.repos[m.table.Cursor()]
 				return m, func() tea.Msg { return switchViewMsg{view: ViewRepoSettings, sessionID: repo.Id} }
@@ -197,7 +197,7 @@ func (m RepoListModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m RepoListModel) tableHeight() int {
-	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+4) // title + blank + blank + action bar
+	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+2) // blank + action bar
 }
 
 func (m RepoListModel) View() tea.View {
@@ -217,7 +217,7 @@ func (m RepoListModel) View() tea.View {
 	if len(m.repos) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No repositories registered."))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[a]dd  [esc] back"))
+		b.WriteString(actionBar([]string{"[a]dd"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -228,11 +228,15 @@ func (m RepoListModel) View() tea.View {
 		b.WriteString("\n")
 		repo := m.repos[m.table.Cursor()]
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-			fmt.Sprintf("Remove %q?", repo.DisplayName)))
+			fmt.Sprintf("Delete %q?", repo.DisplayName)))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(styleActionBar.Render("[s/enter] settings  [a]dd  [d] remove  [esc] back"))
+		b.WriteString(actionBar(
+			[]string{"[enter] settings", "[d]elete"},
+			[]string{"[a]dd"},
+			[]string{"[esc] back"},
+		))
 	}
 
 	return tea.NewView(b.String())

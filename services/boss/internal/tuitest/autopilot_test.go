@@ -25,7 +25,7 @@ func TestTUI_AutopilotView_EmptyState(t *testing.T) {
 
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "No workflows") ||
-			strings.Contains(screen, "Autopilot Workflows")
+			strings.Contains(screen, "Autopilot")
 	}); err != nil {
 		t.Fatal(err)
 	}

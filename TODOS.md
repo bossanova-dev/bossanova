@@ -125,3 +125,31 @@
 **Depends on:** Establishing baseline mutation scores across all modules by running `make mutate` locally first.
 
 **Added:** 2026-03-29 (eng review of mutation testing plan)
+
+---
+
+## TUI Deferred: Narrow Terminal Action Bar Handling
+
+**What:** Detect narrow terminals (< ~100 columns) and truncate, abbreviate, or reflow action bars so they don't wrap awkwardly.
+
+**Why:** The grouped action bars with `·` separators assume ~100+ column terminals. On narrower terminals, the bar wraps mid-group, breaking the visual grouping. This is a developer CLI tool so most users have wide terminals, but it's worth handling gracefully.
+
+**Approach:** Options: (1) Truncate to show only the most-used actions with a `...` indicator. (2) Abbreviate labels (e.g., `[n]` instead of `[n]ew`). (3) Stack groups vertically. The `actionBar()` helper introduced in the TUI navigation cleanup could accept a width parameter and adapt.
+
+**Depends on:** TUI navigation cleanup (improve-the-tui-navigation branch) completing first.
+
+**Added:** 2026-04-05 (eng review of TUI navigation plan)
+
+---
+
+## TUI Deferred: Keyboard Shortcut Help Overlay
+
+**What:** Add a `?` key binding that opens a full-screen overlay showing all available keyboard shortcuts for the current view. Similar to lazygit and k9s help panels.
+
+**Why:** Action bars serve as inline help but can only show so many shortcuts. A help overlay provides full discoverability without cluttering the main view. Especially useful for new users learning the TUI.
+
+**Approach:** `?` key triggers a modal overlay in the App root model. Each view implements a `Shortcuts() []Shortcut` method. The overlay renders a formatted table of key/description pairs grouped by category (item actions, navigation, global). `esc` or `?` dismisses.
+
+**Depends on:** TUI navigation cleanup (improve-the-tui-navigation branch) completing first, so the shortcut definitions are consistent.
+
+**Added:** 2026-04-05 (eng review of TUI navigation plan)

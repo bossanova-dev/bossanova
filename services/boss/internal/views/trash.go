@@ -223,7 +223,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "esc", "q":
+		case "esc":
 			m.cancel = true
 			return m, nil
 		case "r":
@@ -293,7 +293,7 @@ func (m TrashModel) Cancelled() bool { return m.cancel }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m TrashModel) tableHeight() int {
-	overhead := bannerOverhead + 4 // title + blank + blank + action bar
+	overhead := bannerOverhead + 2 // blank + action bar
 	if m.confirming || m.confirmingAll {
 		overhead += 3 // confirmation prompt + surrounding blank lines
 	}
@@ -313,13 +313,11 @@ func (m TrashModel) View() tea.View {
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Archived Sessions"))
-	b.WriteString("\n\n")
 
 	if len(m.sessions) == 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Trash is empty."))
 		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[esc] back"))
+		b.WriteString(actionBar([]string{"[esc] back"}))
 		return tea.NewView(b.String())
 	}
 
@@ -349,7 +347,10 @@ func (m TrashModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(styleActionBar.Render("[d]elete  [a] delete all  [r]estore  [esc] back"))
+		b.WriteString(actionBar(
+			[]string{"[d]elete", "[a] delete all", "[r]estore"},
+			[]string{"[esc] back"},
+		))
 	}
 
 	return tea.NewView(b.String())

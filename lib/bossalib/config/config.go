@@ -115,12 +115,12 @@ func (c AutopilotConfig) SkillName(step string) string {
 	return defaultSkills[step]
 }
 
-// CooldownDuration returns the configured cooldown or the default of 5 minutes.
+// CooldownDuration returns the configured cooldown or the default of 1 minute.
 func (c RepairConfig) CooldownDuration() time.Duration {
 	if c.CooldownMinutes > 0 {
 		return time.Duration(c.CooldownMinutes) * time.Minute
 	}
-	return 5 * time.Minute
+	return 1 * time.Minute
 }
 
 // PollInterval returns the configured poll interval or the default of 5 seconds.

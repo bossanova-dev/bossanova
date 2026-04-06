@@ -337,33 +337,6 @@ func TestNewSession_CreateSessionReceivesTitle(t *testing.T) {
 	}
 }
 
-func TestNewSession_PlanFlowSendsText(t *testing.T) {
-	sc := &stubClient{
-		repos:   oneRepo(),
-		created: &pb.Session{Id: "sess-1", Title: "Add dark mode", BranchName: "boss/add-dark-mode"},
-	}
-	m := NewNewSessionModel(sc, context.Background())
-	m = sendMsg(t, m, reposMsg{repos: sc.repos})
-
-	m.selectedType = sessionTypePlanFeature
-	m.phase = newSessionPhaseForm
-	m.buildForm()
-	m.fd.plan = "Add dark mode\nWith system preference detection"
-
-	cmd := m.startCreating()
-	if cmd == nil {
-		t.Fatal("startCreating returned nil cmd")
-	}
-	cmd() // execute to trigger RPC
-
-	if sc.createReq.Plan != "Add dark mode\nWith system preference detection" {
-		t.Fatalf("CreateSession plan = %q, want full plan text", sc.createReq.Plan)
-	}
-	if sc.createReq.Title != "Add dark mode" {
-		t.Fatalf("CreateSession title = %q, want first line of plan", sc.createReq.Title)
-	}
-}
-
 func TestNewSession_FormDataSharedAcrossUpdateCycles(t *testing.T) {
 	// End-to-end regression: simulate the full bubbletea Update cycle where
 	// the model is copied on every call. Verify that fd written by the form

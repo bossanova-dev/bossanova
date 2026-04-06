@@ -23,7 +23,6 @@ const (
 	sessionTypeQuickChat   sessionType = iota // Quick chat in base folder
 	sessionTypeNewPR                          // Create a new PR
 	sessionTypeExistingPR                     // Work on an existing PR
-	sessionTypePlanFeature                    // Plan a feature
 	sessionTypeExecutePlan                    // Execute a plan (placeholder)
 )
 
@@ -80,16 +79,14 @@ var sessionTypeOptions = []struct {
 	typ   sessionType
 }{
 	{"Create a new PR", "Start a fresh branch and pull request", sessionTypeNewPR},
-	{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
 	{"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
-	{"Plan a feature", "Describe what to build, then launch Claude", sessionTypePlanFeature},
+	{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
 }
 
 // formData holds huh form-bound values on the heap so that Value() pointers
 // remain valid across bubbletea value-receiver copies of NewSessionModel.
 type formData struct {
 	title string
-	plan  string
 }
 
 // NewSessionModel is the multi-step wizard for creating a new coding session.
@@ -286,24 +283,6 @@ func (m *NewSessionModel) buildForm() {
 					Validate(func(s string) error {
 						if strings.TrimSpace(s) == "" {
 							return fmt.Errorf("title is required")
-						}
-						return nil
-					}),
-			),
-		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
-
-	case sessionTypePlanFeature:
-		m.form = huh.NewForm(
-			huh.NewGroup(
-				huh.NewText().
-					Title("What would you like to work on?").
-					Placeholder("Describe what Claude should implement...").
-					Lines(8).
-					Value(&m.fd.plan).
-					ExternalEditor(false).
-					Validate(func(s string) error {
-						if strings.TrimSpace(s) == "" {
-							return fmt.Errorf("plan is required")
 						}
 						return nil
 					}),
@@ -508,7 +487,7 @@ func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 		// Fetch PRs, then show PR selector table.
 		m.phase = newSessionPhaseLoading
 		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
-	case sessionTypeNewPR, sessionTypePlanFeature:
+	case sessionTypeNewPR:
 		m.phase = newSessionPhaseForm
 		m.buildForm()
 		return *m, m.form.Init()
@@ -575,14 +554,6 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 			req.Title = pr.Title
 			req.PrNumber = &pr.Number
 		}
-	case sessionTypePlanFeature:
-		plan := m.fd.plan
-		req.Plan = plan
-		firstLine := strings.SplitN(plan, "\n", 2)[0]
-		if len(firstLine) > 72 {
-			firstLine = firstLine[:69] + "..."
-		}
-		req.Title = firstLine
 	default:
 		req.Title = "New session"
 	}

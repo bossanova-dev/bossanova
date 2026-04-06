@@ -267,6 +267,11 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("get repo: %w", err)
 	}
 
+	// Ensure origin URL is available before any VCS operations.
+	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+		return fmt.Errorf("resolve origin URL: %w", err)
+	}
+
 	hasPR := session.PRNumber != nil
 
 	// Initialize state machine at the session's current state.
@@ -381,6 +386,11 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 // storing the PR number and URL on the session. Used during StartSession
 // for no-plan PR sessions to create the PR immediately.
 func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, branchName string, session *models.Session, repo *models.Repo) error {
+	// Ensure origin URL is available before any VCS operations.
+	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+		return fmt.Errorf("resolve origin URL: %w", err)
+	}
+
 	l.logger.Info().
 		Str("session", sessionID).
 		Str("branch", branchName).
@@ -557,6 +567,37 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		Msg("session resurrected")
 
 	return nil
+}
+
+// resolveOriginURL ensures the repo has a non-empty OriginURL. If it's
+// empty (e.g. git remote get-url failed during initial registration), it
+// re-detects the URL from the repo's local path and persists it.
+func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) (string, error) {
+	if repo.OriginURL != "" {
+		return repo.OriginURL, nil
+	}
+
+	url, err := l.worktrees.DetectOriginURL(ctx, repo.LocalPath)
+	if err != nil {
+		return "", fmt.Errorf("detect origin URL: %w", err)
+	}
+	if url == "" {
+		return "", fmt.Errorf("repo %q has no origin remote configured", repo.DisplayName)
+	}
+
+	if _, err := l.repos.Update(ctx, repo.ID, db.UpdateRepoParams{
+		OriginURL: &url,
+	}); err != nil {
+		return "", fmt.Errorf("persist origin URL: %w", err)
+	}
+
+	l.logger.Info().
+		Str("repo", repo.ID).
+		Str("originURL", url).
+		Msg("re-detected and persisted origin URL")
+
+	repo.OriginURL = url
+	return url, nil
 }
 
 // strPtr returns a double pointer to a string (for UpdateSessionParams).

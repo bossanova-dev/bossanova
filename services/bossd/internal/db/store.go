@@ -20,6 +20,7 @@ type CreateRepoParams struct {
 // Nil fields are not updated.
 type UpdateRepoParams struct {
 	DisplayName             *string
+	OriginURL               *string
 	DefaultBaseBranch       *string
 	WorktreeBaseDir         *string
 	SetupScript             **string // double pointer: nil = don't update, *nil = set to NULL

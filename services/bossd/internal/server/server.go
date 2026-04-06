@@ -1283,6 +1283,18 @@ func (s *Server) StartAutopilot(ctx context.Context, req *connect.Request[pb.Sta
 				Msg("auto-detected flight leg count from plan file")
 		}
 	}
+	// Fallback: try from the CLI's working directory when rootDir didn't
+	// resolve to the correct location (e.g. worktree path mismatch).
+	if msg.MaxLegs == 0 && msg.WorkingDirectory != "" {
+		planAbs := filepath.Join(msg.WorkingDirectory, msg.PlanPath)
+		if count := countPlanFlightLegs(planAbs); count > 0 {
+			msg.MaxLegs = count
+			s.logger.Debug().
+				Str("plan", planAbs).
+				Int32("count", count).
+				Msg("auto-detected flight leg count from plan file (working directory)")
+		}
+	}
 
 	// Build config JSON with work_dir for the plugin.
 	configJSON := fmt.Sprintf(`{"work_dir":%q}`, rootDir)

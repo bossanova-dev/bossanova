@@ -635,6 +635,101 @@ func TestStartWorkflow(t *testing.T) {
 	}
 }
 
+// --- Test: MaxLegs propagation (regression for default-20 bug) ---
+
+func TestStartWorkflowMaxLegsFromRequest(t *testing.T) {
+	// When the server passes MaxLegs=6 (from plan file counting), the plugin
+	// should forward that value to CreateWorkflow, not override with default 20.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	_, err := o.StartWorkflow(context.Background(), &bossanovav1.StartWorkflowRequest{
+		PlanPath: "docs/plans/test.md",
+		MaxLegs:  6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(mock.createWorkflowCalls) != 1 {
+		t.Fatalf("expected 1 CreateWorkflow call, got %d", len(mock.createWorkflowCalls))
+	}
+	got := mock.createWorkflowCalls[0].GetMaxLegs()
+	if got != 6 {
+		t.Errorf("CreateWorkflow MaxLegs = %d, want 6 (from request)", got)
+	}
+}
+
+func TestStartWorkflowMaxLegsDefaultsTo20WhenZero(t *testing.T) {
+	// When the server passes MaxLegs=0 (counting failed), the plugin falls
+	// back to the config default of 20.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	_, err := o.StartWorkflow(context.Background(), &bossanovav1.StartWorkflowRequest{
+		PlanPath: "docs/plans/test.md",
+		MaxLegs:  0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(mock.createWorkflowCalls) != 1 {
+		t.Fatalf("expected 1 CreateWorkflow call, got %d", len(mock.createWorkflowCalls))
+	}
+	got := mock.createWorkflowCalls[0].GetMaxLegs()
+	if got != 20 {
+		t.Errorf("CreateWorkflow MaxLegs = %d, want 20 (default)", got)
+	}
+}
+
+func TestStartWorkflowMaxLegsFromConfig(t *testing.T) {
+	// When config specifies max_flight_legs=5 and the request has MaxLegs=0,
+	// the config value should be used instead of the hardcoded default of 20.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	_, err := o.StartWorkflow(context.Background(), &bossanovav1.StartWorkflowRequest{
+		PlanPath:   "docs/plans/test.md",
+		MaxLegs:    0,
+		ConfigJson: `{"max_flight_legs":5}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(mock.createWorkflowCalls) != 1 {
+		t.Fatalf("expected 1 CreateWorkflow call, got %d", len(mock.createWorkflowCalls))
+	}
+	got := mock.createWorkflowCalls[0].GetMaxLegs()
+	if got != 5 {
+		t.Errorf("CreateWorkflow MaxLegs = %d, want 5 (from config)", got)
+	}
+}
+
+func TestStartWorkflowMaxLegsRequestOverridesConfig(t *testing.T) {
+	// When both config and request specify MaxLegs, the request value wins.
+	mock := newMockHostClient()
+	o := newTestOrchestrator(mock)
+
+	_, err := o.StartWorkflow(context.Background(), &bossanovav1.StartWorkflowRequest{
+		PlanPath:   "docs/plans/test.md",
+		MaxLegs:    6,
+		ConfigJson: `{"max_flight_legs":5}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(mock.createWorkflowCalls) != 1 {
+		t.Fatalf("expected 1 CreateWorkflow call, got %d", len(mock.createWorkflowCalls))
+	}
+	got := mock.createWorkflowCalls[0].GetMaxLegs()
+	if got != 6 {
+		t.Errorf("CreateWorkflow MaxLegs = %d, want 6 (request overrides config)", got)
+	}
+}
+
 func TestStartWorkflowCreateError(t *testing.T) {
 	mock := newMockHostClient()
 	mock.createErr = fmt.Errorf("database error")

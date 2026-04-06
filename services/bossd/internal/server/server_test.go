@@ -123,3 +123,159 @@ func TestCountPlanFlightLegs(t *testing.T) {
 		})
 	}
 }
+
+// TestCountPlanFlightLegsRealPlan verifies the function against a realistic
+// 6-leg plan file to prevent regressions where the count silently falls back
+// to a hardcoded default (e.g. 20).
+func TestCountPlanFlightLegsRealPlan(t *testing.T) {
+	plan := `# Stitcher Service Implementation Plan
+
+**Flight ID:** fp-2026-04-06-1725-stitcher-service
+
+## Overview
+
+Build a new service from scratch.
+
+---
+
+## Flight Leg 1: Scaffold + Schema
+
+### Tasks
+
+- [ ] Create package.json
+- [ ] Create schemas
+
+### Post-Flight Checks for Flight Leg 1
+
+- [ ] Tests pass
+
+### [HANDOFF] Review Flight Leg 1
+
+Human reviews schema design.
+
+---
+
+## Flight Leg 2: Components
+
+### Tasks
+
+- [ ] Create components
+
+### Post-Flight Checks for Flight Leg 2
+
+- [ ] Lint passes
+
+### [HANDOFF] Review Flight Leg 2
+
+Human reviews component structure.
+
+---
+
+## Flight Leg 3: Transcription
+
+### Tasks
+
+- [ ] Create whisper wrapper
+
+### Post-Flight Checks for Flight Leg 3
+
+- [ ] Tests pass
+
+### [HANDOFF] Review Flight Leg 3
+
+Human reviews transcription logic.
+
+---
+
+## Flight Leg 4: Pipeline + CLI
+
+### Tasks
+
+- [ ] Create pipeline orchestrator
+
+### Post-Flight Checks for Flight Leg 4
+
+- [ ] Tests pass
+
+### [HANDOFF] Review Flight Leg 4
+
+Human reviews pipeline ordering.
+
+---
+
+## Flight Leg 5: Test Fixtures
+
+### Tasks
+
+- [ ] Create test fixtures
+
+### Post-Flight Checks for Flight Leg 5
+
+- [ ] Integration test passes
+
+### [HANDOFF] Review Flight Leg 5
+
+Human reviews test quality.
+
+---
+
+## Flight Leg 6: Final Verification
+
+### Tasks
+
+- [ ] Run full test suite
+
+### Post-Flight Checks for Final Verification
+
+- [ ] End-to-end test passes
+
+### [HANDOFF] Final Review
+
+Human reviews complete service.
+`
+
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := countPlanFlightLegs(planPath)
+	if got != 6 {
+		t.Errorf("countPlanFlightLegs() = %d, want 6", got)
+	}
+}
+
+// TestCountPlanFlightLegsWorkingDirFallback verifies the StartAutopilot
+// logic where countPlanFlightLegs should succeed when called with the
+// working directory path even if the rootDir-based path fails.
+func TestCountPlanFlightLegsWorkingDirFallback(t *testing.T) {
+	// Simulate the scenario: plan exists under the working directory
+	// but NOT under the rootDir (e.g. worktree path mismatch).
+	workDir := t.TempDir()
+	wrongRootDir := t.TempDir()
+
+	planRelPath := filepath.Join("docs", "plans", "test-plan.md")
+	planContent := "## Flight Leg 1: Setup\n### [HANDOFF]\n\n## Flight Leg 2: Build\n### [HANDOFF]\n\n## Flight Leg 3: Test\n### [HANDOFF]\n"
+
+	// Create the plan file under workDir only.
+	planFullPath := filepath.Join(workDir, planRelPath)
+	if err := os.MkdirAll(filepath.Dir(planFullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planFullPath, []byte(planContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// rootDir-based path should fail (plan doesn't exist there).
+	rootDirPath := filepath.Join(wrongRootDir, planRelPath)
+	if got := countPlanFlightLegs(rootDirPath); got != -1 {
+		t.Fatalf("expected -1 for wrong rootDir, got %d", got)
+	}
+
+	// workDir-based path should succeed.
+	workDirPath := filepath.Join(workDir, planRelPath)
+	if got := countPlanFlightLegs(workDirPath); got != 3 {
+		t.Errorf("countPlanFlightLegs(workDir) = %d, want 3", got)
+	}
+}

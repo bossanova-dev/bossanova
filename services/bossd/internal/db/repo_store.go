@@ -80,6 +80,10 @@ func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRe
 		sets = append(sets, "display_name = ?")
 		args = append(args, *params.DisplayName)
 	}
+	if params.OriginURL != nil {
+		sets = append(sets, "origin_url = ?")
+		args = append(args, *params.OriginURL)
+	}
 	if params.DefaultBaseBranch != nil {
 		sets = append(sets, "default_base_branch = ?")
 		args = append(args, *params.DefaultBaseBranch)

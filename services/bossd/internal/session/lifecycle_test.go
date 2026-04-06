@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -178,8 +179,18 @@ func (m *mockRepoStore) List(_ context.Context) ([]*models.Repo, error) {
 	return result, nil
 }
 
-func (m *mockRepoStore) Update(_ context.Context, _ string, _ db.UpdateRepoParams) (*models.Repo, error) {
-	return nil, fmt.Errorf("not implemented")
+func (m *mockRepoStore) Update(_ context.Context, id string, params db.UpdateRepoParams) (*models.Repo, error) {
+	r, ok := m.repos[id]
+	if !ok {
+		return nil, fmt.Errorf("repo %s not found", id)
+	}
+	if params.OriginURL != nil {
+		r.OriginURL = *params.OriginURL
+	}
+	if params.DisplayName != nil {
+		r.DisplayName = *params.DisplayName
+	}
+	return r, nil
 }
 
 func (m *mockRepoStore) Delete(_ context.Context, id string) error {
@@ -195,6 +206,7 @@ type mockWorktreeManager struct {
 	archived            []string
 	resurrected         []gitpkg.ResurrectOpts
 	pushed              []string
+	originURL           string // returned by DetectOriginURL
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -233,7 +245,7 @@ func (m *mockWorktreeManager) EmptyTrash(_ context.Context, _ string, _ []string
 }
 
 func (m *mockWorktreeManager) DetectOriginURL(_ context.Context, _ string) (string, error) {
-	return "", nil
+	return m.originURL, nil
 }
 
 func (m *mockWorktreeManager) IsGitRepo(_ context.Context, _ string) bool {
@@ -1046,6 +1058,131 @@ func TestResurrectQuickChatSession(t *testing.T) {
 	// Verify session state is ImplementingPlan.
 	if sessions.sessions["sess-1"].State != machine.ImplementingPlan {
 		t.Errorf("state = %v, want ImplementingPlan", sessions.sessions["sess-1"].State)
+	}
+}
+
+func TestResolveOriginURL_AlreadySet(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
+	if err != nil {
+		t.Fatalf("resolveOriginURL: %v", err)
+	}
+	if url != "git@github.com:owner/repo.git" {
+		t.Errorf("url = %q, want git@github.com:owner/repo.git", url)
+	}
+}
+
+func TestResolveOriginURL_EmptyReDetected(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{originURL: "git@github.com:owner/repo.git"}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+		OriginURL: "", // empty — needs re-detection
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
+	if err != nil {
+		t.Fatalf("resolveOriginURL: %v", err)
+	}
+	if url != "git@github.com:owner/repo.git" {
+		t.Errorf("url = %q, want git@github.com:owner/repo.git", url)
+	}
+	// Verify it was persisted to the repo.
+	if repos.repos["repo-1"].OriginURL != "git@github.com:owner/repo.git" {
+		t.Errorf("repo.OriginURL = %q, want git@github.com:owner/repo.git", repos.repos["repo-1"].OriginURL)
+	}
+}
+
+func TestResolveOriginURL_EmptyNoRemote(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{originURL: ""} // no remote configured
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:          "repo-1",
+		DisplayName: "test-repo",
+		LocalPath:   "/tmp/repo",
+		OriginURL:   "",
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	_, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
+	if err == nil {
+		t.Fatal("expected error when no origin remote is configured")
+	}
+	if !strings.Contains(err.Error(), "no origin remote configured") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestStartSession_NoPlan_EmptyOriginURL_ReDetected(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{originURL: "git@github.com:owner/repo.git"}
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "", // empty — should be re-detected
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "", // no plan → triggers immediate PR creation
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+
+	if err := lc.StartSession(ctx, "sess-1", "", false, false, nil); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Verify origin URL was re-detected and persisted.
+	if repos.repos["repo-1"].OriginURL != "git@github.com:owner/repo.git" {
+		t.Errorf("repo.OriginURL = %q, want git@github.com:owner/repo.git", repos.repos["repo-1"].OriginURL)
+	}
+
+	// Verify PR was created with the re-detected URL.
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("expected 1 createPR call, got %d", len(vp.createPRCalls))
+	}
+	if vp.createPRCalls[0].RepoPath != "git@github.com:owner/repo.git" {
+		t.Errorf("PR repo = %q, want git@github.com:owner/repo.git", vp.createPRCalls[0].RepoPath)
 	}
 }
 

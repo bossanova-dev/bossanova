@@ -203,6 +203,25 @@ func testPROpts() vcs.CreatePROpts {
 	}
 }
 
+func TestCreateDraftPR_EmptyRepoPath(t *testing.T) {
+	p := New(zerolog.Nop(),
+		WithRunGH(func(_ context.Context, args ...string) (string, error) {
+			t.Fatal("gh should not be called with empty repo path")
+			return "", nil
+		}),
+	)
+
+	opts := testPROpts()
+	opts.RepoPath = ""
+	_, err := p.CreateDraftPR(context.Background(), opts)
+	if err == nil {
+		t.Fatal("expected error for empty repo path")
+	}
+	if !strings.Contains(err.Error(), "repo path is empty") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestCreateDraftPR_RetrySuccess(t *testing.T) {
 	var calls atomic.Int32
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
@@ -245,6 +264,10 @@ func TestCreateDraftPR_RetriesExhausted(t *testing.T) {
 	_, err := p.CreateDraftPR(context.Background(), testPROpts())
 	if !errors.Is(err, vcs.ErrRepoNotReady) {
 		t.Errorf("got error %v, want ErrRepoNotReady", err)
+	}
+	// Verify the last error is preserved in the message.
+	if !strings.Contains(err.Error(), "Head sha can't be blank") {
+		t.Errorf("error should contain last error detail, got: %v", err)
 	}
 	if got := calls.Load(); got != 3 {
 		t.Errorf("got %d calls, want 3", got)

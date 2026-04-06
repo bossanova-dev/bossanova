@@ -437,6 +437,48 @@ func TestRepoStore_SettingsFields(t *testing.T) {
 	}
 }
 
+func TestRepoStore_UpdateOriginURL(t *testing.T) {
+	db := setupTestDB(t)
+	store := NewRepoStore(db)
+	ctx := context.Background()
+
+	// Create repo with empty origin URL.
+	repo, err := store.Create(ctx, CreateRepoParams{
+		DisplayName:       "no-origin",
+		LocalPath:         "/tmp/no-origin",
+		OriginURL:         "",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if repo.OriginURL != "" {
+		t.Errorf("origin_url = %q, want empty", repo.OriginURL)
+	}
+
+	// Update origin URL.
+	newURL := "git@github.com:owner/repo.git"
+	updated, err := store.Update(ctx, repo.ID, UpdateRepoParams{
+		OriginURL: &newURL,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.OriginURL != newURL {
+		t.Errorf("origin_url = %q, want %q", updated.OriginURL, newURL)
+	}
+
+	// Verify persistence.
+	got, err := store.Get(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.OriginURL != newURL {
+		t.Errorf("origin_url = %q, want %q", got.OriginURL, newURL)
+	}
+}
+
 func TestForeignKeyCascade_DeleteRepo(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

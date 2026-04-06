@@ -178,9 +178,14 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 // It retries up to 3 times with exponential backoff when GitHub's API hasn't
 // finished indexing the pushed branches (common in newly-created repositories).
 func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
+	repo := repoFlag(opts.RepoPath)
+	if repo == "" {
+		return nil, fmt.Errorf("repo path is empty; re-register the repository or configure its origin URL")
+	}
+
 	args := []string{
 		"pr", "create",
-		"--repo", repoFlag(opts.RepoPath),
+		"--repo", repo,
 		"--head", opts.HeadBranch,
 		"--base", opts.BaseBranch,
 		"--title", opts.Title,
@@ -238,8 +243,7 @@ func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*v
 		}
 	}
 
-	_ = lastErr // preserve for debugging; sentinel conveys the meaning
-	return nil, fmt.Errorf("%w", vcs.ErrRepoNotReady)
+	return nil, fmt.Errorf("create draft PR: %w (last error: %v)", vcs.ErrRepoNotReady, lastErr)
 }
 
 // GetPRStatus returns the current status of a pull request.

@@ -14,16 +14,16 @@ import (
 
 const (
 	// defaultCooldownDuration is the minimum time between repair attempts for the same session.
-	defaultCooldownDuration = 2 * time.Minute
+	defaultCooldownDuration = 1 * time.Minute
 	// defaultPollInterval is how often to check attempt status.
 	defaultPollInterval = 5 * time.Second
 	// defaultRepairSkill is the skill invoked for repair attempts.
 	defaultRepairSkill = "boss-repair"
 	// defaultSweepInterval is how often the periodic sweep runs.
-	defaultSweepInterval = 5 * time.Minute
+	defaultSweepInterval = 1 * time.Minute
 	// defaultStuckTimeout is how long a session must be in ImplementingPlan
 	// before it is considered stuck and eligible for automatic advancement.
-	defaultStuckTimeout = 10 * time.Minute
+	defaultStuckTimeout = 5 * time.Minute
 )
 
 // repairConfig holds parsed config for a repair workflow. Fields mirror

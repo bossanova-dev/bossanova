@@ -294,13 +294,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewRepoAdd:
 		updated, cmd := a.repoAdd.Update(msg)
 		a.repoAdd = updated.(RepoAddModel)
-		if a.repoAdd.Cancelled() {
+		if a.repoAdd.Cancelled() || a.repoAdd.Done() {
+			var highlightID string
+			if cursor := a.repoList.table.Cursor(); cursor >= 0 && cursor < len(a.repoList.repos) {
+				highlightID = a.repoList.repos[cursor].Id
+			}
 			a.repoList = NewRepoListModel(a.client, a.ctx)
-			a.activeView = ViewRepoList
-			return a, a.repoList.Init()
-		}
-		if a.repoAdd.Done() {
-			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.repoList.highlightRepoID = highlightID
+			a.repoList.width = a.width
+			a.repoList.height = a.height
 			a.activeView = ViewRepoList
 			return a, a.repoList.Init()
 		}
@@ -329,8 +331,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.sessionSettings.Update(msg)
 		a.sessionSettings = updated.(SessionSettingsModel)
 		if a.sessionSettings.Cancelled() || a.sessionSettings.Done() {
-			// Return to chat picker, highlighting the session.
-			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, a.sessionSettings.sessionID, "")
+			// Return to chat picker, highlighting the chat we came from.
+			var highlightID string
+			if cursor := a.chatPicker.table.Cursor(); cursor >= 0 && cursor < len(a.chatPicker.chats) {
+				highlightID = a.chatPicker.chats[cursor].ClaudeId
+			}
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, a.sessionSettings.sessionID, highlightID)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			a.activeView = ViewChatPicker
@@ -378,8 +384,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) switchToHome() tea.Cmd {
+	highlightID := a.home.selectedSessionID()
 	a.activeView = ViewHome
 	a.home = NewHomeModel(a.client, a.ctx, a.manager)
+	a.home.highlightSessionID = highlightID
 	a.home.width = a.width
 	a.home.height = a.height
 	return a.home.Init()

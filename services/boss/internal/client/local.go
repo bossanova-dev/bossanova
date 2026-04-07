@@ -132,6 +132,14 @@ func (c *LocalClient) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRS
 	return resp.Msg.PullRequests, nil
 }
 
+func (c *LocalClient) ListTrackerIssues(ctx context.Context, repoID string) ([]*pb.TrackerIssue, error) {
+	resp, err := c.rpc.ListTrackerIssues(ctx, connect.NewRequest(&pb.ListTrackerIssuesRequest{RepoId: repoID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Issues, nil
+}
+
 // --- Session Lifecycle ---
 
 func (c *LocalClient) CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (CreateSessionStream, error) {

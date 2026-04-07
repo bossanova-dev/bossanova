@@ -17,6 +17,7 @@ type TaskSource interface {
 	GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error)
 	PollTasks(ctx context.Context, repoOriginURL string) ([]*bossanovav1.TaskItem, error)
 	UpdateTaskStatus(ctx context.Context, externalID string, status bossanovav1.TaskItemStatus, details string) error
+	ListAvailableIssues(ctx context.Context, repoOriginURL string, config map[string]string) ([]*bossanovav1.TrackerIssue, error)
 }
 
 // EventSource is the host-side interface for EventSourceService plugins.
@@ -164,6 +165,19 @@ func (c *taskSourceGRPCClient) UpdateTaskStatus(ctx context.Context, externalID 
 	}
 	resp := &bossanovav1.UpdateTaskStatusResponse{}
 	return c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/UpdateTaskStatus", req, resp)
+}
+
+func (c *taskSourceGRPCClient) ListAvailableIssues(ctx context.Context, repoOriginURL string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
+	req := &bossanovav1.ListAvailableIssuesRequest{
+		RepoOriginUrl: repoOriginURL,
+		Config:        config,
+	}
+	resp := &bossanovav1.ListAvailableIssuesResponse{}
+	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/ListAvailableIssues", req, resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetIssues(), nil
 }
 
 type eventSourceGRPCClient struct {

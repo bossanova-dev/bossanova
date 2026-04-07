@@ -260,6 +260,10 @@ func (m *MockDaemon) ListRepoPRs(_ context.Context, req *connect.Request[pb.List
 	return connect.NewResponse(&pb.ListRepoPRsResponse{PullRequests: prs}), nil
 }
 
+func (m *MockDaemon) ListTrackerIssues(_ context.Context, _ *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
+	return connect.NewResponse(&pb.ListTrackerIssuesResponse{}), nil
+}
+
 // --- Repo management RPCs ---
 
 func (m *MockDaemon) RemoveRepo(_ context.Context, req *connect.Request[pb.RemoveRepoRequest]) (*connect.Response[pb.RemoveRepoResponse], error) {

@@ -121,6 +121,8 @@ message Repo {
   bool can_auto_address_reviews = 12;
   bool can_auto_resolve_conflicts = 13;
   string merge_strategy = 14;
+  string linear_api_key = 15;
+  string linear_team_key = 16;
 }
 
 // Session represents a Claude coding session.
@@ -229,6 +231,18 @@ message CreatePROpts {
 message PRInfo {
   int32 number = 1;
   string url = 2;
+}
+
+// TrackerIssue represents an issue from an external tracker (Linear, Jira, etc.).
+message TrackerIssue {
+  string external_id = 1;      // eg. "ENG-123"
+  string title = 2;
+  string description = 3;
+  string branch_name = 4;       // Suggested branch name from tracker
+  string url = 5;               // Link to issue in tracker
+  string state = 6;             // eg. "In Progress", "Todo"
+  int32 pr_number = 7;          // Existing PR if found (0 = none)
+  string existing_branch = 8;   // Existing branch if found
 }
 
 // --- VCS Events ---

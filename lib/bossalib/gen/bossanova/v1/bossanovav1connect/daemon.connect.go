@@ -56,6 +56,9 @@ const (
 	// DaemonServiceListRepoPRsProcedure is the fully-qualified name of the DaemonService's ListRepoPRs
 	// RPC.
 	DaemonServiceListRepoPRsProcedure = "/bossanova.v1.DaemonService/ListRepoPRs"
+	// DaemonServiceListTrackerIssuesProcedure is the fully-qualified name of the DaemonService's
+	// ListTrackerIssues RPC.
+	DaemonServiceListTrackerIssuesProcedure = "/bossanova.v1.DaemonService/ListTrackerIssues"
 	// DaemonServiceCreateSessionProcedure is the fully-qualified name of the DaemonService's
 	// CreateSession RPC.
 	DaemonServiceCreateSessionProcedure = "/bossanova.v1.DaemonService/CreateSession"
@@ -156,6 +159,7 @@ type DaemonServiceClient interface {
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
+	ListTrackerIssues(context.Context, *connect.Request[v1.ListTrackerIssuesRequest]) (*connect.Response[v1.ListTrackerIssuesResponse], error)
 	// Session lifecycle
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest]) (*connect.ServerStreamForClient[v1.CreateSessionResponse], error)
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
@@ -256,6 +260,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			httpClient,
 			baseURL+DaemonServiceListRepoPRsProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("ListRepoPRs")),
+			connect.WithClientOptions(opts...),
+		),
+		listTrackerIssues: connect.NewClient[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse](
+			httpClient,
+			baseURL+DaemonServiceListTrackerIssuesProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListTrackerIssues")),
 			connect.WithClientOptions(opts...),
 		),
 		createSession: connect.NewClient[v1.CreateSessionRequest, v1.CreateSessionResponse](
@@ -445,6 +455,7 @@ type daemonServiceClient struct {
 	removeRepo             *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
 	updateRepo             *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
 	listRepoPRs            *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
+	listTrackerIssues      *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
 	createSession          *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
 	getSession             *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
 	listSessions           *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
@@ -514,6 +525,11 @@ func (c *daemonServiceClient) UpdateRepo(ctx context.Context, req *connect.Reque
 // ListRepoPRs calls bossanova.v1.DaemonService.ListRepoPRs.
 func (c *daemonServiceClient) ListRepoPRs(ctx context.Context, req *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error) {
 	return c.listRepoPRs.CallUnary(ctx, req)
+}
+
+// ListTrackerIssues calls bossanova.v1.DaemonService.ListTrackerIssues.
+func (c *daemonServiceClient) ListTrackerIssues(ctx context.Context, req *connect.Request[v1.ListTrackerIssuesRequest]) (*connect.Response[v1.ListTrackerIssuesResponse], error) {
+	return c.listTrackerIssues.CallUnary(ctx, req)
 }
 
 // CreateSession calls bossanova.v1.DaemonService.CreateSession.
@@ -673,6 +689,7 @@ type DaemonServiceHandler interface {
 	RemoveRepo(context.Context, *connect.Request[v1.RemoveRepoRequest]) (*connect.Response[v1.RemoveRepoResponse], error)
 	UpdateRepo(context.Context, *connect.Request[v1.UpdateRepoRequest]) (*connect.Response[v1.UpdateRepoResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error)
+	ListTrackerIssues(context.Context, *connect.Request[v1.ListTrackerIssuesRequest]) (*connect.Response[v1.ListTrackerIssuesResponse], error)
 	// Session lifecycle
 	CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest], *connect.ServerStream[v1.CreateSessionResponse]) error
 	GetSession(context.Context, *connect.Request[v1.GetSessionRequest]) (*connect.Response[v1.GetSessionResponse], error)
@@ -769,6 +786,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		DaemonServiceListRepoPRsProcedure,
 		svc.ListRepoPRs,
 		connect.WithSchema(daemonServiceMethods.ByName("ListRepoPRs")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListTrackerIssuesHandler := connect.NewUnaryHandler(
+		DaemonServiceListTrackerIssuesProcedure,
+		svc.ListTrackerIssues,
+		connect.WithSchema(daemonServiceMethods.ByName("ListTrackerIssues")),
 		connect.WithHandlerOptions(opts...),
 	)
 	daemonServiceCreateSessionHandler := connect.NewServerStreamHandler(
@@ -963,6 +986,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceUpdateRepoHandler.ServeHTTP(w, r)
 		case DaemonServiceListRepoPRsProcedure:
 			daemonServiceListRepoPRsHandler.ServeHTTP(w, r)
+		case DaemonServiceListTrackerIssuesProcedure:
+			daemonServiceListTrackerIssuesHandler.ServeHTTP(w, r)
 		case DaemonServiceCreateSessionProcedure:
 			daemonServiceCreateSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceGetSessionProcedure:
@@ -1060,6 +1085,10 @@ func (UnimplementedDaemonServiceHandler) UpdateRepo(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) ListRepoPRs(context.Context, *connect.Request[v1.ListRepoPRsRequest]) (*connect.Response[v1.ListRepoPRsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListRepoPRs is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListTrackerIssues(context.Context, *connect.Request[v1.ListTrackerIssuesRequest]) (*connect.Response[v1.ListTrackerIssuesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListTrackerIssues is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) CreateSession(context.Context, *connect.Request[v1.CreateSessionRequest], *connect.ServerStream[v1.CreateSessionResponse]) error {

@@ -116,6 +116,19 @@ func (c *taskSourceGRPCClientWrapper) UpdateTaskStatus(ctx context.Context, exte
 	return c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/UpdateTaskStatus", req, resp)
 }
 
+func (c *taskSourceGRPCClientWrapper) ListAvailableIssues(ctx context.Context, repoOriginURL string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
+	req := &bossanovav1.ListAvailableIssuesRequest{
+		RepoOriginUrl: repoOriginURL,
+		Config:        config,
+	}
+	resp := &bossanovav1.ListAvailableIssuesResponse{}
+	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/ListAvailableIssues", req, resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp.GetIssues(), nil
+}
+
 func buildPluginBinary(t *testing.T) string {
 	t.Helper()
 

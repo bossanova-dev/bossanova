@@ -735,6 +735,102 @@ func (*UpdateTaskStatusResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{11}
 }
 
+type ListAvailableIssuesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RepoOriginUrl string                 `protobuf:"bytes,1,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
+	Config        map[string]string      `protobuf:"bytes,2,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAvailableIssuesRequest) Reset() {
+	*x = ListAvailableIssuesRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAvailableIssuesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAvailableIssuesRequest) ProtoMessage() {}
+
+func (x *ListAvailableIssuesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAvailableIssuesRequest.ProtoReflect.Descriptor instead.
+func (*ListAvailableIssuesRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListAvailableIssuesRequest) GetRepoOriginUrl() string {
+	if x != nil {
+		return x.RepoOriginUrl
+	}
+	return ""
+}
+
+func (x *ListAvailableIssuesRequest) GetConfig() map[string]string {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+type ListAvailableIssuesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Issues        []*TrackerIssue        `protobuf:"bytes,1,rep,name=issues,proto3" json:"issues,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAvailableIssuesResponse) Reset() {
+	*x = ListAvailableIssuesResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAvailableIssuesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAvailableIssuesResponse) ProtoMessage() {}
+
+func (x *ListAvailableIssuesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAvailableIssuesResponse.ProtoReflect.Descriptor instead.
+func (*ListAvailableIssuesResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ListAvailableIssuesResponse) GetIssues() []*TrackerIssue {
+	if x != nil {
+		return x.Issues
+	}
+	return nil
+}
+
 type StreamEventsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional filter: only stream events for these repo origin URLs.
@@ -745,7 +841,7 @@ type StreamEventsRequest struct {
 
 func (x *StreamEventsRequest) Reset() {
 	*x = StreamEventsRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[12]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -757,7 +853,7 @@ func (x *StreamEventsRequest) String() string {
 func (*StreamEventsRequest) ProtoMessage() {}
 
 func (x *StreamEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[12]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -770,7 +866,7 @@ func (x *StreamEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamEventsRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{12}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *StreamEventsRequest) GetRepoOriginUrls() []string {
@@ -790,7 +886,7 @@ type StreamEventsResponse struct {
 
 func (x *StreamEventsResponse) Reset() {
 	*x = StreamEventsResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[13]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -802,7 +898,7 @@ func (x *StreamEventsResponse) String() string {
 func (*StreamEventsResponse) ProtoMessage() {}
 
 func (x *StreamEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[13]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -815,7 +911,7 @@ func (x *StreamEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamEventsResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{13}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *StreamEventsResponse) GetNotification() *EventNotification {
@@ -845,7 +941,7 @@ type EventNotification struct {
 
 func (x *EventNotification) Reset() {
 	*x = EventNotification{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[14]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -857,7 +953,7 @@ func (x *EventNotification) String() string {
 func (*EventNotification) ProtoMessage() {}
 
 func (x *EventNotification) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[14]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -870,7 +966,7 @@ func (x *EventNotification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventNotification.ProtoReflect.Descriptor instead.
 func (*EventNotification) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{14}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *EventNotification) GetTimestamp() *timestamppb.Timestamp {
@@ -968,7 +1064,7 @@ type TaskReadyEvent struct {
 
 func (x *TaskReadyEvent) Reset() {
 	*x = TaskReadyEvent{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[15]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -980,7 +1076,7 @@ func (x *TaskReadyEvent) String() string {
 func (*TaskReadyEvent) ProtoMessage() {}
 
 func (x *TaskReadyEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[15]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -993,7 +1089,7 @@ func (x *TaskReadyEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskReadyEvent.ProtoReflect.Descriptor instead.
 func (*TaskReadyEvent) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{15}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *TaskReadyEvent) GetTask() *TaskItem {
@@ -1017,7 +1113,7 @@ type TaskUpdatedEvent struct {
 
 func (x *TaskUpdatedEvent) Reset() {
 	*x = TaskUpdatedEvent{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[16]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1029,7 +1125,7 @@ func (x *TaskUpdatedEvent) String() string {
 func (*TaskUpdatedEvent) ProtoMessage() {}
 
 func (x *TaskUpdatedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[16]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1042,7 +1138,7 @@ func (x *TaskUpdatedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskUpdatedEvent.ProtoReflect.Descriptor instead.
 func (*TaskUpdatedEvent) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{16}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TaskUpdatedEvent) GetExternalId() string {
@@ -1087,7 +1183,7 @@ type ExternalCheckEvent struct {
 
 func (x *ExternalCheckEvent) Reset() {
 	*x = ExternalCheckEvent{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[17]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1099,7 +1195,7 @@ func (x *ExternalCheckEvent) String() string {
 func (*ExternalCheckEvent) ProtoMessage() {}
 
 func (x *ExternalCheckEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[17]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1112,7 +1208,7 @@ func (x *ExternalCheckEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExternalCheckEvent.ProtoReflect.Descriptor instead.
 func (*ExternalCheckEvent) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{17}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ExternalCheckEvent) GetRepoOriginUrl() string {
@@ -1162,7 +1258,7 @@ type CustomEvent struct {
 
 func (x *CustomEvent) Reset() {
 	*x = CustomEvent{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[18]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1174,7 +1270,7 @@ func (x *CustomEvent) String() string {
 func (*CustomEvent) ProtoMessage() {}
 
 func (x *CustomEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[18]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1187,7 +1283,7 @@ func (x *CustomEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CustomEvent.ProtoReflect.Descriptor instead.
 func (*CustomEvent) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{18}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CustomEvent) GetEventType() string {
@@ -1212,7 +1308,7 @@ type GetScheduleRequest struct {
 
 func (x *GetScheduleRequest) Reset() {
 	*x = GetScheduleRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[19]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1224,7 +1320,7 @@ func (x *GetScheduleRequest) String() string {
 func (*GetScheduleRequest) ProtoMessage() {}
 
 func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[19]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1237,7 +1333,7 @@ func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetScheduleRequest.ProtoReflect.Descriptor instead.
 func (*GetScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{19}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{21}
 }
 
 type GetScheduleResponse struct {
@@ -1249,7 +1345,7 @@ type GetScheduleResponse struct {
 
 func (x *GetScheduleResponse) Reset() {
 	*x = GetScheduleResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[20]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1261,7 +1357,7 @@ func (x *GetScheduleResponse) String() string {
 func (*GetScheduleResponse) ProtoMessage() {}
 
 func (x *GetScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[20]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1274,7 +1370,7 @@ func (x *GetScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetScheduleResponse.ProtoReflect.Descriptor instead.
 func (*GetScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{20}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetScheduleResponse) GetJobs() []*ScheduledJob {
@@ -1307,7 +1403,7 @@ type ScheduledJob struct {
 
 func (x *ScheduledJob) Reset() {
 	*x = ScheduledJob{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[21]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1319,7 +1415,7 @@ func (x *ScheduledJob) String() string {
 func (*ScheduledJob) ProtoMessage() {}
 
 func (x *ScheduledJob) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[21]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1332,7 +1428,7 @@ func (x *ScheduledJob) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduledJob.ProtoReflect.Descriptor instead.
 func (*ScheduledJob) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{21}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ScheduledJob) GetId() string {
@@ -1394,7 +1490,7 @@ type ExecuteJobRequest struct {
 
 func (x *ExecuteJobRequest) Reset() {
 	*x = ExecuteJobRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[22]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1406,7 +1502,7 @@ func (x *ExecuteJobRequest) String() string {
 func (*ExecuteJobRequest) ProtoMessage() {}
 
 func (x *ExecuteJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[22]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1419,7 +1515,7 @@ func (x *ExecuteJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteJobRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteJobRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{22}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ExecuteJobRequest) GetJobId() string {
@@ -1439,7 +1535,7 @@ type ExecuteJobResponse struct {
 
 func (x *ExecuteJobResponse) Reset() {
 	*x = ExecuteJobResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[23]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1451,7 +1547,7 @@ func (x *ExecuteJobResponse) String() string {
 func (*ExecuteJobResponse) ProtoMessage() {}
 
 func (x *ExecuteJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[23]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1464,7 +1560,7 @@ func (x *ExecuteJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteJobResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteJobResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{23}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ExecuteJobResponse) GetAction() *JobAction {
@@ -1488,7 +1584,7 @@ type JobAction struct {
 
 func (x *JobAction) Reset() {
 	*x = JobAction{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[24]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1500,7 +1596,7 @@ func (x *JobAction) String() string {
 func (*JobAction) ProtoMessage() {}
 
 func (x *JobAction) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[24]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1513,7 +1609,7 @@ func (x *JobAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobAction.ProtoReflect.Descriptor instead.
 func (*JobAction) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{24}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *JobAction) GetAction() isJobAction_Action {
@@ -1570,7 +1666,7 @@ type CreateSessionAction struct {
 
 func (x *CreateSessionAction) Reset() {
 	*x = CreateSessionAction{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[25]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1582,7 +1678,7 @@ func (x *CreateSessionAction) String() string {
 func (*CreateSessionAction) ProtoMessage() {}
 
 func (x *CreateSessionAction) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[25]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1595,7 +1691,7 @@ func (x *CreateSessionAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSessionAction.ProtoReflect.Descriptor instead.
 func (*CreateSessionAction) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{25}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CreateSessionAction) GetTitle() string {
@@ -1636,7 +1732,7 @@ type NoOpAction struct {
 
 func (x *NoOpAction) Reset() {
 	*x = NoOpAction{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[26]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1648,7 +1744,7 @@ func (x *NoOpAction) String() string {
 func (*NoOpAction) ProtoMessage() {}
 
 func (x *NoOpAction) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[26]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1661,7 +1757,7 @@ func (x *NoOpAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NoOpAction.ProtoReflect.Descriptor instead.
 func (*NoOpAction) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{26}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *NoOpAction) GetReason() string {
@@ -1679,7 +1775,7 @@ type WorkflowServiceGetInfoRequest struct {
 
 func (x *WorkflowServiceGetInfoRequest) Reset() {
 	*x = WorkflowServiceGetInfoRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[27]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1691,7 +1787,7 @@ func (x *WorkflowServiceGetInfoRequest) String() string {
 func (*WorkflowServiceGetInfoRequest) ProtoMessage() {}
 
 func (x *WorkflowServiceGetInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[27]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1704,7 +1800,7 @@ func (x *WorkflowServiceGetInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowServiceGetInfoRequest.ProtoReflect.Descriptor instead.
 func (*WorkflowServiceGetInfoRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{27}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{29}
 }
 
 type WorkflowServiceGetInfoResponse struct {
@@ -1716,7 +1812,7 @@ type WorkflowServiceGetInfoResponse struct {
 
 func (x *WorkflowServiceGetInfoResponse) Reset() {
 	*x = WorkflowServiceGetInfoResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[28]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1728,7 +1824,7 @@ func (x *WorkflowServiceGetInfoResponse) String() string {
 func (*WorkflowServiceGetInfoResponse) ProtoMessage() {}
 
 func (x *WorkflowServiceGetInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[28]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1741,7 +1837,7 @@ func (x *WorkflowServiceGetInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowServiceGetInfoResponse.ProtoReflect.Descriptor instead.
 func (*WorkflowServiceGetInfoResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{28}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *WorkflowServiceGetInfoResponse) GetInfo() *PluginInfo {
@@ -1771,7 +1867,7 @@ type StartWorkflowRequest struct {
 
 func (x *StartWorkflowRequest) Reset() {
 	*x = StartWorkflowRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[29]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1783,7 +1879,7 @@ func (x *StartWorkflowRequest) String() string {
 func (*StartWorkflowRequest) ProtoMessage() {}
 
 func (x *StartWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[29]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1796,7 +1892,7 @@ func (x *StartWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*StartWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{29}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *StartWorkflowRequest) GetPlanPath() string {
@@ -1851,7 +1947,7 @@ type StartWorkflowResponse struct {
 
 func (x *StartWorkflowResponse) Reset() {
 	*x = StartWorkflowResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[30]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1863,7 +1959,7 @@ func (x *StartWorkflowResponse) String() string {
 func (*StartWorkflowResponse) ProtoMessage() {}
 
 func (x *StartWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[30]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1876,7 +1972,7 @@ func (x *StartWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*StartWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{30}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *StartWorkflowResponse) GetWorkflowId() string {
@@ -1902,7 +1998,7 @@ type PauseWorkflowRequest struct {
 
 func (x *PauseWorkflowRequest) Reset() {
 	*x = PauseWorkflowRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[31]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1914,7 +2010,7 @@ func (x *PauseWorkflowRequest) String() string {
 func (*PauseWorkflowRequest) ProtoMessage() {}
 
 func (x *PauseWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[31]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1927,7 +2023,7 @@ func (x *PauseWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*PauseWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{31}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *PauseWorkflowRequest) GetWorkflowId() string {
@@ -1946,7 +2042,7 @@ type PauseWorkflowResponse struct {
 
 func (x *PauseWorkflowResponse) Reset() {
 	*x = PauseWorkflowResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[32]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1958,7 +2054,7 @@ func (x *PauseWorkflowResponse) String() string {
 func (*PauseWorkflowResponse) ProtoMessage() {}
 
 func (x *PauseWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[32]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1971,7 +2067,7 @@ func (x *PauseWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PauseWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*PauseWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{32}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PauseWorkflowResponse) GetStatus() *WorkflowStatusInfo {
@@ -1990,7 +2086,7 @@ type ResumeWorkflowRequest struct {
 
 func (x *ResumeWorkflowRequest) Reset() {
 	*x = ResumeWorkflowRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[33]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2002,7 +2098,7 @@ func (x *ResumeWorkflowRequest) String() string {
 func (*ResumeWorkflowRequest) ProtoMessage() {}
 
 func (x *ResumeWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[33]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2015,7 +2111,7 @@ func (x *ResumeWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*ResumeWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{33}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ResumeWorkflowRequest) GetWorkflowId() string {
@@ -2034,7 +2130,7 @@ type ResumeWorkflowResponse struct {
 
 func (x *ResumeWorkflowResponse) Reset() {
 	*x = ResumeWorkflowResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[34]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2046,7 +2142,7 @@ func (x *ResumeWorkflowResponse) String() string {
 func (*ResumeWorkflowResponse) ProtoMessage() {}
 
 func (x *ResumeWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[34]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2059,7 +2155,7 @@ func (x *ResumeWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*ResumeWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{34}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ResumeWorkflowResponse) GetStatus() *WorkflowStatusInfo {
@@ -2078,7 +2174,7 @@ type CancelWorkflowRequest struct {
 
 func (x *CancelWorkflowRequest) Reset() {
 	*x = CancelWorkflowRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[35]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2090,7 +2186,7 @@ func (x *CancelWorkflowRequest) String() string {
 func (*CancelWorkflowRequest) ProtoMessage() {}
 
 func (x *CancelWorkflowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[35]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2103,7 +2199,7 @@ func (x *CancelWorkflowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelWorkflowRequest.ProtoReflect.Descriptor instead.
 func (*CancelWorkflowRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{35}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CancelWorkflowRequest) GetWorkflowId() string {
@@ -2122,7 +2218,7 @@ type CancelWorkflowResponse struct {
 
 func (x *CancelWorkflowResponse) Reset() {
 	*x = CancelWorkflowResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[36]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2134,7 +2230,7 @@ func (x *CancelWorkflowResponse) String() string {
 func (*CancelWorkflowResponse) ProtoMessage() {}
 
 func (x *CancelWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[36]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2147,7 +2243,7 @@ func (x *CancelWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*CancelWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{36}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CancelWorkflowResponse) GetStatus() *WorkflowStatusInfo {
@@ -2166,7 +2262,7 @@ type GetWorkflowStatusRequest struct {
 
 func (x *GetWorkflowStatusRequest) Reset() {
 	*x = GetWorkflowStatusRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[37]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2178,7 +2274,7 @@ func (x *GetWorkflowStatusRequest) String() string {
 func (*GetWorkflowStatusRequest) ProtoMessage() {}
 
 func (x *GetWorkflowStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[37]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2191,7 +2287,7 @@ func (x *GetWorkflowStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetWorkflowStatusRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{37}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *GetWorkflowStatusRequest) GetWorkflowId() string {
@@ -2210,7 +2306,7 @@ type GetWorkflowStatusResponse struct {
 
 func (x *GetWorkflowStatusResponse) Reset() {
 	*x = GetWorkflowStatusResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[38]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2222,7 +2318,7 @@ func (x *GetWorkflowStatusResponse) String() string {
 func (*GetWorkflowStatusResponse) ProtoMessage() {}
 
 func (x *GetWorkflowStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[38]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2235,7 +2331,7 @@ func (x *GetWorkflowStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetWorkflowStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetWorkflowStatusResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{38}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *GetWorkflowStatusResponse) GetStatus() *WorkflowStatusInfo {
@@ -2260,7 +2356,7 @@ type WorkflowStatusInfo struct {
 
 func (x *WorkflowStatusInfo) Reset() {
 	*x = WorkflowStatusInfo{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[39]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2272,7 +2368,7 @@ func (x *WorkflowStatusInfo) String() string {
 func (*WorkflowStatusInfo) ProtoMessage() {}
 
 func (x *WorkflowStatusInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[39]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2285,7 +2381,7 @@ func (x *WorkflowStatusInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkflowStatusInfo.ProtoReflect.Descriptor instead.
 func (*WorkflowStatusInfo) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{39}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *WorkflowStatusInfo) GetId() string {
@@ -2344,7 +2440,7 @@ type NotifyStatusChangeRequest struct {
 
 func (x *NotifyStatusChangeRequest) Reset() {
 	*x = NotifyStatusChangeRequest{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[40]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2356,7 +2452,7 @@ func (x *NotifyStatusChangeRequest) String() string {
 func (*NotifyStatusChangeRequest) ProtoMessage() {}
 
 func (x *NotifyStatusChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[40]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2369,7 +2465,7 @@ func (x *NotifyStatusChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyStatusChangeRequest.ProtoReflect.Descriptor instead.
 func (*NotifyStatusChangeRequest) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{40}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *NotifyStatusChangeRequest) GetSessionId() string {
@@ -2401,7 +2497,7 @@ type NotifyStatusChangeResponse struct {
 
 func (x *NotifyStatusChangeResponse) Reset() {
 	*x = NotifyStatusChangeResponse{}
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[41]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2413,7 +2509,7 @@ func (x *NotifyStatusChangeResponse) String() string {
 func (*NotifyStatusChangeResponse) ProtoMessage() {}
 
 func (x *NotifyStatusChangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_bossanova_v1_plugin_proto_msgTypes[41]
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2426,7 +2522,7 @@ func (x *NotifyStatusChangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NotifyStatusChangeResponse.ProtoReflect.Descriptor instead.
 func (*NotifyStatusChangeResponse) Descriptor() ([]byte, []int) {
-	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{41}
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{43}
 }
 
 var File_bossanova_v1_plugin_proto protoreflect.FileDescriptor
@@ -2470,7 +2566,15 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"externalId\x124\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1c.bossanova.v1.TaskItemStatusR\x06status\x12\x18\n" +
 	"\adetails\x18\x03 \x01(\tR\adetails\"\x1a\n" +
-	"\x18UpdateTaskStatusResponse\"?\n" +
+	"\x18UpdateTaskStatusResponse\"\xcd\x01\n" +
+	"\x1aListAvailableIssuesRequest\x12&\n" +
+	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12L\n" +
+	"\x06config\x18\x02 \x03(\v24.bossanova.v1.ListAvailableIssuesRequest.ConfigEntryR\x06config\x1a9\n" +
+	"\vConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Q\n" +
+	"\x1bListAvailableIssuesResponse\x122\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"?\n" +
 	"\x13StreamEventsRequest\x12(\n" +
 	"\x10repo_origin_urls\x18\x01 \x03(\tR\x0erepoOriginUrls\"[\n" +
 	"\x14StreamEventsResponse\x12C\n" +
@@ -2598,11 +2702,12 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x1cTASK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cTASK_ITEM_STATUS_IN_PROGRESS\x10\x01\x12\x1e\n" +
 	"\x1aTASK_ITEM_STATUS_COMPLETED\x10\x02\x12\x1b\n" +
-	"\x17TASK_ITEM_STATUS_FAILED\x10\x032\xae\x02\n" +
+	"\x17TASK_ITEM_STATUS_FAILED\x10\x032\x9a\x03\n" +
 	"\x11TaskSourceService\x12h\n" +
 	"\aGetInfo\x12-.bossanova.v1.TaskSourceServiceGetInfoRequest\x1a..bossanova.v1.TaskSourceServiceGetInfoResponse\x12L\n" +
 	"\tPollTasks\x12\x1e.bossanova.v1.PollTasksRequest\x1a\x1f.bossanova.v1.PollTasksResponse\x12a\n" +
-	"\x10UpdateTaskStatus\x12%.bossanova.v1.UpdateTaskStatusRequest\x1a&.bossanova.v1.UpdateTaskStatusResponse2\xd9\x01\n" +
+	"\x10UpdateTaskStatus\x12%.bossanova.v1.UpdateTaskStatusRequest\x1a&.bossanova.v1.UpdateTaskStatusResponse\x12j\n" +
+	"\x13ListAvailableIssues\x12(.bossanova.v1.ListAvailableIssuesRequest\x1a).bossanova.v1.ListAvailableIssuesResponse2\xd9\x01\n" +
 	"\x12EventSourceService\x12j\n" +
 	"\aGetInfo\x12..bossanova.v1.EventSourceServiceGetInfoRequest\x1a/.bossanova.v1.EventSourceServiceGetInfoResponse\x12W\n" +
 	"\fStreamEvents\x12!.bossanova.v1.StreamEventsRequest\x1a\".bossanova.v1.StreamEventsResponse0\x012\x9f\x02\n" +
@@ -2633,7 +2738,7 @@ func file_bossanova_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(TaskAction)(0),                           // 0: bossanova.v1.TaskAction
 	(TaskItemStatus)(0),                       // 1: bossanova.v1.TaskItemStatus
@@ -2649,40 +2754,44 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(*TaskItem)(nil),                          // 11: bossanova.v1.TaskItem
 	(*UpdateTaskStatusRequest)(nil),           // 12: bossanova.v1.UpdateTaskStatusRequest
 	(*UpdateTaskStatusResponse)(nil),          // 13: bossanova.v1.UpdateTaskStatusResponse
-	(*StreamEventsRequest)(nil),               // 14: bossanova.v1.StreamEventsRequest
-	(*StreamEventsResponse)(nil),              // 15: bossanova.v1.StreamEventsResponse
-	(*EventNotification)(nil),                 // 16: bossanova.v1.EventNotification
-	(*TaskReadyEvent)(nil),                    // 17: bossanova.v1.TaskReadyEvent
-	(*TaskUpdatedEvent)(nil),                  // 18: bossanova.v1.TaskUpdatedEvent
-	(*ExternalCheckEvent)(nil),                // 19: bossanova.v1.ExternalCheckEvent
-	(*CustomEvent)(nil),                       // 20: bossanova.v1.CustomEvent
-	(*GetScheduleRequest)(nil),                // 21: bossanova.v1.GetScheduleRequest
-	(*GetScheduleResponse)(nil),               // 22: bossanova.v1.GetScheduleResponse
-	(*ScheduledJob)(nil),                      // 23: bossanova.v1.ScheduledJob
-	(*ExecuteJobRequest)(nil),                 // 24: bossanova.v1.ExecuteJobRequest
-	(*ExecuteJobResponse)(nil),                // 25: bossanova.v1.ExecuteJobResponse
-	(*JobAction)(nil),                         // 26: bossanova.v1.JobAction
-	(*CreateSessionAction)(nil),               // 27: bossanova.v1.CreateSessionAction
-	(*NoOpAction)(nil),                        // 28: bossanova.v1.NoOpAction
-	(*WorkflowServiceGetInfoRequest)(nil),     // 29: bossanova.v1.WorkflowServiceGetInfoRequest
-	(*WorkflowServiceGetInfoResponse)(nil),    // 30: bossanova.v1.WorkflowServiceGetInfoResponse
-	(*StartWorkflowRequest)(nil),              // 31: bossanova.v1.StartWorkflowRequest
-	(*StartWorkflowResponse)(nil),             // 32: bossanova.v1.StartWorkflowResponse
-	(*PauseWorkflowRequest)(nil),              // 33: bossanova.v1.PauseWorkflowRequest
-	(*PauseWorkflowResponse)(nil),             // 34: bossanova.v1.PauseWorkflowResponse
-	(*ResumeWorkflowRequest)(nil),             // 35: bossanova.v1.ResumeWorkflowRequest
-	(*ResumeWorkflowResponse)(nil),            // 36: bossanova.v1.ResumeWorkflowResponse
-	(*CancelWorkflowRequest)(nil),             // 37: bossanova.v1.CancelWorkflowRequest
-	(*CancelWorkflowResponse)(nil),            // 38: bossanova.v1.CancelWorkflowResponse
-	(*GetWorkflowStatusRequest)(nil),          // 39: bossanova.v1.GetWorkflowStatusRequest
-	(*GetWorkflowStatusResponse)(nil),         // 40: bossanova.v1.GetWorkflowStatusResponse
-	(*WorkflowStatusInfo)(nil),                // 41: bossanova.v1.WorkflowStatusInfo
-	(*NotifyStatusChangeRequest)(nil),         // 42: bossanova.v1.NotifyStatusChangeRequest
-	(*NotifyStatusChangeResponse)(nil),        // 43: bossanova.v1.NotifyStatusChangeResponse
-	(*timestamppb.Timestamp)(nil),             // 44: google.protobuf.Timestamp
-	(WorkflowStatus)(0),                       // 45: bossanova.v1.WorkflowStatus
-	(WorkflowStep)(0),                         // 46: bossanova.v1.WorkflowStep
-	(PRDisplayStatus)(0),                      // 47: bossanova.v1.PRDisplayStatus
+	(*ListAvailableIssuesRequest)(nil),        // 14: bossanova.v1.ListAvailableIssuesRequest
+	(*ListAvailableIssuesResponse)(nil),       // 15: bossanova.v1.ListAvailableIssuesResponse
+	(*StreamEventsRequest)(nil),               // 16: bossanova.v1.StreamEventsRequest
+	(*StreamEventsResponse)(nil),              // 17: bossanova.v1.StreamEventsResponse
+	(*EventNotification)(nil),                 // 18: bossanova.v1.EventNotification
+	(*TaskReadyEvent)(nil),                    // 19: bossanova.v1.TaskReadyEvent
+	(*TaskUpdatedEvent)(nil),                  // 20: bossanova.v1.TaskUpdatedEvent
+	(*ExternalCheckEvent)(nil),                // 21: bossanova.v1.ExternalCheckEvent
+	(*CustomEvent)(nil),                       // 22: bossanova.v1.CustomEvent
+	(*GetScheduleRequest)(nil),                // 23: bossanova.v1.GetScheduleRequest
+	(*GetScheduleResponse)(nil),               // 24: bossanova.v1.GetScheduleResponse
+	(*ScheduledJob)(nil),                      // 25: bossanova.v1.ScheduledJob
+	(*ExecuteJobRequest)(nil),                 // 26: bossanova.v1.ExecuteJobRequest
+	(*ExecuteJobResponse)(nil),                // 27: bossanova.v1.ExecuteJobResponse
+	(*JobAction)(nil),                         // 28: bossanova.v1.JobAction
+	(*CreateSessionAction)(nil),               // 29: bossanova.v1.CreateSessionAction
+	(*NoOpAction)(nil),                        // 30: bossanova.v1.NoOpAction
+	(*WorkflowServiceGetInfoRequest)(nil),     // 31: bossanova.v1.WorkflowServiceGetInfoRequest
+	(*WorkflowServiceGetInfoResponse)(nil),    // 32: bossanova.v1.WorkflowServiceGetInfoResponse
+	(*StartWorkflowRequest)(nil),              // 33: bossanova.v1.StartWorkflowRequest
+	(*StartWorkflowResponse)(nil),             // 34: bossanova.v1.StartWorkflowResponse
+	(*PauseWorkflowRequest)(nil),              // 35: bossanova.v1.PauseWorkflowRequest
+	(*PauseWorkflowResponse)(nil),             // 36: bossanova.v1.PauseWorkflowResponse
+	(*ResumeWorkflowRequest)(nil),             // 37: bossanova.v1.ResumeWorkflowRequest
+	(*ResumeWorkflowResponse)(nil),            // 38: bossanova.v1.ResumeWorkflowResponse
+	(*CancelWorkflowRequest)(nil),             // 39: bossanova.v1.CancelWorkflowRequest
+	(*CancelWorkflowResponse)(nil),            // 40: bossanova.v1.CancelWorkflowResponse
+	(*GetWorkflowStatusRequest)(nil),          // 41: bossanova.v1.GetWorkflowStatusRequest
+	(*GetWorkflowStatusResponse)(nil),         // 42: bossanova.v1.GetWorkflowStatusResponse
+	(*WorkflowStatusInfo)(nil),                // 43: bossanova.v1.WorkflowStatusInfo
+	(*NotifyStatusChangeRequest)(nil),         // 44: bossanova.v1.NotifyStatusChangeRequest
+	(*NotifyStatusChangeResponse)(nil),        // 45: bossanova.v1.NotifyStatusChangeResponse
+	nil,                                       // 46: bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
+	(*TrackerIssue)(nil),                      // 47: bossanova.v1.TrackerIssue
+	(*timestamppb.Timestamp)(nil),             // 48: google.protobuf.Timestamp
+	(WorkflowStatus)(0),                       // 49: bossanova.v1.WorkflowStatus
+	(WorkflowStep)(0),                         // 50: bossanova.v1.WorkflowStep
+	(PRDisplayStatus)(0),                      // 51: bossanova.v1.PRDisplayStatus
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
@@ -2691,64 +2800,68 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	11, // 3: bossanova.v1.PollTasksResponse.tasks:type_name -> bossanova.v1.TaskItem
 	0,  // 4: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
 	1,  // 5: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
-	16, // 6: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
-	44, // 7: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
-	17, // 8: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
-	18, // 9: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
-	19, // 10: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
-	20, // 11: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
-	11, // 12: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
-	23, // 13: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
-	44, // 14: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
-	44, // 15: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
-	26, // 16: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
-	27, // 17: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
-	28, // 18: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
-	2,  // 19: bossanova.v1.WorkflowServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	41, // 20: bossanova.v1.StartWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	41, // 21: bossanova.v1.PauseWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	41, // 22: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	41, // 23: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	41, // 24: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	45, // 25: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
-	46, // 26: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
-	44, // 27: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
-	47, // 28: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.PRDisplayStatus
-	3,  // 29: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
-	9,  // 30: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
-	12, // 31: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
-	5,  // 32: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
-	14, // 33: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
-	7,  // 34: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
-	21, // 35: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
-	24, // 36: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
-	29, // 37: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
-	31, // 38: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
-	33, // 39: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
-	35, // 40: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
-	37, // 41: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
-	39, // 42: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
-	42, // 43: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
-	4,  // 44: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
-	10, // 45: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
-	13, // 46: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
-	6,  // 47: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
-	15, // 48: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
-	8,  // 49: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
-	22, // 50: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
-	25, // 51: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
-	30, // 52: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
-	32, // 53: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
-	34, // 54: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
-	36, // 55: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
-	38, // 56: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
-	40, // 57: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
-	43, // 58: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
-	44, // [44:59] is the sub-list for method output_type
-	29, // [29:44] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	46, // 6: bossanova.v1.ListAvailableIssuesRequest.config:type_name -> bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
+	47, // 7: bossanova.v1.ListAvailableIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
+	18, // 8: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
+	48, // 9: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
+	19, // 10: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
+	20, // 11: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
+	21, // 12: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
+	22, // 13: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
+	11, // 14: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
+	25, // 15: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
+	48, // 16: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
+	48, // 17: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
+	28, // 18: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
+	29, // 19: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
+	30, // 20: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
+	2,  // 21: bossanova.v1.WorkflowServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	43, // 22: bossanova.v1.StartWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	43, // 23: bossanova.v1.PauseWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	43, // 24: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	43, // 25: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	43, // 26: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	49, // 27: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
+	50, // 28: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
+	48, // 29: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
+	51, // 30: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.PRDisplayStatus
+	3,  // 31: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
+	9,  // 32: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
+	12, // 33: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
+	14, // 34: bossanova.v1.TaskSourceService.ListAvailableIssues:input_type -> bossanova.v1.ListAvailableIssuesRequest
+	5,  // 35: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
+	16, // 36: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
+	7,  // 37: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
+	23, // 38: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
+	26, // 39: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
+	31, // 40: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
+	33, // 41: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
+	35, // 42: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
+	37, // 43: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
+	39, // 44: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
+	41, // 45: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
+	44, // 46: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
+	4,  // 47: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
+	10, // 48: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
+	13, // 49: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
+	15, // 50: bossanova.v1.TaskSourceService.ListAvailableIssues:output_type -> bossanova.v1.ListAvailableIssuesResponse
+	6,  // 51: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
+	17, // 52: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
+	8,  // 53: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
+	24, // 54: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
+	27, // 55: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
+	32, // 56: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
+	34, // 57: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
+	36, // 58: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
+	38, // 59: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
+	40, // 60: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
+	42, // 61: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
+	45, // 62: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
+	47, // [47:63] is the sub-list for method output_type
+	31, // [31:47] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_plugin_proto_init() }
@@ -2758,15 +2871,15 @@ func file_bossanova_v1_plugin_proto_init() {
 	}
 	file_bossanova_v1_models_proto_init()
 	file_bossanova_v1_plugin_proto_msgTypes[7].OneofWrappers = []any{}
-	file_bossanova_v1_plugin_proto_msgTypes[14].OneofWrappers = []any{
+	file_bossanova_v1_plugin_proto_msgTypes[16].OneofWrappers = []any{
 		(*EventNotification_TaskReady)(nil),
 		(*EventNotification_TaskUpdated)(nil),
 		(*EventNotification_ExternalCheck)(nil),
 		(*EventNotification_Custom)(nil),
 	}
-	file_bossanova_v1_plugin_proto_msgTypes[16].OneofWrappers = []any{}
-	file_bossanova_v1_plugin_proto_msgTypes[21].OneofWrappers = []any{}
-	file_bossanova_v1_plugin_proto_msgTypes[24].OneofWrappers = []any{
+	file_bossanova_v1_plugin_proto_msgTypes[18].OneofWrappers = []any{}
+	file_bossanova_v1_plugin_proto_msgTypes[23].OneofWrappers = []any{}
+	file_bossanova_v1_plugin_proto_msgTypes[26].OneofWrappers = []any{
 		(*JobAction_CreateSession)(nil),
 		(*JobAction_NoOp)(nil),
 	}
@@ -2776,7 +2889,7 @@ func file_bossanova_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_plugin_proto_rawDesc), len(file_bossanova_v1_plugin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   42,
+			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

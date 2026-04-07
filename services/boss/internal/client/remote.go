@@ -106,6 +106,10 @@ func (c *RemoteClient) ListRepoPRs(_ context.Context, _ string) ([]*pb.PRSummary
 	return nil, errLocalOnly("ListRepoPRs")
 }
 
+func (c *RemoteClient) ListTrackerIssues(_ context.Context, _ string) ([]*pb.TrackerIssue, error) {
+	return nil, errLocalOnly("ListTrackerIssues")
+}
+
 // --- Session Lifecycle ---
 
 func (c *RemoteClient) CreateSession(_ context.Context, _ *pb.CreateSessionRequest) (CreateSessionStream, error) {

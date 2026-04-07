@@ -38,6 +38,10 @@ func (s *stubClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, erro
 	return s.prs, s.prsErr
 }
 
+func (s *stubClient) ListTrackerIssues(context.Context, string) ([]*pb.TrackerIssue, error) {
+	return nil, nil
+}
+
 // stubCreateStream implements client.CreateSessionStream for testing.
 // It yields a single SessionCreated message with the provided session.
 type stubCreateStream struct {

@@ -18,6 +18,9 @@ service TaskSourceService {
 
   // UpdateTaskStatus reports the outcome of a session back to the source.
   rpc UpdateTaskStatus(UpdateTaskStatusRequest) returns (UpdateTaskStatusResponse);
+
+  // ListAvailableIssues returns browsable issues from the external tracker.
+  rpc ListAvailableIssues(ListAvailableIssuesRequest) returns (ListAvailableIssuesResponse);
 }
 
 // EventSourceService streams events from external systems (eg. webhooks, polls)
@@ -129,6 +132,15 @@ enum TaskItemStatus {
   TASK_ITEM_STATUS_IN_PROGRESS = 1;
   TASK_ITEM_STATUS_COMPLETED = 2;
   TASK_ITEM_STATUS_FAILED = 3;
+}
+
+message ListAvailableIssuesRequest {
+  string repo_origin_url = 1;
+  map<string, string> config = 2;
+}
+
+message ListAvailableIssuesResponse {
+  repeated TrackerIssue issues = 1;
 }
 
 // --- EventSource Messages ---

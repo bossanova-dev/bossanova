@@ -20,6 +20,7 @@ service DaemonService {
   rpc RemoveRepo(RemoveRepoRequest) returns (RemoveRepoResponse);
   rpc UpdateRepo(UpdateRepoRequest) returns (UpdateRepoResponse);
   rpc ListRepoPRs(ListRepoPRsRequest) returns (ListRepoPRsResponse);
+  rpc ListTrackerIssues(ListTrackerIssuesRequest) returns (ListTrackerIssuesResponse);
 
   // Session lifecycle
   rpc CreateSession(CreateSessionRequest) returns (stream CreateSessionResponse);
@@ -153,6 +154,8 @@ message UpdateRepoRequest {
   optional bool can_auto_resolve_conflicts = 6;
   optional string merge_strategy = 7;
   optional string setup_script = 8;
+  optional string linear_api_key = 9;
+  optional string linear_team_key = 10;
 }
 
 message UpdateRepoResponse {
@@ -165,6 +168,14 @@ message ListRepoPRsRequest {
 
 message ListRepoPRsResponse {
   repeated PRSummary pull_requests = 1;
+}
+
+message ListTrackerIssuesRequest {
+  string repo_id = 1;
+}
+
+message ListTrackerIssuesResponse {
+  repeated TrackerIssue issues = 1;
 }
 
 // --- Session Lifecycle ---
@@ -180,6 +191,8 @@ message CreateSessionRequest {
   bool force_branch = 6;
   // If true, run as a quick chat session (no worktree, no branch, no PR).
   bool quick_chat = 7;
+  // Optional branch name (eg. from Linear's suggested branch name).
+  optional string branch_name = 8;
 }
 
 message CreateSessionResponse {

@@ -351,6 +351,12 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 			params.SetupScript = &msg.SetupScript
 		}
 	}
+	if msg.LinearApiKey != nil {
+		params.LinearAPIKey = msg.LinearApiKey
+	}
+	if msg.LinearTeamKey != nil {
+		params.LinearTeamKey = msg.LinearTeamKey
+	}
 
 	repo, err := s.repos.Update(ctx, msg.Id, params)
 	if err != nil {
@@ -391,6 +397,42 @@ func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRe
 	}
 
 	return connect.NewResponse(&pb.ListRepoPRsResponse{PullRequests: pbPRs}), nil
+}
+
+func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
+	if req.Msg.RepoId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
+	}
+
+	// Get repo from store.
+	repo, err := s.repos.Get(ctx, req.Msg.RepoId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
+	}
+
+	// Check LinearAPIKey is configured.
+	if repo.LinearAPIKey == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear_api_key not configured for this repo"))
+	}
+
+	// Find first TaskSource plugin.
+	sources := s.pluginHost.GetTaskSources()
+	if len(sources) == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no task source plugins available"))
+	}
+	source := sources[0]
+
+	// Call ListAvailableIssues.
+	config := map[string]string{
+		"linear_api_key":  repo.LinearAPIKey,
+		"linear_team_key": repo.LinearTeamKey,
+	}
+	issues, err := source.ListAvailableIssues(ctx, repo.OriginURL, config)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list tracker issues: %w", err))
+	}
+
+	return connect.NewResponse(&pb.ListTrackerIssuesResponse{Issues: issues}), nil
 }
 
 // --- Session Lifecycle ---

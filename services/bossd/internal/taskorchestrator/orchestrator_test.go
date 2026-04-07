@@ -44,6 +44,10 @@ func (m *mockTaskSource) UpdateTaskStatus(_ context.Context, _ string, _ bossano
 	return nil
 }
 
+func (m *mockTaskSource) ListAvailableIssues(_ context.Context, _ string, _ map[string]string) ([]*bossanovav1.TrackerIssue, error) {
+	return nil, nil
+}
+
 type mockRepoStore struct {
 	repos []*models.Repo
 }

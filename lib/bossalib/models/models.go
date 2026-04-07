@@ -33,6 +33,8 @@ type Repo struct {
 	CanAutoAddressReviews   bool
 	CanAutoResolveConflicts bool
 	MergeStrategy           MergeStrategy
+	LinearAPIKey            string
+	LinearTeamKey           string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }

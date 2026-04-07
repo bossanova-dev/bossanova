@@ -45,6 +45,7 @@ type BossClient interface {
 	RemoveRepo(ctx context.Context, id string) error
 	UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error)
 	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
+	ListTrackerIssues(ctx context.Context, repoID string) ([]*pb.TrackerIssue, error)
 
 	// Session lifecycle
 	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (CreateSessionStream, error)

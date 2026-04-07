@@ -48,6 +48,9 @@ const (
 	// TaskSourceServiceUpdateTaskStatusProcedure is the fully-qualified name of the TaskSourceService's
 	// UpdateTaskStatus RPC.
 	TaskSourceServiceUpdateTaskStatusProcedure = "/bossanova.v1.TaskSourceService/UpdateTaskStatus"
+	// TaskSourceServiceListAvailableIssuesProcedure is the fully-qualified name of the
+	// TaskSourceService's ListAvailableIssues RPC.
+	TaskSourceServiceListAvailableIssuesProcedure = "/bossanova.v1.TaskSourceService/ListAvailableIssues"
 	// EventSourceServiceGetInfoProcedure is the fully-qualified name of the EventSourceService's
 	// GetInfo RPC.
 	EventSourceServiceGetInfoProcedure = "/bossanova.v1.EventSourceService/GetInfo"
@@ -93,6 +96,8 @@ type TaskSourceServiceClient interface {
 	PollTasks(context.Context, *connect.Request[v1.PollTasksRequest]) (*connect.Response[v1.PollTasksResponse], error)
 	// UpdateTaskStatus reports the outcome of a session back to the source.
 	UpdateTaskStatus(context.Context, *connect.Request[v1.UpdateTaskStatusRequest]) (*connect.Response[v1.UpdateTaskStatusResponse], error)
+	// ListAvailableIssues returns browsable issues from the external tracker.
+	ListAvailableIssues(context.Context, *connect.Request[v1.ListAvailableIssuesRequest]) (*connect.Response[v1.ListAvailableIssuesResponse], error)
 }
 
 // NewTaskSourceServiceClient constructs a client for the bossanova.v1.TaskSourceService service. By
@@ -124,14 +129,21 @@ func NewTaskSourceServiceClient(httpClient connect.HTTPClient, baseURL string, o
 			connect.WithSchema(taskSourceServiceMethods.ByName("UpdateTaskStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		listAvailableIssues: connect.NewClient[v1.ListAvailableIssuesRequest, v1.ListAvailableIssuesResponse](
+			httpClient,
+			baseURL+TaskSourceServiceListAvailableIssuesProcedure,
+			connect.WithSchema(taskSourceServiceMethods.ByName("ListAvailableIssues")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // taskSourceServiceClient implements TaskSourceServiceClient.
 type taskSourceServiceClient struct {
-	getInfo          *connect.Client[v1.TaskSourceServiceGetInfoRequest, v1.TaskSourceServiceGetInfoResponse]
-	pollTasks        *connect.Client[v1.PollTasksRequest, v1.PollTasksResponse]
-	updateTaskStatus *connect.Client[v1.UpdateTaskStatusRequest, v1.UpdateTaskStatusResponse]
+	getInfo             *connect.Client[v1.TaskSourceServiceGetInfoRequest, v1.TaskSourceServiceGetInfoResponse]
+	pollTasks           *connect.Client[v1.PollTasksRequest, v1.PollTasksResponse]
+	updateTaskStatus    *connect.Client[v1.UpdateTaskStatusRequest, v1.UpdateTaskStatusResponse]
+	listAvailableIssues *connect.Client[v1.ListAvailableIssuesRequest, v1.ListAvailableIssuesResponse]
 }
 
 // GetInfo calls bossanova.v1.TaskSourceService.GetInfo.
@@ -149,6 +161,11 @@ func (c *taskSourceServiceClient) UpdateTaskStatus(ctx context.Context, req *con
 	return c.updateTaskStatus.CallUnary(ctx, req)
 }
 
+// ListAvailableIssues calls bossanova.v1.TaskSourceService.ListAvailableIssues.
+func (c *taskSourceServiceClient) ListAvailableIssues(ctx context.Context, req *connect.Request[v1.ListAvailableIssuesRequest]) (*connect.Response[v1.ListAvailableIssuesResponse], error) {
+	return c.listAvailableIssues.CallUnary(ctx, req)
+}
+
 // TaskSourceServiceHandler is an implementation of the bossanova.v1.TaskSourceService service.
 type TaskSourceServiceHandler interface {
 	// GetInfo returns the plugin's name, version, and capabilities.
@@ -157,6 +174,8 @@ type TaskSourceServiceHandler interface {
 	PollTasks(context.Context, *connect.Request[v1.PollTasksRequest]) (*connect.Response[v1.PollTasksResponse], error)
 	// UpdateTaskStatus reports the outcome of a session back to the source.
 	UpdateTaskStatus(context.Context, *connect.Request[v1.UpdateTaskStatusRequest]) (*connect.Response[v1.UpdateTaskStatusResponse], error)
+	// ListAvailableIssues returns browsable issues from the external tracker.
+	ListAvailableIssues(context.Context, *connect.Request[v1.ListAvailableIssuesRequest]) (*connect.Response[v1.ListAvailableIssuesResponse], error)
 }
 
 // NewTaskSourceServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -184,6 +203,12 @@ func NewTaskSourceServiceHandler(svc TaskSourceServiceHandler, opts ...connect.H
 		connect.WithSchema(taskSourceServiceMethods.ByName("UpdateTaskStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	taskSourceServiceListAvailableIssuesHandler := connect.NewUnaryHandler(
+		TaskSourceServiceListAvailableIssuesProcedure,
+		svc.ListAvailableIssues,
+		connect.WithSchema(taskSourceServiceMethods.ByName("ListAvailableIssues")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.TaskSourceService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case TaskSourceServiceGetInfoProcedure:
@@ -192,6 +217,8 @@ func NewTaskSourceServiceHandler(svc TaskSourceServiceHandler, opts ...connect.H
 			taskSourceServicePollTasksHandler.ServeHTTP(w, r)
 		case TaskSourceServiceUpdateTaskStatusProcedure:
 			taskSourceServiceUpdateTaskStatusHandler.ServeHTTP(w, r)
+		case TaskSourceServiceListAvailableIssuesProcedure:
+			taskSourceServiceListAvailableIssuesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -211,6 +238,10 @@ func (UnimplementedTaskSourceServiceHandler) PollTasks(context.Context, *connect
 
 func (UnimplementedTaskSourceServiceHandler) UpdateTaskStatus(context.Context, *connect.Request[v1.UpdateTaskStatusRequest]) (*connect.Response[v1.UpdateTaskStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.TaskSourceService.UpdateTaskStatus is not implemented"))
+}
+
+func (UnimplementedTaskSourceServiceHandler) ListAvailableIssues(context.Context, *connect.Request[v1.ListAvailableIssuesRequest]) (*connect.Response[v1.ListAvailableIssuesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.TaskSourceService.ListAvailableIssues is not implemented"))
 }
 
 // EventSourceServiceClient is a client for the bossanova.v1.EventSourceService service.

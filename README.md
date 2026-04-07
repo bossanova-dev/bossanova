@@ -35,6 +35,39 @@ Bossanova uses git worktrees to isolate each Claude Code session in its own dire
 
 Sessions run in dedicated worktrees, allowing simultaneous work on multiple features without conflicts. Plugins listen for events (PR creation, CI failures, merge conflicts) and take autonomous actions.
 
+## Setup Scripts
+
+Each repository can have an optional setup script that runs automatically whenever a new worktree is created for a session. This is useful for installing dependencies, copying configuration files, or any other per-worktree initialization.
+
+### Configuring
+
+Set a setup script when adding a repo, or update it later:
+
+```bash
+boss repo update my-repo --setup-script "npm install"
+```
+
+Clear it with an empty string:
+
+```bash
+boss repo update my-repo --setup-script ""
+```
+
+### Environment Variables
+
+The following environment variables are available to the setup script:
+
+| Variable | Description |
+|---|---|
+| `BOSS_REPO_DIR` | Path to the main git repository (the original clone) |
+| `BOSS_WORKTREE_DIR` | Path to the worktree being set up |
+
+These let you reference files in the main repo without hardcoding paths. For example, to copy an `.env` file into each new worktree:
+
+```bash
+boss repo update my-repo --setup-script 'cp "$BOSS_REPO_DIR/.env" "$BOSS_WORKTREE_DIR/.env" && npm install'
+```
+
 ## Alternative Install
 
 **Note**: Manual installation via curl is not yet supported. Use Homebrew for now:

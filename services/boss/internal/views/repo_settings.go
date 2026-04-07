@@ -32,7 +32,9 @@ const (
 	repoSettingsRowCanAutoMergeDependabot  = 4
 	repoSettingsRowCanAutoAddressReviews   = 5
 	repoSettingsRowCanAutoResolveConflicts = 6
-	repoSettingsRowCount                   = 7
+	repoSettingsRowLinearApiKey            = 7
+	repoSettingsRowLinearTeamKey           = 8
+	repoSettingsRowCount                   = 9
 )
 
 // mergeStrategies is the cycle order for the merge strategy setting.
@@ -50,6 +52,17 @@ func mergeStrategyLabel(s string) string {
 	}
 }
 
+// maskAPIKey masks an API key, showing only the last 4 characters.
+func maskAPIKey(key string) string {
+	if key == "" {
+		return "(not set)"
+	}
+	if len(key) <= 4 {
+		return key
+	}
+	return strings.Repeat("*", len(key)-4) + key[len(key)-4:]
+}
+
 // RepoSettingsModel is the TUI view for editing per-repo settings.
 type RepoSettingsModel struct {
 	client client.BossClient
@@ -62,9 +75,11 @@ type RepoSettingsModel struct {
 	err    error
 
 	// Inline editing (-1 = not editing, otherwise the row being edited)
-	editingField int
-	nameInput    textinput.Model
-	setupInput   textinput.Model
+	editingField       int
+	nameInput          textinput.Model
+	setupInput         textinput.Model
+	linearApiKeyInput  textinput.Model
+	linearTeamKeyInput textinput.Model
 
 	width int
 }
@@ -79,13 +94,23 @@ func NewRepoSettingsModel(c client.BossClient, ctx context.Context, repoID strin
 	si.Placeholder = "Optional, e.g. make setup"
 	si.SetWidth(60)
 
+	aki := textinput.New()
+	aki.Placeholder = "lin_api_..."
+	aki.SetWidth(60)
+
+	tki := textinput.New()
+	tki.Placeholder = "e.g. ENG"
+	tki.SetWidth(60)
+
 	return RepoSettingsModel{
-		client:       c,
-		ctx:          ctx,
-		repoID:       repoID,
-		editingField: -1,
-		nameInput:    ni,
-		setupInput:   si,
+		client:             c,
+		ctx:                ctx,
+		repoID:             repoID,
+		editingField:       -1,
+		nameInput:          ni,
+		setupInput:         si,
+		linearApiKeyInput:  aki,
+		linearTeamKeyInput: tki,
 	}
 }
 
@@ -118,6 +143,8 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repo = msg.repo
 		m.nameInput.SetValue(m.repo.DisplayName)
 		m.setupInput.SetValue(m.repo.GetSetupScript())
+		// Note: API key is NOT pre-filled (always full replace for security)
+		m.linearTeamKeyInput.SetValue(m.repo.LinearTeamKey)
 		return m, nil
 
 	case repoSettingsSavedMsg:
@@ -168,6 +195,10 @@ func (m RepoSettingsModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.nameInput, cmd = m.nameInput.Update(msg)
 	case repoSettingsRowSetupScript:
 		m.setupInput, cmd = m.setupInput.Update(msg)
+	case repoSettingsRowLinearApiKey:
+		m.linearApiKeyInput, cmd = m.linearApiKeyInput.Update(msg)
+	case repoSettingsRowLinearTeamKey:
+		m.linearTeamKeyInput, cmd = m.linearTeamKeyInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -197,6 +228,24 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			Id:          m.repoID,
 			SetupScript: &val,
 		})
+	case repoSettingsRowLinearApiKey:
+		val := strings.TrimSpace(m.linearApiKeyInput.Value())
+		m.editingField = -1
+		m.err = nil
+		m.linearApiKeyInput.Blur()
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:           m.repoID,
+			LinearApiKey: &val,
+		})
+	case repoSettingsRowLinearTeamKey:
+		val := strings.TrimSpace(m.linearTeamKeyInput.Value())
+		m.editingField = -1
+		m.err = nil
+		m.linearTeamKeyInput.Blur()
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:            m.repoID,
+			LinearTeamKey: &val,
+		})
 	}
 	return m, nil
 }
@@ -212,6 +261,14 @@ func (m RepoSettingsModel) cancelEdit() RepoSettingsModel {
 		m.setupInput.Blur()
 		if m.repo != nil {
 			m.setupInput.SetValue(m.repo.GetSetupScript())
+		}
+	case repoSettingsRowLinearApiKey:
+		m.linearApiKeyInput.Blur()
+		m.linearApiKeyInput.SetValue("") // Always empty (full replace)
+	case repoSettingsRowLinearTeamKey:
+		m.linearTeamKeyInput.Blur()
+		if m.repo != nil {
+			m.linearTeamKeyInput.SetValue(m.repo.LinearTeamKey)
 		}
 	}
 	m.editingField = -1
@@ -274,6 +331,13 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			Id:                      m.repoID,
 			CanAutoResolveConflicts: &v,
 		})
+	case repoSettingsRowLinearApiKey:
+		m.editingField = repoSettingsRowLinearApiKey
+		m.linearApiKeyInput.SetValue("") // Full replace, not edit
+		return m, m.linearApiKeyInput.Focus()
+	case repoSettingsRowLinearTeamKey:
+		m.editingField = repoSettingsRowLinearTeamKey
+		return m, m.linearTeamKeyInput.Focus()
 	}
 	return m, nil
 }
@@ -390,6 +454,50 @@ func (m RepoSettingsModel) View() tea.View {
 		}
 		line := fmt.Sprintf("%s[%s] %s", cursor, check, cb.label)
 		if m.cursor == cb.row && m.editingField < 0 {
+			line = styleSelected.Render(line)
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	// Row 7: Linear API key
+	if m.editingField == repoSettingsRowLinearApiKey {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Linear API key:"))
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.linearApiKeyInput.View()))
+		b.WriteString("\n")
+	} else {
+		cursor := "  "
+		if m.cursor == repoSettingsRowLinearApiKey {
+			cursor = cursorChevron + " "
+		}
+		line := fmt.Sprintf("%sLinear API key: %s", cursor, maskAPIKey(m.repo.LinearApiKey))
+		if m.cursor == repoSettingsRowLinearApiKey {
+			line = styleSelected.Render(line)
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
+		b.WriteString("\n")
+	}
+
+	// Row 8: Linear team key
+	if m.editingField == repoSettingsRowLinearTeamKey {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Linear team key:"))
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.linearTeamKeyInput.View()))
+		b.WriteString("\n")
+	} else {
+		cursor := "  "
+		if m.cursor == repoSettingsRowLinearTeamKey {
+			cursor = cursorChevron + " "
+		}
+		val := m.repo.LinearTeamKey
+		if val == "" {
+			val = "(none)"
+		}
+		line := fmt.Sprintf("%sLinear team key: %s", cursor, val)
+		if m.cursor == repoSettingsRowLinearTeamKey {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))

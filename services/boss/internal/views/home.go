@@ -80,6 +80,19 @@ func NewHomeModel(c client.BossClient, ctx context.Context, manager *bosspty.Man
 	}
 }
 
+// selectedSessionID returns the ID of the currently highlighted session,
+// or "" if no session is selected.
+func (h HomeModel) selectedSessionID() string {
+	if len(h.sessions) == 0 {
+		return ""
+	}
+	cursor := h.table.Cursor()
+	if cursor < 0 || cursor >= len(h.sessions) {
+		return ""
+	}
+	return h.sessions[cursor].Id
+}
+
 func (h HomeModel) Init() tea.Cmd {
 	return tea.Batch(fetchSessions(h.client, h.ctx), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick)
 }

@@ -101,6 +101,14 @@ func run() error {
 		log.Info().Int64("count", n).Msg("advanced orphaned sessions to awaiting_checks")
 	}
 
+	// Fail any task mappings left in Pending/InProgress from a previous
+	// daemon instance. Their driving goroutines no longer exist.
+	if n, err := taskMappings.FailOrphanedMappings(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to clean up orphaned task mappings")
+	} else if n > 0 {
+		log.Info().Int64("count", n).Msg("failed orphaned task mappings from previous run")
+	}
+
 	// --- Lifecycle ---
 
 	worktrees := gitpkg.NewManager(log.Logger)
@@ -197,9 +205,10 @@ func run() error {
 	// --- Task Orchestrator ---
 
 	sessionCreator := taskorchestrator.NewSessionCreator(sessions, lifecycle, log.Logger)
+	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, claudeRunner)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
-		taskorchestrator.DefaultPollInterval, log.Logger,
+		livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
 	)
 
 	// Wire the orchestrator as the completion notifier for the dispatcher

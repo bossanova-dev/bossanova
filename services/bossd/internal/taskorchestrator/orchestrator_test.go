@@ -78,13 +78,16 @@ func (m *mockRepoStore) Delete(_ context.Context, _ string) error {
 }
 
 type mockTaskMappingStore struct {
-	mappings      map[string]*models.TaskMapping // keyed by external_id
-	bySession     map[string]*models.TaskMapping // keyed by session_id
-	createFn      func(ctx context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error)
-	updateFn      func(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error)
-	deleteFn      func(ctx context.Context, id string) error
-	listPendingFn func(ctx context.Context) ([]*models.TaskMapping, error)
-	nextID        int
+	mappings       map[string]*models.TaskMapping // keyed by external_id
+	bySession      map[string]*models.TaskMapping // keyed by session_id
+	byID           map[string]*models.TaskMapping // keyed by mapping ID
+	createFn       func(ctx context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error)
+	updateFn       func(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error)
+	deleteFn       func(ctx context.Context, id string) error
+	listPendingFn  func(ctx context.Context) ([]*models.TaskMapping, error)
+	getFn          func(ctx context.Context, id string) (*models.TaskMapping, error)
+	failOrphanedFn func(ctx context.Context) (int64, error)
+	nextID         int
 }
 
 func (m *mockTaskMappingStore) Create(ctx context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
@@ -103,6 +106,25 @@ func (m *mockTaskMappingStore) Create(ctx context.Context, params db.CreateTaskM
 		m.mappings[params.ExternalID] = tm
 	}
 	return tm, nil
+}
+
+func (m *mockTaskMappingStore) Get(ctx context.Context, id string) (*models.TaskMapping, error) {
+	if m.getFn != nil {
+		return m.getFn(ctx, id)
+	}
+	if m.byID != nil {
+		if tm, ok := m.byID[id]; ok {
+			return tm, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+
+func (m *mockTaskMappingStore) FailOrphanedMappings(ctx context.Context) (int64, error) {
+	if m.failOrphanedFn != nil {
+		return m.failOrphanedFn(ctx)
+	}
+	return 0, nil
 }
 
 func (m *mockTaskMappingStore) GetByExternalID(_ context.Context, externalID string) (*models.TaskMapping, error) {
@@ -206,6 +228,18 @@ func (m *mockProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ strin
 	return nil
 }
 
+// mockLivenessChecker implements SessionLivenessChecker for tests.
+type mockLivenessChecker struct {
+	aliveFn func(ctx context.Context, sessionID string) bool
+}
+
+func (m *mockLivenessChecker) IsSessionAlive(ctx context.Context, sessionID string) bool {
+	if m.aliveFn != nil {
+		return m.aliveFn(ctx, sessionID)
+	}
+	return true
+}
+
 // helper to create an orchestrator with defaults
 func newTestOrchestrator(opts ...func(*Orchestrator)) *Orchestrator {
 	o := New(
@@ -214,6 +248,7 @@ func newTestOrchestrator(opts ...func(*Orchestrator)) *Orchestrator {
 		&mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}},
 		&mockSessionCreatorOrch{},
 		&mockProvider{},
+		nil, // no liveness checker by default
 		time.Second,
 		zerolog.Nop(),
 	)
@@ -852,6 +887,50 @@ func TestHandleSessionCompleted_ConcurrentCalls_OnlyOneProceeds(t *testing.T) {
 	}
 }
 
+func TestHandleSessionCompleted_DoesNotDeleteNewerMapping(t *testing.T) {
+	// Regression test: if a new task has already replaced the activeMapping
+	// for a repo, the old completion must not delete the newer entry.
+	sessionID := "sess-old"
+	src := &updatingMockTaskSource{
+		mockTaskSource: mockTaskSource{
+			pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
+				return nil, nil
+			},
+		},
+		updateFn: func(_ context.Context, _ string, _ bossanovav1.TaskItemStatus, _ string) error {
+			return nil
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{src}}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-old",
+					ExternalID: "dep:pr:repo:60",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusInProgress,
+				},
+			},
+		}
+		// Simulate a newer task already owning the activeMapping slot.
+		o.activeMapping["r1"] = "tm-new"
+	})
+
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+
+	// The newer mapping must survive.
+	orch.mu.Lock()
+	got, ok := orch.activeMapping["r1"]
+	orch.mu.Unlock()
+
+	if !ok || got != "tm-new" {
+		t.Errorf("expected activeMapping[r1] = 'tm-new', got %q (exists=%v)", got, ok)
+	}
+}
+
 // updatingMockTaskSource wraps mockTaskSource with a custom UpdateTaskStatus.
 type updatingMockTaskSource struct {
 	mockTaskSource
@@ -1357,6 +1436,282 @@ func TestQueue_DuplicateExternalIDNotQueued(t *testing.T) {
 
 	if queueLen != 1 {
 		t.Errorf("expected queue length 1 after duplicate enqueue, got %d", queueLen)
+	}
+}
+
+// --- recovery sweep tests ---
+
+func TestRecoverStaleTasks_DeadSession_UnblocksQueue(t *testing.T) {
+	sessionID := "sess-dead"
+	mappingID := "tm-stuck"
+	var completedSessionID string
+
+	mapping := &models.TaskMapping{
+		ID:        mappingID,
+		RepoID:    "r1",
+		Status:    models.TaskMappingStatusInProgress,
+		SessionID: &sessionID,
+	}
+
+	captureSrc := &updatingMockTaskSource{
+		mockTaskSource: mockTaskSource{
+			pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
+				return nil, nil
+			},
+		},
+		updateFn: func(_ context.Context, _ string, _ bossanovav1.TaskItemStatus, _ string) error {
+			return nil
+		},
+	}
+
+	store := &mockTaskMappingStore{
+		mappings: map[string]*models.TaskMapping{},
+		byID: map[string]*models.TaskMapping{
+			mappingID: mapping,
+		},
+		bySession: map[string]*models.TaskMapping{
+			sessionID: mapping,
+		},
+		updateFn: func(_ context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+			if params.Status != nil {
+				mapping.Status = *params.Status
+			}
+			return mapping, nil
+		},
+	}
+
+	checker := &mockLivenessChecker{
+		aliveFn: func(_ context.Context, sid string) bool {
+			completedSessionID = sid
+			return false // session is dead
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{captureSrc}}
+		o.taskMappings = store
+		o.livenessChecker = checker
+	})
+
+	// Set up the active mapping as if a CREATE_SESSION was in progress.
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.activeMapping["r1"] = mappingID
+	orch.mu.Unlock()
+
+	orch.recoverStaleTasks(context.Background())
+
+	if completedSessionID != sessionID {
+		t.Errorf("expected liveness check for session %q, got %q", sessionID, completedSessionID)
+	}
+
+	// After recovery, the active mapping should be cleared.
+	orch.mu.Lock()
+	_, hasActive := orch.activeMapping["r1"]
+	orch.mu.Unlock()
+	if hasActive {
+		t.Error("expected activeMapping to be cleared after recovery")
+	}
+}
+
+func TestRecoverStaleTasks_AliveSession_NoOp(t *testing.T) {
+	sessionID := "sess-alive"
+	mappingID := "tm-alive"
+
+	mapping := &models.TaskMapping{
+		ID:        mappingID,
+		RepoID:    "r1",
+		Status:    models.TaskMappingStatusInProgress,
+		SessionID: &sessionID,
+	}
+
+	store := &mockTaskMappingStore{
+		mappings: map[string]*models.TaskMapping{},
+		byID: map[string]*models.TaskMapping{
+			mappingID: mapping,
+		},
+	}
+
+	checker := &mockLivenessChecker{
+		aliveFn: func(_ context.Context, _ string) bool {
+			return true // session is alive
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = store
+		o.livenessChecker = checker
+	})
+
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.activeMapping["r1"] = mappingID
+	orch.mu.Unlock()
+
+	orch.recoverStaleTasks(context.Background())
+
+	// Active mapping should still be there — session is alive.
+	orch.mu.Lock()
+	_, hasActive := orch.activeMapping["r1"]
+	orch.mu.Unlock()
+	if !hasActive {
+		t.Error("expected activeMapping to remain when session is alive")
+	}
+}
+
+func TestRecoverStaleTasks_MappingNotFound_ClearsActive(t *testing.T) {
+	store := &mockTaskMappingStore{
+		mappings: map[string]*models.TaskMapping{},
+		byID:     map[string]*models.TaskMapping{}, // empty — mapping not found
+	}
+
+	dequeued := false
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = store
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				dequeued = true
+				return nil
+			},
+		}
+	})
+
+	// Set up active state with a missing mapping.
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.activeMapping["r1"] = "tm-missing"
+	orch.queues["r1"] = []queuedTask{{
+		task: &bossanovav1.TaskItem{
+			ExternalId: "dep:pr:repo:5",
+			Title:      "Queued task",
+			Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		},
+		repo:       repoInfo{id: "r1", originURL: "repo"},
+		pluginName: "dependabot",
+	}}
+	orch.mu.Unlock()
+
+	orch.recoverStaleTasks(context.Background())
+
+	// Active mapping should be cleared.
+	orch.mu.Lock()
+	_, hasActive := orch.activeMapping["r1"]
+	orch.mu.Unlock()
+	if hasActive {
+		t.Error("expected activeMapping to be cleared when mapping not found")
+	}
+
+	// Queued task should have been dequeued.
+	if !dequeued {
+		t.Error("expected queued task to be processed after clearing stale state")
+	}
+}
+
+func TestRecoverStaleTasks_AlreadyCompleted_Dequeues(t *testing.T) {
+	mappingID := "tm-done"
+
+	mapping := &models.TaskMapping{
+		ID:     mappingID,
+		RepoID: "r1",
+		Status: models.TaskMappingStatusCompleted, // already terminal
+	}
+
+	store := &mockTaskMappingStore{
+		mappings: map[string]*models.TaskMapping{},
+		byID: map[string]*models.TaskMapping{
+			mappingID: mapping,
+		},
+	}
+
+	dequeued := false
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = store
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				dequeued = true
+				return nil
+			},
+		}
+	})
+
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.activeMapping["r1"] = mappingID
+	orch.queues["r1"] = []queuedTask{{
+		task: &bossanovav1.TaskItem{
+			ExternalId: "dep:pr:repo:6",
+			Title:      "Queued task",
+			Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		},
+		repo:       repoInfo{id: "r1", originURL: "repo"},
+		pluginName: "dependabot",
+	}}
+	orch.mu.Unlock()
+
+	orch.recoverStaleTasks(context.Background())
+
+	orch.mu.Lock()
+	_, hasActive := orch.activeMapping["r1"]
+	orch.mu.Unlock()
+	if hasActive {
+		t.Error("expected activeMapping to be cleared for terminal mapping")
+	}
+
+	if !dequeued {
+		t.Error("expected queued task to be processed after clearing terminal mapping")
+	}
+}
+
+func TestRecoverStaleTasks_MappingReplaced_Skips(t *testing.T) {
+	// If HandleSessionCompleted runs concurrently and replaces the
+	// activeMapping for a repo between the snapshot and the DB lookup,
+	// recoverStaleTasks must not clear the new mapping or double-dequeue.
+	oldMappingID := "tm-old"
+	newMappingID := "tm-new"
+
+	store := &mockTaskMappingStore{
+		mappings: map[string]*models.TaskMapping{},
+		byID: map[string]*models.TaskMapping{
+			oldMappingID: {
+				ID:     oldMappingID,
+				RepoID: "r1",
+				Status: models.TaskMappingStatusCompleted,
+			},
+		},
+	}
+
+	var orch *Orchestrator
+	// Simulate a concurrent HandleSessionCompleted replacing the mapping
+	// when the DB lookup happens (after the snapshot, during processing).
+	store.getFn = func(_ context.Context, id string) (*models.TaskMapping, error) {
+		if id == oldMappingID {
+			// Before returning, simulate concurrent completion replacing the mapping.
+			orch.mu.Lock()
+			orch.activeMapping["r1"] = newMappingID
+			orch.mu.Unlock()
+			return store.byID[id], nil
+		}
+		return nil, fmt.Errorf("not found")
+	}
+
+	orch = newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = store
+	})
+
+	// Set up the initial active mapping.
+	orch.mu.Lock()
+	orch.active["r1"] = true
+	orch.activeMapping["r1"] = oldMappingID
+	orch.mu.Unlock()
+
+	orch.recoverStaleTasks(context.Background())
+
+	// The new mapping should not have been cleared.
+	orch.mu.Lock()
+	currentMapping := orch.activeMapping["r1"]
+	orch.mu.Unlock()
+	if currentMapping != newMappingID {
+		t.Errorf("expected activeMapping to remain %q, got %q", newMappingID, currentMapping)
 	}
 }
 

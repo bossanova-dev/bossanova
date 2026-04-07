@@ -30,7 +30,6 @@ type UpdateRepoParams struct {
 	CanAutoResolveConflicts *bool
 	MergeStrategy           *models.MergeStrategy
 	LinearAPIKey            *string
-	LinearTeamKey           *string
 }
 
 // RepoStore defines the interface for repo persistence.

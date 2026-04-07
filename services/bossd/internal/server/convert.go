@@ -25,7 +25,6 @@ func repoToProto(r *models.Repo) *pb.Repo {
 		CanAutoResolveConflicts: r.CanAutoResolveConflicts,
 		MergeStrategy:           string(r.MergeStrategy),
 		LinearApiKey:            r.LinearAPIKey,
-		LinearTeamKey:           r.LinearTeamKey,
 		CreatedAt:               timestamppb.New(r.CreatedAt),
 		UpdatedAt:               timestamppb.New(r.UpdatedAt),
 	}

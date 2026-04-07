@@ -68,42 +68,7 @@ func TestRepoSettings_LinearApiKeyEditIsFullReplace(t *testing.T) {
 	}
 }
 
-// TestRepoSettings_LinearTeamKeyEditIsPrefilled verifies that team key editing
-// starts with the current value pre-filled.
-func TestRepoSettings_LinearTeamKeyEditIsPrefilled(t *testing.T) {
-	stub := &stubRepoClient{
-		repos: []*pb.Repo{{
-			Id:            "repo-1",
-			DisplayName:   "Test Repo",
-			LinearTeamKey: "ENG",
-		}},
-	}
-
-	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
-
-	// Initialize the model
-	initCmd := m.Init()
-	msg := initCmd()
-	updatedModel, _ := m.Update(msg)
-	m = updatedModel.(RepoSettingsModel)
-
-	// Navigate to team key row and activate
-	m.cursor = repoSettingsRowLinearTeamKey
-	updatedModel, _ = m.activateRow()
-	m = updatedModel.(RepoSettingsModel)
-
-	// Verify input is pre-filled with current value
-	if m.linearTeamKeyInput.Value() != "ENG" {
-		t.Errorf("linearTeamKeyInput.Value() = %q, want %q", m.linearTeamKeyInput.Value(), "ENG")
-	}
-
-	// Verify editing field is set
-	if m.editingField != repoSettingsRowLinearTeamKey {
-		t.Errorf("editingField = %d, want %d", m.editingField, repoSettingsRowLinearTeamKey)
-	}
-}
-
-// TestRepoSettings_CursorNavigatesToLinearRows verifies that rows 7 and 8
+// TestRepoSettings_CursorNavigatesToLinearRows verifies that all rows
 // are reachable via cursor navigation.
 func TestRepoSettings_CursorNavigatesToLinearRows(t *testing.T) {
 	stub := &stubRepoClient{
@@ -131,7 +96,6 @@ func TestRepoSettings_CursorNavigatesToLinearRows(t *testing.T) {
 		repoSettingsRowCanAutoAddressReviews,   // 5
 		repoSettingsRowCanAutoResolveConflicts, // 6
 		repoSettingsRowLinearApiKey,            // 7
-		repoSettingsRowLinearTeamKey,           // 8
 	}
 
 	for i, expectedRow := range expectedRows {
@@ -147,15 +111,15 @@ func TestRepoSettings_CursorNavigatesToLinearRows(t *testing.T) {
 	}
 
 	// Verify we ended at the last row
-	if m.cursor != repoSettingsRowLinearTeamKey {
-		t.Errorf("final cursor = %d, want %d (Linear team key row)", m.cursor, repoSettingsRowLinearTeamKey)
+	if m.cursor != repoSettingsRowLinearApiKey {
+		t.Errorf("final cursor = %d, want %d (Linear API key row)", m.cursor, repoSettingsRowLinearApiKey)
 	}
 
 	// Try to go down one more time - cursor should stay at last row
 	updatedModel, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = updatedModel.(RepoSettingsModel)
-	if m.cursor != repoSettingsRowLinearTeamKey {
-		t.Errorf("cursor after boundary = %d, want %d (should stay at last row)", m.cursor, repoSettingsRowLinearTeamKey)
+	if m.cursor != repoSettingsRowLinearApiKey {
+		t.Errorf("cursor after boundary = %d, want %d (should stay at last row)", m.cursor, repoSettingsRowLinearApiKey)
 	}
 }
 

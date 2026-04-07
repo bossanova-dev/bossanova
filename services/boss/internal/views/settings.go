@@ -63,16 +63,18 @@ func (m SettingsModel) Init() tea.Cmd {
 }
 
 func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// When editing a text field, forward all message types (not just KeyMsg)
+	// to the textinput so that paste messages are handled correctly.
+	if m.editingRow >= 0 {
+		return m.updateEditing(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.editingRow >= 0 {
-			return m.updateEditing(msg)
-		}
-
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
@@ -93,12 +95,14 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m SettingsModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
-		return m.commitEdit()
-	case "esc":
-		return m.cancelEdit()
+func (m SettingsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "enter":
+			return m.commitEdit()
+		case "esc":
+			return m.cancelEdit()
+		}
 	}
 
 	var cmd tea.Cmd

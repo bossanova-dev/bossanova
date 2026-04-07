@@ -33,8 +33,7 @@ const (
 	repoSettingsRowCanAutoAddressReviews   = 5
 	repoSettingsRowCanAutoResolveConflicts = 6
 	repoSettingsRowLinearApiKey            = 7
-	repoSettingsRowLinearTeamKey           = 8
-	repoSettingsRowCount                   = 9
+	repoSettingsRowCount                   = 8
 )
 
 // mergeStrategies is the cycle order for the merge strategy setting.
@@ -75,11 +74,10 @@ type RepoSettingsModel struct {
 	err    error
 
 	// Inline editing (-1 = not editing, otherwise the row being edited)
-	editingField       int
-	nameInput          textinput.Model
-	setupInput         textinput.Model
-	linearApiKeyInput  textinput.Model
-	linearTeamKeyInput textinput.Model
+	editingField      int
+	nameInput         textinput.Model
+	setupInput        textinput.Model
+	linearApiKeyInput textinput.Model
 
 	width int
 }
@@ -98,19 +96,14 @@ func NewRepoSettingsModel(c client.BossClient, ctx context.Context, repoID strin
 	aki.Placeholder = "lin_api_..."
 	aki.SetWidth(60)
 
-	tki := textinput.New()
-	tki.Placeholder = "e.g. ENG"
-	tki.SetWidth(60)
-
 	return RepoSettingsModel{
-		client:             c,
-		ctx:                ctx,
-		repoID:             repoID,
-		editingField:       -1,
-		nameInput:          ni,
-		setupInput:         si,
-		linearApiKeyInput:  aki,
-		linearTeamKeyInput: tki,
+		client:            c,
+		ctx:               ctx,
+		repoID:            repoID,
+		editingField:      -1,
+		nameInput:         ni,
+		setupInput:        si,
+		linearApiKeyInput: aki,
 	}
 }
 
@@ -130,6 +123,12 @@ func (m RepoSettingsModel) Init() tea.Cmd {
 }
 
 func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// When editing a text field, forward all message types (not just KeyMsg)
+	// to the textinput so that paste messages are handled correctly.
+	if m.editingField >= 0 {
+		return m.updateEditing(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -144,7 +143,6 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nameInput.SetValue(m.repo.DisplayName)
 		m.setupInput.SetValue(m.repo.GetSetupScript())
 		// Note: API key is NOT pre-filled (always full replace for security)
-		m.linearTeamKeyInput.SetValue(m.repo.LinearTeamKey)
 		return m, nil
 
 	case repoSettingsSavedMsg:
@@ -157,10 +155,6 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.editingField >= 0 {
-			return m.updateEditing(msg)
-		}
-
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
@@ -181,12 +175,14 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m RepoSettingsModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "enter":
-		return m.commitEdit()
-	case "esc":
-		return m.cancelEdit(), nil
+func (m RepoSettingsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.String() {
+		case "enter":
+			return m.commitEdit()
+		case "esc":
+			return m.cancelEdit(), nil
+		}
 	}
 
 	var cmd tea.Cmd
@@ -197,8 +193,6 @@ func (m RepoSettingsModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setupInput, cmd = m.setupInput.Update(msg)
 	case repoSettingsRowLinearApiKey:
 		m.linearApiKeyInput, cmd = m.linearApiKeyInput.Update(msg)
-	case repoSettingsRowLinearTeamKey:
-		m.linearTeamKeyInput, cmd = m.linearTeamKeyInput.Update(msg)
 	}
 	return m, cmd
 }
@@ -237,15 +231,6 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			Id:           m.repoID,
 			LinearApiKey: &val,
 		})
-	case repoSettingsRowLinearTeamKey:
-		val := strings.TrimSpace(m.linearTeamKeyInput.Value())
-		m.editingField = -1
-		m.err = nil
-		m.linearTeamKeyInput.Blur()
-		return m, m.saveSettings(&pb.UpdateRepoRequest{
-			Id:            m.repoID,
-			LinearTeamKey: &val,
-		})
 	}
 	return m, nil
 }
@@ -265,11 +250,6 @@ func (m RepoSettingsModel) cancelEdit() RepoSettingsModel {
 	case repoSettingsRowLinearApiKey:
 		m.linearApiKeyInput.Blur()
 		m.linearApiKeyInput.SetValue("") // Always empty (full replace)
-	case repoSettingsRowLinearTeamKey:
-		m.linearTeamKeyInput.Blur()
-		if m.repo != nil {
-			m.linearTeamKeyInput.SetValue(m.repo.LinearTeamKey)
-		}
 	}
 	m.editingField = -1
 	m.err = nil
@@ -335,9 +315,6 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 		m.editingField = repoSettingsRowLinearApiKey
 		m.linearApiKeyInput.SetValue("") // Full replace, not edit
 		return m, m.linearApiKeyInput.Focus()
-	case repoSettingsRowLinearTeamKey:
-		m.editingField = repoSettingsRowLinearTeamKey
-		return m, m.linearTeamKeyInput.Focus()
 	}
 	return m, nil
 }
@@ -475,29 +452,6 @@ func (m RepoSettingsModel) View() tea.View {
 		}
 		line := fmt.Sprintf("%sLinear API key: %s", cursor, maskAPIKey(m.repo.LinearApiKey))
 		if m.cursor == repoSettingsRowLinearApiKey {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
-	}
-
-	// Row 8: Linear team key
-	if m.editingField == repoSettingsRowLinearTeamKey {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Linear team key:"))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.linearTeamKeyInput.View()))
-		b.WriteString("\n")
-	} else {
-		cursor := "  "
-		if m.cursor == repoSettingsRowLinearTeamKey {
-			cursor = cursorChevron + " "
-		}
-		val := m.repo.LinearTeamKey
-		if val == "" {
-			val = "(none)"
-		}
-		line := fmt.Sprintf("%sLinear team key: %s", cursor, val)
-		if m.cursor == repoSettingsRowLinearTeamKey {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))

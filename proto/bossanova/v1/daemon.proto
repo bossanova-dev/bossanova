@@ -155,7 +155,7 @@ message UpdateRepoRequest {
   optional string merge_strategy = 7;
   optional string setup_script = 8;
   optional string linear_api_key = 9;
-  optional string linear_team_key = 10;
+  reserved 10;
 }
 
 message UpdateRepoResponse {

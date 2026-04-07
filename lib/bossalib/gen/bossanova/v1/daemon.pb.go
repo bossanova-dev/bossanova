@@ -660,7 +660,6 @@ type UpdateRepoRequest struct {
 	MergeStrategy           *string                `protobuf:"bytes,7,opt,name=merge_strategy,json=mergeStrategy,proto3,oneof" json:"merge_strategy,omitempty"`
 	SetupScript             *string                `protobuf:"bytes,8,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
 	LinearApiKey            *string                `protobuf:"bytes,9,opt,name=linear_api_key,json=linearApiKey,proto3,oneof" json:"linear_api_key,omitempty"`
-	LinearTeamKey           *string                `protobuf:"bytes,10,opt,name=linear_team_key,json=linearTeamKey,proto3,oneof" json:"linear_team_key,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -754,13 +753,6 @@ func (x *UpdateRepoRequest) GetSetupScript() string {
 func (x *UpdateRepoRequest) GetLinearApiKey() string {
 	if x != nil && x.LinearApiKey != nil {
 		return *x.LinearApiKey
-	}
-	return ""
-}
-
-func (x *UpdateRepoRequest) GetLinearTeamKey() string {
-	if x != nil && x.LinearTeamKey != nil {
-		return *x.LinearTeamKey
 	}
 	return ""
 }
@@ -4386,7 +4378,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05repos\x18\x01 \x03(\v2\x12.bossanova.v1.RepoR\x05repos\"#\n" +
 	"\x11RemoveRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12RemoveRepoResponse\"\xab\x05\n" +
+	"\x12RemoveRepoResponse\"\xf0\x04\n" +
 	"\x11UpdateRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12)\n" +
@@ -4396,9 +4388,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\x06 \x01(\bH\x04R\x17canAutoResolveConflicts\x88\x01\x01\x12*\n" +
 	"\x0emerge_strategy\x18\a \x01(\tH\x05R\rmergeStrategy\x88\x01\x01\x12&\n" +
 	"\fsetup_script\x18\b \x01(\tH\x06R\vsetupScript\x88\x01\x01\x12)\n" +
-	"\x0elinear_api_key\x18\t \x01(\tH\aR\flinearApiKey\x88\x01\x01\x12+\n" +
-	"\x0flinear_team_key\x18\n" +
-	" \x01(\tH\bR\rlinearTeamKey\x88\x01\x01B\x0f\n" +
+	"\x0elinear_api_key\x18\t \x01(\tH\aR\flinearApiKey\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x11\n" +
 	"\x0f_can_auto_mergeB\x1c\n" +
 	"\x1a_can_auto_merge_dependabotB\x1b\n" +
@@ -4406,8 +4396,8 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x1b_can_auto_resolve_conflictsB\x11\n" +
 	"\x0f_merge_strategyB\x0f\n" +
 	"\r_setup_scriptB\x11\n" +
-	"\x0f_linear_api_keyB\x12\n" +
-	"\x10_linear_team_key\"<\n" +
+	"\x0f_linear_api_keyJ\x04\b\n" +
+	"\x10\v\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
 	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"-\n" +
 	"\x12ListRepoPRsRequest\x12\x17\n" +

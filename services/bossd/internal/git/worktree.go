@@ -77,6 +77,7 @@ type CreateOpts struct {
 	WorktreeBaseDir   string    // Directory under which worktrees are created.
 	RepoName          string    // Display name of the repo, used to derive worktree subdirectory.
 	Title             string    // Session title, used to derive branch name.
+	BranchName        string    // If set, use this branch name instead of deriving from Title.
 	SetupScript       *string   // Optional setup script to run after creation.
 	SetupScriptOutput io.Writer // If non-nil, setup script output is written here.
 	Force             bool      // If true, remove any existing branch with the same name.
@@ -170,7 +171,10 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 
 // Create creates a new git worktree with a fresh branch based on baseBranch.
 func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, error) {
-	branch := sanitizeBranchName(opts.Title)
+	branch := opts.BranchName
+	if branch == "" {
+		branch = sanitizeBranchName(opts.Title)
+	}
 	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), branch)
 
 	// Ensure the worktree base directory exists.

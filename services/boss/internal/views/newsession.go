@@ -20,23 +20,25 @@ import (
 type sessionType int
 
 const (
-	sessionTypeQuickChat   sessionType = iota // Quick chat in base folder
-	sessionTypeNewPR                          // Create a new PR
-	sessionTypeExistingPR                     // Work on an existing PR
-	sessionTypeExecutePlan                    // Execute a plan (placeholder)
+	sessionTypeQuickChat    sessionType = iota // Quick chat in base folder
+	sessionTypeNewPR                           // Create a new PR
+	sessionTypeExistingPR                      // Work on an existing PR
+	sessionTypeExecutePlan                     // Execute a plan (placeholder)
+	sessionTypeLinearTicket                    // Work on a Linear ticket
 )
 
 // newSessionPhase tracks the current phase of the wizard.
 type newSessionPhase int
 
 const (
-	newSessionPhaseLoading    newSessionPhase = iota // Fetching repos
-	newSessionPhaseRepoSelect                        // Table-based repo picker
-	newSessionPhaseTypeSelect                        // Table-based session type picker
-	newSessionPhasePRSelect                          // Table-based PR picker
-	newSessionPhaseForm                              // Main huh form active
-	newSessionPhaseCreating                          // Waiting for CreateSession RPC
-	newSessionPhaseDone                              // Terminal
+	newSessionPhaseLoading     newSessionPhase = iota // Fetching repos
+	newSessionPhaseRepoSelect                         // Table-based repo picker
+	newSessionPhaseTypeSelect                         // Table-based session type picker
+	newSessionPhasePRSelect                           // Table-based PR picker
+	newSessionPhaseIssueSelect                        // Table-based issue picker (Linear)
+	newSessionPhaseForm                               // Main huh form active
+	newSessionPhaseCreating                           // Waiting for CreateSession RPC
+	newSessionPhaseDone                               // Terminal
 )
 
 // reposMsg carries the result of a ListRepos RPC call.
@@ -49,6 +51,12 @@ type reposMsg struct {
 type prsMsg struct {
 	prs []*pb.PRSummary
 	err error
+}
+
+// issuesMsg carries the result of a ListTrackerIssues RPC call.
+type issuesMsg struct {
+	issues []*pb.TrackerIssue
+	err    error
 }
 
 // createSessionStreamMsg carries the opened stream or error.
@@ -73,14 +81,30 @@ type streamErrorMsg struct {
 }
 
 // sessionTypeOption defines a row in the session-type selection table.
-var sessionTypeOptions = []struct {
+type sessionTypeOption struct {
 	label string
 	desc  string
 	typ   sessionType
-}{
-	{"Create a new PR", "Start a fresh branch and pull request", sessionTypeNewPR},
-	{"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
-	{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
+}
+
+// buildSessionTypeOptions returns available session types based on repo configuration.
+func (m *NewSessionModel) buildSessionTypeOptions() []sessionTypeOption {
+	opts := []sessionTypeOption{
+		{"Create a new PR", "Start a fresh branch and pull request", sessionTypeNewPR},
+		{"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
+		{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
+	}
+
+	// Add Linear ticket option if repo has Linear API key configured
+	repo := m.selectedRepo()
+	if repo != nil && repo.LinearApiKey != "" {
+		// Insert before Quick chat
+		opts = append(opts[:2], append([]sessionTypeOption{
+			{"Work on a Linear ticket", "Pick a ticket from your Linear board", sessionTypeLinearTicket},
+		}, opts[2:]...)...)
+	}
+
+	return opts
 }
 
 // formData holds huh form-bound values on the heap so that Value() pointers
@@ -102,6 +126,13 @@ type NewSessionModel struct {
 	// Data
 	repos []*pb.Repo
 	prs   []*pb.PRSummary
+
+	// Linear issues
+	trackerIssues   []*pb.TrackerIssue
+	issueTable      table.Model
+	issueTableReady bool
+	issueErr        error
+	selectedIssue   *pb.TrackerIssue
 
 	// Form-bound values (heap-allocated for stable pointers)
 	selectedRepoID string
@@ -154,6 +185,13 @@ func fetchPRs(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
 	return func() tea.Msg {
 		prs, err := c.ListRepoPRs(ctx, repoID)
 		return prsMsg{prs: prs, err: err}
+	}
+}
+
+func fetchIssues(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
+	return func() tea.Msg {
+		issues, err := c.ListTrackerIssues(ctx, repoID)
+		return issuesMsg{issues: issues, err: err}
 	}
 }
 
@@ -222,15 +260,16 @@ func (m *NewSessionModel) buildTypeTable() {
 		{Title: "", Width: 24 + tableColumnSep},
 		{Title: "", Width: 46 + tableColumnSep},
 	}
-	rows := make([]table.Row, len(sessionTypeOptions))
-	for i, opt := range sessionTypeOptions {
+	opts := m.buildSessionTypeOptions()
+	rows := make([]table.Row, len(opts))
+	for i, opt := range opts {
 		indicator := ""
 		if i == 0 {
 			indicator = cursorChevron
 		}
 		rows[i] = table.Row{indicator, opt.label, styleSubtle.Render(opt.desc)}
 	}
-	m.typeTable = newBossTable(cols, rows, len(sessionTypeOptions)+1)
+	m.typeTable = newBossTable(cols, rows, len(opts)+1)
 	m.typeTable.SetWidth(columnsWidth(cols))
 }
 
@@ -267,6 +306,41 @@ func (m *NewSessionModel) buildPRTable() {
 // prTableHeight returns the height for the PR selection table.
 func (m NewSessionModel) prTableHeight() int {
 	return clampedTableHeight(len(m.prs), m.height, bannerOverhead+6) // header + gaps + action bar
+}
+
+func (m *NewSessionModel) buildIssueTable() {
+	ids := make([]string, len(m.trackerIssues))
+	titles := make([]string, len(m.trackerIssues))
+	states := make([]string, len(m.trackerIssues))
+	for i, issue := range m.trackerIssues {
+		ids[i] = issue.ExternalId
+		titles[i] = issue.Title
+		states[i] = issue.State
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "ID", Width: maxColWidth("ID", ids, 10) + tableColumnSep},
+		{Title: "TITLE", Width: maxColWidth("TITLE", titles, 50) + tableColumnSep},
+		{Title: "STATE", Width: maxColWidth("STATE", states, 15) + tableColumnSep},
+	}
+
+	rows := make([]table.Row, len(m.trackerIssues))
+	for i := range m.trackerIssues {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, ids[i], titles[i], styleSubtle.Render(states[i])}
+	}
+
+	m.issueTable = newBossTable(cols, rows, m.issueTableHeight())
+	m.issueTable.SetWidth(columnsWidth(cols))
+}
+
+// issueTableHeight returns the height for the issue selection table.
+func (m NewSessionModel) issueTableHeight() int {
+	return clampedTableHeight(len(m.trackerIssues), m.height, bannerOverhead+6) // header + gaps + action bar
 }
 
 func (m *NewSessionModel) buildForm() {
@@ -309,6 +383,10 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.prTable.SetHeight(m.prTableHeight())
 			m.prTable.SetWidth(msg.Width)
 		}
+		if m.phase == newSessionPhaseIssueSelect {
+			m.issueTable.SetHeight(m.issueTableHeight())
+			m.issueTable.SetWidth(msg.Width)
+		}
 		return m, nil
 
 	case reposMsg:
@@ -342,6 +420,22 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.phase = newSessionPhasePRSelect
 		m.buildPRTable()
+		return m, nil
+
+	case issuesMsg:
+		m.trackerIssues = msg.issues
+		if msg.err != nil {
+			m.issueErr = msg.err
+			m.err = msg.err
+			return m, nil
+		}
+		if len(m.trackerIssues) == 0 {
+			m.err = fmt.Errorf("no issues found in Linear")
+			return m, nil
+		}
+		m.phase = newSessionPhaseIssueSelect
+		m.buildIssueTable()
+		m.issueTableReady = true
 		return m, nil
 
 	case createSessionStreamMsg:
@@ -425,7 +519,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "enter":
 				idx := m.typeTable.Cursor()
-				m.selectedType = sessionTypeOptions[idx].typ
+				opts := m.buildSessionTypeOptions()
+				m.selectedType = opts[idx].typ
 				return m.advanceFromTypeSelect()
 			}
 
@@ -451,6 +546,26 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.prTable, cmd = m.prTable.Update(msg)
 			updateCursorColumn(&m.prTable)
+			return m, cmd
+		}
+
+		if m.phase == newSessionPhaseIssueSelect {
+			switch msg.String() {
+			case "esc":
+				m.phase = newSessionPhaseTypeSelect
+				return m, nil
+			case "enter":
+				idx := m.issueTable.Cursor()
+				if idx >= 0 && idx < len(m.trackerIssues) {
+					m.selectedIssue = m.trackerIssues[idx]
+					return m, m.startCreating()
+				}
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.issueTable, cmd = m.issueTable.Update(msg)
+			updateCursorColumn(&m.issueTable)
 			return m, cmd
 		}
 
@@ -499,6 +614,10 @@ func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 		// Fetch PRs, then show PR selector table.
 		m.phase = newSessionPhaseLoading
 		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
+	case sessionTypeLinearTicket:
+		// Fetch Linear issues, then show issue selector table.
+		m.phase = newSessionPhaseLoading
+		return *m, fetchIssues(m.client, m.ctx, m.selectedRepoID)
 	case sessionTypeNewPR:
 		m.phase = newSessionPhaseForm
 		m.buildForm()
@@ -568,6 +687,22 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 			req.Title = pr.Title
 			req.PrNumber = &pr.Number
 		}
+	case sessionTypeLinearTicket:
+		if m.selectedIssue != nil {
+			issue := m.selectedIssue
+			req.Title = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
+			req.Plan = issue.Description
+			if issue.PrNumber > 0 {
+				// Existing PR - attach to it
+				prNum := issue.PrNumber
+				req.PrNumber = &prNum
+			} else {
+				// New branch using Linear's suggested name
+				if issue.BranchName != "" {
+					req.BranchName = &issue.BranchName
+				}
+			}
+		}
 	default:
 		req.Title = "New session"
 	}
@@ -633,6 +768,21 @@ func (m NewSessionModel) View() tea.View {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.prTable.View()))
 		b.WriteString("\n")
 		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+		return tea.NewView(b.String())
+	}
+
+	if m.phase == newSessionPhaseIssueSelect {
+		var b strings.Builder
+		b.WriteString(m.headerView())
+		if m.issueErr != nil {
+			b.WriteString(renderError(fmt.Sprintf("Error loading issues: %v", m.issueErr), m.width))
+		} else if !m.issueTableReady {
+			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Loading Linear issues..."))
+		} else {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.issueTable.View()))
+			b.WriteString("\n")
+			b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+		}
 		return tea.NewView(b.String())
 	}
 

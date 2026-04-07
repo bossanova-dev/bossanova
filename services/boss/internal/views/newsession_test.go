@@ -13,13 +13,15 @@ import (
 // stubClient implements client.BossClient for testing NewSessionModel.
 // Only the methods used by the wizard are implemented; the rest panic.
 type stubClient struct {
-	repos     []*pb.Repo
-	reposErr  error
-	created   *pb.Session
-	createErr error
-	createReq *pb.CreateSessionRequest // captures the last CreateSession request
-	prs       []*pb.PRSummary
-	prsErr    error
+	repos            []*pb.Repo
+	reposErr         error
+	created          *pb.Session
+	createErr        error
+	createReq        *pb.CreateSessionRequest // captures the last CreateSession request
+	prs              []*pb.PRSummary
+	prsErr           error
+	trackerIssues    []*pb.TrackerIssue
+	trackerIssuesErr error
 }
 
 func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
@@ -39,7 +41,7 @@ func (s *stubClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, erro
 }
 
 func (s *stubClient) ListTrackerIssues(context.Context, string) ([]*pb.TrackerIssue, error) {
-	return nil, nil
+	return s.trackerIssues, s.trackerIssuesErr
 }
 
 // stubCreateStream implements client.CreateSessionStream for testing.
@@ -480,5 +482,215 @@ func TestNewSession_ErrorInFormPhase_EscGoesBackToTypeSelect(t *testing.T) {
 	}
 	if m.err != nil {
 		t.Errorf("expected err to be nil, got %v", m.err)
+	}
+}
+
+// --- Linear Ticket Tests ---
+
+func TestNewSession_LinearTicketOptionHiddenWithoutConfig(t *testing.T) {
+	sc := &stubClient{repos: []*pb.Repo{
+		{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main"},
+	}}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Should be at type select phase
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
+	}
+
+	// Build options - should not include Linear ticket
+	opts := m.buildSessionTypeOptions()
+	if len(opts) != 3 {
+		t.Fatalf("len(opts) = %d, want 3 (no Linear option without API key)", len(opts))
+	}
+
+	// Verify Linear option is not in the list
+	for _, opt := range opts {
+		if opt.typ == sessionTypeLinearTicket {
+			t.Fatal("Linear ticket option should not be shown when LinearApiKey is empty")
+		}
+	}
+}
+
+func TestNewSession_LinearTicketOptionShownWithConfig(t *testing.T) {
+	sc := &stubClient{repos: []*pb.Repo{
+		{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main", LinearApiKey: "lin_api_abc123"},
+	}}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Should be at type select phase
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
+	}
+
+	// Build options - should include Linear ticket
+	opts := m.buildSessionTypeOptions()
+	if len(opts) != 4 {
+		t.Fatalf("len(opts) = %d, want 4 (including Linear option)", len(opts))
+	}
+
+	// Verify Linear option is in the list
+	found := false
+	for _, opt := range opts {
+		if opt.typ == sessionTypeLinearTicket {
+			found = true
+			if opt.label != "Work on a Linear ticket" {
+				t.Fatalf("Linear option label = %q, want %q", opt.label, "Work on a Linear ticket")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Linear ticket option should be shown when LinearApiKey is set")
+	}
+}
+
+func TestNewSession_LinearTicketCreatesSessionWithBracketTitle(t *testing.T) {
+	sc := &stubClient{
+		repos: []*pb.Repo{
+			{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main", LinearApiKey: "lin_api_abc123"},
+		},
+		trackerIssues: []*pb.TrackerIssue{
+			{ExternalId: "ENG-123", Title: "Add authentication", Description: "Implement user auth flow", State: "In Progress"},
+		},
+		created: &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Select Linear ticket type
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+
+	// Simulate receiving issues
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+
+	// Should be at issue select phase
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect (%d)", m.phase, newSessionPhaseIssueSelect)
+	}
+
+	// Select first issue and press enter
+	m.selectedIssue = sc.trackerIssues[0]
+	cmd := m.startCreating()
+
+	// Execute the command to trigger CreateSession
+	if cmd != nil {
+		cmd()
+	}
+
+	// Verify request has bracket title format
+	if sc.createReq.Title != "[ENG-123] Add authentication" {
+		t.Fatalf("CreateSession title = %q, want %q", sc.createReq.Title, "[ENG-123] Add authentication")
+	}
+
+	// Verify plan is set to description
+	if sc.createReq.Plan != "Implement user auth flow" {
+		t.Fatalf("CreateSession plan = %q, want %q", sc.createReq.Plan, "Implement user auth flow")
+	}
+
+	// Verify no PR number is set for new issue
+	if sc.createReq.PrNumber != nil {
+		t.Fatalf("CreateSession PrNumber = %v, want nil for new issue", sc.createReq.PrNumber)
+	}
+}
+
+func TestNewSession_LinearTicketExistingPRAttaches(t *testing.T) {
+	prNum := int32(456)
+	sc := &stubClient{
+		repos: []*pb.Repo{
+			{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main", LinearApiKey: "lin_api_abc123"},
+		},
+		trackerIssues: []*pb.TrackerIssue{
+			{
+				ExternalId:     "ENG-456",
+				Title:          "Fix bug",
+				Description:    "Fix critical bug",
+				State:          "In Progress",
+				PrNumber:       prNum,
+				ExistingBranch: "eng-456-fix-bug",
+			},
+		},
+		created: &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Select Linear ticket type and receive issues
+	m.selectedType = sessionTypeLinearTicket
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+
+	// Select issue with existing PR
+	m.selectedIssue = sc.trackerIssues[0]
+	cmd := m.startCreating()
+
+	// Execute the command to trigger CreateSession
+	if cmd != nil {
+		cmd()
+	}
+
+	// Verify request attaches to existing PR
+	if sc.createReq.PrNumber == nil {
+		t.Fatal("CreateSession PrNumber should be set for issue with existing PR")
+	}
+	if *sc.createReq.PrNumber != prNum {
+		t.Fatalf("CreateSession PrNumber = %d, want %d", *sc.createReq.PrNumber, prNum)
+	}
+
+	// Verify no branch name is set (using existing PR's branch)
+	if sc.createReq.BranchName != nil {
+		t.Fatalf("CreateSession BranchName = %v, want nil when attaching to existing PR", *sc.createReq.BranchName)
+	}
+}
+
+func TestNewSession_LinearTicketNewBranch(t *testing.T) {
+	sc := &stubClient{
+		repos: []*pb.Repo{
+			{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main", LinearApiKey: "lin_api_abc123"},
+		},
+		trackerIssues: []*pb.TrackerIssue{
+			{
+				ExternalId:  "ENG-789",
+				Title:       "New feature",
+				Description: "Add new feature",
+				State:       "Todo",
+				BranchName:  "eng-789-new-feature",
+			},
+		},
+		created: &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Select Linear ticket type and receive issues
+	m.selectedType = sessionTypeLinearTicket
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+
+	// Select issue without existing PR
+	m.selectedIssue = sc.trackerIssues[0]
+	cmd := m.startCreating()
+
+	// Execute the command to trigger CreateSession
+	if cmd != nil {
+		cmd()
+	}
+
+	// Verify request uses Linear's suggested branch name
+	if sc.createReq.BranchName == nil {
+		t.Fatal("CreateSession BranchName should be set for new issue")
+	}
+	if *sc.createReq.BranchName != "eng-789-new-feature" {
+		t.Fatalf("CreateSession BranchName = %q, want %q", *sc.createReq.BranchName, "eng-789-new-feature")
+	}
+
+	// Verify no PR number is set for new issue
+	if sc.createReq.PrNumber != nil {
+		t.Fatalf("CreateSession PrNumber = %v, want nil for new issue", sc.createReq.PrNumber)
+	}
+
+	// Verify plan is set
+	if sc.createReq.Plan != "Add new feature" {
+		t.Fatalf("CreateSession plan = %q, want %q", sc.createReq.Plan, "Add new feature")
 	}
 }

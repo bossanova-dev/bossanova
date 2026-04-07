@@ -40,17 +40,19 @@ type queuedTask struct {
 // Each repo has an in-memory FIFO queue that ensures only one task
 // is processed at a time per repo.
 type Orchestrator struct {
-	sources        TaskSourceProvider
-	repos          db.RepoStore
-	taskMappings   db.TaskMappingStore
-	sessionCreator SessionCreator
-	provider       vcs.Provider
-	interval       time.Duration
-	logger         zerolog.Logger
+	sources         TaskSourceProvider
+	repos           db.RepoStore
+	taskMappings    db.TaskMappingStore
+	sessionCreator  SessionCreator
+	provider        vcs.Provider
+	livenessChecker SessionLivenessChecker // optional; nil-safe
+	interval        time.Duration
+	logger          zerolog.Logger
 
 	mu                sync.Mutex
 	queues            map[string][]queuedTask // keyed by repo ID
 	active            map[string]bool         // repo ID → true if a task is being processed
+	activeMapping     map[string]string       // repo ID → mapping ID (for CREATE_SESSION tasks only)
 	completedSessions map[string]bool         // guards against concurrent HandleSessionCompleted; bounded by daemon lifetime
 }
 
@@ -61,6 +63,7 @@ func New(
 	taskMappings db.TaskMappingStore,
 	sessionCreator SessionCreator,
 	provider vcs.Provider,
+	livenessChecker SessionLivenessChecker,
 	interval time.Duration,
 	logger zerolog.Logger,
 ) *Orchestrator {
@@ -70,10 +73,12 @@ func New(
 		taskMappings:      taskMappings,
 		sessionCreator:    sessionCreator,
 		provider:          provider,
+		livenessChecker:   livenessChecker,
 		interval:          interval,
 		logger:            logger.With().Str("component", "task-orchestrator").Logger(),
 		queues:            make(map[string][]queuedTask),
 		active:            make(map[string]bool),
+		activeMapping:     make(map[string]string),
 		completedSessions: make(map[string]bool),
 	}
 }
@@ -118,6 +123,9 @@ func (o *Orchestrator) poll(ctx context.Context) {
 
 	// Retry any pending plugin updates from previous cycles.
 	o.RetryPendingUpdates(ctx)
+
+	// Recover any stuck tasks (dead Claude processes, orphaned mappings).
+	o.recoverStaleTasks(ctx)
 
 	repos, err := o.repos.List(ctx)
 	if err != nil {
@@ -360,6 +368,15 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 		break
 	}
 
+	// Clear active mapping before dequeuing so the recovery sweep
+	// doesn't re-process this mapping. Guard against deleting a
+	// newer mapping that replaced ours while we were completing.
+	o.mu.Lock()
+	if o.activeMapping[mapping.RepoID] == mapping.ID {
+		delete(o.activeMapping, mapping.RepoID)
+	}
+	o.mu.Unlock()
+
 	// Process the next queued task for this repo.
 	o.dequeueNext(ctx, mapping.RepoID)
 }
@@ -404,6 +421,108 @@ func (o *Orchestrator) RetryPendingUpdates(ctx context.Context) {
 				o.logger.Error().Err(err).Str("mapping", mapping.ID).Msg("clear pending update failed")
 			}
 			break
+		}
+	}
+}
+
+// recoverStaleTasks checks for CREATE_SESSION tasks that are stuck
+// (dead Claude process, orphaned mapping) and forces queue advancement.
+// This is called at the start of each poll cycle as a safety net.
+func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
+	o.mu.Lock()
+	// Snapshot the active mappings so we don't hold the lock during DB calls.
+	activeMappings := make(map[string]string, len(o.activeMapping))
+	for repoID, mappingID := range o.activeMapping {
+		activeMappings[repoID] = mappingID
+	}
+	o.mu.Unlock()
+
+	for repoID, mappingID := range activeMappings {
+		// Re-check under lock that the mapping hasn't changed since we
+		// took the snapshot. A concurrent HandleSessionCompleted may have
+		// already completed this mapping and started a new task, which
+		// would set a different mapping ID for the same repo.
+		o.mu.Lock()
+		currentMappingID, stillActive := o.activeMapping[repoID]
+		o.mu.Unlock()
+		if !stillActive || currentMappingID != mappingID {
+			// A concurrent completion already handled this mapping.
+			continue
+		}
+
+		mapping, err := o.taskMappings.Get(ctx, mappingID)
+		if err != nil {
+			// Mapping not found — it was deleted or the DB is inconsistent.
+			// Clear the active state and advance the queue.
+			o.logger.Warn().
+				Str("repo", repoID).
+				Str("mapping", mappingID).
+				Msg("active mapping not found, clearing stale state")
+			o.mu.Lock()
+			// Double-check: only clear if the mapping hasn't been replaced.
+			if o.activeMapping[repoID] == mappingID {
+				delete(o.activeMapping, repoID)
+			}
+			o.mu.Unlock()
+			o.dequeueNext(ctx, repoID)
+			continue
+		}
+
+		switch mapping.Status {
+		case models.TaskMappingStatusCompleted, models.TaskMappingStatusFailed, models.TaskMappingStatusSkipped:
+			// Already terminal — clear active state and advance.
+			o.logger.Info().
+				Str("repo", repoID).
+				Str("mapping", mappingID).
+				Int("status", int(mapping.Status)).
+				Msg("active mapping already terminal, advancing queue")
+			o.mu.Lock()
+			if o.activeMapping[repoID] == mappingID {
+				delete(o.activeMapping, repoID)
+			}
+			o.mu.Unlock()
+			o.dequeueNext(ctx, repoID)
+
+		case models.TaskMappingStatusInProgress:
+			if mapping.SessionID != nil {
+				// Has a session — check if it's still alive.
+				if o.livenessChecker != nil && !o.livenessChecker.IsSessionAlive(ctx, *mapping.SessionID) {
+					o.logger.Warn().
+						Str("repo", repoID).
+						Str("mapping", mappingID).
+						Str("session", *mapping.SessionID).
+						Msg("session dead, recovering stuck task")
+					// Reuse the existing idempotent completion flow.
+					o.HandleSessionCompleted(ctx, *mapping.SessionID, models.TaskMappingStatusFailed)
+				}
+			} else {
+				// InProgress with no session — orphaned. Mark failed and advance.
+				o.logger.Warn().
+					Str("repo", repoID).
+					Str("mapping", mappingID).
+					Msg("in-progress mapping with no session, marking failed")
+				o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+				o.mu.Lock()
+				if o.activeMapping[repoID] == mappingID {
+					delete(o.activeMapping, repoID)
+				}
+				o.mu.Unlock()
+				o.dequeueNext(ctx, repoID)
+			}
+
+		default:
+			// Pending — shouldn't be in activeMapping. Mark failed and advance.
+			o.logger.Warn().
+				Str("repo", repoID).
+				Str("mapping", mappingID).
+				Msg("pending mapping in active state, marking failed")
+			o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+			o.mu.Lock()
+			if o.activeMapping[repoID] == mappingID {
+				delete(o.activeMapping, repoID)
+			}
+			o.mu.Unlock()
+			o.dequeueNext(ctx, repoID)
 		}
 	}
 }
@@ -557,6 +676,11 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 			Str("mapping", mapping.ID).
 			Msg("update task mapping with session ID failed")
 	}
+
+	// Track the active mapping so the recovery sweep can detect stuck tasks.
+	o.mu.Lock()
+	o.activeMapping[repo.id] = mapping.ID
+	o.mu.Unlock()
 
 	o.logger.Info().
 		Str("session", sess.ID).

@@ -60,11 +60,13 @@ type UpdateTaskMappingParams struct {
 // TaskMappingStore defines the interface for task mapping persistence.
 type TaskMappingStore interface {
 	Create(ctx context.Context, params CreateTaskMappingParams) (*models.TaskMapping, error)
+	Get(ctx context.Context, id string) (*models.TaskMapping, error)
 	GetByExternalID(ctx context.Context, externalID string) (*models.TaskMapping, error)
 	GetBySessionID(ctx context.Context, sessionID string) (*models.TaskMapping, error)
 	Update(ctx context.Context, id string, params UpdateTaskMappingParams) (*models.TaskMapping, error)
 	Delete(ctx context.Context, id string) error
 	ListPending(ctx context.Context) ([]*models.TaskMapping, error)
+	FailOrphanedMappings(ctx context.Context) (int64, error)
 }
 
 // CreateSessionParams holds the parameters for creating a new session.

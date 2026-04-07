@@ -34,7 +34,7 @@ func (s *SQLiteTaskMappingStore) Create(ctx context.Context, params CreateTaskMa
 	if err != nil {
 		return nil, fmt.Errorf("insert task mapping: %w", err)
 	}
-	return s.get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *SQLiteTaskMappingStore) GetByExternalID(ctx context.Context, externalID string) (*models.TaskMapping, error) {
@@ -86,7 +86,7 @@ func (s *SQLiteTaskMappingStore) Update(ctx context.Context, id string, params U
 	if n, _ := res.RowsAffected(); n == 0 {
 		return nil, sql.ErrNoRows
 	}
-	return s.get(ctx, id)
+	return s.Get(ctx, id)
 }
 
 func (s *SQLiteTaskMappingStore) Delete(ctx context.Context, id string) error {
@@ -118,9 +118,25 @@ func (s *SQLiteTaskMappingStore) ListPending(ctx context.Context) ([]*models.Tas
 	return mappings, rows.Err()
 }
 
-func (s *SQLiteTaskMappingStore) get(ctx context.Context, id string) (*models.TaskMapping, error) {
+func (s *SQLiteTaskMappingStore) Get(ctx context.Context, id string) (*models.TaskMapping, error) {
 	row := s.db.QueryRowContext(ctx, taskMappingSelectSQL+" WHERE id = ?", id)
 	return scanTaskMapping(row)
+}
+
+// FailOrphanedMappings marks all Pending/InProgress task mappings as Failed.
+// This is a startup cleanup to recover from a previous daemon crash where
+// tasks were left in non-terminal states with no driving goroutine.
+func (s *SQLiteTaskMappingStore) FailOrphanedMappings(ctx context.Context) (int64, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE task_mappings SET status = ?, updated_at = ? WHERE status IN (?, ?)`,
+		int(models.TaskMappingStatusFailed), now,
+		int(models.TaskMappingStatusPending), int(models.TaskMappingStatusInProgress),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("fail orphaned task mappings: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 const taskMappingSelectSQL = `SELECT id, external_id, plugin_name, session_id, repo_id,

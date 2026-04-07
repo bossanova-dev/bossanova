@@ -101,6 +101,25 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			SetupScript:       setupScript,
 			SetupScriptOutput: setupOutput,
 		})
+		if err != nil {
+			// The branch may not exist on the remote yet (e.g. a Linear ticket
+			// with no PR). Fall back to creating a new branch with that name.
+			l.logger.Info().
+				Str("branch", existingBranch).
+				Err(err).
+				Msg("existing branch not found on remote, creating new branch")
+			result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
+				RepoPath:          repo.LocalPath,
+				BaseBranch:        session.BaseBranch,
+				WorktreeBaseDir:   repo.WorktreeBaseDir,
+				RepoName:          repo.DisplayName,
+				Title:             session.Title,
+				BranchName:        existingBranch,
+				SetupScript:       setupScript,
+				SetupScriptOutput: setupOutput,
+				Force:             forceBranch,
+			})
+		}
 	} else {
 		result, err = l.worktrees.Create(ctx, gitpkg.CreateOpts{
 			RepoPath:          repo.LocalPath,

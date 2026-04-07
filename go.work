@@ -4,6 +4,7 @@ use (
 	./lib/bossalib
 	./plugins/bossd-plugin-autopilot
 	./plugins/bossd-plugin-dependabot
+	./plugins/bossd-plugin-linear
 	./plugins/bossd-plugin-repair
 	./services/boss
 	./services/bossd

@@ -201,12 +201,13 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 // --- Mock WorktreeManager ---
 
 type mockWorktreeManager struct {
-	created             []gitpkg.CreateOpts
-	createdFromExisting []gitpkg.CreateFromExistingBranchOpts
-	archived            []string
-	resurrected         []gitpkg.ResurrectOpts
-	pushed              []string
-	originURL           string // returned by DetectOriginURL
+	created                     []gitpkg.CreateOpts
+	createdFromExisting         []gitpkg.CreateFromExistingBranchOpts
+	createFromExistingBranchErr error // if set, CreateFromExistingBranch returns this error
+	archived                    []string
+	resurrected                 []gitpkg.ResurrectOpts
+	pushed                      []string
+	originURL                   string // returned by DetectOriginURL
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -258,6 +259,9 @@ func (m *mockWorktreeManager) DetectDefaultBranch(_ context.Context, _ string) (
 
 func (m *mockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
 	m.createdFromExisting = append(m.createdFromExisting, opts)
+	if m.createFromExistingBranchErr != nil {
+		return nil, m.createFromExistingBranchErr
+	}
 	return &gitpkg.CreateResult{
 		WorktreePath: "/tmp/worktrees/" + opts.BranchName,
 		BranchName:   opts.BranchName,
@@ -465,6 +469,55 @@ func TestStartSession(t *testing.T) {
 	}
 	if sess.ClaudeSessionID == nil || *sess.ClaudeSessionID != "claude-123" {
 		t.Errorf("claude session id = %v, want claude-123", sess.ClaudeSessionID)
+	}
+}
+
+func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		createFromExistingBranchErr: fmt.Errorf("fetch branch: git fetch origin dave/fre-1176: exit status 128: fatal: couldn't find remote ref dave/fre-1176"),
+	}
+	cr := newMockClaudeRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "FRE-1176 Fix login bug",
+		Plan:       "Fix the bug",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+
+	// Pass a branch name that doesn't exist on the remote.
+	if err := lc.StartSession(ctx, "sess-1", "dave/fre-1176", false, false, nil); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Should have tried CreateFromExistingBranch first.
+	if len(wt.createdFromExisting) != 1 {
+		t.Fatalf("expected 1 CreateFromExistingBranch call, got %d", len(wt.createdFromExisting))
+	}
+
+	// Should have fallen back to Create with the branch name.
+	if len(wt.created) != 1 {
+		t.Fatalf("expected 1 Create call (fallback), got %d", len(wt.created))
+	}
+	if wt.created[0].BranchName != "dave/fre-1176" {
+		t.Errorf("Create BranchName = %q, want dave/fre-1176", wt.created[0].BranchName)
+	}
+	if wt.created[0].BaseBranch != "main" {
+		t.Errorf("Create BaseBranch = %q, want main", wt.created[0].BaseBranch)
 	}
 }
 

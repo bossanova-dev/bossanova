@@ -36,6 +36,7 @@ plugins/bossd-plugin-repair/docs/handoffs/
 /bossd-plugin-dependabot
 /plugins/bossd-plugin-autopilot/bossd-plugin-autopilot
 /plugins/bossd-plugin-dependabot/bossd-plugin-dependabot
+/plugins/bossd-plugin-linear/bossd-plugin-linear
 /plugins/bossd-plugin-repair/bossd-plugin-repair
 /services/bossd/main
 

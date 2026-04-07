@@ -1,6 +1,6 @@
 .PHONY: all clean format build test
 
-PLUGINS := bossd-plugin-autopilot bossd-plugin-dependabot
+PLUGINS := bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-linear
 
 all: clean format build test
 

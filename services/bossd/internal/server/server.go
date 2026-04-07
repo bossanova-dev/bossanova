@@ -354,10 +354,6 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.LinearApiKey != nil {
 		params.LinearAPIKey = msg.LinearApiKey
 	}
-	if msg.LinearTeamKey != nil {
-		params.LinearTeamKey = msg.LinearTeamKey
-	}
-
 	repo, err := s.repos.Update(ctx, msg.Id, params)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update repo: %w", err))
@@ -415,17 +411,33 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear_api_key not configured for this repo"))
 	}
 
-	// Find first TaskSource plugin.
+	// Find Linear plugin among TaskSource plugins.
+	if s.pluginHost == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("plugin host not available"))
+	}
 	sources := s.pluginHost.GetTaskSources()
 	if len(sources) == 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no task source plugins available"))
 	}
-	source := sources[0]
+
+	var source plugin.TaskSource
+	for _, src := range sources {
+		info, err := src.GetInfo(ctx)
+		if err != nil {
+			continue
+		}
+		if info.Name == "linear" {
+			source = src
+			break
+		}
+	}
+	if source == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear plugin not found"))
+	}
 
 	// Call ListAvailableIssues.
 	config := map[string]string{
-		"linear_api_key":  repo.LinearAPIKey,
-		"linear_team_key": repo.LinearTeamKey,
+		"linear_api_key": repo.LinearAPIKey,
 	}
 	issues, err := source.ListAvailableIssues(ctx, repo.OriginURL, config)
 	if err != nil {
@@ -477,6 +489,9 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 				prURL = &u
 			}
 		}
+	} else if msg.BranchName != nil && *msg.BranchName != "" {
+		// Use the branch name from the request (e.g., from Linear's suggested branch name).
+		headBranch = *msg.BranchName
 	}
 
 	createParams := db.CreateSessionParams{

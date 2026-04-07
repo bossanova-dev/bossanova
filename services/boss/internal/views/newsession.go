@@ -131,7 +131,6 @@ type NewSessionModel struct {
 	trackerIssues   []*pb.TrackerIssue
 	issueTable      table.Model
 	issueTableReady bool
-	issueErr        error
 	selectedIssue   *pb.TrackerIssue
 
 	// Form-bound values (heap-allocated for stable pointers)
@@ -365,7 +364,7 @@ func (m *NewSessionModel) buildForm() {
 			),
 		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
 
-	case sessionTypeQuickChat, sessionTypeExistingPR, sessionTypeExecutePlan:
+	case sessionTypeQuickChat, sessionTypeExistingPR, sessionTypeExecutePlan, sessionTypeLinearTicket:
 		// No form needed for these types.
 	}
 }
@@ -425,7 +424,6 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case issuesMsg:
 		m.trackerIssues = msg.issues
 		if msg.err != nil {
-			m.issueErr = msg.err
 			m.err = msg.err
 			return m, nil
 		}
@@ -534,6 +532,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc":
 				m.phase = newSessionPhaseTypeSelect
+				m.forceBranch = false
 				return m, nil
 			case "enter":
 				idx := m.prTable.Cursor()
@@ -553,6 +552,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc":
 				m.phase = newSessionPhaseTypeSelect
+				m.forceBranch = false
 				return m, nil
 			case "enter":
 				idx := m.issueTable.Cursor()
@@ -576,6 +576,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.form = nil
 				m.err = nil
 				m.fd = nil
+				m.forceBranch = false
 				return m, nil
 			}
 			m.cancel = true
@@ -592,6 +593,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.form = nil
 			m.err = nil
 			m.fd = nil
+			m.forceBranch = false
 			return m, nil
 		}
 
@@ -641,10 +643,20 @@ func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.
 		return m, m.startCreating()
 	case "n", "N", "esc":
 		m.confirmingOverwrite = false
+		m.forceBranch = false
 		m.err = nil
-		m.phase = newSessionPhaseForm
-		m.buildForm()
-		return m, m.form.Init()
+		switch m.selectedType {
+		case sessionTypeLinearTicket:
+			m.phase = newSessionPhaseIssueSelect
+			return m, nil
+		case sessionTypeExistingPR:
+			m.phase = newSessionPhasePRSelect
+			return m, nil
+		default:
+			m.phase = newSessionPhaseForm
+			m.buildForm()
+			return m, m.form.Init()
+		}
 	}
 	return m, nil
 }
@@ -696,11 +708,9 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 				// Existing PR - attach to it
 				prNum := issue.PrNumber
 				req.PrNumber = &prNum
-			} else {
+			} else if issue.BranchName != "" {
 				// New branch using Linear's suggested name
-				if issue.BranchName != "" {
-					req.BranchName = &issue.BranchName
-				}
+				req.BranchName = &issue.BranchName
 			}
 		}
 	default:
@@ -774,9 +784,7 @@ func (m NewSessionModel) View() tea.View {
 	if m.phase == newSessionPhaseIssueSelect {
 		var b strings.Builder
 		b.WriteString(m.headerView())
-		if m.issueErr != nil {
-			b.WriteString(renderError(fmt.Sprintf("Error loading issues: %v", m.issueErr), m.width))
-		} else if !m.issueTableReady {
+		if !m.issueTableReady {
 			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Loading Linear issues..."))
 		} else {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.issueTable.View()))

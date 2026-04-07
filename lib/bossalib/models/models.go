@@ -34,7 +34,6 @@ type Repo struct {
 	CanAutoResolveConflicts bool
 	MergeStrategy           MergeStrategy
 	LinearAPIKey            string
-	LinearTeamKey           string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }

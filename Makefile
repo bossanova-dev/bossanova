@@ -1,11 +1,11 @@
 .PHONY: all generate build plugins test lint clean split format build-all plugins-all \
-	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot test-repair \
-	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-repair lint-proto \
-	build-boss build-bossd build-bosso build-autopilot build-dependabot build-repair \
+	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot test-linear test-repair \
+	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-linear lint-repair lint-proto \
+	build-boss build-bossd build-bosso build-autopilot build-dependabot build-linear build-repair \
 	copy-skills \
 	mutate mutate-diff mutate-report mutate-survivors mutate-fix mutate-loop \
 	mutate-bossalib mutate-boss mutate-bossd mutate-bosso \
-	mutate-autopilot mutate-dependabot mutate-repair
+	mutate-autopilot mutate-dependabot mutate-linear mutate-repair
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all plugins-all
@@ -15,7 +15,7 @@ BIN_DIR := bin
 
 # All Go modules in the workspace
 MODULES := lib/bossalib services/boss services/bossd services/bosso \
-	plugins/bossd-plugin-autopilot plugins/bossd-plugin-dependabot plugins/bossd-plugin-repair
+	plugins/bossd-plugin-autopilot plugins/bossd-plugin-dependabot plugins/bossd-plugin-linear plugins/bossd-plugin-repair
 
 # Mutation testing output directory
 MUTATE_DIR := .mutate
@@ -75,11 +75,14 @@ $(BIN_DIR)/bossd-plugin-autopilot: $(GEN_STAMP)
 $(BIN_DIR)/bossd-plugin-dependabot: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
 
+$(BIN_DIR)/bossd-plugin-linear: $(GEN_STAMP)
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-linear ./plugins/bossd-plugin-linear
+
 $(BIN_DIR)/bossd-plugin-repair: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-repair ./plugins/bossd-plugin-repair
 
 ## plugins: Build all plugin binaries
-plugins: $(BIN_DIR)/bossd-plugin-autopilot $(BIN_DIR)/bossd-plugin-dependabot $(BIN_DIR)/bossd-plugin-repair
+plugins: $(BIN_DIR)/bossd-plugin-autopilot $(BIN_DIR)/bossd-plugin-dependabot $(BIN_DIR)/bossd-plugin-linear $(BIN_DIR)/bossd-plugin-repair
 
 ## test: Run tests across all modules (generates protos first if needed)
 test: $(GEN_STAMP) copy-skills
@@ -106,6 +109,9 @@ test-autopilot:
 
 test-dependabot:
 	$(MAKE) -C plugins/bossd-plugin-dependabot test
+
+test-linear:
+	$(MAKE) -C plugins/bossd-plugin-linear test
 
 test-repair:
 	$(MAKE) -C plugins/bossd-plugin-repair test
@@ -140,6 +146,9 @@ lint-autopilot:
 lint-dependabot:
 	cd plugins/bossd-plugin-dependabot && golangci-lint run ./...
 
+lint-linear:
+	cd plugins/bossd-plugin-linear && golangci-lint run ./...
+
 lint-repair:
 	cd plugins/bossd-plugin-repair && golangci-lint run ./...
 
@@ -170,6 +179,9 @@ build-autopilot:
 build-dependabot:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
 
+build-linear:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-linear ./plugins/bossd-plugin-linear
+
 build-repair:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-repair ./plugins/bossd-plugin-repair
 
@@ -189,7 +201,7 @@ PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64
 # Only boss and bossd are distributed (bosso is deployed to Fly.io directly)
 DIST_BINS := boss bossd
 # Plugins for distribution
-DIST_PLUGINS := bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-repair
+DIST_PLUGINS := bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-linear bossd-plugin-repair
 
 build-all: $(GEN_STAMP) copy-skills
 	@for platform in $(PLATFORMS); do \
@@ -373,6 +385,9 @@ mutate-autopilot:
 
 mutate-dependabot:
 	$(call run-mutate-module,plugins/bossd-plugin-dependabot,bossd-plugin-dependabot,$(MUTATE_TIMEOUT))
+
+mutate-linear:
+	$(call run-mutate-module,plugins/bossd-plugin-linear,bossd-plugin-linear,$(MUTATE_TIMEOUT))
 
 mutate-repair:
 	$(call run-mutate-module,plugins/bossd-plugin-repair,bossd-plugin-repair,$(MUTATE_TIMEOUT))

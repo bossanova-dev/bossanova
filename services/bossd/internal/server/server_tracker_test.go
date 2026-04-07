@@ -18,7 +18,7 @@ type stubTaskSource struct {
 
 func (s *stubTaskSource) GetInfo(context.Context) (*pb.PluginInfo, error) {
 	return &pb.PluginInfo{
-		Name:         "stub-linear",
+		Name:         "linear",
 		Version:      "test",
 		Capabilities: []string{"task_source"},
 	}, nil
@@ -36,15 +36,6 @@ func (s *stubTaskSource) ListAvailableIssues(ctx context.Context, repoOriginURL 
 	s.receivedRepoOriginURL = repoOriginURL
 	s.receivedConfig = config
 	return s.issuesToReturn, s.errToReturn
-}
-
-// stubPluginHost implements PluginHost for testing
-type stubPluginHost struct {
-	taskSources []plugin.TaskSource
-}
-
-func (h *stubPluginHost) GetTaskSources() []plugin.TaskSource {
-	return h.taskSources
 }
 
 // TestStubTaskSourceImplementsInterface verifies the stub implements the interface correctly
@@ -68,8 +59,7 @@ func TestStubTaskSourceListAvailableIssues(t *testing.T) {
 	}
 
 	config := map[string]string{
-		"linear_api_key":  "lin_api_test123",
-		"linear_team_key": "ENG",
+		"linear_api_key": "lin_api_test123",
 	}
 
 	issues, err := stub.ListAvailableIssues(context.Background(), "https://github.com/test/repo", config)
@@ -87,9 +77,5 @@ func TestStubTaskSourceListAvailableIssues(t *testing.T) {
 
 	if stub.receivedConfig["linear_api_key"] != "lin_api_test123" {
 		t.Errorf("Expected linear_api_key 'lin_api_test123', got '%s'", stub.receivedConfig["linear_api_key"])
-	}
-
-	if stub.receivedConfig["linear_team_key"] != "ENG" {
-		t.Errorf("Expected linear_team_key 'ENG', got '%s'", stub.receivedConfig["linear_team_key"])
 	}
 }

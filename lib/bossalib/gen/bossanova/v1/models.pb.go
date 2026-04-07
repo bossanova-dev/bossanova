@@ -902,7 +902,6 @@ type Repo struct {
 	CanAutoResolveConflicts bool                   `protobuf:"varint,13,opt,name=can_auto_resolve_conflicts,json=canAutoResolveConflicts,proto3" json:"can_auto_resolve_conflicts,omitempty"`
 	MergeStrategy           string                 `protobuf:"bytes,14,opt,name=merge_strategy,json=mergeStrategy,proto3" json:"merge_strategy,omitempty"`
 	LinearApiKey            string                 `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
-	LinearTeamKey           string                 `protobuf:"bytes,16,opt,name=linear_team_key,json=linearTeamKey,proto3" json:"linear_team_key,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -1038,13 +1037,6 @@ func (x *Repo) GetMergeStrategy() string {
 func (x *Repo) GetLinearApiKey() string {
 	if x != nil {
 		return x.LinearApiKey
-	}
-	return ""
-}
-
-func (x *Repo) GetLinearTeamKey() string {
-	if x != nil {
-		return x.LinearTeamKey
 	}
 	return ""
 }
@@ -2533,7 +2525,7 @@ var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xce\x05\n" +
+	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xac\x05\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -2554,9 +2546,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
-	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKey\x12&\n" +
-	"\x0flinear_team_key\x18\x10 \x01(\tR\rlinearTeamKeyB\x0f\n" +
-	"\r_setup_script\"\x9d\v\n" +
+	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\x9d\v\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +

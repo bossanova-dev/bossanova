@@ -297,6 +297,11 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.form = nil
 				return m, nil
 			}
+			if m.phase == repoAddPhaseDetails {
+				m.phase = repoAddPhaseInput
+				m.buildInputForm()
+				return m, m.form.Init()
+			}
 			m.cancel = true
 			return m, nil
 		}
@@ -330,6 +335,12 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.form = nil
 				m.err = nil
 				return m, nil
+			}
+			if m.phase == repoAddPhaseDetails {
+				m.phase = repoAddPhaseInput
+				m.buildInputForm()
+				m.err = nil
+				return m, m.form.Init()
 			}
 			m.cancel = true
 			return m, nil

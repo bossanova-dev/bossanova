@@ -270,7 +270,9 @@ func (m NewSessionModel) prTableHeight() int {
 }
 
 func (m *NewSessionModel) buildForm() {
-	m.fd = &formData{}
+	if m.fd == nil {
+		m.fd = &formData{}
+	}
 
 	switch m.selectedType {
 	case sessionTypeNewPR:
@@ -454,6 +456,13 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "esc":
+			if m.phase == newSessionPhaseForm {
+				m.phase = newSessionPhaseTypeSelect
+				m.form = nil
+				m.err = nil
+				m.fd = nil
+				return m, nil
+			}
 			m.cancel = true
 			return m, nil
 		}
@@ -464,7 +473,10 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_, cmd := m.form.Update(msg)
 
 		if m.form.State == huh.StateAborted {
-			m.cancel = true
+			m.phase = newSessionPhaseTypeSelect
+			m.form = nil
+			m.err = nil
+			m.fd = nil
 			return m, nil
 		}
 
@@ -510,8 +522,10 @@ func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.
 		return m, m.startCreating()
 	case "n", "N", "esc":
 		m.confirmingOverwrite = false
-		m.cancel = true
-		return m, nil
+		m.err = nil
+		m.phase = newSessionPhaseForm
+		m.buildForm()
+		return m, m.form.Init()
 	}
 	return m, nil
 }

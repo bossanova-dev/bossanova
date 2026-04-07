@@ -228,7 +228,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 
 	// Run setup script if provided.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
+		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
 			return nil, fmt.Errorf("setup script: %w", err)
 		}
 	}
@@ -296,7 +296,7 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 
 	// Run setup script if provided.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, opts.WorktreePath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
+		if err := runSetupScript(ctx, opts.RepoPath, opts.WorktreePath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
 			return fmt.Errorf("setup script: %w", err)
 		}
 	}
@@ -428,7 +428,7 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 
 	// Run setup script if provided.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
-		if err := runSetupScript(ctx, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
+		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
 			return nil, fmt.Errorf("setup script: %w", err)
 		}
 	}
@@ -441,7 +441,11 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 
 // runSetupScript executes a setup script in the given directory with a 5-minute timeout.
 // If output is non-nil, stdout and stderr are written there; otherwise they go to os.Stderr (daemon logs).
-func runSetupScript(ctx context.Context, dir, script string, output io.Writer) error {
+//
+// The following environment variables are set for the script:
+//   - BOSS_REPO_DIR:     path to the main git repository (the original clone)
+//   - BOSS_WORKTREE_DIR: path to the worktree being set up
+func runSetupScript(ctx context.Context, repoPath, dir, script string, output io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, SetupScriptTimeout)
 	defer cancel()
 
@@ -451,6 +455,10 @@ func runSetupScript(ctx context.Context, dir, script string, output io.Writer) e
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", script)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"BOSS_REPO_DIR="+repoPath,
+		"BOSS_WORKTREE_DIR="+dir,
+	)
 	cmd.Stdout = output
 	cmd.Stderr = output
 

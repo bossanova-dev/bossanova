@@ -152,7 +152,9 @@ func TestCreateWithSetupScript(t *testing.T) {
 	logger := zerolog.Nop()
 	mgr := NewManager(logger)
 
-	script := "echo hello > setup-done.txt"
+	// The script writes both a marker file and the BOSS_ env vars so we
+	// can verify they are set correctly.
+	script := `echo hello > setup-done.txt && echo "$BOSS_REPO_DIR" > boss-repo-dir.txt && echo "$BOSS_WORKTREE_DIR" > boss-worktree-dir.txt`
 	result, err := mgr.Create(context.Background(), CreateOpts{
 		RepoPath:        repoDir,
 		BaseBranch:      "main",
@@ -169,6 +171,24 @@ func TestCreateWithSetupScript(t *testing.T) {
 	markerPath := filepath.Join(result.WorktreePath, "setup-done.txt")
 	if _, err := os.Stat(markerPath); err != nil {
 		t.Errorf("setup script marker not found: %v", err)
+	}
+
+	// Verify BOSS_REPO_DIR was set to the main repository path.
+	gotRepo, err := os.ReadFile(filepath.Join(result.WorktreePath, "boss-repo-dir.txt"))
+	if err != nil {
+		t.Fatalf("read boss-repo-dir.txt: %v", err)
+	}
+	if got := strings.TrimSpace(string(gotRepo)); got != repoDir {
+		t.Errorf("BOSS_REPO_DIR = %q, want %q", got, repoDir)
+	}
+
+	// Verify BOSS_WORKTREE_DIR was set to the worktree path.
+	gotWT, err := os.ReadFile(filepath.Join(result.WorktreePath, "boss-worktree-dir.txt"))
+	if err != nil {
+		t.Fatalf("read boss-worktree-dir.txt: %v", err)
+	}
+	if got := strings.TrimSpace(string(gotWT)); got != result.WorktreePath {
+		t.Errorf("BOSS_WORKTREE_DIR = %q, want %q", got, result.WorktreePath)
 	}
 }
 

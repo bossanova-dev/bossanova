@@ -142,6 +142,20 @@
 
 ---
 
+## Linear Plugin Deferred: Encrypt API Keys at Rest
+
+**What:** Encrypt Linear API keys stored in the SQLite `repos` table, rather than storing them as plaintext.
+
+**Why:** V1 stores API keys as plaintext in SQLite with TUI masking (last 4 chars visible). This is acceptable for a single-user local daemon, but doesn't protect against filesystem access to the SQLite DB.
+
+**Approach:** Use OS keychain (macOS Keychain via `keychain` package, Linux `secret-service` via D-Bus) or an AES-encrypted field with a machine-local key derived from the OS. Fallback to plaintext on unsupported systems with a warning.
+
+**Depends on:** Linear plugin V1 (per-repo `linear_api_key` column in repos table).
+
+**Added:** 2026-04-07 (eng review of Linear integration plugin plan)
+
+---
+
 ## TUI Deferred: Keyboard Shortcut Help Overlay
 
 **What:** Add a `?` key binding that opens a full-screen overlay showing all available keyboard shortcuts for the current view. Similar to lazygit and k9s help panels.

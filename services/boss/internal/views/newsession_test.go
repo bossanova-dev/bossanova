@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -390,5 +391,90 @@ func TestNewSession_FormDataSharedAcrossUpdateCycles(t *testing.T) {
 	cmd()
 	if sc.createReq.Title != "works across copies" {
 		t.Fatalf("CreateSession title = %q, want %q", sc.createReq.Title, "works across copies")
+	}
+}
+
+func TestNewSession_FormPhase_EscGoesBackToTypeSelect(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Advance to form phase.
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
+	m.fd.title = "my feature"
+
+	// Press esc — should go back to typeSelect, not cancel.
+	m = sendSpecialKey(t, m, tea.KeyEscape)
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
+	}
+	if m.Cancelled() {
+		t.Error("expected not cancelled — should return to type select, not exit")
+	}
+	if m.form != nil {
+		t.Error("expected form to be nil after going back")
+	}
+	if m.fd != nil {
+		t.Error("expected fd to be nil after going back")
+	}
+}
+
+func TestNewSession_ConfirmOverwrite_EscGoesBackToForm(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Set up form phase with a title, then simulate overwrite confirmation.
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
+	m.fd.title = "my feature"
+	m.confirmingOverwrite = true
+
+	// Press esc — should go back to form with title preserved.
+	m = sendSpecialKey(t, m, tea.KeyEscape)
+
+	if m.phase != newSessionPhaseForm {
+		t.Fatalf("phase = %d, want newSessionPhaseForm (%d)", m.phase, newSessionPhaseForm)
+	}
+	if m.confirmingOverwrite {
+		t.Error("expected confirmingOverwrite=false after esc")
+	}
+	if m.Cancelled() {
+		t.Error("expected not cancelled — should return to form, not exit")
+	}
+	if m.form == nil {
+		t.Error("expected form to be rebuilt")
+	}
+	if m.fd == nil || m.fd.title != "my feature" {
+		t.Fatalf("fd.title = %q, want %q — title should be preserved", m.fd.title, "my feature")
+	}
+}
+
+func TestNewSession_ErrorInFormPhase_EscGoesBackToTypeSelect(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Set up form phase with an error.
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
+	m.err = fmt.Errorf("something went wrong")
+
+	// Press esc — should clear error and go back to typeSelect.
+	m = sendSpecialKey(t, m, tea.KeyEscape)
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
+	}
+	if m.Cancelled() {
+		t.Error("expected not cancelled — should return to type select, not exit")
+	}
+	if m.err != nil {
+		t.Errorf("expected err to be nil, got %v", m.err)
 	}
 }

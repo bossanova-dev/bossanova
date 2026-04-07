@@ -456,3 +456,26 @@ func TestRepoAdd_SetupScriptPassedToClone(t *testing.T) {
 		t.Fatalf("SetupScript = %v, want 'make setup'", sc.cloneReq.SetupScript)
 	}
 }
+
+func TestRepoAdd_DetailsPhase_EscReturnsToInput(t *testing.T) {
+	sc := &repoAddStubClient{}
+	m := NewRepoAddModel(sc, context.Background())
+
+	// Advance to details phase.
+	m.phase = repoAddPhaseDetails
+	m.sourceMode = sourceModeOpen
+	m.buildDetailsForm()
+
+	// Press esc — should go back to input, not cancel.
+	m = sendRepoAddMsg(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if m.phase != repoAddPhaseInput {
+		t.Fatalf("phase = %d, want repoAddPhaseInput (%d)", m.phase, repoAddPhaseInput)
+	}
+	if m.Cancelled() {
+		t.Error("expected not cancelled — should return to input, not exit")
+	}
+	if m.form == nil {
+		t.Error("expected form to be rebuilt for input phase")
+	}
+}

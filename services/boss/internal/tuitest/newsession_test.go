@@ -88,6 +88,52 @@ func TestTUI_NewSessionView_SingleRepoSkipsSelect(t *testing.T) {
 	}
 }
 
+func TestTUI_NewSessionView_FormPhase_EscGoesBackToTypeSelect(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...), // Single repo — skips repo select.
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Press 'n' for new session.
+	if err := h.Driver.SendKey('n'); err != nil {
+		t.Fatal(err)
+	}
+
+	// Single repo skips repo select — should see type select.
+	if err := h.Driver.WaitForText(waitTimeout, "Create a new PR"); err != nil {
+		t.Fatalf("expected type select; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Select "Create a new PR" (first option, already highlighted).
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be on the form phase with "Session title".
+	if err := h.Driver.WaitForText(waitTimeout, "Session title"); err != nil {
+		t.Fatalf("expected form phase; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Press esc — should go back to type select, not home.
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should see type select options again.
+	if err := h.Driver.WaitForText(waitTimeout, "Create a new PR"); err != nil {
+		t.Fatalf("expected type select after esc from form; screen:\n%s", h.Driver.Screen())
+	}
+
+	// Should NOT be on home screen.
+	screen := h.Driver.Screen()
+	if strings.Contains(screen, "No active sessions") {
+		t.Fatalf("should not have returned to home; screen:\n%s", screen)
+	}
+}
+
 func TestTUI_NewSessionView_Cancel(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testMultiRepos()...),

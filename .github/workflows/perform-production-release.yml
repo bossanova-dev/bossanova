@@ -223,8 +223,6 @@ jobs:
     runs-on: ubicloud
     steps:
       - uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
 
       - uses: actions/download-artifact@v8
         with:
@@ -287,8 +285,6 @@ jobs:
     runs-on: ubicloud
     steps:
       - uses: actions/checkout@v6
-        with:
-          token: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
 
       - uses: actions/download-artifact@v8
         with:

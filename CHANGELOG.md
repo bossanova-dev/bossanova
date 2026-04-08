@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.5](https://github.com/recurser/bossanova/compare/v1.1.4...v1.1.5) (2026-04-08)
+
+### Bug Fixes
+
+* **ci:** add persist-credentials: false to release and homebrew checkouts ([9a56201](https://github.com/recurser/bossanova/commit/9a56201cd7196e1aa618bfe442a321f4dca2ab6b))
+* **global:** trigger a release ([e8b3e76](https://github.com/recurser/bossanova/commit/e8b3e763293ec1715da6ea2b6025d9ab85c3c6d3))
+
 ## [1.1.4](https://github.com/recurser/bossanova/compare/v1.1.3...v1.1.4) (2026-04-08)
 
 ### Bug Fixes

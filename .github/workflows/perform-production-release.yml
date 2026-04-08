@@ -240,10 +240,10 @@ jobs:
 
       - name: Push version tag to public repo
         env:
-          GITHUB_TOKEN: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
+          BOSSANOVA_PUBLIC_DEPLOY_KEY: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
         run: |
           VERSION="v${{ needs.version.outputs.version }}"
-          git remote add public https://x-access-token:${GITHUB_TOKEN}@github.com/bossanova-dev/bossanova.git
+          git remote add public https://x-access-token:${BOSSANOVA_PUBLIC_DEPLOY_KEY}@github.com/bossanova-dev/bossanova.git
           git fetch public production
           # Tag the public repo's stripped commit (not the private repo's commit)
           # to avoid leaking private code through the tag's commit tree
@@ -287,9 +287,9 @@ jobs:
 
       - name: Push to Homebrew tap
         env:
-          GITHUB_TOKEN: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
+          BOSSANOVA_PUBLIC_DEPLOY_KEY: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
         run: |
-          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/bossanova-dev/homebrew-tap.git tap
+          git clone https://x-access-token:${BOSSANOVA_PUBLIC_DEPLOY_KEY}@github.com/bossanova-dev/homebrew-tap.git tap
           cp bossanova.rb tap/Formula/bossanova.rb
           cd tap
           git config user.name "github-actions[bot]"

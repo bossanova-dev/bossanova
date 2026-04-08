@@ -2,11 +2,6 @@ go 1.25.8
 
 use (
 	./lib/bossalib
-	./plugins/bossd-plugin-autopilot
-	./plugins/bossd-plugin-dependabot
-	./plugins/bossd-plugin-linear
-	./plugins/bossd-plugin-repair
 	./services/boss
 	./services/bossd
-	./services/bosso
 )

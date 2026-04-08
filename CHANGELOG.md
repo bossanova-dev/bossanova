@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1](https://github.com/recurser/bossanova/compare/v1.0.0...v1.0.1) (2026-04-08)
+
+### Bug Fixes
+
+* **global:** rename the mirror-public action's GITHUB_TOKEN env-var to avoid collisions ([2188f12](https://github.com/recurser/bossanova/commit/2188f1238d9f9b16704ae183077317519655e6cd))
+
 ## 1.0.0 (2026-04-08)
 
 ### Features

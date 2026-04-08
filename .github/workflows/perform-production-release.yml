@@ -63,6 +63,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          cache-dependency-path: go.work.sum
 
       - name: Copy skills for embedding
         run: make copy-skills
@@ -107,7 +108,7 @@ jobs:
             go build -ldflags "${LDFLAGS}" -o "${plugin}-${{ matrix.goos }}-${{ matrix.goarch }}" ./plugins/${plugin}
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -123,14 +124,29 @@ jobs:
       matrix:
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v6
+      - name: Check signing configuration
+        id: check
+        env:
+          APPLE_DEVELOPER_CERTIFICATE_P12: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
+        run: |
+          if [ -z "${APPLE_DEVELOPER_CERTIFICATE_P12}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Apple signing not configured — skipping notarization"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+        if: steps.check.outputs.configured == 'true'
+
+      - uses: actions/download-artifact@v8
+        if: steps.check.outputs.configured == 'true'
         with:
           name: binaries-darwin-${{ matrix.goarch }}
           path: artifacts
 
       - name: Import Developer ID Certificate
+        if: steps.check.outputs.configured == 'true'
         env:
           APPLE_DEVELOPER_CERTIFICATE_P12: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
           APPLE_DEVELOPER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
@@ -153,6 +169,7 @@ jobs:
           security list-keychain -d user -s "${KEYCHAIN_PATH}"
 
       - name: Sign binaries
+        if: steps.check.outputs.configured == 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
@@ -165,11 +182,13 @@ jobs:
           done
 
       - name: Create zip for notarization
+        if: steps.check.outputs.configured == 'true'
         run: |
           cd artifacts
           zip -r ../binaries-darwin-${{ matrix.goarch }}.zip *
 
       - name: Notarize binaries
+        if: steps.check.outputs.configured == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -183,6 +202,7 @@ jobs:
             --wait --timeout 20m
 
       - name: Staple notarization ticket
+        if: steps.check.outputs.configured == 'true'
         run: |
           unzip -o binaries-darwin-${{ matrix.goarch }}.zip -d artifacts-stapled
           for binary in artifacts-stapled/*; do
@@ -190,7 +210,8 @@ jobs:
             xcrun stapler staple "${binary}" || echo "Stapling failed for ${binary} (may not be required)"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
+        if: steps.check.outputs.configured == 'true'
         with:
           name: binaries-darwin-${{ matrix.goarch }}-signed
           path: artifacts-stapled/*
@@ -198,14 +219,14 @@ jobs:
 
   release:
     needs: [version, build, notarize]
-    if: needs.version.outputs.released == 'true'
+    if: always() && needs.version.outputs.released == 'true' && needs.build.result == 'success'
     runs-on: ubicloud
     steps:
       - uses: actions/checkout@v6
         with:
           token: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts-all
 
@@ -269,7 +290,7 @@ jobs:
         with:
           token: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts-all
 

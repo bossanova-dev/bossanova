@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.4](https://github.com/recurser/bossanova/compare/v1.1.3...v1.1.4) (2026-04-08)
+
+### Bug Fixes
+
+* **global:** trigger a release ([1b68301](https://github.com/recurser/bossanova/commit/1b683017979847eaae50a308d6191bd5c22cc925))
+
 ## [1.1.3](https://github.com/recurser/bossanova/compare/v1.1.2...v1.1.3) (2026-04-08)
 
 ### Bug Fixes

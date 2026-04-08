@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0](https://github.com/recurser/bossanova/compare/v1.1.6...v1.2.0) (2026-04-08)
+
+### Features
+
+* **config:** auto-discover plugins relative to binary path ([361e252](https://github.com/recurser/bossanova/commit/361e25262a2b6e4bbe5b71207b9a4a347ebb1eee))
+* **config:** fall back to same-dir plugin discovery for dev mode ([88d9ebe](https://github.com/recurser/bossanova/commit/88d9ebe66f9996f405c827da514a28f194f7a0a4))
+
+### Bug Fixes
+
+* **bossd:** persist auto-discovered plugins to settings on first run ([dfdd3f2](https://github.com/recurser/bossanova/commit/dfdd3f261f55f9e2db7634f09b0df34c44d41c8c))
+* **global:** trigger a release ([610c656](https://github.com/recurser/bossanova/commit/610c656cb74a1fee533c2ffe93caea477f85bd7f))
+* **homebrew:** set executable permission on plugin binaries ([5f30a2a](https://github.com/recurser/bossanova/commit/5f30a2a25d3e9ea5e7e86a104446764bf95bbcf0))
+
 ## [1.1.6](https://github.com/recurser/bossanova/compare/v1.1.5...v1.1.6) (2026-04-08)
 
 ### Bug Fixes

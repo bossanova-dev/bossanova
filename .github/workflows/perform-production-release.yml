@@ -265,10 +265,10 @@ jobs:
         run: |
           VERSION="v${{ needs.version.outputs.version }}"
           git remote add public https://x-access-token:${BOSSANOVA_PUBLIC_DEPLOY_KEY}@github.com/bossanova-dev/bossanova.git
-          git fetch public production
+          git fetch public main
           # Tag the public repo's stripped commit (not the private repo's commit)
           # to avoid leaking private code through the tag's commit tree
-          git tag "${VERSION}" public/production
+          git tag "${VERSION}" public/main
           git push public "${VERSION}"
 
       - name: Create GitHub Release on public repo

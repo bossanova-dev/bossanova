@@ -88,6 +88,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
+          cache-dependency-path: go.work.sum
 
       - name: Copy skills for embedding
         run: make copy-skills
@@ -116,7 +117,7 @@ jobs:
           LDFLAGS="-s -w -X github.com/recurser/bossalib/buildinfo.Version=${VERSION} -X github.com/recurser/bossalib/buildinfo.Commit=${COMMIT} -X github.com/recurser/bossalib/buildinfo.Date=${DATE}"
           go build -ldflags "${LDFLAGS}" -o "bossd-${{ matrix.goos }}-${{ matrix.goarch }}" ./services/bossd/cmd
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -127,7 +128,7 @@ jobs:
     needs: build
     runs-on: ubicloud
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

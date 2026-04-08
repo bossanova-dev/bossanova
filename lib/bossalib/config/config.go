@@ -139,6 +139,54 @@ func (c RepairConfig) SkillName() string {
 	return "boss-repair"
 }
 
+// knownPlugins lists plugin binary names to scan for during auto-discovery.
+var knownPlugins = []string{
+	"bossd-plugin-autopilot",
+	"bossd-plugin-dependabot",
+	"bossd-plugin-repair",
+}
+
+// DiscoverPlugins scans for plugin binaries relative to the running binary's
+// location. Homebrew symlinks /opt/homebrew/bin/bossd → Cellar, so we resolve
+// symlinks first and then check ../libexec/plugins/. Returns an empty slice if
+// no plugins are found.
+func DiscoverPlugins() []PluginConfig {
+	return discoverPluginsFrom("")
+}
+
+// discoverPluginsFrom is the testable core of DiscoverPlugins. When binDir is
+// empty it uses os.Executable() to locate the binary directory.
+func discoverPluginsFrom(binDir string) []PluginConfig {
+	if binDir == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return nil
+		}
+		resolved, err := filepath.EvalSymlinks(exe)
+		if err != nil {
+			return nil
+		}
+		binDir = filepath.Dir(resolved)
+	}
+
+	pluginDir := filepath.Join(binDir, "..", "libexec", "plugins")
+	pluginDir = filepath.Clean(pluginDir)
+
+	var plugins []PluginConfig
+	for _, name := range knownPlugins {
+		path := filepath.Join(pluginDir, name)
+		if _, err := os.Stat(path); err == nil {
+			pluginName := name[len("bossd-plugin-"):]
+			plugins = append(plugins, PluginConfig{
+				Name:    pluginName,
+				Path:    path,
+				Enabled: true,
+			})
+		}
+	}
+	return plugins
+}
+
 // Settings holds global Bossanova configuration.
 type Settings struct {
 	DangerouslySkipPermissions bool            `json:"dangerously_skip_permissions"`

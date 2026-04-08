@@ -167,6 +167,13 @@ func run() error {
 		}
 	})
 
+	if len(settings.Plugins) == 0 {
+		settings.Plugins = config.DiscoverPlugins()
+		if len(settings.Plugins) > 0 {
+			log.Info().Int("count", len(settings.Plugins)).Msg("auto-discovered plugins")
+		}
+	}
+
 	if err := pluginHost.Start(context.Background(), settings.Plugins); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)

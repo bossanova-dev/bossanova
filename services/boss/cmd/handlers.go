@@ -859,45 +859,57 @@ func runSettings(cmd *cobra.Command) error {
 
 func runConfigInit(cmd *cobra.Command) error {
 	pluginDir, _ := cmd.Flags().GetString("plugin-dir")
-	if pluginDir == "" {
-		return fmt.Errorf("--plugin-dir is required")
-	}
 
-	// Validate plugin directory exists
-	info, err := os.Stat(pluginDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("plugin directory not found: %s", pluginDir)
+	var foundPlugins map[string]string // name -> path
+
+	if pluginDir != "" {
+		// Explicit --plugin-dir provided: validate and scan it.
+		info, err := os.Stat(pluginDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("plugin directory not found: %s", pluginDir)
+			}
+			return fmt.Errorf("cannot access plugin directory: %w", err)
 		}
-		return fmt.Errorf("cannot access plugin directory: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("plugin-dir must be a directory: %s", pluginDir)
-	}
+		if !info.IsDir() {
+			return fmt.Errorf("plugin-dir must be a directory: %s", pluginDir)
+		}
 
-	// Convert to absolute path
-	absPluginDir, err := filepath.Abs(pluginDir)
-	if err != nil {
-		return fmt.Errorf("resolve plugin directory: %w", err)
-	}
+		absPluginDir, err := filepath.Abs(pluginDir)
+		if err != nil {
+			return fmt.Errorf("resolve plugin directory: %w", err)
+		}
 
-	// Scan for plugin binaries
-	pluginNames := []string{
-		"bossd-plugin-autopilot",
-		"bossd-plugin-dependabot",
-		"bossd-plugin-repair",
-	}
+		pluginNames := []string{
+			"bossd-plugin-autopilot",
+			"bossd-plugin-dependabot",
+			"bossd-plugin-repair",
+		}
 
-	foundPlugins := make(map[string]string) // name -> path
-	for _, name := range pluginNames {
-		path := filepath.Join(absPluginDir, name)
-		if _, err := os.Stat(path); err == nil {
-			foundPlugins[name] = path
+		foundPlugins = make(map[string]string)
+		for _, name := range pluginNames {
+			path := filepath.Join(absPluginDir, name)
+			if _, err := os.Stat(path); err == nil {
+				foundPlugins[name] = path
+			}
+		}
+	} else {
+		// No --plugin-dir: try auto-discovery relative to binary.
+		discovered := config.DiscoverPlugins()
+		if len(discovered) > 0 {
+			foundPlugins = make(map[string]string)
+			for _, p := range discovered {
+				foundPlugins["bossd-plugin-"+p.Name] = p.Path
+			}
 		}
 	}
 
 	if len(foundPlugins) == 0 {
-		fmt.Fprintf(os.Stderr, "Warning: no plugin binaries found in %s\n", absPluginDir)
+		if pluginDir != "" {
+			fmt.Fprintf(os.Stderr, "Warning: no plugin binaries found in %s\n", pluginDir)
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: no plugin binaries found (use --plugin-dir to specify location)\n")
+		}
 		return nil
 	}
 

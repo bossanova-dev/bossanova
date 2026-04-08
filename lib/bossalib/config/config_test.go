@@ -469,3 +469,74 @@ func TestPluginVersionBackwardsCompatible(t *testing.T) {
 		t.Error("Plugins[0].Enabled: got false, want true")
 	}
 }
+
+func TestDiscoverPluginsFindsPlugins(t *testing.T) {
+	// Create a temp dir mimicking Homebrew layout:
+	//   <cellar>/bin/bossd
+	//   <cellar>/libexec/plugins/bossd-plugin-autopilot
+	//   <cellar>/libexec/plugins/bossd-plugin-repair
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	pluginDir := filepath.Join(tmp, "libexec", "plugins")
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two of three known plugin binaries.
+	for _, name := range []string{"bossd-plugin-autopilot", "bossd-plugin-repair"} {
+		if err := os.WriteFile(filepath.Join(pluginDir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plugins := discoverPluginsFrom(binDir)
+	if len(plugins) != 2 {
+		t.Fatalf("got %d plugins, want 2", len(plugins))
+	}
+
+	// Verify ordering matches knownPlugins order (autopilot before repair).
+	if plugins[0].Name != "autopilot" {
+		t.Errorf("plugins[0].Name: got %q, want %q", plugins[0].Name, "autopilot")
+	}
+	if plugins[1].Name != "repair" {
+		t.Errorf("plugins[1].Name: got %q, want %q", plugins[1].Name, "repair")
+	}
+
+	for _, p := range plugins {
+		if !p.Enabled {
+			t.Errorf("plugin %q: Enabled should be true", p.Name)
+		}
+		if !filepath.IsAbs(p.Path) {
+			t.Errorf("plugin %q: path should be absolute, got %q", p.Name, p.Path)
+		}
+	}
+}
+
+func TestDiscoverPluginsEmptyWhenNoPlugins(t *testing.T) {
+	// An empty bin dir with no ../libexec/plugins/ should return nil.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plugins := discoverPluginsFrom(binDir)
+	if len(plugins) != 0 {
+		t.Errorf("got %d plugins, want 0", len(plugins))
+	}
+}
+
+func TestDiscoverPluginsEmptyWhenDirMissing(t *testing.T) {
+	// When the libexec/plugins dir doesn't exist at all.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "nonexistent", "bin")
+
+	plugins := discoverPluginsFrom(binDir)
+	if len(plugins) != 0 {
+		t.Errorf("got %d plugins, want 0", len(plugins))
+	}
+}

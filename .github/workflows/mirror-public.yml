@@ -33,10 +33,7 @@ jobs:
           rm -rf .github/workflows/
           rm -rf .releaserc.yml
           rm -rf .beads/
-
-          # Keep infra/install.sh for public curl installer, remove the rest
-          find infra/ -mindepth 1 ! -name 'install.sh' -delete 2>/dev/null || true
-          find infra/ -empty -type d -delete 2>/dev/null || true
+          rm -rf infra/
 
           # Create a minimal .github/workflows/ for public repo
           # (This will be empty for now - public CI added later)

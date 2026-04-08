@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0](https://github.com/recurser/bossanova/compare/v1.2.0...v1.3.0) (2026-04-08)
+
+### Features
+
+* **mirror:** replay commits individually to build public history ([88268d0](https://github.com/recurser/bossanova/commit/88268d05503800b8b795319f2cbbd6e5d1932675))
+
+### Bug Fixes
+
+* **mirror:** preserve public repo history across releases ([c53070e](https://github.com/recurser/bossanova/commit/c53070e6d610952895981debccbe6d045458e081))
+* **mirror:** use orphan commit to prevent private history leaking ([4397612](https://github.com/recurser/bossanova/commit/439761219e2e2ec8be65d4918367e11d1879b551))
+
 ## [1.2.0](https://github.com/recurser/bossanova/compare/v1.1.6...v1.2.0) (2026-04-08)
 
 ### Features

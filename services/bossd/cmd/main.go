@@ -171,6 +171,11 @@ func run() error {
 		settings.Plugins = config.DiscoverPlugins()
 		if len(settings.Plugins) > 0 {
 			log.Info().Int("count", len(settings.Plugins)).Msg("auto-discovered plugins")
+			if err := config.Save(settings); err != nil {
+				log.Warn().Err(err).Msg("failed to persist discovered plugins to settings")
+			} else {
+				log.Info().Msg("persisted discovered plugins to settings")
+			}
 		}
 	}
 

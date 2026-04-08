@@ -90,7 +90,10 @@ class Bossanova < Formula
     end
     (libexec/"plugins").mkpath
     %w[bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-repair].each do |p|
-      resource(p).stage { (libexec/"plugins").install Dir["#{p}*"].first => p }
+      resource(p).stage do
+        (libexec/"plugins").install Dir["#{p}*"].first => p
+        chmod 0755, libexec/"plugins"/p
+      end
     end
   end
 

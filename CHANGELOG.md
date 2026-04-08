@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.3](https://github.com/recurser/bossanova/compare/v1.3.2...v1.3.3) (2026-04-08)
+
+### Bug Fixes
+
+* **build:** handle empty skills directory in public repo ([64e8456](https://github.com/recurser/bossanova/commit/64e8456c72ceb106d340e7b7686082ffa33a5069))
+* **homebrew:** remove post_install hook that fails in sandbox ([05d99dd](https://github.com/recurser/bossanova/commit/05d99ddd4bcbb8ded84af848abd98b3008cfb593))
+
 ## [1.3.2](https://github.com/recurser/bossanova/compare/v1.3.1...v1.3.2) (2026-04-08)
 
 ### Bug Fixes

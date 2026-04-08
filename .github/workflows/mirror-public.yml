@@ -32,6 +32,8 @@ jobs:
           rm -rf .github/workflows/
           rm -rf .releaserc.yml
           rm -rf .beads/
+          rm -rf .claude/
+          rm -rf .husky/
           rm -rf infra/
 
           # Create a minimal .github/workflows/ for public repo

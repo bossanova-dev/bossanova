@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.6](https://github.com/recurser/bossanova/compare/v1.1.5...v1.1.6) (2026-04-08)
+
+### Bug Fixes
+
+* **ci:** create Formula/ directory for fresh homebrew-tap repo ([9b45753](https://github.com/recurser/bossanova/commit/9b457537834713b984b41727f82c532b19a1155d))
+* **ci:** mirror only production to public repo's main branch ([2f0fa69](https://github.com/recurser/bossanova/commit/2f0fa69e8177fdbc9df82c4f6966c457dbb556ce))
+* **ci:** strip .claude and .husky from public mirror ([9d6827f](https://github.com/recurser/bossanova/commit/9d6827f69c9cdfdfff9391b642c75508d4b94f8b))
+* **global:** trigger a release ([128869b](https://github.com/recurser/bossanova/commit/128869be5dfc1f07e570d82a8ac2d353883b423e))
+
 ## [1.1.5](https://github.com/recurser/bossanova/compare/v1.1.4...v1.1.5) (2026-04-08)
 
 ### Bug Fixes

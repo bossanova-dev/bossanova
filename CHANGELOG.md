@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0](https://github.com/recurser/bossanova/compare/v1.0.1...v1.1.0) (2026-04-08)
+
+### Features
+
+* **ci:** add workflow_dispatch action to create production release PR ([d077253](https://github.com/recurser/bossanova/commit/d077253f7d858f1d3ac84d3f6eb040a01c08e8f4))
+* **make:** add release target to trigger production release workflow ([d0b6e64](https://github.com/recurser/bossanova/commit/d0b6e64f5d485a9ba7884d4ac4ab10060af189ea))
+
+### Bug Fixes
+
+* **ci:** strip .beads/ from public mirror, remove deprecated split workflow ([ee6a3b3](https://github.com/recurser/bossanova/commit/ee6a3b3847ada773b554ab3a281d2ca0ff2095ee))
+* **ci:** use per-module targets in main CI, strip infra/ from public mirror ([f79fdbe](https://github.com/recurser/bossanova/commit/f79fdbe5fd8b6343c32847f07875977fda7b4954))
+* **global:** fix fetch-depth during mirroring ([a31a1ab](https://github.com/recurser/bossanova/commit/a31a1ab47e6196cf1864fb78bd29ba2e4ce8dbc8))
+* **global:** rename the mirror-public action's GITHUB_TOKEN env-var to avoid collisions ([3661e52](https://github.com/recurser/bossanova/commit/3661e5222c32e94cd1367d72ad58164f52556838))
+
 ## [1.0.1](https://github.com/recurser/bossanova/compare/v1.0.0...v1.0.1) (2026-04-08)
 
 ### Bug Fixes

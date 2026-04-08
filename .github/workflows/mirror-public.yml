@@ -20,6 +20,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Remove private directories
         run: |
@@ -52,7 +53,7 @@ jobs:
 
       - name: Push to public repo
         env:
-          GITHUB_TOKEN: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
+          BOSSANOVA_PUBLIC_DEPLOY_KEY: ${{ secrets.BOSSANOVA_PUBLIC_DEPLOY_KEY }}
         run: |
-          git remote add public https://x-access-token:${GITHUB_TOKEN}@github.com/bossanova-dev/bossanova.git
+          git remote add public https://x-access-token:${BOSSANOVA_PUBLIC_DEPLOY_KEY}@github.com/bossanova-dev/bossanova.git
           git push public HEAD:${{ github.ref_name }} --force

@@ -48,9 +48,9 @@ func TestConfigInitValidPlugins(t *testing.T) {
 	// Create temp plugin directory with 3 plugin binaries
 	pluginDir := t.TempDir()
 	plugins := []string{
-		"bossd-plugin-autopilot",
-		"bossd-plugin-dependabot",
-		"bossd-plugin-repair",
+		"bossd-plugin-alpha",
+		"bossd-plugin-beta",
+		"bossd-plugin-gamma",
 	}
 	for _, name := range plugins {
 		path := filepath.Join(pluginDir, name)
@@ -80,9 +80,9 @@ func TestConfigInitValidPlugins(t *testing.T) {
 
 	// Verify all plugins are present and enabled
 	pluginNames := map[string]bool{
-		"autopilot":  false,
-		"dependabot": false,
-		"repair":     false,
+		"alpha": false,
+		"beta":  false,
+		"gamma": false,
 	}
 	for _, p := range s.Plugins {
 		if _, ok := pluginNames[p.Name]; !ok {
@@ -117,8 +117,8 @@ func TestConfigInitPreservesExistingSettings(t *testing.T) {
 	// Create temp plugin directory with 2 plugins
 	pluginDir := t.TempDir()
 	plugins := []string{
-		"bossd-plugin-autopilot",
-		"bossd-plugin-repair",
+		"bossd-plugin-alpha",
+		"bossd-plugin-beta",
 	}
 	for _, name := range plugins {
 		path := filepath.Join(pluginDir, name)
@@ -134,8 +134,8 @@ func TestConfigInitPreservesExistingSettings(t *testing.T) {
 		PollIntervalSeconds:        120,
 		Plugins: []config.PluginConfig{
 			{
-				Name:    "autopilot",
-				Path:    "/old/path/autopilot",
+				Name:    "alpha",
+				Path:    "/old/path/alpha",
 				Enabled: false,
 				Version: "0.0.1",
 			},
@@ -175,23 +175,23 @@ func TestConfigInitPreservesExistingSettings(t *testing.T) {
 		t.Fatalf("Plugins: got %d, want 2", len(s.Plugins))
 	}
 
-	// Check autopilot was updated
-	var autopilot *config.PluginConfig
+	// Check alpha was updated
+	var alpha *config.PluginConfig
 	for i := range s.Plugins {
-		if s.Plugins[i].Name == "autopilot" {
-			autopilot = &s.Plugins[i]
+		if s.Plugins[i].Name == "alpha" {
+			alpha = &s.Plugins[i]
 			break
 		}
 	}
-	if autopilot == nil {
-		t.Fatal("autopilot plugin not found")
+	if alpha == nil {
+		t.Fatal("alpha plugin not found")
 	}
-	if autopilot.Enabled {
-		t.Error("autopilot: expected Enabled=false (preserved, not re-enabled by config init)")
+	if alpha.Enabled {
+		t.Error("alpha: expected Enabled=false (preserved, not re-enabled by config init)")
 	}
-	expectedPath, _ := filepath.Abs(filepath.Join(pluginDir, "bossd-plugin-autopilot"))
-	if autopilot.Path != expectedPath {
-		t.Errorf("autopilot: Path=%q, want %q (updated)", autopilot.Path, expectedPath)
+	expectedPath, _ := filepath.Abs(filepath.Join(pluginDir, "bossd-plugin-alpha"))
+	if alpha.Path != expectedPath {
+		t.Errorf("alpha: Path=%q, want %q (updated)", alpha.Path, expectedPath)
 	}
 }
 
@@ -248,7 +248,7 @@ func TestConfigInitIdempotent(t *testing.T) {
 	// Create temp plugin directory
 	pluginDir := t.TempDir()
 	plugins := []string{
-		"bossd-plugin-autopilot",
+		"bossd-plugin-alpha",
 	}
 	for _, name := range plugins {
 		path := filepath.Join(pluginDir, name)

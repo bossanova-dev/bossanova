@@ -132,10 +132,16 @@ func (c *taskSourceGRPCClientWrapper) ListAvailableIssues(ctx context.Context, r
 func buildPluginBinary(t *testing.T) string {
 	t.Helper()
 
+	wsRoot := filepath.Join("..", "..", "..", "..")
+	pluginSrc := filepath.Join(wsRoot, "plugins", "bossd-plugin-dependabot")
+	if _, err := os.Stat(pluginSrc); os.IsNotExist(err) {
+		t.Skip("skipping: plugins/bossd-plugin-dependabot not present (public repo)")
+	}
+
 	binPath := filepath.Join(t.TempDir(), "bossd-plugin-dependabot")
 	cmd := exec.Command("go", "build", "-o", binPath, "./plugins/bossd-plugin-dependabot")
 	// Build from the workspace root so go.work resolves bossalib.
-	cmd.Dir = filepath.Join("..", "..", "..", "..")
+	cmd.Dir = wsRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

@@ -1,11 +1,6 @@
 .PHONY: all generate build plugins test lint clean split format build-all plugins-all \
-	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot test-linear test-repair \
-	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-linear lint-repair lint-proto \
-	build-boss build-bossd build-bosso build-autopilot build-dependabot build-linear build-repair \
 	copy-skills release \
-	mutate mutate-diff mutate-report mutate-survivors mutate-fix mutate-loop \
-	mutate-bossalib mutate-boss mutate-bossd mutate-bosso \
-	mutate-autopilot mutate-dependabot mutate-linear mutate-repair
+	mutate mutate-diff mutate-report mutate-survivors mutate-fix mutate-loop
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all plugins-all
@@ -13,9 +8,12 @@ all: clean generate format build plugins build-all plugins-all
 # Binaries output to bin/
 BIN_DIR := bin
 
-# All Go modules in the workspace
-MODULES := lib/bossalib services/boss services/bossd services/bosso \
-	plugins/bossd-plugin-autopilot plugins/bossd-plugin-dependabot plugins/bossd-plugin-linear plugins/bossd-plugin-repair
+# Auto-detect Go modules (works in both private and public repos)
+MODULES := $(patsubst %/go.mod,%,$(wildcard lib/*/go.mod services/*/go.mod plugins/*/go.mod))
+SERVICE_MODULES := $(filter services/%,$(MODULES))
+PLUGIN_MODULES  := $(filter plugins/%,$(MODULES))
+SERVICE_BINS    := $(notdir $(SERVICE_MODULES))
+PLUGIN_BINS     := $(notdir $(PLUGIN_MODULES))
 
 # Mutation testing output directory
 MUTATE_DIR := .mutate
@@ -52,13 +50,21 @@ $(WEB_DEPS_STAMP): services/web/package.json
 ## generate: Run buf generate to produce Go code from proto definitions
 generate: $(GEN_STAMP)
 
-$(GEN_STAMP): $(PROTO_SOURCES) $(WEB_DEPS_STAMP)
+# Make web deps and buf conditional — public repo has committed gen code and no web/
+GEN_DEPS := $(PROTO_SOURCES)
+ifneq ($(wildcard services/web/package.json),)
+GEN_DEPS += $(WEB_DEPS_STAMP)
+endif
+
+$(GEN_STAMP): $(GEN_DEPS)
+ifneq ($(shell command -v buf 2>/dev/null),)
 	rm -rf lib/bossalib/gen
 	buf generate
+endif
 	@touch $(GEN_STAMP)
 
 ## build: Build service binaries (generates protos first if needed)
-build: $(BIN_DIR)/boss $(BIN_DIR)/bossd $(BIN_DIR)/bosso
+build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
 $(BIN_DIR)/boss: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
@@ -66,23 +72,17 @@ $(BIN_DIR)/boss: $(GEN_STAMP) copy-skills
 $(BIN_DIR)/bossd: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 
+ifneq ($(wildcard services/bosso/go.mod),)
 $(BIN_DIR)/bosso: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
-
-$(BIN_DIR)/bossd-plugin-autopilot: $(GEN_STAMP)
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-autopilot ./plugins/bossd-plugin-autopilot
-
-$(BIN_DIR)/bossd-plugin-dependabot: $(GEN_STAMP)
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
-
-$(BIN_DIR)/bossd-plugin-linear: $(GEN_STAMP)
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-linear ./plugins/bossd-plugin-linear
-
-$(BIN_DIR)/bossd-plugin-repair: $(GEN_STAMP)
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-repair ./plugins/bossd-plugin-repair
+endif
 
 ## plugins: Build all plugin binaries
-plugins: $(BIN_DIR)/bossd-plugin-autopilot $(BIN_DIR)/bossd-plugin-dependabot $(BIN_DIR)/bossd-plugin-linear $(BIN_DIR)/bossd-plugin-repair
+plugins: $(addprefix $(BIN_DIR)/,$(PLUGIN_BINS))
+
+# Pattern rule for plugin binaries
+$(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
+	go build -ldflags '$(LDFLAGS)' -o $@ ./plugins/bossd-plugin-$*
 
 ## test: Run tests across all modules (generates protos first if needed)
 test: $(GEN_STAMP) copy-skills
@@ -101,20 +101,18 @@ test-boss: copy-skills
 test-bossd: copy-skills
 	$(MAKE) -C services/bossd test
 
+ifneq ($(wildcard services/bosso/go.mod),)
 test-bosso:
 	$(MAKE) -C services/bosso test
+endif
 
-test-autopilot:
-	$(MAKE) -C plugins/bossd-plugin-autopilot test
-
-test-dependabot:
-	$(MAKE) -C plugins/bossd-plugin-dependabot test
-
-test-linear:
-	$(MAKE) -C plugins/bossd-plugin-linear test
-
-test-repair:
-	$(MAKE) -C plugins/bossd-plugin-repair test
+# Auto-generate per-plugin test targets from detected modules
+define define-plugin-test
+test-$(2):
+	$$(MAKE) -C $(1) test
+endef
+$(foreach p,$(PLUGIN_MODULES),$(eval \
+  $(call define-plugin-test,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
 lint: $(GEN_STAMP) copy-skills
@@ -137,20 +135,18 @@ lint-boss: copy-skills
 lint-bossd: copy-skills
 	cd services/bossd && golangci-lint run ./...
 
+ifneq ($(wildcard services/bosso/go.mod),)
 lint-bosso:
 	cd services/bosso && golangci-lint run ./...
+endif
 
-lint-autopilot:
-	cd plugins/bossd-plugin-autopilot && golangci-lint run ./...
-
-lint-dependabot:
-	cd plugins/bossd-plugin-dependabot && golangci-lint run ./...
-
-lint-linear:
-	cd plugins/bossd-plugin-linear && golangci-lint run ./...
-
-lint-repair:
-	cd plugins/bossd-plugin-repair && golangci-lint run ./...
+# Auto-generate per-plugin lint targets from detected modules
+define define-plugin-lint
+lint-$(2):
+	cd $(1) && golangci-lint run ./...
+endef
+$(foreach p,$(PLUGIN_MODULES),$(eval \
+  $(call define-plugin-lint,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
 ## copy-skills: Copy boss skill files into bossalib for embedding
 copy-skills:
@@ -170,38 +166,42 @@ build-boss: copy-skills
 build-bossd: copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 
+ifneq ($(wildcard services/bosso/go.mod),)
 build-bosso:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
+endif
 
-build-autopilot:
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-autopilot ./plugins/bossd-plugin-autopilot
-
-build-dependabot:
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-dependabot ./plugins/bossd-plugin-dependabot
-
-build-linear:
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-linear ./plugins/bossd-plugin-linear
-
-build-repair:
-	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd-plugin-repair ./plugins/bossd-plugin-repair
+# Auto-generate per-plugin build targets from detected modules
+define define-plugin-build
+build-$(2):
+	go build -ldflags '$$(LDFLAGS)' -o $$(BIN_DIR)/$(notdir $(1)) ./$(1)
+endef
+$(foreach p,$(PLUGIN_MODULES),$(eval \
+  $(call define-plugin-build,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
 ## format: Format Go code, web code, package.json files, and markdown
 format:
-	pnpm syncpack format
-	pnpm syncpack fix
+	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
+		pnpm syncpack format; \
+		pnpm syncpack fix; \
+	fi
 	@for mod in $(MODULES); do \
 		echo "==> Formatting $$mod"; \
 		$(MAKE) -C $$mod format; \
 	done
-	$(MAKE) -C services/web format
-	pnpm run format:docs
+	@if [ -d services/web ]; then \
+		$(MAKE) -C services/web format; \
+	fi
+	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
+		pnpm run format:docs; \
+	fi
 
 ## build-all: Cross-platform builds for distribution (generates protos first if needed)
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64
 # Only boss and bossd are distributed (bosso is deployed to Fly.io directly)
 DIST_BINS := boss bossd
-# Plugins for distribution
-DIST_PLUGINS := bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-linear bossd-plugin-repair
+# Plugins for distribution (auto-detected)
+DIST_PLUGINS := $(PLUGIN_BINS)
 
 build-all: $(GEN_STAMP) copy-skills
 	@for platform in $(PLATFORMS); do \
@@ -213,9 +213,11 @@ build-all: $(GEN_STAMP) copy-skills
 				-o $(BIN_DIR)/$$bin-$$os-$$arch ./services/$$bin/cmd; \
 		done; \
 	done
-	@echo "==> Building bosso (linux/amd64 only)"
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' \
-		-o $(BIN_DIR)/bosso-linux-amd64 ./services/bosso/cmd
+	@if [ -d services/bosso ]; then \
+		echo "==> Building bosso (linux/amd64 only)"; \
+		GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' \
+			-o $(BIN_DIR)/bosso-linux-amd64 ./services/bosso/cmd; \
+	fi
 
 ## plugins-all: Cross-platform plugin builds for distribution
 plugins-all: $(GEN_STAMP)
@@ -238,7 +240,9 @@ clean:
 	@for mod in $(MODULES); do \
 		$(MAKE) -C $$mod clean; \
 	done
-	$(MAKE) -C services/web clean
+	@if [ -d services/web ]; then \
+		$(MAKE) -C services/web clean; \
+	fi
 
 ## release: Trigger the production release workflow (creates a PR from main → production)
 release:
@@ -381,17 +385,15 @@ mutate-boss: copy-skills
 mutate-bossd: copy-skills
 	$(call run-mutate-module,services/bossd,bossd,$(MUTATE_TIMEOUT))
 
+ifneq ($(wildcard services/bosso/go.mod),)
 mutate-bosso:
 	$(call run-mutate-module,services/bosso,bosso,$(MUTATE_TIMEOUT))
+endif
 
-mutate-autopilot:
-	$(call run-mutate-module,plugins/bossd-plugin-autopilot,bossd-plugin-autopilot,$(MUTATE_TIMEOUT))
-
-mutate-dependabot:
-	$(call run-mutate-module,plugins/bossd-plugin-dependabot,bossd-plugin-dependabot,$(MUTATE_TIMEOUT))
-
-mutate-linear:
-	$(call run-mutate-module,plugins/bossd-plugin-linear,bossd-plugin-linear,$(MUTATE_TIMEOUT))
-
-mutate-repair:
-	$(call run-mutate-module,plugins/bossd-plugin-repair,bossd-plugin-repair,$(MUTATE_TIMEOUT))
+# Auto-generate per-plugin mutate targets from detected modules
+define define-plugin-mutate
+mutate-$(2):
+	$$(call run-mutate-module,$(1),$(notdir $(1)),$$(MUTATE_TIMEOUT))
+endef
+$(foreach p,$(PLUGIN_MODULES),$(eval \
+  $(call define-plugin-mutate,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))

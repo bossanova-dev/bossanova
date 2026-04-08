@@ -20,9 +20,9 @@ brew install bossanova-dev/tap/bossanova
 
 - **boss** - Terminal UI for managing Claude Code sessions across repositories
 - **bossd** - Background daemon handling session lifecycle and git operations
-- **bossd-plugin-autopilot** - Autonomous PR creation and merging
-- **bossd-plugin-dependabot** - Automatic dependency update PR handling
-- **bossd-plugin-repair** - Automated PR conflict resolution and CI fixes
+
+Bossd supports plugins (`bossd-plugin-*` binaries) for autonomous PR handling,
+dependency updates, CI repair, and other automation.
 
 ## Prerequisites
 

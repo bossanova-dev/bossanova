@@ -1,6 +1,7 @@
 .PHONY: all clean generate format build test
 
-SERVICES := boss bossd bosso web
+# Auto-detect services that have their own Makefile
+SERVICES := $(notdir $(patsubst %/Makefile,%,$(wildcard */Makefile)))
 
 all: clean generate format build test
 

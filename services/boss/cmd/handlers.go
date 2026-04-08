@@ -925,7 +925,7 @@ func runConfigInit(cmd *cobra.Command) error {
 	}
 
 	for name, path := range foundPlugins {
-		// Extract plugin name from binary name (bossd-plugin-autopilot -> autopilot)
+		// Extract plugin name from binary name (bossd-plugin-foo -> foo)
 		pluginName := strings.TrimPrefix(name, "bossd-plugin-")
 
 		if idx, ok := pluginMap[pluginName]; ok {

@@ -401,14 +401,14 @@ func TestPluginVersionField(t *testing.T) {
 		WorktreeBaseDir: "/test",
 		Plugins: []PluginConfig{
 			{
-				Name:    "autopilot",
-				Path:    "/usr/local/bin/bossd-plugin-autopilot",
+				Name:    "alpha",
+				Path:    "/usr/local/bin/bossd-plugin-alpha",
 				Enabled: true,
 				Version: "1.2.3",
 			},
 			{
-				Name:    "dependabot",
-				Path:    "/usr/local/bin/bossd-plugin-dependabot",
+				Name:    "beta",
+				Path:    "/usr/local/bin/bossd-plugin-beta",
 				Enabled: true,
 				// No version specified (should be omitted)
 			},
@@ -442,8 +442,8 @@ func TestPluginVersionBackwardsCompatible(t *testing.T) {
 		"worktree_base_dir": "/test",
 		"plugins": [
 			{
-				"name": "autopilot",
-				"path": "/usr/local/bin/bossd-plugin-autopilot",
+				"name": "alpha",
+				"path": "/usr/local/bin/bossd-plugin-alpha",
 				"enabled": true
 			}
 		]
@@ -463,8 +463,8 @@ func TestPluginVersionBackwardsCompatible(t *testing.T) {
 	if loaded.Plugins[0].Version != "" {
 		t.Errorf("Plugins[0].Version: got %q, want empty string (omitted field)", loaded.Plugins[0].Version)
 	}
-	if loaded.Plugins[0].Name != "autopilot" {
-		t.Errorf("Plugins[0].Name: got %q, want %q", loaded.Plugins[0].Name, "autopilot")
+	if loaded.Plugins[0].Name != "alpha" {
+		t.Errorf("Plugins[0].Name: got %q, want %q", loaded.Plugins[0].Name, "alpha")
 	}
 	if !loaded.Plugins[0].Enabled {
 		t.Error("Plugins[0].Enabled: got false, want true")
@@ -474,8 +474,8 @@ func TestPluginVersionBackwardsCompatible(t *testing.T) {
 func TestDiscoverPluginsFindsPlugins(t *testing.T) {
 	// Create a temp dir mimicking Homebrew layout:
 	//   <cellar>/bin/bossd
-	//   <cellar>/libexec/plugins/bossd-plugin-autopilot
-	//   <cellar>/libexec/plugins/bossd-plugin-repair
+	//   <cellar>/libexec/plugins/bossd-plugin-alpha
+	//   <cellar>/libexec/plugins/bossd-plugin-beta
 	tmp := t.TempDir()
 	binDir := filepath.Join(tmp, "bin")
 	pluginDir := filepath.Join(tmp, "libexec", "plugins")
@@ -487,8 +487,8 @@ func TestDiscoverPluginsFindsPlugins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create two of three known plugin binaries.
-	for _, name := range []string{"bossd-plugin-autopilot", "bossd-plugin-repair"} {
+	// Create two plugin binaries for discovery.
+	for _, name := range []string{"bossd-plugin-alpha", "bossd-plugin-beta"} {
 		if err := os.WriteFile(filepath.Join(pluginDir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -499,12 +499,12 @@ func TestDiscoverPluginsFindsPlugins(t *testing.T) {
 		t.Fatalf("got %d plugins, want 2", len(plugins))
 	}
 
-	// ReadDir returns entries in alphabetical order (autopilot before repair).
-	if plugins[0].Name != "autopilot" {
-		t.Errorf("plugins[0].Name: got %q, want %q", plugins[0].Name, "autopilot")
+	// ReadDir returns entries in alphabetical order (alpha before beta).
+	if plugins[0].Name != "alpha" {
+		t.Errorf("plugins[0].Name: got %q, want %q", plugins[0].Name, "alpha")
 	}
-	if plugins[1].Name != "repair" {
-		t.Errorf("plugins[1].Name: got %q, want %q", plugins[1].Name, "repair")
+	if plugins[1].Name != "beta" {
+		t.Errorf("plugins[1].Name: got %q, want %q", plugins[1].Name, "beta")
 	}
 
 	for _, p := range plugins {
@@ -551,7 +551,7 @@ func TestDiscoverPluginsFallsBackToSameDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"bossd-plugin-autopilot", "bossd-plugin-dependabot"} {
+	for _, name := range []string{"bossd-plugin-alpha", "bossd-plugin-beta"} {
 		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -561,11 +561,11 @@ func TestDiscoverPluginsFallsBackToSameDir(t *testing.T) {
 	if len(plugins) != 2 {
 		t.Fatalf("got %d plugins, want 2", len(plugins))
 	}
-	if plugins[0].Name != "autopilot" {
-		t.Errorf("plugins[0].Name: got %q, want %q", plugins[0].Name, "autopilot")
+	if plugins[0].Name != "alpha" {
+		t.Errorf("plugins[0].Name: got %q, want %q", plugins[0].Name, "alpha")
 	}
-	if plugins[1].Name != "dependabot" {
-		t.Errorf("plugins[1].Name: got %q, want %q", plugins[1].Name, "dependabot")
+	if plugins[1].Name != "beta" {
+		t.Errorf("plugins[1].Name: got %q, want %q", plugins[1].Name, "beta")
 	}
 }
 
@@ -582,11 +582,11 @@ func TestDiscoverPluginsPrefersLibexec(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Place autopilot in both locations.
-	if err := os.WriteFile(filepath.Join(binDir, "bossd-plugin-autopilot"), []byte("bin"), 0o755); err != nil {
+	// Place alpha in both locations.
+	if err := os.WriteFile(filepath.Join(binDir, "bossd-plugin-alpha"), []byte("bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(libexecDir, "bossd-plugin-autopilot"), []byte("libexec"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(libexecDir, "bossd-plugin-alpha"), []byte("libexec"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 

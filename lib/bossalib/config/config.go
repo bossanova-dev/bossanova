@@ -147,9 +147,9 @@ var knownPlugins = []string{
 }
 
 // DiscoverPlugins scans for plugin binaries relative to the running binary's
-// location. Homebrew symlinks /opt/homebrew/bin/bossd → Cellar, so we resolve
-// symlinks first and then check ../libexec/plugins/. Returns an empty slice if
-// no plugins are found.
+// location. It checks ../libexec/plugins/ first (Homebrew layout, resolving
+// symlinks), then falls back to the binary's own directory (dev mode where
+// all binaries live in bin/). Returns an empty slice if no plugins are found.
 func DiscoverPlugins() []PluginConfig {
 	return discoverPluginsFrom("")
 }
@@ -169,12 +169,22 @@ func discoverPluginsFrom(binDir string) []PluginConfig {
 		binDir = filepath.Dir(resolved)
 	}
 
-	pluginDir := filepath.Join(binDir, "..", "libexec", "plugins")
-	pluginDir = filepath.Clean(pluginDir)
+	// Try Homebrew layout first: ../libexec/plugins/
+	libexecDir := filepath.Clean(filepath.Join(binDir, "..", "libexec", "plugins"))
+	if plugins := scanForPlugins(libexecDir); len(plugins) > 0 {
+		return plugins
+	}
 
+	// Fall back to same directory as binary (dev mode).
+	return scanForPlugins(binDir)
+}
+
+// scanForPlugins checks a directory for known plugin binaries and returns
+// a PluginConfig for each one found.
+func scanForPlugins(dir string) []PluginConfig {
 	var plugins []PluginConfig
 	for _, name := range knownPlugins {
-		path := filepath.Join(pluginDir, name)
+		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); err == nil {
 			pluginName := name[len("bossd-plugin-"):]
 			plugins = append(plugins, PluginConfig{

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -538,5 +539,62 @@ func TestDiscoverPluginsEmptyWhenDirMissing(t *testing.T) {
 	plugins := discoverPluginsFrom(binDir)
 	if len(plugins) != 0 {
 		t.Errorf("got %d plugins, want 0", len(plugins))
+	}
+}
+
+func TestDiscoverPluginsFallsBackToSameDir(t *testing.T) {
+	// Dev mode: plugins sit alongside the binary in the same directory.
+	// No ../libexec/plugins/ exists.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"bossd-plugin-autopilot", "bossd-plugin-dependabot"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plugins := discoverPluginsFrom(binDir)
+	if len(plugins) != 2 {
+		t.Fatalf("got %d plugins, want 2", len(plugins))
+	}
+	if plugins[0].Name != "autopilot" {
+		t.Errorf("plugins[0].Name: got %q, want %q", plugins[0].Name, "autopilot")
+	}
+	if plugins[1].Name != "dependabot" {
+		t.Errorf("plugins[1].Name: got %q, want %q", plugins[1].Name, "dependabot")
+	}
+}
+
+func TestDiscoverPluginsPrefersLibexec(t *testing.T) {
+	// When plugins exist in both ../libexec/plugins/ and the binary dir,
+	// the libexec path should win.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	libexecDir := filepath.Join(tmp, "libexec", "plugins")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(libexecDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Place autopilot in both locations.
+	if err := os.WriteFile(filepath.Join(binDir, "bossd-plugin-autopilot"), []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(libexecDir, "bossd-plugin-autopilot"), []byte("libexec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plugins := discoverPluginsFrom(binDir)
+	if len(plugins) != 1 {
+		t.Fatalf("got %d plugins, want 1", len(plugins))
+	}
+	if !strings.Contains(plugins[0].Path, "libexec") {
+		t.Errorf("expected libexec path, got %q", plugins[0].Path)
 	}
 }

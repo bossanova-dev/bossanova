@@ -158,6 +158,7 @@ copy-skills:
 		mkdir -p $(SKILLS_DST)/$$name; \
 		cp -R $$dir/* $(SKILLS_DST)/$$name/; \
 	done
+	@touch $(SKILLS_DST)/.gitkeep
 
 ## Per-module build targets (no generate dep — CI uses committed gen code)
 build-boss: copy-skills

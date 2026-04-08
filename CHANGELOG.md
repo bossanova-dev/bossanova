@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2](https://github.com/recurser/bossanova/compare/v1.1.1...v1.1.2) (2026-04-08)
+
+### Bug Fixes
+
+* **ci:** upgrade artifact actions to Node 24, fix Go cache, skip notarize gracefully ([8e52763](https://github.com/recurser/bossanova/commit/8e52763eea99656531ff171c3ca627c58457c170))
+* **global:** trigger a release ([0f80f61](https://github.com/recurser/bossanova/commit/0f80f61eaa9bcaa406f905940f2ab1be3d6207cf))
+
 ## [1.1.1](https://github.com/recurser/bossanova/compare/v1.1.0...v1.1.1) (2026-04-08)
 
 ### Bug Fixes

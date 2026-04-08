@@ -22,7 +22,7 @@ jobs:
       status: ${{ steps.changes.conclusion }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - uses: dorny/paths-filter@v3
       id: changes
@@ -48,7 +48,7 @@ jobs:
       contents: read
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - uses: bufbuild/buf-setup-action@v1
 

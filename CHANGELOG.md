@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.3](https://github.com/recurser/bossanova/compare/v1.1.2...v1.1.3) (2026-04-08)
+
+### Bug Fixes
+
+* **ci:** use default token for checkout in release and homebrew jobs ([d8906a2](https://github.com/recurser/bossanova/commit/d8906a2cd3e1b4dfee7a6a2d77ce7ad0ec8b598e))
+* **global:** trigger a release ([0097438](https://github.com/recurser/bossanova/commit/0097438eeaaac328e70e2efaab9646e5fb64fc53))
+
 ## [1.1.2](https://github.com/recurser/bossanova/compare/v1.1.1...v1.1.2) (2026-04-08)
 
 ### Bug Fixes

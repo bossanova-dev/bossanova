@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -137,6 +138,83 @@ func (c RepairConfig) SkillName() string {
 		return c.Skills.Repair
 	}
 	return "boss-repair"
+}
+
+const pluginPrefix = "bossd-plugin-"
+
+// DiscoverPlugins scans for plugin binaries relative to the running binary's
+// location. It checks ../libexec/plugins/ first (Homebrew layout, resolving
+// symlinks), then falls back to the binary's own directory (dev mode where
+// all binaries live in bin/). Returns an empty slice if no plugins are found.
+func DiscoverPlugins() []PluginConfig {
+	return discoverPluginsFrom("")
+}
+
+// discoverPluginsFrom is the testable core of DiscoverPlugins. When binDir is
+// empty it uses os.Executable() to locate the binary directory.
+func discoverPluginsFrom(binDir string) []PluginConfig {
+	if binDir == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return nil
+		}
+		resolved, err := filepath.EvalSymlinks(exe)
+		if err != nil {
+			return nil
+		}
+		binDir = filepath.Dir(resolved)
+	}
+
+	// Try Homebrew layout first: ../libexec/plugins/
+	libexecDir := filepath.Clean(filepath.Join(binDir, "..", "libexec", "plugins"))
+	if plugins := scanForPlugins(libexecDir); len(plugins) > 0 {
+		return plugins
+	}
+
+	// Fall back to same directory as binary (dev mode).
+	return scanForPlugins(binDir)
+}
+
+// platformSuffixes lists OS/arch suffixes to skip during plugin discovery
+// (cross-compiled binaries in dev mode).
+var platformSuffixes = []string{
+	"-darwin-arm64", "-darwin-amd64",
+	"-linux-arm64", "-linux-amd64",
+}
+
+// scanForPlugins scans a directory for any executable matching the
+// bossd-plugin-* prefix and returns a PluginConfig for each one found.
+// Cross-compiled binaries with platform suffixes are skipped.
+func scanForPlugins(dir string) []PluginConfig {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var plugins []PluginConfig
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, pluginPrefix) {
+			continue
+		}
+		if hasPlatformSuffix(name) {
+			continue
+		}
+		plugins = append(plugins, PluginConfig{
+			Name:    name[len(pluginPrefix):],
+			Path:    filepath.Join(dir, name),
+			Enabled: true,
+		})
+	}
+	return plugins
+}
+
+func hasPlatformSuffix(name string) bool {
+	for _, s := range platformSuffixes {
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Settings holds global Bossanova configuration.

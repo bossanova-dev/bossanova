@@ -14,11 +14,6 @@ class Bossanova < Formula
         sha256 "${SHA256_DARWIN_ARM64_BOSSD}"
       end
 
-      resource "bossd-plugin-autopilot" do
-        url "https://github.com/bossanova-dev/bossanova/releases/download/v${VERSION}/bossd-plugin-autopilot-darwin-arm64"
-        sha256 "${SHA256_DARWIN_ARM64_AUTOPILOT}"
-      end
-
       resource "bossd-plugin-dependabot" do
         url "https://github.com/bossanova-dev/bossanova/releases/download/v${VERSION}/bossd-plugin-dependabot-darwin-arm64"
         sha256 "${SHA256_DARWIN_ARM64_DEPENDABOT}"
@@ -37,11 +32,6 @@ class Bossanova < Formula
       resource "bossd" do
         url "https://github.com/bossanova-dev/bossanova/releases/download/v${VERSION}/bossd-darwin-amd64"
         sha256 "${SHA256_DARWIN_AMD64_BOSSD}"
-      end
-
-      resource "bossd-plugin-autopilot" do
-        url "https://github.com/bossanova-dev/bossanova/releases/download/v${VERSION}/bossd-plugin-autopilot-darwin-amd64"
-        sha256 "${SHA256_DARWIN_AMD64_AUTOPILOT}"
       end
 
       resource "bossd-plugin-dependabot" do
@@ -66,11 +56,6 @@ class Bossanova < Formula
         sha256 "${SHA256_LINUX_AMD64_BOSSD}"
       end
 
-      resource "bossd-plugin-autopilot" do
-        url "https://github.com/bossanova-dev/bossanova/releases/download/v${VERSION}/bossd-plugin-autopilot-linux-amd64"
-        sha256 "${SHA256_LINUX_AMD64_AUTOPILOT}"
-      end
-
       resource "bossd-plugin-dependabot" do
         url "https://github.com/bossanova-dev/bossanova/releases/download/v${VERSION}/bossd-plugin-dependabot-linux-amd64"
         sha256 "${SHA256_LINUX_AMD64_DEPENDABOT}"
@@ -89,8 +74,11 @@ class Bossanova < Formula
       bin.install Dir["bossd*"].first => "bossd"
     end
     (libexec/"plugins").mkpath
-    %w[bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-repair].each do |p|
-      resource(p).stage { (libexec/"plugins").install Dir["#{p}*"].first => p }
+    %w[bossd-plugin-dependabot bossd-plugin-repair].each do |p|
+      resource(p).stage do
+        (libexec/"plugins").install Dir["#{p}*"].first => p
+        chmod 0755, libexec/"plugins"/p
+      end
     end
   end
 

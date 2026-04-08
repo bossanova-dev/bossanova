@@ -218,9 +218,9 @@ download_binaries() {
   fi
   printf "%bdone%b\n" "${GREEN}" "${RESET}"
 
-  # Download plugins (3 binaries)
-  printf "  Downloading plugins (3)...                  "
-  for plugin in bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-repair; do
+  # Download plugins (2 binaries)
+  printf "  Downloading plugins (2)...                  "
+  for plugin in bossd-plugin-dependabot bossd-plugin-repair; do
     if ! download_and_verify "${plugin}-${PLATFORM}" "${TEMP_DIR}/${plugin}"; then
       exit 1
     fi

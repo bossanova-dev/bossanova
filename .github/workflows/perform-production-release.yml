@@ -103,7 +103,7 @@ jobs:
           DATE="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           LDFLAGS="-s -w -X github.com/recurser/bossalib/buildinfo.Version=${VERSION} -X github.com/recurser/bossalib/buildinfo.Commit=${COMMIT} -X github.com/recurser/bossalib/buildinfo.Date=${DATE}"
 
-          for plugin in bossd-plugin-autopilot bossd-plugin-dependabot bossd-plugin-repair; do
+          for plugin in bossd-plugin-dependabot bossd-plugin-repair; do
             echo "Building ${plugin} for ${{ matrix.goos }}/${{ matrix.goarch }}"
             go build -ldflags "${LDFLAGS}" -o "${plugin}-${{ matrix.goos }}-${{ matrix.goarch }}" ./plugins/${plugin}
           done

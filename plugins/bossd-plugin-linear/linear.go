@@ -7,7 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
+
+// httpClient is used for Linear API requests with a 30-second timeout to prevent
+// hung connections from blocking the TUI indefinitely.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // linearClient is a GraphQL client for the Linear API.
 type linearClient struct {
@@ -110,7 +115,7 @@ func (c *linearClient) FetchIssues(ctx context.Context) ([]linearIssue, error) {
 	req.Header.Set("Authorization", c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("execute request: %w", err)
 	}

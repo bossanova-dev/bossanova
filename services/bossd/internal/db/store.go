@@ -80,6 +80,8 @@ type CreateSessionParams struct {
 	BaseBranch   string
 	PRNumber     *int
 	PRURL        *string
+	TrackerID    *string
+	TrackerURL   *string
 }
 
 // UpdateSessionParams holds the fields that can be updated on a session.
@@ -91,6 +93,8 @@ type UpdateSessionParams struct {
 	ClaudeSessionID   **string
 	PRNumber          **int
 	PRURL             **string
+	TrackerID         **string
+	TrackerURL        **string
 	LastCheckState    *int
 	AutomationEnabled *bool
 	AttemptCount      *int

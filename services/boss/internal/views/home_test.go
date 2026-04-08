@@ -121,6 +121,58 @@ func TestSessionNeedsAttention(t *testing.T) {
 	}
 }
 
+func TestRenderTrackerLink(t *testing.T) {
+	url := "https://linear.app/team/issue/FRE-1176"
+	tests := []struct {
+		name  string
+		sess  *pb.Session
+		title string
+		want  string
+	}{
+		{
+			name:  "nil session",
+			sess:  nil,
+			title: "[FRE-1176] Some title",
+			want:  "[FRE-1176] Some title",
+		},
+		{
+			name:  "no tracker ID",
+			sess:  &pb.Session{},
+			title: "[FRE-1176] Some title",
+			want:  "[FRE-1176] Some title",
+		},
+		{
+			name:  "tracker ID not in title",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-999"), TrackerUrl: &url},
+			title: "[FRE-1176] Some title",
+			want:  "[FRE-1176] Some title",
+		},
+		{
+			name:  "tracker ID with URL",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-1176"), TrackerUrl: &url},
+			title: "[FRE-1176] Some title",
+			want:  "\x1b]8;;" + url + "\x1b\\\x1b[4m[FRE-1176]\x1b[24m\x1b]8;;\x1b\\ Some title",
+		},
+		{
+			name:  "tracker ID without URL",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-1176")},
+			title: "[FRE-1176] Some title",
+			want:  "\x1b[4m[FRE-1176]\x1b[24m Some title",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderTrackerLink(tt.sess, tt.title)
+			if got != tt.want {
+				t.Errorf("renderTrackerLink() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
 func TestViewEmptyStateNoRepos(t *testing.T) {
 	// Create a HomeModel with no sessions and no repos
 	h := HomeModel{

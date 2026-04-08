@@ -42,7 +42,7 @@ This flight leg completed all proto definition tasks from the plan:
 ### Learnings & Notes
 
 - Proto field numbers locked: Repo 15-16, UpdateRepoRequest 9-10, CreateSessionRequest 8, TrackerIssue 1-8
-- TrackerIssue includes `pr_number` and `existing_branch` for matching existing PRs to Linear tickets
+- TrackerIssue includes `pr_number` and `existing_branch` for matching existing PRs to Linear issues
 - ListTrackerIssues handler validates LinearAPIKey is set before calling plugin
 - TaskSource interface extension maintains backward compatibility (new method only)
 - All generated code follows existing patterns from buf generate

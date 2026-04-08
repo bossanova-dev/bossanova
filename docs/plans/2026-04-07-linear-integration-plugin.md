@@ -4,7 +4,7 @@
 
 ## Overview
 
-Add a Linear issue tracker plugin that lets users pick a Linear ticket when creating a new session. If a PR already exists for the ticket, the session attaches to it. If not, a new branch and draft PR are created using Linear's suggested branch name and `[ENG-123] Title` format.
+Add a Linear issue tracker plugin that lets users pick a Linear issue when creating a new session. If a PR already exists for the ticket, the session attaches to it. If not, a new branch and draft PR are created using Linear's suggested branch name and `[ENG-123] Title` format.
 
 The plugin ships as a separate binary (`bossd-plugin-linear`) excluded from the public repo via the copy-and-strip mirror.
 
@@ -17,7 +17,7 @@ The plugin ships as a separate binary (`bossd-plugin-linear`) excluded from the 
 - [ ] `services/bossd/internal/server/` — ListTrackerIssues handler, UpdateRepo handler changes
 - [ ] `services/bossd/internal/plugin/` — TaskSource interface + gRPC client extension
 - [ ] `services/boss/internal/client/` — BossClient interface + local client extension
-- [ ] `services/boss/internal/views/` — Repo settings (2 new rows), new session wizard (Linear ticket type + issue picker phase)
+- [ ] `services/boss/internal/views/` — Repo settings (2 new rows), new session wizard (Linear issue type + issue picker phase)
 - [ ] `plugins/bossd-plugin-linear/` — New plugin binary (GraphQL client, PR matching, ListAvailableIssues)
 
 ## Design References
@@ -291,7 +291,7 @@ Human reviews: API key masking renders correctly, row navigation works, edit/sav
 
 ---
 
-## Flight Leg 4: TUI — New Session Wizard (Linear Ticket Flow)
+## Flight Leg 4: TUI — New Session Wizard (Linear Issue Flow)
 
 ### Tasks
 
@@ -318,12 +318,12 @@ Human reviews: API key masking renders correctly, row navigation works, edit/sav
             {"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
             {"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
         }
-        // Add Linear ticket option if repo has Linear API key configured
+        // Add Linear issue option if repo has Linear API key configured
         repo := m.selectedRepo()
         if repo != nil && repo.LinearApiKey != "" {
             // Insert before Quick chat
             opts = append(opts[:2], append([]struct{ ... }{
-                {"Work on a Linear ticket", "Pick a ticket from your Linear board", sessionTypeLinearTicket},
+                {"Work on a Linear issue", "Pick a ticket from your Linear board", sessionTypeLinearTicket},
             }, opts[2:]...)...)
         }
         return opts
@@ -331,7 +331,7 @@ Human reviews: API key masking renders correctly, row navigation works, edit/sav
     ```
   - Update all references to `sessionTypeOptions` to use `m.buildSessionTypeOptions()`
 
-- [ ] Implement `advanceFromTypeSelect` for Linear ticket flow
+- [ ] Implement `advanceFromTypeSelect` for Linear issue flow
   - Files: `services/boss/internal/views/newsession.go`
   - Add case in `advanceFromTypeSelect()`:
     ```go
@@ -356,7 +356,7 @@ Human reviews: API key masking renders correctly, row navigation works, edit/sav
     }
     ```
 
-- [ ] Implement issue selection and `startCreating` for Linear tickets
+- [ ] Implement issue selection and `startCreating` for Linear issues
   - Files: `services/boss/internal/views/newsession.go`
   - Handle `issuesMsg`: build table rows from issues, set `issueTableReady`
   - Handle key navigation in `newSessionPhaseIssueSelect`: j/k/up/down + enter to select
@@ -554,7 +554,7 @@ Human reviews: GraphQL query correctness, PR matching logic, host client dial pa
 Human reviews: Complete feature before merge. Verify:
 
 1. Repo settings: Linear API key masked (last 4 chars), team key editable
-2. New session: "Work on a Linear ticket" appears only when configured
+2. New session: "Work on a Linear issue" appears only when configured
 3. Issue picker: loading state, table, selection
 4. Session creation: `[ENG-123] Title` format, existing PR attachment
 5. Plugin: correct GraphQL query, PR matching, host client integration

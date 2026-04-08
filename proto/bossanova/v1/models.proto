@@ -167,6 +167,10 @@ message Session {
 
   // Whether the session has an active Claude Code chat process (heartbeat-tracked).
   bool has_active_chat = 28;
+
+  // External issue tracker fields (eg. Linear, Jira).
+  optional string tracker_id = 29;   // External issue ID (eg. "FRE-1176")
+  optional string tracker_url = 30;  // URL to issue in external tracker
 }
 
 // Attempt represents a fix attempt within a session.

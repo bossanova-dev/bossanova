@@ -2,7 +2,7 @@
 	test-bossalib test-boss test-bossd test-bosso test-autopilot test-dependabot test-linear test-repair \
 	lint-bossalib lint-boss lint-bossd lint-bosso lint-autopilot lint-dependabot lint-linear lint-repair lint-proto \
 	build-boss build-bossd build-bosso build-autopilot build-dependabot build-linear build-repair \
-	copy-skills \
+	copy-skills release \
 	mutate mutate-diff mutate-report mutate-survivors mutate-fix mutate-loop \
 	mutate-bossalib mutate-boss mutate-bossd mutate-bosso \
 	mutate-autopilot mutate-dependabot mutate-linear mutate-repair
@@ -239,6 +239,10 @@ clean:
 		$(MAKE) -C $$mod clean; \
 	done
 	$(MAKE) -C services/web clean
+
+## release: Trigger the production release workflow (creates a PR from main → production)
+release:
+	gh workflow run release.yml --ref main
 
 ## split: Mirror subtrees to separate repos via splitsh/lite
 split:

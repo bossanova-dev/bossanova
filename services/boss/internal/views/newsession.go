@@ -24,7 +24,7 @@ const (
 	sessionTypeNewPR                           // Create a new PR
 	sessionTypeExistingPR                      // Work on an existing PR
 	sessionTypeExecutePlan                     // Execute a plan (placeholder)
-	sessionTypeLinearTicket                    // Work on a Linear ticket
+	sessionTypeLinearTicket                    // Work on a Linear issue
 )
 
 // newSessionPhase tracks the current phase of the wizard.
@@ -95,12 +95,12 @@ func (m *NewSessionModel) buildSessionTypeOptions() []sessionTypeOption {
 		{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
 	}
 
-	// Add Linear ticket option if repo has Linear API key configured
+	// Add Linear issue option if repo has Linear API key configured
 	repo := m.selectedRepo()
 	if repo != nil && repo.LinearApiKey != "" {
 		// Insert before Quick chat
 		opts = append(opts[:2], append([]sessionTypeOption{
-			{"Work on a Linear ticket", "Pick a ticket from your Linear board", sessionTypeLinearTicket},
+			{"Work on a Linear issue", "Pick an issue from your Linear board", sessionTypeLinearTicket},
 		}, opts[2:]...)...)
 	}
 
@@ -704,6 +704,10 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 			issue := m.selectedIssue
 			req.Title = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
 			req.Plan = issue.Description
+			req.TrackerId = &issue.ExternalId
+			if issue.Url != "" {
+				req.TrackerUrl = &issue.Url
+			}
 			if issue.PrNumber > 0 {
 				// Existing PR - attach to it
 				prNum := issue.PrNumber

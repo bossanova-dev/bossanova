@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"strings"
 
 	"charm.land/bubbles/v2/spinner"
 	bosspty "github.com/recurser/boss/internal/pty"
@@ -165,4 +166,50 @@ func renderMutedPRLink(sess *pb.Session) string {
 		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, styled)
 	}
 	return styled
+}
+
+// renderTrackerLink replaces the [tracker_id] portion of a session title with
+// an OSC 8 hyperlinked + underlined version. Returns the original title if
+// the session has no tracker ID or the ID is not found in the title.
+func renderTrackerLink(sess *pb.Session, title string) string {
+	if sess == nil || sess.TrackerId == nil || *sess.TrackerId == "" {
+		return title
+	}
+	target := "[" + *sess.TrackerId + "]"
+	idx := strings.Index(title, target)
+	if idx < 0 {
+		return title
+	}
+	underlined := "\x1b[4m" + target + "\x1b[24m"
+	var linked string
+	if sess.TrackerUrl != nil && *sess.TrackerUrl != "" {
+		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, underlined)
+	} else {
+		linked = underlined
+	}
+	return title[:idx] + linked + title[idx+len(target):]
+}
+
+// renderMutedTrackerLink replaces the [tracker_id] portion of a session title
+// with a muted, strikethrough, underlined, OSC 8 hyperlinked version for
+// merged/closed rows.
+func renderMutedTrackerLink(sess *pb.Session, title string) string {
+	if sess == nil || sess.TrackerId == nil || *sess.TrackerId == "" {
+		return title
+	}
+	target := "[" + *sess.TrackerId + "]"
+	idx := strings.Index(title, target)
+	if idx < 0 {
+		return title
+	}
+	// SGR 38;2;98;98;98 = muted gray foreground (#626262)
+	// SGR 9 = strikethrough, SGR 4 = underline
+	styled := "\x1b[38;2;98;98;98;9;4m" + target + "\x1b[39;29;24m"
+	var linked string
+	if sess.TrackerUrl != nil && *sess.TrackerUrl != "" {
+		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, styled)
+	} else {
+		linked = styled
+	}
+	return title[:idx] + linked + title[idx+len(target):]
 }

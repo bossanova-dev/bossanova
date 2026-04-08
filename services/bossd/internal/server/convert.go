@@ -61,6 +61,12 @@ func sessionToProto(s *models.Session) *pb.Session {
 	if s.PRURL != nil {
 		p.PrUrl = s.PRURL
 	}
+	if s.TrackerID != nil {
+		p.TrackerId = s.TrackerID
+	}
+	if s.TrackerURL != nil {
+		p.TrackerUrl = s.TrackerURL
+	}
 	if s.BlockedReason != nil {
 		p.BlockedReason = s.BlockedReason
 	}

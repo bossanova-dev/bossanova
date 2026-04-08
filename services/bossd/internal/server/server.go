@@ -500,6 +500,8 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		Plan:       msg.Plan,
 		BaseBranch: baseBranch,
 		PRNumber:   prNumber,
+		TrackerID:  msg.TrackerId,
+		TrackerURL: msg.TrackerUrl,
 	}
 	if prURL != nil {
 		createParams.PRURL = prURL

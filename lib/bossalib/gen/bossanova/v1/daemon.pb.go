@@ -990,7 +990,10 @@ type CreateSessionRequest struct {
 	// If true, run as a quick chat session (no worktree, no branch, no PR).
 	QuickChat bool `protobuf:"varint,7,opt,name=quick_chat,json=quickChat,proto3" json:"quick_chat,omitempty"`
 	// Optional branch name (eg. from Linear's suggested branch name).
-	BranchName    *string `protobuf:"bytes,8,opt,name=branch_name,json=branchName,proto3,oneof" json:"branch_name,omitempty"`
+	BranchName *string `protobuf:"bytes,8,opt,name=branch_name,json=branchName,proto3,oneof" json:"branch_name,omitempty"`
+	// External issue tracker fields.
+	TrackerId     *string `protobuf:"bytes,9,opt,name=tracker_id,json=trackerId,proto3,oneof" json:"tracker_id,omitempty"`     // External issue ID (eg. "FRE-1176")
+	TrackerUrl    *string `protobuf:"bytes,10,opt,name=tracker_url,json=trackerUrl,proto3,oneof" json:"tracker_url,omitempty"` // URL to issue in external tracker
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1077,6 +1080,20 @@ func (x *CreateSessionRequest) GetQuickChat() bool {
 func (x *CreateSessionRequest) GetBranchName() string {
 	if x != nil && x.BranchName != nil {
 		return *x.BranchName
+	}
+	return ""
+}
+
+func (x *CreateSessionRequest) GetTrackerId() string {
+	if x != nil && x.TrackerId != nil {
+		return *x.TrackerId
+	}
+	return ""
+}
+
+func (x *CreateSessionRequest) GetTrackerUrl() string {
+	if x != nil && x.TrackerUrl != nil {
+		return *x.TrackerUrl
 	}
 	return ""
 }
@@ -4407,7 +4424,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x18ListTrackerIssuesRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"O\n" +
 	"\x19ListTrackerIssuesResponse\x122\n" +
-	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xa2\x02\n" +
+	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\x8b\x03\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -4419,10 +4436,17 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"quick_chat\x18\a \x01(\bR\tquickChat\x12$\n" +
 	"\vbranch_name\x18\b \x01(\tH\x01R\n" +
-	"branchName\x88\x01\x01B\f\n" +
+	"branchName\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"tracker_id\x18\t \x01(\tH\x02R\ttrackerId\x88\x01\x01\x12$\n" +
+	"\vtracker_url\x18\n" +
+	" \x01(\tH\x03R\n" +
+	"trackerUrl\x88\x01\x01B\f\n" +
 	"\n" +
 	"_pr_numberB\x0e\n" +
-	"\f_branch_name\"\xaf\x01\n" +
+	"\f_branch_nameB\r\n" +
+	"\v_tracker_idB\x0e\n" +
+	"\f_tracker_url\"\xaf\x01\n" +
 	"\x15CreateSessionResponse\x12D\n" +
 	"\fsetup_output\x18\x02 \x01(\v2\x1f.bossanova.v1.SetupScriptOutputH\x00R\vsetupOutput\x12G\n" +
 	"\x0fsession_created\x18\x03 \x01(\v2\x1c.bossanova.v1.SessionCreatedH\x00R\x0esessionCreatedB\a\n" +

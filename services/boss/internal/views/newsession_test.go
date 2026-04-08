@@ -485,7 +485,7 @@ func TestNewSession_ErrorInFormPhase_EscGoesBackToTypeSelect(t *testing.T) {
 	}
 }
 
-// --- Linear Ticket Tests ---
+// --- Linear Issue Tests ---
 
 func TestNewSession_LinearTicketOptionHiddenWithoutConfig(t *testing.T) {
 	sc := &stubClient{repos: []*pb.Repo{
@@ -499,7 +499,7 @@ func TestNewSession_LinearTicketOptionHiddenWithoutConfig(t *testing.T) {
 		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
 	}
 
-	// Build options - should not include Linear ticket
+	// Build options - should not include Linear issue
 	opts := m.buildSessionTypeOptions()
 	if len(opts) != 3 {
 		t.Fatalf("len(opts) = %d, want 3 (no Linear option without API key)", len(opts))
@@ -508,7 +508,7 @@ func TestNewSession_LinearTicketOptionHiddenWithoutConfig(t *testing.T) {
 	// Verify Linear option is not in the list
 	for _, opt := range opts {
 		if opt.typ == sessionTypeLinearTicket {
-			t.Fatal("Linear ticket option should not be shown when LinearApiKey is empty")
+			t.Fatal("Linear issue option should not be shown when LinearApiKey is empty")
 		}
 	}
 }
@@ -525,7 +525,7 @@ func TestNewSession_LinearTicketOptionShownWithConfig(t *testing.T) {
 		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect (%d)", m.phase, newSessionPhaseTypeSelect)
 	}
 
-	// Build options - should include Linear ticket
+	// Build options - should include Linear issue
 	opts := m.buildSessionTypeOptions()
 	if len(opts) != 4 {
 		t.Fatalf("len(opts) = %d, want 4 (including Linear option)", len(opts))
@@ -536,13 +536,13 @@ func TestNewSession_LinearTicketOptionShownWithConfig(t *testing.T) {
 	for _, opt := range opts {
 		if opt.typ == sessionTypeLinearTicket {
 			found = true
-			if opt.label != "Work on a Linear ticket" {
-				t.Fatalf("Linear option label = %q, want %q", opt.label, "Work on a Linear ticket")
+			if opt.label != "Work on a Linear issue" {
+				t.Fatalf("Linear option label = %q, want %q", opt.label, "Work on a Linear issue")
 			}
 		}
 	}
 	if !found {
-		t.Fatal("Linear ticket option should be shown when LinearApiKey is set")
+		t.Fatal("Linear issue option should be shown when LinearApiKey is set")
 	}
 }
 
@@ -552,14 +552,14 @@ func TestNewSession_LinearTicketCreatesSessionWithBracketTitle(t *testing.T) {
 			{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main", LinearApiKey: "lin_api_abc123"},
 		},
 		trackerIssues: []*pb.TrackerIssue{
-			{ExternalId: "ENG-123", Title: "Add authentication", Description: "Implement user auth flow", State: "In Progress"},
+			{ExternalId: "ENG-123", Title: "Add authentication", Description: "Implement user auth flow", State: "In Progress", Url: "https://linear.app/team/issue/ENG-123"},
 		},
 		created: &pb.Session{Id: "session-1"},
 	}
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	// Select Linear ticket type
+	// Select Linear issue type
 	m.selectedType = sessionTypeLinearTicket
 	m.phase = newSessionPhaseLoading
 
@@ -594,6 +594,14 @@ func TestNewSession_LinearTicketCreatesSessionWithBracketTitle(t *testing.T) {
 	if sc.createReq.PrNumber != nil {
 		t.Fatalf("CreateSession PrNumber = %v, want nil for new issue", sc.createReq.PrNumber)
 	}
+
+	// Verify tracker fields are passed through
+	if sc.createReq.TrackerId == nil || *sc.createReq.TrackerId != "ENG-123" {
+		t.Fatalf("CreateSession TrackerId = %v, want %q", sc.createReq.TrackerId, "ENG-123")
+	}
+	if sc.createReq.TrackerUrl == nil || *sc.createReq.TrackerUrl != "https://linear.app/team/issue/ENG-123" {
+		t.Fatalf("CreateSession TrackerUrl = %v, want %q", sc.createReq.TrackerUrl, "https://linear.app/team/issue/ENG-123")
+	}
 }
 
 func TestNewSession_LinearTicketExistingPRAttaches(t *testing.T) {
@@ -617,7 +625,7 @@ func TestNewSession_LinearTicketExistingPRAttaches(t *testing.T) {
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	// Select Linear ticket type and receive issues
+	// Select Linear issue type and receive issues
 	m.selectedType = sessionTypeLinearTicket
 	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
 
@@ -663,7 +671,7 @@ func TestNewSession_LinearTicketNewBranch(t *testing.T) {
 	m := NewNewSessionModel(sc, context.Background())
 	m = sendMsg(t, m, reposMsg{repos: sc.repos})
 
-	// Select Linear ticket type and receive issues
+	// Select Linear issue type and receive issues
 	m.selectedType = sessionTypeLinearTicket
 	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
 

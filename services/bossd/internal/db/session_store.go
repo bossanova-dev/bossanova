@@ -27,11 +27,12 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 	id := sqlutil.NewID()
 	now := sqlutil.TimeNow()
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, pr_number, pr_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Title, params.Plan,
 		params.WorktreePath, params.BranchName, params.BaseBranch,
-		int(machine.CreatingWorktree), params.PRNumber, params.PRURL, now, now,
+		int(machine.CreatingWorktree), params.PRNumber, params.PRURL,
+		params.TrackerID, params.TrackerURL, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert session: %w", err)
@@ -103,6 +104,14 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	if params.PRURL != nil {
 		sets = append(sets, "pr_url = ?")
 		args = append(args, *params.PRURL)
+	}
+	if params.TrackerID != nil {
+		sets = append(sets, "tracker_id = ?")
+		args = append(args, *params.TrackerID)
+	}
+	if params.TrackerURL != nil {
+		sets = append(sets, "tracker_url = ?")
+		args = append(args, *params.TrackerURL)
 	}
 	if params.LastCheckState != nil {
 		sets = append(sets, "last_check_state = ?")
@@ -244,7 +253,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 }
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
-	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.last_check_state,
+	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.last_check_state,
 	s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at
 	FROM sessions s`
 
@@ -255,6 +264,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
+		&sess.TrackerID, &sess.TrackerURL,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt)
 	if err != nil {

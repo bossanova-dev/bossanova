@@ -51,6 +51,8 @@ type Session struct {
 	ClaudeSessionID   *string
 	PRNumber          *int
 	PRURL             *string
+	TrackerID         *string
+	TrackerURL        *string
 	LastCheckState    machine.CheckState
 	AutomationEnabled bool
 	AttemptCount      int

@@ -193,6 +193,9 @@ message CreateSessionRequest {
   bool quick_chat = 7;
   // Optional branch name (eg. from Linear's suggested branch name).
   optional string branch_name = 8;
+  // External issue tracker fields.
+  optional string tracker_id = 9;    // External issue ID (eg. "FRE-1176")
+  optional string tracker_url = 10;  // URL to issue in external tracker
 }
 
 message CreateSessionResponse {

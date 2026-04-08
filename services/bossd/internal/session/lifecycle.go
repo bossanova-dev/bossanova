@@ -102,7 +102,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			SetupScriptOutput: setupOutput,
 		})
 		if err != nil {
-			// The branch may not exist on the remote yet (e.g. a Linear ticket
+			// The branch may not exist on the remote yet (e.g. a Linear issue
 			// with no PR). Fall back to creating a new branch with that name.
 			l.logger.Info().
 				Str("branch", existingBranch).

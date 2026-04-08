@@ -1078,6 +1078,9 @@ type Session struct {
 	WorkflowDisplayMaxLegs int32          `protobuf:"varint,27,opt,name=workflow_display_max_legs,json=workflowDisplayMaxLegs,proto3" json:"workflow_display_max_legs,omitempty"`
 	// Whether the session has an active Claude Code chat process (heartbeat-tracked).
 	HasActiveChat bool `protobuf:"varint,28,opt,name=has_active_chat,json=hasActiveChat,proto3" json:"has_active_chat,omitempty"`
+	// External issue tracker fields (eg. Linear, Jira).
+	TrackerId     *string `protobuf:"bytes,29,opt,name=tracker_id,json=trackerId,proto3,oneof" json:"tracker_id,omitempty"`    // External issue ID (eg. "FRE-1176")
+	TrackerUrl    *string `protobuf:"bytes,30,opt,name=tracker_url,json=trackerUrl,proto3,oneof" json:"tracker_url,omitempty"` // URL to issue in external tracker
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1306,6 +1309,20 @@ func (x *Session) GetHasActiveChat() bool {
 		return x.HasActiveChat
 	}
 	return false
+}
+
+func (x *Session) GetTrackerId() string {
+	if x != nil && x.TrackerId != nil {
+		return *x.TrackerId
+	}
+	return ""
+}
+
+func (x *Session) GetTrackerUrl() string {
+	if x != nil && x.TrackerUrl != nil {
+		return *x.TrackerUrl
+	}
+	return ""
 }
 
 // Attempt represents a fix attempt within a session.
@@ -2547,7 +2564,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\x9d\v\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\x86\f\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -2582,14 +2599,20 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x17workflow_display_status\x18\x19 \x01(\x0e2\x1c.bossanova.v1.WorkflowStatusR\x15workflowDisplayStatus\x120\n" +
 	"\x14workflow_display_leg\x18\x1a \x01(\x05R\x12workflowDisplayLeg\x129\n" +
 	"\x19workflow_display_max_legs\x18\x1b \x01(\x05R\x16workflowDisplayMaxLegs\x12&\n" +
-	"\x0fhas_active_chat\x18\x1c \x01(\bR\rhasActiveChatB\x14\n" +
+	"\x0fhas_active_chat\x18\x1c \x01(\bR\rhasActiveChat\x12\"\n" +
+	"\n" +
+	"tracker_id\x18\x1d \x01(\tH\x06R\ttrackerId\x88\x01\x01\x12$\n" +
+	"\vtracker_url\x18\x1e \x01(\tH\aR\n" +
+	"trackerUrl\x88\x01\x01B\x14\n" +
 	"\x12_claude_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
 	"\a_pr_urlB\x11\n" +
 	"\x0f_blocked_reasonB\x0e\n" +
 	"\f_archived_atB\x13\n" +
-	"\x11_attention_status\"\xc0\x02\n" +
+	"\x11_attention_statusB\r\n" +
+	"\v_tracker_idB\x0e\n" +
+	"\f_tracker_url\"\xc0\x02\n" +
 	"\aAttempt\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

@@ -143,9 +143,10 @@ func (h *HomeModel) buildTableRows() {
 	sortSessionsByAttention(h.sessions)
 
 	repos := make([]string, len(h.sessions))
-	names := make([]string, len(h.sessions))
-	prLabels := make([]string, len(h.sessions)) // visible text for width calc
-	prs := make([]string, len(h.sessions))      // may contain OSC 8 hyperlinks
+	names := make([]string, len(h.sessions))       // plain text for width calc
+	linkedNames := make([]string, len(h.sessions)) // may contain OSC 8 hyperlinks
+	prLabels := make([]string, len(h.sessions))    // visible text for width calc
+	prs := make([]string, len(h.sessions))         // may contain OSC 8 hyperlinks
 	for i, sess := range h.sessions {
 		repos[i] = sess.RepoDisplayName
 		if sess.Title != "" {
@@ -153,6 +154,7 @@ func (h *HomeModel) buildTableRows() {
 		} else {
 			names[i] = sess.BranchName
 		}
+		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
 			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
 			prs[i] = renderPRLink(sess)
@@ -182,11 +184,11 @@ func (h *HomeModel) buildTableRows() {
 		statusStyled := renderPRDisplayStatus(sess, claudeStatus, h.spinner)
 
 		attn := renderAttentionIndicator(sess)
-		repo, name, pr := repos[i], names[i], prs[i]
+		repo, name, pr := repos[i], linkedNames[i], prs[i]
 		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED ||
 			sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED {
 			repo = mutedStrike.Render(repos[i])
-			name = mutedStrike.Render(names[i])
+			name = mutedStrike.Render(renderMutedTrackerLink(sess, names[i]))
 			pr = renderMutedPRLink(sess)
 		}
 

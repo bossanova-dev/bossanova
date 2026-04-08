@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2](https://github.com/recurser/bossanova/compare/v1.3.1...v1.3.2) (2026-04-08)
+
+### Bug Fixes
+
+* **mirror:** remove hardcoded plugin name references from public-visible code ([bbc0f64](https://github.com/recurser/bossanova/commit/bbc0f6479b82008096e445d78107e39490e3ec3e))
+* **mirror:** remove private module references from public repo build ([84488fd](https://github.com/recurser/bossanova/commit/84488fd5fc8490e6568bfa6ad7277b848aac33a1))
+
 ## [1.3.1](https://github.com/recurser/bossanova/compare/v1.3.0...v1.3.1) (2026-04-08)
 
 ### Bug Fixes

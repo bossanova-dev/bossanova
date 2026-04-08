@@ -880,18 +880,17 @@ func runConfigInit(cmd *cobra.Command) error {
 			return fmt.Errorf("resolve plugin directory: %w", err)
 		}
 
-		pluginNames := []string{
-			"bossd-plugin-autopilot",
-			"bossd-plugin-dependabot",
-			"bossd-plugin-repair",
+		entries, err := os.ReadDir(absPluginDir)
+		if err != nil {
+			return fmt.Errorf("read plugin directory: %w", err)
 		}
 
 		foundPlugins = make(map[string]string)
-		for _, name := range pluginNames {
-			path := filepath.Join(absPluginDir, name)
-			if _, err := os.Stat(path); err == nil {
-				foundPlugins[name] = path
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasPrefix(e.Name(), "bossd-plugin-") {
+				continue
 			}
+			foundPlugins[e.Name()] = filepath.Join(absPluginDir, e.Name())
 		}
 	} else {
 		// No --plugin-dir: try auto-discovery relative to binary.

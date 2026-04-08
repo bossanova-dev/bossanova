@@ -269,8 +269,7 @@ func configCmd() *cobra.Command {
 			return runConfigInit(cmd)
 		},
 	}
-	init.Flags().String("plugin-dir", "", "Directory containing plugin binaries (required)")
-	_ = init.MarkFlagRequired("plugin-dir")
+	init.Flags().String("plugin-dir", "", "Directory containing plugin binaries (auto-detected if omitted)")
 
 	cfg.AddCommand(init)
 	return cfg

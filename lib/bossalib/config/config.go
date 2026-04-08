@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -139,12 +140,7 @@ func (c RepairConfig) SkillName() string {
 	return "boss-repair"
 }
 
-// knownPlugins lists plugin binary names to scan for during auto-discovery.
-var knownPlugins = []string{
-	"bossd-plugin-autopilot",
-	"bossd-plugin-dependabot",
-	"bossd-plugin-repair",
-}
+const pluginPrefix = "bossd-plugin-"
 
 // DiscoverPlugins scans for plugin binaries relative to the running binary's
 // location. It checks ../libexec/plugins/ first (Homebrew layout, resolving
@@ -179,22 +175,46 @@ func discoverPluginsFrom(binDir string) []PluginConfig {
 	return scanForPlugins(binDir)
 }
 
-// scanForPlugins checks a directory for known plugin binaries and returns
-// a PluginConfig for each one found.
+// platformSuffixes lists OS/arch suffixes to skip during plugin discovery
+// (cross-compiled binaries in dev mode).
+var platformSuffixes = []string{
+	"-darwin-arm64", "-darwin-amd64",
+	"-linux-arm64", "-linux-amd64",
+}
+
+// scanForPlugins scans a directory for any executable matching the
+// bossd-plugin-* prefix and returns a PluginConfig for each one found.
+// Cross-compiled binaries with platform suffixes are skipped.
 func scanForPlugins(dir string) []PluginConfig {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
 	var plugins []PluginConfig
-	for _, name := range knownPlugins {
-		path := filepath.Join(dir, name)
-		if _, err := os.Stat(path); err == nil {
-			pluginName := name[len("bossd-plugin-"):]
-			plugins = append(plugins, PluginConfig{
-				Name:    pluginName,
-				Path:    path,
-				Enabled: true,
-			})
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, pluginPrefix) {
+			continue
 		}
+		if hasPlatformSuffix(name) {
+			continue
+		}
+		plugins = append(plugins, PluginConfig{
+			Name:    name[len(pluginPrefix):],
+			Path:    filepath.Join(dir, name),
+			Enabled: true,
+		})
 	}
 	return plugins
+}
+
+func hasPlatformSuffix(name string) bool {
+	for _, s := range platformSuffixes {
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // Settings holds global Bossanova configuration.

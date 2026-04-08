@@ -499,7 +499,7 @@ func TestDiscoverPluginsFindsPlugins(t *testing.T) {
 		t.Fatalf("got %d plugins, want 2", len(plugins))
 	}
 
-	// Verify ordering matches knownPlugins order (autopilot before repair).
+	// ReadDir returns entries in alphabetical order (autopilot before repair).
 	if plugins[0].Name != "autopilot" {
 		t.Errorf("plugins[0].Name: got %q, want %q", plugins[0].Name, "autopilot")
 	}

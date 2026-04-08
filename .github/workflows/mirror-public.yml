@@ -32,6 +32,7 @@ jobs:
           rm -rf TODOS.md
           rm -rf .github/workflows/
           rm -rf .releaserc.yml
+          rm -rf .beads/
 
           # Keep infra/install.sh for public curl installer, remove the rest
           find infra/ -mindepth 1 ! -name 'install.sh' -delete 2>/dev/null || true

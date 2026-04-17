@@ -209,7 +209,7 @@ func (m RepoListModel) View() tea.View {
 	}
 
 	if m.loading {
-		return tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render("Loading repositories..."))
+		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading repositories..."))
 	}
 
 	var b strings.Builder

@@ -1333,9 +1333,9 @@ func TestRouteTask_CreateSession_NoDependabotLabel_NoSkipSetupScript(t *testing.
 	}
 }
 
-// --- failed task mapping retry tests ---
+// --- failed task mapping tests ---
 
-func TestProcessTask_FailedMappingIsRetried(t *testing.T) {
+func TestProcessTask_FailedMappingIsSkipped(t *testing.T) {
 	createCalls := 0
 
 	store := &mockTaskMappingStore{
@@ -1372,8 +1372,8 @@ func TestProcessTask_FailedMappingIsRetried(t *testing.T) {
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
-	if createCalls == 0 {
-		t.Error("expected failed task mapping to be deleted and task re-enqueued")
+	if createCalls != 0 {
+		t.Error("expected failed task mapping to be skipped (not retried)")
 	}
 }
 

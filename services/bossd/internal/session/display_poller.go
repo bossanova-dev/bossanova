@@ -105,6 +105,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 	// calls per draft PR per poll cycle.
 	if prStatus.Draft {
 		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
+		info.HeadSHA = prStatus.HeadSHA
 		p.tracker.Set(sessionID, info)
 		return
 	}
@@ -124,5 +125,6 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 	}
 
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	info.HeadSHA = prStatus.HeadSHA
 	p.tracker.Set(sessionID, info)
 }

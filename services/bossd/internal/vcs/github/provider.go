@@ -251,7 +251,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 	out, err := p.runGH(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName",
+		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName,headRefOid",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get PR status: %w", err)
@@ -264,6 +264,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 		Title       string `json:"title"`
 		HeadRefName string `json:"headRefName"`
 		BaseRefName string `json:"baseRefName"`
+		HeadRefOid  string `json:"headRefOid"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parse PR status: %w", err)
@@ -275,6 +276,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 		Title:      raw.Title,
 		HeadBranch: raw.HeadRefName,
 		BaseBranch: raw.BaseRefName,
+		HeadSHA:    raw.HeadRefOid,
 	}
 
 	if raw.Mergeable != "" && raw.Mergeable != "UNKNOWN" {

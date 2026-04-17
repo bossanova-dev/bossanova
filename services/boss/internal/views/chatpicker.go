@@ -13,7 +13,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/claude"
 	"github.com/recurser/boss/internal/client"
-	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -59,7 +58,6 @@ type chatDeletedMsg struct {
 type ChatPickerModel struct {
 	client           client.BossClient
 	ctx              context.Context
-	manager          *bosspty.Manager
 	sessionID        string
 	highlightID      string               // Claude ID to auto-highlight after detach
 	daemonStatuses   map[string]string    // claude_id → status string from daemon heartbeats
@@ -81,11 +79,10 @@ type ChatPickerModel struct {
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
 // If highlightClaudeID is non-empty, that chat will be auto-highlighted after loading.
-func NewChatPickerModel(c client.BossClient, parentCtx context.Context, manager *bosspty.Manager, sessionID, highlightClaudeID string) ChatPickerModel {
+func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionID, highlightClaudeID string) ChatPickerModel {
 	return ChatPickerModel{
 		client:      c,
 		ctx:         parentCtx,
-		manager:     manager,
 		sessionID:   sessionID,
 		highlightID: highlightClaudeID,
 		spinner:     newStatusSpinner(),
@@ -219,13 +216,8 @@ func (m *ChatPickerModel) buildTableRows() {
 	cursor := m.table.Cursor()
 	rows := make([]table.Row, len(m.chats))
 	for i, chat := range m.chats {
-		local := bosspty.StatusStopped
-		if m.manager != nil {
-			local = m.manager.ProcessStatus(chat.ClaudeId)
-		}
 		daemon := m.daemonStatuses[chat.ClaudeId]
-		status := mergeStatus(local, daemon)
-		statusStr := renderClaudeStatus(status, m.spinner)
+		statusStr := renderClaudeStatus(daemon, m.spinner)
 		createdStr := styleSubtle.Render(createds[i])
 		activeStr := styleSubtle.Render(actives[i])
 		indicator := ""
@@ -288,9 +280,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
-		} else if m.manager != nil {
+		} else if m.daemonStatuses != nil {
 			for i, chat := range m.chats {
-				if m.manager.IsRunning(chat.ClaudeId) {
+				if s := m.daemonStatuses[chat.ClaudeId]; s == statusWorking || s == statusIdle || s == statusQuestion {
 					m.table.SetCursor(i)
 					updateCursorColumn(&m.table)
 					break
@@ -446,7 +438,7 @@ func (m ChatPickerModel) View() tea.View {
 			title = m.session.Title
 		}
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Render(
+			lipgloss.NewStyle().Padding(0, 2).Render(
 				fmt.Sprintf("Loading chats for %s...", title)),
 		)
 	}
@@ -488,15 +480,8 @@ func (m ChatPickerModel) View() tea.View {
 }
 
 // chatLastActive returns the most recent activity time for a chat.
-// Prefers local PTY output time, then daemon-reported output time, then created_at.
+// Prefers daemon-reported output time, then created_at.
 func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
-	// Local PTY (this instance owns the process).
-	if m.manager != nil {
-		if lw := m.manager.ProcessLastWrite(chat.ClaudeId); !lw.IsZero() {
-			return lw
-		}
-	}
-	// Daemon-reported last output (another instance owns the process).
 	if t, ok := m.daemonLastOutput[chat.ClaudeId]; ok && !t.IsZero() {
 		return t
 	}

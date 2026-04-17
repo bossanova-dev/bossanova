@@ -8,11 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/google/uuid"
 	"github.com/recurser/boss/internal/claude"
 	"github.com/recurser/boss/internal/client"
-	bosspty "github.com/recurser/boss/internal/pty"
-	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -32,6 +29,12 @@ type sessionFetchedMsg struct {
 	session *pb.Session
 }
 
+// tmuxEnsuredMsg signals that the daemon has created/returned a tmux session.
+type tmuxEnsuredMsg struct {
+	tmuxSessionName string
+	claudeID        string
+}
+
 // attachErrMsg signals a fetch or launch error.
 type attachErrMsg struct {
 	err error
@@ -41,13 +44,12 @@ type attachErrMsg struct {
 type AttachModel struct {
 	client    client.BossClient
 	ctx       context.Context
-	manager   *bosspty.Manager
 	sessionID string
 	resumeID  string // Claude Code session UUID to resume (empty = new chat)
 	claudeID  string // The Claude Code session UUID actually launched
 
 	session   *pb.Session
-	launching bool  // true while fetching session
+	launching bool  // true while fetching session / ensuring tmux
 	returned  bool  // true after claude exits
 	claudeErr error // error from claude process (if any)
 	detach    bool
@@ -58,11 +60,10 @@ type AttachModel struct {
 
 // NewAttachModel creates an AttachModel for the given session.
 // If resumeID is non-empty, Claude Code will be launched with --resume.
-func NewAttachModel(c client.BossClient, parentCtx context.Context, manager *bosspty.Manager, sessionID, resumeID string) AttachModel {
+func NewAttachModel(c client.BossClient, parentCtx context.Context, sessionID, resumeID string) AttachModel {
 	return AttachModel{
 		client:    c,
 		ctx:       parentCtx,
-		manager:   manager,
 		sessionID: sessionID,
 		resumeID:  resumeID,
 		launching: true,
@@ -87,43 +88,36 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case sessionFetchedMsg:
 		m.session = msg.session
+
+		// Determine mode for EnsureTmuxSession RPC.
+		mode := "new"
+		claudeID := ""
+		if m.resumeID != "" {
+			mode = "resume"
+			claudeID = m.resumeID
+		}
+
+		return m, m.ensureTmuxSession(mode, claudeID)
+
+	case tmuxEnsuredMsg:
+		m.claudeID = msg.claudeID
 		m.launching = false
 
-		// Launch interactive Claude in the session's worktree.
-		cfg, _ := config.Load()
-		var args []string
-		if m.resumeID != "" {
-			// Resume an existing Claude Code session.
-			m.claudeID = m.resumeID
-			args = append(args, "--resume", m.resumeID)
-		} else {
-			// New chat: generate UUID, record it, and launch with --session-id.
-			newID := uuid.New().String()
-			if _, err := m.client.RecordChat(m.ctx, m.sessionID, newID, "New chat"); err != nil {
-				m.err = fmt.Errorf("record chat: %w", err)
-				return m, nil
-			}
-			m.claudeID = newID
-			args = append(args, "--session-id", newID)
-		}
-		if cfg.DangerouslySkipPermissions {
-			args = append(args, "--dangerously-skip-permissions")
-		}
-		claudeCmd := exec.Command("claude", args...)
-		claudeCmd.Dir = msg.session.GetWorktreePath()
-
-		m.manager.RegisterSession(m.claudeID, m.sessionID)
-		ptycmd := bosspty.NewPTYCommand(m.manager, m.claudeID, claudeCmd)
-		return m, tea.Exec(ptycmd, func(err error) tea.Msg {
-			// Clear the primary screen buffer so Claude's logo/intro
-			// text doesn't linger in scrollback when boss exits alt screen.
+		sessionName := msg.tmuxSessionName
+		cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+			// Clear the primary screen buffer so tmux content
+			// doesn't linger in scrollback when boss exits alt screen.
 			fmt.Print("\033[2J\033[H\033[3J")
-			return claudeFinishedMsg{err: err, detached: ptycmd.Detached}
+			// tmux attach exits 0 for both detach and session end;
+			// check if the session still exists to distinguish the two.
+			detached := exec.Command("tmux", "has-session", "-t", sessionName).Run() == nil
+			return claudeFinishedMsg{err: err, detached: detached}
 		})
 
 	case claudeFinishedMsg:
 		if msg.detached {
-			// User pressed Ctrl+X / Ctrl+] — process is still running in background.
+			// User detached from tmux (Ctrl+B d) — process is still running in background.
 			m.detach = true
 			return m, nil
 		}
@@ -156,6 +150,17 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// ensureTmuxSession calls the daemon RPC to create or reuse a tmux session.
+func (m AttachModel) ensureTmuxSession(mode, claudeID string) tea.Cmd {
+	return func() tea.Msg {
+		tmuxName, returnedClaudeID, err := m.client.EnsureTmuxSession(m.ctx, m.sessionID, mode, claudeID)
+		if err != nil {
+			return attachErrMsg{err: fmt.Errorf("ensure tmux session: %w", err)}
+		}
+		return tmuxEnsuredMsg{tmuxSessionName: tmuxName, claudeID: returnedClaudeID}
+	}
 }
 
 // updateChatTitle reads the Claude JSONL file and updates the chat title via RPC.
@@ -218,8 +223,8 @@ func (m AttachModel) View() tea.View {
 		if m.session != nil {
 			title = m.session.Title
 		}
-		b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render(
-			fmt.Sprintf("Launching Claude Code for %s...  Press Ctrl+X to detach", title)))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
+			fmt.Sprintf("Launching Claude Code for %s...  Press Ctrl+B d to detach", title)))
 		return tea.NewView(b.String())
 	}
 
@@ -228,7 +233,7 @@ func (m AttachModel) View() tea.View {
 		if m.claudeErr != nil {
 			b.WriteString(renderError(fmt.Sprintf("Claude Code exited with error: %v", m.claudeErr), m.width))
 		} else {
-			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Claude Code session ended."))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Claude Code session ended."))
 		}
 		b.WriteString("\n")
 		b.WriteString(actionBar([]string{"[esc] back"}))

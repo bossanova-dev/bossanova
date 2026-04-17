@@ -313,6 +313,20 @@ func (c *LocalClient) DeleteChat(ctx context.Context, claudeID string) error {
 	return err
 }
 
+// --- Tmux Session Management ---
+
+func (c *LocalClient) EnsureTmuxSession(ctx context.Context, sessionID, mode, claudeID string) (string, string, error) {
+	resp, err := c.rpc.EnsureTmuxSession(ctx, connect.NewRequest(&pb.EnsureTmuxSessionRequest{
+		SessionId: sessionID,
+		Mode:      mode,
+		ClaudeId:  claudeID,
+	}))
+	if err != nil {
+		return "", "", err
+	}
+	return resp.Msg.TmuxSessionName, resp.Msg.ClaudeId, nil
+}
+
 // --- Chat Status ---
 
 func (c *LocalClient) ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error {

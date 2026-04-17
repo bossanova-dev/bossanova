@@ -1,4 +1,4 @@
-// Package auth provides OIDC PKCE authentication for the boss CLI.
+// Package auth provides WorkOS device code authentication for the boss CLI.
 package auth
 
 import (
@@ -11,14 +11,14 @@ import (
 
 const (
 	serviceName = "bossanova"
-	tokenKey    = "oauth-tokens"
+	tokenKey    = "workos-tokens"
 )
 
 // Tokens holds the OAuth2 token set persisted in the keychain.
 type Tokens struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
-	IDToken      string    `json:"id_token,omitempty"`
+	Email        string    `json:"email,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
@@ -63,8 +63,10 @@ func (s *KeychainStore) Save(tokens *Tokens) error {
 		return fmt.Errorf("marshal tokens: %w", err)
 	}
 	return s.ring.Set(keyring.Item{
-		Key:  tokenKey,
-		Data: data,
+		Key:         tokenKey,
+		Data:        data,
+		Label:       "Bossanova",
+		Description: "WorkOS authentication tokens",
 	})
 }
 

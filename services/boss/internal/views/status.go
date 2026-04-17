@@ -5,8 +5,15 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
-	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+)
+
+// Status constants (previously from bosspty package).
+const (
+	statusWorking  = "working"
+	statusIdle     = "idle"
+	statusQuestion = "question"
+	statusStopped  = "stopped"
 )
 
 // newStatusSpinner creates an unstyled spinner for status display.
@@ -19,24 +26,14 @@ func newStatusSpinner() spinner.Model {
 func chatStatusString(s pb.ChatStatus) string {
 	switch s {
 	case pb.ChatStatus_CHAT_STATUS_WORKING:
-		return bosspty.StatusWorking
+		return statusWorking
 	case pb.ChatStatus_CHAT_STATUS_IDLE:
-		return bosspty.StatusIdle
+		return statusIdle
 	case pb.ChatStatus_CHAT_STATUS_QUESTION:
-		return bosspty.StatusQuestion
+		return statusQuestion
 	default:
-		return bosspty.StatusStopped
+		return statusStopped
 	}
-}
-
-// mergeStatus prefers the local (real-time PTY) status over the daemon
-// (heartbeat-based) status, falling back to daemon when the local process
-// is not alive.
-func mergeStatus(local, daemon string) string {
-	if local != bosspty.StatusStopped {
-		return local
-	}
-	return daemon
 }
 
 // styledPRStatus returns a styled label for a PR display status.
@@ -92,10 +89,10 @@ func styledWorkflowStatus(sess *pb.Session, sp spinner.Model) string {
 // renderPRDisplayStatus returns a styled status string for the unified STATUS column.
 // Claude working status overrides all PR display statuses.
 func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Model) string {
-	if claudeStatus == bosspty.StatusQuestion {
+	if claudeStatus == statusQuestion {
 		return styleStatusWarning.Render("? question")
 	}
-	if claudeStatus == bosspty.StatusWorking {
+	if claudeStatus == statusWorking {
 		return styleStatusSuccess.Render(sp.View() + "working")
 	}
 	if label := styledWorkflowStatus(sess, sp); label != "" {
@@ -107,7 +104,7 @@ func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Mod
 	if label := styledPRStatus(sess, sp); label != "" {
 		return label
 	}
-	if claudeStatus == bosspty.StatusIdle {
+	if claudeStatus == statusIdle {
 		return styleStatusWarning.Render("idle")
 	}
 	return styleStatusMuted.Render("stopped")
@@ -124,11 +121,11 @@ func renderSessionPRStatus(sess *pb.Session, sp spinner.Model) string {
 // (working/idle/stopped) without PR display context.
 func renderClaudeStatus(status string, sp spinner.Model) string {
 	switch status {
-	case bosspty.StatusQuestion:
+	case statusQuestion:
 		return styleStatusWarning.Render("? question")
-	case bosspty.StatusWorking:
+	case statusWorking:
 		return styleStatusSuccess.Render(sp.View() + "working")
-	case bosspty.StatusIdle:
+	case statusIdle:
 		return styleStatusWarning.Render("idle")
 	default:
 		return styleStatusMuted.Render("stopped")

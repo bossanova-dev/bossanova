@@ -14,7 +14,7 @@ import (
 func loginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login",
-		Short: "Log in to Bossanova cloud (Auth0 PKCE)",
+		Short: "Log in to Bossanova cloud (WorkOS)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runLogin(cmd)
 		},
@@ -43,9 +43,7 @@ func authStatusCmd() *cobra.Command {
 
 func authConfig() auth.Config {
 	return auth.Config{
-		Issuer:   envOr("BOSS_OIDC_ISSUER", ""),
-		ClientID: envOr("BOSS_OIDC_CLIENT_ID", ""),
-		Audience: envOr("BOSS_OIDC_AUDIENCE", ""),
+		ClientID: envOr("BOSS_WORKOS_CLIENT_ID", ""),
 	}
 }
 
@@ -63,11 +61,21 @@ func newAuthManager() (*auth.Manager, error) {
 	}
 
 	cfg := authConfig()
-	if cfg.Issuer == "" || cfg.ClientID == "" {
-		return nil, fmt.Errorf("BOSS_OIDC_ISSUER and BOSS_OIDC_CLIENT_ID must be set for cloud authentication")
+	if cfg.ClientID == "" {
+		return nil, fmt.Errorf("BOSS_WORKOS_CLIENT_ID must be set for cloud authentication")
 	}
 
 	return auth.NewManager(store, cfg), nil
+}
+
+// newOptionalAuthManager returns an auth manager if BOSS_WORKOS_CLIENT_ID is set,
+// or nil otherwise. Errors are swallowed so the TUI works without auth configured.
+func newOptionalAuthManager() *auth.Manager {
+	mgr, err := newAuthManager()
+	if err != nil {
+		return nil
+	}
+	return mgr
 }
 
 func runLogin(_ *cobra.Command) error {
@@ -76,9 +84,7 @@ func runLogin(_ *cobra.Command) error {
 		return err
 	}
 
-	fmt.Println("Opening browser for authentication...")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := context.Background()
 
 	if err := mgr.Login(ctx); err != nil {
 		return fmt.Errorf("login: %w", err)

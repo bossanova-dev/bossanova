@@ -48,14 +48,14 @@ func TestRenderAttentionIndicator(t *testing.T) {
 			want: lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8C00")).Render("!"),
 		},
 		{
-			name: "review requested renders yellow",
+			name: "review requested does not render indicator",
 			session: &pb.Session{
 				AttentionStatus: &pb.AttentionStatus{
-					NeedsAttention: true,
+					NeedsAttention: false,
 					Reason:         pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED,
 				},
 			},
-			want: styleStatusWarning.Render("!"),
+			want: "",
 		},
 	}
 
@@ -79,7 +79,7 @@ func TestSortSessionsByAttention(t *testing.T) {
 		{Id: "normal-2"},
 		{Id: "attn-2", AttentionStatus: &pb.AttentionStatus{
 			NeedsAttention: true,
-			Reason:         pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
 		}},
 	}
 

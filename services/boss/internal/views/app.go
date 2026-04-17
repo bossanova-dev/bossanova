@@ -3,13 +3,10 @@ package views
 
 import (
 	"context"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
-	bosspty "github.com/recurser/boss/internal/pty"
-	pb "github.com/recurser/bossalib/gen/bossanova/v1"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // View identifies which screen is currently active.
@@ -27,13 +24,14 @@ const (
 	ViewSettings
 	ViewAutopilot
 	ViewSessionSettings
+	ViewLogin
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
 type App struct {
 	client          client.BossClient
+	auth            *auth.Manager
 	ctx             context.Context
-	manager         *bosspty.Manager
 	activeView      View
 	home            HomeModel
 	newSession      NewSessionModel
@@ -46,45 +44,23 @@ type App struct {
 	settings        SettingsModel
 	autopilot       AutopilotModel
 	attach          AttachModel
+	login           LoginModel
 	width           int
 	height          int
 	quitting        bool
-
-	// heartbeatStop signals the background heartbeat goroutine to exit.
-	// The goroutine runs independently of the Bubbletea event loop so that
-	// heartbeats continue even during tea.Exec (when the loop is suspended).
-	heartbeatStop chan struct{}
 }
 
 // NewApp creates a new App wired to the daemon client.
-// It starts a background heartbeat goroutine that keeps running even during
-// tea.Exec (when the Bubbletea event loop is suspended).
-func NewApp(c client.BossClient) App {
+func NewApp(c client.BossClient, authMgr *auth.Manager) App {
 	ctx := context.Background()
-	mgr := bosspty.NewManager()
-	home := NewHomeModel(c, ctx, mgr)
-	stop := make(chan struct{})
-	a := App{
-		client:        c,
-		ctx:           ctx,
-		manager:       mgr,
-		activeView:    ViewHome,
-		home:          home,
-		heartbeatStop: stop,
+	home := NewHomeModel(c, ctx, authMgr)
+	return App{
+		client:     c,
+		auth:       authMgr,
+		ctx:        ctx,
+		activeView: ViewHome,
+		home:       home,
 	}
-	go func() {
-		ticker := time.NewTicker(heartbeatInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				a.sendHeartbeat()
-			}
-		}
-	}()
-	return a
 }
 
 // SetInitialView overrides the default initial view before running the program.
@@ -103,7 +79,7 @@ func (a *App) SetInitialView(v View) {
 
 // SetAttachSession sets the session ID to attach to. Must be called after SetInitialView(ViewAttach).
 func (a *App) SetAttachSession(sessionID, resumeID string) {
-	a.attach = NewAttachModel(a.client, a.ctx, a.manager, sessionID, resumeID)
+	a.attach = NewAttachModel(a.client, a.ctx, sessionID, resumeID)
 }
 
 func (a App) Init() tea.Cmd {
@@ -132,45 +108,6 @@ type switchViewMsg struct {
 	resumeID  string // Claude Code session UUID to resume (ViewAttach only)
 }
 
-const heartbeatInterval = 3 * time.Second
-
-// sendHeartbeat pushes local PTY process statuses to the daemon.
-func (a *App) sendHeartbeat() {
-	if a.manager == nil {
-		return
-	}
-	allStatuses := a.manager.AllStatuses()
-	if len(allStatuses) == 0 {
-		return
-	}
-	reports := make([]*pb.ChatStatusReport, 0, len(allStatuses))
-	for claudeID, info := range allStatuses {
-		report := &pb.ChatStatusReport{
-			ClaudeId: claudeID,
-			Status:   statusToProto(info.Status),
-		}
-		if !info.LastWrite.IsZero() {
-			report.LastOutputAt = timestamppb.New(info.LastWrite)
-		}
-		reports = append(reports, report)
-	}
-	_ = a.client.ReportChatStatus(a.ctx, reports)
-}
-
-// statusToProto converts a bosspty.Status* string to a protobuf ChatStatus.
-func statusToProto(s string) pb.ChatStatus {
-	switch s {
-	case bosspty.StatusWorking:
-		return pb.ChatStatus_CHAT_STATUS_WORKING
-	case bosspty.StatusIdle:
-		return pb.ChatStatus_CHAT_STATUS_IDLE
-	case bosspty.StatusQuestion:
-		return pb.ChatStatus_CHAT_STATUS_QUESTION
-	default:
-		return pb.ChatStatus_CHAT_STATUS_STOPPED
-	}
-}
-
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -191,15 +128,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessionSettings.width = msg.Width
 		a.autopilot.width = msg.Width
 		a.autopilot.height = msg.Height
+		a.login.width = msg.Width
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			a.quitting = true
-			if a.heartbeatStop != nil {
-				close(a.heartbeatStop)
-				a.heartbeatStop = nil
-			}
 			return a, tea.Quit
 		}
 
@@ -211,7 +145,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.newSession.width = a.width
 			return a, a.newSession.Init()
 		case ViewChatPicker:
-			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, msg.sessionID, "")
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, msg.sessionID, "")
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			return a, a.chatPicker.Init()
@@ -247,10 +181,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.autopilot.height = a.height
 			return a, a.autopilot.Init()
 		case ViewAttach:
-			a.attach = NewAttachModel(a.client, a.ctx, a.manager, msg.sessionID, msg.resumeID)
+			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID, msg.resumeID)
 			return a, a.attach.Init()
+		case ViewLogin:
+			a.login = NewLoginModel(a.auth, a.ctx)
+			a.login.width = a.width
+			return a, a.login.Init()
 		case ViewHome:
-			a.home = NewHomeModel(a.client, a.ctx, a.manager)
+			a.home = NewHomeModel(a.client, a.ctx, a.auth)
 			a.home.width = a.width
 			a.home.height = a.height
 			return a, a.home.Init()
@@ -272,7 +210,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.newSession.Done() {
 			sess := a.newSession.CreatedSession()
 			if sess != nil {
-				a.attach = NewAttachModel(a.client, a.ctx, a.manager, sess.Id, "")
+				a.attach = NewAttachModel(a.client, a.ctx, sess.Id, "")
 				a.activeView = ViewAttach
 				return a, a.attach.Init()
 			}
@@ -284,7 +222,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.chatPicker = updated.(ChatPickerModel)
 		if a.chatPicker.Cancelled() {
 			a.activeView = ViewHome
-			a.home = NewHomeModel(a.client, a.ctx, a.manager)
+			a.home = NewHomeModel(a.client, a.ctx, a.auth)
 			a.home.highlightSessionID = a.chatPicker.sessionID
 			a.home.width = a.width
 			a.home.height = a.height
@@ -336,7 +274,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cursor := a.chatPicker.table.Cursor(); cursor >= 0 && cursor < len(a.chatPicker.chats) {
 				highlightID = a.chatPicker.chats[cursor].ClaudeId
 			}
-			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, a.sessionSettings.sessionID, highlightID)
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.sessionSettings.sessionID, highlightID)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			a.activeView = ViewChatPicker
@@ -370,12 +308,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.attach.Detached() {
 			sessionID := a.attach.SessionID()
 			claudeID := a.attach.ClaudeID()
-			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.manager, sessionID, claudeID)
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, claudeID)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			a.activeView = ViewChatPicker
 			// Batch the attach cleanup cmd (e.g. orphan delete) with the chat picker init.
 			return a, tea.Batch(cmd, a.chatPicker.Init())
+		}
+		return a, cmd
+	case ViewLogin:
+		updated, cmd := a.login.Update(msg)
+		a.login = updated.(LoginModel)
+		if a.login.Cancelled() || a.login.Done() {
+			return a, a.switchToHome()
 		}
 		return a, cmd
 	}
@@ -386,7 +331,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) switchToHome() tea.Cmd {
 	highlightID := a.home.selectedSessionID()
 	a.activeView = ViewHome
-	a.home = NewHomeModel(a.client, a.ctx, a.manager)
+	a.home = NewHomeModel(a.client, a.ctx, a.auth)
 	a.home.highlightSessionID = highlightID
 	a.home.width = a.width
 	a.home.height = a.height
@@ -422,6 +367,8 @@ func (a App) View() tea.View {
 		v = a.autopilot.View()
 	case ViewAttach:
 		v = a.attach.View()
+	case ViewLogin:
+		v = a.login.View()
 	default:
 		v = tea.NewView("Unknown view")
 	}
@@ -450,6 +397,8 @@ func (a App) View() tea.View {
 			opts.line1 = "New Session"
 		case ViewRepoAdd:
 			opts.line1 = "Add Repository"
+		case ViewLogin:
+			opts.line1 = "Login"
 		}
 		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}

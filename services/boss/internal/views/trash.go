@@ -309,7 +309,7 @@ func (m TrashModel) View() tea.View {
 	}
 
 	if m.loading {
-		return tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render("Loading archived sessions..."))
+		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading archived sessions..."))
 	}
 
 	var b strings.Builder

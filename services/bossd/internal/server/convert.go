@@ -67,6 +67,9 @@ func sessionToProto(s *models.Session) *pb.Session {
 	if s.TrackerURL != nil {
 		p.TrackerUrl = s.TrackerURL
 	}
+	if s.TmuxSessionName != nil {
+		p.TmuxSessionName = s.TmuxSessionName
+	}
 	if s.BlockedReason != nil {
 		p.BlockedReason = s.BlockedReason
 	}

@@ -29,6 +29,7 @@ import (
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/taskorchestrator"
+	"github.com/recurser/bossd/internal/tmux"
 	"github.com/recurser/bossd/internal/upstream"
 	"github.com/recurser/bossd/internal/vcs/github"
 	"github.com/recurser/bossd/migrations"
@@ -113,8 +114,9 @@ func run() error {
 
 	worktrees := gitpkg.NewManager(log.Logger)
 	claudeRunner := claude.NewRunner(log.Logger)
+	tmuxClient := tmux.NewClient()
 	ghProvider := github.New(log.Logger)
-	lifecycle := session.NewLifecycle(sessions, repos, worktrees, claudeRunner, ghProvider, log.Logger)
+	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, worktrees, claudeRunner, tmuxClient, ghProvider, log.Logger)
 
 	// Reconcile sessions that were created before their PR existed (or
 	// where PR creation happened out-of-band). Matches by branch name.
@@ -157,7 +159,8 @@ func run() error {
 
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
-	pluginHost.SetWorkflowDeps(workflows, sessions, claudeChats, claudeRunner)
+	autopilotRunner := claude.NewTmuxRunner(tmuxClient, log.Logger)
+	pluginHost.SetWorkflowDeps(workflows, sessions, claudeChats, autopilotRunner)
 	pluginHost.SetSessionDeps(repos, sessions, prDisplayTracker, chatStatusTracker)
 
 	// Register PRTracker onChange callback to notify plugins of status changes
@@ -217,7 +220,12 @@ func run() error {
 	// --- Task Orchestrator ---
 
 	sessionCreator := taskorchestrator.NewSessionCreator(sessions, lifecycle, log.Logger)
-	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, claudeRunner)
+	// Warn if tmux is not available — interactive sessions will fail at attach time.
+	if !tmuxClient.Available(context.Background()) {
+		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work")
+	}
+
+	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, claudeChats, claudeRunner, tmuxClient)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
@@ -226,6 +234,10 @@ func run() error {
 	// Wire the orchestrator as the completion notifier for the dispatcher
 	// and server so that terminal session states unblock the per-repo task queue.
 	dispatcher.SetCompletionNotifier(orchestrator)
+
+	// --- Tmux Status Poller ---
+
+	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, claudeChats, tmuxClient, log.Logger)
 
 	// --- Server ---
 
@@ -242,6 +254,7 @@ func run() error {
 		Workflows:          workflows,
 		ChatStatus:         chatStatusTracker,
 		PRDisplay:          prDisplayTracker,
+		TmuxPoller:         tmuxStatusPoller,
 		Lifecycle:          lifecycle,
 		Claude:             claudeRunner,
 		Worktrees:          worktrees,
@@ -285,6 +298,14 @@ func run() error {
 
 	// Start display status poller.
 	displayPoller.Run(pollerCtx)
+
+	// Bootstrap tmux status poller with pre-existing sessions before starting
+	// the polling loop, so sessions from before a daemon restart show correct
+	// status (idle/question) instead of defaulting to unknown.
+	tmuxStatusPoller.Bootstrap(context.Background())
+
+	// Start tmux status poller (captures pane content to detect question/idle/working).
+	tmuxStatusPoller.Run(pollerCtx)
 
 	// Start chat status cleanup goroutine (GC stale entries every 30s).
 	safego.Go(log.Logger, func() {

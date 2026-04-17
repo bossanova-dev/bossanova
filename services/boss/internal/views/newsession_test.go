@@ -159,6 +159,10 @@ func (s *stubClient) StreamAutopilotOutput(context.Context, string) (client.Auto
 	panic("unused")
 }
 
+func (s *stubClient) EnsureTmuxSession(context.Context, string, string, string) (string, string, error) {
+	panic("unused")
+}
+
 // --- Helpers ---
 
 func twoRepos() []*pb.Repo {

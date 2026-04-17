@@ -23,6 +23,7 @@ type PRDisplayInfo struct {
 	Status              PRDisplayStatus
 	HasFailures         bool
 	HasChangesRequested bool
+	HeadSHA             string
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,

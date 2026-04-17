@@ -1,5 +1,5 @@
 .PHONY: all generate build plugins test lint clean split format build-all plugins-all \
-	copy-skills release \
+	copy-skills release stage-release \
 	mutate mutate-diff mutate-report mutate-survivors mutate-fix mutate-loop
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
@@ -20,6 +20,7 @@ MUTATE_DIR := .mutate
 
 # Suppress clang deployment-version warnings from CGO dependencies
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
+export CGO_CFLAGS ?= -Wno-overriding-deployment-version
 
 # Version info injected via ldflags
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -33,7 +34,7 @@ LDFLAGS := -s -w \
 # Proto source files — stamp regenerates when these change
 PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml
 GEN_STAMP := .generate.stamp
-WEB_DEPS_STAMP := services/web/node_modules/.package-lock.json
+WEB_DEPS_STAMP := node_modules/.modules.yaml
 
 # Skill files destination (shared by boss and bossd via bossalib)
 SKILLS_SRC := .claude/skills
@@ -43,9 +44,8 @@ claude:
 	claude --dangerously-skip-permissions
 
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
-$(WEB_DEPS_STAMP): services/web/package.json
-	cd services/web && pnpm install
-	@touch $(WEB_DEPS_STAMP)
+$(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
+	pnpm install
 
 ## generate: Run buf generate to produce Go code from proto definitions
 generate: $(GEN_STAMP)
@@ -247,7 +247,11 @@ clean:
 
 ## release: Trigger the production release workflow (creates a PR from main → production)
 release:
-	gh workflow run release.yml --ref main
+	gh workflow run create-production-release.yml --ref main
+
+## stage-release: Trigger the staging release workflow (creates a PR from main → staging)
+stage-release:
+	gh workflow run create-staging-release.yml --ref main
 
 ## split: Mirror subtrees to separate repos via splitsh/lite
 split:

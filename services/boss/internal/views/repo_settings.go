@@ -340,7 +340,7 @@ func (m RepoSettingsModel) View() tea.View {
 					styleActionBar.Render("[esc] back"),
 			)
 		}
-		return tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render("Loading repository..."))
+		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading repository..."))
 	}
 
 	var b strings.Builder

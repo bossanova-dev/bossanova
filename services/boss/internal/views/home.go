@@ -11,8 +11,8 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
-	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -45,11 +45,16 @@ type autoEnterResolvedMsg struct {
 	claudeID  string // non-empty if exactly one active chat found
 }
 
+// authStatusMsg carries the result of checking auth status.
+type authStatusMsg struct {
+	loggedIn bool
+	email    string
+}
+
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
 	client         client.BossClient
 	ctx            context.Context
-	manager        *bosspty.Manager
 	spinner        spinner.Model
 	sessions       []*pb.Session
 	daemonStatuses map[string]string // session_id → status string from daemon heartbeats
@@ -66,14 +71,20 @@ type HomeModel struct {
 	// Archive confirmation / in-progress
 	confirming bool
 	archiving  bool
+
+	// Auth
+	authMgr          *auth.Manager // nil means auth not configured
+	loggedIn         bool
+	loggedInEmail    string
+	logoutConfirming bool
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
-func NewHomeModel(c client.BossClient, ctx context.Context, manager *bosspty.Manager) HomeModel {
+func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manager) HomeModel {
 	return HomeModel{
 		client:  c,
 		ctx:     ctx,
-		manager: manager,
+		authMgr: authMgr,
 		spinner: newStatusSpinner(),
 		loading: true,
 		table:   newBossTable(nil, nil, 0),
@@ -94,7 +105,11 @@ func (h HomeModel) selectedSessionID() string {
 }
 
 func (h HomeModel) Init() tea.Cmd {
-	return tea.Batch(fetchSessions(h.client, h.ctx), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick)
+	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick}
+	if h.authMgr != nil {
+		cmds = append(cmds, fetchAuthStatus(h.authMgr))
+	}
+	return tea.Batch(cmds...)
 }
 
 // renderAttentionIndicator returns a colored "!" for sessions needing attention,
@@ -178,10 +193,8 @@ func (h *HomeModel) buildTableRows() {
 	cursor := h.table.Cursor()
 	rows := make([]table.Row, len(h.sessions))
 	for i, sess := range h.sessions {
-		local := h.manager.SessionStatus(sess.Id)
 		daemon := h.daemonStatuses[sess.Id]
-		claudeStatus := mergeStatus(local, daemon)
-		statusStyled := renderPRDisplayStatus(sess, claudeStatus, h.spinner)
+		statusStyled := renderPRDisplayStatus(sess, daemon, h.spinner)
 
 		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], linkedNames[i], prs[i]
@@ -219,6 +232,11 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			h.repoCount = msg.count
 		}
+		return h, nil
+
+	case authStatusMsg:
+		h.loggedIn = msg.loggedIn
+		h.loggedInEmail = msg.email
 		return h, nil
 
 	case sessionListMsg:
@@ -288,6 +306,9 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, tea.Batch(fetchSessions(h.client, h.ctx), tickCmd())
 
 	case tea.KeyMsg:
+		if h.logoutConfirming {
+			return h.updateLogoutConfirm(msg)
+		}
 		if h.confirming {
 			return h.updateArchiveConfirm(msg)
 		}
@@ -305,6 +326,15 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, func() tea.Msg { return switchViewMsg{view: ViewTrash} }
 		case "p":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewAutopilot} }
+		case "l":
+			if h.authMgr == nil {
+				return h, nil
+			}
+			if h.loggedIn {
+				h.logoutConfirming = true
+				return h, nil
+			}
+			return h, func() tea.Msg { return switchViewMsg{view: ViewLogin} }
 		case "h":
 			if len(h.sessions) > 0 {
 				sess := h.sessions[h.table.Cursor()]
@@ -348,6 +378,22 @@ func (h HomeModel) updateArchiveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n", "esc":
 		h.confirming = false
+	}
+	return h, nil
+}
+
+func (h HomeModel) updateLogoutConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		h.logoutConfirming = false
+		if h.authMgr != nil {
+			_ = h.authMgr.Logout()
+		}
+		h.loggedIn = false
+		h.loggedInEmail = ""
+		return h, nil
+	case "n", "esc":
+		h.logoutConfirming = false
 	}
 	return h, nil
 }
@@ -401,6 +447,18 @@ func (h HomeModel) tableHeight() int {
 	return clampedTableHeight(len(h.sessions), h.height, overhead)
 }
 
+// loginAction returns the login/logout action label for the action bar,
+// or "" if auth is not configured.
+func (h HomeModel) loginAction() string {
+	if h.authMgr == nil {
+		return ""
+	}
+	if h.loggedIn {
+		return "[l]ogout"
+	}
+	return "[l]ogin"
+}
+
 func (h HomeModel) View() tea.View {
 	if h.err != nil {
 		return tea.NewView(
@@ -422,6 +480,10 @@ func (h HomeModel) View() tea.View {
 		var content string
 		if h.repoCount == 0 {
 			// No repos configured - show welcome message with setup instructions
+			actions := []string{"[n]ew session", "[r]epos", "[s]ettings"}
+			if la := h.loginAction(); la != "" {
+				actions = append(actions, la)
+			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"Welcome to Bossanova!\n\n"+
 					"Add your first repo to get started:\n\n"+
@@ -430,14 +492,18 @@ func (h HomeModel) View() tea.View {
 					"  Press 'n' to create a new session\n\n"+
 					"Docs: https://github.com/bossanova-dev/bossanova",
 			) + "\n" +
-				actionBar([]string{"[n]ew session", "[r]epos", "[s]ettings"}, []string{"[q]uit"})
+				actionBar(actions, []string{"[q]uit"})
 		} else {
 			// Repos exist but no sessions - show simplified guidance
+			actions := []string{"[n]ew session", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"}
+			if la := h.loginAction(); la != "" {
+				actions = append(actions, la)
+			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"No active sessions.\n\n"+
 					"Press 'n' to create a new session, or 'p' for autopilot.",
 			) + "\n" +
-				actionBar([]string{"[n]ew session", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"}, []string{"[q]uit"})
+				actionBar(actions, []string{"[q]uit"})
 		}
 		return tea.NewView(content)
 	}
@@ -459,6 +525,15 @@ func (h HomeModel) View() tea.View {
 			fmt.Sprintf("Archive %q?", sess.Title)))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	} else if h.logoutConfirming {
+		b.WriteString("\n")
+		label := "Log out?"
+		if h.loggedInEmail != "" {
+			label = fmt.Sprintf("Log out %s?", h.loggedInEmail)
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(label))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
 		// Show attention summary for selected session if it needs attention.
 		if cursor := h.table.Cursor(); cursor < len(h.sessions) {
@@ -468,9 +543,13 @@ func (h HomeModel) View() tea.View {
 				b.WriteString("\n")
 			}
 		}
+		navActions := []string{"[n]ew", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"}
+		if la := h.loginAction(); la != "" {
+			navActions = append(navActions, la)
+		}
 		b.WriteString(actionBar(
 			[]string{"[enter] select", "[h]istory", "[a]rchive"},
-			[]string{"[n]ew", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"},
+			navActions,
 			[]string{"[q]uit"},
 		))
 	}
@@ -497,17 +576,12 @@ func (h HomeModel) resolveAutoEnter(sessionID string) tea.Cmd {
 		}
 		statuses, _ := parseChatStatuses(h.client, h.ctx, sessionID)
 
-		// Count chats that are working or idle (either locally or via daemon).
+		// Count chats that are working or idle (via daemon heartbeats).
 		var activeID string
 		activeCount := 0
 		for _, chat := range chats {
-			local := bosspty.StatusStopped
-			if h.manager != nil {
-				local = h.manager.ProcessStatus(chat.ClaudeId)
-			}
 			daemon := statuses[chat.ClaudeId]
-			merged := mergeStatus(local, daemon)
-			if merged == bosspty.StatusWorking || merged == bosspty.StatusIdle || merged == bosspty.StatusQuestion {
+			if daemon == statusWorking || daemon == statusIdle || daemon == statusQuestion {
 				activeID = chat.ClaudeId
 				activeCount++
 			}
@@ -553,5 +627,12 @@ func fetchRepoCount(c client.BossClient, ctx context.Context) tea.Cmd {
 			return repoCountMsg{err: err}
 		}
 		return repoCountMsg{count: len(repos)}
+	}
+}
+
+func fetchAuthStatus(mgr *auth.Manager) tea.Cmd {
+	return func() tea.Msg {
+		status := mgr.Status()
+		return authStatusMsg{loggedIn: status.LoggedIn, email: status.Email}
 	}
 }

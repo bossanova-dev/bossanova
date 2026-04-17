@@ -71,6 +71,9 @@ type BossClient interface {
 	UpdateChatTitle(ctx context.Context, claudeID, title string) error
 	DeleteChat(ctx context.Context, claudeID string) error
 
+	// Tmux session management (on-demand)
+	EnsureTmuxSession(ctx context.Context, sessionID, mode, claudeID string) (tmuxName string, returnedClaudeID string, err error)
+
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)

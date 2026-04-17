@@ -841,12 +841,21 @@ type mockClaudeChatStore struct {
 func (m *mockClaudeChatStore) Create(_ context.Context, _ db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
 	return nil, m.createErr
 }
+func (m *mockClaudeChatStore) GetByClaudeID(_ context.Context, _ string) (*models.ClaudeChat, error) {
+	return nil, nil
+}
 func (m *mockClaudeChatStore) ListBySession(_ context.Context, _ string) ([]*models.ClaudeChat, error) {
 	return nil, nil
 }
 func (m *mockClaudeChatStore) UpdateTitle(_ context.Context, _, _ string) error           { return nil }
 func (m *mockClaudeChatStore) UpdateTitleByClaudeID(_ context.Context, _, _ string) error { return nil }
-func (m *mockClaudeChatStore) DeleteByClaudeID(_ context.Context, _ string) error         { return nil }
+func (m *mockClaudeChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
+	return nil
+}
+func (m *mockClaudeChatStore) DeleteByClaudeID(_ context.Context, _ string) error { return nil }
+func (m *mockClaudeChatStore) ListWithTmuxSession(_ context.Context) ([]*models.ClaudeChat, error) {
+	return nil, nil
+}
 
 func TestCreateAttemptChatErrorBestEffort(t *testing.T) {
 	// When claudeChats.Create() fails, CreateAttempt should still succeed.

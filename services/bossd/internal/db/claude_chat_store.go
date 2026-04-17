@@ -42,9 +42,30 @@ func (s *SQLiteClaudeChatStore) Create(ctx context.Context, params CreateClaudeC
 	}, nil
 }
 
+func (s *SQLiteClaudeChatStore) GetByClaudeID(ctx context.Context, claudeID string) (*models.ClaudeChat, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, claude_id, title, daemon_id, tmux_session_name, created_at
+		 FROM claude_chats
+		 WHERE claude_id = ?`,
+		claudeID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get claude_chat by claude_id: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("get claude_chat by claude_id: %w", err)
+		}
+		return nil, fmt.Errorf("claude_chat not found for claude_id %q", claudeID)
+	}
+	return scanClaudeChat(rows)
+}
+
 func (s *SQLiteClaudeChatStore) ListBySession(ctx context.Context, sessionID string) ([]*models.ClaudeChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, claude_id, title, daemon_id, created_at
+		`SELECT id, session_id, claude_id, title, daemon_id, tmux_session_name, created_at
 		 FROM claude_chats
 		 WHERE session_id = ?
 		 ORDER BY created_at DESC`,
@@ -88,6 +109,17 @@ func (s *SQLiteClaudeChatStore) UpdateTitleByClaudeID(ctx context.Context, claud
 	return nil
 }
 
+func (s *SQLiteClaudeChatStore) UpdateTmuxSessionName(ctx context.Context, claudeID string, name *string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE claude_chats SET tmux_session_name = ? WHERE claude_id = ?`,
+		name, claudeID,
+	)
+	if err != nil {
+		return fmt.Errorf("update claude_chat tmux_session_name: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteClaudeChatStore) DeleteByClaudeID(ctx context.Context, claudeID string) error {
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM claude_chats WHERE claude_id = ?`, claudeID)
@@ -97,10 +129,33 @@ func (s *SQLiteClaudeChatStore) DeleteByClaudeID(ctx context.Context, claudeID s
 	return nil
 }
 
+func (s *SQLiteClaudeChatStore) ListWithTmuxSession(ctx context.Context) ([]*models.ClaudeChat, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, claude_id, title, daemon_id, tmux_session_name, created_at
+		 FROM claude_chats
+		 WHERE tmux_session_name IS NOT NULL AND tmux_session_name != ''
+		 ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list claude_chats with tmux session: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var chats []*models.ClaudeChat
+	for rows.Next() {
+		c, err := scanClaudeChat(rows)
+		if err != nil {
+			return nil, err
+		}
+		chats = append(chats, c)
+	}
+	return chats, rows.Err()
+}
+
 func scanClaudeChat(rows *sql.Rows) (*models.ClaudeChat, error) {
 	var c models.ClaudeChat
 	var createdAt string
-	if err := rows.Scan(&c.ID, &c.SessionID, &c.ClaudeID, &c.Title, &c.DaemonID, &createdAt); err != nil {
+	if err := rows.Scan(&c.ID, &c.SessionID, &c.ClaudeID, &c.Title, &c.DaemonID, &c.TmuxSessionName, &createdAt); err != nil {
 		return nil, fmt.Errorf("scan claude_chat: %w", err)
 	}
 	c.CreatedAt = sqlutil.ParseTime(createdAt)

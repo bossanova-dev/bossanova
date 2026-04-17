@@ -30,7 +30,10 @@ type RegisterDaemonRequest struct {
 	RepoIds []string `protobuf:"bytes,3,rep,name=repo_ids,json=repoIds,proto3" json:"repo_ids,omitempty"`
 	// Optional endpoint URL where the daemon's DaemonService is reachable.
 	// Required for proxy RPC support. Daemons behind NAT may omit this.
-	Endpoint      *string `protobuf:"bytes,4,opt,name=endpoint,proto3,oneof" json:"endpoint,omitempty"`
+	Endpoint *string `protobuf:"bytes,4,opt,name=endpoint,proto3,oneof" json:"endpoint,omitempty"`
+	// User email from the WorkOS device code response.
+	// Used for JIT user creation when the user doesn't exist in the DB yet.
+	Email         string `protobuf:"bytes,5,opt,name=email,proto3" json:"email,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -89,6 +92,13 @@ func (x *RegisterDaemonRequest) GetRepoIds() []string {
 func (x *RegisterDaemonRequest) GetEndpoint() string {
 	if x != nil && x.Endpoint != nil {
 		return *x.Endpoint
+	}
+	return ""
+}
+
+func (x *RegisterDaemonRequest) GetEmail() string {
+	if x != nil {
+		return x.Email
 	}
 	return ""
 }
@@ -1478,12 +1488,13 @@ var File_bossanova_v1_orchestrator_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
-	"\x1fbossanova/v1/orchestrator.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/daemon.proto\x1a\x19bossanova/v1/models.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x99\x01\n" +
+	"\x1fbossanova/v1/orchestrator.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/daemon.proto\x1a\x19bossanova/v1/models.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xaf\x01\n" +
 	"\x15RegisterDaemonRequest\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x19\n" +
 	"\brepo_ids\x18\x03 \x03(\tR\arepoIds\x12\x1f\n" +
-	"\bendpoint\x18\x04 \x01(\tH\x00R\bendpoint\x88\x01\x01B\v\n" +
+	"\bendpoint\x18\x04 \x01(\tH\x00R\bendpoint\x88\x01\x01\x12\x14\n" +
+	"\x05email\x18\x05 \x01(\tR\x05emailB\v\n" +
 	"\t_endpoint\"Z\n" +
 	"\x16RegisterDaemonResponse\x12\x1b\n" +
 	"\tdaemon_id\x18\x01 \x01(\tR\bdaemonId\x12#\n" +

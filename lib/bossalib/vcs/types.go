@@ -55,6 +55,7 @@ type PRStatus struct {
 	Title      string
 	HeadBranch string
 	BaseBranch string
+	HeadSHA    string
 }
 
 // CheckResult represents the result of a single CI check.

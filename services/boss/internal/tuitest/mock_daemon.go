@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -471,6 +472,17 @@ func (m *MockDaemon) GetAutopilotStatus(context.Context, *connect.Request[pb.Get
 
 func (m *MockDaemon) StreamAutopilotOutput(context.Context, *connect.Request[pb.StreamAutopilotOutputRequest], *connect.ServerStream[pb.StreamAutopilotOutputResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+func (m *MockDaemon) EnsureTmuxSession(_ context.Context, req *connect.Request[pb.EnsureTmuxSessionRequest]) (*connect.Response[pb.EnsureTmuxSessionResponse], error) {
+	claudeID := req.Msg.ClaudeId
+	if claudeID == "" {
+		claudeID = uuid.New().String()
+	}
+	return connect.NewResponse(&pb.EnsureTmuxSessionResponse{
+		TmuxSessionName: "boss-mock-tmux",
+		ClaudeId:        claudeID,
+	}), nil
 }
 
 // removeSocket removes a socket file, ignoring "not exist" errors.

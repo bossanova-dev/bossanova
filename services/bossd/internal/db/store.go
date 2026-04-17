@@ -95,6 +95,7 @@ type UpdateSessionParams struct {
 	PRURL             **string
 	TrackerID         **string
 	TrackerURL        **string
+	TmuxSessionName   **string
 	LastCheckState    *int
 	AutomationEnabled *bool
 	AttemptCount      *int
@@ -126,10 +127,13 @@ type CreateClaudeChatParams struct {
 // ClaudeChatStore defines the interface for Claude chat persistence.
 type ClaudeChatStore interface {
 	Create(ctx context.Context, params CreateClaudeChatParams) (*models.ClaudeChat, error)
+	GetByClaudeID(ctx context.Context, claudeID string) (*models.ClaudeChat, error)
 	ListBySession(ctx context.Context, sessionID string) ([]*models.ClaudeChat, error)
 	UpdateTitle(ctx context.Context, id string, title string) error
 	UpdateTitleByClaudeID(ctx context.Context, claudeID string, title string) error
+	UpdateTmuxSessionName(ctx context.Context, claudeID string, name *string) error
 	DeleteByClaudeID(ctx context.Context, claudeID string) error
+	ListWithTmuxSession(ctx context.Context) ([]*models.ClaudeChat, error)
 }
 
 // CreateAttemptParams holds the parameters for creating a new attempt.

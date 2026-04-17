@@ -199,7 +199,7 @@ func (m SessionSettingsModel) View() tea.View {
 					styleActionBar.Render("[esc] back"),
 			)
 		}
-		return tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render("Loading session..."))
+		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading session..."))
 	}
 
 	var b strings.Builder

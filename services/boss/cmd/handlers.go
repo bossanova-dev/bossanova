@@ -63,7 +63,7 @@ func runTUI(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c)
+	app := views.NewApp(c, newOptionalAuthManager())
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err
@@ -167,7 +167,7 @@ func runNew(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c)
+	app := views.NewApp(c, newOptionalAuthManager())
 	app.SetInitialView(views.ViewNewSession)
 	p := tea.NewProgram(app)
 	_, err = p.Run()
@@ -179,7 +179,7 @@ func runAttach(cmd *cobra.Command, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c)
+	app := views.NewApp(c, newOptionalAuthManager())
 	app.SetInitialView(views.ViewAttach)
 	app.SetAttachSession(sessionID, "")
 	p := tea.NewProgram(app)
@@ -192,7 +192,7 @@ func runRepoAdd(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c)
+	app := views.NewApp(c, newOptionalAuthManager())
 	app.SetInitialView(views.ViewRepoAdd)
 	p := tea.NewProgram(app)
 	_, err = p.Run()

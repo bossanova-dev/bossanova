@@ -110,6 +110,130 @@ All notable changes to this project will be documented in this file.
 
 ## 1.0.0 (2026-04-08)
 
+## [1.0.0-staging.19](https://github.com/recurser/bossanova/compare/v1.0.0-staging.18...v1.0.0-staging.19) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** pass --config.strict-dep-builds=false directly to pnpm install ([fee9833](https://github.com/recurser/bossanova/commit/fee983314ae76cf67fed05f17040e845aaa4ed97))
+* **infra:** resolve merge conflict, keep clean main (no WorkOS auth domain) ([d1da11c](https://github.com/recurser/bossanova/commit/d1da11c1fa09e0c9d89d8a68918e2ad765059eca))
+
+### Reverts
+
+* **web:** restore AuthKit devMode, remove custom auth domain infra ([538dd9f](https://github.com/recurser/bossanova/commit/538dd9fccf9b449edc8068840cbdfa8ba4a3d69f))
+
+## [1.0.0-staging.18](https://github.com/recurser/bossanova/compare/v1.0.0-staging.17...v1.0.0-staging.18) (2026-04-17)
+
+### Bug Fixes
+
+* **infra:** hardcode WorkOS CNAME target (cname.workosdns.com) ([00ae162](https://github.com/recurser/bossanova/commit/00ae1623bd82176035446f29cd0c24c33d08cf0f))
+
+## [1.0.0-staging.17](https://github.com/recurser/bossanova/compare/v1.0.0-staging.16...v1.0.0-staging.17) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** pass --config.strict-dep-builds=false directly to pnpm install ([ca10066](https://github.com/recurser/bossanova/commit/ca10066cf5dfeee4b7d8975803ae6c4c9056cde5))
+
+## [1.0.0-staging.16](https://github.com/recurser/bossanova/compare/v1.0.0-staging.15...v1.0.0-staging.16) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** add .npmrc with strict-dep-builds=false for pnpm 10 ([096810c](https://github.com/recurser/bossanova/commit/096810c6ec9cbc7c39d794edaeb43b0f63196812))
+
+## [1.0.0-staging.15](https://github.com/recurser/bossanova/compare/v1.0.0-staging.14...v1.0.0-staging.15) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** use ignoredBuiltDependencies for @bufbuild/buf postinstall ([ea06358](https://github.com/recurser/bossanova/commit/ea06358aab7facbda07025a7bd304067cdc0e9c2))
+
+## [1.0.0-staging.14](https://github.com/recurser/bossanova/compare/v1.0.0-staging.13...v1.0.0-staging.14) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** move onlyBuiltDependencies to pnpm-workspace.yaml for pnpm 10 ([556c372](https://github.com/recurser/bossanova/commit/556c3729268b9335656002e7e9d9deacdd433934))
+
+## [1.0.0-staging.13](https://github.com/recurser/bossanova/compare/v1.0.0-staging.12...v1.0.0-staging.13) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** upgrade pnpm from 9 to 10 to fix ERR_PNPM_IGNORED_BUILDS ([7aca163](https://github.com/recurser/bossanova/commit/7aca16337fcb05ba019a5bd2a7d82094bc95df05))
+
+## [1.0.0-staging.12](https://github.com/recurser/bossanova/compare/v1.0.0-staging.11...v1.0.0-staging.12) (2026-04-17)
+
+### Bug Fixes
+
+* **web:** harden AuthKit token storage by removing devMode ([c9c0790](https://github.com/recurser/bossanova/commit/c9c07900550babe247ef9b949a92948f0adf3480))
+
+## [1.0.0-staging.11](https://github.com/recurser/bossanova/compare/v1.0.0-staging.10...v1.0.0-staging.11) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** approve pnpm build scripts to unblock staging deploy ([4de63c7](https://github.com/recurser/bossanova/commit/4de63c7058bc7f9303b1461f1347f6b86a2d1bdf))
+
+## [1.0.0-staging.10](https://github.com/recurser/bossanova/compare/v1.0.0-staging.9...v1.0.0-staging.10) (2026-04-17)
+
+### Features
+
+* **infra:** add DNS CNAME record for Pages custom domain ([6a9f129](https://github.com/recurser/bossanova/commit/6a9f1292c6ad94cbadbf9a5bace00e2cbcbeb939))
+* **infra:** add DNS CNAME record for Pages custom domain ([628dcc6](https://github.com/recurser/bossanova/commit/628dcc69c985b57057772065b356af37493e0c2e))
+
+### Bug Fixes
+
+* **ci:** upgrade GitHub Actions to silence Node.js 20 deprecation warnings ([cb05568](https://github.com/recurser/bossanova/commit/cb055689ea1d3913aacf9c5b1daa81d047eaadc4))
+* **infra:** use DNS-only (no proxy) for Fly.io CNAME records ([1dc025a](https://github.com/recurser/bossanova/commit/1dc025a31ee92c940c2545dbd6328da1b66685a3))
+* **web:** enable AuthKit devMode for client-only token storage ([84c4d2a](https://github.com/recurser/bossanova/commit/84c4d2a911d4631e8f3680be9351d15480a28684))
+
+## [1.0.0-staging.9](https://github.com/recurser/bossanova/compare/v1.0.0-staging.8...v1.0.0-staging.9) (2026-04-17)
+
+### Bug Fixes
+
+* **bosso:** use array syntax for http_service.checks in fly.toml ([dd61d76](https://github.com/recurser/bossanova/commit/dd61d767664ec83e1746f396329aa4ad9931d8eb))
+* **ci:** pass Cloudflare account ID to wrangler to skip memberships lookup ([1d2cd27](https://github.com/recurser/bossanova/commit/1d2cd27d9d70b6e88661ee0a66a97458a8f447d2))
+
+## [1.0.0-staging.8](https://github.com/recurser/bossanova/compare/v1.0.0-staging.7...v1.0.0-staging.8) (2026-04-17)
+
+### Bug Fixes
+
+* **web:** add name field and remove build section from wrangler.toml ([4235ea9](https://github.com/recurser/bossanova/commit/4235ea9e2ac250dbcec499e9edef6b0c1a95a19b))
+
+## [1.0.0-staging.7](https://github.com/recurser/bossanova/compare/v1.0.0-staging.6...v1.0.0-staging.7) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** use GITHUB_PATH for protoc-gen-es and add plugin stubs to Dockerfile ([4aada25](https://github.com/recurser/bossanova/commit/4aada2537be89e84cb1ed0b662030b983a613633))
+* **ci:** use GITHUB_PATH for protoc-gen-es instead of env PATH override ([960ba27](https://github.com/recurser/bossanova/commit/960ba276ce3b5c3a1e7d5a3b0f3023ad863bb965))
+
+## [1.0.0-staging.6](https://github.com/recurser/bossanova/compare/v1.0.0-staging.5...v1.0.0-staging.6) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** add protobuf generation to deploy-web jobs ([784a296](https://github.com/recurser/bossanova/commit/784a2967af754255e6fa677c647e46908b179ae2))
+
+## [1.0.0-staging.5](https://github.com/recurser/bossanova/compare/v1.0.0-staging.4...v1.0.0-staging.5) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** add protobuf generation to deploy-web jobs ([f12324e](https://github.com/recurser/bossanova/commit/f12324e58f71ddb184bc2c36abfb9569013a507b))
+
+## [1.0.0-staging.4](https://github.com/recurser/bossanova/compare/v1.0.0-staging.3...v1.0.0-staging.4) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** remove bash parameter expansion from semantic-release exec cmd ([e0193aa](https://github.com/recurser/bossanova/commit/e0193aa066653ef6fd8d22c5754480d4ae33e781))
+
+## [1.0.0-staging.3](https://github.com/recurser/bossanova/compare/v1.0.0-staging.2...v1.0.0-staging.3) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** remove bash parameter expansion from semantic-release exec cmd ([bb87d1f](https://github.com/recurser/bossanova/commit/bb87d1fab0618d9a53c71a3d3ca2065db1e13c92))
+
+## [1.0.0-staging.2](https://github.com/recurser/bossanova/compare/v1.0.0-staging.1...v1.0.0-staging.2) (2026-04-17)
+
+### Bug Fixes
+
+* **ci:** correct semantic-release plugin version specifiers ([3bb878c](https://github.com/recurser/bossanova/commit/3bb878c98ca6a8eea91c7bbc6306fbf7f41e0dc0))
+
+## 1.0.0-staging.1 (2026-04-17)
+
 ### Features
 
 * add Bubbletea app shell with daemon client wiring ([87fd411](https://github.com/recurser/bossanova/commit/87fd4114c3b938725f32d9956ea2c7b3a6c8c6b6))
@@ -139,6 +263,7 @@ All notable changes to this project will be documented in this file.
 * add SubmitPR lifecycle method (push, create draft PR, transition to AwaitingChecks) ([a2f3c5c](https://github.com/recurser/bossanova/commit/a2f3c5ccc5b98f418de16cdc7a10443edfcf9a25))
 * add VCS-agnostic interfaces, types, and events ([96620e7](https://github.com/recurser/bossanova/commit/96620e7b819e26322365f0f51a7d2491feb5a591))
 * add WorktreeManager interface and Create implementation ([7cdf2c6](https://github.com/recurser/bossanova/commit/7cdf2c69971e90a6182b681b82cdc621b71d8655))
+* **auth:** [[#110](https://github.com/recurser/bossanova/issues/110)] migrate from Auth0 to WorkOS across CLI, server, and web ([7ad29b2](https://github.com/recurser/bossanova/commit/7ad29b2ddb1be4ff0bfd0a3bb35bca37cd92f886))
 * **autopilot:** [[#22](https://github.com/recurser/bossanova/issues/22)] add handoff recovery step when no handoff file found ([7614643](https://github.com/recurser/bossanova/commit/761464341595c8dc5c7f060f47f50b813e165f18))
 * **autopilot:** [[#26](https://github.com/recurser/bossanova/issues/26)] add session ID tracking to claude runner ([f10b88a](https://github.com/recurser/bossanova/commit/f10b88ac44d131d1b58f75cc3c75710ce7cfd00a))
 * **autopilot:** [[#26](https://github.com/recurser/bossanova/issues/26)] register autopilot chats in session chat list ([f37a050](https://github.com/recurser/bossanova/commit/f37a0508fe93eb77fa461f071d7fc3cb8945ddb7))
@@ -211,6 +336,7 @@ All notable changes to this project will be documented in this file.
 * **chatpicker:** [[#80](https://github.com/recurser/bossanova/issues/80)] add CREATED column and sort by creation time ([81a38c0](https://github.com/recurser/bossanova/commit/81a38c00208e4a909ed5a314fa32eee7e8fb2969))
 * **ci:** add tag-triggered deploy workflow (deploy.yml) ([08a064a](https://github.com/recurser/bossanova/commit/08a064aa580108ca0d81e0654cfb5e8434483df7))
 * **ci:** add web SPA CI workflow (test-web.yml) ([fd6fa19](https://github.com/recurser/bossanova/commit/fd6fa19c86252a0cfbfd7ca860d06d6b92743a51))
+* **ci:** add workflow_dispatch action to create production release PR ([d077253](https://github.com/recurser/bossanova/commit/d077253f7d858f1d3ac84d3f6eb040a01c08e8f4))
 * **cli+tui:** [[#27](https://github.com/recurser/bossanova/issues/27)] unify boss CLI and TUI functional parity ([9747bec](https://github.com/recurser/bossanova/commit/9747becf66368bd23341a4a8472dc9ba5b615a17))
 * **cli:** add AttachView for live session output streaming ([ee29dda](https://github.com/recurser/bossanova/commit/ee29ddabd58ea7ef9795181d55a4bf82c209d3b2))
 * **cli:** add entry point with argument parsing and route resolution ([5918c78](https://github.com/recurser/bossanova/commit/5918c7817bbe41525eaa001d9a76ef09fd325e4a))
@@ -219,6 +345,8 @@ All notable changes to this project will be documented in this file.
 * **cli:** add repo management views (AddRepo wizard, RepoList, RepoRemove) ([3c6067c](https://github.com/recurser/bossanova/commit/3c6067cb4bf6cb35eeb755227c016c26f34bccf7))
 * **cli:** add tsyringe DI container with IpcClient, Config, and Logger tokens ([10f5ab2](https://github.com/recurser/bossanova/commit/10f5ab2326e09f92bd46b6a4c8552c541845ff4c))
 * complete GitHub provider (GetFailedCheckLogs, MarkReadyForReview, GetReviewComments, ListOpenPRs) ([6fcb63f](https://github.com/recurser/bossanova/commit/6fcb63feeb612df5d5d26c5f018314334ae32edf))
+* **config:** auto-discover plugins relative to binary path ([361e252](https://github.com/recurser/bossanova/commit/361e25262a2b6e4bbe5b71207b9a4a347ebb1eee))
+* **config:** fall back to same-dir plugin discovery for dev mode ([88d9ebe](https://github.com/recurser/bossanova/commit/88d9ebe66f9996f405c827da514a28f194f7a0a4))
 * **core:** [[#90](https://github.com/recurser/bossanova/issues/90)] add proto, DB, daemon, and client for Linear integration ([fedd355](https://github.com/recurser/bossanova/commit/fedd355133a62b45daf2c8217e7b11860985a737))
 * create ConnectRPC client for daemon over Unix socket ([2c5c7ca](https://github.com/recurser/bossanova/commit/2c5c7ca85d0348784eac08394b5137fc62a40334))
 * **daemon:** add AttemptStore and set up ~/ path aliases ([a15500a](https://github.com/recurser/bossanova/commit/a15500af0af17a63c924dad47484ce38ef9d0d08))
@@ -258,6 +386,8 @@ All notable changes to this project will be documented in this file.
 * **infra:** consolidate Terraform envs into workspace-keyed config ([1c7792e](https://github.com/recurser/bossanova/commit/1c7792ec43c24b06be13504ea556825a25879ae0))
 * **lib:** add ClaudeChat domain model and IsGitHubURL VCS helper ([b8f342a](https://github.com/recurser/bossanova/commit/b8f342aa89e59f5803f33e7b51179c7cd2e2f092))
 * **linear:** [[#90](https://github.com/recurser/bossanova/issues/90)] add tracker_id/tracker_url to sessions with hyperlinked issue IDs ([0455e3b](https://github.com/recurser/bossanova/commit/0455e3b68f09a9a34e5028f9a585a2f115f9d050))
+* **make:** add release target to trigger production release workflow ([d0b6e64](https://github.com/recurser/bossanova/commit/d0b6e64f5d485a9ba7884d4ac4ab10060af189ea))
+* **mirror:** replay commits individually to build public history ([88268d0](https://github.com/recurser/bossanova/commit/88268d05503800b8b795319f2cbbd6e5d1932675))
 * **mutate:** [[#68](https://github.com/recurser/bossanova/issues/68)] add mutation testing infrastructure via gremlins ([240ea6f](https://github.com/recurser/bossanova/commit/240ea6f635dc026208837954fa5c4bbecf68138f))
 * **orchestrator:** [[#18](https://github.com/recurser/bossanova/issues/18)] add task orchestrator with routing, queuing, and daemon wiring ([111f763](https://github.com/recurser/bossanova/commit/111f76388bf49365865b40db6af7cca937707d3a))
 * **orchestrator:** retry failed task mappings on re-poll ([7855e1c](https://github.com/recurser/bossanova/commit/7855e1c7040f80e4b8c8b46d0bb43ccb5d884f19))
@@ -285,6 +415,7 @@ All notable changes to this project will be documented in this file.
 * **shared:** add WebSocket protocol and barrel exports ([6c854b5](https://github.com/recurser/bossanova/commit/6c854b59248e23cc011f16c70acd5a738778d994))
 * **shared:** add XState v5 session state machine ([aee3dd9](https://github.com/recurser/bossanova/commit/aee3dd9cb9e353844ec204f72b98f43e71619813))
 * **skills:** add /post-flight-checks skill and unify testing across flight workflow ([3a5cc2b](https://github.com/recurser/bossanova/commit/3a5cc2be39eeb534657a73c5accdde9613598569))
+* **tmux:** [[#95](https://github.com/recurser/bossanova/issues/95)] per-chat tmux sessions and daemon-side status polling ([2fc8ede](https://github.com/recurser/bossanova/commit/2fc8ede002f134fe5318f8a9846190552702fcfa))
 * **tui:** [[#83](https://github.com/recurser/bossanova/issues/83)] improve navigation consistency across all views ([c8097dd](https://github.com/recurser/bossanova/commit/c8097ddc49ac46ff282f8a1a019336f1cd1b55d2))
 * **tui:** [[#87](https://github.com/recurser/bossanova/issues/87)] remove Plan a feature option and reorder session types ([0680199](https://github.com/recurser/bossanova/commit/0680199e42b53a162ab6f2a0a6189badf4ff1859))
 * **tui:** [[#90](https://github.com/recurser/bossanova/issues/90)] add Linear repo settings with API key and team key configuration ([14419da](https://github.com/recurser/bossanova/commit/14419da926a4f625884f6f3b997350ca641be23f))
@@ -308,6 +439,9 @@ All notable changes to this project will be documented in this file.
 
 ### Bug Fixes
 
+* **auth:** [[#111](https://github.com/recurser/bossanova/issues/111)] add aud claim to test JWT helpers ([077f419](https://github.com/recurser/bossanova/commit/077f41961674f81d35b66f013c307588d441ecc1))
+* **auth:** [[#111](https://github.com/recurser/bossanova/issues/111)] add JWT audience validation for 'bosso' ([ea0e291](https://github.com/recurser/bossanova/commit/ea0e2912ba4458f2081bb7a8e196667f6338aa40))
+* **auth:** [[#112](https://github.com/recurser/bossanova/issues/112)] set keychain item label to fix repeating password prompt ([24f507d](https://github.com/recurser/bossanova/commit/24f507dc3c071f995035a9247bce782584597644))
 * **autopilot:** [[#26](https://github.com/recurser/bossanova/issues/26)] pause workflow when fewer legs complete than expected ([521f257](https://github.com/recurser/bossanova/commit/521f257514f785e6f3d20533aecfccf2df00b710))
 * **autopilot:** [[#37](https://github.com/recurser/bossanova/issues/37)] fix flight leg counting and handoff directory resolution ([92e4c86](https://github.com/recurser/bossanova/commit/92e4c866c7ac74ca94925a018f67b30eff2c0835))
 * **autopilot:** [[#43](https://github.com/recurser/bossanova/issues/43)] synthesize handoff file when recovery agent doesn't write one ([b0b4412](https://github.com/recurser/bossanova/commit/b0b441233ae7bcc8fdcb50193029b004eae382b5))
@@ -316,6 +450,8 @@ All notable changes to this project will be documented in this file.
 * **autopilot:** [[#81](https://github.com/recurser/bossanova/issues/81)] resume handoff loop at persisted flight leg ([90e052e](https://github.com/recurser/bossanova/commit/90e052edb423a884db25208d8c5bce7385a8aabb))
 * **autopilot:** [[#88](https://github.com/recurser/bossanova/issues/88)] fall back to working directory for flight leg counting ([00faea0](https://github.com/recurser/bossanova/commit/00faea0dcb405e1685e90b07d0b9d894b15b7026))
 * **autopilot:** add stack trace to panic recovery ([a9b389d](https://github.com/recurser/bossanova/commit/a9b389d0e0a3a2725eb4ea07dd04e9b18e2a1980))
+* **autopilot:** pass prompt as CLI arg instead of stdin pipe in tmux ([7888f04](https://github.com/recurser/bossanova/commit/7888f0415c4c0a9559e7b548d7249d6ffef1e06e))
+* **autopilot:** use stdin redirect from plan file instead of CLI arg ([398ff2f](https://github.com/recurser/bossanova/commit/398ff2ff71f13d1a1529dce436626172959296a6))
 * **boss,bossd:** wrap error messages in TUI and add daemon error logging ([3102946](https://github.com/recurser/bossanova/commit/31029469de3b8dd0d897b2d22842487baf5502a4))
 * **boss:** [[#16](https://github.com/recurser/bossanova/issues/16)] fix squashed/missing history on Claude Code reattach ([7a4b247](https://github.com/recurser/bossanova/commit/7a4b247028a7473d2621ce798e754fd28c700a0c))
 * **boss:** [[#19](https://github.com/recurser/bossanova/issues/19)] increase question detection tail size from 2048 to 4096 bytes ([886ac20](https://github.com/recurser/bossanova/commit/886ac20980895e07c925ffc8bcd562da7028854f))
@@ -340,6 +476,7 @@ All notable changes to this project will be documented in this file.
 * **bossd:** convert git URLs to owner/repo format for gh CLI ([da0c56f](https://github.com/recurser/bossanova/commit/da0c56f67b1c98dfac0802f10803a6ac143b67d1))
 * **bossd:** create empty commit before draft PR to avoid GitHub rejection ([9f9cb95](https://github.com/recurser/bossanova/commit/9f9cb95f6ffdab9f49d68261ec5fa6eb69248401))
 * **boss:** dereference pointer returns in handleFormCompleted to avoid panic ([16e90e5](https://github.com/recurser/bossanova/commit/16e90e5a114e07ca7b23aba55b34f22f2b8a006f))
+* **bossd:** persist auto-discovered plugins to settings on first run ([dfdd3f2](https://github.com/recurser/bossanova/commit/dfdd3f261f55f9e2db7634f09b0df34c44d41c8c))
 * **bossd:** populate IsRepairing field in gRPC ListSessions ([a2ad730](https://github.com/recurser/bossanova/commit/a2ad730cb3a58b1c5232e1774465107db979fb75))
 * **bossd:** prevent autopilot stuck in "running" after goroutine exits ([cae8e86](https://github.com/recurser/bossanova/commit/cae8e863420c993cb7cf21c2aacd4663d3895aba))
 * **bossd:** prevent deadlock when scanner fails during setup streaming ([60e8e74](https://github.com/recurser/bossanova/commit/60e8e74ce38113303800cca4b42a135ec5324d43))
@@ -355,20 +492,58 @@ All notable changes to this project will be documented in this file.
 * **boss:** reset confirmingAll/deletingAll flags in single-session handlers ([559ef48](https://github.com/recurser/bossanova/commit/559ef487949841701393df9a1db686c920b71b43))
 * **boss:** show session info in banner for ViewSessionSettings ([dc91b19](https://github.com/recurser/bossanova/commit/dc91b1979a544a6dfa0cc0be73ab3de42e42af0e))
 * **boss:** use consistent confirmation dialog pattern for branch overwrite ([743a55b](https://github.com/recurser/bossanova/commit/743a55ba4babec6c30704065bef114e26ab7843f))
+* **build:** [[#111](https://github.com/recurser/bossanova/issues/111)] add .gitkeep to skills/ so go:embed pattern resolves in fresh clones ([b7e6077](https://github.com/recurser/bossanova/commit/b7e607722aa76d9ed60bbd611565d09573cdf961))
 * **build:** [[#6](https://github.com/recurser/bossanova/issues/6)] add web node_modules prerequisite to generate target ([7779fa6](https://github.com/recurser/bossanova/commit/7779fa6b0f75cf8ce5bff50f777536f239b61ab2))
+* **build:** handle empty skills directory in public repo ([64e8456](https://github.com/recurser/bossanova/commit/64e8456c72ceb106d340e7b7686082ffa33a5069))
+* **ci:** [[#111](https://github.com/recurser/bossanova/issues/111)] use GITHUB_PATH instead of env PATH override for protoc-gen-es ([5b8d5cc](https://github.com/recurser/bossanova/commit/5b8d5cc745796821d16de32a76470900ab048107))
 * **ci:** add golangci-lint install step to all Go workflows ([d35ecd8](https://github.com/recurser/bossanova/commit/d35ecd8f3b4a0a937ba3cba7dd197e6735d8e3e2))
+* **ci:** add persist-credentials: false to release and homebrew checkouts ([9a56201](https://github.com/recurser/bossanova/commit/9a56201cd7196e1aa618bfe442a321f4dca2ab6b))
 * **ci:** commit generated protobuf code for CI builds ([3b0c5ad](https://github.com/recurser/bossanova/commit/3b0c5ad33a0c8179545c5b3a1054c4dad1da878c))
+* **ci:** correct semantic-release plugin version specifiers ([6512632](https://github.com/recurser/bossanova/commit/6512632177d5ba6b5e2acb4ee568fc8c9174fa65))
+* **ci:** create Formula/ directory for fresh homebrew-tap repo ([9b45753](https://github.com/recurser/bossanova/commit/9b457537834713b984b41727f82c532b19a1155d))
 * **ci:** install golangci-lint via curl, fix v2 config exclude-dirs ([38de367](https://github.com/recurser/bossanova/commit/38de3671c2d756d1b67f4282d9cb63559b23d545))
+* **ci:** mirror only production to public repo's main branch ([2f0fa69](https://github.com/recurser/bossanova/commit/2f0fa69e8177fdbc9df82c4f6966c457dbb556ce))
+* **ci:** strip .beads/ from public mirror, remove deprecated split workflow ([ee6a3b3](https://github.com/recurser/bossanova/commit/ee6a3b3847ada773b554ab3a281d2ca0ff2095ee))
+* **ci:** strip .claude and .husky from public mirror ([9d6827f](https://github.com/recurser/bossanova/commit/9d6827f69c9cdfdfff9391b642c75508d4b94f8b))
+* **ci:** strip v prefix from semantic-release version output ([939bebb](https://github.com/recurser/bossanova/commit/939bebbd16d77e0e957f80982501348b3a203056))
+* **ci:** upgrade artifact actions to Node 24, fix Go cache, skip notarize gracefully ([8e52763](https://github.com/recurser/bossanova/commit/8e52763eea99656531ff171c3ca627c58457c170))
+* **ci:** use default token for checkout in release and homebrew jobs ([d8906a2](https://github.com/recurser/bossanova/commit/d8906a2cd3e1b4dfee7a6a2d77ce7ad0ec8b598e))
+* **ci:** use per-module targets in main CI, strip infra/ from public mirror ([f79fdbe](https://github.com/recurser/bossanova/commit/f79fdbe5fd8b6343c32847f07875977fda7b4954))
 * **daemon:** add --tsconfig flag to tsx dev script for path alias resolution ([4827ca6](https://github.com/recurser/bossanova/commit/4827ca68ec8ce80d7e4d7b0ee8ef9022e27c7254))
 * **daemon:** use singleton DI registration and top-level ESM imports ([bbec4ff](https://github.com/recurser/bossanova/commit/bbec4ffbb4c996e1cffa4a45b3eb3509d504a8b6))
 * **dependabot:** [[#33](https://github.com/recurser/bossanova/issues/33)] switch from lazy to eager broker dialing ([d1d9009](https://github.com/recurser/bossanova/commit/d1d9009db49db6645a62e48ed6e7de5294919c20))
+* **deploy:** [[#111](https://github.com/recurser/bossanova/issues/111)] wire Terraform + deploy config for bosso and web ([35f1dc0](https://github.com/recurser/bossanova/commit/35f1dc06603714cadc60e3ccb79ca8ecfb236ef5))
+* **deploy:** [[#111](https://github.com/recurser/bossanova/issues/111)] wire Terraform Cloud + branch-triggered deploy pipeline ([e02c4ba](https://github.com/recurser/bossanova/commit/e02c4ba66da56c7ee6a88819c6989caac57f7e2e))
 * **deps:** regenerate package-lock.json from scratch ([3ce1696](https://github.com/recurser/bossanova/commit/3ce16964a3d26102606de32ad3ebd5ccc9298f42))
 * **deps:** update package-lock.json for vite 8.0.5 ([69e93ac](https://github.com/recurser/bossanova/commit/69e93acaa4804b9a549650e92affb76071046575))
 * gap analysis fixes — ListSessions, EmptyTrash, orphaned sessions, lint ([707df8f](https://github.com/recurser/bossanova/commit/707df8f9c1c2630aeff2074555a01ad9425f8ad3))
+* **global:** fix fetch-depth during mirroring ([a31a1ab](https://github.com/recurser/bossanova/commit/a31a1ab47e6196cf1864fb78bd29ba2e4ce8dbc8))
 * **global:** make sure the release build gets triggered ([bdfbd0b](https://github.com/recurser/bossanova/commit/bdfbd0bba71e80a63f6e74d6e330354941c60c70))
+* **global:** rename the mirror-public action's GITHUB_TOKEN env-var to avoid collisions ([3661e52](https://github.com/recurser/bossanova/commit/3661e5222c32e94cd1367d72ad58164f52556838))
+* **global:** trigger a release ([610c656](https://github.com/recurser/bossanova/commit/610c656cb74a1fee533c2ffe93caea477f85bd7f))
+* **global:** trigger a release ([128869b](https://github.com/recurser/bossanova/commit/128869be5dfc1f07e570d82a8ac2d353883b423e))
+* **global:** trigger a release ([e8b3e76](https://github.com/recurser/bossanova/commit/e8b3e763293ec1715da6ea2b6025d9ab85c3c6d3))
+* **global:** trigger a release ([1b68301](https://github.com/recurser/bossanova/commit/1b683017979847eaae50a308d6191bd5c22cc925))
+* **global:** trigger a release ([0097438](https://github.com/recurser/bossanova/commit/0097438eeaaac328e70e2efaab9646e5fb64fc53))
+* **global:** trigger a release ([0f80f61](https://github.com/recurser/bossanova/commit/0f80f61eaa9bcaa406f905940f2ab1be3d6207cf))
+* **homebrew:** remove post_install hook that fails in sandbox ([05d99dd](https://github.com/recurser/bossanova/commit/05d99ddd4bcbb8ded84af848abd98b3008cfb593))
+* **homebrew:** set executable permission on plugin binaries ([5f30a2a](https://github.com/recurser/bossanova/commit/5f30a2a25d3e9ea5e7e86a104446764bf95bbcf0))
+* **infra:** [[#111](https://github.com/recurser/bossanova/issues/111)] remove Fly module from Terraform, manage with flyctl only ([0898031](https://github.com/recurser/bossanova/commit/08980318143431c756810c945d745d003120b706))
+* **infra:** [[#111](https://github.com/recurser/bossanova/issues/111)] set Fly primary region to ams (Amsterdam) ([9404f10](https://github.com/recurser/bossanova/commit/9404f1086edc0d7b7ad0eb0af8b1ad708db3857f))
+* **infra:** [[#111](https://github.com/recurser/bossanova/issues/111)] set R2 bucket location to WEUR (Western Europe) ([ab63efd](https://github.com/recurser/bossanova/commit/ab63efd40cddb2d61a1f643bcc3e7dcb4ad1760a))
+* **infra:** [[#111](https://github.com/recurser/bossanova/issues/111)] use 'personal' as Fly.io org slug ([9b6638b](https://github.com/recurser/bossanova/commit/9b6638b3e5304a71dc565e8dcf2c9b4eee601c50))
+* **infra:** [[#111](https://github.com/recurser/bossanova/issues/111)] use correct fly provider version constraint ~> 0.0.20 ([858e7d1](https://github.com/recurser/bossanova/commit/858e7d155038374393084026c482601921be254a))
+* **infra:** [[#111](https://github.com/recurser/bossanova/issues/111)] use correct Fly.io org slug dave-perrett ([a17e626](https://github.com/recurser/bossanova/commit/a17e6264d47d3037b2405bd911e24fffce527928))
+* **infra:** [[#111](https://github.com/recurser/bossanova/issues/111)] use separate WorkOS client IDs for staging and production ([7fc2693](https://github.com/recurser/bossanova/commit/7fc26938092fc89f7d3ac34b386f0a1d3a413359))
 * **migration:** use table-recreation for SQLite < 3.35 compatibility ([f2720f4](https://github.com/recurser/bossanova/commit/f2720f4298d50c764e328e13c8133a0dc69fe482))
+* **mirror:** preserve public repo history across releases ([c53070e](https://github.com/recurser/bossanova/commit/c53070e6d610952895981debccbe6d045458e081))
+* **mirror:** remove hardcoded plugin name references from public-visible code ([bbc0f64](https://github.com/recurser/bossanova/commit/bbc0f6479b82008096e445d78107e39490e3ec3e))
+* **mirror:** remove private module references from public repo build ([84488fd](https://github.com/recurser/bossanova/commit/84488fd5fc8490e6568bfa6ad7277b848aac33a1))
+* **mirror:** use orphan commit to prevent private history leaking ([4397612](https://github.com/recurser/bossanova/commit/439761219e2e2ec8be65d4918367e11d1879b551))
+* **mirror:** use read-tree to populate index during commit replay ([64185c1](https://github.com/recurser/bossanova/commit/64185c18cdc84afda32331c80f0f6a0276095cf0))
 * **mutate:** [[#72](https://github.com/recurser/bossanova/issues/72)] add --dangerously-skip-permissions to claude pipe mode ([5159120](https://github.com/recurser/bossanova/commit/515912020c96c54f98fdc5dcb22d7de55eb70b7d))
 * **mutate:** address review feedback on Makefile targets ([db76add](https://github.com/recurser/bossanova/commit/db76add0116b90ddb2228838bc50a3d151330970))
+* **orchestrator:** [[#108](https://github.com/recurser/bossanova/issues/108)] stop retrying failed task mappings to prevent duplicate sessions ([63df67a](https://github.com/recurser/bossanova/commit/63df67ab70c03f1ddc5f5169e38c8a76d4f138de))
 * **orchestrator:** [[#28](https://github.com/recurser/bossanova/issues/28)] resolve four edge cases preventing dependabot PR auto-merge ([8671cf2](https://github.com/recurser/bossanova/commit/8671cf27f1dbfc0d3097987593302d586b014b47))
 * **orchestrator:** [[#30](https://github.com/recurser/bossanova/issues/30)] use vcs.GitHubNWO to construct PR URLs from git remote origins ([c9d07d6](https://github.com/recurser/bossanova/commit/c9d07d656bc2626e806ed9b412c1bdac300f3afb))
 * **orchestrator:** [[#35](https://github.com/recurser/bossanova/issues/35)] check soft failures on smartRetry attempt ([b854c51](https://github.com/recurser/bossanova/commit/b854c5183bea5dda03ebf2ddc83dcc7c2593c7ad))
@@ -383,23 +558,34 @@ All notable changes to this project will be documented in this file.
 * **pty:** [[#23](https://github.com/recurser/bossanova/issues/23)] remove 500-char limit on question detection after ⏺ marker ([2364b97](https://github.com/recurser/bossanova/commit/2364b97723577f9ca65c16b3caa18687f0e31570))
 * **pty:** [[#29](https://github.com/recurser/bossanova/issues/29)] detect questions when ⏺ marker is outside tail buffer ([44d5bba](https://github.com/recurser/bossanova/commit/44d5bbaf0b0dd9ac88151f8893cf3ab54fa33984))
 * remove unused proto conversion helpers to pass lint ([da99008](https://github.com/recurser/bossanova/commit/da9900858079837a75b6b8a32676ca12ae6517bf))
+* **repair:** [[#109](https://github.com/recurser/bossanova/issues/109)] skip repair when head commit SHA matches last attempt ([063f7a6](https://github.com/recurser/bossanova/commit/063f7a624c785232edab5b82a3ad3b5ccc164658))
 * **repair:** [[#66](https://github.com/recurser/bossanova/issues/66)] add periodic sweep to catch stuck sessions ([7573112](https://github.com/recurser/bossanova/commit/7573112ccee0de8570e4e4537bc046298f611a7c))
 * **repair:** reduce default cooldown between repair attempts from 5 to 2 minutes ([27ec4d5](https://github.com/recurser/bossanova/commit/27ec4d568a16e26f24faefb576de01a3e200e5f9))
 * resolve CI lint failures across boss, bossd, and web ([51e4dd3](https://github.com/recurser/bossanova/commit/51e4dd3159b4567fb39338a79b06f2288b3d2d6b))
 * resolve errcheck lint issues and update golangci-lint config for v2 ([01ad6ee](https://github.com/recurser/bossanova/commit/01ad6ee4d0573668a9ce65712aa2a7b31f8cdd5d))
 * resolve exhaustive switch and Slowloris lint warnings ([17cd38f](https://github.com/recurser/bossanova/commit/17cd38f1642c534159e5a7795e4b8afea127ce0b))
 * resolve lint issues in boss CLI (errcheck, unused field) ([77e66ff](https://github.com/recurser/bossanova/commit/77e66ff3fb4a00d79c0397d37f516e9b962216b2))
+* **review:** [[#111](https://github.com/recurser/bossanova/issues/111)] add middleware exemption tests and CF Pages preview config ([dfe9616](https://github.com/recurser/bossanova/commit/dfe961667bf688e019619c14a822153bdc9934f8))
 * **session:** [[#74](https://github.com/recurser/bossanova/issues/74)] make draft PR creation non-fatal and clean up resources on failure ([a0834ce](https://github.com/recurser/bossanova/commit/a0834ce06df5c4a142b312638c6896286fb588f9))
 * **session:** reconcile orphaned sessions with existing PRs on startup ([acc821c](https://github.com/recurser/bossanova/commit/acc821c8b1b2c50e465577acc69fdcaef93ca862))
 * **shared:** fix max attempts guard and add session machine tests ([7f5440d](https://github.com/recurser/bossanova/commit/7f5440d3f533aaf653d753add90b3a4db31f053b))
+* **status:** [[#108](https://github.com/recurser/bossanova/issues/108)] capture tmux scrollback to prevent false positive question detection ([55b2eae](https://github.com/recurser/bossanova/commit/55b2eae1cf2e18249b4a90826fd67ef8d2d0fb6f))
+* **status:** [[#113](https://github.com/recurser/bossanova/issues/113)] sessions show idle instead of working on daemon startup ([eb6e511](https://github.com/recurser/bossanova/commit/eb6e5118d2b0730630dabe5acf1514b3877e8cc1))
 * **status:** [[#77](https://github.com/recurser/bossanova/issues/77)] correct display for merged PRs and unknown mergeability ([9b50dc4](https://github.com/recurser/bossanova/commit/9b50dc4aca8447497841af1b7bc467c14dbd2abb))
 * **status:** [[#78](https://github.com/recurser/bossanova/issues/78)] exclude failed/cancelled workflows from active query ([b3f4d7f](https://github.com/recurser/bossanova/commit/b3f4d7f9d34cd0e73ecef11a8706aea64a7492e6))
 * **status:** deduplicate constructPRURL and fix mergeable-unknown idle regression ([7b02568](https://github.com/recurser/bossanova/commit/7b025682d64888436606d923d10f3cbca4d27635))
+* **tmux:** [[#95](https://github.com/recurser/bossanova/issues/95)] add csi-u key format and TERM_PROGRAM passthrough ([4b5f8f7](https://github.com/recurser/bossanova/commit/4b5f8f7594d6968d28b6277763e77c955d999e39))
+* **tmux:** [[#95](https://github.com/recurser/bossanova/issues/95)] fix key bindings, extended-keys, and enable mouse scrolling ([b101f45](https://github.com/recurser/bossanova/commit/b101f45492817cee2b8338f75b989ec500088226))
+* **tmux:** [[#95](https://github.com/recurser/bossanova/issues/95)] set mouse mode globally and add Shift+Enter test scaffolding ([87faede](https://github.com/recurser/bossanova/commit/87faede7e3d1d04f01a86bb13a6cd98d738462f7))
+* **tui:** [[#106](https://github.com/recurser/bossanova/issues/106)] remove misleading "ready for review" attention alert ([82290fe](https://github.com/recurser/bossanova/commit/82290fe7a9af5d20100db1e657dbe06b93f883ea))
 * **tui:** [[#91](https://github.com/recurser/bossanova/issues/91)] make Esc navigate back one step instead of jumping to home ([8116ca1](https://github.com/recurser/bossanova/commit/8116ca1146011dcbfad580a13d263aedc7169b86))
 * **tui:** [[#92](https://github.com/recurser/bossanova/issues/92)] preserve list cursor position after navigating back ([98fb485](https://github.com/recurser/bossanova/commit/98fb485b0749023c9e55f1f726cad3932b77f2b8))
 * **tui:** correct table height overhead in sub-views ([90a65b1](https://github.com/recurser/bossanova/commit/90a65b1db4aea5e8f34fa4c9353997b89a5962c6))
+* **tui:** remove extra blank line below banner across all screens ([d0c0f00](https://github.com/recurser/bossanova/commit/d0c0f009d670528dc1ec2b994b6b9ea8178e3e0e))
+* **tui:** remove extra blank line below header in create session screen ([cbf4d65](https://github.com/recurser/bossanova/commit/cbf4d6515df63ceeb2d76ccba99058c9bf99cd4f))
 * **vcs:** [[#32](https://github.com/recurser/bossanova/issues/32)] return informational error when repo has no real commits ([46bde5b](https://github.com/recurser/bossanova/commit/46bde5b25424dbedad72b0dd9287e7f6f819550a))
 * **vcs:** [[#34](https://github.com/recurser/bossanova/issues/34)] retry CreateDraftPR on GitHub API not-ready errors ([8f8a92d](https://github.com/recurser/bossanova/commit/8f8a92dce44a3c4d8873612a6075a2485079b77b))
+* **web:** [[#111](https://github.com/recurser/bossanova/issues/111)] migrate services/web from npm to pnpm workspace ([797ad1c](https://github.com/recurser/bossanova/commit/797ad1c0af57e431f9b42f2d32d4a0e2d95f6f85))
 
 ### Performance Improvements
 

@@ -171,6 +171,12 @@ message Session {
   // External issue tracker fields (eg. Linear, Jira).
   optional string tracker_id = 29;   // External issue ID (eg. "FRE-1176")
   optional string tracker_url = 30;  // URL to issue in external tracker
+
+  // tmux session name for persistent terminal sessions.
+  optional string tmux_session_name = 31;
+
+  // Head commit SHA of the PR, used by repair plugin to skip duplicate repairs.
+  string pr_display_head_sha = 32;
 }
 
 // Attempt represents a fix attempt within a session.

@@ -43,14 +43,7 @@ func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionSt
 		}
 
 	case machine.GreenDraft, machine.ReadyForReview:
-		if !repo.CanAutoMerge {
-			return AttentionStatus{
-				NeedsAttention: true,
-				Reason:         AttentionReasonReviewRequested,
-				Summary:        "PR ready for human review",
-				Since:          sess.UpdatedAt,
-			}
-		}
+		// Status column already shows this state; no attention alert needed.
 
 	case machine.FixingChecks:
 		if !repo.CanAutoResolveConflicts {

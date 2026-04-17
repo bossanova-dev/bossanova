@@ -16,6 +16,8 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/machine"
@@ -54,6 +56,7 @@ type Server struct {
 	workflows          db.WorkflowStore
 	chatStatus         *status.Tracker
 	prDisplay          *status.PRTracker
+	tmuxPoller         *status.TmuxStatusPoller
 	lifecycle          *session.Lifecycle
 	claude             claude.ClaudeRunner
 	worktrees          gitpkg.WorktreeManager
@@ -76,6 +79,7 @@ type Config struct {
 	Workflows          db.WorkflowStore
 	ChatStatus         *status.Tracker
 	PRDisplay          *status.PRTracker
+	TmuxPoller         *status.TmuxStatusPoller
 	Lifecycle          *session.Lifecycle
 	Claude             claude.ClaudeRunner
 	Worktrees          gitpkg.WorktreeManager
@@ -95,6 +99,7 @@ func New(cfg Config) *Server {
 		workflows:          cfg.Workflows,
 		chatStatus:         cfg.ChatStatus,
 		prDisplay:          cfg.PRDisplay,
+		tmuxPoller:         cfg.TmuxPoller,
 		lifecycle:          cfg.Lifecycle,
 		claude:             cfg.Claude,
 		worktrees:          cfg.Worktrees,
@@ -1189,6 +1194,16 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 	}
 
 	entries := s.chatStatus.GetBatch(claudeIDs)
+
+	// Build a map of which chats have live tmux sessions (per-chat liveness).
+	tmuxAlive := make(map[string]bool, len(chats))
+	for _, c := range chats {
+		if c.TmuxSessionName != nil && *c.TmuxSessionName != "" &&
+			s.lifecycle.IsTmuxSessionAlive(ctx, *c.TmuxSessionName) {
+			tmuxAlive[c.ClaudeID] = true
+		}
+	}
+
 	statuses := make([]*pb.ChatStatusEntry, 0, len(entries))
 	for id, e := range entries {
 		entry := &pb.ChatStatusEntry{
@@ -1198,7 +1213,33 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 		if !e.LastOutputAt.IsZero() {
 			entry.LastOutputAt = timestamppb.New(e.LastOutputAt)
 		}
+		// When heartbeats report stopped, fall back to per-chat tmux liveness.
+		// Default to IDLE (not WORKING) — the poller will upgrade to WORKING
+		// within 3s if Claude is actually producing output.
+		if entry.Status == pb.ChatStatus_CHAT_STATUS_STOPPED && tmuxAlive[id] {
+			entry.Status = pb.ChatStatus_CHAT_STATUS_IDLE
+		}
 		statuses = append(statuses, entry)
+	}
+
+	// If any tmux-active chat had no heartbeat entry at all, add a synthetic one.
+	for _, c := range chats {
+		if !tmuxAlive[c.ClaudeID] {
+			continue
+		}
+		found := false
+		for _, st := range statuses {
+			if st.ClaudeId == c.ClaudeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			statuses = append(statuses, &pb.ChatStatusEntry{
+				ClaudeId: c.ClaudeID,
+				Status:   pb.ChatStatus_CHAT_STATUS_IDLE,
+			})
+		}
 	}
 
 	return connect.NewResponse(&pb.GetChatStatusesResponse{Statuses: statuses}), nil
@@ -1245,6 +1286,19 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 				best = pb.ChatStatus_CHAT_STATUS_IDLE
 			}
 		}
+		// When heartbeats report stopped, fall back to per-chat tmux liveness.
+		// Default to IDLE (not WORKING) — the poller will upgrade to WORKING
+		// within 3s if Claude is actually producing output.
+		if best == pb.ChatStatus_CHAT_STATUS_STOPPED {
+			for _, c := range chats {
+				if c.TmuxSessionName != nil && *c.TmuxSessionName != "" &&
+					s.lifecycle.IsTmuxSessionAlive(ctx, *c.TmuxSessionName) {
+					best = pb.ChatStatus_CHAT_STATUS_IDLE
+					break
+				}
+			}
+		}
+
 		statuses = append(statuses, &pb.SessionStatusEntry{
 			SessionId: sessionID,
 			Status:    best,
@@ -1252,6 +1306,110 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 	}
 
 	return connect.NewResponse(&pb.GetSessionStatusesResponse{Statuses: statuses}), nil
+}
+
+// --- Tmux Session Management ---
+
+func (s *Server) EnsureTmuxSession(ctx context.Context, req *connect.Request[pb.EnsureTmuxSessionRequest]) (*connect.Response[pb.EnsureTmuxSessionResponse], error) {
+	msg := req.Msg
+	if msg.SessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
+	}
+	if msg.Mode != "new" && msg.Mode != "resume" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("mode must be \"new\" or \"resume\""))
+	}
+	if msg.Mode == "resume" && msg.ClaudeId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required for resume mode"))
+	}
+
+	// If a headless daemon-side Claude process is still running for this
+	// session (started by StartSession), stop it first so we don't end up
+	// with two Claude instances working on the same worktree.
+	sess, err := s.sessions.Get(ctx, msg.SessionId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+	}
+	if sess.ClaudeSessionID != nil && s.claude.IsRunning(*sess.ClaudeSessionID) {
+		if stopErr := s.claude.Stop(*sess.ClaudeSessionID); stopErr != nil {
+			s.logger.Warn().Err(stopErr).
+				Str("session", msg.SessionId).
+				Str("claudeSession", *sess.ClaudeSessionID).
+				Msg("failed to stop headless Claude before starting tmux session")
+		}
+	}
+
+	// Build Claude command based on mode.
+	var claudeID string
+	var command []string
+
+	switch msg.Mode {
+	case "new":
+		claudeID = uuid.New().String()
+		command = []string{"claude", "--session-id", claudeID}
+	case "resume":
+		claudeID = msg.ClaudeId
+		command = []string{"claude", "--resume", claudeID}
+	}
+
+	// Append --dangerously-skip-permissions when the global config enables it.
+	cfg, cfgErr := config.Load()
+	if cfgErr != nil {
+		s.logger.Warn().Err(cfgErr).Msg("failed to load config for dangerously-skip-permissions check")
+	}
+	if cfg.DangerouslySkipPermissions {
+		command = append(command, "--dangerously-skip-permissions")
+	}
+
+	// For "new" chats, always create a new tmux session (without killing others).
+	// For "resume", reuse the existing tmux session for that chat if alive.
+	forceNew := msg.Mode == "new"
+	tmuxName, err := s.lifecycle.EnsureTmuxSession(ctx, msg.SessionId, claudeID, command, forceNew)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("ensure tmux session: %w", err))
+	}
+
+	// Record the new chat in the DB only after tmux session creation succeeds,
+	// to avoid orphaned chat records if tmux creation fails.
+	if msg.Mode == "new" {
+		chat, createErr := s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
+			SessionID: msg.SessionId,
+			ClaudeID:  claudeID,
+			Title:     "New chat",
+		})
+		if createErr != nil {
+			// Clean up the tmux session to avoid an orphaned process.
+			s.lifecycle.KillTmuxByName(ctx, msg.SessionId, tmuxName)
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", createErr))
+		}
+		// Store the tmux session name on the chat record.
+		if err := s.claudeChats.UpdateTmuxSessionName(ctx, chat.ClaudeID, &tmuxName); err != nil {
+			s.logger.Warn().Err(err).
+				Str("claudeID", claudeID).
+				Msg("failed to store tmux session name on new chat")
+		}
+	}
+
+	// Update ClaudeSessionID so that StopSession, ArchiveSession, and the
+	// liveness checker can track the interactive Claude running in tmux.
+	cid := claudeID
+	cidPtr := &cid
+	if _, err := s.sessions.Update(ctx, msg.SessionId, db.UpdateSessionParams{
+		ClaudeSessionID: &cidPtr,
+	}); err != nil {
+		s.logger.Warn().Err(err).
+			Str("session", msg.SessionId).
+			Msg("failed to update ClaudeSessionID for tmux session")
+	}
+
+	// Register with the tmux status poller so it starts tracking this chat.
+	if s.tmuxPoller != nil {
+		s.tmuxPoller.RegisterChat(claudeID)
+	}
+
+	return connect.NewResponse(&pb.EnsureTmuxSessionResponse{
+		TmuxSessionName: tmuxName,
+		ClaudeId:        claudeID,
+	}), nil
 }
 
 // --- Context Resolution ---

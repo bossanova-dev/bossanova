@@ -238,3 +238,58 @@ func TestClaudeChatStore_ListBySession_Empty(t *testing.T) {
 		t.Errorf("expected 0 chats, got %d", len(chats))
 	}
 }
+
+func TestClaudeChatStore_ListWithTmuxSession(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewClaudeChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "ListWithTmuxSession test",
+		WorktreePath: "/tmp/wt/tmux-list",
+		BranchName:   "feat/tmux-list",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Create chat without tmux session.
+	_, err = chatStore.Create(ctx, CreateClaudeChatParams{
+		SessionID: sess.ID, ClaudeID: "no-tmux", Title: "No tmux",
+	})
+	if err != nil {
+		t.Fatalf("create chat without tmux: %v", err)
+	}
+
+	// Create chat with tmux session.
+	_, err = chatStore.Create(ctx, CreateClaudeChatParams{
+		SessionID: sess.ID, ClaudeID: "has-tmux", Title: "Has tmux",
+	})
+	if err != nil {
+		t.Fatalf("create chat with tmux: %v", err)
+	}
+	tmuxName := "boss-test-session"
+	if err := chatStore.UpdateTmuxSessionName(ctx, "has-tmux", &tmuxName); err != nil {
+		t.Fatalf("set tmux session name: %v", err)
+	}
+
+	// ListWithTmuxSession should return only the chat with tmux session.
+	chats, err := chatStore.ListWithTmuxSession(ctx)
+	if err != nil {
+		t.Fatalf("list with tmux session: %v", err)
+	}
+	if len(chats) != 1 {
+		t.Fatalf("expected 1 chat with tmux session, got %d", len(chats))
+	}
+	if chats[0].ClaudeID != "has-tmux" {
+		t.Errorf("claude_id = %q, want %q", chats[0].ClaudeID, "has-tmux")
+	}
+	if chats[0].TmuxSessionName == nil || *chats[0].TmuxSessionName != tmuxName {
+		t.Errorf("tmux_session_name = %v, want %q", chats[0].TmuxSessionName, tmuxName)
+	}
+}

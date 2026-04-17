@@ -286,7 +286,7 @@ func (m AutopilotModel) View() tea.View {
 	}
 
 	if m.loading {
-		return tea.NewView(lipgloss.NewStyle().Padding(1, 2).Render("Loading autopilot workflows..."))
+		return tea.NewView(lipgloss.NewStyle().Padding(0, 2).Render("Loading autopilot workflows..."))
 	}
 
 	var b strings.Builder

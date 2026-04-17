@@ -451,7 +451,7 @@ func (m RepoAddModel) Done() bool { return m.done }
 func (m RepoAddModel) View() tea.View {
 	if m.validating {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Foreground(colorInfo).Render(
+			lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).Render(
 				fmt.Sprintf("Validating %s...", m.fd.localPath)),
 		)
 	}
@@ -465,14 +465,14 @@ func (m RepoAddModel) View() tea.View {
 
 	if m.cloning {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Foreground(colorInfo).Render(
+			lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).Render(
 				fmt.Sprintf("Cloning %s...", m.fd.gitURL)),
 		)
 	}
 
 	if m.done && m.createdRepo != nil {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Foreground(colorSuccess).Render("Repository registered!") + "\n" +
+			lipgloss.NewStyle().Padding(0, 2).Foreground(colorSuccess).Render("Repository registered!") + "\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render(
 					fmt.Sprintf("  ID:   %s\n  Name: %s\n  Path: %s",
 						m.createdRepo.Id, m.createdRepo.DisplayName, m.createdRepo.LocalPath)),

@@ -753,7 +753,7 @@ func (m NewSessionModel) View() tea.View {
 
 	if m.phase == newSessionPhaseLoading {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Render("Loading..."),
+			lipgloss.NewStyle().Padding(0, 2).Render("Loading..."),
 		)
 	}
 
@@ -789,7 +789,7 @@ func (m NewSessionModel) View() tea.View {
 		var b strings.Builder
 		b.WriteString(m.headerView())
 		if !m.issueTableReady {
-			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Loading Linear issues..."))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Loading Linear issues..."))
 		} else {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.issueTable.View()))
 			b.WriteString("\n")
@@ -801,7 +801,7 @@ func (m NewSessionModel) View() tea.View {
 	if m.phase == newSessionPhaseCreating {
 		var b strings.Builder
 		if len(m.setupLines) > 0 {
-			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Running setup script..."))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script..."))
 			b.WriteString("\n")
 			// Show last 10 lines of setup output.
 			start := 0
@@ -813,14 +813,14 @@ func (m NewSessionModel) View() tea.View {
 				b.WriteString("\n")
 			}
 		} else {
-			b.WriteString(lipgloss.NewStyle().Padding(1, 2).Render("Creating a new session..."))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Creating a new session..."))
 		}
 		return tea.NewView(b.String())
 	}
 
 	if m.done && m.createdSess != nil {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(1, 2).Foreground(colorSuccess).Render("Session created!") + "\n" +
+			lipgloss.NewStyle().Padding(0, 2).Foreground(colorSuccess).Render("Session created!") + "\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render(
 					fmt.Sprintf("  ID:     %s\n  Title:  %s\n  Branch: %s",
 						m.createdSess.Id, m.createdSess.Title, m.createdSess.BranchName)),

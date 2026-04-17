@@ -43,6 +43,9 @@ message RegisterDaemonRequest {
   // Optional endpoint URL where the daemon's DaemonService is reachable.
   // Required for proxy RPC support. Daemons behind NAT may omit this.
   optional string endpoint = 4;
+  // User email from the WorkOS device code response.
+  // Used for JIT user creation when the user doesn't exist in the DB yet.
+  string email = 5;
 }
 
 message RegisterDaemonResponse {

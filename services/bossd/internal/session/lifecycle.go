@@ -16,35 +16,42 @@ import (
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/tmux"
 )
 
 // Lifecycle orchestrates worktree creation, Claude process management,
 // and state machine transitions for coding sessions.
 type Lifecycle struct {
-	sessions  db.SessionStore
-	repos     db.RepoStore
-	worktrees gitpkg.WorktreeManager
-	claude    claude.ClaudeRunner
-	provider  vcs.Provider
-	logger    zerolog.Logger
+	sessions    db.SessionStore
+	repos       db.RepoStore
+	claudeChats db.ClaudeChatStore
+	worktrees   gitpkg.WorktreeManager
+	claude      claude.ClaudeRunner
+	tmux        *tmux.Client
+	provider    vcs.Provider
+	logger      zerolog.Logger
 }
 
 // NewLifecycle creates a new session lifecycle orchestrator.
 func NewLifecycle(
 	sessions db.SessionStore,
 	repos db.RepoStore,
+	claudeChats db.ClaudeChatStore,
 	worktrees gitpkg.WorktreeManager,
 	claude claude.ClaudeRunner,
+	tmux *tmux.Client,
 	provider vcs.Provider,
 	logger zerolog.Logger,
 ) *Lifecycle {
 	return &Lifecycle{
-		sessions:  sessions,
-		repos:     repos,
-		worktrees: worktrees,
-		claude:    claude,
-		provider:  provider,
-		logger:    logger,
+		sessions:    sessions,
+		repos:       repos,
+		claudeChats: claudeChats,
+		worktrees:   worktrees,
+		claude:      claude,
+		tmux:        tmux,
+		provider:    provider,
+		logger:      logger,
 	}
 }
 
@@ -236,25 +243,8 @@ func (l *Lifecycle) StartQuickChatSession(ctx context.Context, sessionID string)
 		return fmt.Errorf("set starting_claude state: %w", err)
 	}
 
-	l.logger.Info().
-		Str("session", sessionID).
-		Str("repoPath", repo.LocalPath).
-		Msg("starting quick chat claude")
-
-	// Start Claude in the repo's base directory with no plan.
-	claudeSessionID, err := l.claude.Start(ctx, repo.LocalPath, "", nil, "")
-	if err != nil {
-		return fmt.Errorf("start claude: %w", err)
-	}
-
-	// Update session with Claude session ID.
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		ClaudeSessionID: strPtr(claudeSessionID),
-	}); err != nil {
-		return fmt.Errorf("update claude session id: %w", err)
-	}
-
-	// Transition to ImplementingPlan.
+	// Quick chat has no plan — Claude starts on-demand when user attaches.
+	// Transition directly to ImplementingPlan so the session is ready.
 	implementingState := int(machine.ImplementingPlan)
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		State: &implementingState,
@@ -264,8 +254,7 @@ func (l *Lifecycle) StartQuickChatSession(ctx context.Context, sessionID string)
 
 	l.logger.Info().
 		Str("session", sessionID).
-		Str("claudeSession", claudeSessionID).
-		Msg("quick chat session started")
+		Msg("quick chat session started (Claude on-demand)")
 
 	return nil
 }
@@ -470,6 +459,14 @@ func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 		}
 	}
 
+	// Kill all per-chat tmux sessions.
+	l.killAllChatTmuxSessions(ctx, sessionID)
+
+	// Also kill the legacy per-session tmux session if it exists.
+	if session.TmuxSessionName != nil {
+		l.KillTmuxByName(ctx, sessionID, *session.TmuxSessionName)
+	}
+
 	// Update state to Closed.
 	closedState := int(machine.Closed)
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
@@ -497,6 +494,14 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
 		}
+	}
+
+	// Kill all per-chat tmux sessions.
+	l.killAllChatTmuxSessions(ctx, sessionID)
+
+	// Also kill the legacy per-session tmux session if it exists.
+	if session.TmuxSessionName != nil {
+		l.KillTmuxByName(ctx, sessionID, *session.TmuxSessionName)
 	}
 
 	// Archive worktree (removes directory, keeps branch).
@@ -617,6 +622,164 @@ func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) (st
 
 	repo.OriginURL = url
 	return url, nil
+}
+
+// createTmuxSession creates a tmux session for a specific chat.
+// It is non-fatal: failures are logged as warnings and the session continues
+// without tmux. On success it persists the tmux session name on both the
+// chat record and the session record.
+func (l *Lifecycle) createTmuxSession(ctx context.Context, sessionID, repoID, claudeID, workDir string, command []string) string {
+	if l.tmux == nil || !l.tmux.Available(ctx) {
+		return ""
+	}
+
+	tmuxSessionName := tmux.ChatSessionName(repoID, claudeID)
+	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
+		Name:    tmuxSessionName,
+		WorkDir: workDir,
+		Command: command,
+	}); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("claudeID", claudeID).
+			Str("tmuxSession", tmuxSessionName).
+			Msg("failed to create tmux session; session will continue without tmux")
+		return ""
+	}
+
+	// Store tmux session name on the chat record.
+	if err := l.claudeChats.UpdateTmuxSessionName(ctx, claudeID, &tmuxSessionName); err != nil {
+		l.logger.Warn().Err(err).
+			Str("claudeID", claudeID).
+			Msg("failed to record tmux session name on chat")
+	}
+
+	// Also update session-level TmuxSessionName for backward compatibility
+	// (liveness checker, status queries that haven't migrated yet).
+	tmuxName := &tmuxSessionName
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		TmuxSessionName: &tmuxName,
+	}); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Msg("failed to record tmux session name on session")
+	}
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("claudeID", claudeID).
+		Str("tmuxSession", tmuxSessionName).
+		Msg("tmux session created for chat")
+
+	return tmuxSessionName
+}
+
+// EnsureTmuxSession ensures a tmux session exists for a specific chat.
+// For resume (!forceNew): looks up the chat's tmux_session_name, reuses if alive.
+// For new (forceNew): creates a new tmux session without killing existing ones.
+func (l *Lifecycle) EnsureTmuxSession(ctx context.Context, sessionID, claudeID string, command []string, forceNew bool) (string, error) {
+	session, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("get session: %w", err)
+	}
+
+	// For resume: check if this chat's tmux session is already alive.
+	if !forceNew {
+		chat, chatErr := l.claudeChats.GetByClaudeID(ctx, claudeID)
+		if chatErr == nil && chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
+			if l.tmux != nil && l.tmux.HasSession(ctx, *chat.TmuxSessionName) {
+				return *chat.TmuxSessionName, nil
+			}
+			// Stale tmux name -- clear it.
+			if err := l.claudeChats.UpdateTmuxSessionName(ctx, claudeID, nil); err != nil {
+				l.logger.Warn().Err(err).Str("claudeID", claudeID).Msg("failed to clear stale tmux name on chat")
+			}
+		}
+	}
+
+	// Determine workDir.
+	workDir := session.WorktreePath
+	if workDir == "" {
+		repo, err := l.repos.Get(ctx, session.RepoID)
+		if err != nil {
+			return "", fmt.Errorf("get repo: %w", err)
+		}
+		workDir = repo.LocalPath
+	}
+
+	tmuxName := l.createTmuxSession(ctx, sessionID, session.RepoID, claudeID, workDir, command)
+	if tmuxName == "" {
+		return "", fmt.Errorf("tmux session creation failed")
+	}
+
+	return tmuxName, nil
+}
+
+// killAllChatTmuxSessions kills the tmux session for every chat in the given
+// boss session and clears the tmux_session_name on each chat record.
+func (l *Lifecycle) killAllChatTmuxSessions(ctx context.Context, sessionID string) {
+	if l.tmux == nil {
+		return
+	}
+	chats, err := l.claudeChats.ListBySession(ctx, sessionID)
+	if err != nil {
+		l.logger.Warn().Err(err).Str("session", sessionID).Msg("failed to list chats for tmux cleanup")
+		return
+	}
+	for _, chat := range chats {
+		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+			continue
+		}
+		if err := l.tmux.KillSession(ctx, *chat.TmuxSessionName); err != nil {
+			l.logger.Warn().Err(err).
+				Str("session", sessionID).
+				Str("claudeID", chat.ClaudeID).
+				Str("tmuxSession", *chat.TmuxSessionName).
+				Msg("failed to kill chat tmux session during cleanup")
+		} else {
+			l.logger.Info().
+				Str("session", sessionID).
+				Str("claudeID", chat.ClaudeID).
+				Str("tmuxSession", *chat.TmuxSessionName).
+				Msg("killed chat tmux session")
+		}
+		if err := l.claudeChats.UpdateTmuxSessionName(ctx, chat.ClaudeID, nil); err != nil {
+			l.logger.Warn().Err(err).Str("claudeID", chat.ClaudeID).Msg("failed to clear tmux name during cleanup")
+		}
+	}
+}
+
+// KillTmuxByName kills a tmux session by name and clears the
+// TmuxSessionName field on the associated boss session record.
+func (l *Lifecycle) KillTmuxByName(ctx context.Context, sessionID, tmuxName string) {
+	if tmuxName == "" || l.tmux == nil || !l.tmux.Available(ctx) {
+		return
+	}
+	if err := l.tmux.KillSession(ctx, tmuxName); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("tmuxSession", tmuxName).
+			Msg("failed to kill tmux session during cleanup")
+	} else {
+		l.logger.Info().
+			Str("session", sessionID).
+			Str("tmuxSession", tmuxName).
+			Msg("tmux session killed")
+	}
+	var nilName *string
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		TmuxSessionName: &nilName,
+	}); err != nil {
+		l.logger.Warn().Err(err).Str("session", sessionID).Msg("failed to clear tmux name during cleanup")
+	}
+}
+
+// IsTmuxSessionAlive reports whether the given tmux session name is still
+// running. Returns false when tmux is unavailable or the name is empty.
+func (l *Lifecycle) IsTmuxSessionAlive(ctx context.Context, name string) bool {
+	if name == "" || l.tmux == nil {
+		return false
+	}
+	return l.tmux.HasSession(ctx, name)
 }
 
 // strPtr returns a double pointer to a string (for UpdateSessionParams).

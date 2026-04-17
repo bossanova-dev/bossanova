@@ -219,6 +219,12 @@ func (c *RemoteClient) DeleteChat(_ context.Context, _ string) error {
 	return errLocalOnly("DeleteChat")
 }
 
+// --- Tmux Session Management (local only) ---
+
+func (c *RemoteClient) EnsureTmuxSession(_ context.Context, _, _, _ string) (string, string, error) {
+	return "", "", errLocalOnly("EnsureTmuxSession")
+}
+
 // --- Chat Status (local only) ---
 
 func (c *RemoteClient) ReportChatStatus(_ context.Context, _ []*pb.ChatStatusReport) error {

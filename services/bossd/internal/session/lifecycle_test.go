@@ -20,6 +20,7 @@ import (
 var (
 	_ db.SessionStore        = (*mockSessionStore)(nil)
 	_ db.RepoStore           = (*mockRepoStore)(nil)
+	_ db.ClaudeChatStore     = (*mockClaudeChatStore)(nil)
 	_ gitpkg.WorktreeManager = (*mockWorktreeManager)(nil)
 	_ claude.ClaudeRunner    = (*mockClaudeRunner)(nil)
 	_ vcs.Provider           = (*mockVCSProvider)(nil)
@@ -105,6 +106,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	}
 	if params.BlockedReason != nil {
 		s.BlockedReason = *params.BlockedReason
+	}
+	if params.TmuxSessionName != nil {
+		s.TmuxSessionName = *params.TmuxSessionName
 	}
 	return s, nil
 }
@@ -196,6 +200,42 @@ func (m *mockRepoStore) Update(_ context.Context, id string, params db.UpdateRep
 func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 	delete(m.repos, id)
 	return nil
+}
+
+// --- Mock ClaudeChatStore ---
+
+type mockClaudeChatStore struct{}
+
+func (m *mockClaudeChatStore) Create(_ context.Context, _ db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
+	return nil, nil
+}
+
+func (m *mockClaudeChatStore) GetByClaudeID(_ context.Context, _ string) (*models.ClaudeChat, error) {
+	return nil, nil
+}
+
+func (m *mockClaudeChatStore) ListBySession(_ context.Context, _ string) ([]*models.ClaudeChat, error) {
+	return nil, nil
+}
+
+func (m *mockClaudeChatStore) UpdateTitle(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *mockClaudeChatStore) UpdateTitleByClaudeID(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *mockClaudeChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
+	return nil
+}
+
+func (m *mockClaudeChatStore) DeleteByClaudeID(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *mockClaudeChatStore) ListWithTmuxSession(_ context.Context) ([]*models.ClaudeChat, error) {
+	return nil, nil
 }
 
 // --- Mock WorktreeManager ---
@@ -425,7 +465,7 @@ func TestStartSession(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartSession(ctx, "sess-1", "", false, false, nil); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -497,7 +537,7 @@ func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) 
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// Pass a branch name that doesn't exist on the remote.
 	if err := lc.StartSession(ctx, "sess-1", "dave/fre-1176", false, false, nil); err != nil {
@@ -539,7 +579,7 @@ func TestStopSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -580,7 +620,7 @@ func TestArchiveSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ArchiveSession: %v", err)
@@ -643,7 +683,7 @@ func TestResurrectSession(t *testing.T) {
 	oldClaudeID := "claude-old"
 	sess.ClaudeSessionID = &oldClaudeID
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
@@ -686,7 +726,7 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 		// ArchivedAt is nil — not archived.
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	err := lc.ResurrectSession(ctx, "sess-1")
 	if err == nil {
@@ -712,7 +752,7 @@ func TestStopSessionNoClaudeProcess(t *testing.T) {
 		// No ClaudeSessionID.
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -754,7 +794,7 @@ func TestSubmitPR(t *testing.T) {
 		State:        machine.ImplementingPlan,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
 		t.Fatalf("SubmitPR: %v", err)
@@ -819,7 +859,7 @@ func TestSubmitPRWrongState(t *testing.T) {
 		State:  machine.CreatingWorktree, // wrong state for SubmitPR
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
 
 	err := lc.SubmitPR(ctx, "sess-1")
 	if err == nil {
@@ -856,7 +896,7 @@ func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
 	vp.nextPRInfo = nil
 	vp.createPRErr = vcs.ErrRepoNotReady
 
-	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
 
 	err := lc.StartSession(ctx, "sess-1", "", false, false, nil)
 	if err != nil {
@@ -900,7 +940,7 @@ func TestStartSession_SkipSetupScript_NilsSetupScript(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with an existing branch (dependabot PR path).
 	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, true, nil); err != nil {
@@ -940,7 +980,7 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with no existing branch (new branch path).
 	if err := lc.StartSession(ctx, "sess-1", "", false, true, nil); err != nil {
@@ -978,7 +1018,7 @@ func TestStartQuickChatSession(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartQuickChatSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StartQuickChatSession: %v", err)
@@ -992,18 +1032,9 @@ func TestStartQuickChatSession(t *testing.T) {
 		t.Errorf("expected 0 existing branch worktrees, got %d", len(wt.createdFromExisting))
 	}
 
-	// Verify Claude was started in repo's base directory.
-	if len(cr.started) != 1 {
-		t.Fatalf("expected 1 claude start, got %d", len(cr.started))
-	}
-	if cr.started[0].workDir != "/tmp/repo" {
-		t.Errorf("claude workDir = %q, want /tmp/repo", cr.started[0].workDir)
-	}
-	if cr.started[0].plan != "" {
-		t.Errorf("claude plan = %q, want empty", cr.started[0].plan)
-	}
-	if cr.started[0].resume != nil {
-		t.Errorf("claude resume = %v, want nil", cr.started[0].resume)
+	// Verify Claude was NOT started (on-demand via EnsureTmuxSession).
+	if len(cr.started) != 0 {
+		t.Fatalf("expected 0 claude starts, got %d", len(cr.started))
 	}
 
 	// Verify session was updated correctly.
@@ -1016,9 +1047,6 @@ func TestStartQuickChatSession(t *testing.T) {
 	}
 	if sess.BranchName != "" {
 		t.Errorf("branch name = %q, want empty", sess.BranchName)
-	}
-	if sess.ClaudeSessionID == nil || *sess.ClaudeSessionID != "claude-123" {
-		t.Errorf("claude session id = %v, want claude-123", sess.ClaudeSessionID)
 	}
 }
 
@@ -1046,7 +1074,7 @@ func TestArchiveQuickChatSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ArchiveSession: %v", err)
@@ -1089,7 +1117,7 @@ func TestResurrectQuickChatSession(t *testing.T) {
 		ClaudeSessionID: &oldClaudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
@@ -1128,7 +1156,7 @@ func TestResolveOriginURL_AlreadySet(t *testing.T) {
 		OriginURL: "git@github.com:owner/repo.git",
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err != nil {
@@ -1153,7 +1181,7 @@ func TestResolveOriginURL_EmptyReDetected(t *testing.T) {
 		OriginURL: "", // empty — needs re-detection
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err != nil {
@@ -1183,7 +1211,7 @@ func TestResolveOriginURL_EmptyNoRemote(t *testing.T) {
 		OriginURL:   "",
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	_, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err == nil {
@@ -1219,7 +1247,7 @@ func TestStartSession_NoPlan_EmptyOriginURL_ReDetected(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.StartSession(ctx, "sess-1", "", false, false, nil); err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -1263,7 +1291,7 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, wt, cr, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = false with existing branch.
 	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, false, nil); err != nil {

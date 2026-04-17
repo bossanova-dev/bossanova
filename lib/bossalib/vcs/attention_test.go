@@ -44,15 +44,13 @@ func TestComputeAttentionStatus(t *testing.T) {
 			wantSummary:   "fix loop exhausted, needs human intervention",
 		},
 		{
-			name: "green draft with auto-merge off needs review",
+			name: "green draft with auto-merge off does not need attention",
 			session: &models.Session{
 				State:     machine.GreenDraft,
 				UpdatedAt: now,
 			},
 			repo:          &models.Repo{CanAutoMerge: false},
-			wantAttention: true,
-			wantReason:    AttentionReasonReviewRequested,
-			wantSummary:   "PR ready for human review",
+			wantAttention: false,
 		},
 		{
 			name: "green draft with auto-merge on does not need attention",
@@ -64,15 +62,13 @@ func TestComputeAttentionStatus(t *testing.T) {
 			wantAttention: false,
 		},
 		{
-			name: "ready for review with auto-merge off needs review",
+			name: "ready for review with auto-merge off does not need attention",
 			session: &models.Session{
 				State:     machine.ReadyForReview,
 				UpdatedAt: now,
 			},
 			repo:          &models.Repo{CanAutoMerge: false},
-			wantAttention: true,
-			wantReason:    AttentionReasonReviewRequested,
-			wantSummary:   "PR ready for human review",
+			wantAttention: false,
 		},
 		{
 			name: "ready for review with auto-merge on does not need attention",

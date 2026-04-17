@@ -237,6 +237,9 @@ func (s *stubRepoClient) StreamAutopilotOutput(context.Context, string) (client.
 	panic("unused")
 }
 func (s *stubRepoClient) ShutdownDaemon(context.Context) error { panic("unused") }
+func (s *stubRepoClient) EnsureTmuxSession(context.Context, string, string, string) (string, string, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
 }

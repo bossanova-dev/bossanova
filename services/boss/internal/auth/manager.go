@@ -6,13 +6,18 @@ import (
 	"time"
 )
 
+// Config holds WorkOS provider configuration.
+type Config struct {
+	ClientID string // WorkOS application client ID
+}
+
 // Manager coordinates token loading, refresh, and persistence.
 type Manager struct {
 	store  TokenStore
 	config Config
 }
 
-// NewManager creates a Manager with the given store and OIDC config.
+// NewManager creates a Manager with the given store and WorkOS config.
 func NewManager(store TokenStore, cfg Config) *Manager {
 	return &Manager{store: store, config: cfg}
 }
@@ -36,7 +41,6 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("access token expired and no refresh token available; run 'boss login'")
 	}
 
-	// Add a buffer so we refresh a bit before actual expiry.
 	refreshed, err := RefreshAccessToken(ctx, m.config, tokens.RefreshToken)
 	if err != nil {
 		return "", fmt.Errorf("refresh token: %w (run 'boss login' to re-authenticate)", err)
@@ -49,13 +53,28 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	return refreshed.AccessToken, nil
 }
 
-// Login performs the PKCE flow and stores the resulting tokens.
+// Login performs the WorkOS device code flow and stores the resulting tokens.
 func (m *Manager) Login(ctx context.Context) error {
-	tokens, err := Login(ctx, m.config)
+	result, err := Login(ctx, m.config)
 	if err != nil {
 		return err
 	}
-	return m.store.Save(tokens)
+	return m.store.Save(result.Tokens)
+}
+
+// StartLogin initiates the device code flow and returns the device code
+// response without printing to stdout (safe for TUI use).
+func (m *Manager) StartLogin(ctx context.Context) (*DeviceCodeResponse, error) {
+	return RequestDeviceCode(ctx, m.config)
+}
+
+// PollLogin polls for token completion and saves the resulting tokens.
+func (m *Manager) PollLogin(ctx context.Context, deviceCode string, interval int) error {
+	result, err := PollForToken(ctx, m.config, deviceCode, interval)
+	if err != nil {
+		return err
+	}
+	return m.store.Save(result.Tokens)
 }
 
 // Logout removes stored tokens.
@@ -71,23 +90,19 @@ type Status struct {
 }
 
 // Status reports whether the user is logged in.
+// A user is considered logged in if they have stored tokens — even if the
+// access token has expired — as long as a refresh token is available.
 func (m *Manager) Status() *Status {
 	tokens, err := m.store.Load()
 	if err != nil {
 		return &Status{LoggedIn: false}
 	}
 
-	s := &Status{
-		LoggedIn:  tokens.Valid(),
+	loggedIn := tokens.Valid() || tokens.RefreshToken != ""
+
+	return &Status{
+		LoggedIn:  loggedIn,
 		ExpiresAt: tokens.ExpiresAt,
+		Email:     tokens.Email,
 	}
-
-	// Try to extract email from ID token claims (JWT payload).
-	if tokens.IDToken != "" {
-		if claims, err := parseIDTokenClaims(tokens.IDToken); err == nil {
-			s.Email = claims.Email
-		}
-	}
-
-	return s
 }

@@ -42,7 +42,7 @@ var (
 	styleTitle     = lipgloss.NewStyle().Bold(true).Padding(0, 2)
 	styleSelected  = lipgloss.NewStyle().Bold(true)
 	styleActionBar = lipgloss.NewStyle().Faint(true).Padding(actionBarPadY, 2)
-	styleError     = lipgloss.NewStyle().Foreground(colorDanger).Padding(1, 2)
+	styleError     = lipgloss.NewStyle().Foreground(colorDanger).Padding(0, 2)
 	styleSubtle    = lipgloss.NewStyle().Faint(true)
 )
 

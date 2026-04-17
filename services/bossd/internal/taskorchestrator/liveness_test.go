@@ -116,18 +116,20 @@ func TestLivenessChecker_SessionPastImplementingPlan(t *testing.T) {
 	}
 }
 
-func TestLivenessChecker_NoClaudeSessionID(t *testing.T) {
+func TestLivenessChecker_NoProcessIdentifiers(t *testing.T) {
+	// When neither ClaudeSessionID nor TmuxSessionName is set, the session
+	// is still initializing (e.g. quick chat waiting for first attach).
 	checker := &defaultLivenessChecker{
 		sessions: &mockSessionStoreLiveness{
 			sessions: map[string]*models.Session{
-				"sess-2": {ID: "sess-2", State: machine.ImplementingPlan, ClaudeSessionID: nil},
+				"sess-2": {ID: "sess-2", State: machine.ImplementingPlan, ClaudeSessionID: nil, TmuxSessionName: nil},
 			},
 		},
 		claude: &mockClaudeRunnerLiveness{running: map[string]bool{}},
 	}
 
-	if checker.IsSessionAlive(context.Background(), "sess-2") {
-		t.Error("expected false when no Claude session ID")
+	if !checker.IsSessionAlive(context.Background(), "sess-2") {
+		t.Error("expected true when session has no process identifiers (still initializing)")
 	}
 }
 

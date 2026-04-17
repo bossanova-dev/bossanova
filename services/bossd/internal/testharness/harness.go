@@ -76,7 +76,7 @@ func New(t *testing.T) *Harness {
 	vcsMock := NewMockVCSProvider()
 
 	// Lifecycle.
-	lifecycle := session.NewLifecycle(sessions, repos, gitMock, claudeMock, vcsMock, logger)
+	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, gitMock, claudeMock, nil, vcsMock, logger)
 
 	// Server.
 	srv := server.New(server.Config{

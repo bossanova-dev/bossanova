@@ -53,6 +53,7 @@ type Session struct {
 	PRURL             *string
 	TrackerID         *string
 	TrackerURL        *string
+	TmuxSessionName   *string
 	LastCheckState    machine.CheckState
 	AutomationEnabled bool
 	AttemptCount      int
@@ -75,12 +76,13 @@ type Attempt struct {
 
 // ClaudeChat represents a Claude Code conversation associated with a session.
 type ClaudeChat struct {
-	ID        string
-	SessionID string
-	ClaudeID  string // Claude Code session UUID
-	Title     string
-	DaemonID  string // Originating daemon (empty = local)
-	CreatedAt time.Time
+	ID              string
+	SessionID       string
+	ClaudeID        string // Claude Code session UUID
+	Title           string
+	DaemonID        string  // Originating daemon (empty = local)
+	TmuxSessionName *string // tmux session name for this chat (nil = no tmux)
+	CreatedAt       time.Time
 }
 
 // TaskMappingStatus represents the state of a task mapping.

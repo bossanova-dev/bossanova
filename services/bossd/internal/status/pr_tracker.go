@@ -13,6 +13,7 @@ type PRDisplayEntry struct {
 	HasFailures         bool
 	HasChangesRequested bool
 	IsRepairing         bool
+	HeadSHA             string
 	UpdatedAt           time.Time
 }
 
@@ -54,6 +55,7 @@ func (t *PRTracker) Set(sessionID string, info vcs.PRDisplayInfo) {
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
 		IsRepairing:         isRepairing,
+		HeadSHA:             info.HeadSHA,
 		UpdatedAt:           time.Now(),
 	}
 	t.entries[sessionID] = newEntry
@@ -77,6 +79,7 @@ func (t *PRTracker) Get(sessionID string) *PRDisplayEntry {
 		HasFailures:         e.HasFailures,
 		HasChangesRequested: e.HasChangesRequested,
 		IsRepairing:         e.IsRepairing,
+		HeadSHA:             e.HeadSHA,
 		UpdatedAt:           e.UpdatedAt,
 	}
 }
@@ -96,6 +99,7 @@ func (t *PRTracker) GetBatch(sessionIDs []string) map[string]*PRDisplayEntry {
 			HasFailures:         e.HasFailures,
 			HasChangesRequested: e.HasChangesRequested,
 			IsRepairing:         e.IsRepairing,
+			HeadSHA:             e.HeadSHA,
 			UpdatedAt:           e.UpdatedAt,
 		}
 	}

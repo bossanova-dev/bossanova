@@ -2,16 +2,12 @@ package auth
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // --- Mock token store ---
@@ -137,12 +133,7 @@ func TestManager_AccessToken_ExpiredNoRefresh(t *testing.T) {
 }
 
 func TestManager_AccessToken_ExpiredWithRefresh(t *testing.T) {
-	// Set up a mock Auth0 token endpoint.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/oauth/token" {
-			http.Error(w, "not found", 404)
-			return
-		}
 		if r.FormValue("grant_type") != "refresh_token" {
 			http.Error(w, "bad grant_type", 400)
 			return
@@ -156,12 +147,15 @@ func TestManager_AccessToken_ExpiredWithRefresh(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  "new-access-token",
 			"refresh_token": "new-refresh-token",
-			"id_token":      "",
 			"expires_in":    3600,
-			"token_type":    "Bearer",
+			"user":          map[string]string{"id": "user_01", "email": "test@example.com"},
 		})
 	}))
 	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
 
 	store := &mockTokenStore{
 		tokens: &Tokens{
@@ -171,10 +165,7 @@ func TestManager_AccessToken_ExpiredWithRefresh(t *testing.T) {
 		},
 	}
 
-	cfg := Config{
-		Issuer:   srv.URL + "/",
-		ClientID: "test-client",
-	}
+	cfg := Config{ClientID: "test-client"}
 	mgr := NewManager(store, cfg)
 
 	token, err := mgr.AccessToken(context.Background())
@@ -214,25 +205,10 @@ func TestManager_Logout(t *testing.T) {
 // --- Manager.Status ---
 
 func TestManager_Status_LoggedIn(t *testing.T) {
-	// Create a minimal ID token with email claim.
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-
-	idToken, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"sub":   "auth0|user123",
-		"email": "dave@example.com",
-		"name":  "Dave",
-	}).SignedString(key)
-	if err != nil {
-		t.Fatalf("sign id token: %v", err)
-	}
-
 	store := &mockTokenStore{
 		tokens: &Tokens{
 			AccessToken: "token",
-			IDToken:     idToken,
+			Email:       "dave@example.com",
 			ExpiresAt:   time.Now().Add(time.Hour),
 		},
 	}
@@ -241,6 +217,26 @@ func TestManager_Status_LoggedIn(t *testing.T) {
 	status := mgr.Status()
 	if !status.LoggedIn {
 		t.Error("expected LoggedIn = true")
+	}
+	if status.Email != "dave@example.com" {
+		t.Errorf("got email %q, want %q", status.Email, "dave@example.com")
+	}
+}
+
+func TestManager_Status_ExpiredButRefreshable(t *testing.T) {
+	store := &mockTokenStore{
+		tokens: &Tokens{
+			AccessToken:  "expired-token",
+			RefreshToken: "my-refresh",
+			Email:        "dave@example.com",
+			ExpiresAt:    time.Now().Add(-time.Hour),
+		},
+	}
+	mgr := NewManager(store, Config{})
+
+	status := mgr.Status()
+	if !status.LoggedIn {
+		t.Error("expected LoggedIn = true when refresh token is available")
 	}
 	if status.Email != "dave@example.com" {
 		t.Errorf("got email %q, want %q", status.Email, "dave@example.com")
@@ -257,73 +253,295 @@ func TestManager_Status_NotLoggedIn(t *testing.T) {
 	}
 }
 
-// --- Claims parsing ---
+// --- Device code flow ---
 
-func TestParseIDTokenClaims(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+func TestRequestDeviceCode_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user_management/authorize/device" {
+			http.Error(w, "not found", 404)
+			return
+		}
+		if r.FormValue("client_id") != "test-client" {
+			t.Errorf("expected client_id=test-client, got %q", r.FormValue("client_id"))
+		}
 
-	idToken, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"sub":   "auth0|user456",
-		"email": "test@example.com",
-		"name":  "Test User",
-	}).SignedString(key)
-	if err != nil {
-		t.Fatalf("sign token: %v", err)
-	}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"device_code":               "dev-code-123",
+			"user_code":                 "ABCD-1234",
+			"verification_uri":          "https://auth.example.com/activate",
+			"verification_uri_complete": "https://auth.example.com/activate?code=ABCD-1234",
+			"expires_in":                300,
+			"interval":                  5,
+		})
+	}))
+	defer srv.Close()
 
-	claims, err := parseIDTokenClaims(idToken)
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	cfg := Config{ClientID: "test-client"}
+	resp, err := RequestDeviceCode(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if claims.Sub != "auth0|user456" {
-		t.Errorf("got sub %q, want %q", claims.Sub, "auth0|user456")
+	if resp.DeviceCode != "dev-code-123" {
+		t.Errorf("device_code = %q, want %q", resp.DeviceCode, "dev-code-123")
 	}
-	if claims.Email != "test@example.com" {
-		t.Errorf("got email %q, want %q", claims.Email, "test@example.com")
+	if resp.UserCode != "ABCD-1234" {
+		t.Errorf("user_code = %q, want %q", resp.UserCode, "ABCD-1234")
 	}
-	if claims.Name != "Test User" {
-		t.Errorf("got name %q, want %q", claims.Name, "Test User")
+	if resp.ExpiresIn != 300 {
+		t.Errorf("expires_in = %d, want 300", resp.ExpiresIn)
+	}
+	if resp.Interval != 5 {
+		t.Errorf("interval = %d, want 5", resp.Interval)
 	}
 }
 
-func TestParseIDTokenClaims_InvalidFormat(t *testing.T) {
-	_, err := parseIDTokenClaims("not-a-jwt")
+func TestRequestDeviceCode_NetworkError(t *testing.T) {
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = "http://127.0.0.1:1"
+
+	cfg := Config{ClientID: "test-client"}
+	_, err := RequestDeviceCode(context.Background(), cfg)
 	if err == nil {
-		t.Error("expected error for invalid JWT format")
+		t.Fatal("expected error for unreachable server")
 	}
 }
 
-// --- PKCE helpers ---
+func TestRequestDeviceCode_BadResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte("internal server error"))
+	}))
+	defer srv.Close()
 
-func TestCodeVerifierAndChallenge(t *testing.T) {
-	verifier, err := generateCodeVerifier()
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	cfg := Config{ClientID: "test-client"}
+	_, err := RequestDeviceCode(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for bad response")
+	}
+}
+
+func TestPollForToken_PendingThenSuccess(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount < 3 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":             "authorization_pending",
+				"error_description": "user hasn't completed login yet",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "my-access-token",
+			"refresh_token": "my-refresh-token",
+			"expires_in":    3600,
+			"user":          map[string]string{"id": "user_01H", "email": "test@example.com"},
+		})
+	}))
+	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	cfg := Config{ClientID: "test-client"}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := PollForToken(ctx, cfg, "dev-code-123", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(verifier) < 32 {
-		t.Errorf("verifier too short: %d chars", len(verifier))
+	if result.Tokens.AccessToken != "my-access-token" {
+		t.Errorf("access_token = %q, want %q", result.Tokens.AccessToken, "my-access-token")
 	}
-
-	challenge := codeChallenge(verifier)
-	if challenge == "" {
-		t.Error("challenge should not be empty")
+	if result.Email != "test@example.com" {
+		t.Errorf("email = %q, want %q", result.Email, "test@example.com")
 	}
-	if challenge == verifier {
-		t.Error("challenge should not equal verifier")
-	}
-
-	// Verify different verifiers produce different challenges.
-	verifier2, _ := generateCodeVerifier()
-	challenge2 := codeChallenge(verifier2)
-	if challenge == challenge2 {
-		t.Error("different verifiers should produce different challenges")
+	if callCount < 3 {
+		t.Errorf("expected at least 3 poll calls, got %d", callCount)
 	}
 }
 
-// --- RefreshAccessToken ---
+func TestPollForToken_SlowDown(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":             "slow_down",
+				"error_description": "slow down",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "token",
+			"refresh_token": "refresh",
+			"expires_in":    3600,
+			"user":          map[string]string{"id": "user_01", "email": "test@example.com"},
+		})
+	}))
+	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	cfg := Config{ClientID: "test-client"}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := PollForToken(ctx, cfg, "dev-code", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Tokens.AccessToken != "token" {
+		t.Errorf("access_token = %q, want %q", result.Tokens.AccessToken, "token")
+	}
+}
+
+func TestPollForToken_AccessDenied(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":             "access_denied",
+			"error_description": "user denied access",
+		})
+	}))
+	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	cfg := Config{ClientID: "test-client"}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := PollForToken(ctx, cfg, "dev-code", 0)
+	if err == nil {
+		t.Fatal("expected error for access_denied")
+	}
+}
+
+func TestPollForToken_ExpiredToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":             "expired_token",
+			"error_description": "device code expired",
+		})
+	}))
+	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	cfg := Config{ClientID: "test-client"}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := PollForToken(ctx, cfg, "dev-code", 0)
+	if err == nil {
+		t.Fatal("expected error for expired_token")
+	}
+}
+
+func TestPollForToken_ContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":             "authorization_pending",
+			"error_description": "waiting",
+		})
+	}))
+	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	cfg := Config{ClientID: "test-client"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := PollForToken(ctx, cfg, "dev-code", 0)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestLogin_DeviceCodeFlow(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/user_management/authorize/device":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"device_code":               "dev-code-login",
+				"user_code":                 "LOGIN-CODE",
+				"verification_uri":          "https://auth.example.com/activate",
+				"verification_uri_complete": "https://auth.example.com/activate?code=LOGIN-CODE",
+				"expires_in":                300,
+				"interval":                  0,
+			})
+		case "/user_management/authenticate":
+			callCount++
+			if callCount < 2 {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error":             "authorization_pending",
+					"error_description": "waiting",
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "login-access-token",
+				"refresh_token": "login-refresh-token",
+				"expires_in":    3600,
+				"user":          map[string]string{"id": "user_01", "email": "login@example.com"},
+			})
+		default:
+			http.Error(w, "not found", 404)
+		}
+	}))
+	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	origOpen := openBrowserFn
+	openBrowserFn = func(url string) error { return nil }
+	defer func() { openBrowserFn = origOpen }()
+
+	cfg := Config{ClientID: "test-client"}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := Login(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Login failed: %v", err)
+	}
+	if result.Tokens.AccessToken != "login-access-token" {
+		t.Errorf("access_token = %q, want %q", result.Tokens.AccessToken, "login-access-token")
+	}
+	if result.Email != "login@example.com" {
+		t.Errorf("email = %q, want %q", result.Email, "login@example.com")
+	}
+}
 
 func TestRefreshAccessToken_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -342,16 +560,16 @@ func TestRefreshAccessToken_Success(t *testing.T) {
 			"access_token":  "fresh-access",
 			"refresh_token": "fresh-refresh",
 			"expires_in":    7200,
-			"token_type":    "Bearer",
+			"user":          map[string]string{"id": "user_01", "email": "test@example.com"},
 		})
 	}))
 	defer srv.Close()
 
-	cfg := Config{
-		Issuer:   srv.URL + "/",
-		ClientID: "my-client",
-	}
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
 
+	cfg := Config{ClientID: "my-client"}
 	tokens, err := RefreshAccessToken(context.Background(), cfg, "old-refresh")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -362,6 +580,9 @@ func TestRefreshAccessToken_Success(t *testing.T) {
 	if tokens.RefreshToken != "fresh-refresh" {
 		t.Errorf("got refresh token %q, want %q", tokens.RefreshToken, "fresh-refresh")
 	}
+	if tokens.Email != "test@example.com" {
+		t.Errorf("got email %q, want %q", tokens.Email, "test@example.com")
+	}
 }
 
 func TestRefreshAccessToken_KeepsOldRefreshIfNotReissued(t *testing.T) {
@@ -369,15 +590,17 @@ func TestRefreshAccessToken_KeepsOldRefreshIfNotReissued(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "fresh-access",
-			// No refresh_token in response — keep old.
-			"expires_in": 7200,
-			"token_type": "Bearer",
+			"expires_in":   7200,
+			"user":         map[string]string{"id": "user_01", "email": "test@example.com"},
 		})
 	}))
 	defer srv.Close()
 
-	cfg := Config{Issuer: srv.URL + "/", ClientID: "c"}
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
 
+	cfg := Config{ClientID: "c"}
 	tokens, err := RefreshAccessToken(context.Background(), cfg, "keep-me")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -398,118 +621,13 @@ func TestRefreshAccessToken_ErrorResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := Config{Issuer: srv.URL + "/", ClientID: "c"}
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
 
+	cfg := Config{ClientID: "c"}
 	_, err := RefreshAccessToken(context.Background(), cfg, "expired-refresh")
 	if err == nil {
 		t.Fatal("expected error for invalid grant")
-	}
-}
-
-// --- Login PKCE flow (end-to-end with mock auth server) ---
-
-func TestLogin_PKCEFlow(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-
-	var capturedState, capturedChallenge, capturedRedirectURI string
-
-	// Mock Auth0 server that handles authorize + token endpoints.
-	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/authorize":
-			// Capture the PKCE parameters.
-			capturedState = r.URL.Query().Get("state")
-			capturedChallenge = r.URL.Query().Get("code_challenge")
-			capturedRedirectURI = r.URL.Query().Get("redirect_uri")
-
-			if r.URL.Query().Get("code_challenge_method") != "S256" {
-				t.Error("expected code_challenge_method=S256")
-			}
-			if r.URL.Query().Get("response_type") != "code" {
-				t.Error("expected response_type=code")
-			}
-
-			// Simulate browser redirect to callback with code.
-			callbackURL := fmt.Sprintf("%s?code=test-auth-code&state=%s",
-				capturedRedirectURI, capturedState)
-
-			http.Redirect(w, r, callbackURL, http.StatusFound)
-
-		case "/oauth/token":
-			if r.FormValue("grant_type") != "authorization_code" {
-				t.Errorf("expected grant_type=authorization_code, got %q", r.FormValue("grant_type"))
-			}
-			if r.FormValue("code") != "test-auth-code" {
-				t.Errorf("expected code=test-auth-code, got %q", r.FormValue("code"))
-			}
-
-			// Generate a real ID token.
-			idToken, _ := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-				"sub":   "auth0|testuser",
-				"email": "test@example.com",
-			}).SignedString(key)
-
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token":  "pkce-access-token",
-				"refresh_token": "pkce-refresh-token",
-				"id_token":      idToken,
-				"expires_in":    3600,
-				"token_type":    "Bearer",
-			})
-		}
-	}))
-	defer authSrv.Close()
-
-	cfg := Config{
-		Issuer:   authSrv.URL + "/",
-		ClientID: "test-pkce-client",
-		Audience: "https://api.test.bossanova.dev",
-	}
-
-	// Override openBrowser to simulate the browser redirect.
-	// In the real flow, the browser opens the authorize URL, user logs in,
-	// and Auth0 redirects to the callback. We simulate this by making an
-	// HTTP request to the authorize endpoint, which redirects to our callback.
-	origOpenBrowser := openBrowserFn
-	openBrowserFn = func(url string) error {
-		// Follow the authorize URL to trigger the callback redirect.
-		client := &http.Client{
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return nil // follow redirects
-			},
-		}
-		resp, err := client.Get(url)
-		if err != nil {
-			return err
-		}
-		_ = resp.Body.Close()
-		return nil
-	}
-	defer func() { openBrowserFn = origOpenBrowser }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	tokens, err := Login(ctx, cfg)
-	if err != nil {
-		t.Fatalf("Login failed: %v", err)
-	}
-
-	if tokens.AccessToken != "pkce-access-token" {
-		t.Errorf("got access token %q, want %q", tokens.AccessToken, "pkce-access-token")
-	}
-	if tokens.RefreshToken != "pkce-refresh-token" {
-		t.Errorf("got refresh token %q, want %q", tokens.RefreshToken, "pkce-refresh-token")
-	}
-
-	if capturedState == "" {
-		t.Error("state parameter was not captured")
-	}
-	if capturedChallenge == "" {
-		t.Error("code_challenge parameter was not captured")
 	}
 }

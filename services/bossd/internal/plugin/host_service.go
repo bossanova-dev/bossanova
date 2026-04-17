@@ -617,10 +617,12 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			var displayStatus vcs.PRDisplayStatus
 			var hasFailures bool
 			var isRepairing bool
+			var headSHA string
 			if entry != nil {
 				displayStatus = entry.Status
 				hasFailures = entry.HasFailures
 				isRepairing = entry.IsRepairing
+				headSHA = entry.HeadSHA
 			}
 
 			// Check heartbeat tracker for active Claude Code chat processes.
@@ -653,6 +655,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				PrDisplayHasFailures: hasFailures,
 				IsRepairing:          isRepairing,
 				HasActiveChat:        hasActiveChat,
+				PrDisplayHeadSha:     headSHA,
 			}
 			if !sess.UpdatedAt.IsZero() {
 				pbSess.UpdatedAt = timestamppb.New(sess.UpdatedAt)

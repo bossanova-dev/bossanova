@@ -54,6 +54,9 @@ service DaemonService {
   // VCS event delivery (orchestrator → daemon via webhook routing)
   rpc DeliverVCSEvent(DeliverVCSEventRequest) returns (DeliverVCSEventResponse);
 
+  // Tmux session management (on-demand)
+  rpc EnsureTmuxSession(EnsureTmuxSessionRequest) returns (EnsureTmuxSessionResponse);
+
   // --- Autopilot ---
 
   // StartAutopilot begins a new autopilot workflow for a plan file.
@@ -436,6 +439,19 @@ message DeliverVCSEventRequest {
 }
 
 message DeliverVCSEventResponse {}
+
+// --- Tmux Session Management ---
+
+message EnsureTmuxSessionRequest {
+  string session_id = 1;   // Boss session ID
+  string mode = 2;         // "new" or "resume"
+  string claude_id = 3;    // Required for "resume", ignored for "new"
+}
+
+message EnsureTmuxSessionResponse {
+  string tmux_session_name = 1;
+  string claude_id = 2;    // Generated UUID for "new", echoed for "resume"
+}
 
 // --- Autopilot ---
 

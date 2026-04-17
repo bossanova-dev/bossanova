@@ -124,6 +124,9 @@ const (
 	// DaemonServiceDeliverVCSEventProcedure is the fully-qualified name of the DaemonService's
 	// DeliverVCSEvent RPC.
 	DaemonServiceDeliverVCSEventProcedure = "/bossanova.v1.DaemonService/DeliverVCSEvent"
+	// DaemonServiceEnsureTmuxSessionProcedure is the fully-qualified name of the DaemonService's
+	// EnsureTmuxSession RPC.
+	DaemonServiceEnsureTmuxSessionProcedure = "/bossanova.v1.DaemonService/EnsureTmuxSession"
 	// DaemonServiceStartAutopilotProcedure is the fully-qualified name of the DaemonService's
 	// StartAutopilot RPC.
 	DaemonServiceStartAutopilotProcedure = "/bossanova.v1.DaemonService/StartAutopilot"
@@ -187,6 +190,8 @@ type DaemonServiceClient interface {
 	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
+	// Tmux session management (on-demand)
+	EnsureTmuxSession(context.Context, *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error)
 	// StartAutopilot begins a new autopilot workflow for a plan file.
 	StartAutopilot(context.Context, *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error)
 	// PauseAutopilot gracefully pauses a running workflow.
@@ -400,6 +405,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DeliverVCSEvent")),
 			connect.WithClientOptions(opts...),
 		),
+		ensureTmuxSession: connect.NewClient[v1.EnsureTmuxSessionRequest, v1.EnsureTmuxSessionResponse](
+			httpClient,
+			baseURL+DaemonServiceEnsureTmuxSessionProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("EnsureTmuxSession")),
+			connect.WithClientOptions(opts...),
+		),
 		startAutopilot: connect.NewClient[v1.StartAutopilotRequest, v1.StartAutopilotResponse](
 			httpClient,
 			baseURL+DaemonServiceStartAutopilotProcedure,
@@ -478,6 +489,7 @@ type daemonServiceClient struct {
 	getChatStatuses        *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
 	getSessionStatuses     *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
 	deliverVCSEvent        *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
+	ensureTmuxSession      *connect.Client[v1.EnsureTmuxSessionRequest, v1.EnsureTmuxSessionResponse]
 	startAutopilot         *connect.Client[v1.StartAutopilotRequest, v1.StartAutopilotResponse]
 	pauseAutopilot         *connect.Client[v1.PauseAutopilotRequest, v1.PauseAutopilotResponse]
 	resumeAutopilot        *connect.Client[v1.ResumeAutopilotRequest, v1.ResumeAutopilotResponse]
@@ -642,6 +654,11 @@ func (c *daemonServiceClient) DeliverVCSEvent(ctx context.Context, req *connect.
 	return c.deliverVCSEvent.CallUnary(ctx, req)
 }
 
+// EnsureTmuxSession calls bossanova.v1.DaemonService.EnsureTmuxSession.
+func (c *daemonServiceClient) EnsureTmuxSession(ctx context.Context, req *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error) {
+	return c.ensureTmuxSession.CallUnary(ctx, req)
+}
+
 // StartAutopilot calls bossanova.v1.DaemonService.StartAutopilot.
 func (c *daemonServiceClient) StartAutopilot(ctx context.Context, req *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error) {
 	return c.startAutopilot.CallUnary(ctx, req)
@@ -717,6 +734,8 @@ type DaemonServiceHandler interface {
 	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
+	// Tmux session management (on-demand)
+	EnsureTmuxSession(context.Context, *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error)
 	// StartAutopilot begins a new autopilot workflow for a plan file.
 	StartAutopilot(context.Context, *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error)
 	// PauseAutopilot gracefully pauses a running workflow.
@@ -926,6 +945,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DeliverVCSEvent")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceEnsureTmuxSessionHandler := connect.NewUnaryHandler(
+		DaemonServiceEnsureTmuxSessionProcedure,
+		svc.EnsureTmuxSession,
+		connect.WithSchema(daemonServiceMethods.ByName("EnsureTmuxSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceStartAutopilotHandler := connect.NewUnaryHandler(
 		DaemonServiceStartAutopilotProcedure,
 		svc.StartAutopilot,
@@ -1032,6 +1057,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetSessionStatusesHandler.ServeHTTP(w, r)
 		case DaemonServiceDeliverVCSEventProcedure:
 			daemonServiceDeliverVCSEventHandler.ServeHTTP(w, r)
+		case DaemonServiceEnsureTmuxSessionProcedure:
+			daemonServiceEnsureTmuxSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceStartAutopilotProcedure:
 			daemonServiceStartAutopilotHandler.ServeHTTP(w, r)
 		case DaemonServicePauseAutopilotProcedure:
@@ -1177,6 +1204,10 @@ func (UnimplementedDaemonServiceHandler) GetSessionStatuses(context.Context, *co
 
 func (UnimplementedDaemonServiceHandler) DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeliverVCSEvent is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) EnsureTmuxSession(context.Context, *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.EnsureTmuxSession is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) StartAutopilot(context.Context, *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error) {

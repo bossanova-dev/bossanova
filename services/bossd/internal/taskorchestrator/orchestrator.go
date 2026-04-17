@@ -216,28 +216,18 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, re
 func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	externalID := task.GetExternalId()
 
-	// Dedup: skip if we've already seen this external ID, unless the
-	// previous attempt failed — in that case delete the old mapping so
-	// the task is retried.
+	// Dedup: skip if we've already seen this external ID. All statuses
+	// (including Failed) are terminal — a failed task is not retried
+	// automatically. This prevents FailOrphanedMappings (which marks
+	// all in-progress mappings as Failed on daemon restart) from
+	// triggering infinite session re-creation.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
 	if err == nil && existing != nil {
-		if existing.Status == models.TaskMappingStatusFailed {
-			o.logger.Info().
-				Str("external_id", externalID).
-				Msg("previous attempt failed, retrying task")
-			if err := o.taskMappings.Delete(ctx, existing.ID); err != nil {
-				o.logger.Error().Err(err).
-					Str("external_id", externalID).
-					Msg("delete failed task mapping")
-				return
-			}
-		} else {
-			o.logger.Info().
-				Str("external_id", externalID).
-				Int("status", int(existing.Status)).
-				Msg("task already tracked, skipping")
-			return
-		}
+		o.logger.Info().
+			Str("external_id", externalID).
+			Int("status", int(existing.Status)).
+			Msg("task already tracked, skipping")
+		return
 	}
 
 	o.enqueue(ctx, task, repo, pluginName)

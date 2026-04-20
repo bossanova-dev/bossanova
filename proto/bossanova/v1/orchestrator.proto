@@ -15,6 +15,7 @@ service OrchestratorService {
   rpc RegisterDaemon(RegisterDaemonRequest) returns (RegisterDaemonResponse);
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   rpc ListDaemons(ListDaemonsRequest) returns (ListDaemonsResponse);
+  rpc SyncSessions(SyncSessionsRequest) returns (SyncSessionsResponse);
 
   // Session transfer between daemons
   rpc TransferSession(TransferSessionRequest) returns (TransferSessionResponse);
@@ -77,6 +78,13 @@ message DaemonInfo {
 message ListDaemonsResponse {
   repeated DaemonInfo daemons = 1;
 }
+
+message SyncSessionsRequest {
+  string daemon_id = 1;
+  repeated Session sessions = 2;
+}
+
+message SyncSessionsResponse {}
 
 // --- Session Transfer ---
 

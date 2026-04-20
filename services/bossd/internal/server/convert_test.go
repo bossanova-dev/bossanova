@@ -135,7 +135,7 @@ func TestSessionToProto(t *testing.T) {
 		UpdatedAt:         now,
 	}
 
-	p := sessionToProto(sess)
+	p := SessionToProto(sess)
 	if p.Id != "sess-1" {
 		t.Errorf("Id = %q", p.Id)
 	}
@@ -174,7 +174,7 @@ func TestSessionToProto_NilOptionals(t *testing.T) {
 		RepoID: "repo-1",
 		State:  machine.CreatingWorktree,
 	}
-	p := sessionToProto(sess)
+	p := SessionToProto(sess)
 	if p.ClaudeSessionId != nil {
 		t.Errorf("ClaudeSessionId should be nil")
 	}

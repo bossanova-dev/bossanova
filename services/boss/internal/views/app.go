@@ -184,7 +184,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID, msg.resumeID)
 			return a, a.attach.Init()
 		case ViewLogin:
-			a.login = NewLoginModel(a.auth, a.ctx)
+			a.login = NewLoginModel(a.auth, a.client, a.ctx)
 			a.login.width = a.width
 			return a, a.login.Init()
 		case ViewHome:

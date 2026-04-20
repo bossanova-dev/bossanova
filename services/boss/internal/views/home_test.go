@@ -192,13 +192,13 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 	}
 
 	// Check for setup instructions
-	if !strings.Contains(content, "boss repo add /path/to/your/repo") {
+	if !strings.Contains(content, "Press 'r' to open the repos menu") {
 		t.Errorf("expected setup instructions in empty state with no repos, got: %s", content)
 	}
 
-	// Check for documentation link
-	if !strings.Contains(content, "https://github.com/bossanova-dev/bossanova") {
-		t.Errorf("expected documentation link in empty state with no repos, got: %s", content)
+	// 'n' (new session) should not be offered when there are no repos
+	if strings.Contains(content, "[n]ew session") {
+		t.Errorf("should not offer [n]ew session when no repos exist, got: %s", content)
 	}
 }
 
@@ -216,13 +216,13 @@ func TestViewEmptyStateWithRepos(t *testing.T) {
 	content := view.Content
 
 	// Check for simplified guidance
-	if !strings.Contains(content, "No active sessions") {
-		t.Errorf("expected 'No active sessions' message when repos exist, got: %s", content)
+	if !strings.Contains(content, "no active sessions") {
+		t.Errorf("expected 'no active sessions' message when repos exist, got: %s", content)
 	}
 
-	// Check for autopilot guidance
-	if !strings.Contains(content, "Press 'n' to create a new session, or 'p' for autopilot") {
-		t.Errorf("expected autopilot guidance when repos exist, got: %s", content)
+	// Check for new-session prompt
+	if !strings.Contains(content, "Press 'n' to create a new session") {
+		t.Errorf("expected new-session prompt when repos exist, got: %s", content)
 	}
 
 	// Should NOT show welcome message when repos exist

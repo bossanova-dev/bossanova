@@ -304,7 +304,7 @@ func TestTUI_CtrlC_QuitsFromSettings(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 

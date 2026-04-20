@@ -29,6 +29,7 @@ import (
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/upstream"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -63,6 +64,7 @@ type Server struct {
 	provider           vcs.Provider
 	pluginHost         *plugin.Host
 	completionNotifier session.SessionCompletionNotifier
+	upstreamMgr        *upstream.Manager
 	logger             zerolog.Logger
 	listener           net.Listener
 	srv                *http.Server
@@ -86,6 +88,7 @@ type Config struct {
 	Provider           vcs.Provider
 	PluginHost         *plugin.Host
 	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
+	UpstreamMgr        *upstream.Manager                 // optional, nil in local-only mode
 	Logger             zerolog.Logger
 }
 
@@ -106,6 +109,7 @@ func New(cfg Config) *Server {
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
 		completionNotifier: cfg.CompletionNotifier,
+		upstreamMgr:        cfg.UpstreamMgr,
 		logger:             cfg.Logger,
 	}
 }
@@ -597,7 +601,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 	return stream.Send(&pb.CreateSessionResponse{
 		Event: &pb.CreateSessionResponse_SessionCreated{
 			SessionCreated: &pb.SessionCreated{
-				Session: sessionToProto(sess),
+				Session: SessionToProto(sess),
 			},
 		},
 	})
@@ -613,7 +617,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 	}
 
-	p := sessionToProto(session)
+	p := SessionToProto(session)
 
 	// Hydrate attention status from session state and repo flags.
 	if repo, err := s.repos.Get(ctx, session.RepoID); err == nil {
@@ -676,7 +680,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 
 	pbSessions := make([]*pb.Session, len(sessions))
 	for i, sess := range sessions {
-		p := sessionToProto(sess)
+		p := SessionToProto(sess)
 		if repo, ok := repoCache[sess.RepoID]; ok {
 			p.RepoDisplayName = repo.DisplayName
 			p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(sess, repo))
@@ -837,7 +841,7 @@ func (s *Server) StopSession(ctx context.Context, req *connect.Request[pb.StopSe
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.StopSessionResponse{Session: sessionToProto(sess)}), nil
+	return connect.NewResponse(&pb.StopSessionResponse{Session: SessionToProto(sess)}), nil
 }
 
 func (s *Server) PauseSession(ctx context.Context, req *connect.Request[pb.PauseSessionRequest]) (*connect.Response[pb.PauseSessionResponse], error) {
@@ -858,7 +862,7 @@ func (s *Server) PauseSession(ctx context.Context, req *connect.Request[pb.Pause
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.PauseSessionResponse{Session: sessionToProto(session)}), nil
+	return connect.NewResponse(&pb.PauseSessionResponse{Session: SessionToProto(session)}), nil
 }
 
 func (s *Server) ResumeSession(ctx context.Context, req *connect.Request[pb.ResumeSessionRequest]) (*connect.Response[pb.ResumeSessionResponse], error) {
@@ -879,7 +883,7 @@ func (s *Server) ResumeSession(ctx context.Context, req *connect.Request[pb.Resu
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.ResumeSessionResponse{Session: sessionToProto(session)}), nil
+	return connect.NewResponse(&pb.ResumeSessionResponse{Session: SessionToProto(session)}), nil
 }
 
 func (s *Server) RetrySession(ctx context.Context, req *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error) {
@@ -903,7 +907,7 @@ func (s *Server) RetrySession(ctx context.Context, req *connect.Request[pb.Retry
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.RetrySessionResponse{Session: sessionToProto(session)}), nil
+	return connect.NewResponse(&pb.RetrySessionResponse{Session: SessionToProto(session)}), nil
 }
 
 func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.CloseSessionRequest]) (*connect.Response[pb.CloseSessionResponse], error) {
@@ -928,7 +932,7 @@ func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.Close
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.CloseSessionResponse{Session: sessionToProto(session)}), nil
+	return connect.NewResponse(&pb.CloseSessionResponse{Session: SessionToProto(session)}), nil
 }
 
 func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
@@ -999,7 +1003,7 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 		}
 	}
 
-	p := sessionToProto(sess)
+	p := SessionToProto(sess)
 	if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil {
 		p.RepoDisplayName = repo.DisplayName
 	}
@@ -1023,7 +1027,7 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: sessionToProto(sess)}), nil
+	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: SessionToProto(sess)}), nil
 }
 
 func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
@@ -1040,7 +1044,7 @@ func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.R
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: sessionToProto(sess)}), nil
+	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: SessionToProto(sess)}), nil
 }
 
 func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {
@@ -1446,7 +1450,7 @@ func (s *Server) ResolveContext(ctx context.Context, req *connect.Request[pb.Res
 		for _, sess := range sessions {
 			if sess.WorktreePath != "" && isSubdirOf(absWD, sess.WorktreePath) {
 				resp.Repo = repoToProto(repo)
-				resp.Session = sessionToProto(sess)
+				resp.Session = SessionToProto(sess)
 				return connect.NewResponse(resp), nil
 			}
 		}
@@ -1751,6 +1755,40 @@ func (s *Server) StreamAutopilotOutput(ctx context.Context, req *connect.Request
 			StatusUpdate: autopilotWorkflowToProto(w),
 		},
 	})
+}
+
+// --- Auth Change Notification ---
+
+func (s *Server) NotifyAuthChange(ctx context.Context, req *connect.Request[pb.NotifyAuthChangeRequest]) (*connect.Response[pb.NotifyAuthChangeResponse], error) {
+	action := req.Msg.Action
+	if action != "login" && action != "logout" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("action must be \"login\" or \"logout\""))
+	}
+
+	if s.upstreamMgr == nil {
+		// No orchestrator configured — nothing to do.
+		return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil
+	}
+
+	switch action {
+	case "login":
+		repos, err := s.repos.List(ctx)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list repos: %w", err))
+		}
+		repoIDs := make([]string, len(repos))
+		for i, r := range repos {
+			repoIDs[i] = r.ID
+		}
+		if err := s.upstreamMgr.NotifyLogin(ctx, repoIDs); err != nil {
+			s.logger.Warn().Err(err).Msg("upstream connect after login failed")
+			// Non-fatal: daemon still works in local mode.
+		}
+	case "logout":
+		s.upstreamMgr.NotifyLogout()
+	}
+
+	return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil
 }
 
 // resolveAutopilotContext resolves a working directory into a repo ID and session ID.

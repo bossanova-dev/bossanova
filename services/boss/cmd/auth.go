@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/boss/internal/client"
 )
 
 func loginCmd() *cobra.Command {
@@ -90,6 +91,9 @@ func runLogin(_ *cobra.Command) error {
 		return fmt.Errorf("login: %w", err)
 	}
 
+	// Notify daemon so it can connect upstream immediately.
+	notifyDaemonAuthChange("login")
+
 	status := mgr.Status()
 	if status.Email != "" {
 		fmt.Printf("Logged in as %s\n", status.Email)
@@ -108,8 +112,25 @@ func runLogout(_ *cobra.Command) error {
 	if err := mgr.Logout(); err != nil {
 		return fmt.Errorf("logout: %w", err)
 	}
+
+	// Notify daemon so it can disconnect upstream.
+	notifyDaemonAuthChange("logout")
+
 	fmt.Println("Logged out.")
 	return nil
+}
+
+// notifyDaemonAuthChange is a best-effort notification to the daemon.
+// Failures are ignored because the daemon may not be running.
+func notifyDaemonAuthChange(action string) {
+	socketPath, err := client.DefaultSocketPath()
+	if err != nil {
+		return
+	}
+	c := client.NewLocal(socketPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = c.NotifyAuthChange(ctx, action)
 }
 
 func runAuthStatus(_ *cobra.Command) error {

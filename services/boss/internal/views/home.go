@@ -317,6 +317,9 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q":
 			return h, tea.Quit
 		case "n":
+			if h.repoCount == 0 {
+				return h, nil
+			}
 			return h, func() tea.Msg { return switchViewMsg{view: ViewNewSession} }
 		case "r":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewRepoList} }
@@ -391,7 +394,10 @@ func (h HomeModel) updateLogoutConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		h.loggedIn = false
 		h.loggedInEmail = ""
-		return h, nil
+		return h, func() tea.Msg {
+			_ = h.client.NotifyAuthChange(h.ctx, "logout")
+			return nil
+		}
 	case "n", "esc":
 		h.logoutConfirming = false
 	}
@@ -480,17 +486,14 @@ func (h HomeModel) View() tea.View {
 		var content string
 		if h.repoCount == 0 {
 			// No repos configured - show welcome message with setup instructions
-			actions := []string{"[n]ew session", "[r]epos", "[s]ettings"}
+			actions := []string{"[r]epos", "[s]ettings"}
 			if la := h.loginAction(); la != "" {
 				actions = append(actions, la)
 			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"Welcome to Bossanova!\n\n"+
-					"Add your first repo to get started:\n\n"+
-					"  boss repo add /path/to/your/repo\n\n"+
-					"Then create a session:\n\n"+
-					"  Press 'n' to create a new session\n\n"+
-					"Docs: https://github.com/bossanova-dev/bossanova",
+					"To get started, you need to add a repository for us to work on together.\n\n"+
+					lipgloss.NewStyle().Bold(true).Render("Press 'r' to open the repos menu."),
 			) + "\n" +
 				actionBar(actions, []string{"[q]uit"})
 		} else {
@@ -500,8 +503,8 @@ func (h HomeModel) View() tea.View {
 				actions = append(actions, la)
 			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
-				"No active sessions.\n\n"+
-					"Press 'n' to create a new session, or 'p' for autopilot.",
+				"You have no active sessions.\n\n"+
+					lipgloss.NewStyle().Bold(true).Render("Press 'n' to create a new session."),
 			) + "\n" +
 				actionBar(actions, []string{"[q]uit"})
 		}

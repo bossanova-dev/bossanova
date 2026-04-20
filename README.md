@@ -76,6 +76,33 @@ boss repo update my-repo --setup-script 'cp "$BOSS_REPO_DIR/.env" "$BOSS_WORKTRE
 brew install bossanova-dev/tap/bossanova
 ```
 
+## Build from Source
+
+Requires macOS with [Homebrew](https://brew.sh/). The `make deps` target
+installs everything else (`go`, `buf`, `golangci-lint`, `jq`, `gh`,
+`gremlins`, and the `protoc-gen-go`/`protoc-gen-connect-go` buf plugins).
+
+```bash
+git clone https://github.com/recurser/bossanova.git
+cd bossanova
+make deps
+make
+```
+
+Binaries land in `bin/`. The Go-based buf plugins install into `$(go env GOPATH)/bin`
+(usually `~/go/bin`) — if that directory isn't on your `PATH`, `make deps` will
+print the command to add it.
+
+Other useful targets:
+
+| Target | What it does |
+|---|---|
+| `make build` | Build `boss` and `bossd` only (skips plugins and cross-compiles) |
+| `make plugins` | Build the `bossd-plugin-*` binaries |
+| `make test` | Run tests across all modules |
+| `make lint` | Run `golangci-lint` and `buf lint` |
+| `make clean` | Remove `bin/` and generated code |
+
 ## Uninstall
 
 ```bash

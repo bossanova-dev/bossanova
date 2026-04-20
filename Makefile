@@ -1,6 +1,6 @@
-.PHONY: all generate build plugins test lint clean split format build-all plugins-all \
-	copy-skills release stage-release \
-	mutate mutate-diff mutate-report mutate-survivors mutate-fix mutate-loop
+.PHONY: all build build-all clean copy-skills deps format generate lint \
+	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
+	plugins plugins-all release setup-worktree split stage-release test
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all plugins-all
@@ -43,6 +43,61 @@ SKILLS_DST := lib/bossalib/skilldata/skills
 claude:
 	claude --dangerously-skip-permissions
 
+## deps: Install required build/dev tools via Homebrew (macOS)
+deps:
+	@if ! command -v brew >/dev/null 2>&1; then \
+		echo "Homebrew is required. Install from https://brew.sh/"; \
+		exit 1; \
+	fi
+	@echo "==> Installing build dependencies via Homebrew"
+	@for pkg in go buf golangci-lint jq gh pnpm; do \
+		if command -v $$pkg >/dev/null 2>&1; then \
+			echo "    $$pkg: already installed"; \
+		else \
+			echo "    $$pkg: installing..."; \
+			brew install $$pkg; \
+		fi; \
+	done
+	@if command -v gremlins >/dev/null 2>&1; then \
+		echo "    gremlins: already installed"; \
+	else \
+		echo "    gremlins: installing..."; \
+		brew install go-gremlins/tap/gremlins; \
+	fi
+	@echo "==> Installing Go-based buf plugins"
+	@if command -v protoc-gen-go >/dev/null 2>&1; then \
+		echo "    protoc-gen-go: already installed"; \
+	else \
+		echo "    protoc-gen-go: installing..."; \
+		go install google.golang.org/protobuf/cmd/protoc-gen-go@latest; \
+	fi
+	@if command -v protoc-gen-connect-go >/dev/null 2>&1; then \
+		echo "    protoc-gen-connect-go: already installed"; \
+	else \
+		echo "    protoc-gen-connect-go: installing..."; \
+		go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest; \
+	fi
+	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
+	case ":$$PATH:" in *":$$gobin:"*) ;; \
+		*) echo ""; echo "NOTE: $$gobin is not on your PATH — add it so buf can find protoc-gen-go."; \
+		echo "      fish: fish_add_path $$gobin"; \
+		echo "      bash/zsh: export PATH=\"$$gobin:\$$PATH\"";; \
+	esac
+	@echo "==> Done. Run 'make' to build."
+
+## setup-worktree: Copy .env from the main repo into a new worktree (for bossanova setup-script)
+setup-worktree:
+	@if [ -z "$$BOSS_REPO_DIR" ] || [ -z "$$BOSS_WORKTREE_DIR" ]; then \
+		echo "setup-worktree must be invoked by bossanova (BOSS_REPO_DIR and BOSS_WORKTREE_DIR required)"; \
+		exit 1; \
+	fi
+	@if [ -f "$$BOSS_REPO_DIR/.env" ]; then \
+		cp "$$BOSS_REPO_DIR/.env" "$$BOSS_WORKTREE_DIR/.env"; \
+		echo "Copied .env into $$BOSS_WORKTREE_DIR"; \
+	else \
+		echo "No .env in $$BOSS_REPO_DIR — skipping"; \
+	fi
+
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
 	pnpm install
@@ -68,9 +123,11 @@ build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
 $(BIN_DIR)/boss: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/boss; fi
 
 $(BIN_DIR)/bossd: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/bossd; fi
 
 ifneq ($(wildcard services/bosso/go.mod),)
 $(BIN_DIR)/bosso: $(GEN_STAMP)
@@ -163,9 +220,11 @@ copy-skills:
 ## Per-module build targets (no generate dep — CI uses committed gen code)
 build-boss: copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/boss; fi
 
 build-bossd: copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/bossd; fi
 
 ifneq ($(wildcard services/bosso/go.mod),)
 build-bosso:

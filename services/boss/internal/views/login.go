@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/boss/internal/client"
 )
 
 // loginPhase tracks the current state of the login flow.
@@ -43,6 +44,7 @@ type loginAutoReturnMsg struct{}
 // LoginModel handles the interactive device code login flow.
 type LoginModel struct {
 	mgr       *auth.Manager
+	client    client.BossClient
 	ctx       context.Context
 	cancel    context.CancelFunc
 	spinner   spinner.Model
@@ -57,10 +59,11 @@ type LoginModel struct {
 }
 
 // NewLoginModel creates a new login model that will start the device code flow.
-func NewLoginModel(mgr *auth.Manager, parentCtx context.Context) LoginModel {
+func NewLoginModel(mgr *auth.Manager, c client.BossClient, parentCtx context.Context) LoginModel {
 	ctx, cancel := context.WithCancel(parentCtx)
 	return LoginModel{
 		mgr:     mgr,
+		client:  c,
 		ctx:     ctx,
 		cancel:  cancel,
 		spinner: newStatusSpinner(),
@@ -133,9 +136,16 @@ func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginCompleteMsg:
 		m.phase = loginPhaseSuccess
 		m.email = msg.email
-		return m, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
+		// Notify daemon of login (best-effort, non-blocking).
+		notifyCmd := func() tea.Msg {
+			if m.client != nil {
+				_ = m.client.NotifyAuthChange(m.ctx, "login")
+			}
+			return nil
+		}
+		return m, tea.Batch(notifyCmd, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
 			return loginAutoReturnMsg{}
-		})
+		}))
 
 	case loginErrorMsg:
 		// If context was cancelled (user pressed esc), treat as cancellation.

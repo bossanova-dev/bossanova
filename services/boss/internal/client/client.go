@@ -79,6 +79,9 @@ type BossClient interface {
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
 
+	// Auth change notification
+	NotifyAuthChange(ctx context.Context, action string) error
+
 	// Autopilot workflows
 	StartAutopilot(ctx context.Context, req *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error)
 	PauseAutopilot(ctx context.Context, workflowID string) (*pb.AutopilotWorkflow, error)

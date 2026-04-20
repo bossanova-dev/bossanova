@@ -34,8 +34,8 @@ func repoToProto(r *models.Repo) *pb.Repo {
 	return p
 }
 
-// sessionToProto converts a domain Session to its protobuf representation.
-func sessionToProto(s *models.Session) *pb.Session {
+// SessionToProto converts a domain Session to its protobuf representation.
+func SessionToProto(s *models.Session) *pb.Session {
 	p := &pb.Session{
 		Id:                s.ID,
 		RepoId:            s.RepoID,

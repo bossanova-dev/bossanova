@@ -356,6 +356,15 @@ func (c *LocalClient) GetSessionStatuses(ctx context.Context, sessionIDs []strin
 	return resp.Msg.Statuses, nil
 }
 
+// --- Auth Change Notification ---
+
+func (c *LocalClient) NotifyAuthChange(ctx context.Context, action string) error {
+	_, err := c.rpc.NotifyAuthChange(ctx, connect.NewRequest(&pb.NotifyAuthChangeRequest{
+		Action: action,
+	}))
+	return err
+}
+
 // --- Autopilot Workflows ---
 
 func (c *LocalClient) StartAutopilot(ctx context.Context, req *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {

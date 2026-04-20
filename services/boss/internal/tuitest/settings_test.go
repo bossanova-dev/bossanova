@@ -13,7 +13,7 @@ func TestTUI_SettingsView_Content(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -41,7 +41,7 @@ func TestTUI_SettingsView_TogglePermissions(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -85,7 +85,7 @@ func TestTUI_SettingsView_JKNavigation(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -132,7 +132,7 @@ func TestTUI_SettingsView_EditCancel(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 

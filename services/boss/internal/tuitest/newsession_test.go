@@ -12,7 +12,7 @@ func TestTUI_NewSessionView_RepoSelect(t *testing.T) {
 		tuitest.WithRepos(testMultiRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -40,7 +40,7 @@ func TestTUI_NewSessionView_TypeSelect(t *testing.T) {
 		tuitest.WithRepos(testMultiRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,7 +70,7 @@ func TestTUI_NewSessionView_SingleRepoSkipsSelect(t *testing.T) {
 		tuitest.WithRepos(testRepos()...), // Only 1 repo.
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,7 +93,7 @@ func TestTUI_NewSessionView_FormPhase_EscGoesBackToTypeSelect(t *testing.T) {
 		tuitest.WithRepos(testRepos()...), // Single repo — skips repo select.
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,7 +129,7 @@ func TestTUI_NewSessionView_FormPhase_EscGoesBackToTypeSelect(t *testing.T) {
 
 	// Should NOT be on home screen.
 	screen := h.Driver.Screen()
-	if strings.Contains(screen, "No active sessions") {
+	if strings.Contains(screen, "no active sessions") {
 		t.Fatalf("should not have returned to home; screen:\n%s", screen)
 	}
 }
@@ -139,7 +139,7 @@ func TestTUI_NewSessionView_Cancel(t *testing.T) {
 		tuitest.WithRepos(testMultiRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +155,7 @@ func TestTUI_NewSessionView_Cancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatalf("expected home view after cancel; screen:\n%s", h.Driver.Screen())
 	}
 }

@@ -57,6 +57,9 @@ service DaemonService {
   // Tmux session management (on-demand)
   rpc EnsureTmuxSession(EnsureTmuxSessionRequest) returns (EnsureTmuxSessionResponse);
 
+  // Auth change notification (CLI → daemon)
+  rpc NotifyAuthChange(NotifyAuthChangeRequest) returns (NotifyAuthChangeResponse);
+
   // --- Autopilot ---
 
   // StartAutopilot begins a new autopilot workflow for a plan file.
@@ -439,6 +442,14 @@ message DeliverVCSEventRequest {
 }
 
 message DeliverVCSEventResponse {}
+
+// --- Auth Change Notification ---
+
+message NotifyAuthChangeRequest {
+  string action = 1; // "login" or "logout"
+}
+
+message NotifyAuthChangeResponse {}
 
 // --- Tmux Session Management ---
 

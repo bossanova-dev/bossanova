@@ -48,7 +48,7 @@ func TestTUI_RepoListView_EmptyState(t *testing.T) {
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "No repositories registered"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Press 'a' to add your first repository"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -58,7 +58,7 @@ func TestTUI_RepoListView_RemoveConfirm(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,7 +84,7 @@ func TestTUI_RepoListView_RemoveConfirm(t *testing.T) {
 
 	// Repo should be removed.
 	err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "No repositories registered") ||
+		return strings.Contains(screen, "Press 'a' to add your first repository") ||
 			!strings.Contains(screen, "my-app")
 	})
 	if err != nil {
@@ -102,7 +102,7 @@ func TestTUI_RepoListView_RemoveCancel(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -136,7 +136,7 @@ func TestTUI_RepoListView_MultipleRepos(t *testing.T) {
 		tuitest.WithRepos(testMultiRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,7 +161,7 @@ func TestTUI_RepoListView_NavigateToSettings(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 

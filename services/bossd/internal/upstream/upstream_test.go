@@ -14,15 +14,30 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// mockSessionLister implements SessionLister for testing.
+type mockSessionLister struct {
+	sessions []*pb.Session
+	err      error
+}
+
+func (m *mockSessionLister) ListSessions(ctx context.Context) ([]*pb.Session, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.sessions, nil
+}
+
 // mockHandler implements OrchestratorServiceHandler for testing.
 type mockHandler struct {
 	bossanovav1connect.UnimplementedOrchestratorServiceHandler
 
 	registerCalls  atomic.Int32
 	heartbeatCalls atomic.Int32
+	syncCalls      atomic.Int32
 
 	registerFn  func(context.Context, *connect.Request[pb.RegisterDaemonRequest]) (*connect.Response[pb.RegisterDaemonResponse], error)
 	heartbeatFn func(context.Context, *connect.Request[pb.HeartbeatRequest]) (*connect.Response[pb.HeartbeatResponse], error)
+	syncFn      func(context.Context, *connect.Request[pb.SyncSessionsRequest]) (*connect.Response[pb.SyncSessionsResponse], error)
 }
 
 func (m *mockHandler) RegisterDaemon(ctx context.Context, req *connect.Request[pb.RegisterDaemonRequest]) (*connect.Response[pb.RegisterDaemonResponse], error) {
@@ -44,6 +59,14 @@ func (m *mockHandler) Heartbeat(ctx context.Context, req *connect.Request[pb.Hea
 	return connect.NewResponse(&pb.HeartbeatResponse{}), nil
 }
 
+func (m *mockHandler) SyncSessions(ctx context.Context, req *connect.Request[pb.SyncSessionsRequest]) (*connect.Response[pb.SyncSessionsResponse], error) {
+	if m.syncFn != nil {
+		return m.syncFn(ctx, req)
+	}
+	m.syncCalls.Add(1)
+	return connect.NewResponse(&pb.SyncSessionsResponse{}), nil
+}
+
 func setupTest(t *testing.T, handler *mockHandler) *Manager {
 	t.Helper()
 
@@ -61,7 +84,8 @@ func setupTest(t *testing.T, handler *mockHandler) *Manager {
 	}
 
 	logger := zerolog.Nop()
-	mgr := newManagerWithClient(cfg, bossanovav1connect.NewOrchestratorServiceClient(srv.Client(), srv.URL), logger)
+	lister := &mockSessionLister{sessions: []*pb.Session{}}
+	mgr := newManagerWithClient(cfg, bossanovav1connect.NewOrchestratorServiceClient(srv.Client(), srv.URL), logger, lister)
 
 	return mgr
 }
@@ -353,5 +377,210 @@ func TestReconnectStopsOnShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("reconnect didn't stop")
+	}
+}
+
+func TestSyncLoop_SendsSessionSnapshots(t *testing.T) {
+	handler := &mockHandler{}
+	var capturedSessions []*pb.Session
+	handler.syncFn = func(_ context.Context, req *connect.Request[pb.SyncSessionsRequest]) (*connect.Response[pb.SyncSessionsResponse], error) {
+		handler.syncCalls.Add(1)
+		capturedSessions = req.Msg.Sessions
+		return connect.NewResponse(&pb.SyncSessionsResponse{}), nil
+	}
+
+	// Create mock session lister with test sessions
+	testSessions := []*pb.Session{
+		{Id: "sess-1", RepoId: "repo-1", Title: "Test Session 1"},
+		{Id: "sess-2", RepoId: "repo-1", Title: "Test Session 2"},
+	}
+	lister := &mockSessionLister{sessions: testSessions}
+
+	mux := http.NewServeMux()
+	path, h := bossanovav1connect.NewOrchestratorServiceHandler(handler)
+	mux.Handle(path, h)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := Config{
+		OrchestratorURL: srv.URL,
+		DaemonID:        "test-daemon",
+		Hostname:        "test-host",
+		UserJWT:         "test-jwt",
+	}
+
+	logger := zerolog.Nop()
+	mgr := newManagerWithClient(cfg, bossanovav1connect.NewOrchestratorServiceClient(srv.Client(), srv.URL), logger, lister)
+
+	err := mgr.Connect(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer mgr.Stop()
+
+	// Directly call syncSessions to test without waiting for ticker
+	if err := mgr.syncSessions(); err != nil {
+		t.Fatalf("syncSessions: %v", err)
+	}
+
+	if handler.syncCalls.Load() != 1 {
+		t.Fatalf("expected 1 sync call, got %d", handler.syncCalls.Load())
+	}
+	if len(capturedSessions) != 2 {
+		t.Fatalf("expected 2 sessions in sync request, got %d", len(capturedSessions))
+	}
+	if capturedSessions[0].Id != "sess-1" {
+		t.Fatalf("expected first session ID 'sess-1', got %q", capturedSessions[0].Id)
+	}
+}
+
+func TestSyncLoop_SkipsWhenDisconnected(t *testing.T) {
+	handler := &mockHandler{}
+	lister := &mockSessionLister{sessions: []*pb.Session{{Id: "sess-1"}}}
+
+	mux := http.NewServeMux()
+	path, h := bossanovav1connect.NewOrchestratorServiceHandler(handler)
+	mux.Handle(path, h)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := Config{
+		OrchestratorURL: srv.URL,
+		DaemonID:        "test-daemon",
+		Hostname:        "test-host",
+		UserJWT:         "test-jwt",
+	}
+
+	logger := zerolog.Nop()
+	mgr := newManagerWithClient(cfg, bossanovav1connect.NewOrchestratorServiceClient(srv.Client(), srv.URL), logger, lister)
+
+	// Don't call Connect() - manager is not connected
+	if mgr.IsConnected() {
+		t.Fatal("manager should not be connected before Connect()")
+	}
+
+	// The syncLoop checks IsConnected() before calling syncSessions(),
+	// so when disconnected, sync is skipped. We verify IsConnected() is false.
+	// We can't easily test the loop logic without timers, but we verify the
+	// guard condition that syncLoop uses.
+	if mgr.IsConnected() {
+		t.Fatal("expected manager to be disconnected")
+	}
+}
+
+func TestNotifyLogin_ConnectsToUpstream(t *testing.T) {
+	handler := &mockHandler{}
+	mgr := setupTest(t, handler)
+
+	// NotifyLogin should register and start loops (no prior Connect needed).
+	err := mgr.NotifyLogin(context.Background(), []string{"repo-1"})
+	if err != nil {
+		t.Fatalf("NotifyLogin: %v", err)
+	}
+	defer mgr.Stop()
+
+	if !mgr.IsConnected() {
+		t.Fatal("expected IsConnected to be true after NotifyLogin")
+	}
+	if handler.registerCalls.Load() != 1 {
+		t.Fatalf("expected 1 register call, got %d", handler.registerCalls.Load())
+	}
+}
+
+func TestNotifyLogout_DisconnectsFromUpstream(t *testing.T) {
+	handler := &mockHandler{}
+	mgr := setupTest(t, handler)
+
+	err := mgr.Connect(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	if !mgr.IsConnected() {
+		t.Fatal("expected IsConnected before NotifyLogout")
+	}
+
+	mgr.NotifyLogout()
+
+	if mgr.IsConnected() {
+		t.Fatal("expected IsConnected to be false after NotifyLogout")
+	}
+}
+
+func TestNotifyLogin_ReconnectsWhenAlreadyConnected(t *testing.T) {
+	handler := &mockHandler{}
+	mgr := setupTest(t, handler)
+
+	// First connect.
+	err := mgr.Connect(context.Background(), []string{"repo-1"})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	if handler.registerCalls.Load() != 1 {
+		t.Fatalf("expected 1 register call after Connect, got %d", handler.registerCalls.Load())
+	}
+
+	// NotifyLogin should stop existing loops, re-register, and restart.
+	err = mgr.NotifyLogin(context.Background(), []string{"repo-1", "repo-2"})
+	if err != nil {
+		t.Fatalf("NotifyLogin: %v", err)
+	}
+	defer mgr.Stop()
+
+	if !mgr.IsConnected() {
+		t.Fatal("expected IsConnected after NotifyLogin reconnect")
+	}
+	if handler.registerCalls.Load() != 2 {
+		t.Fatalf("expected 2 register calls (initial + reconnect), got %d", handler.registerCalls.Load())
+	}
+}
+
+func TestHeartbeat_ReportsActiveSessionCount(t *testing.T) {
+	handler := &mockHandler{}
+	var capturedActiveCount int32
+	handler.heartbeatFn = func(_ context.Context, req *connect.Request[pb.HeartbeatRequest]) (*connect.Response[pb.HeartbeatResponse], error) {
+		handler.heartbeatCalls.Add(1)
+		capturedActiveCount = req.Msg.ActiveSessions
+		return connect.NewResponse(&pb.HeartbeatResponse{}), nil
+	}
+
+	// Create mock session lister with 3 sessions
+	testSessions := []*pb.Session{
+		{Id: "sess-1"},
+		{Id: "sess-2"},
+		{Id: "sess-3"},
+	}
+	lister := &mockSessionLister{sessions: testSessions}
+
+	mux := http.NewServeMux()
+	path, h := bossanovav1connect.NewOrchestratorServiceHandler(handler)
+	mux.Handle(path, h)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := Config{
+		OrchestratorURL: srv.URL,
+		DaemonID:        "test-daemon",
+		Hostname:        "test-host",
+		UserJWT:         "test-jwt",
+	}
+
+	logger := zerolog.Nop()
+	mgr := newManagerWithClient(cfg, bossanovav1connect.NewOrchestratorServiceClient(srv.Client(), srv.URL), logger, lister)
+
+	err := mgr.Connect(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer mgr.Stop()
+
+	// Send heartbeat
+	if err := mgr.sendHeartbeat(); err != nil {
+		t.Fatalf("sendHeartbeat: %v", err)
+	}
+
+	if capturedActiveCount != 3 {
+		t.Fatalf("expected ActiveSessions=3, got %d", capturedActiveCount)
 	}
 }

@@ -239,6 +239,12 @@ func (c *RemoteClient) GetSessionStatuses(_ context.Context, _ []string) ([]*pb.
 	return nil, errLocalOnly("GetSessionStatuses")
 }
 
+// --- Auth Change Notification (local only) ---
+
+func (c *RemoteClient) NotifyAuthChange(_ context.Context, _ string) error {
+	return nil // no-op in remote mode
+}
+
 // --- Autopilot Workflows (local only) ---
 
 func (c *RemoteClient) StartAutopilot(_ context.Context, _ *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {

@@ -42,6 +42,9 @@ const (
 	// OrchestratorServiceListDaemonsProcedure is the fully-qualified name of the OrchestratorService's
 	// ListDaemons RPC.
 	OrchestratorServiceListDaemonsProcedure = "/bossanova.v1.OrchestratorService/ListDaemons"
+	// OrchestratorServiceSyncSessionsProcedure is the fully-qualified name of the OrchestratorService's
+	// SyncSessions RPC.
+	OrchestratorServiceSyncSessionsProcedure = "/bossanova.v1.OrchestratorService/SyncSessions"
 	// OrchestratorServiceTransferSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's TransferSession RPC.
 	OrchestratorServiceTransferSessionProcedure = "/bossanova.v1.OrchestratorService/TransferSession"
@@ -80,6 +83,7 @@ type OrchestratorServiceClient interface {
 	RegisterDaemon(context.Context, *connect.Request[v1.RegisterDaemonRequest]) (*connect.Response[v1.RegisterDaemonResponse], error)
 	Heartbeat(context.Context, *connect.Request[v1.HeartbeatRequest]) (*connect.Response[v1.HeartbeatResponse], error)
 	ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error)
+	SyncSessions(context.Context, *connect.Request[v1.SyncSessionsRequest]) (*connect.Response[v1.SyncSessionsResponse], error)
 	// Session transfer between daemons
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
@@ -122,6 +126,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceListDaemonsProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ListDaemons")),
+			connect.WithClientOptions(opts...),
+		),
+		syncSessions: connect.NewClient[v1.SyncSessionsRequest, v1.SyncSessionsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceSyncSessionsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("SyncSessions")),
 			connect.WithClientOptions(opts...),
 		),
 		transferSession: connect.NewClient[v1.TransferSessionRequest, v1.TransferSessionResponse](
@@ -192,6 +202,7 @@ type orchestratorServiceClient struct {
 	registerDaemon      *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
 	heartbeat           *connect.Client[v1.HeartbeatRequest, v1.HeartbeatResponse]
 	listDaemons         *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
+	syncSessions        *connect.Client[v1.SyncSessionsRequest, v1.SyncSessionsResponse]
 	transferSession     *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
 	proxyListSessions   *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
 	proxyGetSession     *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
@@ -217,6 +228,11 @@ func (c *orchestratorServiceClient) Heartbeat(ctx context.Context, req *connect.
 // ListDaemons calls bossanova.v1.OrchestratorService.ListDaemons.
 func (c *orchestratorServiceClient) ListDaemons(ctx context.Context, req *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error) {
 	return c.listDaemons.CallUnary(ctx, req)
+}
+
+// SyncSessions calls bossanova.v1.OrchestratorService.SyncSessions.
+func (c *orchestratorServiceClient) SyncSessions(ctx context.Context, req *connect.Request[v1.SyncSessionsRequest]) (*connect.Response[v1.SyncSessionsResponse], error) {
+	return c.syncSessions.CallUnary(ctx, req)
 }
 
 // TransferSession calls bossanova.v1.OrchestratorService.TransferSession.
@@ -275,6 +291,7 @@ type OrchestratorServiceHandler interface {
 	RegisterDaemon(context.Context, *connect.Request[v1.RegisterDaemonRequest]) (*connect.Response[v1.RegisterDaemonResponse], error)
 	Heartbeat(context.Context, *connect.Request[v1.HeartbeatRequest]) (*connect.Response[v1.HeartbeatResponse], error)
 	ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error)
+	SyncSessions(context.Context, *connect.Request[v1.SyncSessionsRequest]) (*connect.Response[v1.SyncSessionsResponse], error)
 	// Session transfer between daemons
 	TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error)
 	// Proxied daemon RPCs (remote CLI → orchestrator → daemon)
@@ -313,6 +330,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceListDaemonsProcedure,
 		svc.ListDaemons,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ListDaemons")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceSyncSessionsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceSyncSessionsProcedure,
+		svc.SyncSessions,
+		connect.WithSchema(orchestratorServiceMethods.ByName("SyncSessions")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceTransferSessionHandler := connect.NewUnaryHandler(
@@ -383,6 +406,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceHeartbeatHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListDaemonsProcedure:
 			orchestratorServiceListDaemonsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceSyncSessionsProcedure:
+			orchestratorServiceSyncSessionsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceTransferSessionProcedure:
 			orchestratorServiceTransferSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListSessionsProcedure:
@@ -422,6 +447,10 @@ func (UnimplementedOrchestratorServiceHandler) Heartbeat(context.Context, *conne
 
 func (UnimplementedOrchestratorServiceHandler) ListDaemons(context.Context, *connect.Request[v1.ListDaemonsRequest]) (*connect.Response[v1.ListDaemonsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListDaemons is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) SyncSessions(context.Context, *connect.Request[v1.SyncSessionsRequest]) (*connect.Response[v1.SyncSessionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.SyncSessions is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) TransferSession(context.Context, *connect.Request[v1.TransferSessionRequest]) (*connect.Response[v1.TransferSessionResponse], error) {

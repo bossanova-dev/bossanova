@@ -215,7 +215,10 @@ func (m RepoListModel) View() tea.View {
 	var b strings.Builder
 
 	if len(m.repos) == 0 {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No repositories registered."))
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
+			"All of the repositories you are working on will be listed here.\n\n" +
+				"Press 'a' to add your first repository.",
+		))
 		b.WriteString("\n")
 		b.WriteString(actionBar([]string{"[a]dd"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())

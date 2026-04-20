@@ -15,7 +15,7 @@ func TestTUI_AutopilotView_EmptyState(t *testing.T) {
 		tuitest.WithRepos(testRepos()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -33,7 +33,7 @@ func TestTUI_AutopilotView_EmptyState(t *testing.T) {
 	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -44,7 +44,7 @@ func TestTUI_AutopilotView_ShowsWorkflows(t *testing.T) {
 		tuitest.WithWorkflows(testWorkflows()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,7 +69,7 @@ func TestTUI_AutopilotView_PauseWorkflow(t *testing.T) {
 		tuitest.WithWorkflows(testWorkflows()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,7 +119,7 @@ func TestTUI_AutopilotView_ResumeWorkflow(t *testing.T) {
 		tuitest.WithWorkflows(workflows...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -154,7 +154,7 @@ func TestTUI_AutopilotView_CancelConfirm(t *testing.T) {
 		tuitest.WithWorkflows(testWorkflows()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -199,7 +199,7 @@ func TestTUI_AutopilotView_CancelDeny(t *testing.T) {
 		tuitest.WithWorkflows(testWorkflows()...),
 	)
 
-	if err := h.Driver.WaitForText(waitTimeout, "No active sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
 

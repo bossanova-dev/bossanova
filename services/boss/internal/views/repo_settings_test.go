@@ -236,7 +236,8 @@ func (s *stubRepoClient) ListAutopilotWorkflows(context.Context, *pb.ListAutopil
 func (s *stubRepoClient) StreamAutopilotOutput(context.Context, string) (client.AutopilotOutputStream, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ShutdownDaemon(context.Context) error { panic("unused") }
+func (s *stubRepoClient) NotifyAuthChange(context.Context, string) error { return nil }
+func (s *stubRepoClient) ShutdownDaemon(context.Context) error           { panic("unused") }
 func (s *stubRepoClient) EnsureTmuxSession(context.Context, string, string, string) (string, string, error) {
 	panic("unused")
 }

@@ -35,6 +35,43 @@ import (
 	"github.com/recurser/bossd/migrations"
 )
 
+// sessionListerAdapter adapts SessionStore to upstream.SessionLister.
+type sessionListerAdapter struct {
+	sessions db.SessionStore
+	repos    db.RepoStore
+}
+
+// ListSessions returns all active (non-archived) sessions as protobuf.
+func (a *sessionListerAdapter) ListSessions(ctx context.Context) ([]*bossanovav1.Session, error) {
+	// List all active sessions from local DB (pass empty string for all repos)
+	allSessions, err := a.sessions.ListActive(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to protobuf
+	var pbSessions []*bossanovav1.Session
+	for _, s := range allSessions {
+		pbSessions = append(pbSessions, server.SessionToProto(s))
+	}
+
+	// Denormalize repo_display_name, caching to avoid redundant DB calls.
+	repoCache := make(map[string]string)
+	for _, pbSess := range pbSessions {
+		if name, ok := repoCache[pbSess.RepoId]; ok {
+			pbSess.RepoDisplayName = name
+			continue
+		}
+		repo, err := a.repos.Get(ctx, pbSess.RepoId)
+		if err == nil {
+			repoCache[pbSess.RepoId] = repo.DisplayName
+			pbSess.RepoDisplayName = repo.DisplayName
+		}
+	}
+
+	return pbSessions, nil
+}
+
 func main() {
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
@@ -84,6 +121,9 @@ func run() error {
 	claudeChats := db.NewClaudeChatStore(database)
 	taskMappings := db.NewTaskMappingStore(database)
 	workflows := db.NewWorkflowStore(database)
+
+	// Create session lister for upstream sync
+	sessionLister := &sessionListerAdapter{sessions: sessions, repos: repos}
 
 	// Fail any workflows left in running/pending state from a previous daemon
 	// instance. Their driving goroutines no longer exist after a restart.
@@ -246,6 +286,29 @@ func run() error {
 		return fmt.Errorf("socket path: %w", err)
 	}
 
+	// --- Upstream (optional, cloud mode) ---
+
+	var upstreamMgr *upstream.Manager
+	if cfg := upstream.ConfigFromEnv(); cfg != nil {
+		upstreamMgr = upstream.NewManager(*cfg, log.Logger, sessionLister)
+
+		// Gather repo IDs for registration.
+		allRepos, err := repos.List(context.Background())
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to list repos for upstream registration")
+		}
+		var repoIDs []string
+		for _, r := range allRepos {
+			repoIDs = append(repoIDs, r.ID)
+		}
+
+		if err := upstreamMgr.Connect(context.Background(), repoIDs); err != nil {
+			// Non-fatal: daemon works in local mode without orchestrator.
+			// Keep upstreamMgr non-nil so NotifyAuthChange can reconnect later.
+			log.Warn().Err(err).Msg("upstream connection failed, running in local-only mode")
+		}
+	}
+
 	srv := server.New(server.Config{
 		Repos:              repos,
 		Sessions:           sessions,
@@ -261,31 +324,9 @@ func run() error {
 		Provider:           ghProvider,
 		PluginHost:         pluginHost,
 		CompletionNotifier: orchestrator,
+		UpstreamMgr:        upstreamMgr,
 		Logger:             log.Logger,
 	})
-
-	// --- Upstream (optional, cloud mode) ---
-
-	var upstreamMgr *upstream.Manager
-	if cfg := upstream.ConfigFromEnv(); cfg != nil {
-		upstreamMgr = upstream.NewManager(*cfg, log.Logger)
-
-		// Gather repo IDs for registration.
-		allRepos, err := repos.List(context.Background())
-		if err != nil {
-			log.Warn().Err(err).Msg("failed to list repos for upstream registration")
-		}
-		var repoIDs []string
-		for _, r := range allRepos {
-			repoIDs = append(repoIDs, r.ID)
-		}
-
-		if err := upstreamMgr.Connect(context.Background(), repoIDs); err != nil {
-			// Non-fatal: daemon works in local mode without orchestrator.
-			log.Warn().Err(err).Msg("upstream connection failed, running in local-only mode")
-			upstreamMgr = nil
-		}
-	}
 
 	// Start poller and dispatcher.
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())

@@ -485,6 +485,10 @@ func (m *MockDaemon) EnsureTmuxSession(_ context.Context, req *connect.Request[p
 	}), nil
 }
 
+func (m *MockDaemon) NotifyAuthChange(context.Context, *connect.Request[pb.NotifyAuthChangeRequest]) (*connect.Response[pb.NotifyAuthChangeResponse], error) {
+	return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil
+}
+
 // removeSocket removes a socket file, ignoring "not exist" errors.
 func removeSocket(path string) error {
 	err := os.Remove(path)

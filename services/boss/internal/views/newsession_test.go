@@ -158,6 +158,7 @@ func (s *stubClient) ListAutopilotWorkflows(context.Context, *pb.ListAutopilotWo
 func (s *stubClient) StreamAutopilotOutput(context.Context, string) (client.AutopilotOutputStream, error) {
 	panic("unused")
 }
+func (s *stubClient) NotifyAuthChange(context.Context, string) error { return nil }
 
 func (s *stubClient) EnsureTmuxSession(context.Context, string, string, string) (string, string, error) {
 	panic("unused")

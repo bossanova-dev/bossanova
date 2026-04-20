@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0](https://github.com/recurser/bossanova/compare/v1.4.0...v1.5.0) (2026-04-20)
+
+### Features
+
+* **boss,bossd:** notify daemon of auth changes after login/logout ([1144432](https://github.com/recurser/bossanova/commit/1144432072105e3f89a1780ca4f47a93c230add6))
+* **bossd:** [[#115](https://github.com/recurser/bossanova/issues/115)] add SessionLister interface to upstream ([0fc90f2](https://github.com/recurser/bossanova/commit/0fc90f2990ae0bb98ab01c9510feb802cadbed2a))
+* **boss:** improve empty-state guidance on welcome and repo list ([6b5ae98](https://github.com/recurser/bossanova/commit/6b5ae9862e50270764e8a082544b91c62dd3a841))
+* **bosso:** [[#115](https://github.com/recurser/bossanova/issues/115)] add SyncSessions RPC and expand sessions_registry schema ([720914f](https://github.com/recurser/bossanova/commit/720914fd0c28888b5daa231cfddcbd24c71b9aac))
+* **boss:** refine no-sessions empty state copy ([ad52c42](https://github.com/recurser/bossanova/commit/ad52c4229586815f44971b4c567e05bb838b6d2e))
+
+### Bug Fixes
+
+* **bosso,bossd:** [[#115](https://github.com/recurser/bossanova/issues/115)] wrap UpsertBatch in transaction and cache repo lookups ([f4998fb](https://github.com/recurser/bossanova/commit/f4998fb1d5eb4c40f99d43e70c5ce3315c171e00))
+* **bosso:** [[#115](https://github.com/recurser/bossanova/issues/115)] address gosec and staticcheck lint warnings ([9e42517](https://github.com/recurser/bossanova/commit/9e425170252295dc23b1a1e8472083fdeddc96b9))
+* **bosso:** [[#115](https://github.com/recurser/bossanova/issues/115)] apply request filters in ProxyListSessions DB fallback ([cc1050e](https://github.com/recurser/bossanova/commit/cc1050e2ec65b3a2f7d5519e87261b8dfb6e75f4))
+* **bosso:** [[#115](https://github.com/recurser/bossanova/issues/115)] fix DB fallback logic and UpsertBatch daemonID usage ([c285e19](https://github.com/recurser/bossanova/commit/c285e19f8842364a06c6123c34ecef8c2091c962))
+* **bosso:** [[#115](https://github.com/recurser/bossanova/issues/115)] fix gofmt trailing newline ([b86b123](https://github.com/recurser/bossanova/commit/b86b1231bcc3ed80c5ca5439da28b6816ccf9d43))
+* **bosso:** [[#115](https://github.com/recurser/bossanova/issues/115)] make TestProxyListSessions_FallsBackToDB order-independent ([b25e97e](https://github.com/recurser/bossanova/commit/b25e97e758ce18a7d149f4c2795ed97d69c4aac2))
+* **repair:** [[#117](https://github.com/recurser/bossanova/issues/117)] unblock stuck implementing_plan sessions ([cba04a6](https://github.com/recurser/bossanova/commit/cba04a67534b3e81e799207df58bc029abb4edbd))
+* **repair:** prevent force-advance from being blocked by stuck timeout ([d0cf752](https://github.com/recurser/bossanova/commit/d0cf752844678d8a050d06e4b813f92302e0695f))
+
 ## [1.4.0](https://github.com/recurser/bossanova/compare/v1.3.3...v1.4.0) (2026-04-17)
 
 ### Features

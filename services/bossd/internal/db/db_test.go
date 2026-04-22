@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/recurser/bossalib/machine"
@@ -59,6 +60,57 @@ func TestMigrationRunner(t *testing.T) {
 		if err != nil {
 			t.Errorf("table %s should exist: %v", table, err)
 		}
+	}
+}
+
+// TestMissingIndexesUsed is the acceptance test for the
+// 20260421170000_add_missing_indexes migration. It asserts that
+// SQLite's query planner picks the new indexes instead of falling back to a
+// full table scan.
+func TestMissingIndexesUsed(t *testing.T) {
+	db := setupTestDB(t)
+
+	cases := []struct {
+		name  string
+		query string
+		index string
+	}{
+		{
+			name:  "workflows.repo_id",
+			query: "SELECT id FROM workflows WHERE repo_id = ?",
+			index: "idx_workflows_repo_id",
+		},
+		{
+			name:  "claude_chats.claude_id",
+			query: "SELECT id FROM claude_chats WHERE claude_id = ?",
+			index: "idx_claude_chats_claude_id",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.Query("EXPLAIN QUERY PLAN "+tc.query, "x")
+			if err != nil {
+				t.Fatalf("explain: %v", err)
+			}
+			defer func() { _ = rows.Close() }()
+
+			var plan string
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				plan += detail + "\n"
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows: %v", err)
+			}
+			if !strings.Contains(plan, tc.index) {
+				t.Errorf("plan for %q does not use %s:\n%s", tc.query, tc.index, plan)
+			}
+		})
 	}
 }
 
@@ -222,6 +274,96 @@ func TestSessionStore_CRUD(t *testing.T) {
 	_, err = store.Get(ctx, sess.ID)
 	if err != sql.ErrNoRows {
 		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestSessionStore_ListActiveWithRepo verifies the join-based list returns
+// each session alongside its repo's display name in a single query, rather
+// than the old N+1 list-then-loop pattern. The structural guarantee (single
+// QueryContext) lives in the implementation; this test pins the behavior.
+func TestSessionStore_ListActiveWithRepo(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+
+	// Two repos with distinct display names so we can verify correct pairing.
+	repoA, err := repoStore.Create(ctx, CreateRepoParams{
+		DisplayName:       "repo-a",
+		LocalPath:         "/tmp/a",
+		OriginURL:         "https://github.com/test/a.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/wt/a",
+	})
+	if err != nil {
+		t.Fatalf("create repoA: %v", err)
+	}
+	repoB, err := repoStore.Create(ctx, CreateRepoParams{
+		DisplayName:       "repo-b",
+		LocalPath:         "/tmp/b",
+		OriginURL:         "https://github.com/test/b.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/wt/b",
+	})
+	if err != nil {
+		t.Fatalf("create repoB: %v", err)
+	}
+
+	// Three active sessions in repoA, two in repoB, plus one archived that
+	// must be excluded.
+	for i, rid := range []string{repoA.ID, repoA.ID, repoA.ID, repoB.ID, repoB.ID} {
+		if _, err := store.Create(ctx, CreateSessionParams{
+			RepoID:       rid,
+			Title:        "s",
+			WorktreePath: "/tmp/wt/x",
+			BranchName:   "feat/x",
+			BaseBranch:   "main",
+		}); err != nil {
+			t.Fatalf("create session %d: %v", i, err)
+		}
+	}
+	archived, _ := store.Create(ctx, CreateSessionParams{
+		RepoID: repoA.ID, Title: "arch", WorktreePath: "/tmp/wt/a", BranchName: "a", BaseBranch: "main",
+	})
+	if err := store.Archive(ctx, archived.ID); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	// Unfiltered: all active sessions, each paired with its repo name.
+	all, err := store.ListActiveWithRepo(ctx, "")
+	if err != nil {
+		t.Fatalf("list active with repo: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("len = %d, want 5", len(all))
+	}
+	for _, r := range all {
+		switch r.RepoID {
+		case repoA.ID:
+			if r.RepoDisplayName != "repo-a" {
+				t.Errorf("repoA session got display %q, want repo-a", r.RepoDisplayName)
+			}
+		case repoB.ID:
+			if r.RepoDisplayName != "repo-b" {
+				t.Errorf("repoB session got display %q, want repo-b", r.RepoDisplayName)
+			}
+		default:
+			t.Errorf("unexpected repoID %q", r.RepoID)
+		}
+	}
+
+	// Filtered by repoA: only repoA's three active sessions.
+	onlyA, err := store.ListActiveWithRepo(ctx, repoA.ID)
+	if err != nil {
+		t.Fatalf("list filtered: %v", err)
+	}
+	if len(onlyA) != 3 {
+		t.Fatalf("filtered len = %d, want 3", len(onlyA))
+	}
+	for _, r := range onlyA {
+		if r.RepoID != repoA.ID || r.RepoDisplayName != "repo-a" {
+			t.Errorf("filtered row repoID=%q display=%q", r.RepoID, r.RepoDisplayName)
+		}
 	}
 }
 

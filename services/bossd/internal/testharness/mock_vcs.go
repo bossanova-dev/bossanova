@@ -20,8 +20,13 @@ type MockVCSProvider struct {
 	MergePRCalls            []mergePRCall
 	prCounter               atomic.Int32
 
-	// PRStatus is returned by GetPRStatus. Defaults to open.
+	// PRStatus is the default returned by GetPRStatus when no per-PR
+	// override has been set. Defaults to open+mergeable.
 	PRStatus *vcs.PRStatus
+
+	// prStatuses optionally overrides the default PRStatus on a per-PR basis.
+	// Set via SetPRStatus.
+	prStatuses map[int]*vcs.PRStatus
 
 	// CheckResults is returned by GetCheckResults. Defaults to empty.
 	CheckResults []vcs.CheckResult
@@ -43,6 +48,10 @@ type MockVCSProvider struct {
 
 	// MergePRErr is returned by MergePR when set.
 	MergePRErr error
+
+	// createPRError is returned by the next CreateDraftPR call when set,
+	// then cleared.
+	createPRError error
 }
 
 type markReadyCall struct {
@@ -53,6 +62,7 @@ type markReadyCall struct {
 type mergePRCall struct {
 	RepoPath string
 	PRID     int
+	Strategy string
 }
 
 // NewMockVCSProvider creates a mock VCS provider with sensible defaults.
@@ -69,7 +79,13 @@ func NewMockVCSProvider() *MockVCSProvider {
 func (m *MockVCSProvider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	m.mu.Lock()
 	m.CreateDraftPRCalls = append(m.CreateDraftPRCalls, opts)
+	injectedErr := m.createPRError
+	m.createPRError = nil
 	m.mu.Unlock()
+
+	if injectedErr != nil {
+		return nil, injectedErr
+	}
 
 	if m.CreateDraftPRFunc != nil {
 		return m.CreateDraftPRFunc(ctx, opts)
@@ -82,8 +98,46 @@ func (m *MockVCSProvider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROp
 	}, nil
 }
 
+// SetCreatePRError causes the next CreateDraftPR call to return err. After
+// firing once it is cleared.
+func (m *MockVCSProvider) SetCreatePRError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createPRError = err
+}
+
+// SetMergePRError sets the error returned by every subsequent MergePR call.
+// Pass nil to clear. The MergePRErr field is exported and may also be set
+// directly, but callers in resilience tests should prefer this setter so
+// the mu-guarded write is safe under concurrent access.
+func (m *MockVCSProvider) SetMergePRError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.MergePRErr = err
+}
+
 func (m *MockVCSProvider) GetPRStatus(ctx context.Context, repoPath string, prID int) (*vcs.PRStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if status, ok := m.prStatuses[prID]; ok {
+		return status, nil
+	}
 	return m.PRStatus, nil
+}
+
+// SetPRStatus overrides the status returned by GetPRStatus for a specific PR.
+// Pass status=nil to clear the override and fall back to PRStatus.
+func (m *MockVCSProvider) SetPRStatus(prID int, status *vcs.PRStatus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.prStatuses == nil {
+		m.prStatuses = make(map[int]*vcs.PRStatus)
+	}
+	if status == nil {
+		delete(m.prStatuses, prID)
+		return
+	}
+	m.prStatuses[prID] = status
 }
 
 func (m *MockVCSProvider) GetCheckResults(ctx context.Context, repoPath string, prID int) ([]vcs.CheckResult, error) {
@@ -119,7 +173,8 @@ func (m *MockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ st
 
 func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
 	m.mu.Lock()
-	m.MergePRCalls = append(m.MergePRCalls, mergePRCall{RepoPath: repoPath, PRID: prID})
+	m.MergePRCalls = append(m.MergePRCalls, mergePRCall{RepoPath: repoPath, PRID: prID, Strategy: strategy})
+	err := m.MergePRErr
 	m.mu.Unlock()
-	return m.MergePRErr
+	return err
 }

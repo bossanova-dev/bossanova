@@ -240,6 +240,175 @@ func TestHasQuestionPrompt(t *testing.T) {
 	}
 }
 
+func TestHasQuestionPrompt_EmptyInputPrompt(t *testing.T) {
+	// Regression: "❯ " on a line by itself is Claude Code's empty input prompt
+	// waiting for user keystrokes, NOT an AskUserQuestion selector. Surrounding
+	// indented status-bar lines must not be mistaken for selector options.
+	data := "⏺ Here's a long response without any question at the end.\n" +
+		"\n" +
+		strings.Repeat("─", 80) + " crop-box-zoom-fix ──\n" +
+		"❯ \n" +
+		strings.Repeat("─", 80) + "\n" +
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #110\n" +
+		"  Opus 4.7 | Context: 89% remaining\n"
+	if HasQuestionPrompt([]byte(data)) {
+		t.Error("should NOT detect question when ❯ is an empty input prompt with status-bar chrome")
+	}
+}
+
+func TestHasQuestionPrompt_InterruptedToolCall(t *testing.T) {
+	// Regression: user interrupts a tool call mid-execution. Claude Code renders
+	// "⎿  Interrupted · What should Claude do instead?" as the tool result.
+	// The most recent ⏺ response text has no "?", so this should NOT flag as a
+	// question -- the "?" is Claude Code UI text, not Claude's words.
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "interrupted Read tool",
+			data: "⏺ Now I'll review the new changes (since the last review) with fresh eyes.\n" +
+				"\n" +
+				"  Read 1 file (ctrl+o to expand)\n" +
+				"  ⎿  Interrupted · What should Claude do instead?\n",
+		},
+		{
+			name: "interrupted Bash tool",
+			data: "⏺ Let me check the status.\n" +
+				"\n" +
+				"⏺ Bash(make test)\n" +
+				"  ⎿  Interrupted · What should Claude do instead?\n",
+		},
+		{
+			name: "interrupt in tail with response marker outside tail",
+			// Pattern 3 fallback: ⏺ is pushed out of the 30-line window; only
+			// content left in the tail is the interrupt artifact. Must NOT fire.
+			data: func() string {
+				var b strings.Builder
+				b.WriteString("⏺ Here's a long response without any question at the end.\n")
+				for range 40 {
+					b.WriteString("  filler line to push the marker out of the tail\n")
+				}
+				b.WriteString("  ⎿  Interrupted · What should Claude do instead?\n")
+				return b.String()
+			}(),
+		},
+		{
+			name: "interrupt followed by status bar (exact user-reported shape)",
+			data: "⏺ Bash(git diff 01b58092..HEAD 2>&1 | head -400)\n" +
+				"  ⎿  diff --git a/apps/frontend/src/engine/InputHandler.ts b/apps/frontend/src/engine/InputHandler.ts\n" +
+				"     index d8ce2513..d7eb64a1 100644\n" +
+				"     --- a/apps/frontend/src/engine/InputHandler.ts\n" +
+				"     … +113 lines (ctrl+o to expand)\n" +
+				"\n" +
+				"⏺ Now I'll review the new changes (since the last review) with fresh eyes.\n" +
+				"\n" +
+				"  Read 1 file (ctrl+o to expand)\n" +
+				"  ⎿  Interrupted · What should Claude do instead?\n" +
+				"\n" +
+				strings.Repeat("─", 80) + " crop-box-zoom-fix ──\n" +
+				"❯ \n" +
+				strings.Repeat("─", 80) + "\n" +
+				"  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #110\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if HasQuestionPrompt([]byte(tt.data)) {
+				clean := StripANSI([]byte(tt.data))
+				tail := LastNLines(clean, 30)
+				t.Errorf("should NOT detect question for interrupted tool call\n  clean: %q\n  tail: %q",
+					string(clean), string(tail))
+			}
+		})
+	}
+}
+
+func TestHasQuestionPrompt_QuestionMarkInsideToolOutput(t *testing.T) {
+	// Tool output continuation lines that happen to end with "?" must not
+	// trigger question detection -- tool output is system/external text.
+	data := "⏺ Bash(grep -r 'TODO' src/)\n" +
+		"  ⎿  src/foo.ts: // TODO: handle edge case?\n" +
+		"     src/bar.ts: // TODO: verify this is correct?\n" +
+		"     src/baz.ts: // done\n"
+	if HasQuestionPrompt([]byte(data)) {
+		t.Error("should NOT detect question when only '?' is inside tool output continuation lines")
+	}
+}
+
+func TestHasQuestionPrompt_QuestionAfterInterruptedTool(t *testing.T) {
+	// Claude recovers from an interrupt and asks a real follow-up question.
+	// The interrupt artifact should be stripped; the real question should fire.
+	data := "⏺ I was about to read a file, but you interrupted.\n" +
+		"\n" +
+		"  Read 1 file (ctrl+o to expand)\n" +
+		"  ⎿  Interrupted · What should Claude do instead?\n" +
+		"\n" +
+		"⏺ Should I skip the file read and proceed directly to the diff review?\n"
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question when Claude asks a follow-up after an interrupt")
+	}
+}
+
+func TestHasQuestionPrompt_ClaudeCodeTips(t *testing.T) {
+	// Claude Code renders contextual "Tip:" lines beneath its working/thinking
+	// spinner. These tips often end with "?" ("Did you know you can …?") but
+	// they are UI chrome, not questions from Claude. They must not trigger
+	// question detection.
+	negative := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "tip below working spinner (user-reported shape)",
+			data: "✽ Newspapering… (11s · ↑ 682 tokens · thinking with xhigh effort)\n" +
+				"  ⎿  Tip: Did you know you can drag and drop image files into your terminal?\n",
+		},
+		{
+			name: "tip with ⎿ after a non-question response (Pattern 2 path)",
+			data: "⏺ I've finished the refactor.\n" +
+				"\n" +
+				"  ⎿  Tip: Did you know you can drag and drop image files into your terminal?\n",
+		},
+		{
+			name: "tip without ⎿ connector (bare indented form)",
+			data: "✽ Working… (3s)\n" +
+				"  Tip: Run /help for a list of commands?\n",
+		},
+		{
+			name: "tip in tail with response marker pushed out of tail (Pattern 3 path)",
+			data: func() string {
+				var b strings.Builder
+				b.WriteString("⏺ Here's a long response without any question at the end.\n")
+				for range 40 {
+					b.WriteString("  filler line to push the marker out of the tail\n")
+				}
+				b.WriteString("✽ Newspapering… (11s · ↑ 682 tokens)\n")
+				b.WriteString("  ⎿  Tip: Did you know you can drag and drop image files into your terminal?\n")
+				return b.String()
+			}(),
+		},
+	}
+	for _, tt := range negative {
+		t.Run(tt.name, func(t *testing.T) {
+			if HasQuestionPrompt([]byte(tt.data)) {
+				clean := StripANSI([]byte(tt.data))
+				tail := LastNLines(clean, 30)
+				t.Errorf("should NOT detect question for Claude Code tip line\n  clean: %q\n  tail: %q",
+					string(clean), string(tail))
+			}
+		})
+	}
+
+	// Positive guard: a real Claude question that contains the word "Tip:"
+	// mid-sentence (not at line start) must still be detected. The tip filter
+	// is anchored to line start, so this line is untouched.
+	positive := "⏺ Tip: consider caching the result. Does that make sense to you?\n"
+	if !HasQuestionPrompt([]byte(positive)) {
+		t.Error("should detect real question even when response contains 'Tip:' mid-sentence")
+	}
+}
+
 func TestHasQuestionPrompt_FalsePositiveScrollback(t *testing.T) {
 	// Regression test: when scrollback is captured, an older response with "?"
 	// is visible but the latest ⏺ response has no question. Pattern 2 should

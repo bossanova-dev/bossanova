@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,12 +29,51 @@ var socketCounter atomic.Int64
 // interface with in-memory data. Only the RPCs actually used by the TUI are
 // implemented; the rest return Unimplemented.
 type MockDaemon struct {
-	mu        sync.RWMutex
-	repos     []*pb.Repo
-	sessions  []*pb.Session
-	workflows []*pb.AutopilotWorkflow
-	chats     []*pb.ClaudeChat
-	prs       map[string][]*pb.PRSummary // keyed by repo ID
+	mu            sync.RWMutex
+	repos         []*pb.Repo
+	sessions      []*pb.Session
+	workflows     []*pb.AutopilotWorkflow
+	chats         []*pb.ClaudeChat
+	prs           map[string][]*pb.PRSummary    // keyed by repo ID
+	trackerIssues map[string][]*pb.TrackerIssue // keyed by repo ID
+
+	// lastCreateSession records the most recent CreateSession request so tests
+	// can assert on what the TUI sent (e.g. that filter-narrowed selection uses
+	// the correct original-index PR).
+	lastCreateSession *pb.CreateSessionRequest
+
+	// updateSessionCalls records every UpdateSession request so tests can
+	// assert the TUI sent the expected title / field updates.
+	updateSessionCalls []*pb.UpdateSessionRequest
+
+	// Channel-backed AttachSession streaming. Tests push events via
+	// PushOutputLine / PushStateChange / PushSessionEnded; the AttachSession
+	// RPC reads from the per-session channel and forwards to the stream.
+	attachEvents map[string]chan *pb.AttachSessionResponse
+	attachCalls  []*pb.AttachSessionRequest
+
+	// ensureTmuxErr, when non-nil, is returned from every EnsureTmuxSession
+	// call. Lets tests exercise AttachView's error path without depending on
+	// tmux behavior inside the PTY harness.
+	ensureTmuxErr error
+
+	// ensureTmuxCalls records every EnsureTmuxSession request so tests can
+	// assert on which session / mode / claude_id the TUI sent.
+	ensureTmuxCalls []*pb.EnsureTmuxSessionRequest
+
+	// validateRepoPathResp, when non-nil, overrides the default ValidateRepoPath
+	// response (IsValid=true). Lets tests exercise RepoAddView's error-path.
+	validateRepoPathResp *pb.ValidateRepoPathResponse
+	validateRepoPathErr  error
+
+	// registerRepoCalls records every RegisterRepo request so tests can assert
+	// the TUI sent the expected display name / path / setup script.
+	registerRepoCalls []*pb.RegisterRepoRequest
+
+	// notifyAuthChangeCalls records the action ("login" / "logout") of every
+	// NotifyAuthChange request so tests can assert the TUI notified the
+	// daemon after the user authenticated or signed out.
+	notifyAuthChangeCalls []string
 
 	socketPath string
 	httpServer *http.Server
@@ -46,7 +86,11 @@ func NewMockDaemon(t *testing.T) *MockDaemon {
 	t.Helper()
 
 	// Use /tmp directly — t.TempDir() paths can exceed the 104-char macOS Unix socket limit.
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("boss-tuitest-%d.sock", socketCounter.Add(1)))
+	// Include PID so parallel test binaries (tuitest + clitest run side-by-side under
+	// `go test ./...`) don't collide on `/tmp/boss-tuitest-1.sock`: each package gets
+	// its own counter starting at 1, so without the PID qualifier the second binary
+	// would remove and rebind the first binary's still-active socket.
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("boss-tuitest-%d-%d.sock", os.Getpid(), socketCounter.Add(1)))
 	t.Cleanup(func() {
 		_ = removeSocket(socketPath)
 	})
@@ -58,9 +102,11 @@ func NewMockDaemon(t *testing.T) *MockDaemon {
 	}
 
 	m := &MockDaemon{
-		socketPath: socketPath,
-		listener:   ln,
-		prs:        make(map[string][]*pb.PRSummary),
+		socketPath:    socketPath,
+		listener:      ln,
+		prs:           make(map[string][]*pb.PRSummary),
+		trackerIssues: make(map[string][]*pb.TrackerIssue),
+		attachEvents:  make(map[string]chan *pb.AttachSessionResponse),
 	}
 
 	mux := http.NewServeMux()
@@ -119,6 +165,31 @@ func (m *MockDaemon) AddPRs(repoID string, prs []*pb.PRSummary) {
 	m.prs[repoID] = append(m.prs[repoID], prs...)
 }
 
+// AddTrackerIssues adds tracker (Linear) issues for a repo to the mock daemon's in-memory store.
+func (m *MockDaemon) AddTrackerIssues(repoID string, issues []*pb.TrackerIssue) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.trackerIssues[repoID] = append(m.trackerIssues[repoID], issues...)
+}
+
+// LastCreateSession returns the most recent CreateSession request received
+// by the mock, or nil if none was received.
+func (m *MockDaemon) LastCreateSession() *pb.CreateSessionRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastCreateSession
+}
+
+// UpdateSessionCalls returns a copy of every UpdateSession request recorded
+// by the mock.
+func (m *MockDaemon) UpdateSessionCalls() []*pb.UpdateSessionRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.UpdateSessionRequest, len(m.updateSessionCalls))
+	copy(out, m.updateSessionCalls)
+	return out
+}
+
 // Sessions returns a copy of the current sessions.
 func (m *MockDaemon) Sessions() []*pb.Session {
 	m.mu.RLock()
@@ -157,9 +228,19 @@ func (m *MockDaemon) ListRepos(_ context.Context, _ *connect.Request[pb.ListRepo
 func (m *MockDaemon) ListSessions(_ context.Context, req *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	stateSet := make(map[pb.SessionState]bool, len(req.Msg.States))
+	for _, st := range req.Msg.States {
+		stateSet[st] = true
+	}
 	var out []*pb.Session
 	for _, s := range m.sessions {
 		if s.ArchivedAt != nil && !req.Msg.IncludeArchived {
+			continue
+		}
+		if req.Msg.RepoId != nil && *req.Msg.RepoId != "" && s.RepoId != *req.Msg.RepoId {
+			continue
+		}
+		if len(stateSet) > 0 && !stateSet[s.State] {
 			continue
 		}
 		out = append(out, s)
@@ -261,8 +342,25 @@ func (m *MockDaemon) ListRepoPRs(_ context.Context, req *connect.Request[pb.List
 	return connect.NewResponse(&pb.ListRepoPRsResponse{PullRequests: prs}), nil
 }
 
-func (m *MockDaemon) ListTrackerIssues(_ context.Context, _ *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
-	return connect.NewResponse(&pb.ListTrackerIssuesResponse{}), nil
+func (m *MockDaemon) ListTrackerIssues(_ context.Context, req *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	issues := m.trackerIssues[req.Msg.RepoId]
+	// When the TUI sends a query, simulate the Linear-side filter by narrowing
+	// to issues whose title contains the query (case-insensitive). This lets
+	// tests exercise the debounced-search code path without spinning up a real
+	// Linear API.
+	if q := strings.TrimSpace(req.Msg.Query); q != "" {
+		filtered := issues[:0:0]
+		needle := strings.ToLower(q)
+		for _, i := range issues {
+			if strings.Contains(strings.ToLower(i.Title), needle) {
+				filtered = append(filtered, i)
+			}
+		}
+		issues = filtered
+	}
+	return connect.NewResponse(&pb.ListTrackerIssuesResponse{Issues: issues}), nil
 }
 
 // --- Repo management RPCs ---
@@ -313,6 +411,16 @@ func (m *MockDaemon) UpdateRepo(_ context.Context, req *connect.Request[pb.Updat
 }
 
 func (m *MockDaemon) ValidateRepoPath(_ context.Context, _ *connect.Request[pb.ValidateRepoPathRequest]) (*connect.Response[pb.ValidateRepoPathResponse], error) {
+	m.mu.RLock()
+	resp := m.validateRepoPathResp
+	err := m.validateRepoPathErr
+	m.mu.RUnlock()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if resp != nil {
+		return connect.NewResponse(resp), nil
+	}
 	return connect.NewResponse(&pb.ValidateRepoPathResponse{
 		IsValid:       true,
 		IsGithub:      true,
@@ -320,9 +428,25 @@ func (m *MockDaemon) ValidateRepoPath(_ context.Context, _ *connect.Request[pb.V
 	}), nil
 }
 
+// SetValidateRepoPathResult overrides the default ValidateRepoPath response.
+// Passing nil clears the override.
+func (m *MockDaemon) SetValidateRepoPathResult(resp *pb.ValidateRepoPathResponse) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.validateRepoPathResp = resp
+}
+
+// SetValidateRepoPathError makes every ValidateRepoPath call return err.
+func (m *MockDaemon) SetValidateRepoPathError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.validateRepoPathErr = err
+}
+
 func (m *MockDaemon) RegisterRepo(_ context.Context, req *connect.Request[pb.RegisterRepoRequest]) (*connect.Response[pb.RegisterRepoResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.registerRepoCalls = append(m.registerRepoCalls, req.Msg)
 	repo := &pb.Repo{
 		Id:                fmt.Sprintf("repo-%d", len(m.repos)+1),
 		DisplayName:       req.Msg.DisplayName,
@@ -335,6 +459,16 @@ func (m *MockDaemon) RegisterRepo(_ context.Context, req *connect.Request[pb.Reg
 	}
 	m.repos = append(m.repos, repo)
 	return connect.NewResponse(&pb.RegisterRepoResponse{Repo: repo}), nil
+}
+
+// RegisterRepoCalls returns a copy of every RegisterRepo request recorded
+// by the mock.
+func (m *MockDaemon) RegisterRepoCalls() []*pb.RegisterRepoRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.RegisterRepoRequest, len(m.registerRepoCalls))
+	copy(out, m.registerRepoCalls)
+	return out
 }
 
 // --- Autopilot RPCs ---
@@ -412,17 +546,106 @@ func (m *MockDaemon) CloneAndRegisterRepo(context.Context, *connect.Request[pb.C
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
-func (m *MockDaemon) CreateSession(context.Context, *connect.Request[pb.CreateSessionRequest], *connect.ServerStream[pb.CreateSessionResponse]) error {
+func (m *MockDaemon) CreateSession(_ context.Context, req *connect.Request[pb.CreateSessionRequest], _ *connect.ServerStream[pb.CreateSessionResponse]) error {
+	m.mu.Lock()
+	m.lastCreateSession = req.Msg
+	m.mu.Unlock()
+	// Return Unimplemented so the TUI surfaces an error banner after recording
+	// the request — tests assert on the captured request, not on created sessions.
 	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
-func (m *MockDaemon) AttachSession(context.Context, *connect.Request[pb.AttachSessionRequest], *connect.ServerStream[pb.AttachSessionResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+// AttachSession reads events from the per-session channel populated by
+// PushOutputLine / PushStateChange / PushSessionEnded and forwards them to
+// the stream. Returns nil on SessionEnded or ctx cancellation.
+func (m *MockDaemon) AttachSession(ctx context.Context, req *connect.Request[pb.AttachSessionRequest], stream *connect.ServerStream[pb.AttachSessionResponse]) error {
+	m.mu.Lock()
+	m.attachCalls = append(m.attachCalls, req.Msg)
+	m.mu.Unlock()
+
+	ch := m.ensureAttachChannel(req.Msg.Id)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(ev); err != nil {
+				return err
+			}
+			if _, ended := ev.Event.(*pb.AttachSessionResponse_SessionEnded); ended {
+				return nil
+			}
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+// AttachSessionCalls returns a copy of every AttachSession request recorded
+// by the mock.
+func (m *MockDaemon) AttachSessionCalls() []*pb.AttachSessionRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.AttachSessionRequest, len(m.attachCalls))
+	copy(out, m.attachCalls)
+	return out
+}
+
+// PushOutputLine enqueues an OutputLine event on the session's attach stream.
+// Blocks if the channel is full (64-event buffer should be enough for tests).
+func (m *MockDaemon) PushOutputLine(sessionID, text string) {
+	m.ensureAttachChannel(sessionID) <- &pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_OutputLine{
+			OutputLine: &pb.OutputLine{
+				Text:      text,
+				Timestamp: timestamppb.Now(),
+			},
+		},
+	}
+}
+
+// PushStateChange enqueues a StateChange event on the session's attach stream.
+func (m *MockDaemon) PushStateChange(sessionID string, previous, next pb.SessionState) {
+	m.ensureAttachChannel(sessionID) <- &pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_StateChange{
+			StateChange: &pb.StateChange{
+				PreviousState: previous,
+				NewState:      next,
+			},
+		},
+	}
+}
+
+// PushSessionEnded enqueues a SessionEnded event. The active AttachSession
+// stream returns nil after sending this event, closing the stream cleanly.
+func (m *MockDaemon) PushSessionEnded(sessionID string, finalState pb.SessionState) {
+	m.ensureAttachChannel(sessionID) <- &pb.AttachSessionResponse{
+		Event: &pb.AttachSessionResponse_SessionEnded{
+			SessionEnded: &pb.SessionEnded{
+				FinalState: finalState,
+			},
+		},
+	}
+}
+
+// ensureAttachChannel returns the buffered event channel for a session,
+// creating it if needed. Safe for concurrent callers.
+func (m *MockDaemon) ensureAttachChannel(sessionID string) chan *pb.AttachSessionResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.attachEvents[sessionID]
+	if !ok {
+		ch = make(chan *pb.AttachSessionResponse, 64)
+		m.attachEvents[sessionID] = ch
+	}
+	return ch
 }
 
 func (m *MockDaemon) UpdateSession(_ context.Context, req *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.updateSessionCalls = append(m.updateSessionCalls, req.Msg)
 	for _, s := range m.sessions {
 		if s.Id == req.Msg.Id {
 			if req.Msg.Title != nil {
@@ -454,6 +677,10 @@ func (m *MockDaemon) CloseSession(context.Context, *connect.Request[pb.CloseSess
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+func (m *MockDaemon) MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
 func (m *MockDaemon) RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
@@ -475,6 +702,13 @@ func (m *MockDaemon) StreamAutopilotOutput(context.Context, *connect.Request[pb.
 }
 
 func (m *MockDaemon) EnsureTmuxSession(_ context.Context, req *connect.Request[pb.EnsureTmuxSessionRequest]) (*connect.Response[pb.EnsureTmuxSessionResponse], error) {
+	m.mu.Lock()
+	m.ensureTmuxCalls = append(m.ensureTmuxCalls, req.Msg)
+	injectedErr := m.ensureTmuxErr
+	m.mu.Unlock()
+	if injectedErr != nil {
+		return nil, connect.NewError(connect.CodeInternal, injectedErr)
+	}
 	claudeID := req.Msg.ClaudeId
 	if claudeID == "" {
 		claudeID = uuid.New().String()
@@ -485,8 +719,39 @@ func (m *MockDaemon) EnsureTmuxSession(_ context.Context, req *connect.Request[p
 	}), nil
 }
 
-func (m *MockDaemon) NotifyAuthChange(context.Context, *connect.Request[pb.NotifyAuthChangeRequest]) (*connect.Response[pb.NotifyAuthChangeResponse], error) {
+// EnsureTmuxSessionCalls returns a copy of every EnsureTmuxSession request
+// recorded by the mock.
+func (m *MockDaemon) EnsureTmuxSessionCalls() []*pb.EnsureTmuxSessionRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.EnsureTmuxSessionRequest, len(m.ensureTmuxCalls))
+	copy(out, m.ensureTmuxCalls)
+	return out
+}
+
+// SetEnsureTmuxError makes every EnsureTmuxSession call return err. Used by
+// tests that exercise AttachView's error path without depending on tmux.
+func (m *MockDaemon) SetEnsureTmuxError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureTmuxErr = err
+}
+
+func (m *MockDaemon) NotifyAuthChange(_ context.Context, req *connect.Request[pb.NotifyAuthChangeRequest]) (*connect.Response[pb.NotifyAuthChangeResponse], error) {
+	m.mu.Lock()
+	m.notifyAuthChangeCalls = append(m.notifyAuthChangeCalls, req.Msg.Action)
+	m.mu.Unlock()
 	return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil
+}
+
+// NotifyAuthChangeCalls returns a copy of the actions ("login" / "logout")
+// passed to every NotifyAuthChange request recorded by the mock.
+func (m *MockDaemon) NotifyAuthChangeCalls() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, len(m.notifyAuthChangeCalls))
+	copy(out, m.notifyAuthChangeCalls)
+	return out
 }
 
 // removeSocket removes a socket file, ignoring "not exist" errors.

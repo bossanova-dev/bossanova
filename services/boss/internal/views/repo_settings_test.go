@@ -185,6 +185,9 @@ func (s *stubRepoClient) RetrySession(context.Context, string) (*pb.Session, err
 func (s *stubRepoClient) CloseSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *stubRepoClient) MergeSession(context.Context, string) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) RemoveSession(context.Context, string) error { panic("unused") }
 func (s *stubRepoClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")
@@ -244,6 +247,6 @@ func (s *stubRepoClient) EnsureTmuxSession(context.Context, string, string, stri
 func (s *stubRepoClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ListTrackerIssues(context.Context, string) ([]*pb.TrackerIssue, error) {
+func (s *stubRepoClient) ListTrackerIssues(context.Context, string, string) ([]*pb.TrackerIssue, error) {
 	panic("unused")
 }

@@ -23,9 +23,12 @@ func NewTaskMappingStore(db *sql.DB) *SQLiteTaskMappingStore {
 }
 
 func (s *SQLiteTaskMappingStore) Create(ctx context.Context, params CreateTaskMappingParams) (*models.TaskMapping, error) {
-	id := sqlutil.NewID()
+	id, err := sqlutil.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("new task mapping id: %w", err)
+	}
 	now := sqlutil.TimeNow()
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO task_mappings (id, external_id, plugin_name, repo_id, status, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		id, params.ExternalID, params.PluginName, params.RepoID,

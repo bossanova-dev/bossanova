@@ -22,12 +22,22 @@ type Status struct {
 }
 
 // Install registers the daemon with the system service manager.
-// bossdPath is the absolute path to the bossd binary.
-func Install(bossdPath string) error {
+// bossdPath is the absolute path to the bossd binary. If force is false and
+// the service file already exists, Install returns an error to avoid
+// overwriting an existing installation.
+func Install(bossdPath string, force bool) error {
 	if err := validatePath(bossdPath); err != nil {
 		return err
 	}
-	return platformInstall(bossdPath)
+	return platformInstall(bossdPath, force)
+}
+
+// skipLaunchctl reports whether service-manager invocations (launchctl on
+// macOS, systemctl on Linux) should be skipped. Set via the
+// BOSS_DAEMON_SKIP_LAUNCHCTL env var so tests can exercise file-writing
+// behaviour without touching the host's service manager.
+func skipLaunchctl() bool {
+	return os.Getenv("BOSS_DAEMON_SKIP_LAUNCHCTL") != ""
 }
 
 // validatePath checks that a path is safe to use in service templates.

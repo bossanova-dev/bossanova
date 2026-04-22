@@ -1,0 +1,17 @@
+[
+  {
+    "user": {"login": "alice"},
+    "body": "LGTM, nice work.",
+    "state": "APPROVED"
+  },
+  {
+    "user": {"login": "bob"},
+    "body": "Please add tests for the edge case.",
+    "state": "CHANGES_REQUESTED"
+  },
+  {
+    "user": {"login": "carol"},
+    "body": "Minor nit in the comments.",
+    "state": "COMMENTED"
+  }
+]

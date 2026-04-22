@@ -45,7 +45,7 @@ type BossClient interface {
 	RemoveRepo(ctx context.Context, id string) error
 	UpdateRepo(ctx context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error)
 	ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRSummary, error)
-	ListTrackerIssues(ctx context.Context, repoID string) ([]*pb.TrackerIssue, error)
+	ListTrackerIssues(ctx context.Context, repoID, query string) ([]*pb.TrackerIssue, error)
 
 	// Session lifecycle
 	CreateSession(ctx context.Context, req *pb.CreateSessionRequest) (CreateSessionStream, error)
@@ -57,6 +57,7 @@ type BossClient interface {
 	ResumeSession(ctx context.Context, id string) (*pb.Session, error)
 	RetrySession(ctx context.Context, id string) (*pb.Session, error)
 	CloseSession(ctx context.Context, id string) (*pb.Session, error)
+	MergeSession(ctx context.Context, id string) (*pb.Session, error)
 	RemoveSession(ctx context.Context, id string) error
 	UpdateSession(ctx context.Context, req *pb.UpdateSessionRequest) (*pb.Session, error)
 

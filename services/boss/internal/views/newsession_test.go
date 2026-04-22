@@ -40,7 +40,7 @@ func (s *stubClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, erro
 	return s.prs, s.prsErr
 }
 
-func (s *stubClient) ListTrackerIssues(context.Context, string) ([]*pb.TrackerIssue, error) {
+func (s *stubClient) ListTrackerIssues(context.Context, string, string) ([]*pb.TrackerIssue, error) {
 	return s.trackerIssues, s.trackerIssuesErr
 }
 
@@ -77,6 +77,47 @@ func (s *stubCreateStream) Close() error {
 	return nil
 }
 
+// trackingCreateStream records whether Close was called and can be configured
+// to return an error on Receive or an unknown event type on Msg.
+type trackingCreateStream struct {
+	received   bool
+	receiveErr error // if non-nil, Receive returns false and Err returns this
+	unknown    bool  // if true, Msg returns an event the wizard does not handle
+	closed     bool
+}
+
+func (s *trackingCreateStream) Receive() bool {
+	if s.receiveErr != nil {
+		return false
+	}
+	if s.received {
+		return false
+	}
+	s.received = true
+	return true
+}
+
+func (s *trackingCreateStream) Msg() *pb.CreateSessionResponse {
+	if s.unknown {
+		// Empty response — no Event oneof set, hits the default branch.
+		return &pb.CreateSessionResponse{}
+	}
+	return &pb.CreateSessionResponse{
+		Event: &pb.CreateSessionResponse_SessionCreated{
+			SessionCreated: &pb.SessionCreated{},
+		},
+	}
+}
+
+func (s *trackingCreateStream) Err() error {
+	return s.receiveErr
+}
+
+func (s *trackingCreateStream) Close() error {
+	s.closed = true
+	return nil
+}
+
 // Unused interface methods — panic if called unexpectedly.
 func (s *stubClient) Ping(context.Context) error { panic("unused") }
 func (s *stubClient) ResolveContext(context.Context, string) (*pb.ResolveContextResponse, error) {
@@ -107,6 +148,7 @@ func (s *stubClient) PauseSession(context.Context, string) (*pb.Session, error) 
 func (s *stubClient) ResumeSession(context.Context, string) (*pb.Session, error) { panic("unused") }
 func (s *stubClient) RetrySession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *stubClient) CloseSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
+func (s *stubClient) MergeSession(context.Context, string) (*pb.Session, error)  { panic("unused") }
 func (s *stubClient) RemoveSession(context.Context, string) error                { panic("unused") }
 func (s *stubClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")
@@ -590,9 +632,10 @@ func TestNewSession_LinearTicketCreatesSessionWithBracketTitle(t *testing.T) {
 		t.Fatalf("CreateSession title = %q, want %q", sc.createReq.Title, "[ENG-123] Add authentication")
 	}
 
-	// Verify plan is set to description
-	if sc.createReq.Plan != "Implement user auth flow" {
-		t.Fatalf("CreateSession plan = %q, want %q", sc.createReq.Plan, "Implement user auth flow")
+	// Verify plan is set to the formatted Linear block (header + description + URL).
+	wantPlan := "Linear issue:\n\n[ENG-123] Add authentication\n\nImplement user auth flow\n\nhttps://linear.app/team/issue/ENG-123\n"
+	if sc.createReq.Plan != wantPlan {
+		t.Fatalf("CreateSession plan = %q, want %q", sc.createReq.Plan, wantPlan)
 	}
 
 	// Verify no PR number is set for new issue
@@ -702,8 +745,502 @@ func TestNewSession_LinearTicketNewBranch(t *testing.T) {
 		t.Fatalf("CreateSession PrNumber = %v, want nil for new issue", sc.createReq.PrNumber)
 	}
 
-	// Verify plan is set
-	if sc.createReq.Plan != "Add new feature" {
-		t.Fatalf("CreateSession plan = %q, want %q", sc.createReq.Plan, "Add new feature")
+	// Verify plan is the formatted Linear block. Issue has no URL set, so
+	// the URL line is absent.
+	wantPlan := "Linear issue:\n\n[ENG-789] New feature\n\nAdd new feature\n"
+	if sc.createReq.Plan != wantPlan {
+		t.Fatalf("CreateSession plan = %q, want %q", sc.createReq.Plan, wantPlan)
+	}
+}
+
+func TestFormatLinearPrompt(t *testing.T) {
+	tests := []struct {
+		name  string
+		issue *pb.TrackerIssue
+		want  string
+	}{
+		{
+			name: "all fields",
+			issue: &pb.TrackerIssue{
+				ExternalId:  "ENG-1",
+				Title:       "Do the thing",
+				Description: "Full description body.",
+				Url:         "https://linear.app/x/issue/ENG-1",
+			},
+			want: "Linear issue:\n\n[ENG-1] Do the thing\n\nFull description body.\n\nhttps://linear.app/x/issue/ENG-1\n",
+		},
+		{
+			name: "no url",
+			issue: &pb.TrackerIssue{
+				ExternalId:  "ENG-2",
+				Title:       "Something",
+				Description: "Short description.",
+			},
+			want: "Linear issue:\n\n[ENG-2] Something\n\nShort description.\n",
+		},
+		{
+			name: "no description",
+			issue: &pb.TrackerIssue{
+				ExternalId: "ENG-3",
+				Title:      "Bare title",
+				Url:        "https://linear.app/x/issue/ENG-3",
+			},
+			want: "Linear issue:\n\n[ENG-3] Bare title\n\nhttps://linear.app/x/issue/ENG-3\n",
+		},
+		{
+			name: "description surrounded by whitespace gets trimmed",
+			issue: &pb.TrackerIssue{
+				ExternalId:  "ENG-4",
+				Title:       "Padded",
+				Description: "\n\n  body text  \n\n",
+			},
+			want: "Linear issue:\n\n[ENG-4] Padded\n\nbody text\n",
+		},
+		{
+			name:  "nil issue",
+			issue: nil,
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatLinearPrompt(tt.issue)
+			if got != tt.want {
+				t.Errorf("formatLinearPrompt mismatch\ngot:  %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReadNextStreamMsgClosesOnTerminalPaths verifies that the reader goroutine
+// closes the stream on every terminal branch — receive error, clean EOF, and
+// unknown event type — so that a reader error cannot leak the underlying RPC
+// stream. SetupOutput is non-terminal and must leave the stream open.
+func TestReadNextStreamMsgClosesOnTerminalPaths(t *testing.T) {
+	cases := []struct {
+		name   string
+		stream *trackingCreateStream
+		want   any
+	}{
+		{
+			name:   "receive error",
+			stream: &trackingCreateStream{receiveErr: fmt.Errorf("boom")},
+			want:   streamErrorMsg{},
+		},
+		{
+			name:   "unexpected event",
+			stream: &trackingCreateStream{unknown: true},
+			want:   streamErrorMsg{},
+		},
+		{
+			name:   "session created",
+			stream: &trackingCreateStream{},
+			want:   streamSessionCreatedMsg{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := readNextStreamMsg(tc.stream)
+			msg := cmd()
+			switch tc.want.(type) {
+			case streamErrorMsg:
+				if _, ok := msg.(streamErrorMsg); !ok {
+					t.Fatalf("got %T, want streamErrorMsg", msg)
+				}
+			case streamSessionCreatedMsg:
+				if _, ok := msg.(streamSessionCreatedMsg); !ok {
+					t.Fatalf("got %T, want streamSessionCreatedMsg", msg)
+				}
+			}
+			if !tc.stream.closed {
+				t.Fatal("stream was not closed on terminal path")
+			}
+		})
+	}
+}
+
+// TestReadNextStreamMsgDoesNotCloseOnSetupOutput ensures that non-terminal
+// SetupOutput messages leave the stream open so the wizard can keep reading.
+func TestReadNextStreamMsgDoesNotCloseOnSetupOutput(t *testing.T) {
+	stream := &setupOutputStream{}
+	cmd := readNextStreamMsg(stream)
+	msg := cmd()
+	if _, ok := msg.(setupScriptLineMsg); !ok {
+		t.Fatalf("got %T, want setupScriptLineMsg", msg)
+	}
+	if stream.closed {
+		t.Fatal("stream must remain open on non-terminal SetupOutput")
+	}
+}
+
+// setupOutputStream yields a single SetupOutput event then EOFs. Close is
+// tracked so tests can assert the stream stayed open on non-terminal paths.
+type setupOutputStream struct {
+	received bool
+	closed   bool
+}
+
+func (s *setupOutputStream) Receive() bool {
+	if s.received {
+		return false
+	}
+	s.received = true
+	return true
+}
+
+func (s *setupOutputStream) Msg() *pb.CreateSessionResponse {
+	return &pb.CreateSessionResponse{
+		Event: &pb.CreateSessionResponse_SetupOutput{
+			SetupOutput: &pb.SetupScriptOutput{Text: "line"},
+		},
+	}
+}
+
+func (s *setupOutputStream) Err() error   { return nil }
+func (s *setupOutputStream) Close() error { s.closed = true; return nil }
+
+// TestNewSession_PRRefetchResetsStaleFilteredIndices is a regression test for
+// the panic that occurred when the user navigated back and fetched a shorter
+// PR list: the first prsMsg populated m.prsFiltered with indices into the old
+// (longer) list, and a second prsMsg with fewer PRs would reuse those stale
+// indices and index past the end of m.prs.
+func TestNewSession_PRRefetchResetsStaleFilteredIndices(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	longList := []*pb.PRSummary{
+		{Number: 1, Title: "alpha", HeadBranch: "a"},
+		{Number: 2, Title: "beta", HeadBranch: "b"},
+		{Number: 3, Title: "gamma", HeadBranch: "c"},
+	}
+	m = sendMsg(t, m, prsMsg{prs: longList})
+	if got := len(m.prsFiltered); got != len(longList) {
+		t.Fatalf("after first prsMsg: len(prsFiltered)=%d, want %d", got, len(longList))
+	}
+
+	// Simulate the user navigating back and a second fetch returning fewer
+	// PRs. Without the fix this would reuse stale indices (0,1,2) against a
+	// two-element slice and panic in buildPRTable's row loop.
+	shortList := []*pb.PRSummary{
+		{Number: 10, Title: "fresh-one", HeadBranch: "x"},
+		{Number: 11, Title: "fresh-two", HeadBranch: "y"},
+	}
+	m = sendMsg(t, m, prsMsg{prs: shortList})
+
+	if got := len(m.prs); got != len(shortList) {
+		t.Fatalf("len(prs)=%d, want %d", got, len(shortList))
+	}
+	if got := len(m.prsFiltered); got != len(shortList) {
+		t.Fatalf("len(prsFiltered)=%d, want %d after refetch", got, len(shortList))
+	}
+	for _, i := range m.prsFiltered {
+		if i < 0 || i >= len(m.prs) {
+			t.Fatalf("stale index %d in prsFiltered (len(prs)=%d)", i, len(m.prs))
+		}
+	}
+}
+
+// TestNewSession_PRFilterActivationRebuildsTable is a regression test for the
+// bug where pressing "/" from idle transitioned the filter line from hidden
+// (Height=0) to visible (Height=1) but did not rebuild the PR table. The
+// table's stored height was then stale by one row until the user typed the
+// first character — enough to overflow the terminal.
+func TestNewSession_PRFilterActivationRebuildsTable(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	// Small terminal height so the clamp in prTableHeight() reacts to the
+	// filter's 1-row overhead — otherwise `needed` stays below `avail` and
+	// the bug is invisible.
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeExistingPR
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+		{Number: 1, Title: "alpha", HeadBranch: "a"},
+		{Number: 2, Title: "beta", HeadBranch: "b"},
+		{Number: 3, Title: "gamma", HeadBranch: "c"},
+	}})
+	if m.phase != newSessionPhasePRSelect {
+		t.Fatalf("phase = %d, want newSessionPhasePRSelect (%d)", m.phase, newSessionPhasePRSelect)
+	}
+
+	heightBefore := m.prTable.Height()
+	expectedAfter := heightBefore - 1 // filter line steals one row from the table
+	m = sendKey(t, m, '/')
+	if !m.prFilter.Active() {
+		t.Fatalf("prFilter.Active() = false after '/', want true")
+	}
+	if got := m.prTable.Height(); got != expectedAfter {
+		t.Fatalf("prTable.Height() = %d after '/', want %d (before=%d, minus filter overhead) — table not rebuilt on filter activation", got, expectedAfter, heightBefore)
+	}
+}
+
+// TestNewSession_IssueFilterActivationRebuildsTable mirrors the PR regression
+// for the Linear issue selector.
+func TestNewSession_IssueFilterActivationRebuildsTable(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+		{ExternalId: "ENG-1", Title: "alpha", State: "open"},
+		{ExternalId: "ENG-2", Title: "beta", State: "open"},
+		{ExternalId: "ENG-3", Title: "gamma", State: "open"},
+	}})
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect (%d)", m.phase, newSessionPhaseIssueSelect)
+	}
+
+	heightBefore := m.issueTable.Height()
+	expectedAfter := heightBefore - 1
+	m = sendKey(t, m, '/')
+	if !m.issueFilter.Active() {
+		t.Fatalf("issueFilter.Active() = false after '/', want true")
+	}
+	if got := m.issueTable.Height(); got != expectedAfter {
+		t.Fatalf("issueTable.Height() = %d after '/', want %d (before=%d, minus filter overhead) — table not rebuilt on filter activation", got, expectedAfter, heightBefore)
+	}
+}
+
+// TestNewSession_IssueFilterDebouncedSearch verifies that typing into the
+// issue filter schedules a debounced server-side search instead of only doing
+// local matching, and that stale responses are dropped while fresh ones land.
+func TestNewSession_IssueFilterDebouncedSearch(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+		{ExternalId: "ENG-1", Title: "alpha", State: "open"},
+		{ExternalId: "ENG-2", Title: "beta", State: "open"},
+	}})
+
+	// Activate filter and type a character.
+	m = sendKey(t, m, '/')
+	startSeq := m.issueSearchSeq
+
+	updated, cmd := m.Update(keyPress('a'))
+	m = assertValueType(t, updated)
+
+	if m.issueSearchSeq != startSeq+1 {
+		t.Errorf("issueSearchSeq = %d after keystroke, want %d", m.issueSearchSeq, startSeq+1)
+	}
+	if !m.issuesFetching {
+		t.Error("issuesFetching = false after keystroke, want true")
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd batch (tick + input update) after keystroke, got nil")
+	}
+
+	// A stale issuesMsg (query doesn't match the live one) must be ignored —
+	// trackerIssues should keep its prior contents.
+	prevTitles := []string{m.trackerIssues[0].Title, m.trackerIssues[1].Title}
+	m = sendMsg(t, m, issuesMsg{
+		issues: []*pb.TrackerIssue{{ExternalId: "STALE", Title: "stale-result"}},
+		query:  "different-query",
+	})
+	if len(m.trackerIssues) != 2 || m.trackerIssues[0].Title != prevTitles[0] {
+		t.Errorf("stale issuesMsg overwrote trackerIssues: got %+v, want titles %v", m.trackerIssues, prevTitles)
+	}
+
+	// Simulate the debounce tick firing — handler should set issueSearchQuery
+	// to the live query and dispatch a fetch (cmd is the fetch closure).
+	tickQuery := m.issueFilter.Query()
+	updated, cmd = m.Update(searchIssuesTickMsg{seq: m.issueSearchSeq, query: tickQuery})
+	m = assertValueType(t, updated)
+	if m.issueSearchQuery != tickQuery {
+		t.Errorf("issueSearchQuery = %q after tick, want %q", m.issueSearchQuery, tickQuery)
+	}
+	if cmd == nil {
+		t.Error("expected fetchIssues cmd after tick fired, got nil")
+	}
+
+	// Fresh result for the live query lands and replaces trackerIssues.
+	m = sendMsg(t, m, issuesMsg{
+		issues: []*pb.TrackerIssue{{ExternalId: "ENG-99", Title: "fresh-match", State: "open"}},
+		seq:    m.issueSearchSeq,
+		query:  tickQuery,
+	})
+	if len(m.trackerIssues) != 1 || m.trackerIssues[0].Title != "fresh-match" {
+		t.Errorf("fresh issuesMsg did not replace trackerIssues: got %+v", m.trackerIssues)
+	}
+	if m.issuesFetching {
+		t.Error("issuesFetching = true after fresh issuesMsg, want false")
+	}
+}
+
+// TestNewSession_IssueFilterDebounceSeqDropsStaleTick verifies that a tick
+// whose seq has been superseded by a newer keystroke is silently dropped —
+// otherwise rapid typing would fan out into many concurrent searches.
+func TestNewSession_IssueFilterDebounceSeqDropsStaleTick(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{{ExternalId: "ENG-1", Title: "alpha"}}})
+	m = sendKey(t, m, '/')
+
+	// Two keystrokes — second one supersedes the first.
+	updated, _ := m.Update(keyPress('a'))
+	m = assertValueType(t, updated)
+	staleSeq := m.issueSearchSeq
+	updated, _ = m.Update(keyPress('b'))
+	m = assertValueType(t, updated)
+
+	if m.issueSearchSeq <= staleSeq {
+		t.Fatalf("issueSearchSeq did not advance: stale=%d, new=%d", staleSeq, m.issueSearchSeq)
+	}
+
+	// Tick with the stale seq must be a no-op (no fetch dispatched).
+	updated, cmd := m.Update(searchIssuesTickMsg{seq: staleSeq, query: "a"})
+	m = assertValueType(t, updated)
+	if cmd != nil {
+		t.Errorf("expected stale tick to be dropped (cmd=nil), got %T", cmd)
+	}
+	if m.issueSearchQuery == "a" {
+		t.Error("stale tick updated issueSearchQuery — guard failed")
+	}
+}
+
+// TestNewSession_IssueLateFetchAfterEscDoesNotSnapBack verifies that an
+// in-flight issue fetch returning after the user has backed out of the issue
+// selector does not re-enter the issue-select phase.
+func TestNewSession_IssueLateFetchAfterEscDoesNotSnapBack(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{{ExternalId: "ENG-1", Title: "alpha"}}})
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect", m.phase)
+	}
+
+	// Simulate the user activating the filter, typing, and pressing Esc —
+	// which deactivates the filter and dispatches a fetch for "". Capture the
+	// seq the in-flight fetch was issued with.
+	m = sendKey(t, m, '/')
+	updated, _ := m.Update(keyPress('a'))
+	m = assertValueType(t, updated)
+	m = sendSpecialKey(t, m, tea.KeyEscape)
+	inFlightSeq := m.issueSearchSeq
+
+	// Second Esc — back out of the issue selector entirely. This must
+	// invalidate the in-flight fetch so its response does not snap the user
+	// back to the issue-select phase.
+	m = sendSpecialKey(t, m, tea.KeyEscape)
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d after Esc, want newSessionPhaseTypeSelect", m.phase)
+	}
+
+	// Late response from the Esc-triggered refetch arrives. Handler must drop
+	// it rather than force the phase back to issue select.
+	m = sendMsg(t, m, issuesMsg{
+		issues: []*pb.TrackerIssue{{ExternalId: "ENG-1", Title: "alpha"}},
+		seq:    inFlightSeq,
+		query:  "",
+	})
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("late issuesMsg snapped phase back to %d, want newSessionPhaseTypeSelect", m.phase)
+	}
+}
+
+// TestNewSession_IssueStaleFetchDroppedWhileTyping verifies that a fetch
+// issued by an earlier debounce tick is discarded when the user keeps typing
+// before the response arrives — otherwise the "searching…" indicator would
+// disappear and the cursor would jump to row 0 mid-keystroke.
+func TestNewSession_IssueStaleFetchDroppedWhileTyping(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+		{ExternalId: "ENG-1", Title: "alpha", State: "open"},
+		{ExternalId: "ENG-2", Title: "beta", State: "open"},
+	}})
+
+	// First keystroke → first tick fires → fetch dispatched with seq=1.
+	m = sendKey(t, m, '/')
+	updated, _ := m.Update(keyPress('a'))
+	m = assertValueType(t, updated)
+	updated, _ = m.Update(searchIssuesTickMsg{seq: m.issueSearchSeq, query: m.issueFilter.Query()})
+	m = assertValueType(t, updated)
+	firstFetchSeq := m.issueSearchSeq
+
+	// User keeps typing before the first fetch returns — seq bumps past the
+	// in-flight fetch's seq.
+	updated, _ = m.Update(keyPress('b'))
+	m = assertValueType(t, updated)
+	if m.issueSearchSeq == firstFetchSeq {
+		t.Fatalf("issueSearchSeq did not advance after second keystroke")
+	}
+	if !m.issuesFetching {
+		t.Fatal("issuesFetching = false while user is still typing")
+	}
+
+	// Late response from the first fetch arrives. It must be dropped so the
+	// "searching…" indicator stays up and the cached rows are preserved.
+	m = sendMsg(t, m, issuesMsg{
+		issues: []*pb.TrackerIssue{{ExternalId: "ENG-STALE", Title: "stale"}},
+		seq:    firstFetchSeq,
+		query:  "a",
+	})
+	if !m.issuesFetching {
+		t.Error("stale issuesMsg cleared issuesFetching — guard failed")
+	}
+	if len(m.trackerIssues) != 2 {
+		t.Errorf("stale issuesMsg overwrote trackerIssues: got %d entries, want 2", len(m.trackerIssues))
+	}
+}
+
+// TestNewSession_IssueRefetchResetsStaleFilteredIndices mirrors the PR
+// regression for the Linear issue selector.
+func TestNewSession_IssueRefetchResetsStaleFilteredIndices(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	longList := []*pb.TrackerIssue{
+		{ExternalId: "ENG-1", Title: "alpha", State: "open"},
+		{ExternalId: "ENG-2", Title: "beta", State: "open"},
+		{ExternalId: "ENG-3", Title: "gamma", State: "open"},
+	}
+	m = sendMsg(t, m, issuesMsg{issues: longList})
+	if got := len(m.issuesFiltered); got != len(longList) {
+		t.Fatalf("after first issuesMsg: len(issuesFiltered)=%d, want %d", got, len(longList))
+	}
+
+	shortList := []*pb.TrackerIssue{
+		{ExternalId: "ENG-9", Title: "fresh-one", State: "open"},
+	}
+	m = sendMsg(t, m, issuesMsg{issues: shortList})
+
+	if got := len(m.trackerIssues); got != len(shortList) {
+		t.Fatalf("len(trackerIssues)=%d, want %d", got, len(shortList))
+	}
+	if got := len(m.issuesFiltered); got != len(shortList) {
+		t.Fatalf("len(issuesFiltered)=%d, want %d after refetch", got, len(shortList))
+	}
+	for _, i := range m.issuesFiltered {
+		if i < 0 || i >= len(m.trackerIssues) {
+			t.Fatalf("stale index %d in issuesFiltered (len=%d)", i, len(m.trackerIssues))
+		}
 	}
 }

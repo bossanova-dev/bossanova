@@ -32,6 +32,7 @@ service DaemonService {
   rpc ResumeSession(ResumeSessionRequest) returns (ResumeSessionResponse);
   rpc RetrySession(RetrySessionRequest) returns (RetrySessionResponse);
   rpc CloseSession(CloseSessionRequest) returns (CloseSessionResponse);
+  rpc MergeSession(MergeSessionRequest) returns (MergeSessionResponse);
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
 
@@ -178,6 +179,7 @@ message ListRepoPRsResponse {
 
 message ListTrackerIssuesRequest {
   string repo_id = 1;
+  string query = 2;
 }
 
 message ListTrackerIssuesResponse {
@@ -309,6 +311,14 @@ message CloseSessionRequest {
 }
 
 message CloseSessionResponse {
+  Session session = 1;
+}
+
+message MergeSessionRequest {
+  string id = 1;
+}
+
+message MergeSessionResponse {
   Session session = 1;
 }
 

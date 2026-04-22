@@ -71,3 +71,26 @@ func TestDriver_ScreenContains(t *testing.T) {
 		t.Fatal("ScreenContains returned true for absent text")
 	}
 }
+
+// TestDriver_CloseRaceRegression exercises the vt.Close vs responseLoop
+// race by creating and closing drivers back-to-back. Pre-fix this tripped
+// -race on the emulator's `closed` bool; post-fix the pipe writer is
+// closed directly and -race stays quiet.
+func TestDriver_CloseRaceRegression(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping race-stress regression in -short mode")
+	}
+	for i := range 30 {
+		d, err := tuidriver.New(tuidriver.Options{
+			Command: "true",
+			Width:   80,
+			Height:  24,
+		})
+		if err != nil {
+			t.Fatalf("iter %d: New: %v", i, err)
+		}
+		if err := d.Close(); err != nil {
+			t.Fatalf("iter %d: Close: %v", i, err)
+		}
+	}
+}

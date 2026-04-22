@@ -2,9 +2,33 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"sync"
 	"time"
 )
+
+// migrationHintOnce ensures the "run 'boss login' to reset" hint is printed
+// at most once per process, even across multiple Load() callers.
+var (
+	migrationHintOnce sync.Once
+	migrationHintOut  io.Writer = os.Stderr
+)
+
+// maybeWarnCredentialsUnreadable prints a one-shot hint when a Load() failure
+// indicates the stored credentials can't be decrypted. Typical cause: the
+// user upgraded past the keyringutil rollout and their on-disk keyring file
+// was encrypted with the old hardcoded passphrase.
+func maybeWarnCredentialsUnreadable(err error) {
+	if !errors.Is(err, ErrCredentialsUnreadable) {
+		return
+	}
+	migrationHintOnce.Do(func() {
+		_, _ = fmt.Fprintln(migrationHintOut, "warning: stored credentials can't be decrypted with the current keyring passphrase — run 'boss logout && boss login' to reset.")
+	})
+}
 
 // Config holds WorkOS provider configuration.
 type Config struct {
@@ -28,6 +52,7 @@ func NewManager(store TokenStore, cfg Config) *Manager {
 func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	tokens, err := m.store.Load()
 	if err != nil {
+		maybeWarnCredentialsUnreadable(err)
 		// No stored tokens — not logged in.
 		return "", nil
 	}
@@ -95,6 +120,7 @@ type Status struct {
 func (m *Manager) Status() *Status {
 	tokens, err := m.store.Load()
 	if err != nil {
+		maybeWarnCredentialsUnreadable(err)
 		return &Status{LoggedIn: false}
 	}
 

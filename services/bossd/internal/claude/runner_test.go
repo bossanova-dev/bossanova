@@ -311,6 +311,67 @@ func TestSubscribeUnknownSession(t *testing.T) {
 	}
 }
 
+// TestSubscriberCancelRemovesFromList verifies that cancelling the context
+// passed to Subscribe deregisters the subscriber channel from the broadcaster's
+// list. This is the invariant AttachSession relies on: when the handler
+// returns (for any reason), its sub-context is cancelled and the channel is
+// promptly removed so we don't leak a slot in subscribers.chans.
+func TestSubscriberCancelRemovesFromList(t *testing.T) {
+	// Build a runner whose fake "claude" process blocks on stdin so the
+	// session stays running until we explicitly stop it — that way we can
+	// observe the subscriber list before the process-exit cleanup closes it.
+	logDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	r := NewRunner(
+		zerolog.Nop(),
+		WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c", "cat > /dev/null")
+		}),
+		WithLogDir(logDir),
+		WithConfigPath(configPath),
+	)
+	ctx := context.Background()
+	sid, err := r.Start(ctx, t.TempDir(), "test plan", nil, "")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = r.Stop(sid) }()
+
+	subCtx, cancel := context.WithCancel(ctx)
+	if _, err := r.Subscribe(subCtx, sid); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	r.mu.RLock()
+	p := r.procs[sid]
+	r.mu.RUnlock()
+
+	// Sanity: exactly one subscriber registered.
+	p.subs.mu.RLock()
+	initial := len(p.subs.chans)
+	p.subs.mu.RUnlock()
+	if initial != 1 {
+		t.Fatalf("expected 1 subscriber after Subscribe, got %d", initial)
+	}
+
+	cancel()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		p.subs.mu.RLock()
+		remaining := len(p.subs.chans)
+		p.subs.mu.RUnlock()
+		if remaining == 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("subscriber not removed after context cancel; %d still registered", remaining)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 func TestStopUnknownSession(t *testing.T) {
 	r := NewRunner(zerolog.Nop())
 	if err := r.Stop("nonexistent"); err == nil {

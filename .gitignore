@@ -43,4 +43,4 @@ docs/handoffs/
 .mutate/
 
 # Beads
-.beads/issues.jsonl
+.beads

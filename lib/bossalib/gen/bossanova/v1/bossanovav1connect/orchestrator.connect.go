@@ -75,6 +75,9 @@ const (
 	// OrchestratorServiceDeleteWebhookConfigProcedure is the fully-qualified name of the
 	// OrchestratorService's DeleteWebhookConfig RPC.
 	OrchestratorServiceDeleteWebhookConfigProcedure = "/bossanova.v1.OrchestratorService/DeleteWebhookConfig"
+	// OrchestratorServiceReportBugProcedure is the fully-qualified name of the OrchestratorService's
+	// ReportBug RPC.
+	OrchestratorServiceReportBugProcedure = "/bossanova.v1.OrchestratorService/ReportBug"
 )
 
 // OrchestratorServiceClient is a client for the bossanova.v1.OrchestratorService service.
@@ -97,6 +100,9 @@ type OrchestratorServiceClient interface {
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
 	DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error)
+	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
+	// resolves the caller's identity when a bearer token is present.
+	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
 }
 
 // NewOrchestratorServiceClient constructs a client for the bossanova.v1.OrchestratorService
@@ -194,6 +200,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteWebhookConfig")),
 			connect.WithClientOptions(opts...),
 		),
+		reportBug: connect.NewClient[v1.ReportBugRequest, v1.ReportBugResponse](
+			httpClient,
+			baseURL+OrchestratorServiceReportBugProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ReportBug")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -213,6 +225,7 @@ type orchestratorServiceClient struct {
 	createWebhookConfig *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
 	listWebhookConfigs  *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
 	deleteWebhookConfig *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
+	reportBug           *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
 }
 
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
@@ -285,6 +298,11 @@ func (c *orchestratorServiceClient) DeleteWebhookConfig(ctx context.Context, req
 	return c.deleteWebhookConfig.CallUnary(ctx, req)
 }
 
+// ReportBug calls bossanova.v1.OrchestratorService.ReportBug.
+func (c *orchestratorServiceClient) ReportBug(ctx context.Context, req *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {
+	return c.reportBug.CallUnary(ctx, req)
+}
+
 // OrchestratorServiceHandler is an implementation of the bossanova.v1.OrchestratorService service.
 type OrchestratorServiceHandler interface {
 	// Daemon registry
@@ -305,6 +323,9 @@ type OrchestratorServiceHandler interface {
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
 	DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error)
+	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
+	// resolves the caller's identity when a bearer token is present.
+	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
 }
 
 // NewOrchestratorServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -398,6 +419,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteWebhookConfig")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceReportBugHandler := connect.NewUnaryHandler(
+		OrchestratorServiceReportBugProcedure,
+		svc.ReportBug,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ReportBug")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.OrchestratorService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case OrchestratorServiceRegisterDaemonProcedure:
@@ -428,6 +455,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceListWebhookConfigsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceDeleteWebhookConfigProcedure:
 			orchestratorServiceDeleteWebhookConfigHandler.ServeHTTP(w, r)
+		case OrchestratorServiceReportBugProcedure:
+			orchestratorServiceReportBugHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -491,4 +520,8 @@ func (UnimplementedOrchestratorServiceHandler) ListWebhookConfigs(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteWebhookConfig is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ReportBug is not implemented"))
 }

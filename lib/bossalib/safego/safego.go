@@ -9,9 +9,14 @@ import (
 
 // Go launches fn in a new goroutine with panic recovery.
 // If fn panics, the panic is logged and the goroutine returns
-// instead of crashing the process.
-func Go(logger zerolog.Logger, fn func()) {
+// instead of crashing the process. The returned channel is closed
+// once the goroutine has exited — including after panic recovery
+// and its log write — so callers (typically tests) can synchronize
+// on completion without racing the recover path.
+func Go(logger zerolog.Logger, fn func()) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer func() {
 			if r := recover(); r != nil {
 				logger.Error().
@@ -22,4 +27,5 @@ func Go(logger zerolog.Logger, fn func()) {
 		}()
 		fn()
 	}()
+	return done
 }

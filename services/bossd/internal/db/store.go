@@ -103,12 +103,21 @@ type UpdateSessionParams struct {
 	ArchivedAt        **string // ISO 8601 string or nil
 }
 
+// SessionWithRepo pairs a Session with its owning repo's display name, so
+// callers that need both can fetch them in a single join query rather than
+// issuing a follow-up Get per session.
+type SessionWithRepo struct {
+	*models.Session
+	RepoDisplayName string
+}
+
 // SessionStore defines the interface for session persistence.
 type SessionStore interface {
 	Create(ctx context.Context, params CreateSessionParams) (*models.Session, error)
 	Get(ctx context.Context, id string) (*models.Session, error)
 	List(ctx context.Context, repoID string) ([]*models.Session, error)
 	ListActive(ctx context.Context, repoID string) ([]*models.Session, error)
+	ListActiveWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error)
 	ListArchived(ctx context.Context, repoID string) ([]*models.Session, error)
 	Update(ctx context.Context, id string, params UpdateSessionParams) (*models.Session, error)
 	Archive(ctx context.Context, id string) error

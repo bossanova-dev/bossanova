@@ -53,6 +53,16 @@ type chatDeletedMsg struct {
 	err      error
 }
 
+// newTabResultMsg carries the result of an async openInNewTab call.
+type newTabResultMsg struct {
+	err error
+}
+
+// mergeResultMsg carries the result of an async MergeSession RPC call.
+type mergeResultMsg struct {
+	err error
+}
+
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
@@ -70,24 +80,39 @@ type ChatPickerModel struct {
 	loading bool
 	err     error
 	cancel  bool
+	merged  bool
 	width   int
 	height  int
 
+	// newTabSupported is cached at construction so we don't re-inspect
+	// env vars on every render. The [t]erminal action is hidden when
+	// false — there's no recoverable path on unsupported terminals.
+	newTabSupported bool
+
+	// Transient status line (e.g. "couldn't open new tab in <term>"),
+	// cleared on the next keypress.
+	statusMsg string
+
 	// Remove confirmation
 	confirming bool
+
+	// Merge confirmation / in-progress
+	mergeConfirming bool
+	merging         bool
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
 // If highlightClaudeID is non-empty, that chat will be auto-highlighted after loading.
 func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionID, highlightClaudeID string) ChatPickerModel {
 	return ChatPickerModel{
-		client:      c,
-		ctx:         parentCtx,
-		sessionID:   sessionID,
-		highlightID: highlightClaudeID,
-		spinner:     newStatusSpinner(),
-		loading:     true,
-		table:       newBossTable(nil, nil, 0),
+		client:          c,
+		ctx:             parentCtx,
+		sessionID:       sessionID,
+		highlightID:     highlightClaudeID,
+		spinner:         newStatusSpinner(),
+		loading:         true,
+		table:           newBossTable(nil, nil, 0),
+		newTabSupported: hasNewTabSupport(),
 	}
 }
 
@@ -233,6 +258,15 @@ func (m *ChatPickerModel) buildTableRows() {
 	m.table.SetCursor(cursor)
 }
 
+// canMerge reports whether the [m]erge action should be available for the
+// current session — only when the session has an open PR and its display
+// status is "passing".
+func (m ChatPickerModel) canMerge() bool {
+	return m.session != nil &&
+		m.session.GetPrNumber() != 0 &&
+		m.session.GetPrDisplayStatus() == pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING
+}
+
 // selectedChat returns the chat at the current table cursor, or nil if empty.
 func (m ChatPickerModel) selectedChat() *pb.ClaudeChat {
 	idx := m.table.Cursor()
@@ -315,6 +349,25 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case newTabResultMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Couldn't open new tab: %v", msg.err)
+		}
+		return m, nil
+
+	case mergeResultMsg:
+		m.merging = false
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Couldn't merge: %v", msg.err)
+			return m, nil
+		}
+		// Merge succeeded — signal App to return to the session list. The
+		// server-side PR state transition lands asynchronously via webhook;
+		// HomeModel renders the session as MERGED optimistically until the
+		// daemon reconciles.
+		m.merged = true
+		return m, nil
+
 	case tickMsg:
 		return m, tea.Batch(m.refreshStatuses(), tickCmd())
 
@@ -346,9 +399,21 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// While a merge is in flight the View hides all action bars and
+		// confirmation prompts behind the spinner. Swallow key input so the
+		// user can't invisibly enter `d`/`m` confirm state and then confirm
+		// it with `y` against a prompt they can't see.
+		if m.merging {
+			return m, nil
+		}
 		if m.confirming {
 			return m.updateDeleteConfirm(msg)
 		}
+		if m.mergeConfirming {
+			return m.updateMergeConfirm(msg)
+		}
+
+		m.statusMsg = ""
 
 		switch msg.String() {
 		case "esc":
@@ -368,6 +433,23 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					sessionID: m.sessionID,
 				}
 			}
+		case "t":
+			if !m.newTabSupported || m.session == nil {
+				return m, nil
+			}
+			path := m.session.GetWorktreePath()
+			if path == "" {
+				return m, nil
+			}
+			return m, func() tea.Msg {
+				return newTabResultMsg{err: openInNewTab(path)}
+			}
+		case "m":
+			if !m.canMerge() {
+				return m, nil
+			}
+			m.mergeConfirming = true
+			return m, nil
 		case "d":
 			if chat := m.selectedChat(); chat != nil {
 				m.confirming = true
@@ -397,6 +479,24 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m ChatPickerModel) updateMergeConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		m.mergeConfirming = false
+		m.merging = true
+		client := m.client
+		ctx := m.ctx
+		id := m.sessionID
+		return m, func() tea.Msg {
+			_, err := client.MergeSession(ctx, id)
+			return mergeResultMsg{err: err}
+		}
+	case "n", "esc":
+		m.mergeConfirming = false
+	}
+	return m, nil
+}
+
 func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
@@ -418,6 +518,19 @@ func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 
 // Cancelled returns true if the user cancelled the chat picker.
 func (m ChatPickerModel) Cancelled() bool { return m.cancel }
+
+// Merged returns true if the user just completed a successful merge from
+// this session. App uses this signal to return to the home view.
+func (m ChatPickerModel) Merged() bool { return m.merged }
+
+// Session returns the active session, or nil if it has not been fetched yet.
+// Used by the top-level App to attach session context to a bug report.
+func (m ChatPickerModel) Session() *pb.Session { return m.session }
+
+// DaemonStatuses returns the per-chat daemon heartbeat statuses, keyed by
+// Claude ID. Used by the top-level App to attach diagnostic context to a
+// bug report.
+func (m ChatPickerModel) DaemonStatuses() map[string]string { return m.daemonStatuses }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m ChatPickerModel) tableHeight() int {
@@ -448,7 +561,14 @@ func (m ChatPickerModel) View() tea.View {
 	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
 	b.WriteString("\n")
 
-	if m.confirming {
+	if m.merging {
+		label := "Merging PR..."
+		if n := m.session.GetPrNumber(); n != 0 {
+			label = fmt.Sprintf("Merging PR #%d...", n)
+		}
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
+			m.spinner.View() + label))
+	} else if m.confirming {
 		chat := m.selectedChat()
 		if chat != nil {
 			chatTitle := chat.Title
@@ -461,16 +581,36 @@ func (m ChatPickerModel) View() tea.View {
 			b.WriteString("\n")
 			b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 		}
+	} else if m.mergeConfirming {
+		prompt := "Merge PR?"
+		if n := m.session.GetPrNumber(); n != 0 {
+			prompt = fmt.Sprintf("Merge PR #%d?", n)
+		}
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(prompt))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
+		if m.statusMsg != "" {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
+			b.WriteString("\n")
+		}
+		middle := []string{"[n]ew chat", "[s]ettings"}
+		if m.newTabSupported {
+			middle = append(middle, "[t]erminal")
+		}
+		if m.canMerge() {
+			middle = append(middle, "[m]erge")
+		}
 		if m.selectedChat() != nil {
 			b.WriteString(actionBar(
 				[]string{"[enter] select", "[d]elete"},
-				[]string{"[n]ew chat", "[s]ettings"},
+				middle,
 				[]string{"[esc] back"},
 			))
 		} else {
 			b.WriteString(actionBar(
-				[]string{"[n]ew chat", "[s]ettings"},
+				middle,
 				[]string{"[esc] back"},
 			))
 		}

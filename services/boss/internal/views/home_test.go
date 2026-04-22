@@ -171,6 +171,79 @@ func TestRenderTrackerLink(t *testing.T) {
 	}
 }
 
+func TestRenderMutedTrackerLink(t *testing.T) {
+	url := "https://linear.app/team/issue/FRE-1176"
+	// Shorthands for the raw-ANSI envelopes used in the expected strings.
+	const (
+		ms   = "\x1b[38;2;98;98;98;9m"   // muted + strike open
+		msc  = "\x1b[39;29m"             // muted + strike close
+		msu  = "\x1b[38;2;98;98;98;9;4m" // muted + strike + underline open
+		msuc = "\x1b[39;29;24m"          // muted + strike + underline close
+	)
+	target := "[FRE-1176]"
+	styledTarget := msu + target + msuc
+	linkedTarget := "\x1b]8;;" + url + "\x1b\\" + styledTarget + "\x1b]8;;\x1b\\"
+
+	tests := []struct {
+		name  string
+		sess  *pb.Session
+		title string
+		want  string
+	}{
+		{
+			name:  "nil session wraps whole title",
+			sess:  nil,
+			title: "[FRE-1176] Some title",
+			want:  ms + "[FRE-1176] Some title" + msc,
+		},
+		{
+			name:  "no tracker ID wraps whole title",
+			sess:  &pb.Session{},
+			title: "[FRE-1176] Some title",
+			want:  ms + "[FRE-1176] Some title" + msc,
+		},
+		{
+			name:  "tracker ID not in title wraps whole title",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-999"), TrackerUrl: &url},
+			title: "[FRE-1176] Some title",
+			want:  ms + "[FRE-1176] Some title" + msc,
+		},
+		{
+			name:  "tracker ID with URL",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-1176"), TrackerUrl: &url},
+			title: "[FRE-1176] Some title",
+			want:  linkedTarget + ms + " Some title" + msc,
+		},
+		{
+			name:  "tracker ID without URL",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-1176")},
+			title: "[FRE-1176] Some title",
+			want:  styledTarget + ms + " Some title" + msc,
+		},
+		{
+			name:  "tracker ID at end of title",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-1176"), TrackerUrl: &url},
+			title: "Some title [FRE-1176]",
+			want:  ms + "Some title " + msc + linkedTarget,
+		},
+		{
+			name:  "title is only the tracker ID",
+			sess:  &pb.Session{TrackerId: strPtr("FRE-1176"), TrackerUrl: &url},
+			title: "[FRE-1176]",
+			want:  linkedTarget,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderMutedTrackerLink(tt.sess, tt.title)
+			if got != tt.want {
+				t.Errorf("renderMutedTrackerLink() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func TestViewEmptyStateNoRepos(t *testing.T) {
@@ -199,6 +272,66 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 	// 'n' (new session) should not be offered when there are no repos
 	if strings.Contains(content, "[n]ew session") {
 		t.Errorf("should not offer [n]ew session when no repos exist, got: %s", content)
+	}
+}
+
+func TestApplyMergedOptimisticOverride(t *testing.T) {
+	passing := pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING
+	merged := pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED
+	closed := pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED
+
+	tests := []struct {
+		name          string
+		trackedID     string
+		serverStatus  pb.PRDisplayStatus
+		wantStatus    pb.PRDisplayStatus
+		wantTrackedID string
+	}{
+		{
+			name:          "no tracked id is a no-op",
+			trackedID:     "",
+			serverStatus:  passing,
+			wantStatus:    passing,
+			wantTrackedID: "",
+		},
+		{
+			name:          "overrides passing while webhook is in flight",
+			trackedID:     "s1",
+			serverStatus:  passing,
+			wantStatus:    merged,
+			wantTrackedID: "s1",
+		},
+		{
+			name:          "clears override once server reports merged",
+			trackedID:     "s1",
+			serverStatus:  merged,
+			wantStatus:    merged,
+			wantTrackedID: "",
+		},
+		{
+			name:          "clears override once server reports closed",
+			trackedID:     "s1",
+			serverStatus:  closed,
+			wantStatus:    closed,
+			wantTrackedID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sess := &pb.Session{Id: "s1", PrDisplayStatus: tt.serverStatus}
+			h := HomeModel{
+				sessions:           []*pb.Session{sess},
+				mergedOptimisticID: tt.trackedID,
+			}
+			h.applyMergedOptimisticOverride()
+			if got := sess.PrDisplayStatus; got != tt.wantStatus {
+				t.Errorf("session PrDisplayStatus = %v, want %v", got, tt.wantStatus)
+			}
+			if h.mergedOptimisticID != tt.wantTrackedID {
+				t.Errorf("mergedOptimisticID = %q, want %q", h.mergedOptimisticID, tt.wantTrackedID)
+			}
+		})
 	}
 }
 

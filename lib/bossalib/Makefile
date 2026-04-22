@@ -4,9 +4,9 @@
 format:
 	gofmt -w .
 
-## test: Run tests
+## test: Run tests under -race with coverage
 test:
-	go test ./...
+	go test -race -timeout 300s -coverprofile=coverage.out ./...
 
 ## clean: Remove generated code and copied skills
 clean:

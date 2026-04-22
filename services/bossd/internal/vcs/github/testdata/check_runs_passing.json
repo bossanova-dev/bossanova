@@ -1,0 +1,17 @@
+[
+  {
+    "name": "build",
+    "state": "SUCCESS",
+    "workflow": "ci.yml"
+  },
+  {
+    "name": "test",
+    "state": "SUCCESS",
+    "workflow": "ci.yml"
+  },
+  {
+    "name": "lint",
+    "state": "SUCCESS",
+    "workflow": "ci.yml"
+  }
+]

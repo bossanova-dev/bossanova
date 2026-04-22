@@ -23,6 +23,8 @@ type TmuxStatusPoller struct {
 
 	mu           sync.Mutex
 	prevCaptures map[string]captureEntry // claudeID -> previous capture
+
+	done chan struct{} // closed when Run's goroutine exits
 }
 
 type captureEntry struct {
@@ -38,6 +40,7 @@ func NewTmuxStatusPoller(tracker *Tracker, chats db.ClaudeChatStore, tmux *tmux.
 		tmux:         tmux,
 		logger:       logger,
 		prevCaptures: make(map[string]captureEntry),
+		done:         make(chan struct{}),
 	}
 }
 
@@ -50,6 +53,7 @@ const IdleThreshold = 5 * time.Second
 // Run starts the background polling goroutine. It stops when ctx is cancelled.
 func (p *TmuxStatusPoller) Run(ctx context.Context) {
 	safego.Go(p.logger, func() {
+		defer close(p.done)
 		ticker := time.NewTicker(PollInterval)
 		defer ticker.Stop()
 		for {
@@ -62,6 +66,9 @@ func (p *TmuxStatusPoller) Run(ctx context.Context) {
 		}
 	})
 }
+
+// Done returns a channel closed when Run's goroutine exits.
+func (p *TmuxStatusPoller) Done() <-chan struct{} { return p.done }
 
 // pollOnce scans all chats with non-null tmux_session_name and updates statuses.
 func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {

@@ -106,7 +106,7 @@ func (c *RemoteClient) ListRepoPRs(_ context.Context, _ string) ([]*pb.PRSummary
 	return nil, errLocalOnly("ListRepoPRs")
 }
 
-func (c *RemoteClient) ListTrackerIssues(_ context.Context, _ string) ([]*pb.TrackerIssue, error) {
+func (c *RemoteClient) ListTrackerIssues(_ context.Context, _, _ string) ([]*pb.TrackerIssue, error) {
 	return nil, errLocalOnly("ListTrackerIssues")
 }
 
@@ -177,6 +177,10 @@ func (c *RemoteClient) RetrySession(_ context.Context, _ string) (*pb.Session, e
 
 func (c *RemoteClient) CloseSession(_ context.Context, _ string) (*pb.Session, error) {
 	return nil, errLocalOnly("CloseSession")
+}
+
+func (c *RemoteClient) MergeSession(_ context.Context, _ string) (*pb.Session, error) {
+	return nil, errLocalOnly("MergeSession")
 }
 
 func (c *RemoteClient) RemoveSession(_ context.Context, _ string) error {

@@ -4,6 +4,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/99designs/keyring"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"github.com/recurser/bossalib/keyringutil"
 	"github.com/recurser/bossalib/safego"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -37,12 +39,21 @@ type Config struct {
 	UserJWT         string // user's OIDC JWT for initial registration
 }
 
+// defaultOrchestratorURL is the production bosso that bossd syncs with
+// when BOSSD_ORCHESTRATOR_URL is unset. Set the env var to an empty string
+// to force local-only mode (dev), or to a different URL (staging, self-host).
+const defaultOrchestratorURL = "https://orchestrator.bossanova.dev"
+
 // ConfigFromEnv reads upstream configuration from environment variables.
-// Returns nil if BOSSD_ORCHESTRATOR_URL is not set (local-only mode).
-// If BOSSD_USER_JWT is not set, falls back to reading the access token
-// from the OS keychain (shared with "boss login").
+// Unset BOSSD_ORCHESTRATOR_URL uses defaultOrchestratorURL; an explicitly
+// empty value opts out and returns nil (local-only mode). If BOSSD_USER_JWT
+// is not set, falls back to reading the access token from the OS keychain
+// (shared with "boss login").
 func ConfigFromEnv() *Config {
-	url := os.Getenv("BOSSD_ORCHESTRATOR_URL")
+	url, set := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
+	if !set {
+		url = defaultOrchestratorURL
+	}
 	if url == "" {
 		return nil
 	}
@@ -69,18 +80,37 @@ type keychainTokens struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
-// openKeyring opens the shared bossanova keyring.
+// openKeyring opens the shared bossanova keyring. bossd runs as a daemon
+// with no flag plumbing, so allowInsecure is hard-wired to false here — a
+// broken environment should surface a real error rather than silently
+// reverting to the hardcoded passphrase.
 func openKeyring() (keyring.Keyring, error) {
 	return keyring.Open(keyring.Config{
 		ServiceName:              "bossanova",
 		KeychainTrustApplication: true,
 		FileDir:                  "~/.config/bossanova/keyring",
-		FilePasswordFunc:         keyring.FixedStringPrompt("bossanova"),
+		FilePasswordFunc:         keyring.PromptFunc(keyringutil.New(false)),
+	})
+}
+
+// keychainWarnOnce ensures the "run boss login to reset" hint is logged at
+// most once per daemon process even when loadTokenFromKeychain is called
+// multiple times.
+var keychainWarnOnce sync.Once
+
+func warnKeychainOnce(err error) {
+	keychainWarnOnce.Do(func() {
+		fmt.Fprintf(os.Stderr,
+			"bossd: could not read stored credentials (%v) — run 'boss logout && boss login' on this host if auth was previously configured\n",
+			err,
+		)
 	})
 }
 
 // loadTokenFromKeychain reads the access token stored by "boss login",
-// refreshing it via the WorkOS API if expired.
+// refreshing it via the WorkOS API if expired. Returns "" when no tokens
+// are stored or when the stored tokens can't be read; a decrypt failure
+// (stale passphrase after the keyringutil rollout) is logged once.
 func loadTokenFromKeychain() string {
 	ring, err := openKeyring()
 	if err != nil {
@@ -89,11 +119,15 @@ func loadTokenFromKeychain() string {
 
 	item, err := ring.Get("workos-tokens")
 	if err != nil {
+		if !errors.Is(err, keyring.ErrKeyNotFound) {
+			warnKeychainOnce(err)
+		}
 		return ""
 	}
 
 	var tokens keychainTokens
 	if err := json.Unmarshal(item.Data, &tokens); err != nil {
+		warnKeychainOnce(err)
 		return ""
 	}
 

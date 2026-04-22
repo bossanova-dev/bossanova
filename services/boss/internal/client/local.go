@@ -132,8 +132,8 @@ func (c *LocalClient) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRS
 	return resp.Msg.PullRequests, nil
 }
 
-func (c *LocalClient) ListTrackerIssues(ctx context.Context, repoID string) ([]*pb.TrackerIssue, error) {
-	resp, err := c.rpc.ListTrackerIssues(ctx, connect.NewRequest(&pb.ListTrackerIssuesRequest{RepoId: repoID}))
+func (c *LocalClient) ListTrackerIssues(ctx context.Context, repoID, query string) ([]*pb.TrackerIssue, error) {
+	resp, err := c.rpc.ListTrackerIssues(ctx, connect.NewRequest(&pb.ListTrackerIssuesRequest{RepoId: repoID, Query: query}))
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +229,14 @@ func (c *LocalClient) RetrySession(ctx context.Context, id string) (*pb.Session,
 
 func (c *LocalClient) CloseSession(ctx context.Context, id string) (*pb.Session, error) {
 	resp, err := c.rpc.CloseSession(ctx, connect.NewRequest(&pb.CloseSessionRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.Session, nil
+}
+
+func (c *LocalClient) MergeSession(ctx context.Context, id string) (*pb.Session, error) {
+	resp, err := c.rpc.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: id}))
 	if err != nil {
 		return nil, err
 	}

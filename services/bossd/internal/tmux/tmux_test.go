@@ -402,6 +402,43 @@ func TestCapturePane_ScrollbackFlag(t *testing.T) {
 	}
 }
 
+func TestPasteText_Args(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.PasteText(ctx, "boss-test-sess", "hello\nworld"); err != nil {
+		t.Fatalf("PasteText failed: %v", err)
+	}
+
+	if len(mock.calls) != 2 {
+		t.Fatalf("expected 2 tmux calls (load-buffer, paste-buffer), got %d: %v", len(mock.calls), mock.calls)
+	}
+
+	wantLoad := []string{"tmux", "load-buffer", "-b", "bossanova-prefill-boss-test-sess", "-"}
+	if !equalSlices(mock.calls[0], wantLoad) {
+		t.Errorf("load-buffer args: expected %v, got %v", wantLoad, mock.calls[0])
+	}
+
+	wantPaste := []string{"tmux", "paste-buffer", "-d", "-p", "-b", "bossanova-prefill-boss-test-sess", "-t", "boss-test-sess"}
+	if !equalSlices(mock.calls[1], wantPaste) {
+		t.Errorf("paste-buffer args: expected %v, got %v", wantPaste, mock.calls[1])
+	}
+}
+
+func TestPasteText_EmptySessionName(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.PasteText(ctx, "", "hi"); err == nil {
+		t.Fatal("expected error for empty session name, got nil")
+	}
+	if len(mock.calls) != 0 {
+		t.Errorf("expected no tmux calls when session name is empty, got %d", len(mock.calls))
+	}
+}
+
 func equalSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -84,6 +84,12 @@ func (m *Manager) SessionStatus(sessionID string) string {
 }
 
 // GetOrStart returns an existing process for the given ID, or starts a new one.
+//
+// Concurrency: the whole "check entry → observe p.done → delete → insert new"
+// sequence runs under m.mu. That makes check-then-delete atomic with respect
+// to any other map-mutating call (Get, Cleanup, GetOrStart) so a concurrent
+// Get cannot observe a dead entry that this call is about to replace.
+// TestManagerConcurrentGetGetOrStartCleanup locks this invariant in under -race.
 func (m *Manager) GetOrStart(id string, cmd *exec.Cmd) (*Process, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

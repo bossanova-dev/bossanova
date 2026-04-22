@@ -42,9 +42,14 @@ func authStatusCmd() *cobra.Command {
 	}
 }
 
+// defaultWorkOSClientID is the production WorkOS device-code client that
+// `boss login` uses when BOSS_WORKOS_CLIENT_ID is unset. WorkOS client IDs
+// are public; the secret is held by WorkOS. Override for staging.
+const defaultWorkOSClientID = "client_01KP805YXXAMZSN2YB4NGXS9XB"
+
 func authConfig() auth.Config {
 	return auth.Config{
-		ClientID: envOr("BOSS_WORKOS_CLIENT_ID", ""),
+		ClientID: envOr("BOSS_WORKOS_CLIENT_ID", defaultWorkOSClientID),
 	}
 }
 
@@ -55,10 +60,17 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func newAuthManager() (*auth.Manager, error) {
-	store, err := auth.NewKeychainStore()
-	if err != nil {
-		return nil, fmt.Errorf("open keychain: %w", err)
+func newAuthManager(cmd *cobra.Command) (*auth.Manager, error) {
+	var store auth.TokenStore
+	if override := resolveE2ETokenStore(); override != nil {
+		// Only reachable under the `e2e` build tag; see authstore_e2e.go.
+		store = override
+	} else {
+		ks, err := auth.NewKeychainStore(allowInsecureKeyring(cmd))
+		if err != nil {
+			return nil, fmt.Errorf("open keychain: %w", err)
+		}
+		store = ks
 	}
 
 	cfg := authConfig()
@@ -69,18 +81,31 @@ func newAuthManager() (*auth.Manager, error) {
 	return auth.NewManager(store, cfg), nil
 }
 
+// allowInsecureKeyring reads the --allow-insecure-keyring persistent flag if
+// present. Returns false if the flag isn't registered (e.g. in tests).
+func allowInsecureKeyring(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	v, err := cmd.Flags().GetBool("allow-insecure-keyring")
+	if err != nil {
+		return false
+	}
+	return v
+}
+
 // newOptionalAuthManager returns an auth manager if BOSS_WORKOS_CLIENT_ID is set,
 // or nil otherwise. Errors are swallowed so the TUI works without auth configured.
-func newOptionalAuthManager() *auth.Manager {
-	mgr, err := newAuthManager()
+func newOptionalAuthManager(cmd *cobra.Command) *auth.Manager {
+	mgr, err := newAuthManager(cmd)
 	if err != nil {
 		return nil
 	}
 	return mgr
 }
 
-func runLogin(_ *cobra.Command) error {
-	mgr, err := newAuthManager()
+func runLogin(cmd *cobra.Command) error {
+	mgr, err := newAuthManager(cmd)
 	if err != nil {
 		return err
 	}
@@ -103,8 +128,8 @@ func runLogin(_ *cobra.Command) error {
 	return nil
 }
 
-func runLogout(_ *cobra.Command) error {
-	mgr, err := newAuthManager()
+func runLogout(cmd *cobra.Command) error {
+	mgr, err := newAuthManager(cmd)
 	if err != nil {
 		return err
 	}
@@ -133,8 +158,8 @@ func notifyDaemonAuthChange(action string) {
 	_ = c.NotifyAuthChange(ctx, action)
 }
 
-func runAuthStatus(_ *cobra.Command) error {
-	mgr, err := newAuthManager()
+func runAuthStatus(cmd *cobra.Command) error {
+	mgr, err := newAuthManager(cmd)
 	if err != nil {
 		return err
 	}

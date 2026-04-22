@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,37 +39,21 @@ import (
 // sessionListerAdapter adapts SessionStore to upstream.SessionLister.
 type sessionListerAdapter struct {
 	sessions db.SessionStore
-	repos    db.RepoStore
 }
 
-// ListSessions returns all active (non-archived) sessions as protobuf.
+// ListSessions returns all active (non-archived) sessions as protobuf,
+// populated with each session's repo display name via a single JOIN query.
 func (a *sessionListerAdapter) ListSessions(ctx context.Context) ([]*bossanovav1.Session, error) {
-	// List all active sessions from local DB (pass empty string for all repos)
-	allSessions, err := a.sessions.ListActive(ctx, "")
+	rows, err := a.sessions.ListActiveWithRepo(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-
-	// Convert to protobuf
-	var pbSessions []*bossanovav1.Session
-	for _, s := range allSessions {
-		pbSessions = append(pbSessions, server.SessionToProto(s))
+	pbSessions := make([]*bossanovav1.Session, 0, len(rows))
+	for _, r := range rows {
+		pbSess := server.SessionToProto(r.Session)
+		pbSess.RepoDisplayName = r.RepoDisplayName
+		pbSessions = append(pbSessions, pbSess)
 	}
-
-	// Denormalize repo_display_name, caching to avoid redundant DB calls.
-	repoCache := make(map[string]string)
-	for _, pbSess := range pbSessions {
-		if name, ok := repoCache[pbSess.RepoId]; ok {
-			pbSess.RepoDisplayName = name
-			continue
-		}
-		repo, err := a.repos.Get(ctx, pbSess.RepoId)
-		if err == nil {
-			repoCache[pbSess.RepoId] = repo.DisplayName
-			pbSess.RepoDisplayName = repo.DisplayName
-		}
-	}
-
 	return pbSessions, nil
 }
 
@@ -81,21 +66,52 @@ func main() {
 		return
 	}
 
-	if err := run(); err != nil {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	if err := run(runOpts{stopSig: sigCh}); err != nil {
 		fmt.Fprintf(os.Stderr, "bossd: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	// Human-friendly console logging.
-	bossalog.Setup("bossd")
+// runOpts carries optional overrides for run. All fields are optional;
+// zero values produce the production daemon defaults. Tests use this to
+// inject a synthetic stop signal, isolate paths, and observe readiness.
+type runOpts struct {
+	// stopSig triggers graceful shutdown. Required for non-test callers.
+	stopSig <-chan os.Signal
+
+	// dbPath overrides db.DefaultDBPath() when non-empty.
+	dbPath string
+
+	// socketPath overrides server.DefaultSocketPath() when non-empty.
+	socketPath string
+
+	// plugins overrides discovered/configured plugins when non-nil.
+	// Pass a non-nil empty slice to disable plugin discovery entirely.
+	plugins []config.PluginConfig
+
+	// onReady, if non-nil, is invoked once the daemon's server is
+	// listening and all startup goroutines have been launched. Runs on a
+	// separate goroutine so it cannot block shutdown.
+	onReady func()
+}
+
+func run(opts runOpts) error {
+	// Human-friendly console logging plus rotated file at $XDG_STATE_HOME/bossanova/logs/bossd.log.
+	logCloser := bossalog.Setup("bossd")
+	defer func() { _ = logCloser.Close() }()
 
 	// --- Database ---
 
-	dbPath, err := db.DefaultDBPath()
-	if err != nil {
-		return fmt.Errorf("db path: %w", err)
+	dbPath := opts.dbPath
+	if dbPath == "" {
+		p, err := db.DefaultDBPath()
+		if err != nil {
+			return fmt.Errorf("db path: %w", err)
+		}
+		dbPath = p
 	}
 
 	database, err := db.Open(dbPath)
@@ -123,7 +139,7 @@ func run() error {
 	workflows := db.NewWorkflowStore(database)
 
 	// Create session lister for upstream sync
-	sessionLister := &sessionListerAdapter{sessions: sessions, repos: repos}
+	sessionLister := &sessionListerAdapter{sessions: sessions}
 
 	// Fail any workflows left in running/pending state from a previous daemon
 	// instance. Their driving goroutines no longer exist after a restart.
@@ -172,7 +188,7 @@ func run() error {
 	// Note: FixLoop removed - repair functionality moved to plugin
 
 	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, nil, log.Logger)
-	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, log.Logger)
+	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, session.DefaultPollTimeout, log.Logger)
 
 	// --- Chat Status Tracker ---
 
@@ -210,10 +226,14 @@ func run() error {
 		}
 	})
 
-	if len(settings.Plugins) == 0 {
-		settings.Plugins = config.DiscoverPlugins()
-		if len(settings.Plugins) > 0 {
-			log.Info().Int("count", len(settings.Plugins)).Msg("auto-discovered plugins")
+	pluginCfgs := settings.Plugins
+	if opts.plugins != nil {
+		pluginCfgs = opts.plugins
+	} else if len(pluginCfgs) == 0 {
+		pluginCfgs = config.DiscoverPlugins()
+		if len(pluginCfgs) > 0 {
+			log.Info().Int("count", len(pluginCfgs)).Msg("auto-discovered plugins")
+			settings.Plugins = pluginCfgs
 			if err := config.Save(settings); err != nil {
 				log.Warn().Err(err).Msg("failed to persist discovered plugins to settings")
 			} else {
@@ -222,13 +242,52 @@ func run() error {
 		}
 	}
 
-	if err := pluginHost.Start(context.Background(), settings.Plugins); err != nil {
+	// Self-heal a settings file that accumulated duplicate plugin entries —
+	// e.g. a user added a plugin the discovery loop also wrote. Duplicates
+	// would otherwise spawn parallel plugin subprocesses with independent
+	// in-memory dedup state (see bossd-plugin-repair).
+	if deduped, dropped := config.DedupPluginConfigs(pluginCfgs); dropped {
+		log.Warn().Int("before", len(pluginCfgs)).Int("after", len(deduped)).Msg("removing duplicate plugin entries")
+		pluginCfgs = deduped
+		if opts.plugins == nil {
+			settings.Plugins = deduped
+			if err := config.Save(settings); err != nil {
+				log.Warn().Err(err).Msg("failed to persist deduped plugin list to settings")
+			}
+		}
+	}
+
+	if err := pluginHost.Start(context.Background(), pluginCfgs); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)
 	}
 
+	// shutdownWG tracks daemon goroutines so we can wait for them to exit cleanly.
+	// Subsystems that manage their own goroutines (poller, dispatcher, orchestrator,
+	// display poller, tmux poller) expose a Done() channel; goroutines spawned
+	// directly below use wg.Add/wg.Done via trackedGo below.
+	var shutdownWG sync.WaitGroup
+
+	// trackedGo spawns fn via safego.Go and registers it with shutdownWG.
+	trackedGo := func(fn func()) {
+		shutdownWG.Add(1)
+		safego.Go(log.Logger, func() {
+			defer shutdownWG.Done()
+			fn()
+		})
+	}
+
+	// trackDone registers a subsystem's Done() channel with shutdownWG.
+	trackDone := func(done <-chan struct{}) {
+		shutdownWG.Add(1)
+		go func() {
+			defer shutdownWG.Done()
+			<-done
+		}()
+	}
+
 	// Auto-start repair plugin workflows if available
-	safego.Go(log.Logger, func() {
+	trackedGo(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -268,7 +327,7 @@ func run() error {
 	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, claudeChats, claudeRunner, tmuxClient)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
-		livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
+		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
 	)
 
 	// Wire the orchestrator as the completion notifier for the dispatcher
@@ -281,9 +340,13 @@ func run() error {
 
 	// --- Server ---
 
-	socketPath, err := server.DefaultSocketPath()
-	if err != nil {
-		return fmt.Errorf("socket path: %w", err)
+	socketPath := opts.socketPath
+	if socketPath == "" {
+		p, err := server.DefaultSocketPath()
+		if err != nil {
+			return fmt.Errorf("socket path: %w", err)
+		}
+		socketPath = p
 	}
 
 	// --- Upstream (optional, cloud mode) ---
@@ -332,13 +395,17 @@ func run() error {
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
 	events := poller.Run(pollerCtx)
-	safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
+	trackDone(poller.Done())
+	dispatcherDone := safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
+	trackDone(dispatcherDone)
 
 	// Start task orchestrator (polls plugin task sources).
 	orchestrator.Start(pollerCtx)
+	trackDone(orchestrator.Done())
 
 	// Start display status poller.
 	displayPoller.Run(pollerCtx)
+	trackDone(displayPoller.Done())
 
 	// Bootstrap tmux status poller with pre-existing sessions before starting
 	// the polling loop, so sessions from before a daemon restart show correct
@@ -347,9 +414,10 @@ func run() error {
 
 	// Start tmux status poller (captures pane content to detect question/idle/working).
 	tmuxStatusPoller.Run(pollerCtx)
+	trackDone(tmuxStatusPoller.Done())
 
 	// Start chat status cleanup goroutine (GC stale entries every 30s).
-	safego.Go(log.Logger, func() {
+	trackedGo(func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -362,20 +430,30 @@ func run() error {
 		}
 	})
 
-	// Start server in a goroutine.
+	// Bind the socket and initialize the http.Server synchronously so
+	// Shutdown below cannot race with the serving goroutine's write to
+	// the internal server field.
+	if err := srv.Listen(socketPath); err != nil {
+		return fmt.Errorf("server listen: %w", err)
+	}
+
+	// Start serving in a goroutine.
 	errCh := make(chan error, 1)
-	safego.Go(log.Logger, func() {
+	trackedGo(func() {
 		log.Info().Str("socket", socketPath).Msg("starting server")
-		errCh <- srv.ListenAndServe(socketPath)
+		errCh <- srv.Serve()
 	})
 
-	// --- Signal handling ---
+	// --- Ready hook (tests) ---
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	if opts.onReady != nil {
+		safego.Go(log.Logger, opts.onReady)
+	}
+
+	// --- Wait for shutdown trigger ---
 
 	select {
-	case sig := <-sigCh:
+	case sig := <-opts.stopSig:
 		log.Info().Str("signal", sig.String()).Msg("shutting down")
 	case err := <-errCh:
 		// Server exited unexpectedly.
@@ -408,6 +486,21 @@ func run() error {
 
 	// Clean up socket file.
 	_ = os.Remove(socketPath)
+
+	// Wait for all tracked daemon goroutines to exit, with a hard 10-second
+	// upper bound. Logs a warning on timeout — we still exit cleanly but
+	// some goroutines may have been abandoned (e.g. a plugin RPC hang).
+	waitCh := make(chan struct{})
+	go func() {
+		shutdownWG.Wait()
+		close(waitCh)
+	}()
+	select {
+	case <-waitCh:
+		log.Info().Msg("all daemon goroutines exited cleanly")
+	case <-time.After(10 * time.Second):
+		log.Warn().Msg("forced exit: daemon goroutines did not stop within 10s")
+	}
 
 	log.Info().Msg("daemon stopped")
 	return nil

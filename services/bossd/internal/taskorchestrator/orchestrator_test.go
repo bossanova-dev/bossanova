@@ -44,7 +44,7 @@ func (m *mockTaskSource) UpdateTaskStatus(_ context.Context, _ string, _ bossano
 	return nil
 }
 
-func (m *mockTaskSource) ListAvailableIssues(_ context.Context, _ string, _ map[string]string) ([]*bossanovav1.TrackerIssue, error) {
+func (m *mockTaskSource) ListAvailableIssues(_ context.Context, _ string, _ string, _ map[string]string) ([]*bossanovav1.TrackerIssue, error) {
 	return nil, nil
 }
 
@@ -252,6 +252,7 @@ func newTestOrchestrator(opts ...func(*Orchestrator)) *Orchestrator {
 		&mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}},
 		&mockSessionCreatorOrch{},
 		&mockProvider{},
+		nil, // no base branch syncer by default
 		nil, // no liveness checker by default
 		time.Second,
 		zerolog.Nop(),

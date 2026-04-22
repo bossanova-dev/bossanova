@@ -31,6 +31,14 @@ type SessionCompletionNotifier interface {
 
 // Dispatcher consumes VCS events from the poller and applies the
 // corresponding state machine transitions and database updates.
+//
+// Concurrency model: Run reads from a single events channel in a single
+// goroutine, so per-session event ordering is preserved by construction.
+// The only other path that calls dispatch handlers is in-process tests
+// that also drive Run. d.mu is retained as belt-and-suspenders so an
+// accidental future caller cannot interleave a partial state transition.
+// Plugin callbacks (NotifyStatusChange) are dispatched by the plugin
+// host and never invoke dispatcher methods directly.
 type Dispatcher struct {
 	sessions           db.SessionStore
 	repos              db.RepoStore
@@ -38,7 +46,7 @@ type Dispatcher struct {
 	fixLoop            FixHandler
 	completionNotifier SessionCompletionNotifier
 	logger             zerolog.Logger
-	mu                 sync.Mutex // guards concurrent session transitions
+	mu                 sync.Mutex // see type doc: redundant given single-goroutine Run, kept as a safety net
 }
 
 // NewDispatcher creates a new event dispatcher.

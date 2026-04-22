@@ -9,6 +9,7 @@ package tuidriver
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -216,14 +217,14 @@ func (d *Driver) Close() error {
 	_ = d.cmd.Wait()
 	// Close the PTY — readLoop has already exited (d.done closed).
 	err := d.pty.Close()
-	// Close the VT emulator to unblock responseLoop's vt.Read call.
-	// NOTE: There is a benign data race between vt.Close() and vt.Read()
-	// on the emulator's internal closed bool (charmbracelet/x/vt). The
-	// race is harmless: the underlying io.Pipe operations are thread-safe,
-	// and the bool is only written once (false→true). The worst case is
-	// that Read enters pr.Read after closed is set, which returns EOF
-	// immediately because Close already closed the pipe writer.
-	_ = d.vt.Close()
+	// Unblock responseLoop's vt.Read by closing the vt emulator's internal
+	// pipe writer directly. vt.Close() would also set an unsynchronized
+	// `closed` bool the race detector flags against vt.Read; io.PipeWriter
+	// Close/Read are documented as safe to call concurrently, so going
+	// through InputPipe() avoids the race entirely.
+	if closer, ok := d.vt.InputPipe().(io.Closer); ok {
+		_ = closer.Close()
+	}
 	<-d.respDone
 	return err
 }

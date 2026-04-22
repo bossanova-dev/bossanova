@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -158,6 +159,12 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	procCtx, cancel := context.WithCancel(ctx)
 	cmd := r.cmdFunc(procCtx, "claude", args...)
 	cmd.Dir = workDir
+	// On context cancellation, send SIGTERM for graceful shutdown. If the
+	// process doesn't exit within WaitDelay, Go's os/exec sends SIGKILL
+	// automatically. This matches Stop()'s documented 10s-then-force-kill
+	// behaviour.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
 
 	// Pipe plan to stdin.
 	stdin, err := cmd.StdinPipe()
@@ -237,7 +244,10 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	return sessionID, nil
 }
 
-// Stop terminates the Claude process for the given session.
+// Stop terminates the Claude process for the given session. It cancels the
+// process context (which sends SIGTERM via cmd.Cancel) and waits for the
+// process to exit. If graceful shutdown takes longer than 10 seconds it
+// force-kills the process and waits for the exit goroutine to observe it.
 func (r *Runner) Stop(sessionID string) error {
 	r.mu.RLock()
 	p, ok := r.procs[sessionID]
@@ -248,16 +258,18 @@ func (r *Runner) Stop(sessionID string) error {
 
 	p.cancel()
 
-	// Wait for process to exit with a timeout.
 	select {
 	case <-p.done:
+		return nil
 	case <-time.After(10 * time.Second):
-		// Force kill if graceful shutdown didn't work.
-		if p.cmd.Process != nil {
-			_ = p.cmd.Process.Kill()
-		}
 	}
 
+	// Graceful shutdown timed out — force kill and wait for the exit
+	// goroutine to actually observe the process exit.
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+	<-p.done
 	return nil
 }
 

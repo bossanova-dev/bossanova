@@ -23,9 +23,12 @@ func NewWorkflowStore(db *sql.DB) *SQLiteWorkflowStore {
 }
 
 func (s *SQLiteWorkflowStore) Create(ctx context.Context, params CreateWorkflowParams) (*models.Workflow, error) {
-	id := sqlutil.NewID()
+	id, err := sqlutil.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("new workflow id: %w", err)
+	}
 	now := sqlutil.TimeNow()
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO workflows (id, session_id, repo_id, plan_path, max_legs, start_commit_sha, config_json, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.SessionID, params.RepoID, params.PlanPath, params.MaxLegs,

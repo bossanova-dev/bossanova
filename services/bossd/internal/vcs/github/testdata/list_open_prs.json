@@ -1,0 +1,16 @@
+[
+  {
+    "number": 42,
+    "title": "Add dark mode support",
+    "headRefName": "feature/dark-mode",
+    "state": "OPEN",
+    "author": {"login": "alice"}
+  },
+  {
+    "number": 43,
+    "title": "Fix auth bug",
+    "headRefName": "fix/auth-bug",
+    "state": "OPEN",
+    "author": {"login": "bob"}
+  }
+]

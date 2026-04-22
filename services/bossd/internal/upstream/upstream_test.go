@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -277,15 +278,43 @@ func TestReconnectOnHeartbeatFailure(t *testing.T) {
 	}
 }
 
-func TestConfigFromEnvReturnsNilWhenNotSet(t *testing.T) {
-	// Clear env vars to ensure clean state.
+func TestConfigFromEnvReturnsNilWhenExplicitlyEmpty(t *testing.T) {
+	// Explicit empty string is the opt-out path into local-only mode.
 	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
 	t.Setenv("BOSSD_DAEMON_ID", "")
 	t.Setenv("BOSSD_USER_JWT", "")
 
 	cfg := ConfigFromEnv()
 	if cfg != nil {
-		t.Fatal("expected nil config when BOSSD_ORCHESTRATOR_URL is not set")
+		t.Fatal("expected nil config when BOSSD_ORCHESTRATOR_URL is explicitly empty")
+	}
+}
+
+func TestConfigFromEnvUsesProductionDefaultWhenUnset(t *testing.T) {
+	// t.Setenv always sets the var; unsetting requires os.Unsetenv and a
+	// Cleanup to restore any prior value.
+	prev, hadPrev := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
+	if err := os.Unsetenv("BOSSD_ORCHESTRATOR_URL"); err != nil {
+		t.Fatalf("unset env: %v", err)
+	}
+	t.Cleanup(func() {
+		var err error
+		if hadPrev {
+			err = os.Setenv("BOSSD_ORCHESTRATOR_URL", prev)
+		} else {
+			err = os.Unsetenv("BOSSD_ORCHESTRATOR_URL")
+		}
+		if err != nil {
+			t.Errorf("restore env: %v", err)
+		}
+	})
+
+	cfg := ConfigFromEnv()
+	if cfg == nil {
+		t.Fatal("expected non-nil config when BOSSD_ORCHESTRATOR_URL is unset (should use default)")
+	}
+	if cfg.OrchestratorURL != "https://orchestrator.bossanova.dev" {
+		t.Fatalf("expected production default URL, got %q", cfg.OrchestratorURL)
 	}
 }
 

@@ -68,6 +68,14 @@ type HomeModel struct {
 	// Navigation
 	highlightSessionID string // session to auto-highlight after returning from chat picker
 
+	// mergedOptimisticID is set when the user returns from a successful merge
+	// in the chat picker. While set, the matching session's PrDisplayStatus
+	// is rendered as MERGED even if the daemon still reports PASSING — the
+	// PR-merged webhook lands asynchronously, so without this override the
+	// status column would flicker back to "passing" until the next poll.
+	// Cleared once the daemon reports a terminal state (MERGED/CLOSED).
+	mergedOptimisticID string
+
 	// Archive confirmation / in-progress
 	confirming bool
 	archiving  bool
@@ -88,6 +96,33 @@ func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manage
 		spinner: newStatusSpinner(),
 		loading: true,
 		table:   newBossTable(nil, nil, 0),
+	}
+}
+
+// DaemonStatuses returns the per-session daemon heartbeat statuses, keyed by
+// session ID. Used by the top-level App to attach diagnostic context to a
+// bug report.
+func (h HomeModel) DaemonStatuses() map[string]string { return h.daemonStatuses }
+
+// applyMergedOptimisticOverride overrides the tracked session's display
+// status to MERGED until the daemon webhook catches up. Clears the override
+// once the server reports a terminal state.
+func (h *HomeModel) applyMergedOptimisticOverride() {
+	if h.mergedOptimisticID == "" {
+		return
+	}
+	for _, sess := range h.sessions {
+		if sess.Id != h.mergedOptimisticID {
+			continue
+		}
+		switch sess.GetPrDisplayStatus() {
+		case pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED,
+			pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED:
+			h.mergedOptimisticID = ""
+		default:
+			sess.PrDisplayStatus = pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED
+		}
+		return
 	}
 }
 
@@ -201,7 +236,10 @@ func (h *HomeModel) buildTableRows() {
 		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED ||
 			sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED {
 			repo = mutedStrike.Render(repos[i])
-			name = mutedStrike.Render(renderMutedTrackerLink(sess, names[i]))
+			// renderMutedTrackerLink styles the full title with raw ANSI and
+			// wraps the tracker ID in OSC 8; do NOT wrap its output with
+			// lipgloss — that strips the hyperlink envelope.
+			name = renderMutedTrackerLink(sess, names[i])
 			pr = renderMutedPRLink(sess)
 		}
 
@@ -244,6 +282,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.sessions = msg.sessions
 		h.daemonStatuses = msg.daemonStatuses
 		h.err = msg.err
+		h.applyMergedOptimisticOverride()
 		h.buildTableRows()
 		if h.highlightSessionID != "" {
 			for i, sess := range h.sessions {

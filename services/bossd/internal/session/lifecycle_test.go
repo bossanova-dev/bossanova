@@ -71,6 +71,14 @@ func (m *mockSessionStore) ListActive(_ context.Context, _ string) ([]*models.Se
 	return m.List(context.Background(), "")
 }
 
+func (m *mockSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	var result []*db.SessionWithRepo
+	for _, s := range m.sessions {
+		result = append(result, &db.SessionWithRepo{Session: s})
+	}
+	return result, nil
+}
+
 func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }
@@ -295,6 +303,14 @@ func (m *mockWorktreeManager) IsGitRepo(_ context.Context, _ string) bool {
 
 func (m *mockWorktreeManager) DetectDefaultBranch(_ context.Context, _ string) (string, error) {
 	return "main", nil
+}
+
+func (m *mockWorktreeManager) EnsureBaseBranchReadyForSync(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *mockWorktreeManager) SyncBaseBranch(_ context.Context, _, _ string) error {
+	return nil
 }
 
 func (m *mockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
@@ -839,6 +855,64 @@ func TestSubmitPR(t *testing.T) {
 	}
 }
 
+func TestSubmitPR_ExistingPRStillPushesImplementationCommits(t *testing.T) {
+	// When a draft PR was already created up-front (e.g. via createDraftPR
+	// during StartSession), SubmitPR must still push so that any commits
+	// Claude made on top of the placeholder empty commit reach the remote.
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+		OriginURL: "owner/repo",
+	}
+	existingPR := 7
+	existingURL := "https://github.com/owner/repo/pull/7"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Test Session",
+		Plan:         "Do something",
+		WorktreePath: "/tmp/worktrees/test-repo/test-session",
+		BranchName:   "test-session",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		PRNumber:     &existingPR,
+		PRURL:        &existingURL,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
+
+	if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
+		t.Fatalf("SubmitPR: %v", err)
+	}
+
+	// Verify branch was pushed even though a PR already existed.
+	if len(wt.pushed) != 1 || wt.pushed[0] != "test-session" {
+		t.Errorf("expected push of test-session, got %v", wt.pushed)
+	}
+
+	// Verify no new PR was created.
+	if len(vp.createPRCalls) != 0 {
+		t.Errorf("expected 0 createPR calls (PR already exists), got %d", len(vp.createPRCalls))
+	}
+
+	// Verify session was advanced to AwaitingChecks with PR info preserved.
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.AwaitingChecks {
+		t.Errorf("state = %v, want AwaitingChecks", sess.State)
+	}
+	if sess.PRNumber == nil || *sess.PRNumber != 7 {
+		t.Errorf("PR number = %v, want 7", sess.PRNumber)
+	}
+}
+
 func TestSubmitPRWrongState(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -1306,5 +1380,62 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 		t.Error("expected non-nil SetupScript when skipSetupScript=false")
 	} else if *wt.createdFromExisting[0].SetupScript != "npm install" {
 		t.Errorf("expected SetupScript 'npm install', got %q", *wt.createdFromExisting[0].SetupScript)
+	}
+}
+
+func TestShouldConsiderPrefill(t *testing.T) {
+	trackerID := "ENG-1"
+	emptyTracker := ""
+
+	tests := []struct {
+		name     string
+		forceNew bool
+		session  *models.Session
+		want     bool
+	}{
+		{
+			name:     "linear session, new chat, plan present",
+			forceNew: true,
+			session:  &models.Session{TrackerID: &trackerID, Plan: "Do something"},
+			want:     true,
+		},
+		{
+			name:     "resume mode (forceNew=false) skips prefill",
+			forceNew: false,
+			session:  &models.Session{TrackerID: &trackerID, Plan: "Do something"},
+			want:     false,
+		},
+		{
+			name:     "non-tracker session skips prefill",
+			forceNew: true,
+			session:  &models.Session{TrackerID: nil, Plan: "Do something"},
+			want:     false,
+		},
+		{
+			name:     "empty tracker id skips prefill",
+			forceNew: true,
+			session:  &models.Session{TrackerID: &emptyTracker, Plan: "Do something"},
+			want:     false,
+		},
+		{
+			name:     "empty plan skips prefill",
+			forceNew: true,
+			session:  &models.Session{TrackerID: &trackerID, Plan: ""},
+			want:     false,
+		},
+		{
+			name:     "nil session",
+			forceNew: true,
+			session:  nil,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldConsiderPrefill(tt.forceNew, tt.session); got != tt.want {
+				t.Errorf("shouldConsiderPrefill = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

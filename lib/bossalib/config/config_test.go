@@ -598,3 +598,70 @@ func TestDiscoverPluginsPrefersLibexec(t *testing.T) {
 		t.Errorf("expected libexec path, got %q", plugins[0].Path)
 	}
 }
+
+func TestDedupPluginConfigs(t *testing.T) {
+	cases := []struct {
+		name        string
+		in          []PluginConfig
+		wantNames   []string
+		wantPaths   []string
+		wantDropped bool
+	}{
+		{
+			name:        "empty",
+			in:          nil,
+			wantNames:   nil,
+			wantDropped: false,
+		},
+		{
+			name: "single entry",
+			in: []PluginConfig{
+				{Name: "repair", Path: "/a", Enabled: true},
+			},
+			wantNames:   []string{"repair"},
+			wantPaths:   []string{"/a"},
+			wantDropped: false,
+		},
+		{
+			name: "no duplicates",
+			in: []PluginConfig{
+				{Name: "repair", Path: "/a", Enabled: true},
+				{Name: "autopilot", Path: "/b", Enabled: true},
+			},
+			wantNames:   []string{"repair", "autopilot"},
+			wantPaths:   []string{"/a", "/b"},
+			wantDropped: false,
+		},
+		{
+			name: "duplicate keeps first",
+			in: []PluginConfig{
+				{Name: "repair", Path: "/first", Enabled: true},
+				{Name: "autopilot", Path: "/b", Enabled: true},
+				{Name: "repair", Path: "/second", Enabled: true},
+			},
+			wantNames:   []string{"repair", "autopilot"},
+			wantPaths:   []string{"/first", "/b"},
+			wantDropped: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, dropped := DedupPluginConfigs(tc.in)
+			if dropped != tc.wantDropped {
+				t.Errorf("dropped = %v, want %v", dropped, tc.wantDropped)
+			}
+			if len(got) != len(tc.wantNames) {
+				t.Fatalf("got %d entries, want %d", len(got), len(tc.wantNames))
+			}
+			for i, want := range tc.wantNames {
+				if got[i].Name != want {
+					t.Errorf("entry %d name = %q, want %q", i, got[i].Name, want)
+				}
+				if got[i].Path != tc.wantPaths[i] {
+					t.Errorf("entry %d path = %q, want %q", i, got[i].Path, tc.wantPaths[i])
+				}
+			}
+		})
+	}
+}

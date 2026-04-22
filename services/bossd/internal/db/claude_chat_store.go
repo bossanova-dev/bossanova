@@ -22,9 +22,12 @@ func NewClaudeChatStore(db *sql.DB) *SQLiteClaudeChatStore {
 }
 
 func (s *SQLiteClaudeChatStore) Create(ctx context.Context, params CreateClaudeChatParams) (*models.ClaudeChat, error) {
-	id := sqlutil.NewID()
+	id, err := sqlutil.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("new claude_chat id: %w", err)
+	}
 	now := sqlutil.TimeNow()
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO claude_chats (id, session_id, claude_id, title, created_at)
 		 VALUES (?, ?, ?, ?, ?)`,
 		id, params.SessionID, params.ClaudeID, params.Title, now,

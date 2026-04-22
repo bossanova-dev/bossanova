@@ -28,6 +28,14 @@ type TaskSourceProvider interface {
 	GetTaskSources() []plugin.TaskSource
 }
 
+// BaseBranchSyncer fast-forwards the local base branch in a main repo to
+// match origin/<base>. Implemented by git.Manager; kept as a narrow
+// interface here to avoid an internal/git import from the orchestrator and
+// to simplify test doubles.
+type BaseBranchSyncer interface {
+	SyncBaseBranch(ctx context.Context, localPath, base string) error
+}
+
 // queuedTask pairs a task item with its repo info for the FIFO queue.
 type queuedTask struct {
 	task       *bossanovav1.TaskItem
@@ -45,41 +53,53 @@ type Orchestrator struct {
 	taskMappings    db.TaskMappingStore
 	sessionCreator  SessionCreator
 	provider        vcs.Provider
+	baseSyncer      BaseBranchSyncer       // optional; nil-safe
 	livenessChecker SessionLivenessChecker // optional; nil-safe
 	interval        time.Duration
 	logger          zerolog.Logger
 
-	mu                sync.Mutex
-	queues            map[string][]queuedTask // keyed by repo ID
-	active            map[string]bool         // repo ID → true if a task is being processed
-	activeMapping     map[string]string       // repo ID → mapping ID (for CREATE_SESSION tasks only)
-	completedSessions map[string]bool         // guards against concurrent HandleSessionCompleted; bounded by daemon lifetime
+	mu            sync.Mutex
+	queues        map[string][]queuedTask // keyed by repo ID
+	active        map[string]bool         // repo ID → true if a task is being processed
+	activeMapping map[string]string       // repo ID → mapping ID (for CREATE_SESSION tasks only)
+
+	// completedSessions guards against concurrent HandleSessionCompleted for
+	// the same session (sessionID → struct{}). sync.Map.LoadOrStore is
+	// atomic, so callers cannot observe the intermediate "empty slot" state
+	// that would enable a duplicate completion. Entries are cleared each
+	// poll cycle; the DB-level terminal-status check backstops late arrivals.
+	completedSessions sync.Map
+
+	done chan struct{} // closed when Start's goroutine exits
 }
 
-// New creates a new task orchestrator.
+// New creates a new task orchestrator. baseSyncer may be nil; when nil,
+// auto-merged PRs will not refresh the main repo's local base branch.
 func New(
 	sources TaskSourceProvider,
 	repos db.RepoStore,
 	taskMappings db.TaskMappingStore,
 	sessionCreator SessionCreator,
 	provider vcs.Provider,
+	baseSyncer BaseBranchSyncer,
 	livenessChecker SessionLivenessChecker,
 	interval time.Duration,
 	logger zerolog.Logger,
 ) *Orchestrator {
 	return &Orchestrator{
-		sources:           sources,
-		repos:             repos,
-		taskMappings:      taskMappings,
-		sessionCreator:    sessionCreator,
-		provider:          provider,
-		livenessChecker:   livenessChecker,
-		interval:          interval,
-		logger:            logger.With().Str("component", "task-orchestrator").Logger(),
-		queues:            make(map[string][]queuedTask),
-		active:            make(map[string]bool),
-		activeMapping:     make(map[string]string),
-		completedSessions: make(map[string]bool),
+		sources:         sources,
+		repos:           repos,
+		taskMappings:    taskMappings,
+		sessionCreator:  sessionCreator,
+		provider:        provider,
+		baseSyncer:      baseSyncer,
+		livenessChecker: livenessChecker,
+		interval:        interval,
+		logger:          logger.With().Str("component", "task-orchestrator").Logger(),
+		queues:          make(map[string][]queuedTask),
+		active:          make(map[string]bool),
+		activeMapping:   make(map[string]string),
+		done:            make(chan struct{}),
 	}
 }
 
@@ -88,9 +108,13 @@ func New(
 // spread evenly (e.g. 5 repos with 60s interval → one repo every 12s).
 func (o *Orchestrator) Start(ctx context.Context) {
 	safego.Go(o.logger, func() {
+		defer close(o.done)
 		o.run(ctx)
 	})
 }
+
+// Done returns a channel closed when Start's goroutine exits.
+func (o *Orchestrator) Done() <-chan struct{} { return o.done }
 
 func (o *Orchestrator) run(ctx context.Context) {
 	ticker := time.NewTicker(o.interval)
@@ -117,9 +141,7 @@ func (o *Orchestrator) poll(ctx context.Context) {
 	// Evict stale completion guards. The concurrent window for
 	// HandleSessionCompleted is milliseconds; by the next poll cycle the
 	// DB status is terminal, so the DB-level guard catches late arrivals.
-	o.mu.Lock()
-	clear(o.completedSessions)
-	o.mu.Unlock()
+	o.completedSessions.Clear()
 
 	// Retry any pending plugin updates from previous cycles.
 	o.RetryPendingUpdates(ctx)
@@ -146,6 +168,8 @@ func (o *Orchestrator) poll(ctx context.Context) {
 				id:            repo.ID,
 				displayName:   repo.DisplayName,
 				originURL:     repo.OriginURL,
+				localPath:     repo.LocalPath,
+				baseBranch:    repo.DefaultBaseBranch,
 				mergeStrategy: string(repo.MergeStrategy),
 			})
 		}
@@ -299,18 +323,15 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 	}
 
 	// Fast in-memory guard: serialise concurrent callers for the same session.
-	// This prevents the TOCTOU race where two goroutines both read InProgress
-	// from the DB, both pass the terminal-status check, and both dequeue.
-	o.mu.Lock()
-	if o.completedSessions[sessionID] {
-		o.mu.Unlock()
+	// LoadOrStore is atomic — the first caller stores and proceeds, any
+	// concurrent caller observes the existing entry and bails. This replaces
+	// the previous map+mutex and keeps o.mu free for queue operations.
+	if _, loaded := o.completedSessions.LoadOrStore(sessionID, struct{}{}); loaded {
 		o.logger.Debug().
 			Str("session", sessionID).
 			Msg("session completion already processed (in-memory guard)")
 		return
 	}
-	o.completedSessions[sessionID] = true
-	o.mu.Unlock()
 
 	// Belt-and-suspenders DB guard for post-restart: the in-memory set is
 	// empty after a daemon restart, but the mapping status is already terminal.
@@ -607,6 +628,21 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 		return
 	}
 
+	// Refresh the user's local main repo so subsequent worktrees and
+	// manual operations on <base> start from the post-merge tip.
+	// Auto-merge runs unattended, so a sync failure logs a warning
+	// rather than failing the task — the server-side merge is already done.
+	if o.baseSyncer != nil && repo.localPath != "" && repo.baseBranch != "" {
+		if err := o.baseSyncer.SyncBaseBranch(ctx, repo.localPath, repo.baseBranch); err != nil {
+			o.logger.Warn().Err(err).
+				Int("pr", prNumber).
+				Str("repo", repo.displayName).
+				Str("local_path", repo.localPath).
+				Str("base", repo.baseBranch).
+				Msg("post-merge sync of local base branch failed; user can run `git fetch` manually")
+		}
+	}
+
 	o.logger.Info().
 		Int("pr", prNumber).
 		Str("repo", repo.displayName).
@@ -725,5 +761,7 @@ type repoInfo struct {
 	id            string
 	displayName   string
 	originURL     string
+	localPath     string
+	baseBranch    string
 	mergeStrategy string
 }

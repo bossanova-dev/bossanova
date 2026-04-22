@@ -11,6 +11,7 @@ import (
 // stubTaskSource implements plugin.TaskSource for testing
 type stubTaskSource struct {
 	receivedRepoOriginURL string
+	receivedQuery         string
 	receivedConfig        map[string]string
 	issuesToReturn        []*pb.TrackerIssue
 	errToReturn           error
@@ -32,8 +33,9 @@ func (s *stubTaskSource) UpdateTaskStatus(context.Context, string, pb.TaskItemSt
 	return nil
 }
 
-func (s *stubTaskSource) ListAvailableIssues(ctx context.Context, repoOriginURL string, config map[string]string) ([]*pb.TrackerIssue, error) {
+func (s *stubTaskSource) ListAvailableIssues(ctx context.Context, repoOriginURL string, query string, config map[string]string) ([]*pb.TrackerIssue, error) {
 	s.receivedRepoOriginURL = repoOriginURL
+	s.receivedQuery = query
 	s.receivedConfig = config
 	return s.issuesToReturn, s.errToReturn
 }
@@ -62,7 +64,7 @@ func TestStubTaskSourceListAvailableIssues(t *testing.T) {
 		"linear_api_key": "lin_api_test123",
 	}
 
-	issues, err := stub.ListAvailableIssues(context.Background(), "https://github.com/test/repo", config)
+	issues, err := stub.ListAvailableIssues(context.Background(), "https://github.com/test/repo", "login bug", config)
 	if err != nil {
 		t.Fatalf("ListAvailableIssues failed: %v", err)
 	}
@@ -73,6 +75,10 @@ func TestStubTaskSourceListAvailableIssues(t *testing.T) {
 
 	if stub.receivedRepoOriginURL != "https://github.com/test/repo" {
 		t.Errorf("Expected repoOriginURL 'https://github.com/test/repo', got '%s'", stub.receivedRepoOriginURL)
+	}
+
+	if stub.receivedQuery != "login bug" {
+		t.Errorf("Expected query 'login bug', got '%s'", stub.receivedQuery)
 	}
 
 	if stub.receivedConfig["linear_api_key"] != "lin_api_test123" {

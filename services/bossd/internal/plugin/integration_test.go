@@ -2,12 +2,9 @@ package plugin_test
 
 import (
 	"context"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"sync"
 	"testing"
 
-	"github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 
@@ -15,13 +12,30 @@ import (
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/vcs"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
+	"github.com/recurser/bossd/internal/plugin/pluginharness"
 )
 
-// testVCSProvider returns canned responses for the integration test.
+// mergePRCall records a single invocation of testVCSProvider.MergePR so
+// tests can assert the daemon reached the merge path with the right repo /
+// PR / strategy tuple. Tracked behind a mutex since the plugin subprocess
+// and the orchestrator run on different goroutines.
+type mergePRCall struct {
+	RepoPath string
+	PRID     int
+	Strategy string
+}
+
+// testVCSProvider returns canned responses for the integration test. The
+// Merge* fields are mutated under mu; readers should call MergeCalls() to
+// get a consistent snapshot.
 type testVCSProvider struct {
 	prs    []vcs.PRSummary
 	checks map[int][]vcs.CheckResult
 	status map[int]*vcs.PRStatus
+
+	mu         sync.Mutex
+	mergeCalls []mergePRCall
+	mergeErr   error // if non-nil, MergePR returns this error (exercise the orchestrator's failure path)
 }
 
 func (p *testVCSProvider) CreateDraftPR(_ context.Context, _ vcs.CreatePROpts) (*vcs.PRInfo, error) {
@@ -49,7 +63,27 @@ func (p *testVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSumm
 func (p *testVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
 	return nil, nil
 }
-func (p *testVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) error { return nil }
+
+// MergePR records the call under mu so concurrent callers (the plugin
+// subprocess and the orchestrator goroutine) can't race on the slice.
+func (p *testVCSProvider) MergePR(_ context.Context, repoPath string, prID int, strategy string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.mergeCalls = append(p.mergeCalls, mergePRCall{RepoPath: repoPath, PRID: prID, Strategy: strategy})
+	return p.mergeErr
+}
+
+// MergeCalls returns a defensive copy of every MergePR invocation seen so
+// far. Tests poll this to wait for async merges to land — returning a copy
+// keeps the test assertion path free of the provider's lock.
+func (p *testVCSProvider) MergeCalls() []mergePRCall {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]mergePRCall, len(p.mergeCalls))
+	copy(out, p.mergeCalls)
+	return out
+}
+
 func (p *testVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
 	return nil
 }
@@ -116,10 +150,11 @@ func (c *taskSourceGRPCClientWrapper) UpdateTaskStatus(ctx context.Context, exte
 	return c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/UpdateTaskStatus", req, resp)
 }
 
-func (c *taskSourceGRPCClientWrapper) ListAvailableIssues(ctx context.Context, repoOriginURL string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
+func (c *taskSourceGRPCClientWrapper) ListAvailableIssues(ctx context.Context, repoOriginURL string, query string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
 	req := &bossanovav1.ListAvailableIssuesRequest{
 		RepoOriginUrl: repoOriginURL,
 		Config:        config,
+		Query:         query,
 	}
 	resp := &bossanovav1.ListAvailableIssuesResponse{}
 	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/ListAvailableIssues", req, resp)
@@ -129,25 +164,12 @@ func (c *taskSourceGRPCClientWrapper) ListAvailableIssues(ctx context.Context, r
 	return resp.GetIssues(), nil
 }
 
-func buildPluginBinary(t *testing.T) string {
+// buildDependabotBinary is a thin wrapper that records the plugin name so
+// existing call sites stay readable. New tests should call pluginharness
+// directly with the relevant plugin name.
+func buildDependabotBinary(t *testing.T) string {
 	t.Helper()
-
-	wsRoot := filepath.Join("..", "..", "..", "..")
-	pluginSrc := filepath.Join(wsRoot, "plugins", "bossd-plugin-dependabot")
-	if _, err := os.Stat(pluginSrc); os.IsNotExist(err) {
-		t.Skip("skipping: plugins/bossd-plugin-dependabot not present (public repo)")
-	}
-
-	binPath := filepath.Join(t.TempDir(), "bossd-plugin-dependabot")
-	cmd := exec.Command("go", "build", "-o", binPath, "./plugins/bossd-plugin-dependabot")
-	// Build from the workspace root so go.work resolves bossalib.
-	cmd.Dir = wsRoot
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("build plugin binary: %v", err)
-	}
-	return binPath
+	return pluginharness.BuildPlugin(t, "bossd-plugin-dependabot")
 }
 
 // TestIntegration_NewPluginMapBrokerDial verifies that the production
@@ -163,7 +185,7 @@ func TestIntegration_NewPluginMapBrokerDial(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	binPath := buildPluginBinary(t)
+	binPath := buildDependabotBinary(t)
 
 	success := vcs.CheckConclusionSuccess
 	mergeable := true
@@ -196,16 +218,7 @@ func TestIntegration_NewPluginMapBrokerDial(t *testing.T) {
 		sharedplugin.PluginTypeTaskSource: pluginpkg.NewTaskSourceGRPCPlugin(hostService),
 	}
 
-	client := goplugin.NewClient(&goplugin.ClientConfig{
-		HandshakeConfig: pluginpkg.Handshake,
-		Plugins:         pluginMap,
-		Cmd:             exec.Command(binPath),
-		AllowedProtocols: []goplugin.Protocol{
-			goplugin.ProtocolGRPC,
-		},
-		Logger: hclog.NewNullLogger(),
-	})
-	defer client.Kill()
+	client := pluginharness.SpawnPlugin(t, binPath, pluginMap)
 
 	rpcClient, err := client.Client()
 	if err != nil {
@@ -245,7 +258,7 @@ func TestIntegration_PluginGRPCRoundTrip(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	binPath := buildPluginBinary(t)
+	binPath := buildDependabotBinary(t)
 
 	mergeable := true
 	success := vcs.CheckConclusionSuccess
@@ -284,20 +297,7 @@ func TestIntegration_PluginGRPCRoundTrip(t *testing.T) {
 		},
 	}
 
-	client := goplugin.NewClient(&goplugin.ClientConfig{
-		HandshakeConfig: goplugin.HandshakeConfig{
-			ProtocolVersion:  sharedplugin.ProtocolVersion,
-			MagicCookieKey:   sharedplugin.MagicCookieKey,
-			MagicCookieValue: sharedplugin.MagicCookieValue,
-		},
-		Plugins: pluginMap,
-		Cmd:     exec.Command(binPath),
-		AllowedProtocols: []goplugin.Protocol{
-			goplugin.ProtocolGRPC,
-		},
-		Logger: hclog.NewNullLogger(),
-	})
-	defer client.Kill()
+	client := pluginharness.SpawnPlugin(t, binPath, pluginMap)
 
 	rpcClient, err := client.Client()
 	if err != nil {

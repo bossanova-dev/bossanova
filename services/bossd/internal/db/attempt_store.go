@@ -23,9 +23,12 @@ func NewAttemptStore(db *sql.DB) *SQLiteAttemptStore {
 }
 
 func (s *SQLiteAttemptStore) Create(ctx context.Context, params CreateAttemptParams) (*models.Attempt, error) {
-	id := sqlutil.NewID()
+	id, err := sqlutil.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("new attempt id: %w", err)
+	}
 	now := sqlutil.TimeNow()
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO attempts (id, session_id, trigger, result, created_at, updated_at)
 		 VALUES (?, ?, ?, 0, ?, ?)`,
 		id, params.SessionID, params.Trigger, now, now,

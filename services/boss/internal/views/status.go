@@ -187,26 +187,43 @@ func renderTrackerLink(sess *pb.Session, title string) string {
 	return title[:idx] + linked + title[idx+len(target):]
 }
 
-// renderMutedTrackerLink replaces the [tracker_id] portion of a session title
-// with a muted, strikethrough, underlined, OSC 8 hyperlinked version for
-// merged/closed rows.
+// SGR envelopes for merged/closed title text. Raw ANSI (not lipgloss) so they
+// can bracket an OSC 8 hyperlink without the lipgloss Render path mangling the
+// hyperlink envelope.
+const (
+	// 38;2;98;98;98 = muted gray fg (#626262); 9 = strikethrough.
+	mutedStrikeOpen  = "\x1b[38;2;98;98;98;9m"
+	mutedStrikeClose = "\x1b[39;29m"
+	// Same as above with 4 = underline, used on the tracker label itself.
+	mutedStrikeUnderlineOpen  = "\x1b[38;2;98;98;98;9;4m"
+	mutedStrikeUnderlineClose = "\x1b[39;29;24m"
+)
+
+// renderMutedTrackerLink returns the full title styled muted + strikethrough
+// for merged/closed rows. If the title contains the session's [tracker_id], it
+// is additionally underlined and wrapped in an OSC 8 hyperlink to the tracker
+// URL. Styling is done with raw ANSI rather than lipgloss so the OSC 8 envelope
+// survives intact — lipgloss.Render on a string containing OSC 8 strips the
+// leading ESC bytes and leaves the payload visible.
 func renderMutedTrackerLink(sess *pb.Session, title string) string {
+	wrap := func(s string) string {
+		if s == "" {
+			return ""
+		}
+		return mutedStrikeOpen + s + mutedStrikeClose
+	}
 	if sess == nil || sess.TrackerId == nil || *sess.TrackerId == "" {
-		return title
+		return wrap(title)
 	}
 	target := "[" + *sess.TrackerId + "]"
 	idx := strings.Index(title, target)
 	if idx < 0 {
-		return title
+		return wrap(title)
 	}
-	// SGR 38;2;98;98;98 = muted gray foreground (#626262)
-	// SGR 9 = strikethrough, SGR 4 = underline
-	styled := "\x1b[38;2;98;98;98;9;4m" + target + "\x1b[39;29;24m"
-	var linked string
+	styledTarget := mutedStrikeUnderlineOpen + target + mutedStrikeUnderlineClose
+	linked := styledTarget
 	if sess.TrackerUrl != nil && *sess.TrackerUrl != "" {
-		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, styled)
-	} else {
-		linked = styled
+		linked = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.TrackerUrl, styledTarget)
 	}
-	return title[:idx] + linked + title[idx+len(target):]
+	return wrap(title[:idx]) + linked + wrap(title[idx+len(target):])
 }

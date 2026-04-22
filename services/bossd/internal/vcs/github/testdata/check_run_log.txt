@@ -1,0 +1,7 @@
+2026-04-22T10:00:01Z ##[group]Run tests
+2026-04-22T10:00:02Z go test ./...
+2026-04-22T10:00:05Z ok   github.com/example/package 0.125s
+2026-04-22T10:00:06Z FAIL github.com/example/other    0.030s
+2026-04-22T10:00:06Z --- FAIL: TestSomething (0.01s)
+2026-04-22T10:00:06Z     assertion: expected foo, got bar
+2026-04-22T10:00:07Z ##[error]Process completed with exit code 1.

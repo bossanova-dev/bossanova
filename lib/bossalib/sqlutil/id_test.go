@@ -5,7 +5,10 @@ import (
 )
 
 func TestNewID(t *testing.T) {
-	id := NewID()
+	id, err := NewID()
+	if err != nil {
+		t.Fatalf("NewID() err = %v, want nil", err)
+	}
 
 	// Should be 16 hex characters (8 bytes).
 	if len(id) != 16 {
@@ -23,7 +26,10 @@ func TestNewID(t *testing.T) {
 func TestNewID_Unique(t *testing.T) {
 	seen := make(map[string]bool)
 	for range 1000 {
-		id := NewID()
+		id, err := NewID()
+		if err != nil {
+			t.Fatalf("NewID() err = %v, want nil", err)
+		}
 		if seen[id] {
 			t.Fatalf("NewID() produced duplicate: %s", id)
 		}

@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 // View identifies which screen is currently active.
@@ -25,6 +26,7 @@ const (
 	ViewAutopilot
 	ViewSessionSettings
 	ViewLogin
+	ViewBugReport
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
@@ -45,6 +47,7 @@ type App struct {
 	autopilot       AutopilotModel
 	attach          AttachModel
 	login           LoginModel
+	bugReport       BugReportModel
 	width           int
 	height          int
 	quitting        bool
@@ -129,17 +132,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.autopilot.width = msg.Width
 		a.autopilot.height = msg.Height
 		a.login.width = msg.Width
+		a.bugReport.width = msg.Width
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			a.quitting = true
 			return a, tea.Quit
+		case "ctrl+b":
+			if a.activeView == ViewBugReport {
+				break
+			}
+			a.bugReport = NewBugReportModel(a.client, a.ctx, a.auth, a.activeView, a.currentSession(), a.currentDaemonStatuses())
+			a.bugReport.width = a.width
+			a.activeView = ViewBugReport
+			return a, a.bugReport.Init()
 		}
 
 	case switchViewMsg:
 		a.activeView = msg.view
-		switch msg.view {
+		switch msg.view { //nolint:exhaustive // ViewBugReport is pushed via ctrl+b, not switchViewMsg
 		case ViewNewSession:
 			a.newSession = NewNewSessionModel(a.client, a.ctx)
 			a.newSession.width = a.width
@@ -220,10 +232,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewChatPicker:
 		updated, cmd := a.chatPicker.Update(msg)
 		a.chatPicker = updated.(ChatPickerModel)
-		if a.chatPicker.Cancelled() {
+		if a.chatPicker.Cancelled() || a.chatPicker.Merged() {
+			sessionID := a.chatPicker.sessionID
+			merged := a.chatPicker.Merged()
 			a.activeView = ViewHome
 			a.home = NewHomeModel(a.client, a.ctx, a.auth)
-			a.home.highlightSessionID = a.chatPicker.sessionID
+			a.home.highlightSessionID = sessionID
+			if merged {
+				a.home.mergedOptimisticID = sessionID
+			}
 			a.home.width = a.width
 			a.home.height = a.height
 			return a, a.home.Init()
@@ -323,9 +340,56 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.switchToHome()
 		}
 		return a, cmd
+	case ViewBugReport:
+		updated, cmd := a.bugReport.Update(msg)
+		a.bugReport = updated.(BugReportModel)
+		if a.bugReport.Cancelled() || a.bugReport.Done() {
+			// Restore the prior view without recreating it so existing state
+			// (table cursor, loaded data, spinners) is preserved. The prior
+			// view's self-perpetuating tick chain was swallowed by the modal,
+			// so restart it when the restored view depends on tickMsg.
+			a.activeView = a.bugReport.PreviousView()
+			return a, resumeTickCmd(a.activeView)
+		}
+		return a, cmd
 	}
 
 	return a, nil
+}
+
+// currentSession returns the session associated with the active view, or nil
+// if none. Only views that expose a *pb.Session participate.
+func (a App) currentSession() *pb.Session {
+	if a.activeView == ViewChatPicker {
+		return a.chatPicker.Session()
+	}
+	return nil
+}
+
+// currentDaemonStatuses returns the daemon heartbeat statuses tracked by the
+// active view, or nil if the view doesn't track any. Keys differ by view —
+// Home is session-id keyed, ChatPicker is claude-id keyed — which is fine
+// for diagnostic triage.
+func (a App) currentDaemonStatuses() map[string]string {
+	switch a.activeView { //nolint:exhaustive // only views that track statuses participate
+	case ViewChatPicker:
+		return a.chatPicker.DaemonStatuses()
+	case ViewHome:
+		return a.home.DaemonStatuses()
+	}
+	return nil
+}
+
+// resumeTickCmd returns a tickCmd for views whose status refresh depends on a
+// self-perpetuating tick chain. The bug-report modal swallows tickMsg while
+// it is active, so the chain needs restarting when the modal dismisses back
+// to one of these views. Returns nil for views that don't use ticks.
+func resumeTickCmd(v View) tea.Cmd {
+	switch v { //nolint:exhaustive // only tick-driven views participate
+	case ViewHome, ViewChatPicker, ViewAutopilot:
+		return tickCmd()
+	}
+	return nil
 }
 
 func (a *App) switchToHome() tea.Cmd {
@@ -369,6 +433,8 @@ func (a App) View() tea.View {
 		v = a.attach.View()
 	case ViewLogin:
 		v = a.login.View()
+	case ViewBugReport:
+		v = a.bugReport.View()
 	default:
 		v = tea.NewView("Unknown view")
 	}
@@ -399,6 +465,8 @@ func (a App) View() tea.View {
 			opts.line1 = "Add Repository"
 		case ViewLogin:
 			opts.line1 = "Login"
+		case ViewBugReport:
+			opts.line1 = "Report a bug"
 		}
 		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}

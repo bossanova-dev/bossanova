@@ -95,7 +95,8 @@ func generatePlist(bossdPath string) (string, error) {
 }
 
 // platformInstall writes the LaunchAgent plist and loads it via launchctl.
-func platformInstall(bossdPath string) error {
+// When force is false and the plist already exists, it refuses to overwrite.
+func platformInstall(bossdPath string, force bool) error {
 	plist, err := generatePlist(bossdPath)
 	if err != nil {
 		return err
@@ -104,6 +105,12 @@ func platformInstall(bossdPath string) error {
 	plistPath, err := platformServicePath()
 	if err != nil {
 		return err
+	}
+
+	if !force {
+		if _, err := os.Stat(plistPath); err == nil {
+			return fmt.Errorf("plist already exists at %s (use --force to overwrite)", plistPath)
+		}
 	}
 
 	// Ensure LaunchAgents directory exists.
@@ -125,6 +132,10 @@ func platformInstall(bossdPath string) error {
 		return fmt.Errorf("write plist: %w", err)
 	}
 
+	if skipLaunchctl() {
+		return nil
+	}
+
 	// Load the agent.
 	cmd := exec.Command("launchctl", "load", plistPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -142,8 +153,10 @@ func platformUninstall() error {
 	}
 
 	// Unload the agent (ignore error if not loaded).
-	cmd := exec.Command("launchctl", "unload", plistPath)
-	_ = cmd.Run()
+	if !skipLaunchctl() {
+		cmd := exec.Command("launchctl", "unload", plistPath)
+		_ = cmd.Run()
+	}
 
 	// Remove the plist file.
 	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
@@ -171,7 +184,11 @@ func platformGetStatus() (*Status, error) {
 	}
 	st.Installed = true
 
-	// Check launchctl for running state.
+	// Check launchctl for running state (skipped in test mode).
+	if skipLaunchctl() {
+		return st, nil
+	}
+
 	cmd := exec.Command("launchctl", "list", Label)
 	out, err := cmd.Output()
 	if err != nil {

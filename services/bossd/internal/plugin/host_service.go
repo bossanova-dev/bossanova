@@ -3,6 +3,8 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -31,6 +33,12 @@ type HostServiceServer struct {
 	repoStore     db.RepoStore
 	prTracker     *status.PRTracker
 	chatTracker   *status.Tracker
+
+	// createWorkflowMu serialises the "check for active workflow + insert"
+	// sequence in CreateWorkflow so that concurrent plugin calls (or duplicate
+	// plugin instances) cannot both observe an idle session and both create a
+	// running workflow. CreateWorkflow is low-QPS so a single mutex is fine.
+	createWorkflowMu sync.Mutex
 }
 
 // NewHostServiceServer creates a HostServiceServer that proxies to the
@@ -57,6 +65,44 @@ func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.Sessi
 	s.sessionStore = sessions
 	s.prTracker = tracker
 	s.chatTracker = chatTracker
+}
+
+// Validate reports any dependencies that SetWorkflowDeps/SetSessionDeps were
+// expected to install but that are still nil. Host.Start calls this before
+// launching plugins so a missing dep fails the daemon loudly at startup
+// instead of surfacing later as an "Unavailable" RPC the first time a
+// plugin tries to call back. The per-handler nil guards are kept as
+// defense-in-depth for anyone using HostServiceServer directly (e.g. tests).
+func (s *HostServiceServer) Validate() error {
+	var missing []string
+	if s.provider == nil {
+		missing = append(missing, "vcs provider")
+	}
+	if s.workflowStore == nil {
+		missing = append(missing, "workflow store")
+	}
+	if s.sessionStore == nil {
+		missing = append(missing, "session store")
+	}
+	if s.claudeChats == nil {
+		missing = append(missing, "claude chat store")
+	}
+	if s.claude == nil {
+		missing = append(missing, "claude runner")
+	}
+	if s.repoStore == nil {
+		missing = append(missing, "repo store")
+	}
+	if s.prTracker == nil {
+		missing = append(missing, "PR tracker")
+	}
+	if s.chatTracker == nil {
+		missing = append(missing, "chat tracker")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("host service missing dependencies: %s", strings.Join(missing, ", "))
 }
 
 // hostServiceDesc is a manually-built gRPC service descriptor for
@@ -278,8 +324,31 @@ func (s *HostServiceServer) CreateWorkflow(ctx context.Context, req *bossanovav1
 		configJSON = &v
 	}
 
+	// Atomically reject duplicate active workflows for the same session.
+	// Without this, two racing plugin instances (or a plugin restart that
+	// loses in-memory dedup) can both pass their own isSessionIdle check
+	// before either one calls CreateWorkflow, and each one then spawns a
+	// separate Claude chat for the same session. Holding the mutex across
+	// the check + insert closes that race: the second caller sees the first
+	// one's row and gets AlreadyExists. Plugins are expected to treat that
+	// as a soft skip.
+	sessionID := req.GetSessionId()
+	if sessionID != "" {
+		s.createWorkflowMu.Lock()
+		defer s.createWorkflowMu.Unlock()
+
+		active, err := s.workflowStore.ListActiveBySessionIDs(ctx, []string{sessionID})
+		if err != nil {
+			return nil, fmt.Errorf("create workflow: check active: %w", err)
+		}
+		if len(active) > 0 {
+			return nil, grpcstatus.Errorf(codes.AlreadyExists,
+				"workflow already active for session %s (id=%s)", sessionID, active[0].ID)
+		}
+	}
+
 	w, err := s.workflowStore.Create(ctx, db.CreateWorkflowParams{
-		SessionID:      req.GetSessionId(),
+		SessionID:      sessionID,
 		RepoID:         repoID,
 		PlanPath:       req.GetPlanPath(),
 		MaxLegs:        int(req.GetMaxLegs()),

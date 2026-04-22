@@ -59,15 +59,53 @@ func StripANSI(data []byte) []byte {
 	return out
 }
 
-// selectorRe matches the bubbletea selection cursor at the start of a line.
+// selectorRe matches the bubbletea selection cursor at the start of a line
+// pointing at an actual option (non-whitespace after "❯ "). The same ❯ glyph
+// is used by Claude Code's own empty input prompt ("❯ " on a line by itself),
+// so we require following content to avoid false positives when the prompt is
+// just waiting for input.
 // ❯ is U+276F (HEAVY RIGHT-POINTING ANGLE QUOTATION MARK).
-var selectorRe = regexp.MustCompile(`(?m)^[^\S\n]*❯ `)
+var selectorRe = regexp.MustCompile(`(?m)^[^\S\n]*❯ \S`)
 
 // optionRe matches indented option lines (2+ leading spaces followed by text).
 var optionRe = regexp.MustCompile(`(?m)^[ ]{2,}\S`)
 
 // trailingQuestionRe matches a line ending with "?" (optional trailing whitespace).
 var trailingQuestionRe = regexp.MustCompile(`\?[\s]*(?:\n|$)`)
+
+// toolOutputBlockRe matches a Claude Code tool-result block: a line whose first
+// non-space character is ⎿ (U+23BF), plus any following lines indented 4+
+// spaces (continuation of the same tool result). Claude Code renders system
+// text here — including the "Interrupted · What should Claude do instead?"
+// artifact when a tool call is cancelled — which must not be mistaken for a
+// conversational question from Claude.
+var toolOutputBlockRe = regexp.MustCompile(`(?m)^[ ]*⎿[^\n]*(?:\n[ ]{4,}[^\n]*)*`)
+
+// stripToolOutput removes tool-result blocks from text so incidental "?" in
+// tool output (notably the interrupt artifact) doesn't trigger question
+// detection. Non-tool-output text is left untouched.
+func stripToolOutput(data []byte) []byte {
+	return toolOutputBlockRe.ReplaceAll(data, nil)
+}
+
+// tipLineRe matches Claude Code's contextual "Tip:" status lines rendered
+// beneath the working/thinking spinner. These are UI chrome, not Claude's
+// words, so any trailing "?" on them must not trigger question detection.
+// Shape seen in the wild:
+//
+//	"  ⎿  Tip: Did you know you can drag and drop image files …?"
+//	"  Tip: Run /help for a list of commands"
+//
+// Match leading whitespace, an optional ⎿ (U+23BF) connector with its
+// following space(s), then the literal "Tip:" prefix and the rest of the
+// line. Anchored to line start to avoid mid-sentence false positives.
+var tipLineRe = regexp.MustCompile(`(?m)^[ ]*(?:⎿[ ]+)?Tip:[^\n]*`)
+
+// stripTipLines removes Claude Code "Tip:" status lines so the incidental
+// "?" that ends many of them doesn't trigger question detection.
+func stripTipLines(data []byte) []byte {
+	return tipLineRe.ReplaceAll(data, nil)
+}
 
 // HasQuestionPrompt checks whether the last portion of PTY output looks like
 // a Claude Code question prompt. It detects three patterns:
@@ -96,7 +134,8 @@ func HasQuestionPrompt(data []byte) bool {
 	// Find the last response marker and check if the text from there to the end
 	// contains a trailing "?".
 	if idx := bytes.LastIndex(clean, []byte("\u23FA")); idx >= 0 {
-		if trailingQuestionRe.Match(clean[idx:]) {
+		afterMarker := stripTipLines(stripToolOutput(clean[idx:]))
+		if trailingQuestionRe.Match(afterMarker) {
 			return true
 		}
 		// Response marker found but no trailing "?" -- definitely not a question.
@@ -107,8 +146,9 @@ func HasQuestionPrompt(data []byte) bool {
 	// Claude Code's TUI renders dividers, status bars, and cursor positioning
 	// after the response text. With wide terminals or re-renders, this
 	// post-response content can push the marker out of the tail buffer.
-	// Check if any line in the last 30 lines ends with "?".
-	if trailingQuestionRe.Match(tail) {
+	// Check if any line in the last 30 lines ends with "?" (excluding tool
+	// output blocks -- system text like the interrupt artifact, not Claude's).
+	if trailingQuestionRe.Match(stripTipLines(stripToolOutput(tail))) {
 		return true
 	}
 

@@ -2,7 +2,6 @@ package safego_test
 
 import (
 	"bytes"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,16 +14,16 @@ func TestGo_NoPanic(t *testing.T) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-
 	var ran bool
-	safego.Go(logger, func() {
-		defer wg.Done()
+	done := safego.Go(logger, func() {
 		ran = true
 	})
 
-	wg.Wait()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for goroutine to complete")
+	}
 
 	if !ran {
 		t.Fatal("expected function to run")
@@ -38,19 +37,14 @@ func TestGo_RecoversPanic(t *testing.T) {
 	var buf bytes.Buffer
 	logger := zerolog.New(&buf)
 
-	safego.Go(logger, func() {
+	done := safego.Go(logger, func() {
 		panic("test panic")
 	})
 
-	// Poll the buffer with short intervals instead of a single sleep.
-	deadline := time.After(2 * time.Second)
-	for buf.Len() == 0 {
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for panic recovery log output")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for panic recovery")
 	}
 
 	output := buf.String()
@@ -62,5 +56,28 @@ func TestGo_RecoversPanic(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("test panic")) {
 		t.Fatalf("expected panic value in log, got: %s", output)
+	}
+}
+
+// TestGo_DoneClosesAfterRecoverLog is a narrow regression test for the race
+// between the panic-recovery log write and a concurrent read of the same
+// sink. The returned done channel must close ONLY after the deferred
+// recover+log has finished, so the caller can read the sink without racing.
+func TestGo_DoneClosesAfterRecoverLog(t *testing.T) {
+	for i := range 100 {
+		var buf bytes.Buffer
+		logger := zerolog.New(&buf)
+
+		done := safego.Go(logger, func() { panic("regression") })
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: timeout waiting for done", i)
+		}
+		// Must be able to read the buffer immediately with no race.
+		if !bytes.Contains(buf.Bytes(), []byte("recovered from panic")) {
+			t.Fatalf("iter %d: log not written before done closed; got %q", i, buf.String())
+		}
 	}
 }

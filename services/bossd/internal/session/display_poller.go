@@ -21,6 +21,7 @@ type DisplayPoller struct {
 	tracker  *status.PRTracker
 	interval time.Duration
 	logger   zerolog.Logger
+	done     chan struct{}
 }
 
 // NewDisplayPoller creates a new display status poller.
@@ -39,6 +40,7 @@ func NewDisplayPoller(
 		tracker:  tracker,
 		interval: interval,
 		logger:   logger,
+		done:     make(chan struct{}),
 	}
 }
 
@@ -46,6 +48,8 @@ func NewDisplayPoller(
 // context is cancelled.
 func (p *DisplayPoller) Run(ctx context.Context) {
 	safego.Go(p.logger, func() {
+		defer close(p.done)
+
 		ticker := time.NewTicker(p.interval)
 		defer ticker.Stop()
 
@@ -62,6 +66,9 @@ func (p *DisplayPoller) Run(ctx context.Context) {
 		}
 	})
 }
+
+// Done returns a channel closed when Run's goroutine exits.
+func (p *DisplayPoller) Done() <-chan struct{} { return p.done }
 
 // poll iterates all active sessions with PRs and updates display statuses.
 func (p *DisplayPoller) poll(ctx context.Context) {

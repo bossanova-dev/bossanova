@@ -16,6 +16,8 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 // mockVCSProvider is a minimal mock for vcs.Provider used in host_service tests.
@@ -273,6 +275,11 @@ func (m *mockClaudeRunner) History(sessionID string) []claude.OutputLine {
 
 // --- Test helpers for workflow tests ---
 
+// migrationsDir mirrors pluginharness.MigrationsDir but lives here because
+// this file is in package plugin — importing pluginharness from the plugin
+// package would create an import cycle (pluginharness depends on plugin for
+// NewHandshake). Tests in package plugin_test should use pluginharness.MigrationsDir
+// instead.
 func migrationsDir() string {
 	_, filename, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
@@ -376,6 +383,96 @@ func TestHostServiceCreateWorkflow(t *testing.T) {
 	}
 }
 
+func TestHostServiceCreateWorkflowRejectsDuplicateActiveSession(t *testing.T) {
+	srv, _, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// First workflow succeeds.
+	first, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		MaxLegs:   1,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkflow 1: %v", err)
+	}
+
+	// Second workflow for the same session while the first is still active
+	// should be rejected with AlreadyExists.
+	_, err = srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		MaxLegs:   1,
+	})
+	if err == nil {
+		t.Fatal("CreateWorkflow 2: expected AlreadyExists error, got nil")
+	}
+	if code := grpcstatus.Code(err); code != codes.AlreadyExists {
+		t.Fatalf("CreateWorkflow 2: got code %v, want AlreadyExists", code)
+	}
+
+	// Complete the first workflow. A new CreateWorkflow should now succeed.
+	completed := "completed"
+	if _, err := srv.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+		Id:     first.GetWorkflow().GetId(),
+		Status: &completed,
+	}); err != nil {
+		t.Fatalf("UpdateWorkflow: %v", err)
+	}
+	if _, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+		SessionId: sessionID,
+		RepoId:    repoID,
+		MaxLegs:   1,
+	}); err != nil {
+		t.Fatalf("CreateWorkflow 3 (post-completion): %v", err)
+	}
+}
+
+func TestHostServiceCreateWorkflowConcurrentDedupes(t *testing.T) {
+	srv, _, sessionID, repoID := setupWorkflowTestServer(t)
+	ctx := context.Background()
+
+	// Race two concurrent CreateWorkflow calls for the same session and
+	// assert exactly one wins. This is the real-world scenario: two repair
+	// plugin instances (or a restart race) both decide the session is idle,
+	// both try to create, and only one row should persist.
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+				SessionId: sessionID,
+				RepoId:    repoID,
+				MaxLegs:   1,
+			})
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	successes := 0
+	alreadyExists := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case grpcstatus.Code(err) == codes.AlreadyExists:
+			alreadyExists++
+		default:
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Errorf("got %d successful CreateWorkflow calls, want 1", successes)
+	}
+	if alreadyExists != n-1 {
+		t.Errorf("got %d AlreadyExists rejections, want %d", alreadyExists, n-1)
+	}
+}
+
 func TestHostServiceGetWorkflow(t *testing.T) {
 	srv, _, sessionID, repoID := setupWorkflowTestServer(t)
 	ctx := context.Background()
@@ -473,13 +570,21 @@ func TestHostServiceListWorkflows(t *testing.T) {
 		t.Errorf("expected 0 workflows, got %d", len(resp.GetWorkflows()))
 	}
 
-	// Create two workflows.
-	_, err = srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
+	// Create two workflows for the same session. CreateWorkflow enforces
+	// "only one active workflow per session", so the first must be marked
+	// terminal before the second is created.
+	w1, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
 		SessionId: sessionID, RepoId: repoID,
 		PlanPath: "docs/plans/plan-1.md", MaxLegs: 20,
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkflow 1: %v", err)
+	}
+	completed := "completed"
+	if _, err := srv.UpdateWorkflow(ctx, &bossanovav1.UpdateWorkflowRequest{
+		Id: w1.GetWorkflow().GetId(), Status: &completed,
+	}); err != nil {
+		t.Fatalf("UpdateWorkflow w1 -> completed: %v", err)
 	}
 	w2, err := srv.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{
 		SessionId: sessionID, RepoId: repoID,

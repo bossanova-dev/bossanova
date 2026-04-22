@@ -1572,6 +1572,387 @@ func (*DeleteWebhookConfigResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{29}
 }
 
+type ReportBugRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Comment       string                 `protobuf:"bytes,1,opt,name=comment,proto3" json:"comment,omitempty"`
+	Context       *ReportContext         `protobuf:"bytes,2,opt,name=context,proto3" json:"context,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportBugRequest) Reset() {
+	*x = ReportBugRequest{}
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportBugRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportBugRequest) ProtoMessage() {}
+
+func (x *ReportBugRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportBugRequest.ProtoReflect.Descriptor instead.
+func (*ReportBugRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ReportBugRequest) GetComment() string {
+	if x != nil {
+		return x.Comment
+	}
+	return ""
+}
+
+func (x *ReportBugRequest) GetContext() *ReportContext {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+type ReportBugResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ReportId      string                 `protobuf:"bytes,1,opt,name=report_id,json=reportId,proto3" json:"report_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportBugResponse) Reset() {
+	*x = ReportBugResponse{}
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportBugResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportBugResponse) ProtoMessage() {}
+
+func (x *ReportBugResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportBugResponse.ProtoReflect.Descriptor instead.
+func (*ReportBugResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ReportBugResponse) GetReportId() string {
+	if x != nil {
+		return x.ReportId
+	}
+	return ""
+}
+
+// ReportContext bundles everything the TUI attaches to a bug report.
+// All fields are optional; the server tolerates empty values.
+type ReportContext struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Client identity
+	BossVersion string `protobuf:"bytes,1,opt,name=boss_version,json=bossVersion,proto3" json:"boss_version,omitempty"`
+	BossCommit  string `protobuf:"bytes,2,opt,name=boss_commit,json=bossCommit,proto3" json:"boss_commit,omitempty"`
+	Os          string `protobuf:"bytes,3,opt,name=os,proto3" json:"os,omitempty"`
+	Arch        string `protobuf:"bytes,4,opt,name=arch,proto3" json:"arch,omitempty"`
+	Terminal    string `protobuf:"bytes,5,opt,name=terminal,proto3" json:"terminal,omitempty"`
+	// Session state at report time.
+	CurrentSession *Session          `protobuf:"bytes,6,opt,name=current_session,json=currentSession,proto3" json:"current_session,omitempty"`
+	Sessions       []*SessionSummary `protobuf:"bytes,7,rep,name=sessions,proto3" json:"sessions,omitempty"`
+	DaemonStatuses map[string]string `protobuf:"bytes,8,rep,name=daemon_statuses,json=daemonStatuses,proto3" json:"daemon_statuses,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Tailed log contents (last N lines each).
+	BossLogTail  string `protobuf:"bytes,9,opt,name=boss_log_tail,json=bossLogTail,proto3" json:"boss_log_tail,omitempty"`
+	BossdLogTail string `protobuf:"bytes,10,opt,name=bossd_log_tail,json=bossdLogTail,proto3" json:"bossd_log_tail,omitempty"`
+	// Optionally populated — most recent Claude turns, if available.
+	RecentTurns   []*ClaudeTurn `protobuf:"bytes,11,rep,name=recent_turns,json=recentTurns,proto3" json:"recent_turns,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportContext) Reset() {
+	*x = ReportContext{}
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportContext) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportContext) ProtoMessage() {}
+
+func (x *ReportContext) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportContext.ProtoReflect.Descriptor instead.
+func (*ReportContext) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *ReportContext) GetBossVersion() string {
+	if x != nil {
+		return x.BossVersion
+	}
+	return ""
+}
+
+func (x *ReportContext) GetBossCommit() string {
+	if x != nil {
+		return x.BossCommit
+	}
+	return ""
+}
+
+func (x *ReportContext) GetOs() string {
+	if x != nil {
+		return x.Os
+	}
+	return ""
+}
+
+func (x *ReportContext) GetArch() string {
+	if x != nil {
+		return x.Arch
+	}
+	return ""
+}
+
+func (x *ReportContext) GetTerminal() string {
+	if x != nil {
+		return x.Terminal
+	}
+	return ""
+}
+
+func (x *ReportContext) GetCurrentSession() *Session {
+	if x != nil {
+		return x.CurrentSession
+	}
+	return nil
+}
+
+func (x *ReportContext) GetSessions() []*SessionSummary {
+	if x != nil {
+		return x.Sessions
+	}
+	return nil
+}
+
+func (x *ReportContext) GetDaemonStatuses() map[string]string {
+	if x != nil {
+		return x.DaemonStatuses
+	}
+	return nil
+}
+
+func (x *ReportContext) GetBossLogTail() string {
+	if x != nil {
+		return x.BossLogTail
+	}
+	return ""
+}
+
+func (x *ReportContext) GetBossdLogTail() string {
+	if x != nil {
+		return x.BossdLogTail
+	}
+	return ""
+}
+
+func (x *ReportContext) GetRecentTurns() []*ClaudeTurn {
+	if x != nil {
+		return x.RecentTurns
+	}
+	return nil
+}
+
+// SessionSummary is a lightweight view of a Session for report context.
+type SessionSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	RepoId        string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	Title         string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	State         SessionState           `protobuf:"varint,4,opt,name=state,proto3,enum=bossanova.v1.SessionState" json:"state,omitempty"`
+	PrNumber      *int32                 `protobuf:"varint,5,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
+	PrUrl         *string                `protobuf:"bytes,6,opt,name=pr_url,json=prUrl,proto3,oneof" json:"pr_url,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SessionSummary) Reset() {
+	*x = SessionSummary{}
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SessionSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SessionSummary) ProtoMessage() {}
+
+func (x *SessionSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SessionSummary.ProtoReflect.Descriptor instead.
+func (*SessionSummary) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *SessionSummary) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SessionSummary) GetRepoId() string {
+	if x != nil {
+		return x.RepoId
+	}
+	return ""
+}
+
+func (x *SessionSummary) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *SessionSummary) GetState() SessionState {
+	if x != nil {
+		return x.State
+	}
+	return SessionState_SESSION_STATE_UNSPECIFIED
+}
+
+func (x *SessionSummary) GetPrNumber() int32 {
+	if x != nil && x.PrNumber != nil {
+		return *x.PrNumber
+	}
+	return 0
+}
+
+func (x *SessionSummary) GetPrUrl() string {
+	if x != nil && x.PrUrl != nil {
+		return *x.PrUrl
+	}
+	return ""
+}
+
+func (x *SessionSummary) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+// ClaudeTurn is a single turn from a recent Claude conversation.
+type ClaudeTurn struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// "user" or "assistant".
+	Role          string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	Timestamp     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClaudeTurn) Reset() {
+	*x = ClaudeTurn{}
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClaudeTurn) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClaudeTurn) ProtoMessage() {}
+
+func (x *ClaudeTurn) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_orchestrator_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClaudeTurn.ProtoReflect.Descriptor instead.
+func (*ClaudeTurn) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_orchestrator_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ClaudeTurn) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ClaudeTurn) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ClaudeTurn) GetTimestamp() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Timestamp
+	}
+	return nil
+}
+
 var File_bossanova_v1_orchestrator_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
@@ -1668,8 +2049,46 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\aconfigs\x18\x01 \x03(\v2\x1b.bossanova.v1.WebhookConfigR\aconfigs\",\n" +
 	"\x1aDeleteWebhookConfigRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x1d\n" +
-	"\x1bDeleteWebhookConfigResponse2\xef\n" +
+	"\x1bDeleteWebhookConfigResponse\"c\n" +
+	"\x10ReportBugRequest\x12\x18\n" +
+	"\acomment\x18\x01 \x01(\tR\acomment\x125\n" +
+	"\acontext\x18\x02 \x01(\v2\x1b.bossanova.v1.ReportContextR\acontext\"0\n" +
+	"\x11ReportBugResponse\x12\x1b\n" +
+	"\treport_id\x18\x01 \x01(\tR\breportId\"\xb1\x04\n" +
+	"\rReportContext\x12!\n" +
+	"\fboss_version\x18\x01 \x01(\tR\vbossVersion\x12\x1f\n" +
+	"\vboss_commit\x18\x02 \x01(\tR\n" +
+	"bossCommit\x12\x0e\n" +
+	"\x02os\x18\x03 \x01(\tR\x02os\x12\x12\n" +
+	"\x04arch\x18\x04 \x01(\tR\x04arch\x12\x1a\n" +
+	"\bterminal\x18\x05 \x01(\tR\bterminal\x12>\n" +
+	"\x0fcurrent_session\x18\x06 \x01(\v2\x15.bossanova.v1.SessionR\x0ecurrentSession\x128\n" +
+	"\bsessions\x18\a \x03(\v2\x1c.bossanova.v1.SessionSummaryR\bsessions\x12X\n" +
+	"\x0fdaemon_statuses\x18\b \x03(\v2/.bossanova.v1.ReportContext.DaemonStatusesEntryR\x0edaemonStatuses\x12\"\n" +
+	"\rboss_log_tail\x18\t \x01(\tR\vbossLogTail\x12$\n" +
+	"\x0ebossd_log_tail\x18\n" +
+	" \x01(\tR\fbossdLogTail\x12;\n" +
+	"\frecent_turns\x18\v \x03(\v2\x18.bossanova.v1.ClaudeTurnR\vrecentTurns\x1aA\n" +
+	"\x13DaemonStatusesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x93\x02\n" +
+	"\x0eSessionSummary\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\x120\n" +
+	"\x05state\x18\x04 \x01(\x0e2\x1a.bossanova.v1.SessionStateR\x05state\x12 \n" +
+	"\tpr_number\x18\x05 \x01(\x05H\x00R\bprNumber\x88\x01\x01\x12\x1a\n" +
+	"\x06pr_url\x18\x06 \x01(\tH\x01R\x05prUrl\x88\x01\x01\x129\n" +
 	"\n" +
+	"updated_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\f\n" +
+	"\n" +
+	"_pr_numberB\t\n" +
+	"\a_pr_url\"t\n" +
+	"\n" +
+	"ClaudeTurn\x12\x12\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\x128\n" +
+	"\ttimestamp\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp2\xbd\v\n" +
 	"\x13OrchestratorService\x12[\n" +
 	"\x0eRegisterDaemon\x12#.bossanova.v1.RegisterDaemonRequest\x1a$.bossanova.v1.RegisterDaemonResponse\x12L\n" +
 	"\tHeartbeat\x12\x1e.bossanova.v1.HeartbeatRequest\x1a\x1f.bossanova.v1.HeartbeatResponse\x12R\n" +
@@ -1684,7 +2103,8 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x12ProxyResumeSession\x12'.bossanova.v1.ProxyResumeSessionRequest\x1a(.bossanova.v1.ProxyResumeSessionResponse\x12j\n" +
 	"\x13CreateWebhookConfig\x12(.bossanova.v1.CreateWebhookConfigRequest\x1a).bossanova.v1.CreateWebhookConfigResponse\x12g\n" +
 	"\x12ListWebhookConfigs\x12'.bossanova.v1.ListWebhookConfigsRequest\x1a(.bossanova.v1.ListWebhookConfigsResponse\x12j\n" +
-	"\x13DeleteWebhookConfig\x12(.bossanova.v1.DeleteWebhookConfigRequest\x1a).bossanova.v1.DeleteWebhookConfigResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x13DeleteWebhookConfig\x12(.bossanova.v1.DeleteWebhookConfigRequest\x1a).bossanova.v1.DeleteWebhookConfigResponse\x12L\n" +
+	"\tReportBug\x12\x1e.bossanova.v1.ReportBugRequest\x1a\x1f.bossanova.v1.ReportBugResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_orchestrator_proto_rawDescOnce sync.Once
@@ -1698,7 +2118,7 @@ func file_bossanova_v1_orchestrator_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_orchestrator_proto_rawDescData
 }
 
-var file_bossanova_v1_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
+var file_bossanova_v1_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
 var file_bossanova_v1_orchestrator_proto_goTypes = []any{
 	(*RegisterDaemonRequest)(nil),       // 0: bossanova.v1.RegisterDaemonRequest
 	(*RegisterDaemonResponse)(nil),      // 1: bossanova.v1.RegisterDaemonResponse
@@ -1730,64 +2150,80 @@ var file_bossanova_v1_orchestrator_proto_goTypes = []any{
 	(*ListWebhookConfigsResponse)(nil),  // 27: bossanova.v1.ListWebhookConfigsResponse
 	(*DeleteWebhookConfigRequest)(nil),  // 28: bossanova.v1.DeleteWebhookConfigRequest
 	(*DeleteWebhookConfigResponse)(nil), // 29: bossanova.v1.DeleteWebhookConfigResponse
-	(*timestamppb.Timestamp)(nil),       // 30: google.protobuf.Timestamp
-	(*Session)(nil),                     // 31: bossanova.v1.Session
-	(SessionState)(0),                   // 32: bossanova.v1.SessionState
-	(*OutputLine)(nil),                  // 33: bossanova.v1.OutputLine
-	(*StateChange)(nil),                 // 34: bossanova.v1.StateChange
-	(*SessionEnded)(nil),                // 35: bossanova.v1.SessionEnded
+	(*ReportBugRequest)(nil),            // 30: bossanova.v1.ReportBugRequest
+	(*ReportBugResponse)(nil),           // 31: bossanova.v1.ReportBugResponse
+	(*ReportContext)(nil),               // 32: bossanova.v1.ReportContext
+	(*SessionSummary)(nil),              // 33: bossanova.v1.SessionSummary
+	(*ClaudeTurn)(nil),                  // 34: bossanova.v1.ClaudeTurn
+	nil,                                 // 35: bossanova.v1.ReportContext.DaemonStatusesEntry
+	(*timestamppb.Timestamp)(nil),       // 36: google.protobuf.Timestamp
+	(*Session)(nil),                     // 37: bossanova.v1.Session
+	(SessionState)(0),                   // 38: bossanova.v1.SessionState
+	(*OutputLine)(nil),                  // 39: bossanova.v1.OutputLine
+	(*StateChange)(nil),                 // 40: bossanova.v1.StateChange
+	(*SessionEnded)(nil),                // 41: bossanova.v1.SessionEnded
 }
 var file_bossanova_v1_orchestrator_proto_depIdxs = []int32{
-	30, // 0: bossanova.v1.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
-	30, // 1: bossanova.v1.DaemonInfo.last_heartbeat:type_name -> google.protobuf.Timestamp
+	36, // 0: bossanova.v1.HeartbeatRequest.timestamp:type_name -> google.protobuf.Timestamp
+	36, // 1: bossanova.v1.DaemonInfo.last_heartbeat:type_name -> google.protobuf.Timestamp
 	5,  // 2: bossanova.v1.ListDaemonsResponse.daemons:type_name -> bossanova.v1.DaemonInfo
-	31, // 3: bossanova.v1.SyncSessionsRequest.sessions:type_name -> bossanova.v1.Session
-	31, // 4: bossanova.v1.TransferSessionResponse.session:type_name -> bossanova.v1.Session
-	32, // 5: bossanova.v1.ProxyListSessionsRequest.states:type_name -> bossanova.v1.SessionState
-	31, // 6: bossanova.v1.ProxyListSessionsResponse.sessions:type_name -> bossanova.v1.Session
-	31, // 7: bossanova.v1.ProxyGetSessionResponse.session:type_name -> bossanova.v1.Session
-	33, // 8: bossanova.v1.ProxyAttachSessionResponse.output_line:type_name -> bossanova.v1.OutputLine
-	34, // 9: bossanova.v1.ProxyAttachSessionResponse.state_change:type_name -> bossanova.v1.StateChange
-	35, // 10: bossanova.v1.ProxyAttachSessionResponse.session_ended:type_name -> bossanova.v1.SessionEnded
-	31, // 11: bossanova.v1.ProxyStopSessionResponse.session:type_name -> bossanova.v1.Session
-	31, // 12: bossanova.v1.ProxyPauseSessionResponse.session:type_name -> bossanova.v1.Session
-	31, // 13: bossanova.v1.ProxyResumeSessionResponse.session:type_name -> bossanova.v1.Session
-	30, // 14: bossanova.v1.WebhookConfig.created_at:type_name -> google.protobuf.Timestamp
+	37, // 3: bossanova.v1.SyncSessionsRequest.sessions:type_name -> bossanova.v1.Session
+	37, // 4: bossanova.v1.TransferSessionResponse.session:type_name -> bossanova.v1.Session
+	38, // 5: bossanova.v1.ProxyListSessionsRequest.states:type_name -> bossanova.v1.SessionState
+	37, // 6: bossanova.v1.ProxyListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	37, // 7: bossanova.v1.ProxyGetSessionResponse.session:type_name -> bossanova.v1.Session
+	39, // 8: bossanova.v1.ProxyAttachSessionResponse.output_line:type_name -> bossanova.v1.OutputLine
+	40, // 9: bossanova.v1.ProxyAttachSessionResponse.state_change:type_name -> bossanova.v1.StateChange
+	41, // 10: bossanova.v1.ProxyAttachSessionResponse.session_ended:type_name -> bossanova.v1.SessionEnded
+	37, // 11: bossanova.v1.ProxyStopSessionResponse.session:type_name -> bossanova.v1.Session
+	37, // 12: bossanova.v1.ProxyPauseSessionResponse.session:type_name -> bossanova.v1.Session
+	37, // 13: bossanova.v1.ProxyResumeSessionResponse.session:type_name -> bossanova.v1.Session
+	36, // 14: bossanova.v1.WebhookConfig.created_at:type_name -> google.protobuf.Timestamp
 	23, // 15: bossanova.v1.CreateWebhookConfigResponse.config:type_name -> bossanova.v1.WebhookConfig
 	23, // 16: bossanova.v1.ListWebhookConfigsResponse.configs:type_name -> bossanova.v1.WebhookConfig
-	0,  // 17: bossanova.v1.OrchestratorService.RegisterDaemon:input_type -> bossanova.v1.RegisterDaemonRequest
-	2,  // 18: bossanova.v1.OrchestratorService.Heartbeat:input_type -> bossanova.v1.HeartbeatRequest
-	4,  // 19: bossanova.v1.OrchestratorService.ListDaemons:input_type -> bossanova.v1.ListDaemonsRequest
-	7,  // 20: bossanova.v1.OrchestratorService.SyncSessions:input_type -> bossanova.v1.SyncSessionsRequest
-	9,  // 21: bossanova.v1.OrchestratorService.TransferSession:input_type -> bossanova.v1.TransferSessionRequest
-	11, // 22: bossanova.v1.OrchestratorService.ProxyListSessions:input_type -> bossanova.v1.ProxyListSessionsRequest
-	13, // 23: bossanova.v1.OrchestratorService.ProxyGetSession:input_type -> bossanova.v1.ProxyGetSessionRequest
-	15, // 24: bossanova.v1.OrchestratorService.ProxyAttachSession:input_type -> bossanova.v1.ProxyAttachSessionRequest
-	17, // 25: bossanova.v1.OrchestratorService.ProxyStopSession:input_type -> bossanova.v1.ProxyStopSessionRequest
-	19, // 26: bossanova.v1.OrchestratorService.ProxyPauseSession:input_type -> bossanova.v1.ProxyPauseSessionRequest
-	21, // 27: bossanova.v1.OrchestratorService.ProxyResumeSession:input_type -> bossanova.v1.ProxyResumeSessionRequest
-	24, // 28: bossanova.v1.OrchestratorService.CreateWebhookConfig:input_type -> bossanova.v1.CreateWebhookConfigRequest
-	26, // 29: bossanova.v1.OrchestratorService.ListWebhookConfigs:input_type -> bossanova.v1.ListWebhookConfigsRequest
-	28, // 30: bossanova.v1.OrchestratorService.DeleteWebhookConfig:input_type -> bossanova.v1.DeleteWebhookConfigRequest
-	1,  // 31: bossanova.v1.OrchestratorService.RegisterDaemon:output_type -> bossanova.v1.RegisterDaemonResponse
-	3,  // 32: bossanova.v1.OrchestratorService.Heartbeat:output_type -> bossanova.v1.HeartbeatResponse
-	6,  // 33: bossanova.v1.OrchestratorService.ListDaemons:output_type -> bossanova.v1.ListDaemonsResponse
-	8,  // 34: bossanova.v1.OrchestratorService.SyncSessions:output_type -> bossanova.v1.SyncSessionsResponse
-	10, // 35: bossanova.v1.OrchestratorService.TransferSession:output_type -> bossanova.v1.TransferSessionResponse
-	12, // 36: bossanova.v1.OrchestratorService.ProxyListSessions:output_type -> bossanova.v1.ProxyListSessionsResponse
-	14, // 37: bossanova.v1.OrchestratorService.ProxyGetSession:output_type -> bossanova.v1.ProxyGetSessionResponse
-	16, // 38: bossanova.v1.OrchestratorService.ProxyAttachSession:output_type -> bossanova.v1.ProxyAttachSessionResponse
-	18, // 39: bossanova.v1.OrchestratorService.ProxyStopSession:output_type -> bossanova.v1.ProxyStopSessionResponse
-	20, // 40: bossanova.v1.OrchestratorService.ProxyPauseSession:output_type -> bossanova.v1.ProxyPauseSessionResponse
-	22, // 41: bossanova.v1.OrchestratorService.ProxyResumeSession:output_type -> bossanova.v1.ProxyResumeSessionResponse
-	25, // 42: bossanova.v1.OrchestratorService.CreateWebhookConfig:output_type -> bossanova.v1.CreateWebhookConfigResponse
-	27, // 43: bossanova.v1.OrchestratorService.ListWebhookConfigs:output_type -> bossanova.v1.ListWebhookConfigsResponse
-	29, // 44: bossanova.v1.OrchestratorService.DeleteWebhookConfig:output_type -> bossanova.v1.DeleteWebhookConfigResponse
-	31, // [31:45] is the sub-list for method output_type
-	17, // [17:31] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	32, // 17: bossanova.v1.ReportBugRequest.context:type_name -> bossanova.v1.ReportContext
+	37, // 18: bossanova.v1.ReportContext.current_session:type_name -> bossanova.v1.Session
+	33, // 19: bossanova.v1.ReportContext.sessions:type_name -> bossanova.v1.SessionSummary
+	35, // 20: bossanova.v1.ReportContext.daemon_statuses:type_name -> bossanova.v1.ReportContext.DaemonStatusesEntry
+	34, // 21: bossanova.v1.ReportContext.recent_turns:type_name -> bossanova.v1.ClaudeTurn
+	38, // 22: bossanova.v1.SessionSummary.state:type_name -> bossanova.v1.SessionState
+	36, // 23: bossanova.v1.SessionSummary.updated_at:type_name -> google.protobuf.Timestamp
+	36, // 24: bossanova.v1.ClaudeTurn.timestamp:type_name -> google.protobuf.Timestamp
+	0,  // 25: bossanova.v1.OrchestratorService.RegisterDaemon:input_type -> bossanova.v1.RegisterDaemonRequest
+	2,  // 26: bossanova.v1.OrchestratorService.Heartbeat:input_type -> bossanova.v1.HeartbeatRequest
+	4,  // 27: bossanova.v1.OrchestratorService.ListDaemons:input_type -> bossanova.v1.ListDaemonsRequest
+	7,  // 28: bossanova.v1.OrchestratorService.SyncSessions:input_type -> bossanova.v1.SyncSessionsRequest
+	9,  // 29: bossanova.v1.OrchestratorService.TransferSession:input_type -> bossanova.v1.TransferSessionRequest
+	11, // 30: bossanova.v1.OrchestratorService.ProxyListSessions:input_type -> bossanova.v1.ProxyListSessionsRequest
+	13, // 31: bossanova.v1.OrchestratorService.ProxyGetSession:input_type -> bossanova.v1.ProxyGetSessionRequest
+	15, // 32: bossanova.v1.OrchestratorService.ProxyAttachSession:input_type -> bossanova.v1.ProxyAttachSessionRequest
+	17, // 33: bossanova.v1.OrchestratorService.ProxyStopSession:input_type -> bossanova.v1.ProxyStopSessionRequest
+	19, // 34: bossanova.v1.OrchestratorService.ProxyPauseSession:input_type -> bossanova.v1.ProxyPauseSessionRequest
+	21, // 35: bossanova.v1.OrchestratorService.ProxyResumeSession:input_type -> bossanova.v1.ProxyResumeSessionRequest
+	24, // 36: bossanova.v1.OrchestratorService.CreateWebhookConfig:input_type -> bossanova.v1.CreateWebhookConfigRequest
+	26, // 37: bossanova.v1.OrchestratorService.ListWebhookConfigs:input_type -> bossanova.v1.ListWebhookConfigsRequest
+	28, // 38: bossanova.v1.OrchestratorService.DeleteWebhookConfig:input_type -> bossanova.v1.DeleteWebhookConfigRequest
+	30, // 39: bossanova.v1.OrchestratorService.ReportBug:input_type -> bossanova.v1.ReportBugRequest
+	1,  // 40: bossanova.v1.OrchestratorService.RegisterDaemon:output_type -> bossanova.v1.RegisterDaemonResponse
+	3,  // 41: bossanova.v1.OrchestratorService.Heartbeat:output_type -> bossanova.v1.HeartbeatResponse
+	6,  // 42: bossanova.v1.OrchestratorService.ListDaemons:output_type -> bossanova.v1.ListDaemonsResponse
+	8,  // 43: bossanova.v1.OrchestratorService.SyncSessions:output_type -> bossanova.v1.SyncSessionsResponse
+	10, // 44: bossanova.v1.OrchestratorService.TransferSession:output_type -> bossanova.v1.TransferSessionResponse
+	12, // 45: bossanova.v1.OrchestratorService.ProxyListSessions:output_type -> bossanova.v1.ProxyListSessionsResponse
+	14, // 46: bossanova.v1.OrchestratorService.ProxyGetSession:output_type -> bossanova.v1.ProxyGetSessionResponse
+	16, // 47: bossanova.v1.OrchestratorService.ProxyAttachSession:output_type -> bossanova.v1.ProxyAttachSessionResponse
+	18, // 48: bossanova.v1.OrchestratorService.ProxyStopSession:output_type -> bossanova.v1.ProxyStopSessionResponse
+	20, // 49: bossanova.v1.OrchestratorService.ProxyPauseSession:output_type -> bossanova.v1.ProxyPauseSessionResponse
+	22, // 50: bossanova.v1.OrchestratorService.ProxyResumeSession:output_type -> bossanova.v1.ProxyResumeSessionResponse
+	25, // 51: bossanova.v1.OrchestratorService.CreateWebhookConfig:output_type -> bossanova.v1.CreateWebhookConfigResponse
+	27, // 52: bossanova.v1.OrchestratorService.ListWebhookConfigs:output_type -> bossanova.v1.ListWebhookConfigsResponse
+	29, // 53: bossanova.v1.OrchestratorService.DeleteWebhookConfig:output_type -> bossanova.v1.DeleteWebhookConfigResponse
+	31, // 54: bossanova.v1.OrchestratorService.ReportBug:output_type -> bossanova.v1.ReportBugResponse
+	40, // [40:55] is the sub-list for method output_type
+	25, // [25:40] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_orchestrator_proto_init() }
@@ -1804,13 +2240,14 @@ func file_bossanova_v1_orchestrator_proto_init() {
 		(*ProxyAttachSessionResponse_StateChange)(nil),
 		(*ProxyAttachSessionResponse_SessionEnded)(nil),
 	}
+	file_bossanova_v1_orchestrator_proto_msgTypes[33].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_orchestrator_proto_rawDesc), len(file_bossanova_v1_orchestrator_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   30,
+			NumMessages:   36,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -229,10 +229,22 @@ func renderBanner(active View, opts bannerOpts) string {
 	var line1, line2 string
 	switch {
 	case (active == ViewChatPicker || active == ViewSessionSettings) && opts.session != nil:
-		// Session title with clickable tracker ID and PR number.
-		title := renderTrackerLink(opts.session, opts.session.Title)
-		if prLink := renderPRLink(opts.session); prLink != "" {
-			title = prLink + " " + title
+		// Session title with clickable tracker ID and PR number. Merged/closed
+		// PRs get the same muted strikethrough treatment as merged rows on the
+		// home screen, so the banner reflects the terminal state at a glance.
+		merged := opts.session.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED ||
+			opts.session.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED
+		var title string
+		if merged {
+			title = renderMutedTrackerLink(opts.session, opts.session.Title)
+			if prLink := renderMutedPRLink(opts.session); prLink != "" {
+				title = prLink + " " + title
+			}
+		} else {
+			title = renderTrackerLink(opts.session, opts.session.Title)
+			if prLink := renderPRLink(opts.session); prLink != "" {
+				title = prLink + " " + title
+			}
 		}
 		if prStatus := renderSessionPRStatus(opts.session, opts.spinner); prStatus != "" {
 			title += " (" + prStatus + ")"

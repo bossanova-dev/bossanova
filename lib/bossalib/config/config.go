@@ -142,6 +142,33 @@ func (c RepairConfig) SkillName() string {
 
 const pluginPrefix = "bossd-plugin-"
 
+// DedupPluginConfigs returns cfgs with duplicate entries removed, keeping the
+// first occurrence of each name. The second return value reports whether any
+// duplicates were dropped, which callers can use to decide whether to persist
+// the cleaned-up slice back to disk.
+//
+// Duplicates cause a second plugin subprocess to be launched with its own
+// in-memory state, breaking per-session dedup in plugins like repair (each
+// instance independently fires NotifyStatusChange → CreateWorkflow, yielding
+// parallel chats).
+func DedupPluginConfigs(cfgs []PluginConfig) ([]PluginConfig, bool) {
+	if len(cfgs) <= 1 {
+		return cfgs, false
+	}
+	seen := make(map[string]struct{}, len(cfgs))
+	out := make([]PluginConfig, 0, len(cfgs))
+	dropped := false
+	for _, c := range cfgs {
+		if _, ok := seen[c.Name]; ok {
+			dropped = true
+			continue
+		}
+		seen[c.Name] = struct{}{}
+		out = append(out, c)
+	}
+	return out, dropped
+}
+
 // DiscoverPlugins scans for plugin binaries relative to the running binary's
 // location. It checks ../libexec/plugins/ first (Homebrew layout, resolving
 // symlinks), then falls back to the binary's own directory (dev mode where

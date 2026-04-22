@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 )
 
 // CommandFactory creates exec.Cmd instances. Allows injection for testing.
@@ -221,4 +222,28 @@ func (c *Client) CapturePane(ctx context.Context, sessionName string) (string, e
 		return "", fmt.Errorf("capture pane %q: %w", sessionName, err)
 	}
 	return string(out), nil
+}
+
+// PasteText loads text into a private tmux paste buffer and pastes it into
+// the named session's active pane. The -p flag forces bracketed-paste mode,
+// so applications like Claude Code treat the entire text as a single paste
+// (multiline input, no Enter submit). The -d flag deletes the buffer after
+// paste so the text does not leak into later paste history.
+func (c *Client) PasteText(ctx context.Context, sessionName, text string) error {
+	if sessionName == "" {
+		return fmt.Errorf("session name is required")
+	}
+	bufName := "bossanova-prefill-" + sessionName
+
+	loadCmd := c.cmdFunc(ctx, "tmux", "load-buffer", "-b", bufName, "-")
+	loadCmd.Stdin = strings.NewReader(text)
+	if err := loadCmd.Run(); err != nil {
+		return fmt.Errorf("load tmux paste buffer: %w", err)
+	}
+
+	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-b", bufName, "-t", sessionName)
+	if err := pasteCmd.Run(); err != nil {
+		return fmt.Errorf("paste tmux buffer into %q: %w", sessionName, err)
+	}
+	return nil
 }

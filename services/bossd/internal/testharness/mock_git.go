@@ -16,12 +16,13 @@ var _ gitpkg.WorktreeManager = (*MockWorktreeManager)(nil)
 type MockWorktreeManager struct {
 	mu sync.Mutex
 
-	CreateCalls     []gitpkg.CreateOpts
-	CloneCalls      []cloneCall
-	ArchiveCalls    []string
-	ResurrectCalls  []gitpkg.ResurrectOpts
-	PushCalls       []pushCall
-	EmptyTrashCalls []emptyTrashCall
+	CreateCalls                   []gitpkg.CreateOpts
+	CreateFromExistingBranchCalls []gitpkg.CreateFromExistingBranchOpts
+	CloneCalls                    []cloneCall
+	ArchiveCalls                  []string
+	ResurrectCalls                []gitpkg.ResurrectOpts
+	PushCalls                     []pushCall
+	EmptyTrashCalls               []emptyTrashCall
 
 	// CreateFunc overrides the default Create behavior when set.
 	CreateFunc func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
@@ -34,6 +35,13 @@ type MockWorktreeManager struct {
 
 	// DetectOriginURLResult is returned by DetectOriginURL.
 	DetectOriginURLResult string
+
+	// createErrorOnCall maps 1-indexed Create call numbers to errors.
+	// When the call counter matches, the next Create returns this error
+	// and the entry is consumed.
+	createErrorOnCall map[int]error
+	// pushError is returned by the next Push call when set, then cleared.
+	pushError error
 }
 
 type cloneCall struct {
@@ -61,7 +69,16 @@ func NewMockWorktreeManager() *MockWorktreeManager {
 func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
 	m.mu.Lock()
 	m.CreateCalls = append(m.CreateCalls, opts)
+	callNum := len(m.CreateCalls)
+	injectedErr, hasInjected := m.createErrorOnCall[callNum]
+	if hasInjected {
+		delete(m.createErrorOnCall, callNum)
+	}
 	m.mu.Unlock()
+
+	if hasInjected {
+		return nil, injectedErr
+	}
 
 	if m.CreateFunc != nil {
 		return m.CreateFunc(ctx, opts)
@@ -73,6 +90,29 @@ func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts
 		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s/%s", sanitize(opts.RepoName), branch),
 		BranchName:   branch,
 	}, nil
+}
+
+// SetCreateError causes the next Create call to return err. After firing
+// once it is cleared, so subsequent Create calls fall through to the
+// default behavior (or CreateFunc if set).
+func (m *MockWorktreeManager) SetCreateError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.createErrorOnCall == nil {
+		m.createErrorOnCall = make(map[int]error)
+	}
+	m.createErrorOnCall[len(m.CreateCalls)+1] = err
+}
+
+// SetCreateErrorOnCall causes the Nth Create call (1-indexed, counted across
+// the lifetime of the mock) to return err. Use 1 to fail the very next call.
+func (m *MockWorktreeManager) SetCreateErrorOnCall(n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.createErrorOnCall == nil {
+		m.createErrorOnCall = make(map[int]error)
+	}
+	m.createErrorOnCall[n] = err
 }
 
 func (m *MockWorktreeManager) Clone(ctx context.Context, cloneURL, localPath string) error {
@@ -114,12 +154,25 @@ func (m *MockWorktreeManager) EmptyCommit(_ context.Context, _, _ string) error 
 func (m *MockWorktreeManager) Push(ctx context.Context, worktreePath, branch string) error {
 	m.mu.Lock()
 	m.PushCalls = append(m.PushCalls, pushCall{WorktreePath: worktreePath, Branch: branch})
+	injectedErr := m.pushError
+	m.pushError = nil
 	m.mu.Unlock()
 
+	if injectedErr != nil {
+		return injectedErr
+	}
 	if m.PushFunc != nil {
 		return m.PushFunc(ctx, worktreePath, branch)
 	}
 	return nil
+}
+
+// SetPushError causes the next Push call to return err. After firing
+// once it is cleared.
+func (m *MockWorktreeManager) SetPushError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pushError = err
 }
 
 func (m *MockWorktreeManager) DetectOriginURL(ctx context.Context, repoPath string) (string, error) {
@@ -134,7 +187,18 @@ func (m *MockWorktreeManager) DetectDefaultBranch(ctx context.Context, repoPath 
 	return "main", nil
 }
 
+func (m *MockWorktreeManager) EnsureBaseBranchReadyForSync(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (m *MockWorktreeManager) SyncBaseBranch(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *MockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
+	m.mu.Lock()
+	m.CreateFromExistingBranchCalls = append(m.CreateFromExistingBranchCalls, opts)
+	m.mu.Unlock()
 	return &gitpkg.CreateResult{
 		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s", opts.BranchName),
 		BranchName:   opts.BranchName,

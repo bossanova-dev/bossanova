@@ -137,6 +137,7 @@ enum TaskItemStatus {
 message ListAvailableIssuesRequest {
   string repo_origin_url = 1;
   map<string, string> config = 2;
+  string query = 3;
 }
 
 message ListAvailableIssuesResponse {

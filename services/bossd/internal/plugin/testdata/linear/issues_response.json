@@ -1,0 +1,38 @@
+{
+  "data": {
+    "issues": {
+      "nodes": [
+        {
+          "identifier": "ENG-123",
+          "title": "Fix login bug",
+          "description": "Users report intermittent login failures after the last auth refactor. Investigate session cookie handling.",
+          "branchName": "eng-123-fix-login",
+          "url": "https://linear.app/recurser/issue/ENG-123",
+          "state": {
+            "name": "In Progress"
+          }
+        },
+        {
+          "identifier": "ENG-124",
+          "title": "Add dark mode toggle",
+          "description": "Users have requested a dark theme for the settings page.",
+          "branchName": "eng-124-dark-mode",
+          "url": "https://linear.app/recurser/issue/ENG-124",
+          "state": {
+            "name": "Todo"
+          }
+        },
+        {
+          "identifier": "ENG-125",
+          "title": "Refactor auth middleware",
+          "description": "Clean up stale branches in the auth middleware to prepare for OIDC support.",
+          "branchName": "eng-125-refactor-auth",
+          "url": "https://linear.app/recurser/issue/ENG-125",
+          "state": {
+            "name": "Todo"
+          }
+        }
+      ]
+    }
+  }
+}

@@ -23,9 +23,12 @@ func NewRepoStore(db *sql.DB) *SQLiteRepoStore {
 }
 
 func (s *SQLiteRepoStore) Create(ctx context.Context, params CreateRepoParams) (*models.Repo, error) {
-	id := sqlutil.NewID()
+	id, err := sqlutil.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("new repo id: %w", err)
+	}
 	now := sqlutil.TimeNow()
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO repos (id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_address_reviews, can_auto_resolve_conflicts, merge_strategy, linear_api_key, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 1, 'merge', '', ?, ?)`,
 		id, params.DisplayName, params.LocalPath, params.OriginURL,

@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -193,9 +195,12 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 		return fmt.Errorf("set implementing_plan state: %w", err)
 	}
 
-	// For new PR sessions (no plan, no existing PR), push the branch and
-	// create a draft PR immediately so the user gets a PR right away.
-	if session.Plan == "" && session.PRNumber == nil {
+	// For sessions without an existing PR, push the branch and create a
+	// draft PR immediately so the user gets a PR right away. This covers
+	// both plain "new PR" sessions and tracker-sourced sessions (e.g.
+	// Linear tickets) — the latter carry a Plan but still need a PR up
+	// front for visibility.
+	if session.PRNumber == nil {
 		if err := l.createDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName, session, repo); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
@@ -260,10 +265,10 @@ func (l *Lifecycle) StartQuickChatSession(ctx context.Context, sessionID string)
 }
 
 // SubmitPR transitions the session from ImplementingPlan through to
-// AwaitingChecks. If the PR was already created (no-plan sessions), it skips
-// push/create and goes directly to AwaitingChecks. Otherwise it pushes the
-// branch, creates a draft PR, and transitions through PushingBranch →
-// OpeningDraftPR → AwaitingChecks.
+// AwaitingChecks. If the PR was already created (draft-PR-up-front sessions),
+// it pushes any pending commits and goes directly to AwaitingChecks. Otherwise
+// it pushes the branch, creates a draft PR, and transitions through
+// PushingBranch → OpeningDraftPR → AwaitingChecks.
 func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -297,7 +302,13 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 	}
 
 	if hasPR {
-		// PR already exists — skip push/create, go straight to AwaitingChecks.
+		// PR already exists — skip PR creation, but still push so that any
+		// commits made since createDraftPR (e.g. Claude's implementation
+		// commits on top of the empty placeholder commit) reach the remote.
+		if err := l.worktrees.Push(ctx, session.WorktreePath, session.BranchName); err != nil {
+			return fmt.Errorf("push branch: %w", err)
+		}
+
 		awaitingState := int(machine.AwaitingChecks)
 		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 			State: &awaitingState,
@@ -392,7 +403,7 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 
 // createDraftPR pushes the branch and creates a draft PR on GitHub,
 // storing the PR number and URL on the session. Used during StartSession
-// for no-plan PR sessions to create the PR immediately.
+// to create the PR immediately for any session without an existing one.
 func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, branchName string, session *models.Session, repo *models.Repo) error {
 	// Ensure origin URL is available before any VCS operations.
 	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
@@ -419,6 +430,7 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 		HeadBranch: branchName,
 		BaseBranch: session.BaseBranch,
 		Title:      session.Title,
+		Body:       session.Plan,
 		Draft:      true,
 	})
 	if err != nil {
@@ -711,7 +723,74 @@ func (l *Lifecycle) EnsureTmuxSession(ctx context.Context, sessionID, claudeID s
 		return "", fmt.Errorf("tmux session creation failed")
 	}
 
+	// On the first interactive chat of a tracker-backed session, pre-fill
+	// Claude's input box with the session plan so the user opens the chat
+	// with a ready-to-refine prompt instead of a blank input. The daemon
+	// creates the chat record *after* this function returns (see
+	// server.EnsureTmuxSession), so an empty chat list here means "no chats
+	// yet".
+	if shouldConsiderPrefill(forceNew, session) {
+		chats, err := l.claudeChats.ListBySession(ctx, sessionID)
+		if err != nil {
+			l.logger.Warn().Err(err).
+				Str("session", sessionID).
+				Msg("could not list chats for prefill check; skipping prefill")
+		} else if len(chats) == 0 {
+			l.prefillClaudeInput(ctx, tmuxName, session.Plan)
+		}
+	}
+
 	return tmuxName, nil
+}
+
+// shouldConsiderPrefill reports whether the caller should proceed to check
+// chat history and potentially prefill Claude's input. Separated from the
+// DB call and tmux call so the gating logic is easy to unit test.
+func shouldConsiderPrefill(forceNew bool, session *models.Session) bool {
+	if !forceNew || session == nil {
+		return false
+	}
+	if session.TrackerID == nil || *session.TrackerID == "" {
+		return false
+	}
+	return session.Plan != ""
+}
+
+// prefillClaudeInput pastes text into Claude's TUI input box via tmux's
+// bracketed-paste buffer. Waits (best-effort) for Claude's TUI to render
+// its ready marker before pasting, then proceeds regardless. Failures are
+// logged but non-fatal — a missing prefill is a minor UX degradation, not
+// a reason to reject the attach.
+func (l *Lifecycle) prefillClaudeInput(ctx context.Context, tmuxName, text string) {
+	if l.tmux == nil {
+		return
+	}
+
+	// Claude Code renders "? for shortcuts" in its footer once the input
+	// box is ready to receive input. Poll the pane until we see it, or
+	// until a short deadline elapses — then paste either way.
+	const readyMarker = "? for shortcuts"
+	const pollInterval = 100 * time.Millisecond
+	const maxWait = 2 * time.Second
+
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		out, err := l.tmux.CapturePane(ctx, tmuxName)
+		if err == nil && strings.Contains(out, readyMarker) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(pollInterval):
+		}
+	}
+
+	if err := l.tmux.PasteText(ctx, tmuxName, text); err != nil {
+		l.logger.Warn().Err(err).
+			Str("tmuxSession", tmuxName).
+			Msg("failed to prefill Claude input; session continues without prefill")
+	}
 }
 
 // killAllChatTmuxSessions kills the tmux session for every chat in the given

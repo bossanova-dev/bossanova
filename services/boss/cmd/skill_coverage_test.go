@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
-	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/recurser/bossalib/skilldata"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -71,11 +72,30 @@ func TestSkillCoversAllCommands(t *testing.T) {
 	}
 }
 
+// readSkillContent reads the canonical boss SKILL.md from the repository's
+// .claude/skills/ source tree, walking up from this test file's location to
+// locate the repo root. This avoids depending on `make copy-skills` having
+// populated the embedded FS before `go test` compiles the test binary.
 func readSkillContent(t *testing.T) string {
 	t.Helper()
-	data, err := fs.ReadFile(skilldata.SkillsFS, "skills/boss/SKILL.md")
-	if err != nil {
-		t.Fatalf("read skill file from embedded FS: %v", err)
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("runtime.Caller failed")
 	}
-	return string(data)
+	dir := filepath.Dir(thisFile)
+	for {
+		candidate := filepath.Join(dir, ".claude", "skills", "boss", "SKILL.md")
+		if _, err := os.Stat(candidate); err == nil {
+			data, err := os.ReadFile(candidate)
+			if err != nil {
+				t.Fatalf("read %s: %v", candidate, err)
+			}
+			return string(data)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("could not locate .claude/skills/boss/SKILL.md walking up from %s", filepath.Dir(thisFile))
+		}
+		dir = parent
+	}
 }

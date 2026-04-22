@@ -1,0 +1,12 @@
+[
+  {
+    "Number": 42,
+    "Title": "Fix login bug",
+    "HeadBranch": "eng-123-fix-login"
+  },
+  {
+    "Number": 43,
+    "Title": "[ENG-125] Refactor auth middleware",
+    "HeadBranch": "feature/auth-refactor"
+  }
+]

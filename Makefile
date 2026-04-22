@@ -1,9 +1,14 @@
 .PHONY: all build build-all clean copy-skills deps format generate lint \
+	lint-check-version \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
-	plugins plugins-all release setup-worktree split stage-release test
+	plugins plugins-all release setup-worktree split stage-release test test-race
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all plugins-all
+
+# Pinned golangci-lint version. Must match the version used in CI
+# (.github/workflows/*.yml). Bumping requires coordinated changes to both.
+GOLANGCI_LINT_VERSION := v2.11.4
 
 # Binaries output to bin/
 BIN_DIR := bin
@@ -50,7 +55,7 @@ deps:
 		exit 1; \
 	fi
 	@echo "==> Installing build dependencies via Homebrew"
-	@for pkg in go buf golangci-lint jq gh pnpm; do \
+	@for pkg in go buf jq gh pnpm; do \
 		if command -v $$pkg >/dev/null 2>&1; then \
 			echo "    $$pkg: already installed"; \
 		else \
@@ -58,6 +63,17 @@ deps:
 			brew install $$pkg; \
 		fi; \
 	done
+	@# golangci-lint: enforce pinned version so local runs match CI.
+	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
+	want="$(GOLANGCI_LINT_VERSION)"; \
+	if command -v golangci-lint >/dev/null 2>&1 && \
+	   golangci-lint --version 2>/dev/null | grep -Eq "version (v)?$${want#v}( |$$)"; then \
+		echo "    golangci-lint: $$want already installed"; \
+	else \
+		echo "    golangci-lint: installing $$want..."; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$$want/install.sh \
+			| sh -s -- -b "$$gobin" $$want; \
+	fi
 	@if command -v gremlins >/dev/null 2>&1; then \
 		echo "    gremlins: already installed"; \
 	else \
@@ -148,6 +164,10 @@ test: $(GEN_STAMP) copy-skills
 		$(MAKE) -C $$mod test; \
 	done
 
+## test-race: Run the full test suite under -race (alias for test; per-module
+## targets always enable -race, so this exists for discoverability / CI).
+test-race: test
+
 ## Per-module test targets (no generate dep — CI uses committed gen code)
 test-bossalib: copy-skills
 	$(MAKE) -C lib/bossalib test
@@ -159,7 +179,7 @@ test-bossd: copy-skills
 	$(MAKE) -C services/bossd test
 
 ifneq ($(wildcard services/bosso/go.mod),)
-test-bosso:
+test-bosso: copy-skills
 	$(MAKE) -C services/bosso test
 endif
 
@@ -171,8 +191,22 @@ endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-test,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
+## lint-check-version: Fail if installed golangci-lint does not match $(GOLANGCI_LINT_VERSION)
+lint-check-version:
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint not installed. Run 'make deps'."; \
+		exit 1; \
+	fi
+	@want="$(GOLANGCI_LINT_VERSION)"; \
+	if ! golangci-lint --version 2>/dev/null | grep -Eq "version (v)?$${want#v}( |$$)"; then \
+		echo "golangci-lint version mismatch: want $$want"; \
+		echo "  got: $$(golangci-lint --version 2>/dev/null)"; \
+		echo "  run 'make deps' to install the pinned version"; \
+		exit 1; \
+	fi
+
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
-lint: $(GEN_STAMP) copy-skills
+lint: lint-check-version $(GEN_STAMP) copy-skills
 	buf lint
 	@for mod in $(MODULES); do \
 		echo "==> Linting $$mod"; \
@@ -183,23 +217,23 @@ lint: $(GEN_STAMP) copy-skills
 lint-proto:
 	buf lint
 
-lint-bossalib: copy-skills
+lint-bossalib: lint-check-version copy-skills
 	cd lib/bossalib && golangci-lint run ./...
 
-lint-boss: copy-skills
+lint-boss: lint-check-version copy-skills
 	cd services/boss && golangci-lint run ./...
 
-lint-bossd: copy-skills
+lint-bossd: lint-check-version copy-skills
 	cd services/bossd && golangci-lint run ./...
 
 ifneq ($(wildcard services/bosso/go.mod),)
-lint-bosso:
+lint-bosso: lint-check-version copy-skills
 	cd services/bosso && golangci-lint run ./...
 endif
 
 # Auto-generate per-plugin lint targets from detected modules
 define define-plugin-lint
-lint-$(2):
+lint-$(2): lint-check-version
 	cd $(1) && golangci-lint run ./...
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \

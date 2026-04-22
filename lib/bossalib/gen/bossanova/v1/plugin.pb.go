@@ -739,6 +739,7 @@ type ListAvailableIssuesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RepoOriginUrl string                 `protobuf:"bytes,1,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
 	Config        map[string]string      `protobuf:"bytes,2,rep,name=config,proto3" json:"config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Query         string                 `protobuf:"bytes,3,opt,name=query,proto3" json:"query,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -785,6 +786,13 @@ func (x *ListAvailableIssuesRequest) GetConfig() map[string]string {
 		return x.Config
 	}
 	return nil
+}
+
+func (x *ListAvailableIssuesRequest) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
 }
 
 type ListAvailableIssuesResponse struct {
@@ -2566,10 +2574,11 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"externalId\x124\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x1c.bossanova.v1.TaskItemStatusR\x06status\x12\x18\n" +
 	"\adetails\x18\x03 \x01(\tR\adetails\"\x1a\n" +
-	"\x18UpdateTaskStatusResponse\"\xcd\x01\n" +
+	"\x18UpdateTaskStatusResponse\"\xe3\x01\n" +
 	"\x1aListAvailableIssuesRequest\x12&\n" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12L\n" +
-	"\x06config\x18\x02 \x03(\v24.bossanova.v1.ListAvailableIssuesRequest.ConfigEntryR\x06config\x1a9\n" +
+	"\x06config\x18\x02 \x03(\v24.bossanova.v1.ListAvailableIssuesRequest.ConfigEntryR\x06config\x12\x14\n" +
+	"\x05query\x18\x03 \x01(\tR\x05query\x1a9\n" +
 	"\vConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"Q\n" +

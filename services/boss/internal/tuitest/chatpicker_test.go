@@ -1,6 +1,7 @@
 package tuitest_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -138,6 +139,59 @@ func TestTUI_ChatPickerView_DeleteCancel(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if !h.Driver.ScreenContains("Initial implementation") {
 		t.Fatalf("chat disappeared after cancel; screen:\n%s", h.Driver.Screen())
+	}
+}
+
+// TestTUI_ChatPickerView_CreatesNewChat verifies that pressing 'n' in
+// ChatPicker routes into AttachView for a fresh chat: the daemon receives an
+// EnsureTmuxSession RPC with mode="new" and no claude_id (the "create new
+// chat" signal at the RPC boundary — there is no dedicated CreateChat RPC).
+//
+// Uses SetEnsureTmuxError to stop AttachView at its error screen so we avoid
+// tea.ExecProcess'ing tmux inside the PTY harness — same pattern as
+// TestTUI_AttachView_BackKey.
+func TestTUI_ChatPickerView_CreatesNewChat(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+		tuitest.WithChats(testChats()...),
+	)
+	h.Daemon.SetEnsureTmuxError(errors.New("tmux unavailable in test env"))
+
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "[n]ew chat"); err != nil {
+		t.Fatalf("expected ChatPicker; screen:\n%s", h.Driver.Screen())
+	}
+
+	// 'n' → switchViewMsg{ViewAttach, sessionID} with no resumeID.
+	if err := h.Driver.SendKey('n'); err != nil {
+		t.Fatal(err)
+	}
+
+	// AttachView fetches the session then calls EnsureTmuxSession; our
+	// injected error surfaces as an attach error screen.
+	if err := h.Driver.WaitForText(waitTimeout, "ensure tmux session"); err != nil {
+		t.Fatalf("expected attach error screen; screen:\n%s", h.Driver.Screen())
+	}
+
+	calls := h.Daemon.EnsureTmuxSessionCalls()
+	if len(calls) == 0 {
+		t.Fatalf("EnsureTmuxSession was never called; screen:\n%s", h.Driver.Screen())
+	}
+	req := calls[len(calls)-1]
+	if req.SessionId != "sess-aaa-111" {
+		t.Fatalf("EnsureTmuxSession.SessionId = %q, want %q", req.SessionId, "sess-aaa-111")
+	}
+	if req.Mode != "new" {
+		t.Fatalf("EnsureTmuxSession.Mode = %q, want %q (new-chat path)", req.Mode, "new")
+	}
+	if req.ClaudeId != "" {
+		t.Fatalf("EnsureTmuxSession.ClaudeId = %q, want empty (new chat, not resume)", req.ClaudeId)
 	}
 }
 

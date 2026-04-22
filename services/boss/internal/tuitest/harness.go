@@ -19,6 +19,19 @@ var (
 	bossBinaryErr  error
 )
 
+// BossBinaryPath returns the path to the compiled boss binary, or an error
+// if BuildBoss has not been called or the build failed. Exported so other
+// test packages (e.g. clitest) can reuse the single built binary.
+func BossBinaryPath() (string, error) {
+	if bossBinaryErr != nil {
+		return "", bossBinaryErr
+	}
+	if bossBinaryPath == "" {
+		return "", fmt.Errorf("BuildBoss was not called from TestMain")
+	}
+	return bossBinaryPath, nil
+}
+
 // BuildBoss compiles the boss binary to a temporary directory.
 // Call this from TestMain before m.Run(). The returned cleanup function
 // removes the temporary binary.
@@ -30,7 +43,10 @@ func BuildBoss() (cleanup func()) {
 	}
 
 	bossBinaryPath = filepath.Join(dir, "boss")
-	cmd := exec.Command("go", "build", "-o", bossBinaryPath, "./cmd")
+	// Build with the e2e tag so test-only overrides compile in (auth token
+	// store override, etc). The production build omits the tag and therefore
+	// never reaches these hooks.
+	cmd := exec.Command("go", "build", "-tags", "e2e", "-o", bossBinaryPath, "./cmd")
 	cmd.Dir = serviceDir()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -56,12 +72,14 @@ type Harness struct {
 type Option func(*harnessConfig)
 
 type harnessConfig struct {
-	repos     []*pb.Repo
-	sessions  []*pb.Session
-	workflows []*pb.AutopilotWorkflow
-	chats     []*pb.ClaudeChat
-	prs       map[string][]*pb.PRSummary
-	args      []string
+	repos         []*pb.Repo
+	sessions      []*pb.Session
+	workflows     []*pb.AutopilotWorkflow
+	chats         []*pb.ClaudeChat
+	prs           map[string][]*pb.PRSummary
+	trackerIssues map[string][]*pb.TrackerIssue
+	args          []string
+	loggedInEmail string
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -102,6 +120,26 @@ func WithPRs(repoID string, prs ...*pb.PRSummary) Option {
 	}
 }
 
+// WithTrackerIssues seeds the mock daemon with Linear/tracker issues for a repo.
+func WithTrackerIssues(repoID string, issues ...*pb.TrackerIssue) Option {
+	return func(c *harnessConfig) {
+		if c.trackerIssues == nil {
+			c.trackerIssues = make(map[string][]*pb.TrackerIssue)
+		}
+		c.trackerIssues[repoID] = append(c.trackerIssues[repoID], issues...)
+	}
+}
+
+// WithLoggedInUser makes the boss subprocess behave as if the given email is
+// already authenticated. Wired via the BOSS_AUTH_E2E_EMAIL env var, which the
+// e2e-tagged token-store override in services/boss/cmd/authstore_e2e.go reads
+// to return an in-memory store with tokens for that email.
+func WithLoggedInUser(email string) Option {
+	return func(c *harnessConfig) {
+		c.loggedInEmail = email
+	}
+}
+
 // New creates a test harness with a mock daemon and TUI driver.
 // It requires BuildBoss to have been called from TestMain.
 func New(t *testing.T, opts ...Option) *Harness {
@@ -135,11 +173,16 @@ func New(t *testing.T, opts ...Option) *Harness {
 	for repoID, prs := range cfg.prs {
 		daemon.AddPRs(repoID, prs)
 	}
+	for repoID, issues := range cfg.trackerIssues {
+		daemon.AddTrackerIssues(repoID, issues)
+	}
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.
 	var env []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "BOSS_SOCKET=") || strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") {
+		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
+			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
+			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") {
 			continue
 		}
 		env = append(env, e)
@@ -149,6 +192,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 		"BOSS_SKIP_SKILLS=1",
 		"TERM=xterm-256color",
 	)
+	if cfg.loggedInEmail != "" {
+		env = append(env, "BOSS_AUTH_E2E_EMAIL="+cfg.loggedInEmail)
+	}
 
 	driver, err := tuidriver.New(tuidriver.Options{
 		Command: bossBinaryPath,

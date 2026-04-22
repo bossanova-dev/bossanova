@@ -1,4 +1,9 @@
 -- +goose Up
+-- NON-REVERSIBLE: this migration drops linear_team_key. The down step
+-- re-adds the column but cannot restore its previous values — any data in
+-- linear_team_key at the time the up ran is permanently lost. Operators who
+-- need the data back must restore from backup.
+--
 -- Recreate repos table without linear_team_key to support SQLite < 3.35
 -- which does not have DROP COLUMN.
 CREATE TABLE repos_new (
@@ -36,4 +41,8 @@ DROP TABLE repos;
 ALTER TABLE repos_new RENAME TO repos;
 
 -- +goose Down
-ALTER TABLE repos ADD COLUMN linear_team_key TEXT NOT NULL DEFAULT '';
+-- No-op: restoring the column without its data would be misleading. See the
+-- NON-REVERSIBLE note in the up section above. If a rollback is unavoidable,
+-- run `ALTER TABLE repos ADD COLUMN linear_team_key TEXT NOT NULL DEFAULT ''`
+-- manually after restoring the pre-migration data from backup.
+SELECT 1;

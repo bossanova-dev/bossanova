@@ -28,7 +28,7 @@ import (
 func newClient(cmd *cobra.Command) (client.BossClient, error) {
 	remote, _ := cmd.Root().Flags().GetString("remote")
 	if remote != "" {
-		return newRemoteClient(remote)
+		return newRemoteClient(cmd, remote)
 	}
 	socketPath, err := client.DefaultSocketPath()
 	if err != nil {
@@ -46,8 +46,8 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 }
 
 // newRemoteClient creates a RemoteClient with a JWT from the keychain.
-func newRemoteClient(baseURL string) (client.BossClient, error) {
-	mgr, err := newAuthManager()
+func newRemoteClient(cmd *cobra.Command, baseURL string) (client.BossClient, error) {
+	mgr, err := newAuthManager(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w (run 'boss login' first)", err)
 	}
@@ -63,7 +63,7 @@ func runTUI(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c, newOptionalAuthManager())
+	app := views.NewApp(c, newOptionalAuthManager(cmd))
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err
@@ -167,7 +167,7 @@ func runNew(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c, newOptionalAuthManager())
+	app := views.NewApp(c, newOptionalAuthManager(cmd))
 	app.SetInitialView(views.ViewNewSession)
 	p := tea.NewProgram(app)
 	_, err = p.Run()
@@ -179,7 +179,7 @@ func runAttach(cmd *cobra.Command, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c, newOptionalAuthManager())
+	app := views.NewApp(c, newOptionalAuthManager(cmd))
 	app.SetInitialView(views.ViewAttach)
 	app.SetAttachSession(sessionID, "")
 	p := tea.NewProgram(app)
@@ -192,7 +192,7 @@ func runRepoAdd(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	app := views.NewApp(c, newOptionalAuthManager())
+	app := views.NewApp(c, newOptionalAuthManager(cmd))
 	app.SetInitialView(views.ViewRepoAdd)
 	p := tea.NewProgram(app)
 	_, err = p.Run()
@@ -346,13 +346,14 @@ func runTrashEmpty(cmd *cobra.Command) error {
 
 // --- Daemon Management ---
 
-func runDaemonInstall(_ *cobra.Command) error {
+func runDaemonInstall(cmd *cobra.Command) error {
 	bossdPath, err := daemon.ResolveBossdPath()
 	if err != nil {
 		return err
 	}
 
-	if err := daemon.Install(bossdPath); err != nil {
+	force, _ := cmd.Flags().GetBool("force")
+	if err := daemon.Install(bossdPath, force); err != nil {
 		return fmt.Errorf("install daemon: %w", err)
 	}
 

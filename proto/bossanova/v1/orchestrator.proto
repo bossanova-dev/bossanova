@@ -32,6 +32,10 @@ service OrchestratorService {
   rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse);
   rpc ListWebhookConfigs(ListWebhookConfigsRequest) returns (ListWebhookConfigsResponse);
   rpc DeleteWebhookConfig(DeleteWebhookConfigRequest) returns (DeleteWebhookConfigResponse);
+
+  // Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
+  // resolves the caller's identity when a bearer token is present.
+  rpc ReportBug(ReportBugRequest) returns (ReportBugResponse);
 }
 
 // --- Daemon Registry ---
@@ -199,3 +203,56 @@ message DeleteWebhookConfigRequest {
 }
 
 message DeleteWebhookConfigResponse {}
+
+// --- Bug reporting ---
+
+message ReportBugRequest {
+  string comment = 1;
+  ReportContext context = 2;
+}
+
+message ReportBugResponse {
+  string report_id = 1;
+}
+
+// ReportContext bundles everything the TUI attaches to a bug report.
+// All fields are optional; the server tolerates empty values.
+message ReportContext {
+  // Client identity
+  string boss_version = 1;
+  string boss_commit = 2;
+  string os = 3;
+  string arch = 4;
+  string terminal = 5;
+
+  // Session state at report time.
+  Session current_session = 6;
+  repeated SessionSummary sessions = 7;
+  map<string, string> daemon_statuses = 8;
+
+  // Tailed log contents (last N lines each).
+  string boss_log_tail = 9;
+  string bossd_log_tail = 10;
+
+  // Optionally populated — most recent Claude turns, if available.
+  repeated ClaudeTurn recent_turns = 11;
+}
+
+// SessionSummary is a lightweight view of a Session for report context.
+message SessionSummary {
+  string id = 1;
+  string repo_id = 2;
+  string title = 3;
+  SessionState state = 4;
+  optional int32 pr_number = 5;
+  optional string pr_url = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+// ClaudeTurn is a single turn from a recent Claude conversation.
+message ClaudeTurn {
+  // "user" or "assistant".
+  string role = 1;
+  string content = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}

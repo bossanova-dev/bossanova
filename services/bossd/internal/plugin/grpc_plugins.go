@@ -2,12 +2,41 @@ package plugin
 
 import (
 	"context"
+	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+// defaultPluginRPCTimeout bounds every unary RPC the daemon dispatches to a
+// plugin subprocess. A hung or mis-behaving plugin must not block the daemon
+// indefinitely. Callers that need a tighter bound (e.g. NotifyStatusChange at
+// 5s) wrap the ctx before calling in; callers that legitimately need a longer
+// bound can extend ctx with an explicit deadline — this timeout is applied as
+// a ceiling on top of the caller's ctx, so the shorter of the two wins.
+//
+// No daemon → plugin RPC is server-streaming today. If one is added (e.g. a
+// future EventSourceService.StreamEvents wiring), its client method must
+// bypass invokePluginUnary to avoid a premature 30s cutoff on the stream.
+const defaultPluginRPCTimeout = 30 * time.Second
+
+// invokePluginUnary forwards to grpc.ClientConn.Invoke with
+// defaultPluginRPCTimeout applied. All daemon → plugin unary RPCs go through
+// this helper so the timeout is enforced in one place.
+func invokePluginUnary(ctx context.Context, conn *grpc.ClientConn, method string, req, resp any) error {
+	return invokePluginUnaryWithTimeout(ctx, conn, defaultPluginRPCTimeout, method, req, resp)
+}
+
+// invokePluginUnaryWithTimeout is invokePluginUnary with a caller-supplied
+// timeout. Separated out so tests can exercise the timeout path without
+// waiting the full default (30s) and without mutating package-level state.
+func invokePluginUnaryWithTimeout(ctx context.Context, conn *grpc.ClientConn, timeout time.Duration, method string, req, resp any) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return conn.Invoke(ctx, method, req, resp)
+}
 
 // --- Host-side interfaces ---
 // These define what the host can call on each plugin type.
@@ -17,7 +46,7 @@ type TaskSource interface {
 	GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error)
 	PollTasks(ctx context.Context, repoOriginURL string) ([]*bossanovav1.TaskItem, error)
 	UpdateTaskStatus(ctx context.Context, externalID string, status bossanovav1.TaskItemStatus, details string) error
-	ListAvailableIssues(ctx context.Context, repoOriginURL string, config map[string]string) ([]*bossanovav1.TrackerIssue, error)
+	ListAvailableIssues(ctx context.Context, repoOriginURL string, query string, config map[string]string) ([]*bossanovav1.TrackerIssue, error)
 }
 
 // EventSource is the host-side interface for EventSourceService plugins.
@@ -137,8 +166,7 @@ type taskSourceGRPCClient struct {
 
 func (c *taskSourceGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
 	resp := &bossanovav1.TaskSourceServiceGetInfoResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/GetInfo", &bossanovav1.TaskSourceServiceGetInfoRequest{}, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/GetInfo", &bossanovav1.TaskSourceServiceGetInfoRequest{}, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetInfo(), nil
@@ -150,8 +178,7 @@ func (c *taskSourceGRPCClient) PollTasks(ctx context.Context, repoOriginURL stri
 		req.RepoOriginUrl = &repoOriginURL
 	}
 	resp := &bossanovav1.PollTasksResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/PollTasks", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/PollTasks", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetTasks(), nil
@@ -164,17 +191,17 @@ func (c *taskSourceGRPCClient) UpdateTaskStatus(ctx context.Context, externalID 
 		Details:    details,
 	}
 	resp := &bossanovav1.UpdateTaskStatusResponse{}
-	return c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/UpdateTaskStatus", req, resp)
+	return invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/UpdateTaskStatus", req, resp)
 }
 
-func (c *taskSourceGRPCClient) ListAvailableIssues(ctx context.Context, repoOriginURL string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
+func (c *taskSourceGRPCClient) ListAvailableIssues(ctx context.Context, repoOriginURL string, query string, config map[string]string) ([]*bossanovav1.TrackerIssue, error) {
 	req := &bossanovav1.ListAvailableIssuesRequest{
 		RepoOriginUrl: repoOriginURL,
 		Config:        config,
+		Query:         query,
 	}
 	resp := &bossanovav1.ListAvailableIssuesResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.TaskSourceService/ListAvailableIssues", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/ListAvailableIssues", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetIssues(), nil
@@ -186,8 +213,7 @@ type eventSourceGRPCClient struct {
 
 func (c *eventSourceGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
 	resp := &bossanovav1.EventSourceServiceGetInfoResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.EventSourceService/GetInfo", &bossanovav1.EventSourceServiceGetInfoRequest{}, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.EventSourceService/GetInfo", &bossanovav1.EventSourceServiceGetInfoRequest{}, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetInfo(), nil
@@ -199,8 +225,7 @@ type schedulerGRPCClient struct {
 
 func (c *schedulerGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
 	resp := &bossanovav1.SchedulerServiceGetInfoResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.SchedulerService/GetInfo", &bossanovav1.SchedulerServiceGetInfoRequest{}, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.SchedulerService/GetInfo", &bossanovav1.SchedulerServiceGetInfoRequest{}, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetInfo(), nil
@@ -208,8 +233,7 @@ func (c *schedulerGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginI
 
 func (c *schedulerGRPCClient) GetSchedule(ctx context.Context) ([]*bossanovav1.ScheduledJob, error) {
 	resp := &bossanovav1.GetScheduleResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.SchedulerService/GetSchedule", &bossanovav1.GetScheduleRequest{}, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.SchedulerService/GetSchedule", &bossanovav1.GetScheduleRequest{}, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetJobs(), nil
@@ -218,8 +242,7 @@ func (c *schedulerGRPCClient) GetSchedule(ctx context.Context) ([]*bossanovav1.S
 func (c *schedulerGRPCClient) ExecuteJob(ctx context.Context, jobID string) (*bossanovav1.JobAction, error) {
 	req := &bossanovav1.ExecuteJobRequest{JobId: jobID}
 	resp := &bossanovav1.ExecuteJobResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.SchedulerService/ExecuteJob", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.SchedulerService/ExecuteJob", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetAction(), nil
@@ -231,8 +254,7 @@ type workflowServiceGRPCClient struct {
 
 func (c *workflowServiceGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.PluginInfo, error) {
 	resp := &bossanovav1.WorkflowServiceGetInfoResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/GetInfo", &bossanovav1.WorkflowServiceGetInfoRequest{}, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/GetInfo", &bossanovav1.WorkflowServiceGetInfoRequest{}, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetInfo(), nil
@@ -240,8 +262,7 @@ func (c *workflowServiceGRPCClient) GetInfo(ctx context.Context) (*bossanovav1.P
 
 func (c *workflowServiceGRPCClient) StartWorkflow(ctx context.Context, req *bossanovav1.StartWorkflowRequest) (*bossanovav1.StartWorkflowResponse, error) {
 	resp := &bossanovav1.StartWorkflowResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/StartWorkflow", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/StartWorkflow", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -250,8 +271,7 @@ func (c *workflowServiceGRPCClient) StartWorkflow(ctx context.Context, req *boss
 func (c *workflowServiceGRPCClient) PauseWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.PauseWorkflowRequest{WorkflowId: workflowID}
 	resp := &bossanovav1.PauseWorkflowResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/PauseWorkflow", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/PauseWorkflow", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -260,8 +280,7 @@ func (c *workflowServiceGRPCClient) PauseWorkflow(ctx context.Context, workflowI
 func (c *workflowServiceGRPCClient) ResumeWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.ResumeWorkflowRequest{WorkflowId: workflowID}
 	resp := &bossanovav1.ResumeWorkflowResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/ResumeWorkflow", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/ResumeWorkflow", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -270,8 +289,7 @@ func (c *workflowServiceGRPCClient) ResumeWorkflow(ctx context.Context, workflow
 func (c *workflowServiceGRPCClient) CancelWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.CancelWorkflowRequest{WorkflowId: workflowID}
 	resp := &bossanovav1.CancelWorkflowResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/CancelWorkflow", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/CancelWorkflow", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -280,8 +298,7 @@ func (c *workflowServiceGRPCClient) CancelWorkflow(ctx context.Context, workflow
 func (c *workflowServiceGRPCClient) GetWorkflowStatus(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error) {
 	req := &bossanovav1.GetWorkflowStatusRequest{WorkflowId: workflowID}
 	resp := &bossanovav1.GetWorkflowStatusResponse{}
-	err := c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/GetWorkflowStatus", req, resp)
-	if err != nil {
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/GetWorkflowStatus", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetStatus(), nil
@@ -294,7 +311,7 @@ func (c *workflowServiceGRPCClient) NotifyStatusChange(ctx context.Context, sess
 		HasFailures:   hasFailures,
 	}
 	resp := &bossanovav1.NotifyStatusChangeResponse{}
-	return c.conn.Invoke(ctx, "/bossanova.v1.WorkflowService/NotifyStatusChange", req, resp)
+	return invokePluginUnary(ctx, c.conn, "/bossanova.v1.WorkflowService/NotifyStatusChange", req, resp)
 }
 
 // Compile-time interface checks.

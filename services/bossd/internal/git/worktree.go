@@ -14,12 +14,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/recurser/bossalib/setupscript"
 	"github.com/rs/zerolog"
 )
 
 // ErrBranchExists is returned when a branch with the derived name already
 // exists and the caller did not set Force in CreateOpts.
 var ErrBranchExists = errors.New("branch already exists")
+
+// ErrBaseBranchNotReady is returned by EnsureBaseBranchReadyForSync when the
+// main repo cannot be safely fast-forwarded to match origin/<base>. The error
+// message always explains the condition (dirty tree, divergence, etc.) so
+// callers can surface it to the user verbatim.
+var ErrBaseBranchNotReady = errors.New("base branch not ready for sync")
 
 // SetupScriptTimeout is the maximum time allowed for a setup script to run.
 const SetupScriptTimeout = 5 * time.Minute
@@ -68,6 +75,22 @@ type WorktreeManager interface {
 	// the given path by inspecting refs/remotes/origin/HEAD. Falls back to
 	// "main" if the ref doesn't exist.
 	DetectDefaultBranch(ctx context.Context, repoPath string) (string, error)
+
+	// EnsureBaseBranchReadyForSync verifies that the main repo at localPath
+	// is in a state where SyncBaseBranch can safely fast-forward the local
+	// base branch to match origin/<base>. It fetches origin/<base> as a
+	// side effect so divergence can be detected against the latest remote.
+	// Returns an error wrapping ErrBaseBranchNotReady when the working tree
+	// is dirty on the base branch or the local base has diverged from
+	// origin; the error message is safe to show to the user.
+	EnsureBaseBranchReadyForSync(ctx context.Context, localPath, base string) error
+
+	// SyncBaseBranch fetches origin and fast-forwards the local base branch
+	// to match origin/<base>. If <base> is the currently checked-out branch
+	// it uses `git merge --ff-only`; otherwise it performs a direct ref
+	// update via `git fetch origin <base>:<base>` which leaves the working
+	// tree untouched. Also prunes stale remote-tracking refs.
+	SyncBaseBranch(ctx context.Context, localPath, base string) error
 }
 
 // CreateOpts holds the parameters for creating a new worktree.
@@ -383,6 +406,118 @@ func (m *Manager) IsGitRepo(ctx context.Context, path string) bool {
 	return err == nil
 }
 
+// EnsureBaseBranchReadyForSync checks that the main repo at localPath can
+// be fast-forwarded to match origin/<base>. It does not modify any branch
+// refs — it only fetches origin/<base> so the divergence check sees current
+// remote state. See WorktreeManager.EnsureBaseBranchReadyForSync.
+func (m *Manager) EnsureBaseBranchReadyForSync(ctx context.Context, localPath, base string) error {
+	if base == "" {
+		return fmt.Errorf("base branch is required")
+	}
+
+	// Refresh the remote-tracking ref so divergence is measured against
+	// the latest remote state, not a stale cache.
+	if _, err := runGit(ctx, localPath, "fetch", "origin", base); err != nil {
+		return fmt.Errorf("fetch origin/%s: %w", base, err)
+	}
+
+	current, isDetached, err := currentBranch(ctx, localPath)
+	if err != nil {
+		return fmt.Errorf("resolve HEAD: %w", err)
+	}
+
+	// If the base branch has no local ref yet, there is nothing to
+	// fast-forward — SyncBaseBranch will create it.
+	if !branchExists(ctx, localPath, base) {
+		return nil
+	}
+
+	if !isDetached && current == base {
+		// Working tree must be clean so `merge --ff-only` won't trip on
+		// uncommitted changes.
+		dirty, err := runGit(ctx, localPath, "status", "--porcelain")
+		if err != nil {
+			return fmt.Errorf("git status: %w", err)
+		}
+		if dirty != "" {
+			return fmt.Errorf(
+				"%w: main repo at %s has uncommitted changes on %s; commit/stash or switch branches before merging",
+				ErrBaseBranchNotReady, localPath, base,
+			)
+		}
+	}
+
+	// Require `refs/heads/<base>` to be an ancestor of `origin/<base>` so the
+	// sync step can fast-forward. Divergence needs manual resolution.
+	if _, err := runGit(ctx, localPath,
+		"merge-base", "--is-ancestor", "refs/heads/"+base, "refs/remotes/origin/"+base,
+	); err != nil {
+		return fmt.Errorf(
+			"%w: local %s has diverged from origin/%s in %s; rebase or reset before merging",
+			ErrBaseBranchNotReady, base, base, localPath,
+		)
+	}
+
+	return nil
+}
+
+// SyncBaseBranch fetches origin and fast-forwards the local base branch to
+// match origin/<base>. See WorktreeManager.SyncBaseBranch.
+func (m *Manager) SyncBaseBranch(ctx context.Context, localPath, base string) error {
+	if base == "" {
+		return fmt.Errorf("base branch is required")
+	}
+
+	// Fetch with --prune so merged-and-deleted remote branches (e.g. the
+	// session branch that `gh pr merge --delete-branch` just removed) are
+	// dropped from the local remote-tracking refs.
+	if _, err := runGit(ctx, localPath, "fetch", "--prune", "origin"); err != nil {
+		return fmt.Errorf("fetch --prune origin: %w", err)
+	}
+
+	current, isDetached, err := currentBranch(ctx, localPath)
+	if err != nil {
+		return fmt.Errorf("resolve HEAD: %w", err)
+	}
+
+	if !isDetached && current == base {
+		// Base is checked out — fast-forward via merge so the working tree
+		// stays in sync with HEAD.
+		if _, err := runGit(ctx, localPath,
+			"merge", "--ff-only", "refs/remotes/origin/"+base,
+		); err != nil {
+			return fmt.Errorf("ff-only merge origin/%s: %w", base, err)
+		}
+		return nil
+	}
+
+	// Base is not checked out — update the local ref directly without
+	// touching the working tree. `fetch origin <base>:<base>` refuses any
+	// non-fast-forward, so this remains safe.
+	if _, err := runGit(ctx, localPath,
+		"fetch", "origin", base+":"+base,
+	); err != nil {
+		return fmt.Errorf("fast-forward local %s: %w", base, err)
+	}
+	return nil
+}
+
+// currentBranch returns the name of the checked-out branch, or ("", true, nil)
+// when HEAD is detached. Errors from `git symbolic-ref` other than the
+// detached-HEAD case are propagated.
+func currentBranch(ctx context.Context, repoPath string) (name string, detached bool, err error) {
+	out, gitErr := runGit(ctx, repoPath, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if gitErr == nil {
+		return out, false, nil
+	}
+	// symbolic-ref --quiet exits non-zero (exit 1) on detached HEAD without
+	// writing stderr; distinguish that from a genuine failure.
+	if _, statErr := runGit(ctx, repoPath, "rev-parse", "--verify", "HEAD"); statErr == nil {
+		return "", true, nil
+	}
+	return "", false, gitErr
+}
+
 // DetectDefaultBranch returns the default branch name for a repo by
 // inspecting refs/remotes/origin/HEAD. Falls back to "main".
 func (m *Manager) DetectDefaultBranch(ctx context.Context, repoPath string) (string, error) {
@@ -443,34 +578,29 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	}, nil
 }
 
-// runSetupScript executes a setup script in the given directory with a 5-minute timeout.
-// If output is non-nil, stdout and stderr are written there; otherwise they go to os.Stderr (daemon logs).
+// runSetupScript parses the stored setup_script value into a structured
+// setupscript.Spec and executes it in the worktree with a 5-minute timeout.
 //
-// The following environment variables are set for the script:
+// The following environment variables are set for the process:
 //   - BOSS_REPO_DIR:     path to the main git repository (the original clone)
 //   - BOSS_WORKTREE_DIR: path to the worktree being set up
+//
+// If output is non-nil, stdout and stderr are written there; otherwise they
+// go to os.Stderr (daemon logs). Legacy bare-string values are rewritten to
+// <worktree>/.boss/setup.sh on first use — the user is nudged via `warn` to
+// migrate to a structured {"type":...} value.
 func runSetupScript(ctx context.Context, repoPath, dir, script string, output io.Writer) error {
-	ctx, cancel := context.WithTimeout(ctx, SetupScriptTimeout)
-	defer cancel()
-
-	if output == nil {
-		output = os.Stderr
-	}
-
-	cmd := exec.CommandContext(ctx, "sh", "-c", script)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"BOSS_REPO_DIR="+repoPath,
-		"BOSS_WORKTREE_DIR="+dir,
-	)
-	cmd.Stdout = output
-	cmd.Stderr = output
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("timed out after %v", SetupScriptTimeout)
-		}
+	spec, err := setupscript.Parse(script)
+	if err != nil {
 		return err
 	}
-	return nil
+	return spec.Execute(ctx, setupscript.ExecuteOpts{
+		RepoPath:     repoPath,
+		WorktreePath: dir,
+		Output:       output,
+		Timeout:      SetupScriptTimeout,
+		Warn: func(msg string) {
+			fmt.Fprintln(os.Stderr, "bossd: "+msg)
+		},
+	})
 }

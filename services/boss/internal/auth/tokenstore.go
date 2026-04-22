@@ -3,11 +3,19 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/99designs/keyring"
+	"github.com/recurser/bossalib/keyringutil"
 )
+
+// ErrCredentialsUnreadable wraps any Load() failure that isn't "no tokens
+// stored" — typically a decryption mismatch after the keyring passphrase
+// was upgraded from the old static value. Callers can check this with
+// errors.Is and surface a re-login hint to the user.
+var ErrCredentialsUnreadable = errors.New("stored credentials can't be decrypted — run 'boss login' to reset")
 
 const (
 	serviceName = "bossanova"
@@ -40,15 +48,19 @@ type KeychainStore struct {
 	ring keyring.Keyring
 }
 
-// NewKeychainStore opens a keyring backed by the OS credential store.
-func NewKeychainStore() (*KeychainStore, error) {
+// NewKeychainStore opens a keyring backed by the OS credential store. The
+// allowInsecure flag is plumbed through to the file-backend password helper:
+// when true, the legacy hardcoded passphrase is used if a per-install random
+// passphrase can't be materialized (broken XDG_RUNTIME_DIR + no writable home).
+func NewKeychainStore(allowInsecure bool) (*KeychainStore, error) {
 	ring, err := keyring.Open(keyring.Config{
 		ServiceName: serviceName,
 		// macOS: use the system keychain.
 		KeychainTrustApplication: true,
-		// Linux: try secret-service, fall back to file-based.
+		// Linux: try secret-service, fall back to file-based with a
+		// per-install random passphrase supplied by keyringutil.
 		FileDir:          "~/.config/bossanova/keyring",
-		FilePasswordFunc: keyring.FixedStringPrompt("bossanova"),
+		FilePasswordFunc: keyring.PromptFunc(keyringutil.New(allowInsecure)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open keyring: %w", err)
@@ -71,14 +83,22 @@ func (s *KeychainStore) Save(tokens *Tokens) error {
 }
 
 // Load reads tokens from the keychain.
+//
+// When the item is missing, returns keyring.ErrKeyNotFound unwrapped so
+// callers can distinguish "no tokens" from "can't decrypt". Any other Get
+// failure (typically a passphrase mismatch after the keyringutil rollout)
+// is wrapped with ErrCredentialsUnreadable.
 func (s *KeychainStore) Load() (*Tokens, error) {
 	item, err := s.ring.Get(tokenKey)
 	if err != nil {
-		return nil, fmt.Errorf("get token: %w", err)
+		if errors.Is(err, keyring.ErrKeyNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: %w", ErrCredentialsUnreadable, err)
 	}
 	var tokens Tokens
 	if err := json.Unmarshal(item.Data, &tokens); err != nil {
-		return nil, fmt.Errorf("unmarshal tokens: %w", err)
+		return nil, fmt.Errorf("%w: unmarshal tokens: %w", ErrCredentialsUnreadable, err)
 	}
 	return &tokens, nil
 }

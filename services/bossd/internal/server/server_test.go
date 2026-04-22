@@ -279,3 +279,76 @@ func TestCountPlanFlightLegsWorkingDirFallback(t *testing.T) {
 		t.Errorf("countPlanFlightLegs(workDir) = %d, want 3", got)
 	}
 }
+
+func TestResolvePlanFile(t *testing.T) {
+	workDir := t.TempDir()
+	rootDir := t.TempDir()
+
+	planRel := filepath.Join("docs", "plans", "plan.md")
+	planInRoot := filepath.Join(rootDir, planRel)
+	if err := os.MkdirAll(filepath.Dir(planInRoot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planInRoot, []byte("# plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	planInWork := filepath.Join(workDir, planRel)
+	if err := os.MkdirAll(filepath.Dir(planInWork), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planInWork, []byte("# plan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("prefers first candidate when present", func(t *testing.T) {
+		got, err := resolvePlanFile(planRel, rootDir, workDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != planInRoot {
+			t.Errorf("got %q, want %q", got, planInRoot)
+		}
+	})
+
+	t.Run("falls back to second candidate", func(t *testing.T) {
+		got, err := resolvePlanFile(planRel, t.TempDir(), workDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != planInWork {
+			t.Errorf("got %q, want %q", got, planInWork)
+		}
+	})
+
+	t.Run("errors when file missing in all candidates", func(t *testing.T) {
+		_, err := resolvePlanFile("missing.md", rootDir, workDir)
+		if err == nil {
+			t.Fatal("expected error for missing plan file")
+		}
+	})
+
+	t.Run("errors when plan_path is empty", func(t *testing.T) {
+		_, err := resolvePlanFile("", rootDir, workDir)
+		if err == nil {
+			t.Fatal("expected error for empty plan path")
+		}
+	})
+
+	t.Run("skips empty candidate directories", func(t *testing.T) {
+		got, err := resolvePlanFile(planRel, "", rootDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != planInRoot {
+			t.Errorf("got %q, want %q", got, planInRoot)
+		}
+	})
+
+	t.Run("rejects when path resolves to a directory", func(t *testing.T) {
+		_, err := resolvePlanFile("docs", rootDir)
+		if err == nil {
+			t.Fatal("expected error when path resolves to a directory")
+		}
+	})
+}

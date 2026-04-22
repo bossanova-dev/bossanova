@@ -24,9 +24,12 @@ func NewSessionStore(db *sql.DB) *SQLiteSessionStore {
 }
 
 func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionParams) (*models.Session, error) {
-	id := sqlutil.NewID()
+	id, err := sqlutil.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("new session id: %w", err)
+	}
 	now := sqlutil.TimeNow()
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Title, params.Plan,
@@ -61,6 +64,35 @@ func (s *SQLiteSessionStore) ListActive(ctx context.Context, repoID string) ([]*
 	}
 	query := sessionSelectSQL + " WHERE s.repo_id = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC"
 	return s.querySessionList(ctx, query, repoID)
+}
+
+// ListActiveWithRepo returns active (non-archived) sessions in one query
+// that joins repos to populate RepoDisplayName. Eliminates the per-session
+// Repo.Get round trip that the previous list-then-loop approach required.
+func (s *SQLiteSessionStore) ListActiveWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error) {
+	query := sessionSelectWithRepoSQL + " WHERE s.archived_at IS NULL"
+	args := []any{}
+	if repoID != "" {
+		query += " AND s.repo_id = ?"
+		args = append(args, repoID)
+	}
+	query += " ORDER BY s.created_at DESC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions with repo: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*SessionWithRepo
+	for rows.Next() {
+		sess, repoName, err := scanSessionWithRepo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName})
+	}
+	return out, rows.Err()
 }
 
 func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
@@ -260,6 +292,47 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at
 	FROM sessions s`
+
+// sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
+// can return display names alongside each session in a single round trip.
+// LEFT JOIN keeps sessions whose repo was concurrently deleted — the row
+// still appears with an empty display name.
+const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
+	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
+	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at,
+	COALESCE(r.display_name, '')
+	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
+
+func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
+	var sess models.Session
+	var state, lastCheckState, automationEnabled int
+	var archivedAt, createdAt, updatedAt *string
+	var repoDisplayName string
+	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
+		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
+		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
+		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
+		&lastCheckState, &automationEnabled, &sess.AttemptCount,
+		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt,
+		&repoDisplayName)
+	if err != nil {
+		return nil, "", err
+	}
+	sess.State = machine.State(state)
+	sess.LastCheckState = machine.CheckState(lastCheckState)
+	sess.AutomationEnabled = automationEnabled != 0
+	if archivedAt != nil {
+		t := sqlutil.ParseTime(*archivedAt)
+		sess.ArchivedAt = &t
+	}
+	if createdAt != nil {
+		sess.CreatedAt = sqlutil.ParseTime(*createdAt)
+	}
+	if updatedAt != nil {
+		sess.UpdatedAt = sqlutil.ParseTime(*updatedAt)
+	}
+	return &sess, repoDisplayName, nil
+}
 
 func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var sess models.Session

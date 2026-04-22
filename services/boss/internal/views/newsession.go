@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
@@ -15,6 +16,12 @@ import (
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+// issueSearchDebounce is the wait between the last filter keystroke and the
+// debounced server-side search. ~250ms is the sweet spot — slow enough that
+// fast typists only fire one request per word, fast enough that pausing feels
+// instant.
+const issueSearchDebounce = 250 * time.Millisecond
 
 // sessionType identifies the kind of session to create.
 type sessionType int
@@ -53,10 +60,25 @@ type prsMsg struct {
 	err error
 }
 
-// issuesMsg carries the result of a ListTrackerIssues RPC call.
+// issuesMsg carries the result of a ListTrackerIssues RPC call. seq is the
+// monotonic sequence number in effect when the fetch was issued; the handler
+// drops the response when it no longer matches m.issueSearchSeq (meaning the
+// user typed further or navigated away). query is still used to distinguish
+// the initial unfiltered load from an empty search result.
 type issuesMsg struct {
 	issues []*pb.TrackerIssue
 	err    error
+	seq    uint64
+	query  string
+}
+
+// searchIssuesTickMsg fires after the debounce window elapses. The seq field
+// is a monotonic counter incremented on every keystroke that changes the
+// query — when the tick fires we ignore it unless seq is still the latest, so
+// a burst of keystrokes only triggers one search at the end.
+type searchIssuesTickMsg struct {
+	seq   uint64
+	query string
 }
 
 // createSessionStreamMsg carries the opened stream or error.
@@ -133,6 +155,22 @@ type NewSessionModel struct {
 	issueTableReady bool
 	selectedIssue   *pb.TrackerIssue
 
+	// Live server-side search state. issueSearchSeq is incremented on every
+	// keystroke that changes the filter query; debounce ticks and in-flight
+	// fetches carry the seq they were issued with so stale responses are
+	// dropped. issueSearchQuery is the query that the currently displayed
+	// trackerIssues was fetched with — used both for stale-response rejection
+	// and to know whether a backend refetch is needed on Esc.
+	issueSearchSeq   uint64
+	issueSearchQuery string
+	issuesFetching   bool
+
+	// Filters — indices into m.prs / m.trackerIssues that match the current query.
+	prFilter       listFilter
+	issueFilter    listFilter
+	prsFiltered    []int
+	issuesFiltered []int
+
 	// Form-bound values (heap-allocated for stable pointers)
 	selectedRepoID string
 	selectedType   sessionType
@@ -163,9 +201,11 @@ type NewSessionModel struct {
 // NewNewSessionModel creates a NewSessionModel wired to the daemon client.
 func NewNewSessionModel(c client.BossClient, ctx context.Context) NewSessionModel {
 	return NewSessionModel{
-		client: c,
-		ctx:    ctx,
-		phase:  newSessionPhaseLoading,
+		client:      c,
+		ctx:         ctx,
+		phase:       newSessionPhaseLoading,
+		prFilter:    newListFilter(),
+		issueFilter: newListFilter(),
 	}
 }
 
@@ -187,11 +227,20 @@ func fetchPRs(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
 	}
 }
 
-func fetchIssues(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
+func fetchIssues(c client.BossClient, ctx context.Context, repoID, query string, seq uint64) tea.Cmd {
 	return func() tea.Msg {
-		issues, err := c.ListTrackerIssues(ctx, repoID)
-		return issuesMsg{issues: issues, err: err}
+		issues, err := c.ListTrackerIssues(ctx, repoID, query)
+		return issuesMsg{issues: issues, err: err, seq: seq, query: query}
 	}
+}
+
+// scheduleIssueSearch schedules a debounced server-side search. The returned
+// command emits a searchIssuesTickMsg after issueSearchDebounce; the handler
+// for that message ignores it if a newer keystroke has incremented seq.
+func scheduleIssueSearch(seq uint64, query string) tea.Cmd {
+	return tea.Tick(issueSearchDebounce, func(time.Time) tea.Msg {
+		return searchIssuesTickMsg{seq: seq, query: query}
+	})
 }
 
 func openCreateStream(c client.BossClient, ctx context.Context, req *pb.CreateSessionRequest) tea.Cmd {
@@ -203,7 +252,12 @@ func openCreateStream(c client.BossClient, ctx context.Context, req *pb.CreateSe
 
 func readNextStreamMsg(stream client.CreateSessionStream) tea.Cmd {
 	return func() tea.Msg {
+		// Close the stream on any terminal path (error, EOF, SessionCreated,
+		// unknown event). SetupOutput is the only non-terminal case, where the
+		// caller will schedule another readNextStreamMsg and the stream must stay
+		// open.
 		if !stream.Receive() {
+			_ = stream.Close()
 			if err := stream.Err(); err != nil {
 				return streamErrorMsg{err: err}
 			}
@@ -214,8 +268,10 @@ func readNextStreamMsg(stream client.CreateSessionStream) tea.Cmd {
 		case *pb.CreateSessionResponse_SetupOutput:
 			return setupScriptLineMsg{text: e.SetupOutput.GetText()}
 		case *pb.CreateSessionResponse_SessionCreated:
+			_ = stream.Close()
 			return streamSessionCreatedMsg{session: e.SessionCreated.GetSession()}
 		default:
+			_ = stream.Close()
 			return streamErrorMsg{err: fmt.Errorf("unexpected stream event")}
 		}
 	}
@@ -272,14 +328,32 @@ func (m *NewSessionModel) buildTypeTable() {
 	m.typeTable.SetWidth(columnsWidth(cols))
 }
 
-func (m *NewSessionModel) buildPRTable() {
-	numbers := make([]string, len(m.prs))
-	titles := make([]string, len(m.prs))
-	branches := make([]string, len(m.prs))
+// applyPRFilter rebuilds m.prsFiltered based on the current prFilter query.
+func (m *NewSessionModel) applyPRFilter() {
+	m.prsFiltered = m.prsFiltered[:0]
 	for i, pr := range m.prs {
-		numbers[i] = fmt.Sprintf("#%d", pr.Number)
-		titles[i] = pr.Title
-		branches[i] = pr.HeadBranch
+		hay := fmt.Sprintf("#%d %s %s", pr.Number, pr.Title, pr.HeadBranch)
+		if m.prFilter.Matches(hay) {
+			m.prsFiltered = append(m.prsFiltered, i)
+		}
+	}
+	m.prFilter.SetCounts(len(m.prsFiltered), len(m.prs))
+}
+
+func (m *NewSessionModel) buildPRTable() {
+	// Always re-apply the filter so m.prsFiltered reflects current m.prs.
+	// Without this, stale indices from a previous fetch can point past the end
+	// of a shorter new m.prs and panic in the row loop below.
+	m.applyPRFilter()
+	n := len(m.prsFiltered)
+	numbers := make([]string, n)
+	titles := make([]string, n)
+	branches := make([]string, n)
+	for j, i := range m.prsFiltered {
+		pr := m.prs[i]
+		numbers[j] = fmt.Sprintf("#%d", pr.Number)
+		titles[j] = pr.Title
+		branches[j] = pr.HeadBranch
 	}
 
 	cols := []table.Column{
@@ -289,13 +363,13 @@ func (m *NewSessionModel) buildPRTable() {
 		{Title: "BRANCH", Width: maxColWidth("BRANCH", branches, 30) + tableColumnSep},
 	}
 
-	rows := make([]table.Row, len(m.prs))
-	for i := range m.prs {
+	rows := make([]table.Row, n)
+	for j := range m.prsFiltered {
 		indicator := ""
-		if i == 0 {
+		if j == 0 {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, numbers[i], titles[i], styleSubtle.Render(branches[i])}
+		rows[j] = table.Row{indicator, numbers[j], titles[j], styleSubtle.Render(branches[j])}
 	}
 
 	m.prTable = newBossTable(cols, rows, m.prTableHeight())
@@ -304,17 +378,35 @@ func (m *NewSessionModel) buildPRTable() {
 
 // prTableHeight returns the height for the PR selection table.
 func (m NewSessionModel) prTableHeight() int {
-	return clampedTableHeight(len(m.prs), m.height, bannerOverhead+6) // header + gaps + action bar
+	return clampedTableHeight(len(m.prsFiltered), m.height, bannerOverhead+6+m.prFilter.Height())
+}
+
+// applyIssueFilter rebuilds m.issuesFiltered based on the current issueFilter query.
+func (m *NewSessionModel) applyIssueFilter() {
+	m.issuesFiltered = m.issuesFiltered[:0]
+	for i, issue := range m.trackerIssues {
+		hay := issue.ExternalId + " " + issue.Title + " " + issue.State
+		if m.issueFilter.Matches(hay) {
+			m.issuesFiltered = append(m.issuesFiltered, i)
+		}
+	}
+	m.issueFilter.SetCounts(len(m.issuesFiltered), len(m.trackerIssues))
 }
 
 func (m *NewSessionModel) buildIssueTable() {
-	ids := make([]string, len(m.trackerIssues))
-	titles := make([]string, len(m.trackerIssues))
-	states := make([]string, len(m.trackerIssues))
-	for i, issue := range m.trackerIssues {
-		ids[i] = issue.ExternalId
-		titles[i] = issue.Title
-		states[i] = issue.State
+	// Always re-apply the filter so m.issuesFiltered reflects current
+	// m.trackerIssues. Without this, stale indices from a previous fetch can
+	// point past the end of a shorter new m.trackerIssues and panic below.
+	m.applyIssueFilter()
+	n := len(m.issuesFiltered)
+	ids := make([]string, n)
+	titles := make([]string, n)
+	states := make([]string, n)
+	for j, i := range m.issuesFiltered {
+		issue := m.trackerIssues[i]
+		ids[j] = issue.ExternalId
+		titles[j] = issue.Title
+		states[j] = issue.State
 	}
 
 	cols := []table.Column{
@@ -324,13 +416,13 @@ func (m *NewSessionModel) buildIssueTable() {
 		{Title: "STATE", Width: maxColWidth("STATE", states, 15) + tableColumnSep},
 	}
 
-	rows := make([]table.Row, len(m.trackerIssues))
-	for i := range m.trackerIssues {
+	rows := make([]table.Row, n)
+	for j := range m.issuesFiltered {
 		indicator := ""
-		if i == 0 {
+		if j == 0 {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, ids[i], titles[i], styleSubtle.Render(states[i])}
+		rows[j] = table.Row{indicator, ids[j], titles[j], styleSubtle.Render(states[j])}
 	}
 
 	m.issueTable = newBossTable(cols, rows, m.issueTableHeight())
@@ -339,7 +431,7 @@ func (m *NewSessionModel) buildIssueTable() {
 
 // issueTableHeight returns the height for the issue selection table.
 func (m NewSessionModel) issueTableHeight() int {
-	return clampedTableHeight(len(m.trackerIssues), m.height, bannerOverhead+6) // header + gaps + action bar
+	return clampedTableHeight(len(m.issuesFiltered), m.height, bannerOverhead+6+m.issueFilter.Height())
 }
 
 func (m *NewSessionModel) buildForm() {
@@ -422,19 +514,41 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case issuesMsg:
-		m.trackerIssues = msg.issues
+		// Drop stale responses: a newer search may have been issued, or the
+		// user may have navigated away from the issue flow, since this fetch
+		// was started. Keying off seq (rather than query) closes the window
+		// where m.issueSearchQuery has not yet caught up with the latest
+		// keystroke — the debounce tick only updates it when it fires.
+		if msg.seq != m.issueSearchSeq {
+			return m, nil
+		}
+		m.issuesFetching = false
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
 		}
-		if len(m.trackerIssues) == 0 {
+		m.trackerIssues = msg.issues
+		// An empty result is fatal only on the very first (unfiltered) load —
+		// after that we may legitimately be showing "no matches for <query>",
+		// which the table renders fine on its own.
+		if len(m.trackerIssues) == 0 && !m.issueTableReady && msg.query == "" {
 			m.err = fmt.Errorf("no issues found in Linear")
 			return m, nil
 		}
 		m.phase = newSessionPhaseIssueSelect
 		m.buildIssueTable()
+		m.issueTable.SetCursor(0)
+		updateCursorColumn(&m.issueTable)
 		m.issueTableReady = true
 		return m, nil
+
+	case searchIssuesTickMsg:
+		// Ignore stale ticks — a newer keystroke has superseded this one.
+		if msg.seq != m.issueSearchSeq {
+			return m, nil
+		}
+		m.issueSearchQuery = msg.query
+		return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, msg.query, msg.seq)
 
 	case createSessionStreamMsg:
 		if msg.err != nil {
@@ -457,17 +571,13 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, readNextStreamMsg(m.createStream)
 
 	case streamSessionCreatedMsg:
-		if m.createStream != nil {
-			_ = m.createStream.Close()
-		}
+		// readNextStreamMsg closes the stream on terminal events.
 		m.createdSess = msg.session
 		m.done = true
 		return m, nil
 
 	case streamErrorMsg:
-		if m.createStream != nil {
-			_ = m.createStream.Close()
-		}
+		// readNextStreamMsg closes the stream on terminal events.
 		var connectErr *connect.Error
 		if errors.As(msg.err, &connectErr) && connectErr.Code() == connect.CodeAlreadyExists {
 			m.confirmingOverwrite = true
@@ -529,14 +639,60 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.phase == newSessionPhasePRSelect {
+			// While the filter input is focused, route keys through it (with
+			// special handling for commit/clear/navigation).
+			if m.prFilter.Active() {
+				switch msg.String() {
+				case "enter":
+					if !m.prFilter.Commit() {
+						m.prFilter.Deactivate()
+						m.buildPRTable()
+					}
+					return m, nil
+				case "esc":
+					m.prFilter.Deactivate()
+					m.buildPRTable()
+					m.prTable.SetCursor(0)
+					updateCursorColumn(&m.prTable)
+					return m, nil
+				case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
+					var cmd tea.Cmd
+					m.prTable, cmd = m.prTable.Update(msg)
+					updateCursorColumn(&m.prTable)
+					return m, cmd
+				}
+				prev := m.prFilter.Query()
+				cmd := m.prFilter.Update(msg)
+				if m.prFilter.Query() != prev {
+					m.buildPRTable()
+					m.prTable.SetCursor(0)
+					updateCursorColumn(&m.prTable)
+				}
+				return m, cmd
+			}
+
 			switch msg.String() {
+			case "/":
+				cmd := m.prFilter.Activate()
+				// Activate transitions the filter line from hidden (Height=0)
+				// to visible (Height=1); rebuild the table so its height is
+				// recomputed before the next render.
+				m.buildPRTable()
+				return m, cmd
 			case "esc":
+				if m.prFilter.Applied() {
+					m.prFilter.Deactivate()
+					m.buildPRTable()
+					m.prTable.SetCursor(0)
+					updateCursorColumn(&m.prTable)
+					return m, nil
+				}
 				m.phase = newSessionPhaseTypeSelect
 				m.forceBranch = false
 				return m, nil
 			case "enter":
 				idx := m.prTable.Cursor()
-				if idx >= 0 && idx < len(m.prs) {
+				if idx >= 0 && idx < len(m.prsFiltered) {
 					return m, m.startCreating()
 				}
 				return m, nil
@@ -549,15 +705,65 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.phase == newSessionPhaseIssueSelect {
+			if m.issueFilter.Active() {
+				switch msg.String() {
+				case "enter":
+					// Live debounced search means there is nothing to "commit"
+					// — pressing Enter selects the highlighted row, mirroring
+					// how Enter behaves once the filter input is blurred.
+					idx := m.issueTable.Cursor()
+					if idx >= 0 && idx < len(m.issuesFiltered) {
+						m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
+						return m, m.startCreating()
+					}
+					return m, nil
+				case "esc":
+					// Clear the filter and refetch the unfiltered list. The
+					// seq bump invalidates any in-flight tick or fetch.
+					m.issueFilter.Deactivate()
+					m.issueSearchSeq++
+					m.issueSearchQuery = ""
+					m.issuesFetching = true
+					m.buildIssueTable()
+					return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.issueSearchSeq)
+				case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
+					var cmd tea.Cmd
+					m.issueTable, cmd = m.issueTable.Update(msg)
+					updateCursorColumn(&m.issueTable)
+					return m, cmd
+				}
+				prev := m.issueFilter.Query()
+				cmd := m.issueFilter.Update(msg)
+				if m.issueFilter.Query() != prev {
+					// Local rebuild gives instant feedback against the cached
+					// rows; the debounced tick will issue the real search.
+					m.buildIssueTable()
+					m.issueTable.SetCursor(0)
+					updateCursorColumn(&m.issueTable)
+					m.issueSearchSeq++
+					m.issuesFetching = true
+					return m, tea.Batch(cmd, scheduleIssueSearch(m.issueSearchSeq, m.issueFilter.Query()))
+				}
+				return m, cmd
+			}
+
 			switch msg.String() {
+			case "/":
+				cmd := m.issueFilter.Activate()
+				// See the matching comment on the PR filter branch above.
+				m.buildIssueTable()
+				return m, cmd
 			case "esc":
+				// Bumping seq here invalidates any in-flight fetch whose
+				// response would otherwise snap the user back to issue select.
+				m.issueSearchSeq++
 				m.phase = newSessionPhaseTypeSelect
 				m.forceBranch = false
 				return m, nil
 			case "enter":
 				idx := m.issueTable.Cursor()
-				if idx >= 0 && idx < len(m.trackerIssues) {
-					m.selectedIssue = m.trackerIssues[idx]
+				if idx >= 0 && idx < len(m.issuesFiltered) {
+					m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
 					return m, m.startCreating()
 				}
 				return m, nil
@@ -619,7 +825,8 @@ func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 	case sessionTypeLinearTicket:
 		// Fetch Linear issues, then show issue selector table.
 		m.phase = newSessionPhaseLoading
-		return *m, fetchIssues(m.client, m.ctx, m.selectedRepoID)
+		m.issueSearchQuery = ""
+		return *m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.issueSearchSeq)
 	case sessionTypeNewPR:
 		m.phase = newSessionPhaseForm
 		m.buildForm()
@@ -694,8 +901,8 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		req.Title = m.fd.title
 	case sessionTypeExistingPR:
 		idx := m.prTable.Cursor()
-		if idx >= 0 && idx < len(m.prs) {
-			pr := m.prs[idx]
+		if idx >= 0 && idx < len(m.prsFiltered) {
+			pr := m.prs[m.prsFiltered[idx]]
 			req.Title = pr.Title
 			req.PrNumber = &pr.Number
 		}
@@ -703,7 +910,7 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		if m.selectedIssue != nil {
 			issue := m.selectedIssue
 			req.Title = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
-			req.Plan = issue.Description
+			req.Plan = formatLinearPrompt(issue)
 			req.TrackerId = &issue.ExternalId
 			if issue.Url != "" {
 				req.TrackerUrl = &issue.Url
@@ -722,6 +929,44 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 	}
 
 	return openCreateStream(m.client, m.ctx, req)
+}
+
+// formatLinearPrompt renders a Linear tracker issue as a labeled block used
+// for the session plan. The returned string flows into the draft PR body
+// and the first prompt shown to Claude, so it needs to stand alone as
+// both a human-readable PR description and a usable starting prompt.
+//
+// Fields missing on the issue are individually omitted so we never render
+// blank lines for absent data.
+func formatLinearPrompt(issue *pb.TrackerIssue) string {
+	if issue == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Linear issue:\n\n")
+	header := issue.Title
+	if issue.ExternalId != "" {
+		if header != "" {
+			header = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
+		} else {
+			header = fmt.Sprintf("[%s]", issue.ExternalId)
+		}
+	}
+	if header != "" {
+		b.WriteString(header)
+		b.WriteString("\n")
+	}
+	if desc := strings.TrimSpace(issue.Description); desc != "" {
+		b.WriteString("\n")
+		b.WriteString(desc)
+		b.WriteString("\n")
+	}
+	if issue.Url != "" {
+		b.WriteString("\n")
+		b.WriteString(issue.Url)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // Cancelled returns true if the user cancelled the wizard.
@@ -779,9 +1024,18 @@ func (m NewSessionModel) View() tea.View {
 	if m.phase == newSessionPhasePRSelect {
 		var b strings.Builder
 		b.WriteString(m.headerView())
-		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.prTable.View()))
-		b.WriteString("\n")
-		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+		if m.prFilter.Engaged() && len(m.prsFiltered) == 0 {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render("no matches"))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.prTable.View()))
+			b.WriteString("\n")
+		}
+		if m.prFilter.Engaged() {
+			b.WriteString(m.prFilter.View())
+			b.WriteString("\n")
+		}
+		b.WriteString(prSelectActionBar(m.prFilter, len(m.prs) > 0))
 		return tea.NewView(b.String())
 	}
 
@@ -791,9 +1045,25 @@ func (m NewSessionModel) View() tea.View {
 		if !m.issueTableReady {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Loading Linear issues..."))
 		} else {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.issueTable.View()))
-			b.WriteString("\n")
-			b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+			if m.issueFilter.Engaged() && len(m.issuesFiltered) == 0 {
+				placeholder := "no matches"
+				if m.issuesFetching {
+					placeholder = "searching…"
+				}
+				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(placeholder))
+				b.WriteString("\n")
+			} else {
+				b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.issueTable.View()))
+				b.WriteString("\n")
+			}
+			if m.issueFilter.Engaged() {
+				b.WriteString(m.issueFilter.View())
+				if m.issuesFetching && len(m.issuesFiltered) > 0 {
+					b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  searching…"))
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString(prSelectActionBar(m.issueFilter, len(m.trackerIssues) > 0))
 		}
 		return tea.NewView(b.String())
 	}
@@ -850,6 +1120,28 @@ func (m NewSessionModel) View() tea.View {
 	}
 
 	return tea.NewView("")
+}
+
+// prSelectActionBar renders the action bar for the filterable select phases
+// (PR select and issue select). The bar adapts to the filter state:
+//   - filtering (input focused): replaces the bar with the filter help.
+//   - applied (query committed): offers to edit or clear the filter.
+//   - idle: normal "[enter] select" plus discoverability hint for "/".
+func prSelectActionBar(f listFilter, hasItems bool) string {
+	if f.Active() {
+		return actionBar(f.ActionBar())
+	}
+	if f.Applied() {
+		return actionBar(
+			[]string{"[enter] select"},
+			[]string{"[/] edit filter", "[esc] clear"},
+		)
+	}
+	primary := []string{"[enter] select"}
+	if hasItems {
+		primary = append(primary, "[/] filter")
+	}
+	return actionBar(primary, []string{"[esc] back"})
 }
 
 func (m NewSessionModel) headerView() string {

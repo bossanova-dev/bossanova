@@ -1,0 +1,9 @@
+[
+  {
+    "number": 40,
+    "title": "Old feature (abandoned)",
+    "headRefName": "feature/abandoned",
+    "state": "CLOSED",
+    "author": {"login": "alice"}
+  }
+]

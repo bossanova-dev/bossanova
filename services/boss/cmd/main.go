@@ -8,16 +8,28 @@ import (
 
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/skilldata"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
 func main() {
-	if err := rootCmd().Execute(); err != nil {
+	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "boss: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func run() error {
+	// File-only logging: all boss commands (TUI and plain CLI) write to the
+	// rotated log file under $XDG_STATE_HOME/bossanova/logs/boss.log. Stderr
+	// is skipped so the Bubble Tea TUI isn't corrupted by log output. Without
+	// this, bug reports would always ship an empty BossLogTail.
+	logCloser := bossalog.SetupFileOnly("boss")
+	defer func() { _ = logCloser.Close() }()
+
+	return rootCmd().Execute()
 }
 
 func rootCmd() *cobra.Command {
@@ -37,6 +49,11 @@ func rootCmd() *cobra.Command {
 	}
 
 	root.PersistentFlags().String("remote", "", "Connect to orchestrator URL instead of local daemon")
+	root.PersistentFlags().Bool("allow-insecure-keyring", false, "Fall back to the legacy static keyring passphrase when no writable passphrase location is available (insecure)")
+	// Hidden — this is an escape hatch surfaced only in the keyring
+	// helper's error message, not in --help. Users who need it will be
+	// directed to it explicitly.
+	_ = root.PersistentFlags().MarkHidden("allow-insecure-keyring")
 
 	root.AddCommand(
 		versionCmd(),
@@ -214,14 +231,17 @@ func daemonCmd() *cobra.Command {
 		Short: "Manage the bossd daemon",
 	}
 
-	d.AddCommand(
-		&cobra.Command{
-			Use:   "install",
-			Short: "Install bossd as a macOS LaunchAgent",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return runDaemonInstall(cmd)
-			},
+	install := &cobra.Command{
+		Use:   "install",
+		Short: "Install bossd as a macOS LaunchAgent",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemonInstall(cmd)
 		},
+	}
+	install.Flags().Bool("force", false, "Overwrite existing service file")
+
+	d.AddCommand(
+		install,
 		&cobra.Command{
 			Use:   "uninstall",
 			Short: "Uninstall the bossd LaunchAgent",

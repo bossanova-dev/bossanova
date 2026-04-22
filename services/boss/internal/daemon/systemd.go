@@ -68,18 +68,27 @@ func generateUnit(bossdPath string) (string, error) {
 }
 
 // platformInstall writes the systemd user unit file and enables/starts it.
-func platformInstall(bossdPath string) error {
-	// Check that systemctl is available before attempting install.
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return fmt.Errorf("systemctl not found: systemd is required for daemon management on Linux")
-	}
-
-	unit, err := generateUnit(bossdPath)
+// When force is false and the unit file already exists, it refuses to overwrite.
+func platformInstall(bossdPath string, force bool) error {
+	unitPath, err := platformServicePath()
 	if err != nil {
 		return err
 	}
 
-	unitPath, err := platformServicePath()
+	if !force {
+		if _, err := os.Stat(unitPath); err == nil {
+			return fmt.Errorf("unit file already exists at %s (use --force to overwrite)", unitPath)
+		}
+	}
+
+	// Check that systemctl is available before attempting install (skipped in test mode).
+	if !skipLaunchctl() {
+		if _, err := exec.LookPath("systemctl"); err != nil {
+			return fmt.Errorf("systemctl not found: systemd is required for daemon management on Linux")
+		}
+	}
+
+	unit, err := generateUnit(bossdPath)
 	if err != nil {
 		return err
 	}
@@ -92,6 +101,10 @@ func platformInstall(bossdPath string) error {
 	// Write the unit file.
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write unit file: %w", err)
+	}
+
+	if skipLaunchctl() {
+		return nil
 	}
 
 	// Reload systemd daemon.
@@ -131,7 +144,9 @@ func platformUninstall() error {
 	}
 
 	// Stop and disable the service (ignore errors if not running/enabled).
-	_ = exec.Command("systemctl", "--user", "disable", "--now", ServiceName).Run()
+	if !skipLaunchctl() {
+		_ = exec.Command("systemctl", "--user", "disable", "--now", ServiceName).Run()
+	}
 
 	// Remove the unit file.
 	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
@@ -139,7 +154,9 @@ func platformUninstall() error {
 	}
 
 	// Reload systemd daemon.
-	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if !skipLaunchctl() {
+		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	}
 
 	return nil
 }
@@ -161,6 +178,10 @@ func platformGetStatus() (*Status, error) {
 		return nil, fmt.Errorf("check unit file: %w", err)
 	}
 	st.Installed = true
+
+	if skipLaunchctl() {
+		return st, nil
+	}
 
 	// Check if service is active.
 	cmd := exec.Command("systemctl", "--user", "is-active", ServiceName)

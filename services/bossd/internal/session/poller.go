@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -16,6 +17,10 @@ import (
 // DefaultPollInterval is the default interval between CI check polls.
 const DefaultPollInterval = 2 * time.Minute
 
+// DefaultPollTimeout bounds the duration of a single poll iteration so
+// a hung VCS provider call cannot wedge the polling loop indefinitely.
+const DefaultPollTimeout = 30 * time.Second
+
 // SessionEvent pairs a VCS event with the session it belongs to.
 type SessionEvent struct {
 	SessionID string
@@ -25,27 +30,39 @@ type SessionEvent struct {
 // Poller periodically checks CI status for sessions in AwaitingChecks state
 // and emits VCS events when status changes are detected.
 type Poller struct {
-	sessions db.SessionStore
-	repos    db.RepoStore
-	provider vcs.Provider
-	interval time.Duration
-	logger   zerolog.Logger
+	sessions    db.SessionStore
+	repos       db.RepoStore
+	provider    vcs.Provider
+	interval    time.Duration
+	pollTimeout time.Duration
+	logger      zerolog.Logger
+	done        chan struct{}
+
+	// timeoutCount is only accessed from the Run goroutine.
+	timeoutCount int
 }
 
-// NewPoller creates a new check poller.
+// NewPoller creates a new check poller. A zero pollTimeout selects
+// DefaultPollTimeout.
 func NewPoller(
 	sessions db.SessionStore,
 	repos db.RepoStore,
 	provider vcs.Provider,
 	interval time.Duration,
+	pollTimeout time.Duration,
 	logger zerolog.Logger,
 ) *Poller {
+	if pollTimeout <= 0 {
+		pollTimeout = DefaultPollTimeout
+	}
 	return &Poller{
-		sessions: sessions,
-		repos:    repos,
-		provider: provider,
-		interval: interval,
-		logger:   logger,
+		sessions:    sessions,
+		repos:       repos,
+		provider:    provider,
+		interval:    interval,
+		pollTimeout: pollTimeout,
+		logger:      logger,
+		done:        make(chan struct{}),
 	}
 }
 
@@ -55,25 +72,51 @@ func NewPoller(
 func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 	ch := make(chan SessionEvent, 64)
 	safego.Go(p.logger, func() {
+		defer close(p.done)
 		defer close(ch)
 
 		ticker := time.NewTicker(p.interval)
 		defer ticker.Stop()
 
 		// Poll immediately on start, then on each tick.
-		p.poll(ctx, ch)
+		p.runOnce(ctx, ch)
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				p.poll(ctx, ch)
+				p.runOnce(ctx, ch)
 			}
 		}
 	})
 	return ch
 }
+
+// runOnce executes a single poll iteration bounded by pollTimeout.
+// Consecutive timeouts are counted and logged so a slow-or-hung
+// provider becomes visible in the logs.
+func (p *Poller) runOnce(ctx context.Context, ch chan<- SessionEvent) {
+	pollCtx, cancel := context.WithTimeout(ctx, p.pollTimeout)
+	defer cancel()
+
+	p.poll(pollCtx, ch)
+
+	// Distinguish a timeout from ordinary parent-ctx cancellation.
+	if ctx.Err() == nil && errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
+		p.timeoutCount++
+		p.logger.Warn().
+			Int("consecutive_timeouts", p.timeoutCount).
+			Dur("timeout", p.pollTimeout).
+			Msg("poller: poll iteration exceeded timeout")
+	} else {
+		p.timeoutCount = 0
+	}
+}
+
+// Done returns a channel that is closed when the Run goroutine exits.
+// Useful for coordinating shutdown.
+func (p *Poller) Done() <-chan struct{} { return p.done }
 
 // poll checks all sessions in AwaitingChecks state and emits events.
 func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
@@ -85,6 +128,9 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 	}
 
 	for _, repo := range repos {
+		if ctx.Err() != nil {
+			return
+		}
 		sessions, err := p.sessions.ListActive(ctx, repo.ID)
 		if err != nil {
 			p.logger.Error().Err(err).Str("repo", repo.ID).Msg("poller: list sessions")
@@ -92,6 +138,9 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 		}
 
 		for _, sess := range sessions {
+			if ctx.Err() != nil {
+				return
+			}
 			if sess.State != machine.AwaitingChecks {
 				continue
 			}

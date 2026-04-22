@@ -114,10 +114,15 @@ func New(cfg Config) *Server {
 	}
 }
 
-// ListenAndServe starts the server on a Unix socket at the given path.
-// It removes any stale socket file before binding. The caller should
-// call Shutdown to stop the server gracefully.
-func (s *Server) ListenAndServe(socketPath string) error {
+// Listen binds a Unix socket and initializes the underlying http.Server
+// synchronously. After Listen returns the server is fully configured and
+// Shutdown can be called safely; use Serve (typically in a goroutine) to
+// accept requests.
+//
+// Splitting bind-and-configure from Serve eliminates a race where a caller
+// firing Shutdown before the serving goroutine had written s.srv would
+// observe a nil pointer (or worse, race the write under -race).
+func (s *Server) Listen(socketPath string) error {
 	// Remove stale socket file from previous run.
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale socket: %w", err)
@@ -146,10 +151,27 @@ func (s *Server) ListenAndServe(socketPath string) error {
 		WriteTimeout:      120 * time.Second, // streaming RPCs need longer write timeout
 		IdleTimeout:       120 * time.Second,
 	}
-	return s.srv.Serve(ln)
+	return nil
 }
 
-// Shutdown gracefully stops the server.
+// Serve blocks serving requests on the listener created by Listen. It
+// returns http.ErrServerClosed when Shutdown completes successfully.
+func (s *Server) Serve() error {
+	return s.srv.Serve(s.listener)
+}
+
+// ListenAndServe is a convenience for Listen followed by Serve. Callers
+// that need to invoke Shutdown concurrently with the serving goroutine
+// should prefer the two-phase API (Listen sync, Serve in a goroutine).
+func (s *Server) ListenAndServe(socketPath string) error {
+	if err := s.Listen(socketPath); err != nil {
+		return err
+	}
+	return s.Serve()
+}
+
+// Shutdown gracefully stops the server. Safe to call before or after
+// Serve, but the caller must ensure Listen has returned first.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.srv != nil {
 		return s.srv.Shutdown(ctx)
@@ -444,11 +466,14 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear plugin not found"))
 	}
 
-	// Call ListAvailableIssues.
+	// Call ListAvailableIssues. The query is optional; when set, the plugin pushes
+	// it down to the tracker API as a filter so the search isn't limited to the
+	// first page that the plugin happens to have cached locally.
 	config := map[string]string{
 		"linear_api_key": repo.LinearAPIKey,
 	}
-	issues, err := source.ListAvailableIssues(ctx, repo.OriginURL, config)
+	query := strings.TrimSpace(req.Msg.Query)
+	issues, err := source.ListAvailableIssues(ctx, repo.OriginURL, query, config)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list tracker issues: %w", err))
 	}
@@ -786,13 +811,23 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 		}
 	}
 
-	// Subscribe to new output lines.
-	ch, err := s.claude.Subscribe(ctx, claudeSessionID)
+	// Subscribe to new output lines. Use a subscription-scoped context so the
+	// subscriber is always deregistered from the broadcaster when this handler
+	// returns — including on stream.Send errors (client disconnect), panics, or
+	// normal process exit. Without this, a cleanup goroutine inside the
+	// broadcaster relies on the handler's ctx being cancelled by the transport
+	// layer, which is a leak risk under unusual client-disconnect semantics.
+	subCtx, cancelSub := context.WithCancel(ctx)
+	defer cancelSub()
+
+	ch, err := s.claude.Subscribe(subCtx, claudeSessionID)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe: %w", err))
 	}
 
-	// Stream new lines until process exits or client disconnects.
+	// Stream new lines until process exits or client disconnects. On Send
+	// error, return immediately; the deferred cancelSub triggers subscriber
+	// removal so the broadcaster stops referencing this channel.
 	for line := range ch {
 		if err := stream.Send(&pb.AttachSessionResponse{
 			Event: &pb.AttachSessionResponse_OutputLine{
@@ -933,6 +968,78 @@ func (s *Server) CloseSession(ctx context.Context, req *connect.Request[pb.Close
 	}
 
 	return connect.NewResponse(&pb.CloseSessionResponse{Session: SessionToProto(session)}), nil
+}
+
+func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+
+	sess, err := s.sessions.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
+	}
+	if sess.PRNumber == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("session has no PR to merge"))
+	}
+
+	// Guard against merging while CI is still red or reviews are outstanding.
+	// The webhook-driven tracker is authoritative; fall back to allowing the
+	// merge if the tracker has no entry (gh will itself reject an unmergeable PR).
+	if s.prDisplay != nil {
+		if e := s.prDisplay.Get(sess.ID); e != nil && e.Status != vcs.PRDisplayStatusPassing {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("PR is not passing"))
+		}
+	}
+
+	repo, err := s.repos.Get(ctx, sess.RepoID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get repo: %w", err))
+	}
+
+	// Sync the branch the PR actually targets, which may differ from the
+	// repo's default branch (e.g. a PR into `develop`).
+	baseBranch := sess.BaseBranch
+	if baseBranch == "" {
+		baseBranch = repo.DefaultBaseBranch
+	}
+
+	// Verify the main repo can be safely fast-forwarded after the merge.
+	// Doing this BEFORE `gh pr merge` means we never end up with a
+	// successful server-side merge paired with a local repo the user would
+	// need to untangle by hand. The error message is safe to surface.
+	if err := s.worktrees.EnsureBaseBranchReadyForSync(ctx, repo.LocalPath, baseBranch); err != nil {
+		if errors.Is(err, gitpkg.ErrBaseBranchNotReady) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pre-merge sync check: %w", err))
+	}
+
+	if err := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, string(repo.MergeStrategy)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("merge PR: %w", err))
+	}
+
+	// Pull the merged commit into the user's local main repo so subsequent
+	// worktrees, branches, and manual operations on <base> start from the
+	// post-merge tip. The pre-check above makes this the expected happy
+	// path; sync failures are logged but do not fail the RPC because the
+	// server-side merge has already succeeded.
+	if err := s.worktrees.SyncBaseBranch(ctx, repo.LocalPath, baseBranch); err != nil {
+		s.logger.Warn().Err(err).
+			Str("repo", repo.LocalPath).
+			Str("base", baseBranch).
+			Msg("post-merge sync of local base branch failed; run `git fetch` + fast-forward manually")
+	}
+
+	// Re-fetch so callers see any server-side side effects; the state
+	// transition to Merged itself arrives asynchronously via the PR-merged
+	// webhook handled by session.Dispatcher.
+	sess, err = s.sessions.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+	}
+
+	return connect.NewResponse(&pb.MergeSessionResponse{Session: SessionToProto(sess)}), nil
 }
 
 func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.RemoveSessionRequest]) (*connect.Response[pb.RemoveSessionResponse], error) {
@@ -1493,27 +1600,23 @@ func (s *Server) StartAutopilot(ctx context.Context, req *connect.Request[pb.Sta
 		}
 	}
 
+	// Resolve the plan file so we can fail fast on a bad path and use the
+	// resolved location to auto-detect the flight leg count. We check the
+	// session worktree first, then fall back to the CLI's working directory
+	// (handles worktree path mismatch).
+	planAbs, err := resolvePlanFile(msg.PlanPath, rootDir, msg.WorkingDirectory)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Auto-detect max legs from plan file if not explicitly set.
-	if msg.MaxLegs == 0 && rootDir != "" {
-		planAbs := filepath.Join(rootDir, msg.PlanPath)
+	if msg.MaxLegs == 0 {
 		if count := countPlanFlightLegs(planAbs); count > 0 {
 			msg.MaxLegs = count
 			s.logger.Debug().
 				Str("plan", planAbs).
 				Int32("count", count).
 				Msg("auto-detected flight leg count from plan file")
-		}
-	}
-	// Fallback: try from the CLI's working directory when rootDir didn't
-	// resolve to the correct location (e.g. worktree path mismatch).
-	if msg.MaxLegs == 0 && msg.WorkingDirectory != "" {
-		planAbs := filepath.Join(msg.WorkingDirectory, msg.PlanPath)
-		if count := countPlanFlightLegs(planAbs); count > 0 {
-			msg.MaxLegs = count
-			s.logger.Debug().
-				Str("plan", planAbs).
-				Int32("count", count).
-				Msg("auto-detected flight leg count from plan file (working directory)")
 		}
 	}
 
@@ -1851,6 +1954,26 @@ func isSubdirOf(child, parent string) bool {
 	// Ensure parent ends with separator for prefix matching.
 	parentPrefix := parent + string(filepath.Separator)
 	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
+}
+
+// resolvePlanFile returns the absolute path to planPath by joining it with
+// each candidate directory in order. Returns an error if the file does not
+// exist (or is a directory) under any candidate.
+func resolvePlanFile(planPath string, candidates ...string) (string, error) {
+	if planPath == "" {
+		return "", fmt.Errorf("plan_path is required")
+	}
+	for _, dir := range candidates {
+		if dir == "" {
+			continue
+		}
+		abs := filepath.Join(dir, planPath)
+		info, err := os.Stat(abs)
+		if err == nil && !info.IsDir() {
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("plan file not found: %s", planPath)
 }
 
 // countPlanFlightLegs counts "## Flight Leg" headings and [HANDOFF] markers

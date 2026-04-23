@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.2](https://github.com/recurser/bossanova/compare/v1.6.1...v1.6.2) (2026-04-23)
+
+### Bug Fixes
+
+* **bossd:** sync archived sessions upstream so archive state reaches bosso ([83e7195](https://github.com/recurser/bossanova/commit/83e71959588747e3511ea0180a0871bfb3bfcfce))
+* **bosso:** make daemon registration idempotent for the same owner ([c02a528](https://github.com/recurser/bossanova/commit/c02a528074b1232a532cde5a691b50d40287d773))
+* **global:** trigger a release ([8feea25](https://github.com/recurser/bossanova/commit/8feea2580277ce01290404c9794049d8c9a8c7cc))
+* **statusdetect:** [[#141](https://github.com/recurser/bossanova/issues/141)] require '?' for AskUserQuestion to clear sticky question state ([258c583](https://github.com/recurser/bossanova/commit/258c583395bebebc6904943fd7b0e2c7f46c68c5))
+* **tests:** include '?' in HasQuestionPrompt delegation fixture ([c01edd7](https://github.com/recurser/bossanova/commit/c01edd7940165dc0ecd366b6f0102c47f5260b1e))
+
 ## [1.6.1](https://github.com/recurser/bossanova/compare/v1.6.0...v1.6.1) (2026-04-23)
 
 ### Bug Fixes

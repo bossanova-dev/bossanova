@@ -12,29 +12,29 @@ func TestComputeDisplayStatus(t *testing.T) {
 		pr                      *PRStatus
 		checks                  []CheckResult
 		reviews                 []ReviewComment
-		wantStatus              PRDisplayStatus
+		wantStatus              DisplayStatus
 		wantHasFailure          bool
 		wantHasChangesRequested bool
 	}{
 		{
 			name:       "nil PR returns Idle",
 			pr:         nil,
-			wantStatus: PRDisplayStatusIdle,
+			wantStatus: DisplayStatusIdle,
 		},
 		{
 			name:       "merged PR",
 			pr:         &PRStatus{State: PRStateMerged},
-			wantStatus: PRDisplayStatusMerged,
+			wantStatus: DisplayStatusMerged,
 		},
 		{
 			name:       "closed PR",
 			pr:         &PRStatus{State: PRStateClosed},
-			wantStatus: PRDisplayStatusClosed,
+			wantStatus: DisplayStatusClosed,
 		},
 		{
 			name:       "draft PR",
 			pr:         &PRStatus{State: PRStateOpen, Draft: true, Mergeable: boolPtr(true)},
-			wantStatus: PRDisplayStatusDraft,
+			wantStatus: DisplayStatusDraft,
 		},
 		{
 			name: "draft takes priority over passing checks",
@@ -42,12 +42,12 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus: PRDisplayStatusDraft,
+			wantStatus: DisplayStatusDraft,
 		},
 		{
 			name:       "conflict (not mergeable)",
 			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(false)},
-			wantStatus: PRDisplayStatusConflict,
+			wantStatus: DisplayStatusConflict,
 		},
 		{
 			name: "all checks failed",
@@ -55,7 +55,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
 			},
-			wantStatus: PRDisplayStatusFailing,
+			wantStatus: DisplayStatusFailing,
 		},
 		{
 			name: "mixed: some passed, some failed, all completed",
@@ -64,7 +64,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
 			},
-			wantStatus: PRDisplayStatusFailing,
+			wantStatus: DisplayStatusFailing,
 		},
 		{
 			name: "checks running, none failed yet",
@@ -73,7 +73,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusInProgress},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus:     PRDisplayStatusChecking,
+			wantStatus:     DisplayStatusChecking,
 			wantHasFailure: false,
 		},
 		{
@@ -83,7 +83,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusInProgress},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
 			},
-			wantStatus:     PRDisplayStatusChecking,
+			wantStatus:     DisplayStatusChecking,
 			wantHasFailure: true,
 		},
 		{
@@ -95,7 +95,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus: PRDisplayStatusRejected,
+			wantStatus: DisplayStatusRejected,
 		},
 		{
 			name: "changes requested then approved by same author = passing",
@@ -107,7 +107,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Author: "alice", State: ReviewStateChangesRequested},
 				{Author: "alice", State: ReviewStateApproved},
 			},
-			wantStatus: PRDisplayStatusApproved,
+			wantStatus: DisplayStatusApproved,
 		},
 		{
 			name: "changes requested by one author, approved by different author = rejected",
@@ -119,7 +119,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Author: "alice", State: ReviewStateChangesRequested},
 				{Author: "bob", State: ReviewStateApproved},
 			},
-			wantStatus: PRDisplayStatusRejected,
+			wantStatus: DisplayStatusRejected,
 		},
 		{
 			name: "changes requested then dismissed by same author = passing",
@@ -131,7 +131,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Author: "alice", State: ReviewStateChangesRequested},
 				{Author: "alice", State: ReviewStateDismissed},
 			},
-			wantStatus: PRDisplayStatusPassing,
+			wantStatus: DisplayStatusPassing,
 		},
 		{
 			name: "all checks green, no outstanding reviews = passing",
@@ -140,7 +140,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus: PRDisplayStatusPassing,
+			wantStatus: DisplayStatusPassing,
 		},
 		{
 			name: "all checks green with approved review = approved",
@@ -151,17 +151,17 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateApproved},
 			},
-			wantStatus: PRDisplayStatusApproved,
+			wantStatus: DisplayStatusApproved,
 		},
 		{
 			name:       "open PR, no checks = idle",
 			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
-			wantStatus: PRDisplayStatusIdle,
+			wantStatus: DisplayStatusIdle,
 		},
 		{
 			name:       "open PR, mergeable unknown, no checks = checking",
 			pr:         &PRStatus{State: PRStateOpen},
-			wantStatus: PRDisplayStatusChecking,
+			wantStatus: DisplayStatusChecking,
 		},
 		{
 			name: "conflict takes priority over failing checks",
@@ -169,7 +169,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
 			},
-			wantStatus: PRDisplayStatusConflict,
+			wantStatus: DisplayStatusConflict,
 		},
 		{
 			name: "merged takes priority over everything",
@@ -180,7 +180,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{State: ReviewStateChangesRequested},
 			},
-			wantStatus: PRDisplayStatusMerged,
+			wantStatus: DisplayStatusMerged,
 		},
 		{
 			name: "queued checks count as running",
@@ -188,7 +188,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusQueued},
 			},
-			wantStatus:     PRDisplayStatusChecking,
+			wantStatus:     DisplayStatusChecking,
 			wantHasFailure: false,
 		},
 		{
@@ -200,7 +200,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus:              PRDisplayStatusChecking,
+			wantStatus:              DisplayStatusChecking,
 			wantHasChangesRequested: true,
 		},
 		{
@@ -213,7 +213,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus:              PRDisplayStatusChecking,
+			wantStatus:              DisplayStatusChecking,
 			wantHasFailure:          true,
 			wantHasChangesRequested: true,
 		},
@@ -223,7 +223,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus: PRDisplayStatusChecking,
+			wantStatus: DisplayStatusChecking,
 		},
 		{
 			name: "mergeable unknown with approval = checking (not approved)",
@@ -234,7 +234,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateApproved},
 			},
-			wantStatus: PRDisplayStatusChecking,
+			wantStatus: DisplayStatusChecking,
 		},
 		{
 			name: "mergeable true with passing checks = passing (unchanged)",
@@ -242,7 +242,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus: PRDisplayStatusPassing,
+			wantStatus: DisplayStatusPassing,
 		},
 		{
 			name: "mergeable unknown with approval and no checks = checking (not idle)",
@@ -250,7 +250,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateApproved},
 			},
-			wantStatus: PRDisplayStatusChecking,
+			wantStatus: DisplayStatusChecking,
 		},
 		{
 			name: "mergeable unknown with failing checks = failing (not affected)",
@@ -258,7 +258,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			checks: []CheckResult{
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
 			},
-			wantStatus: PRDisplayStatusFailing,
+			wantStatus: DisplayStatusFailing,
 		},
 		{
 			name: "mergeable unknown with changes requested = rejected (not affected)",
@@ -269,7 +269,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
 			},
-			wantStatus: PRDisplayStatusRejected,
+			wantStatus: DisplayStatusRejected,
 		},
 		{
 			name: "neutral conclusion is not a failure",
@@ -278,7 +278,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionNeutral)},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus: PRDisplayStatusPassing,
+			wantStatus: DisplayStatusPassing,
 		},
 		{
 			name: "skipped conclusion is not a failure",
@@ -287,7 +287,7 @@ func TestComputeDisplayStatus(t *testing.T) {
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSkipped)},
 				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
-			wantStatus: PRDisplayStatusPassing,
+			wantStatus: DisplayStatusPassing,
 		},
 	}
 

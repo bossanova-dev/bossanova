@@ -6,6 +6,7 @@ import (
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/statusdetect"
 	"github.com/recurser/bossd/internal/db"
@@ -16,10 +17,11 @@ import (
 // TmuxStatusPoller polls tmux pane content for active chats and feeds
 // working/idle/question statuses into the status tracker.
 type TmuxStatusPoller struct {
-	tracker *Tracker
-	chats   db.ClaudeChatStore
-	tmux    *tmux.Client
-	logger  zerolog.Logger
+	tracker  *Tracker
+	chats    db.ClaudeChatStore
+	sessions db.SessionStore
+	tmux     *tmux.Client
+	logger   zerolog.Logger
 
 	mu           sync.Mutex
 	prevCaptures map[string]captureEntry // claudeID -> previous capture
@@ -32,11 +34,13 @@ type captureEntry struct {
 	at      time.Time
 }
 
-// NewTmuxStatusPoller creates a new poller.
-func NewTmuxStatusPoller(tracker *Tracker, chats db.ClaudeChatStore, tmux *tmux.Client, logger zerolog.Logger) *TmuxStatusPoller {
+// NewTmuxStatusPoller creates a new poller. sessions may be nil in tests that
+// don't exercise the transcript-aware question-suppression path.
+func NewTmuxStatusPoller(tracker *Tracker, chats db.ClaudeChatStore, sessions db.SessionStore, tmux *tmux.Client, logger zerolog.Logger) *TmuxStatusPoller {
 	return &TmuxStatusPoller{
 		tracker:      tracker,
 		chats:        chats,
+		sessions:     sessions,
 		tmux:         tmux,
 		logger:       logger,
 		prevCaptures: make(map[string]captureEntry),
@@ -76,9 +80,9 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	// to work from the previous captures map to know which chats to check.
 	// On top of that, scan for newly active chats from the tracker's entries.
 	p.mu.Lock()
-	activeClaudes := make(map[string]string) // claudeID -> tmuxSessionName
+	activeClaudes := make(map[string]*models.ClaudeChat) // claudeID -> chat
 	for claudeID := range p.prevCaptures {
-		activeClaudes[claudeID] = ""
+		activeClaudes[claudeID] = nil
 	}
 	p.mu.Unlock()
 
@@ -99,15 +103,16 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			p.mu.Unlock()
 			continue
 		}
-		activeClaudes[claudeID] = *chat.TmuxSessionName
+		activeClaudes[claudeID] = chat
 	}
 
 	// Capture pane and detect status for each active chat.
 	now := time.Now()
-	for claudeID, tmuxName := range activeClaudes {
-		if tmuxName == "" {
+	for claudeID, chat := range activeClaudes {
+		if chat == nil {
 			continue
 		}
+		tmuxName := *chat.TmuxSessionName
 		content, err := p.tmux.CapturePane(ctx, tmuxName)
 		if err != nil {
 			p.logger.Debug().Err(err).
@@ -117,17 +122,30 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			continue
 		}
 
+		// Resolve question state before taking p.mu — userAnsweredChat
+		// may issue DB queries and we hold the mutex only briefly below.
+		paneShowsQuestion := statusdetect.HasQuestionPrompt([]byte(content))
+		questionSuppressed := paneShowsQuestion && p.userAnsweredChat(ctx, chat)
+
 		p.mu.Lock()
 		prev, hasPrev := p.prevCaptures[claudeID]
 
 		var status pb.ChatStatus
-		if statusdetect.HasQuestionPrompt([]byte(content)) {
+		switch {
+		case paneShowsQuestion && !questionSuppressed:
 			status = pb.ChatStatus_CHAT_STATUS_QUESTION
-		} else if !hasPrev || content != prev.content {
+		case questionSuppressed:
+			// The pane still matches the question pattern but the transcript
+			// shows the user has answered — Claude is about to render its
+			// response. Report WORKING explicitly so the UI doesn't briefly
+			// flash IDLE when the old question capture is already past the
+			// idle threshold.
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
-		} else if now.Sub(prev.at) > IdleThreshold {
+		case !hasPrev || content != prev.content:
+			status = pb.ChatStatus_CHAT_STATUS_WORKING
+		case now.Sub(prev.at) > IdleThreshold:
 			status = pb.ChatStatus_CHAT_STATUS_IDLE
-		} else {
+		default:
 			// Content unchanged but not yet past idle threshold -- keep working.
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
 		}
@@ -190,10 +208,19 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 			continue
 		}
 
+		paneShowsQuestion := statusdetect.HasQuestionPrompt([]byte(content))
+		questionSuppressed := paneShowsQuestion && p.userAnsweredChat(ctx, chat)
+
 		var status pb.ChatStatus
-		if statusdetect.HasQuestionPrompt([]byte(content)) {
+		switch {
+		case paneShowsQuestion && !questionSuppressed:
 			status = pb.ChatStatus_CHAT_STATUS_QUESTION
-		} else {
+		case questionSuppressed:
+			// Mirror pollOnce: the pane still matches the question pattern but
+			// the transcript shows the user has answered. Report WORKING so the
+			// UI doesn't flash IDLE before the first poll cycle corrects it.
+			status = pb.ChatStatus_CHAT_STATUS_WORKING
+		default:
 			status = pb.ChatStatus_CHAT_STATUS_IDLE
 		}
 
@@ -212,4 +239,24 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 	if len(chats) > 0 {
 		p.logger.Info().Int("count", len(chats)).Msg("bootstrap: discovered chats with tmux sessions")
 	}
+}
+
+// userAnsweredChat reports whether the JSONL transcript for chat shows the
+// user has already responded to the currently-visible question prompt. It
+// resolves the chat's session, derives the transcript path, and consults
+// lastTurnIsUser. Any lookup failure returns false (fail-open: the caller
+// keeps reporting QUESTION based on pane content alone).
+func (p *TmuxStatusPoller) userAnsweredChat(ctx context.Context, chat *models.ClaudeChat) bool {
+	if p.sessions == nil || chat == nil {
+		return false
+	}
+	sess, err := p.sessions.Get(ctx, chat.SessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" {
+		return false
+	}
+	path, err := transcriptPath(sess.WorktreePath, chat.ClaudeID)
+	if err != nil {
+		return false
+	}
+	return lastTurnIsUser(path)
 }

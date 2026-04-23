@@ -2439,7 +2439,7 @@ type NotifyStatusChangeRequest struct {
 	// Session ID whose PR status changed.
 	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// New display status.
-	DisplayStatus PRDisplayStatus `protobuf:"varint,2,opt,name=display_status,json=displayStatus,proto3,enum=bossanova.v1.PRDisplayStatus" json:"display_status,omitempty"`
+	DisplayStatus DisplayStatus `protobuf:"varint,2,opt,name=display_status,json=displayStatus,proto3,enum=bossanova.v1.DisplayStatus" json:"display_status,omitempty"`
 	// Whether the PR has failing checks.
 	HasFailures   bool `protobuf:"varint,3,opt,name=has_failures,json=hasFailures,proto3" json:"has_failures,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -2483,11 +2483,11 @@ func (x *NotifyStatusChangeRequest) GetSessionId() string {
 	return ""
 }
 
-func (x *NotifyStatusChangeRequest) GetDisplayStatus() PRDisplayStatus {
+func (x *NotifyStatusChangeRequest) GetDisplayStatus() DisplayStatus {
 	if x != nil {
 		return x.DisplayStatus
 	}
-	return PRDisplayStatus_PR_DISPLAY_STATUS_UNSPECIFIED
+	return DisplayStatus_DISPLAY_STATUS_UNSPECIFIED
 }
 
 func (x *NotifyStatusChangeRequest) GetHasFailures() bool {
@@ -2694,11 +2694,11 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\n" +
 	"last_error\x18\x05 \x01(\tR\tlastError\x129\n" +
 	"\n" +
-	"started_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\"\xa3\x01\n" +
+	"started_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\"\xa1\x01\n" +
 	"\x19NotifyStatusChangeRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\x12D\n" +
-	"\x0edisplay_status\x18\x02 \x01(\x0e2\x1d.bossanova.v1.PRDisplayStatusR\rdisplayStatus\x12!\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12B\n" +
+	"\x0edisplay_status\x18\x02 \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\rdisplayStatus\x12!\n" +
 	"\fhas_failures\x18\x03 \x01(\bR\vhasFailures\"\x1c\n" +
 	"\x1aNotifyStatusChangeResponse*\x82\x01\n" +
 	"\n" +
@@ -2800,7 +2800,7 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(*timestamppb.Timestamp)(nil),             // 48: google.protobuf.Timestamp
 	(WorkflowStatus)(0),                       // 49: bossanova.v1.WorkflowStatus
 	(WorkflowStep)(0),                         // 50: bossanova.v1.WorkflowStep
-	(PRDisplayStatus)(0),                      // 51: bossanova.v1.PRDisplayStatus
+	(DisplayStatus)(0),                        // 51: bossanova.v1.DisplayStatus
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
@@ -2833,7 +2833,7 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	49, // 27: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
 	50, // 28: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
 	48, // 29: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
-	51, // 30: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.PRDisplayStatus
+	51, // 30: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
 	3,  // 31: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
 	9,  // 32: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
 	12, // 33: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest

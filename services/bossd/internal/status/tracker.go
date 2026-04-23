@@ -25,6 +25,14 @@ type Entry struct {
 type Tracker struct {
 	mu      sync.RWMutex
 	entries map[string]*Entry // claude_id -> entry
+
+	// onUpdate, when non-nil, is invoked after every Update with the
+	// claude_id whose status changed. The hook resolves claude_id →
+	// sessionID and triggers DisplayStatusComputer.Recompute. Kept as a
+	// loose function to avoid a status → db dependency on a concrete
+	// resolver type, and to keep this package free of cross-package
+	// imports for chat lookup.
+	onUpdate func(claudeID string)
 }
 
 // NewTracker creates a new empty Tracker.
@@ -37,12 +45,30 @@ func NewTracker() *Tracker {
 // Update upserts a heartbeat for the given claude ID.
 func (t *Tracker) Update(claudeID string, status pb.ChatStatus, lastOutputAt time.Time) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	prev, hadPrev := t.entries[claudeID]
 	t.entries[claudeID] = &Entry{
 		Status:       status,
 		LastOutputAt: lastOutputAt,
 		ReceivedAt:   time.Now(),
 	}
+	hook := t.onUpdate
+	t.mu.Unlock()
+
+	// Fire the hook only when the status actually changed — avoids burning
+	// a recompute on every 3-second heartbeat when nothing's moved.
+	if hook != nil && (!hadPrev || prev.Status != status) {
+		hook(claudeID)
+	}
+}
+
+// SetOnUpdate wires a callback fired after Update when the chat's status
+// changes. The wiring lives in cmd/main.go and resolves claude_id →
+// sessionID before delegating to DisplayStatusComputer.Recompute. Tests
+// usually leave this nil.
+func (t *Tracker) SetOnUpdate(fn func(claudeID string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onUpdate = fn
 }
 
 // Get returns the cached entry for the given claude ID, or nil if not found

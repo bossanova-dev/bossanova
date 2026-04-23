@@ -58,6 +58,47 @@ func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.Claude
 	return result, nil
 }
 
+// --- mock SessionStore (only Get is exercised by the poller) ---
+
+type mockSessionStore struct {
+	sessions map[string]*models.Session
+}
+
+func (m *mockSessionStore) Create(_ context.Context, _ db.CreateSessionParams) (*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", id)
+	}
+	return s, nil
+}
+func (m *mockSessionStore) List(_ context.Context, _ string) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) ListActive(_ context.Context, _ string) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) ListWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) Archive(_ context.Context, _ string) error   { return nil }
+func (m *mockSessionStore) Resurrect(_ context.Context, _ string) error { return nil }
+func (m *mockSessionStore) Delete(_ context.Context, _ string) error    { return nil }
+func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+	return 0, nil
+}
+
 // --- mock tmux command factory ---
 // Uses scripts that write to temp files to simulate tmux has-session and capture-pane.
 
@@ -131,7 +172,7 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.RegisterChat(claudeID)
 	poller.pollOnce(context.Background())
 
@@ -163,7 +204,7 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.RegisterChat(claudeID)
 	poller.pollOnce(context.Background())
 
@@ -194,7 +235,7 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 
 	// Simulate a previous capture that happened >5s ago with same content.
 	// The content must match exactly what CapturePane returns (cat outputs
@@ -235,7 +276,7 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.RegisterChat(claudeID)
 	poller.pollOnce(context.Background())
 
@@ -251,7 +292,7 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
 	tracker := NewTracker()
 	tmuxClient := tmux.NewClient()
-	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.ClaudeChat{}}, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.ClaudeChat{}}, nil, tmuxClient, zerolog.Nop())
 
 	poller.RegisterChat("c1")
 	poller.mu.Lock()
@@ -287,7 +328,7 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	entry := tracker.Get(claudeID)
@@ -326,7 +367,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	entry := tracker.Get(claudeID)
@@ -335,6 +376,64 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
 		t.Errorf("expected QUESTION, got %v", entry.Status)
+	}
+}
+
+// TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking proves that
+// Bootstrap mirrors pollOnce's explicit WORKING branch for suppressed questions:
+// when a tmux pane shows a question prompt but the transcript shows the user
+// has already answered, Bootstrap must report WORKING (not IDLE) so the UI
+// doesn't flash IDLE before the first poll corrects it.
+func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.T) {
+	tmuxName := "boss-boot-suppress"
+	claudeID := "claude-boot-suppress"
+	sessionID := "sess-boot-suppress"
+	worktreePath := "/tmp/boss-boot-suppress-wt"
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectDir := home + "/.claude/projects/" + pathToProjectKey(worktreePath)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	transcript := projectDir + "/" + claudeID + ".jsonl"
+	userAnsweredFixture := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
+{"type":"user","message":{"role":"user","content":"yes"}}
+`
+	if err := os.WriteFile(transcript, []byte(userAnsweredFixture), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.ClaudeChat{
+			claudeID: {ClaudeID: claudeID, SessionID: sessionID, TmuxSessionName: &tmuxName},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{
+			sessionID: {ID: sessionID, WorktreePath: worktreePath},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{
+			tmuxName: "  Allow Claude to run this command?\n\n  ❯ Allow\n    Allow once\n    Deny\n",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	tracker := NewTracker()
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	poller.Bootstrap(context.Background())
+
+	entry := tracker.Get(claudeID)
+	if entry == nil {
+		t.Fatal("expected entry after bootstrap")
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING (question suppressed, user already answered), got %v", entry.Status)
 	}
 }
 
@@ -356,7 +455,7 @@ func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	entry := tracker.Get(claudeID)
@@ -385,7 +484,7 @@ func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	// Should be a no-op — no entries in tracker or prevCaptures.
@@ -394,5 +493,107 @@ func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
 	poller.mu.Unlock()
 	if captureCount != 0 {
 		t.Errorf("expected 0 captures, got %d", captureCount)
+	}
+}
+
+// TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered proves the
+// transcript-aware check: when HasQuestionPrompt matches the pane but the
+// JSONL transcript's last meaningful turn is a user message, status is
+// downgraded out of QUESTION and falls through to normal working detection.
+func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
+	tmuxName := "boss-test-suppress"
+	claudeID := "claude-suppress"
+	sessionID := "sess-suppress"
+	worktreePath := "/tmp/boss-test-suppress-wt"
+
+	// Redirect os.UserHomeDir() to a per-test HOME so transcriptPath()
+	// resolves under t.TempDir() rather than the real ~/.claude.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Write the JSONL fixture at the path Claude Code would use.
+	projectDir := home + "/.claude/projects/" + pathToProjectKey(worktreePath)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	transcript := projectDir + "/" + claudeID + ".jsonl"
+	userAnsweredFixture := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
+{"type":"user","message":{"role":"user","content":"yes"}}
+`
+	assistantQuestionFixture := `{"type":"user","message":{"role":"user","content":"start"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
+`
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.ClaudeChat{
+			claudeID: {ClaudeID: claudeID, SessionID: sessionID, TmuxSessionName: &tmuxName},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{
+			sessionID: {ID: sessionID, WorktreePath: worktreePath},
+		},
+	}
+
+	questionPane := "  Allow Claude to run this command?\n\n  ❯ Allow\n    Allow once\n    Deny\n"
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: questionPane},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	// Case A: user has answered — transcript shows user last. Expect WORKING.
+	if err := os.WriteFile(transcript, []byte(userAnsweredFixture), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	tracker := NewTracker()
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	poller.RegisterChat(claudeID)
+	poller.pollOnce(context.Background())
+
+	if entry := tracker.Get(claudeID); entry == nil {
+		t.Fatal("expected entry after poll")
+	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING (question suppressed, user just answered), got %v", entry.Status)
+	}
+
+	// Case B: assistant still pending — transcript shows assistant last. Expect QUESTION.
+	if err := os.WriteFile(transcript, []byte(assistantQuestionFixture), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	tracker2 := NewTracker()
+	poller2 := NewTmuxStatusPoller(tracker2, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	poller2.RegisterChat(claudeID)
+	poller2.pollOnce(context.Background())
+
+	if entry := tracker2.Get(claudeID); entry == nil {
+		t.Fatal("expected entry after poll")
+	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Errorf("expected QUESTION (assistant last), got %v", entry.Status)
+	}
+
+	// Case C (regression guard): question has been showing long enough that
+	// prev.at is older than IdleThreshold, THEN the user answers. Without the
+	// explicit WORKING branch for suppressed questions, the unchanged content
+	// plus stale timestamp would drop us straight to IDLE.
+	if err := os.WriteFile(transcript, []byte(userAnsweredFixture), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	tracker3 := NewTracker()
+	poller3 := NewTmuxStatusPoller(tracker3, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	// Seed prevCaptures with the *same* question pane content but an old
+	// timestamp — mirrors the "question was showing for a while" scenario.
+	poller3.mu.Lock()
+	poller3.prevCaptures[claudeID] = captureEntry{
+		content: questionPane,
+		at:      time.Now().Add(-2 * IdleThreshold),
+	}
+	poller3.mu.Unlock()
+	poller3.pollOnce(context.Background())
+
+	if entry := tracker3.Get(claudeID); entry == nil {
+		t.Fatal("expected entry after poll")
+	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING after suppression with stale prev (not IDLE), got %v", entry.Status)
 	}
 }

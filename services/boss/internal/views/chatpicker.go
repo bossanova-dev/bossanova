@@ -264,7 +264,7 @@ func (m *ChatPickerModel) buildTableRows() {
 func (m ChatPickerModel) canMerge() bool {
 	return m.session != nil &&
 		m.session.GetPrNumber() != 0 &&
-		m.session.GetPrDisplayStatus() == pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING
+		m.session.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_PASSING
 }
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.

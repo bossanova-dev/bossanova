@@ -150,15 +150,15 @@ message Session {
   string repo_display_name = 19;
 
   // PR display status, hydrated server-side from the PR display tracker.
-  PRDisplayStatus pr_display_status = 20;
-  bool pr_display_has_failures = 21;
-  bool pr_display_has_changes_requested = 23;
+  DisplayStatus display_status = 20;
+  bool display_has_failures = 21;
+  bool display_has_changes_requested = 23;
 
   // Attention status, hydrated server-side from session state.
   optional AttentionStatus attention_status = 22;
 
   // Whether this session is currently being repaired by the repair plugin.
-  bool is_repairing = 24;
+  bool display_is_repairing = 24;
 
   // Workflow display fields, hydrated server-side from active workflows.
   WorkflowStatus workflow_display_status = 25;
@@ -177,6 +177,26 @@ message Session {
 
   // Head commit SHA of the PR, used by repair plugin to skip duplicate repairs.
   string pr_display_head_sha = 32;
+
+  // Composite display fields, computed by bossd's DisplayStatusComputer and
+  // persisted so every client (TUI, web, future consumers) renders the same
+  // label/intent/spinner verbatim — including when bosso falls back to its
+  // own DB while the originating bossd is offline.
+  string display_label = 33;          // eg. "working", "checking", "running 2/4", "? question", "stopped"
+  DisplayIntent display_intent = 34;  // semantic meaning; clients map to styling
+  bool display_spinner = 35;          // whether to render the spinner glyph
+}
+
+// DisplayIntent represents the semantic meaning of a session's display
+// status. Clients map intent to styling (color, weight, etc.) — the proto
+// itself stays presentation-agnostic.
+enum DisplayIntent {
+  DISPLAY_INTENT_UNSPECIFIED = 0;
+  DISPLAY_INTENT_SUCCESS = 1;
+  DISPLAY_INTENT_WARNING = 2;
+  DISPLAY_INTENT_DANGER = 3;
+  DISPLAY_INTENT_MUTED = 4;
+  DISPLAY_INTENT_INFO = 5;
 }
 
 // Attempt represents a fix attempt within a session.
@@ -312,19 +332,19 @@ message AttentionStatus {
   google.protobuf.Timestamp since = 4;
 }
 
-// PRDisplayStatus represents the unified display status for a PR in the TUI.
-enum PRDisplayStatus {
-  PR_DISPLAY_STATUS_UNSPECIFIED = 0;
-  PR_DISPLAY_STATUS_IDLE = 1;
-  PR_DISPLAY_STATUS_CHECKING = 2;
-  PR_DISPLAY_STATUS_FAILING = 3;
-  PR_DISPLAY_STATUS_CONFLICT = 4;
-  PR_DISPLAY_STATUS_REJECTED = 5;
-  PR_DISPLAY_STATUS_PASSING = 6;
-  PR_DISPLAY_STATUS_MERGED = 7;
-  PR_DISPLAY_STATUS_CLOSED = 8;
-  PR_DISPLAY_STATUS_DRAFT = 9;
-  PR_DISPLAY_STATUS_APPROVED = 10;
+// DisplayStatus represents the unified display status for a session in the TUI.
+enum DisplayStatus {
+  DISPLAY_STATUS_UNSPECIFIED = 0;
+  DISPLAY_STATUS_IDLE = 1;
+  DISPLAY_STATUS_CHECKING = 2;
+  DISPLAY_STATUS_FAILING = 3;
+  DISPLAY_STATUS_CONFLICT = 4;
+  DISPLAY_STATUS_REJECTED = 5;
+  DISPLAY_STATUS_PASSING = 6;
+  DISPLAY_STATUS_MERGED = 7;
+  DISPLAY_STATUS_CLOSED = 8;
+  DISPLAY_STATUS_DRAFT = 9;
+  DISPLAY_STATUS_APPROVED = 10;
 }
 
 // WorkflowStatus represents the lifecycle state of an autopilot workflow.

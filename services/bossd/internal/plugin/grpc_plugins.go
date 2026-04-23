@@ -69,7 +69,7 @@ type WorkflowService interface {
 	ResumeWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error)
 	CancelWorkflow(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error)
 	GetWorkflowStatus(ctx context.Context, workflowID string) (*bossanovav1.WorkflowStatusInfo, error)
-	NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.PRDisplayStatus, hasFailures bool) error
+	NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.DisplayStatus, hasFailures bool) error
 }
 
 // --- GRPCPlugin implementations ---
@@ -304,7 +304,7 @@ func (c *workflowServiceGRPCClient) GetWorkflowStatus(ctx context.Context, workf
 	return resp.GetStatus(), nil
 }
 
-func (c *workflowServiceGRPCClient) NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.PRDisplayStatus, hasFailures bool) error {
+func (c *workflowServiceGRPCClient) NotifyStatusChange(ctx context.Context, sessionID string, displayStatus bossanovav1.DisplayStatus, hasFailures bool) error {
 	req := &bossanovav1.NotifyStatusChangeRequest{
 		SessionId:     sessionID,
 		DisplayStatus: displayStatus,

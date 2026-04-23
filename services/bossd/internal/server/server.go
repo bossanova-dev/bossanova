@@ -56,7 +56,7 @@ type Server struct {
 	claudeChats        db.ClaudeChatStore
 	workflows          db.WorkflowStore
 	chatStatus         *status.Tracker
-	prDisplay          *status.PRTracker
+	displayTracker     *status.DisplayTracker
 	tmuxPoller         *status.TmuxStatusPoller
 	lifecycle          *session.Lifecycle
 	claude             claude.ClaudeRunner
@@ -80,7 +80,7 @@ type Config struct {
 	ClaudeChats        db.ClaudeChatStore
 	Workflows          db.WorkflowStore
 	ChatStatus         *status.Tracker
-	PRDisplay          *status.PRTracker
+	DisplayTracker     *status.DisplayTracker
 	TmuxPoller         *status.TmuxStatusPoller
 	Lifecycle          *session.Lifecycle
 	Claude             claude.ClaudeRunner
@@ -101,7 +101,7 @@ func New(cfg Config) *Server {
 		claudeChats:        cfg.ClaudeChats,
 		workflows:          cfg.Workflows,
 		chatStatus:         cfg.ChatStatus,
-		prDisplay:          cfg.PRDisplay,
+		displayTracker:     cfg.DisplayTracker,
 		tmuxPoller:         cfg.TmuxPoller,
 		lifecycle:          cfg.Lifecycle,
 		claude:             cfg.Claude,
@@ -651,11 +651,11 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	}
 
 	// Hydrate PR display status from the in-memory tracker.
-	if s.prDisplay != nil {
-		if e := s.prDisplay.Get(session.ID); e != nil {
-			p.PrDisplayStatus = pb.PRDisplayStatus(e.Status)
-			p.PrDisplayHasFailures = e.HasFailures
-			p.PrDisplayHasChangesRequested = e.HasChangesRequested
+	if s.displayTracker != nil {
+		if e := s.displayTracker.Get(session.ID); e != nil {
+			p.DisplayStatus = pb.DisplayStatus(e.Status)
+			p.DisplayHasFailures = e.HasFailures
+			p.DisplayHasChangesRequested = e.HasChangesRequested
 		}
 	}
 
@@ -714,19 +714,27 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	}
 
 	// Hydrate PR display statuses from the in-memory tracker.
+	//
+	// The composite display fields (DisplayLabel/Intent/Spinner) are persisted on
+	// the session row, but the per-axis fields below (DisplayStatus,
+	// DisplayHasFailures, DisplayHasChangesRequested, DisplayIsRepairing, and the
+	// WorkflowDisplay* block hydrated next) are NOT in models.Session — only the
+	// in-memory tracker knows them. Remaining typed-enum consumers: the TUI
+	// (home.go/chatpicker.go/theme.go via GetDisplayStatus) and the repair plugin
+	// (server.go via GetDisplayStatus + GetDisplayHasFailures).
 	sessionIDs := make([]string, len(sessions))
 	for i, sess := range sessions {
 		sessionIDs[i] = sess.ID
 	}
-	var entries map[string]*status.PRDisplayEntry
-	if s.prDisplay != nil {
-		entries = s.prDisplay.GetBatch(sessionIDs)
+	var entries map[string]*status.DisplayEntry
+	if s.displayTracker != nil {
+		entries = s.displayTracker.GetBatch(sessionIDs)
 		for i, sess := range sessions {
 			if e, ok := entries[sess.ID]; ok {
-				pbSessions[i].PrDisplayStatus = pb.PRDisplayStatus(e.Status)
-				pbSessions[i].PrDisplayHasFailures = e.HasFailures
-				pbSessions[i].PrDisplayHasChangesRequested = e.HasChangesRequested
-				pbSessions[i].IsRepairing = e.IsRepairing
+				pbSessions[i].DisplayStatus = pb.DisplayStatus(e.Status)
+				pbSessions[i].DisplayHasFailures = e.HasFailures
+				pbSessions[i].DisplayHasChangesRequested = e.HasChangesRequested
+				pbSessions[i].DisplayIsRepairing = e.IsRepairing
 			}
 		}
 	}
@@ -746,7 +754,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 				if w, ok := best[sess.ID]; ok {
 					// Don't show stale workflow status for sessions with merged/closed PRs.
 					if prEntry, hasEntry := entries[sess.ID]; hasEntry &&
-						(prEntry.Status == vcs.PRDisplayStatusMerged || prEntry.Status == vcs.PRDisplayStatusClosed) {
+						(prEntry.Status == vcs.DisplayStatusMerged || prEntry.Status == vcs.DisplayStatusClosed) {
 						continue
 					}
 					pbSessions[i].WorkflowDisplayStatus = workflowStatusToProto(w.Status)
@@ -986,8 +994,8 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	// Guard against merging while CI is still red or reviews are outstanding.
 	// The webhook-driven tracker is authoritative; fall back to allowing the
 	// merge if the tracker has no entry (gh will itself reject an unmergeable PR).
-	if s.prDisplay != nil {
-		if e := s.prDisplay.Get(sess.ID); e != nil && e.Status != vcs.PRDisplayStatusPassing {
+	if s.displayTracker != nil {
+		if e := s.displayTracker.Get(sess.ID); e != nil && e.Status != vcs.DisplayStatusPassing {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("PR is not passing"))
 		}
 	}

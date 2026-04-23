@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/lipgloss/v2"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -17,7 +18,7 @@ const (
 )
 
 // newStatusSpinner creates an unstyled spinner for status display.
-// Color is applied by renderPRDisplayStatus so the entire cell has a single ANSI wrap.
+// Color is applied at the call site so the entire cell has a single ANSI wrap.
 func newStatusSpinner() spinner.Model {
 	return spinner.New(spinner.WithSpinner(spinner.Dot))
 }
@@ -39,26 +40,26 @@ func chatStatusString(s pb.ChatStatus) string {
 // styledPRStatus returns a styled label for a PR display status.
 // Returns "" for unspecified/unknown statuses.
 func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
-	switch sess.PrDisplayStatus {
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED:
+	switch sess.DisplayStatus {
+	case pb.DisplayStatus_DISPLAY_STATUS_MERGED:
 		return styleStatusMuted.Render("✔ merged")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED:
+	case pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
 		return styleStatusMuted.Render("closed")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_APPROVED:
+	case pb.DisplayStatus_DISPLAY_STATUS_APPROVED:
 		return styleStatusSuccess.Render("✓ approved")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING:
+	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
 		return styleStatusSuccess.Render("✓ passing")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING:
+	case pb.DisplayStatus_DISPLAY_STATUS_FAILING:
 		return styleStatusDanger.Render("⨯ failing")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CONFLICT:
+	case pb.DisplayStatus_DISPLAY_STATUS_CONFLICT:
 		return styleStatusDanger.Render("conflict")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_REJECTED:
+	case pb.DisplayStatus_DISPLAY_STATUS_REJECTED:
 		return styleStatusDanger.Render("⨯ rejected")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_DRAFT:
+	case pb.DisplayStatus_DISPLAY_STATUS_DRAFT:
 		return styleStatusMuted.Render("draft")
-	case pb.PRDisplayStatus_PR_DISPLAY_STATUS_CHECKING:
+	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING:
 		s := styleStatusWarning
-		if sess.PrDisplayHasChangesRequested || sess.PrDisplayHasFailures {
+		if sess.DisplayHasChangesRequested || sess.DisplayHasFailures {
 			s = styleStatusDanger
 		}
 		return s.Render(sp.View() + "checking")
@@ -67,47 +68,34 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 	}
 }
 
-// styledWorkflowStatus returns a styled label for an active autopilot workflow.
-// Returns "" when no active workflow is present.
-func styledWorkflowStatus(sess *pb.Session, sp spinner.Model) string {
-	switch sess.WorkflowDisplayStatus {
-	case pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING:
-		return styleStatusInfo.Render(fmt.Sprintf("%srunning %d/%d", sp.View(), sess.WorkflowDisplayLeg, sess.WorkflowDisplayMaxLegs))
-	case pb.WorkflowStatus_WORKFLOW_STATUS_PENDING:
-		return styleStatusInfo.Render(sp.View() + "pending")
-	case pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED:
-		return styleStatusWarning.Render(fmt.Sprintf("paused %d/%d", sess.WorkflowDisplayLeg, sess.WorkflowDisplayMaxLegs))
-	case pb.WorkflowStatus_WORKFLOW_STATUS_FAILED:
-		return styleStatusDanger.Render(fmt.Sprintf("failed %d/%d", sess.WorkflowDisplayLeg, sess.WorkflowDisplayMaxLegs))
-	case pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED:
-		return styleStatusMuted.Render("cancelled")
-	default:
+// renderDisplayStatus renders the unified STATUS column directly from the
+// composite display fields (DisplayLabel/DisplayIntent/DisplaySpinner) computed
+// by bossd. Clients no longer recompose — they just style.
+func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
+	if sess == nil {
 		return ""
 	}
+	label := sess.GetDisplayLabel()
+	if sess.GetDisplaySpinner() {
+		label = sp.View() + label
+	}
+	return styleForIntent(sess.GetDisplayIntent()).Render(label)
 }
 
-// renderPRDisplayStatus returns a styled status string for the unified STATUS column.
-// Claude working status overrides all PR display statuses.
-func renderPRDisplayStatus(sess *pb.Session, claudeStatus string, sp spinner.Model) string {
-	if claudeStatus == statusQuestion {
-		return styleStatusWarning.Render("? question")
+// styleForIntent maps a DisplayIntent to its lipgloss style for the TUI.
+func styleForIntent(intent pb.DisplayIntent) lipgloss.Style {
+	switch intent {
+	case pb.DisplayIntent_DISPLAY_INTENT_SUCCESS:
+		return styleStatusSuccess
+	case pb.DisplayIntent_DISPLAY_INTENT_WARNING:
+		return styleStatusWarning
+	case pb.DisplayIntent_DISPLAY_INTENT_DANGER:
+		return styleStatusDanger
+	case pb.DisplayIntent_DISPLAY_INTENT_INFO:
+		return styleStatusInfo
+	default:
+		return styleStatusMuted
 	}
-	if claudeStatus == statusWorking {
-		return styleStatusSuccess.Render(sp.View() + "working")
-	}
-	if label := styledWorkflowStatus(sess, sp); label != "" {
-		return label
-	}
-	if sess.IsRepairing {
-		return styleStatusWarning.Render(sp.View() + "repairing")
-	}
-	if label := styledPRStatus(sess, sp); label != "" {
-		return label
-	}
-	if claudeStatus == statusIdle {
-		return styleStatusWarning.Render("idle")
-	}
-	return styleStatusMuted.Render("stopped")
 }
 
 // renderSessionPRStatus returns a styled PR status label for display next to

@@ -50,6 +50,9 @@ func SessionToProto(s *models.Session) *pb.Session {
 		AttemptCount:      int32(s.AttemptCount),
 		CreatedAt:         timestamppb.New(s.CreatedAt),
 		UpdatedAt:         timestamppb.New(s.UpdatedAt),
+		DisplayLabel:      s.DisplayLabel,
+		DisplayIntent:     pb.DisplayIntent(s.DisplayIntent),
+		DisplaySpinner:    s.DisplaySpinner,
 	}
 	if s.ClaudeSessionID != nil {
 		p.ClaudeSessionId = s.ClaudeSessionID

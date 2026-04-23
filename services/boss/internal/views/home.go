@@ -69,7 +69,7 @@ type HomeModel struct {
 	highlightSessionID string // session to auto-highlight after returning from chat picker
 
 	// mergedOptimisticID is set when the user returns from a successful merge
-	// in the chat picker. While set, the matching session's PrDisplayStatus
+	// in the chat picker. While set, the matching session's DisplayStatus
 	// is rendered as MERGED even if the daemon still reports PASSING — the
 	// PR-merged webhook lands asynchronously, so without this override the
 	// status column would flicker back to "passing" until the next poll.
@@ -115,12 +115,12 @@ func (h *HomeModel) applyMergedOptimisticOverride() {
 		if sess.Id != h.mergedOptimisticID {
 			continue
 		}
-		switch sess.GetPrDisplayStatus() {
-		case pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED,
-			pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED:
+		switch sess.GetDisplayStatus() {
+		case pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+			pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
 			h.mergedOptimisticID = ""
 		default:
-			sess.PrDisplayStatus = pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED
+			sess.DisplayStatus = pb.DisplayStatus_DISPLAY_STATUS_MERGED
 		}
 		return
 	}
@@ -228,13 +228,12 @@ func (h *HomeModel) buildTableRows() {
 	cursor := h.table.Cursor()
 	rows := make([]table.Row, len(h.sessions))
 	for i, sess := range h.sessions {
-		daemon := h.daemonStatuses[sess.Id]
-		statusStyled := renderPRDisplayStatus(sess, daemon, h.spinner)
+		statusStyled := renderDisplayStatus(sess, h.spinner)
 
 		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], linkedNames[i], prs[i]
-		if sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED ||
-			sess.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED {
+		if sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
+			sess.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED {
 			repo = mutedStrike.Render(repos[i])
 			// renderMutedTrackerLink styles the full title with raw ANSI and
 			// wraps the tracker ID in OSC 8; do NOT wrap its output with

@@ -135,11 +135,37 @@ func run(opts runOpts) error {
 	// --- Stores ---
 
 	repos := db.NewRepoStore(database)
-	sessions := db.NewSessionStore(database)
+	rawSessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
 	claudeChats := db.NewClaudeChatStore(database)
 	taskMappings := db.NewTaskMappingStore(database)
-	workflows := db.NewWorkflowStore(database)
+	rawWorkflows := db.NewWorkflowStore(database)
+
+	// The display-status computer needs to read the bare stores; wrap them
+	// after construction so the computer's own writes don't recurse through
+	// the recompute hooks (the wrapper short-circuits on display-only writes,
+	// but reading via the unwrapped store is also free of side effects).
+	chatStatusTracker := status.NewTracker()
+	displayTracker := status.NewDisplayTracker()
+	displayComputer := status.NewDisplayStatusComputer(
+		rawSessions, displayTracker, chatStatusTracker, claudeChats, rawWorkflows, log.Logger,
+	)
+	var sessions db.SessionStore = db.NewRecomputingSessionStore(rawSessions, displayComputer)
+	var workflows db.WorkflowStore = db.NewRecomputingWorkflowStore(rawWorkflows, displayComputer)
+
+	// Wire the display tracker so its mutations recompute synchronously.
+	displayTracker.SetRecomputer(displayComputer)
+	// Wire the chat-status tracker similarly. It is keyed by claude_id, so
+	// resolve to a session before calling Recompute.
+	chatStatusTracker.SetOnUpdate(func(claudeID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		chat, err := claudeChats.GetByClaudeID(ctx, claudeID)
+		if err != nil || chat == nil {
+			return
+		}
+		_ = displayComputer.Recompute(ctx, chat.SessionID)
+	})
 
 	// Create session lister for upstream sync
 	sessionLister := &sessionListerAdapter{sessions: sessions}
@@ -169,6 +195,34 @@ func run(opts runOpts) error {
 		log.Info().Int64("count", n).Msg("failed orphaned task mappings from previous run")
 	}
 
+	// Backfill the display-status composite for every active session. After
+	// a daemon restart the in-memory inputs (chat, display tracker) are
+	// empty, so the persisted display_label may not match the stored state.
+	// Recomputing once at boot ensures the row matches what Compute would
+	// produce given current inputs (typically "stopped" or PR-axis label),
+	// so clients reading via the bosso DB-fallback path don't see stale
+	// "running 2/4" labels from the previous daemon's last write.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		all, err := rawSessions.ListActive(ctx, "")
+		if err != nil {
+			log.Warn().Err(err).Msg("display backfill: list active sessions failed")
+		} else {
+			var updated int
+			for _, s := range all {
+				if err := displayComputer.Recompute(ctx, s.ID); err != nil {
+					log.Debug().Err(err).Str("session_id", s.ID).Msg("display backfill: recompute failed")
+					continue
+				}
+				updated++
+			}
+			if updated > 0 {
+				log.Info().Int("count", updated).Msg("display backfill: recomputed active sessions")
+			}
+		}
+		cancel()
+	}
+
 	// --- Lifecycle ---
 
 	worktrees := gitpkg.NewManager(log.Logger)
@@ -193,13 +247,8 @@ func run(opts runOpts) error {
 	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, nil, log.Logger)
 	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, session.DefaultPollTimeout, log.Logger)
 
-	// --- Chat Status Tracker ---
+	// --- Settings + Display Poller ---
 
-	chatStatusTracker := status.NewTracker()
-
-	// --- PR Display Tracker + Poller ---
-
-	prDisplayTracker := status.NewPRTracker()
 	settings, _ := config.Load()
 
 	// Update boss skills if they were previously installed by the CLI.
@@ -210,7 +259,7 @@ func run(opts runOpts) error {
 	}
 
 	displayPoller := session.NewDisplayPoller(
-		sessions, repos, ghProvider, prDisplayTracker,
+		sessions, repos, ghProvider, displayTracker,
 		settings.DisplayPollInterval(), log.Logger,
 	)
 
@@ -220,10 +269,10 @@ func run(opts runOpts) error {
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
 	autopilotRunner := claude.NewTmuxRunner(tmuxClient, log.Logger)
 	pluginHost.SetWorkflowDeps(workflows, sessions, claudeChats, autopilotRunner)
-	pluginHost.SetSessionDeps(repos, sessions, prDisplayTracker, chatStatusTracker)
+	pluginHost.SetSessionDeps(repos, sessions, displayTracker, chatStatusTracker)
 
-	// Register PRTracker onChange callback to notify plugins of status changes
-	prDisplayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.PRDisplayEntry) {
+	// Register DisplayTracker onChange callback to notify plugins of status changes
+	displayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.DisplayEntry) {
 		if newEntry != nil {
 			pluginHost.NotifyStatusChange(context.Background(), sessionID, newEntry.Status, newEntry.HasFailures)
 		}
@@ -339,7 +388,7 @@ func run(opts runOpts) error {
 
 	// --- Tmux Status Poller ---
 
-	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, claudeChats, tmuxClient, log.Logger)
+	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, claudeChats, sessions, tmuxClient, log.Logger)
 
 	// --- Server ---
 
@@ -382,7 +431,7 @@ func run(opts runOpts) error {
 		ClaudeChats:        claudeChats,
 		Workflows:          workflows,
 		ChatStatus:         chatStatusTracker,
-		PRDisplay:          prDisplayTracker,
+		DisplayTracker:     displayTracker,
 		TmuxPoller:         tmuxStatusPoller,
 		Lifecycle:          lifecycle,
 		Claude:             claudeRunner,

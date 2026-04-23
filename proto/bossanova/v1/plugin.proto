@@ -358,7 +358,7 @@ message NotifyStatusChangeRequest {
   // Session ID whose PR status changed.
   string session_id = 1;
   // New display status.
-  PRDisplayStatus display_status = 2;
+  DisplayStatus display_status = 2;
   // Whether the PR has failing checks.
   bool has_failures = 3;
 }

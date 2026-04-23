@@ -232,8 +232,8 @@ func renderBanner(active View, opts bannerOpts) string {
 		// Session title with clickable tracker ID and PR number. Merged/closed
 		// PRs get the same muted strikethrough treatment as merged rows on the
 		// home screen, so the banner reflects the terminal state at a glance.
-		merged := opts.session.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED ||
-			opts.session.PrDisplayStatus == pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED
+		merged := opts.session.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_MERGED ||
+			opts.session.DisplayStatus == pb.DisplayStatus_DISPLAY_STATUS_CLOSED
 		var title string
 		if merged {
 			title = renderMutedTrackerLink(opts.session, opts.session.Title)

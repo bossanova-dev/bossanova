@@ -113,7 +113,7 @@ func newDiscoveryHost(t *testing.T) *discoveryHost {
 	bus := eventbus.New(zerolog.Nop())
 	host := pluginpkg.New(bus, provider, zerolog.Nop())
 	host.SetWorkflowDeps(workflows, sessions, chats, runner)
-	host.SetSessionDeps(repos, sessions, status.NewPRTracker(), status.NewTracker())
+	host.SetSessionDeps(repos, sessions, status.NewDisplayTracker(), status.NewTracker())
 
 	// Cleanup runs LIFO: register bus.Close first so host.Stop (registered
 	// second) runs before the bus is torn down — host depends on bus.

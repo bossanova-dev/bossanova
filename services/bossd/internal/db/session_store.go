@@ -199,6 +199,18 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "archived_at = ?")
 		args = append(args, *params.ArchivedAt)
 	}
+	if params.DisplayLabel != nil {
+		sets = append(sets, "display_label = ?")
+		args = append(args, *params.DisplayLabel)
+	}
+	if params.DisplayIntent != nil {
+		sets = append(sets, "display_intent = ?")
+		args = append(args, int(*params.DisplayIntent))
+	}
+	if params.DisplaySpinner != nil {
+		sets = append(sets, "display_spinner = ?")
+		args = append(args, sqlutil.BoolToInt(*params.DisplaySpinner))
+	}
 
 	args = append(args, id)
 	query := "UPDATE sessions SET " + strings.Join(sets, ", ") + " WHERE id = ?"
@@ -320,7 +332,8 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at
+	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at,
+	s.display_label, s.display_intent, s.display_spinner
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -330,6 +343,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at,
+	s.display_label, s.display_intent, s.display_spinner,
 	COALESCE(r.display_name, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -337,6 +351,8 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 	var sess models.Session
 	var state, lastCheckState, automationEnabled int
 	var archivedAt, createdAt, updatedAt *string
+	var displayIntent int
+	var displaySpinner int
 	var repoDisplayName string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
@@ -344,6 +360,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt,
+		&sess.DisplayLabel, &displayIntent, &displaySpinner,
 		&repoDisplayName)
 	if err != nil {
 		return nil, "", err
@@ -351,6 +368,8 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.AutomationEnabled = automationEnabled != 0
+	sess.DisplayIntent = int32(displayIntent)
+	sess.DisplaySpinner = displaySpinner != 0
 	if archivedAt != nil {
 		t := sqlutil.ParseTime(*archivedAt)
 		sess.ArchivedAt = &t
@@ -368,18 +387,23 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var sess models.Session
 	var state, lastCheckState, automationEnabled int
 	var archivedAt, createdAt, updatedAt *string
+	var displayIntent int
+	var displaySpinner int
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
-		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt)
+		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt,
+		&sess.DisplayLabel, &displayIntent, &displaySpinner)
 	if err != nil {
 		return nil, err
 	}
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
 	sess.AutomationEnabled = automationEnabled != 0
+	sess.DisplayIntent = int32(displayIntent)
+	sess.DisplaySpinner = displaySpinner != 0
 	if archivedAt != nil {
 		t := sqlutil.ParseTime(*archivedAt)
 		sess.ArchivedAt = &t

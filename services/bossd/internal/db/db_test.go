@@ -760,6 +760,80 @@ func TestForeignKeyCascade_DeleteSession(t *testing.T) {
 	}
 }
 
+// TestSessionStore_DisplayCompositeRoundTrip pins the wire-shape-and-storage
+// contract for Phase 1: the three composite display fields default to
+// empty/zero, accept writes via UpdateSessionParams, and round-trip through
+// the SELECT/scan path with their values intact.
+func TestSessionStore_DisplayCompositeRoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	// Newly created sessions default to empty label / zero intent / false spinner.
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Display composite",
+		WorktreePath: "/tmp/wt/display",
+		BranchName:   "feat/display",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sess.DisplayLabel != "" || sess.DisplayIntent != 0 || sess.DisplaySpinner {
+		t.Errorf("defaults: got label=%q intent=%d spinner=%v, want empty/0/false",
+			sess.DisplayLabel, sess.DisplayIntent, sess.DisplaySpinner)
+	}
+
+	// Write all three fields.
+	label := "running 2/4"
+	intent := int32(2) // WARNING
+	spinner := true
+	updated, err := store.Update(ctx, sess.ID, UpdateSessionParams{
+		DisplayLabel:   &label,
+		DisplayIntent:  &intent,
+		DisplaySpinner: &spinner,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.DisplayLabel != label || updated.DisplayIntent != intent || updated.DisplaySpinner != spinner {
+		t.Errorf("update: got label=%q intent=%d spinner=%v, want %q/%d/%v",
+			updated.DisplayLabel, updated.DisplayIntent, updated.DisplaySpinner,
+			label, intent, spinner)
+	}
+
+	// Re-fetch to confirm SELECT/scan order matches the persisted columns.
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.DisplayLabel != label || got.DisplayIntent != intent || got.DisplaySpinner != spinner {
+		t.Errorf("get: got label=%q intent=%d spinner=%v, want %q/%d/%v",
+			got.DisplayLabel, got.DisplayIntent, got.DisplaySpinner,
+			label, intent, spinner)
+	}
+
+	// The join-based ListWithRepo path also has its own scan order — verify
+	// it stays in sync with the row-only path.
+	rows, err := store.ListWithRepo(ctx, "")
+	if err != nil {
+		t.Fatalf("list with repo: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("list len = %d, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.DisplayLabel != label || r.DisplayIntent != intent || r.DisplaySpinner != spinner {
+		t.Errorf("list with repo: got label=%q intent=%d spinner=%v, want %q/%d/%v",
+			r.DisplayLabel, r.DisplayIntent, r.DisplaySpinner,
+			label, intent, spinner)
+	}
+}
+
 func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

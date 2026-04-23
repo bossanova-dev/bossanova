@@ -25,14 +25,14 @@ import (
 // side. Plugins call back to this server via go-plugin's GRPCBroker to
 // query VCS data, manage workflows, and control Claude attempts.
 type HostServiceServer struct {
-	provider      vcs.Provider
-	workflowStore db.WorkflowStore
-	sessionStore  db.SessionStore
-	claudeChats   db.ClaudeChatStore
-	claude        claude.ClaudeRunner
-	repoStore     db.RepoStore
-	prTracker     *status.PRTracker
-	chatTracker   *status.Tracker
+	provider       vcs.Provider
+	workflowStore  db.WorkflowStore
+	sessionStore   db.SessionStore
+	claudeChats    db.ClaudeChatStore
+	claude         claude.ClaudeRunner
+	repoStore      db.RepoStore
+	displayTracker *status.DisplayTracker
+	chatTracker    *status.Tracker
 
 	// createWorkflowMu serialises the "check for active workflow + insert"
 	// sequence in CreateWorkflow so that concurrent plugin calls (or duplicate
@@ -60,10 +60,10 @@ func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, sessions db.
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs
 // (ListSessions, GetReviewComments, FireSessionEvent).
-func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker, chatTracker *status.Tracker) {
+func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
 	s.repoStore = repos
 	s.sessionStore = sessions
-	s.prTracker = tracker
+	s.displayTracker = tracker
 	s.chatTracker = chatTracker
 }
 
@@ -93,7 +93,7 @@ func (s *HostServiceServer) Validate() error {
 	if s.repoStore == nil {
 		missing = append(missing, "repo store")
 	}
-	if s.prTracker == nil {
+	if s.displayTracker == nil {
 		missing = append(missing, "PR tracker")
 	}
 	if s.chatTracker == nil {
@@ -662,7 +662,7 @@ func (s *HostServiceServer) ListClosedPRs(ctx context.Context, req *bossanovav1.
 }
 
 func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error) {
-	if s.repoStore == nil || s.sessionStore == nil || s.prTracker == nil {
+	if s.repoStore == nil || s.sessionStore == nil || s.displayTracker == nil {
 		return nil, grpcstatus.Error(codes.Internal, "session dependencies not set")
 	}
 
@@ -681,9 +681,9 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 		}
 
 		for _, sess := range sessions {
-			// Hydrate with PRTracker status
-			entry := s.prTracker.Get(sess.ID)
-			var displayStatus vcs.PRDisplayStatus
+			// Hydrate with DisplayTracker status
+			entry := s.displayTracker.Get(sess.ID)
+			var displayStatus vcs.DisplayStatus
 			var hasFailures bool
 			var isRepairing bool
 			var headSHA string
@@ -714,17 +714,17 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			}
 
 			pbSess := &bossanovav1.Session{
-				Id:                   sess.ID,
-				RepoId:               sess.RepoID,
-				RepoDisplayName:      repo.DisplayName,
-				Title:                sess.Title,
-				BranchName:           sess.BranchName,
-				State:                sessionStateToProto(sess.State),
-				PrDisplayStatus:      vcsDisplayStatusToProto(displayStatus),
-				PrDisplayHasFailures: hasFailures,
-				IsRepairing:          isRepairing,
-				HasActiveChat:        hasActiveChat,
-				PrDisplayHeadSha:     headSHA,
+				Id:                 sess.ID,
+				RepoId:             sess.RepoID,
+				RepoDisplayName:    repo.DisplayName,
+				Title:              sess.Title,
+				BranchName:         sess.BranchName,
+				State:              sessionStateToProto(sess.State),
+				DisplayStatus:      vcsDisplayStatusToProto(displayStatus),
+				DisplayHasFailures: hasFailures,
+				DisplayIsRepairing: isRepairing,
+				HasActiveChat:      hasActiveChat,
+				PrDisplayHeadSha:   headSHA,
 			}
 			if !sess.UpdatedAt.IsZero() {
 				pbSess.UpdatedAt = timestamppb.New(sess.UpdatedAt)
@@ -870,8 +870,8 @@ func vcsReviewStateToProto(s vcs.ReviewState) bossanovav1.ReviewState {
 	}
 }
 
-func vcsDisplayStatusToProto(s vcs.PRDisplayStatus) bossanovav1.PRDisplayStatus {
-	return bossanovav1.PRDisplayStatus(s)
+func vcsDisplayStatusToProto(s vcs.DisplayStatus) bossanovav1.DisplayStatus {
+	return bossanovav1.DisplayStatus(s)
 }
 
 func sessionStateToProto(s machine.State) bossanovav1.SessionState {
@@ -921,10 +921,10 @@ func hostServiceGetReviewCommentsHandler(srv interface{}, ctx context.Context, d
 }
 
 func (s *HostServiceServer) SetRepairStatus(_ context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error) {
-	if s.prTracker == nil {
+	if s.displayTracker == nil {
 		return nil, grpcstatus.Error(codes.Internal, "PR tracker not set")
 	}
-	s.prTracker.SetRepairing(req.GetSessionId(), req.GetIsRepairing())
+	s.displayTracker.SetRepairing(req.GetSessionId(), req.GetIsRepairing())
 	return &bossanovav1.SetRepairStatusResponse{}, nil
 }
 

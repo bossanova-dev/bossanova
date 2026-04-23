@@ -45,10 +45,10 @@ type Harness struct {
 	Git         *MockWorktreeManager
 	Claude      *MockClaudeRunner
 	VCS         *MockVCSProvider
-	// PRDisplay backs the MergeSession "PR is not passing" guard. Leave
+	// DisplayTracker backs the MergeSession "PR is not passing" guard. Leave
 	// entries empty to let merges through (the guard skips when no entry
-	// exists); call PRDisplay.Set with a non-passing status to block.
-	PRDisplay *status.PRTracker
+	// exists); call DisplayTracker.Set with a non-passing status to block.
+	DisplayTracker *status.DisplayTracker
 
 	// Client is a ConnectRPC client connected to the test server.
 	Client bossanovav1connect.DaemonServiceClient
@@ -118,21 +118,21 @@ func newHarness(t *testing.T, dbPath string) *Harness {
 	// PR display tracker. Wired through to the server so MergeSession's
 	// "PR is not passing" guard is reachable from tests — entries default
 	// to empty, so merges fall through unless a test explicitly calls
-	// PRDisplay.Set with a non-passing status.
-	prDisplay := status.NewPRTracker()
+	// DisplayTracker.Set with a non-passing status.
+	display := status.NewDisplayTracker()
 
 	// Server.
 	srv := server.New(server.Config{
-		Repos:       repos,
-		Sessions:    sessions,
-		Attempts:    attempts,
-		ClaudeChats: claudeChats,
-		PRDisplay:   prDisplay,
-		Lifecycle:   lifecycle,
-		Claude:      claudeMock,
-		Worktrees:   gitMock,
-		Provider:    vcsMock,
-		Logger:      logger,
+		Repos:          repos,
+		Sessions:       sessions,
+		Attempts:       attempts,
+		ClaudeChats:    claudeChats,
+		DisplayTracker: display,
+		Lifecycle:      lifecycle,
+		Claude:         claudeMock,
+		Worktrees:      gitMock,
+		Provider:       vcsMock,
+		Logger:         logger,
 	})
 
 	// Start server on a temp Unix socket.
@@ -167,21 +167,21 @@ func newHarness(t *testing.T, dbPath string) *Harness {
 	)
 
 	h := &Harness{
-		DB:          database,
-		Repos:       repos,
-		Sessions:    sessions,
-		Attempts:    attempts,
-		ClaudeChats: claudeChats,
-		Lifecycle:   lifecycle,
-		Server:      srv,
-		Git:         gitMock,
-		Claude:      claudeMock,
-		VCS:         vcsMock,
-		PRDisplay:   prDisplay,
-		Client:      client,
-		socketPath:  socketPath,
-		httpServer:  httpServer,
-		listener:    ln,
+		DB:             database,
+		Repos:          repos,
+		Sessions:       sessions,
+		Attempts:       attempts,
+		ClaudeChats:    claudeChats,
+		Lifecycle:      lifecycle,
+		Server:         srv,
+		Git:            gitMock,
+		Claude:         claudeMock,
+		VCS:            vcsMock,
+		DisplayTracker: display,
+		Client:         client,
+		socketPath:     socketPath,
+		httpServer:     httpServer,
+		listener:       ln,
 	}
 
 	// Single cleanup hook ensures Close runs at test teardown even when

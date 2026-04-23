@@ -2004,9 +2004,9 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\n" +
 	"\b_repo_idB\f\n" +
 	"\n" +
-	"_daemon_id\"N\n" +
+	"_daemon_id\"c\n" +
 	"\x19ProxyListSessionsResponse\x121\n" +
-	"\bsessions\x18\x01 \x03(\v2\x15.bossanova.v1.SessionR\bsessions\"(\n" +
+	"\bsessions\x18\x01 \x03(\v2\x15.bossanova.v1.SessionR\bsessionsJ\x04\b\x02\x10\x03R\rchat_statuses\"(\n" +
 	"\x16ProxyGetSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"J\n" +
 	"\x17ProxyGetSessionResponse\x12/\n" +

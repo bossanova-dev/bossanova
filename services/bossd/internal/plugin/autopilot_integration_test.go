@@ -483,7 +483,7 @@ func TestE2E_Autopilot_NotifyStatusChange(t *testing.T) {
 	// this ever returns an error, autopilot's NotifyStatusChange handler
 	// has grown behaviour that needs its own dedicated test — fail loudly.
 	err = workflow.NotifyStatusChange(ctx, h.sessionID,
-		bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING, false)
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING, false)
 	if err != nil {
 		t.Errorf("NotifyStatusChange returned error: %v", err)
 	}

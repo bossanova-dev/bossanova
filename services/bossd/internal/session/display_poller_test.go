@@ -20,7 +20,7 @@ func TestDisplayPoller_PollsSessionWithPR(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	prNum := 42
@@ -51,8 +51,8 @@ func TestDisplayPoller_PollsSessionWithPR(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry for sess-1, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusPassing {
-		t.Errorf("Status = %d, want %d (Passing)", e.Status, vcs.PRDisplayStatusPassing)
+	if e.Status != vcs.DisplayStatusPassing {
+		t.Errorf("Status = %d, want %d (Passing)", e.Status, vcs.DisplayStatusPassing)
 	}
 }
 
@@ -63,7 +63,7 @@ func TestDisplayPoller_SkipsSessionWithoutPR(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -94,7 +94,7 @@ func TestDisplayPoller_MergedPR(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	prNum := 10
@@ -119,8 +119,8 @@ func TestDisplayPoller_MergedPR(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusMerged {
-		t.Errorf("Status = %d, want %d (Merged)", e.Status, vcs.PRDisplayStatusMerged)
+	if e.Status != vcs.DisplayStatusMerged {
+		t.Errorf("Status = %d, want %d (Merged)", e.Status, vcs.DisplayStatusMerged)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestDisplayPoller_FailingChecks(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	prNum := 10
@@ -160,8 +160,8 @@ func TestDisplayPoller_FailingChecks(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusFailing {
-		t.Errorf("Status = %d, want %d (Failing)", e.Status, vcs.PRDisplayStatusFailing)
+	if e.Status != vcs.DisplayStatusFailing {
+		t.Errorf("Status = %d, want %d (Failing)", e.Status, vcs.DisplayStatusFailing)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestDisplayPoller_ChangesRequested(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	prNum := 10
@@ -204,8 +204,8 @@ func TestDisplayPoller_ChangesRequested(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusRejected {
-		t.Errorf("Status = %d, want %d (Rejected)", e.Status, vcs.PRDisplayStatusRejected)
+	if e.Status != vcs.DisplayStatusRejected {
+		t.Errorf("Status = %d, want %d (Rejected)", e.Status, vcs.DisplayStatusRejected)
 	}
 }
 
@@ -216,7 +216,7 @@ func TestDisplayPoller_GracefulDegradation_CheckResultsError(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	prNum := 10
@@ -244,8 +244,8 @@ func TestDisplayPoller_GracefulDegradation_CheckResultsError(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry despite check results error, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusIdle {
-		t.Errorf("Status = %d, want %d (Idle — no checks available)", e.Status, vcs.PRDisplayStatusIdle)
+	if e.Status != vcs.DisplayStatusIdle {
+		t.Errorf("Status = %d, want %d (Idle — no checks available)", e.Status, vcs.DisplayStatusIdle)
 	}
 }
 
@@ -256,7 +256,7 @@ func TestDisplayPoller_GracefulDegradation_ReviewCommentsError(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	prNum := 10
@@ -287,8 +287,8 @@ func TestDisplayPoller_GracefulDegradation_ReviewCommentsError(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry despite review comments error, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusPassing {
-		t.Errorf("Status = %d, want %d (Passing — reviews unavailable)", e.Status, vcs.PRDisplayStatusPassing)
+	if e.Status != vcs.DisplayStatusPassing {
+		t.Errorf("Status = %d, want %d (Passing — reviews unavailable)", e.Status, vcs.DisplayStatusPassing)
 	}
 }
 
@@ -299,7 +299,7 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	tracker := status.NewPRTracker()
+	tracker := status.NewDisplayTracker()
 	logger := zerolog.Nop()
 
 	prNum := 10
@@ -325,8 +325,8 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
 	}
-	if e.Status != vcs.PRDisplayStatusDraft {
-		t.Errorf("Status = %d, want %d (Draft)", e.Status, vcs.PRDisplayStatusDraft)
+	if e.Status != vcs.DisplayStatusDraft {
+		t.Errorf("Status = %d, want %d (Draft)", e.Status, vcs.DisplayStatusDraft)
 	}
 
 	// Verify no check or review API calls were made.

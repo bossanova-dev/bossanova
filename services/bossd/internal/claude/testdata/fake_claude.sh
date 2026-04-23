@@ -10,6 +10,9 @@
 #
 #   FAKE_CLAUDE_LINES=<n>         emit n lines of valid stream-json (default 1)
 #   FAKE_CLAUDE_DELAY_MS=<ms>     sleep between lines (default 0)
+#   FAKE_CLAUDE_START_DELAY_MS=<ms>  sleep before emitting the first line
+#                                   (default 0). Lets tests subscribe before
+#                                   emission begins, avoiding races.
 #   FAKE_CLAUDE_EXIT=<code>       exit code (default 0)
 #   FAKE_CLAUDE_IGNORE_SIGTERM=1  ignore SIGTERM — forces the runner's
 #                                 force-kill path after its 10s timeout
@@ -22,6 +25,7 @@ set -u
 
 lines="${FAKE_CLAUDE_LINES:-1}"
 delay_ms="${FAKE_CLAUDE_DELAY_MS:-0}"
+start_delay_ms="${FAKE_CLAUDE_START_DELAY_MS:-0}"
 exit_code="${FAKE_CLAUDE_EXIT:-0}"
 ignore_sigterm="${FAKE_CLAUDE_IGNORE_SIGTERM:-0}"
 echo_args_file="${FAKE_CLAUDE_ECHO_ARGS_FILE:-}"
@@ -41,6 +45,12 @@ fi
 # Drain stdin so writers don't block on a full pipe.
 cat > /dev/null &
 drain_pid=$!
+
+# Optional pre-emission delay — gives callers a window to subscribe before
+# the first line is broadcast.
+if [ "$start_delay_ms" -gt 0 ]; then
+  if sleep "0.$(printf '%03d' "$start_delay_ms")" 2>/dev/null; then :; else sleep 1; fi
+fi
 
 i=1
 while [ "$i" -le "$lines" ]; do

@@ -30,31 +30,31 @@ import (
 
 // repairHarness bundles the daemon-side state the repair plugin needs to call
 // back into: an in-memory SQLite DB with real stores, a claude.Runner whose
-// subprocesses are fake_claude.sh, a PRTracker that SetRepairStatus mutates,
+// subprocesses are fake_claude.sh, a DisplayTracker that SetRepairStatus mutates,
 // and a HostServiceServer wired with all of them.
 //
 // Unlike autopilotHarness, the repair plugin reads session state via
 // ListSessions (to evaluate isSessionRepairable) and writes IsRepairing via
-// SetRepairStatus (which goes through PRTracker). Both require SetSessionDeps
+// SetRepairStatus (which goes through DisplayTracker). Both require SetSessionDeps
 // in addition to SetWorkflowDeps.
 type repairHarness struct {
-	t             *testing.T
-	tmpDir        string
-	workDir       string
-	sessionID     string
-	repoID        string
-	db            *sql.DB
-	repos         db.RepoStore
-	sessions      db.SessionStore
-	workflows     db.WorkflowStore
-	chats         db.ClaudeChatStore
-	prTracker     *status.PRTracker
-	chatTracker   *status.Tracker
-	hostService   *pluginpkg.HostServiceServer
-	claudeRunner  claude.ClaudeRunner
-	pluginBinPath string
-	pluginClient  *goplugin.Client // exposed for ReattachConfig and manual Kill in drain tests
-	workflow      pluginpkg.WorkflowService
+	t              *testing.T
+	tmpDir         string
+	workDir        string
+	sessionID      string
+	repoID         string
+	db             *sql.DB
+	repos          db.RepoStore
+	sessions       db.SessionStore
+	workflows      db.WorkflowStore
+	chats          db.ClaudeChatStore
+	displayTracker *status.DisplayTracker
+	chatTracker    *status.Tracker
+	hostService    *pluginpkg.HostServiceServer
+	claudeRunner   claude.ClaudeRunner
+	pluginBinPath  string
+	pluginClient   *goplugin.Client // exposed for ReattachConfig and manual Kill in drain tests
+	workflow       pluginpkg.WorkflowService
 }
 
 // repairHarnessOpts tunes harness construction. InitialState sets the session
@@ -158,7 +158,7 @@ func newRepairHarness(t *testing.T, opts repairHarnessOpts) *repairHarness {
 		t.Fatalf("mkdir claude-logs: %v", err)
 	}
 
-	prTracker := status.NewPRTracker()
+	displayTracker := status.NewDisplayTracker()
 	chatTracker := status.NewTracker()
 
 	// VCS provider is unused by repair (it doesn't touch PRs directly) but
@@ -166,7 +166,7 @@ func newRepairHarness(t *testing.T, opts repairHarnessOpts) *repairHarness {
 	// dispatch; a zero-value stub is sufficient.
 	hostService := pluginpkg.NewHostServiceServer(&testVCSProvider{})
 	hostService.SetWorkflowDeps(workflows, sessions, chats, runner)
-	hostService.SetSessionDeps(repos, sessions, prTracker, chatTracker)
+	hostService.SetSessionDeps(repos, sessions, displayTracker, chatTracker)
 
 	binPath := pluginharness.BuildPlugin(t, "bossd-plugin-repair")
 
@@ -191,23 +191,23 @@ func newRepairHarness(t *testing.T, opts repairHarnessOpts) *repairHarness {
 	}
 
 	return &repairHarness{
-		t:             t,
-		tmpDir:        tmpDir,
-		workDir:       workDir,
-		sessionID:     session.ID,
-		repoID:        repo.ID,
-		db:            sqlDB,
-		repos:         repos,
-		sessions:      sessions,
-		workflows:     workflows,
-		chats:         chats,
-		prTracker:     prTracker,
-		chatTracker:   chatTracker,
-		hostService:   hostService,
-		claudeRunner:  runner,
-		pluginBinPath: binPath,
-		pluginClient:  client,
-		workflow:      workflow,
+		t:              t,
+		tmpDir:         tmpDir,
+		workDir:        workDir,
+		sessionID:      session.ID,
+		repoID:         repo.ID,
+		db:             sqlDB,
+		repos:          repos,
+		sessions:       sessions,
+		workflows:      workflows,
+		chats:          chats,
+		displayTracker: displayTracker,
+		chatTracker:    chatTracker,
+		hostService:    hostService,
+		claudeRunner:   runner,
+		pluginBinPath:  binPath,
+		pluginClient:   client,
+		workflow:       workflow,
 	}
 }
 
@@ -228,13 +228,13 @@ func (h *repairHarness) configJSON() string {
 	return string(b)
 }
 
-// waitForRepairStatus polls prTracker until IsRepairing matches `want` or
+// waitForRepairStatus polls displayTracker until IsRepairing matches `want` or
 // the deadline expires.
 func (h *repairHarness) waitForRepairStatus(want bool, timeout time.Duration) {
 	h.t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
-		entry := h.prTracker.Get(h.sessionID)
+		entry := h.displayTracker.Get(h.sessionID)
 		got := entry != nil && entry.IsRepairing
 		if got == want {
 			return
@@ -274,7 +274,7 @@ func (h *repairHarness) waitForWorkflow(ctx context.Context, timeout time.Durati
 // triggerRepair runs the StartWorkflow + NotifyStatusChange sequence that
 // every trigger-path test begins with. Shared so each test keeps its focus
 // on the behaviour being asserted.
-func (h *repairHarness) triggerRepair(ctx context.Context, displayStatus bossanovav1.PRDisplayStatus, hasFailures bool) {
+func (h *repairHarness) triggerRepair(ctx context.Context, displayStatus bossanovav1.DisplayStatus, hasFailures bool) {
 	h.t.Helper()
 	if _, err := h.workflow.StartWorkflow(ctx, &bossanovav1.StartWorkflowRequest{
 		SessionId:  h.sessionID,
@@ -307,7 +307,7 @@ func TestE2E_Repair_TriggersOnFailing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	h.triggerRepair(ctx, bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING, true)
+	h.triggerRepair(ctx, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
 
 	// The most reliable side effect: a workflow record for our session.
 	// CreateWorkflow is called before CreateAttempt, so if the workflow
@@ -358,7 +358,7 @@ func TestE2E_Repair_TriggersOnFailing(t *testing.T) {
 }
 
 // TestE2E_Repair_TriggersOnConflict verifies the plugin treats CONFLICT
-// identically to FAILING — maybeRepair's OR-chain over PRDisplayStatus
+// identically to FAILING — maybeRepair's OR-chain over DisplayStatus
 // is one of the two load-bearing predicates (along with isSessionRepairable)
 // that decides whether a notification triggers a repair. has_failures is
 // false in the CONFLICT case (conflicts are orthogonal to CI status), so
@@ -379,7 +379,7 @@ func TestE2E_Repair_TriggersOnConflict(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	h.triggerRepair(ctx, bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_CONFLICT, false)
+	h.triggerRepair(ctx, bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false)
 
 	// CreateWorkflow is the first irreversible side effect; seeing a
 	// workflow record for our session is proof the plugin passed every
@@ -422,7 +422,7 @@ func TestE2E_Repair_GracefulDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	h.triggerRepair(ctx, bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING, true)
+	h.triggerRepair(ctx, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
 
 	// Wait until repair is visibly in flight. Without this, SIGTERM could
 	// arrive before the repair goroutine has even called SetRepairStatus(true),
@@ -489,7 +489,7 @@ func TestE2E_Repair_GracefulDrain(t *testing.T) {
 // FixingChecks (the production case where repair is expected to help),
 // the plugin must:
 //  1. Drive the attempt to completion (workflow.status = "completed")
-//  2. Clear the repair indicator (PRTracker.IsRepairing = false)
+//  2. Clear the repair indicator (DisplayTracker.IsRepairing = false)
 //  3. Fire FixComplete to advance the state machine out of FixingChecks
 //
 // If step 3 regresses, sessions would loop back to repair forever rather
@@ -506,7 +506,7 @@ func TestE2E_Repair_ForcePushesFix(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	h.triggerRepair(ctx, bossanovav1.PRDisplayStatus_PR_DISPLAY_STATUS_FAILING, true)
+	h.triggerRepair(ctx, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
 
 	wf := h.waitForWorkflow(ctx, 10*time.Second)
 

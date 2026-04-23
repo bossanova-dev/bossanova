@@ -1050,7 +1050,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 
 			// Mark the PR as passing in the display tracker so the
 			// MergeSession "PR not passing" guard lets the call through.
-			h.PRDisplay.Set(sessionID, vcs.PRDisplayInfo{Status: vcs.PRDisplayStatusPassing})
+			h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 
 			if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID})); err != nil {
 				t.Fatalf("merge session: %v", err)
@@ -1087,7 +1087,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 
 		// Signal the display tracker that the PR is failing, which
 		// trips the guard in MergeSession.
-		h.PRDisplay.Set(sessionID, vcs.PRDisplayInfo{Status: vcs.PRDisplayStatusFailing, HasFailures: true})
+		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusFailing, HasFailures: true})
 
 		stateBefore := getSessionState(t, h, ctx, sessionID)
 

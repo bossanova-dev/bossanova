@@ -329,7 +329,7 @@ func (h *Host) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore,
 }
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs.
-func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.PRTracker, chatTracker *status.Tracker) {
+func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
 	if h.hostService != nil {
 		h.hostService.SetSessionDeps(repos, sessions, tracker, chatTracker)
 	}
@@ -338,9 +338,9 @@ func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, trac
 // NotifyStatusChange broadcasts a PR status change to all workflow plugins.
 // Each plugin call runs in its own panic-recovered goroutine with a bounded
 // timeout so a slow plugin cannot hold a goroutine open indefinitely.
-func (h *Host) NotifyStatusChange(ctx context.Context, sessionID string, displayStatus vcs.PRDisplayStatus, hasFailures bool) {
+func (h *Host) NotifyStatusChange(ctx context.Context, sessionID string, displayStatus vcs.DisplayStatus, hasFailures bool) {
 	services := h.GetWorkflowServices()
-	pbStatus := bossanovav1.PRDisplayStatus(displayStatus)
+	pbStatus := bossanovav1.DisplayStatus(displayStatus)
 	for _, svc := range services {
 		s := svc
 		safego.Go(h.logger, func() {

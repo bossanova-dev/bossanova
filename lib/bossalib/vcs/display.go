@@ -1,26 +1,26 @@
 package vcs
 
-// PRDisplayStatus represents the unified display status for a PR in the TUI.
-type PRDisplayStatus int
+// DisplayStatus represents the unified display status for a session in the TUI.
+type DisplayStatus int
 
-// Values must match the proto PRDisplayStatus enum (which starts with UNSPECIFIED = 0).
+// Values must match the proto DisplayStatus enum (which starts with UNSPECIFIED = 0).
 const (
-	PRDisplayStatusUnspecified PRDisplayStatus = 0
-	PRDisplayStatusIdle        PRDisplayStatus = 1
-	PRDisplayStatusChecking    PRDisplayStatus = 2
-	PRDisplayStatusFailing     PRDisplayStatus = 3
-	PRDisplayStatusConflict    PRDisplayStatus = 4
-	PRDisplayStatusRejected    PRDisplayStatus = 5
-	PRDisplayStatusPassing     PRDisplayStatus = 6
-	PRDisplayStatusMerged      PRDisplayStatus = 7
-	PRDisplayStatusClosed      PRDisplayStatus = 8
-	PRDisplayStatusDraft       PRDisplayStatus = 9
-	PRDisplayStatusApproved    PRDisplayStatus = 10
+	DisplayStatusUnspecified DisplayStatus = 0
+	DisplayStatusIdle        DisplayStatus = 1
+	DisplayStatusChecking    DisplayStatus = 2
+	DisplayStatusFailing     DisplayStatus = 3
+	DisplayStatusConflict    DisplayStatus = 4
+	DisplayStatusRejected    DisplayStatus = 5
+	DisplayStatusPassing     DisplayStatus = 6
+	DisplayStatusMerged      DisplayStatus = 7
+	DisplayStatusClosed      DisplayStatus = 8
+	DisplayStatusDraft       DisplayStatus = 9
+	DisplayStatusApproved    DisplayStatus = 10
 )
 
-// PRDisplayInfo holds the computed display status and metadata for a PR.
-type PRDisplayInfo struct {
-	Status              PRDisplayStatus
+// DisplayInfo holds the computed display status and metadata for a session.
+type DisplayInfo struct {
+	Status              DisplayStatus
 	HasFailures         bool
 	HasChangesRequested bool
 	HeadSHA             string
@@ -28,27 +28,27 @@ type PRDisplayInfo struct {
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
 // and review comments. Priority: Merged > Closed > Conflict > Failing > Checking > Rejected > Approved > Passing > Idle.
-func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewComment) PRDisplayInfo {
+func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewComment) DisplayInfo {
 	if pr == nil {
-		return PRDisplayInfo{Status: PRDisplayStatusIdle}
+		return DisplayInfo{Status: DisplayStatusIdle}
 	}
 
 	// Terminal states first.
 	if pr.State == PRStateMerged {
-		return PRDisplayInfo{Status: PRDisplayStatusMerged}
+		return DisplayInfo{Status: DisplayStatusMerged}
 	}
 	if pr.State == PRStateClosed {
-		return PRDisplayInfo{Status: PRDisplayStatusClosed}
+		return DisplayInfo{Status: DisplayStatusClosed}
 	}
 
 	// Draft PRs are not ready for review — other statuses become noise.
 	if pr.Draft {
-		return PRDisplayInfo{Status: PRDisplayStatusDraft}
+		return DisplayInfo{Status: DisplayStatusDraft}
 	}
 
 	// Conflict detection.
 	if pr.Mergeable != nil && !*pr.Mergeable {
-		return PRDisplayInfo{Status: PRDisplayStatusConflict}
+		return DisplayInfo{Status: DisplayStatusConflict}
 	}
 
 	// Analyze CI checks.
@@ -68,7 +68,7 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 
 	// If all checks are complete and some failed, it's failing.
 	if hasChecks && !hasRunning && hasFailed {
-		return PRDisplayInfo{Status: PRDisplayStatusFailing}
+		return DisplayInfo{Status: DisplayStatusFailing}
 	}
 
 	// Review analysis: use each author's latest review (reviews arrive chronologically).
@@ -89,30 +89,30 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 
 	// If checks are still running, it's checking (with metadata flags for styling).
 	if hasRunning {
-		return PRDisplayInfo{Status: PRDisplayStatusChecking, HasFailures: hasFailed, HasChangesRequested: hasChangesRequested}
+		return DisplayInfo{Status: DisplayStatusChecking, HasFailures: hasFailed, HasChangesRequested: hasChangesRequested}
 	}
 
 	// Rejected takes priority — any outstanding changes_requested blocks approval.
 	if hasChangesRequested {
-		return PRDisplayInfo{Status: PRDisplayStatusRejected}
+		return DisplayInfo{Status: DisplayStatusRejected}
 	}
 
 	// When mergeable is unknown we can't confirm passing/approved — show "checking".
 	mergeableUnknown := pr.Mergeable == nil
 
 	if hasApproval && !mergeableUnknown {
-		return PRDisplayInfo{Status: PRDisplayStatusApproved}
+		return DisplayInfo{Status: DisplayStatusApproved}
 	}
 
 	// All checks green, no conflicts, no outstanding reviews = passing.
 	if hasChecks && !hasFailed && !mergeableUnknown {
-		return PRDisplayInfo{Status: PRDisplayStatusPassing}
+		return DisplayInfo{Status: DisplayStatusPassing}
 	}
 
 	// Mergeability hasn't been confirmed — show "checking" until resolved.
 	if mergeableUnknown {
-		return PRDisplayInfo{Status: PRDisplayStatusChecking, HasChangesRequested: hasChangesRequested}
+		return DisplayInfo{Status: DisplayStatusChecking, HasChangesRequested: hasChangesRequested}
 	}
 
-	return PRDisplayInfo{Status: PRDisplayStatusIdle}
+	return DisplayInfo{Status: DisplayStatusIdle}
 }

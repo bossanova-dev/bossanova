@@ -62,6 +62,9 @@ func SessionToProto(s *Session) *pb.Session {
 		BlockedReason:     s.BlockedReason,
 		CreatedAt:         timestamppb.New(s.CreatedAt),
 		UpdatedAt:         timestamppb.New(s.UpdatedAt),
+		DisplayLabel:      s.DisplayLabel,
+		DisplayIntent:     pb.DisplayIntent(s.DisplayIntent),
+		DisplaySpinner:    s.DisplaySpinner,
 	}
 	if s.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
@@ -89,6 +92,9 @@ func SessionFromProto(p *pb.Session) *Session {
 		BlockedReason:     p.BlockedReason,
 		CreatedAt:         p.CreatedAt.AsTime(),
 		UpdatedAt:         p.UpdatedAt.AsTime(),
+		DisplayLabel:      p.DisplayLabel,
+		DisplayIntent:     int32(p.DisplayIntent),
+		DisplaySpinner:    p.DisplaySpinner,
 	}
 	if p.ArchivedAt != nil {
 		t := p.ArchivedAt.AsTime()

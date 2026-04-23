@@ -13,12 +13,12 @@ import (
 )
 
 // DisplayPoller periodically polls PR status, checks, and reviews for all
-// active sessions with PRs and updates the PRTracker with computed display statuses.
+// active sessions with PRs and updates the DisplayTracker with computed display statuses.
 type DisplayPoller struct {
 	sessions db.SessionStore
 	repos    db.RepoStore
 	provider vcs.Provider
-	tracker  *status.PRTracker
+	tracker  *status.DisplayTracker
 	interval time.Duration
 	logger   zerolog.Logger
 	done     chan struct{}
@@ -29,7 +29,7 @@ func NewDisplayPoller(
 	sessions db.SessionStore,
 	repos db.RepoStore,
 	provider vcs.Provider,
-	tracker *status.PRTracker,
+	tracker *status.DisplayTracker,
 	interval time.Duration,
 	logger zerolog.Logger,
 ) *DisplayPoller {
@@ -90,7 +90,7 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 				continue
 			}
 			// Skip merged PRs — terminal state, no further polling needed.
-			if entry := p.tracker.Get(sess.ID); entry != nil && entry.Status == vcs.PRDisplayStatusMerged {
+			if entry := p.tracker.Get(sess.ID); entry != nil && entry.Status == vcs.DisplayStatusMerged {
 				continue
 			}
 			p.pollSession(ctx, repo.OriginURL, sess.ID, *sess.PRNumber)

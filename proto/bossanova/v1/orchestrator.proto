@@ -120,6 +120,11 @@ message ProxyListSessionsRequest {
 
 message ProxyListSessionsResponse {
   repeated Session sessions = 1;
+  // Field 2 (`chat_statuses`) was removed when clients stopped composing
+  // their own status — `Session.display_label/intent/spinner` now carries
+  // the rendered state directly. Tag reserved to prevent reuse.
+  reserved 2;
+  reserved "chat_statuses";
 }
 
 message ProxyGetSessionRequest {

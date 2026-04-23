@@ -61,6 +61,13 @@ type Session struct {
 	ArchivedAt        *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+
+	// Composite display fields, persisted so every client renders the same
+	// label/intent/spinner verbatim. Populated by the DisplayStatusComputer in
+	// Step 2; for now they round-trip as empty/zero values.
+	DisplayLabel   string
+	DisplayIntent  int32
+	DisplaySpinner bool
 }
 
 // Attempt represents a fix attempt within a session.

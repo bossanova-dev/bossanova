@@ -276,15 +276,15 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 }
 
 func TestApplyMergedOptimisticOverride(t *testing.T) {
-	passing := pb.PRDisplayStatus_PR_DISPLAY_STATUS_PASSING
-	merged := pb.PRDisplayStatus_PR_DISPLAY_STATUS_MERGED
-	closed := pb.PRDisplayStatus_PR_DISPLAY_STATUS_CLOSED
+	passing := pb.DisplayStatus_DISPLAY_STATUS_PASSING
+	merged := pb.DisplayStatus_DISPLAY_STATUS_MERGED
+	closed := pb.DisplayStatus_DISPLAY_STATUS_CLOSED
 
 	tests := []struct {
 		name          string
 		trackedID     string
-		serverStatus  pb.PRDisplayStatus
-		wantStatus    pb.PRDisplayStatus
+		serverStatus  pb.DisplayStatus
+		wantStatus    pb.DisplayStatus
 		wantTrackedID string
 	}{
 		{
@@ -319,14 +319,14 @@ func TestApplyMergedOptimisticOverride(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sess := &pb.Session{Id: "s1", PrDisplayStatus: tt.serverStatus}
+			sess := &pb.Session{Id: "s1", DisplayStatus: tt.serverStatus}
 			h := HomeModel{
 				sessions:           []*pb.Session{sess},
 				mergedOptimisticID: tt.trackedID,
 			}
 			h.applyMergedOptimisticOverride()
-			if got := sess.PrDisplayStatus; got != tt.wantStatus {
-				t.Errorf("session PrDisplayStatus = %v, want %v", got, tt.wantStatus)
+			if got := sess.DisplayStatus; got != tt.wantStatus {
+				t.Errorf("session DisplayStatus = %v, want %v", got, tt.wantStatus)
 			}
 			if h.mergedOptimisticID != tt.wantTrackedID {
 				t.Errorf("mergedOptimisticID = %q, want %q", h.mergedOptimisticID, tt.wantTrackedID)

@@ -101,6 +101,13 @@ type UpdateSessionParams struct {
 	AttemptCount      *int
 	BlockedReason     **string
 	ArchivedAt        **string // ISO 8601 string or nil
+
+	// Composite display fields, updated by the DisplayStatusComputer (Step 2).
+	// Pointer-typed so a nil value means "don't touch" and a zero value means
+	// "set to empty/zero" — matching the rest of UpdateSessionParams.
+	DisplayLabel   *string
+	DisplayIntent  *int32
+	DisplaySpinner *bool
 }
 
 // SessionWithRepo pairs a Session with its owning repo's display name, so

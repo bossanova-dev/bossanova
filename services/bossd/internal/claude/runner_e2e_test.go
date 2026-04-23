@@ -161,9 +161,12 @@ func TestE2E_ClaudeRunner_RingBufferRetention(t *testing.T) {
 }
 
 func TestE2E_ClaudeRunner_MultiSubscriber(t *testing.T) {
+	// START_DELAY_MS lets subscribers register before the first emission;
+	// otherwise line 1 can be broadcast before Subscribe is called.
 	r, _ := runnerWithFakeClaude(t, map[string]string{
-		"FAKE_CLAUDE_LINES":    "5",
-		"FAKE_CLAUDE_DELAY_MS": "050",
+		"FAKE_CLAUDE_LINES":          "5",
+		"FAKE_CLAUDE_DELAY_MS":       "050",
+		"FAKE_CLAUDE_START_DELAY_MS": "500",
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

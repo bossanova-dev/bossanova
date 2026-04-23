@@ -95,6 +95,36 @@ func (s *SQLiteSessionStore) ListActiveWithRepo(ctx context.Context, repoID stri
 	return out, rows.Err()
 }
 
+// ListWithRepo returns both active and archived sessions with their repo
+// display name populated. Used by the upstream sync adapter so archive
+// transitions reach bosso (instead of an archived session just dropping out
+// of the snapshot, which looks identical to deletion to the receiver).
+func (s *SQLiteSessionStore) ListWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error) {
+	query := sessionSelectWithRepoSQL
+	args := []any{}
+	if repoID != "" {
+		query += " WHERE s.repo_id = ?"
+		args = append(args, repoID)
+	}
+	query += " ORDER BY s.created_at DESC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions with repo: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*SessionWithRepo
+	for rows.Next() {
+		sess, repoName, err := scanSessionWithRepo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName})
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
 	if repoID == "" {
 		query := sessionSelectSQL + " WHERE s.archived_at IS NOT NULL ORDER BY s.created_at DESC"

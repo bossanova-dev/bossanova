@@ -38,6 +38,10 @@ func (m *mockSessionStore) ListActiveWithRepo(ctx context.Context, repoID string
 	return nil, nil
 }
 
+func (m *mockSessionStore) ListWithRepo(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	return nil, nil
+}
+
 func (m *mockSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
 	return nil, nil
 }

@@ -79,6 +79,14 @@ func (m *mockSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*d
 	return result, nil
 }
 
+func (m *mockSessionStore) ListWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	var result []*db.SessionWithRepo
+	for _, s := range m.sessions {
+		result = append(result, &db.SessionWithRepo{Session: s})
+	}
+	return result, nil
+}
+
 func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }

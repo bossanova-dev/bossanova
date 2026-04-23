@@ -367,6 +367,74 @@ func TestSessionStore_ListActiveWithRepo(t *testing.T) {
 	}
 }
 
+// TestSessionStore_ListWithRepo pins the sync-adapter's contract: both
+// active and archived sessions must come back, each paired with its repo
+// display name. If archived sessions are missing from this list the
+// orchestrator's delete-not-in pass drops them instead of recording the
+// archive transition.
+func TestSessionStore_ListWithRepo(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo, err := repoStore.Create(ctx, CreateRepoParams{
+		DisplayName:       "repo-a",
+		LocalPath:         "/tmp/a",
+		OriginURL:         "https://github.com/test/a.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/wt/a",
+	})
+	if err != nil {
+		t.Fatalf("create repo: %v", err)
+	}
+
+	active, err := store.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "active", WorktreePath: "/tmp/wt/a", BranchName: "a", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("create active: %v", err)
+	}
+	archived, err := store.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "arch", WorktreePath: "/tmp/wt/b", BranchName: "b", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("create archived: %v", err)
+	}
+	if err := store.Archive(ctx, archived.ID); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	rows, err := store.ListWithRepo(ctx, "")
+	if err != nil {
+		t.Fatalf("list with repo: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len = %d, want 2 (active + archived)", len(rows))
+	}
+	var sawActive, sawArchived bool
+	for _, r := range rows {
+		if r.RepoDisplayName != "repo-a" {
+			t.Errorf("display = %q, want repo-a", r.RepoDisplayName)
+		}
+		switch r.ID {
+		case active.ID:
+			sawActive = true
+			if r.ArchivedAt != nil {
+				t.Error("active session has archived_at set")
+			}
+		case archived.ID:
+			sawArchived = true
+			if r.ArchivedAt == nil {
+				t.Error("archived session missing archived_at")
+			}
+		}
+	}
+	if !sawActive || !sawArchived {
+		t.Errorf("missing session: active=%v archived=%v", sawActive, sawArchived)
+	}
+}
+
 func TestSessionStore_ArchiveResurrect(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

@@ -6,6 +6,7 @@ package statusdetect
 import (
 	"bytes"
 	"regexp"
+	"unicode/utf8"
 )
 
 // cursorFwdRe matches CSI cursor-forward sequences: ESC[nC (move right n columns).
@@ -107,11 +108,77 @@ func stripTipLines(data []byte) []byte {
 	return tipLineRe.ReplaceAll(data, nil)
 }
 
+// userPromptLineRe matches lines that are the user's previously-submitted
+// prompt rendered in conversation history. Claude Code prefixes these with
+// "❯ " (same glyph as the AskUserQuestion selector). Any "?" in the user's
+// own words must not trigger question detection -- only Claude's questions
+// should fire the state.
+var userPromptLineRe = regexp.MustCompile(`(?m)^[ ]*❯ [^\n]*`)
+
+// stripUserPromptLines removes the user's prompt history lines so a "?" the
+// user typed (e.g. "what does this do?") doesn't trigger question detection.
+func stripUserPromptLines(data []byte) []byte {
+	return userPromptLineRe.ReplaceAll(data, nil)
+}
+
+// optionStopMarkers are the leading runes that signal the end of an
+// AskUserQuestion option block. If a non-blank line after the selector starts
+// (after trimming spaces) with one of these, it's not an option -- it's
+// Claude conversation, tool output, a spinner, or another prompt entry.
+var optionStopMarkers = map[rune]bool{
+	'⎿': true, // tool output continuation (U+23BF)
+	'⏺': true, // Claude response marker (U+23FA)
+	'·': true, // working spinner (U+00B7)
+	'✻': true, // thinking spinner (U+273B)
+	'❯': true, // another prompt entry (U+276F)
+}
+
+// countConsecutiveOptionLines counts how many consecutive indented option
+// lines follow a selector. Walks forward line-by-line, skipping blank lines
+// (real prompts may have blank-separated option blocks). Returns:
+//   - count: number of valid consecutive option lines
+//   - brokenByMarker: true if the run was terminated by a Claude marker
+//     (⎿, ⏺, ·, ✻, ❯), which signals the candidate selector is not a real
+//     prompt -- it's user prompt history followed by Claude conversation.
+//
+// A non-indented line (like a "────" divider) or EOF terminates the run
+// without setting brokenByMarker -- those are normal AskUserQuestion
+// terminators.
+func countConsecutiveOptionLines(data []byte) (count int, brokenByMarker bool) {
+	for len(data) > 0 {
+		nl := bytes.IndexByte(data, '\n')
+		var line []byte
+		if nl < 0 {
+			line = data
+			data = nil
+		} else {
+			line = data[:nl]
+			data = data[nl+1:]
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		trimmed := bytes.TrimLeft(line, " ")
+		if r, _ := utf8.DecodeRune(trimmed); optionStopMarkers[r] {
+			return count, true
+		}
+		if !optionRe.Match(line) {
+			return count, false
+		}
+		count++
+	}
+	return count, false
+}
+
 // HasQuestionPrompt checks whether the last portion of PTY output looks like
 // a Claude Code question prompt. It detects three patterns:
-//  1. AskUserQuestion/permission prompt: selector cursor + indented options
+//  1. AskUserQuestion/permission prompt: selector cursor + consecutive options
 //  2. Conversational question: Claude response ending with ?
 //  3. Fallback: trailing "?" in recent output when response marker is outside the tail
+//
+// All three patterns require a "?" somewhere in the cleaned tail -- a real
+// question always has one (in the question text above the selector, or in
+// the response itself).
 func HasQuestionPrompt(data []byte) bool {
 	if len(data) == 0 {
 		return false
@@ -121,12 +188,29 @@ func HasQuestionPrompt(data []byte) bool {
 		return false
 	}
 
-	// Pattern 1: AskUserQuestion -- selector + 2+ indented option lines.
 	// Only check the last ~30 lines (enough for the question UI at screen bottom).
 	tail := LastNLines(clean, 30)
-	if selectorRe.Match(tail) {
-		if matches := optionRe.FindAll(tail, -1); len(matches) >= 2 {
-			return true
+
+	// Pattern 1: AskUserQuestion / permission prompt -- selector + consecutive
+	// indented option lines. Requires a "?" somewhere in the cleaned tail (the
+	// question text above the selector). Without that gate, the user's own
+	// previously-submitted prompt (rendered as "❯ <text>" in conversation
+	// history) gets mistaken for the selector and surrounding indented lines
+	// like "  Read 4 files..." or "  ⎿  Tip: ..." get mistaken for options.
+	cleanedTail := stripUserPromptLines(stripTipLines(stripToolOutput(tail)))
+	if bytes.ContainsRune(cleanedTail, '?') {
+		selectorMatches := selectorRe.FindAllIndex(tail, -1)
+		// Iterate newest-first: AskUserQuestion is always at the bottom of the pane.
+		for i := len(selectorMatches) - 1; i >= 0; i-- {
+			loc := selectorMatches[i]
+			lineEnd := bytes.IndexByte(tail[loc[1]:], '\n')
+			if lineEnd < 0 {
+				continue
+			}
+			count, broken := countConsecutiveOptionLines(tail[loc[1]+lineEnd+1:])
+			if !broken && count >= 1 {
+				return true
+			}
 		}
 	}
 
@@ -147,8 +231,9 @@ func HasQuestionPrompt(data []byte) bool {
 	// after the response text. With wide terminals or re-renders, this
 	// post-response content can push the marker out of the tail buffer.
 	// Check if any line in the last 30 lines ends with "?" (excluding tool
-	// output blocks -- system text like the interrupt artifact, not Claude's).
-	if trailingQuestionRe.Match(stripTipLines(stripToolOutput(tail))) {
+	// output, tip lines, and the user's prompt history -- none of those are
+	// Claude's words).
+	if trailingQuestionRe.Match(stripUserPromptLines(stripTipLines(stripToolOutput(tail)))) {
 		return true
 	}
 

@@ -126,7 +126,7 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 	factory := &mockTmuxFactory{
 		sessions: map[string]bool{tmuxName: true},
 		captures: map[string]string{
-			tmuxName: "  ❯ Allow\n    Allow once\n    Deny\n",
+			tmuxName: "  Allow Claude to run this command?\n\n  ❯ Allow\n    Allow once\n    Deny\n",
 		},
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
@@ -321,7 +321,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	factory := &mockTmuxFactory{
 		sessions: map[string]bool{tmuxName: true},
 		captures: map[string]string{
-			tmuxName: "  ❯ Allow\n    Allow once\n    Deny\n",
+			tmuxName: "  Allow Claude to run this command?\n\n  ❯ Allow\n    Allow once\n    Deny\n",
 		},
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))

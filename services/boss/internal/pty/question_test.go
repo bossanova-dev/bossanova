@@ -16,7 +16,7 @@ func TestStripANSI_Delegation(t *testing.T) {
 
 func TestHasQuestionPrompt_Delegation(t *testing.T) {
 	// AskUserQuestion prompt should be detected.
-	data := "  ❯ Allow\n    Allow once\n    Deny\n"
+	data := "  Claude wants to run a command. Allow?\n\n  ❯ Allow\n    Allow once\n    Deny\n"
 	if !hasQuestionPrompt([]byte(data)) {
 		t.Error("hasQuestionPrompt delegation failed: should detect question")
 	}

@@ -41,10 +41,13 @@ type sessionListerAdapter struct {
 	sessions db.SessionStore
 }
 
-// ListSessions returns all active (non-archived) sessions as protobuf,
+// ListSessions returns every session (active and archived) as protobuf,
 // populated with each session's repo display name via a single JOIN query.
+// Archived sessions are included so the orchestrator sees the archive
+// transition — filtering to active only would make an archived session
+// look indistinguishable from a deleted one at the receiver.
 func (a *sessionListerAdapter) ListSessions(ctx context.Context) ([]*bossanovav1.Session, error) {
-	rows, err := a.sessions.ListActiveWithRepo(ctx, "")
+	rows, err := a.sessions.ListWithRepo(ctx, "")
 	if err != nil {
 		return nil, err
 	}

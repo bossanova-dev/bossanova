@@ -61,7 +61,7 @@ func TestHasQuestionPrompt(t *testing.T) {
 		},
 		{
 			name: "permission prompt",
-			data: `  Claude wants to run a command:
+			data: `  Claude wants to run a command. Allow?
 
   ❯ Allow
     Allow once
@@ -440,7 +440,7 @@ func TestLastNLines(t *testing.T) {
 }
 
 func TestHasQuestionPrompt_ExactlyTwoOptions(t *testing.T) {
-	data := `Choose one:
+	data := `Choose one?
 
   ❯ First option
     Second option
@@ -461,7 +461,7 @@ func TestHasQuestionPrompt_OnlyOneOption(t *testing.T) {
 }
 
 func TestHasQuestionPrompt_ThreeOptions(t *testing.T) {
-	data := `  Choose one:
+	data := `  Choose one?
 
   ❯ First option
     Second option
@@ -510,5 +510,82 @@ func TestLastNLines_SingleCharacterBeforeNewline(t *testing.T) {
 	want := []byte("a\n")
 	if !bytes.Equal(got, want) {
 		t.Errorf("LastNLines(\"a\\n\", 1) = %q, want %q", got, want)
+	}
+}
+
+// TestHasQuestionPrompt_FalsePositiveUserPromptWithSummaries reproduces the
+// user-reported sticky-question shape: the user's previous prompt ("❯ yes fix
+// both ...") is in the captured pane along with summary lines like "Read 4
+// files..." and "Searched for 2 patterns..." and several Bash tool blocks.
+// No "?" appears anywhere in Claude's words. Must NOT detect a question.
+func TestHasQuestionPrompt_FalsePositiveUserPromptWithSummaries(t *testing.T) {
+	data := "✻ Cogitated for 12m 24s\n" +
+		"\n" +
+		"❯ yes fix both of those issues and dig into the socket issue too\n" +
+		"\n" +
+		"  Read 4 files, listed 1 directory (ctrl+o to expand)\n" +
+		"\n" +
+		"⏺ Let me look at how the driver sends keys and how the boss process connects to the daemon.\n" +
+		"\n" +
+		"⏺ Bash(wc -l services/boss/internal/tuidriver/*.go)\n" +
+		"  ⎿  Error: Exit code 1\n" +
+		"     (eval):1: no matches found: lib/bossalib/tuidriver/*.go\n" +
+		"\n" +
+		"  Searched for 2 patterns, read 2 files (ctrl+o to expand)\n" +
+		"\n" +
+		"⏺ Bash(go test -count=10 -run=TestTUI_AttachView_BackKey -timeout 120s ./internal/tuitest)\n" +
+		"  ⎿  ok         github.com/recurser/boss/internal/tuitest       6.373s\n" +
+		"\n" +
+		"⏺ Bash(go test -race -count=1 -timeout 300s ./internal/tuitest/)\n" +
+		"  ⎿  ok         github.com/recurser/boss/internal/tuitest       35.5\n" +
+		"     (1m 10s · timeout 10m)\n" +
+		"\n" +
+		"· Beboppin'… (3m 21s · ↓ 7.1k tokens · thought for 1s)\n" +
+		"  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work\n"
+	if HasQuestionPrompt([]byte(data)) {
+		t.Error("should NOT detect question when user's prompt is in scrollback and no '?' appears in Claude's words")
+	}
+}
+
+// TestHasQuestionPrompt_NoQuestionMarkAnywhere covers the general principle:
+// if there's no "?" anywhere in the cleaned tail, this can't be a question --
+// regardless of how many indented lines or selectors appear.
+func TestHasQuestionPrompt_NoQuestionMarkAnywhere(t *testing.T) {
+	data := "❯ run the build\n" +
+		"\n" +
+		"  Read 5 files\n" +
+		"  Edited 2 files\n" +
+		"  Ran 3 commands\n" +
+		"\n" +
+		"⏺ Done.\n"
+	if HasQuestionPrompt([]byte(data)) {
+		t.Error("should NOT detect question when no '?' appears anywhere in the cleaned tail")
+	}
+}
+
+// TestHasQuestionPrompt_UserPromptWithQuestionMark covers the case where the
+// user's submitted prompt contains a "?" (e.g. "what does this do?"). The
+// user's own "?" must not contribute to detection -- only Claude's words.
+func TestHasQuestionPrompt_UserPromptWithQuestionMark(t *testing.T) {
+	data := "❯ what does this do?\n" +
+		"\n" +
+		"⏺ It runs the build pipeline and uploads the artifacts.\n"
+	if HasQuestionPrompt([]byte(data)) {
+		t.Error("should NOT detect question when user's prompt has '?' but Claude's response does not")
+	}
+}
+
+// TestHasQuestionPrompt_OptionsBrokenByClaudeMarker guards the consecutive-
+// options counter: if the lines after the selector are interrupted by a
+// Claude marker (⏺/⎿/·/✻), the option count must stop there.
+func TestHasQuestionPrompt_OptionsBrokenByClaudeMarker(t *testing.T) {
+	data := "What did we do?\n" +
+		"\n" +
+		"❯ yes do that\n" +
+		"  one summary line\n" +
+		"⏺ Working on it now.\n" +
+		"  another summary line\n"
+	if HasQuestionPrompt([]byte(data)) {
+		t.Error("should NOT detect question when ⏺ marker breaks the option run after the selector")
 	}
 }

@@ -131,6 +131,16 @@ func (m *reconcileMockSessionStore) ListActiveWithRepo(_ context.Context, repoID
 	return result, nil
 }
 
+func (m *reconcileMockSessionStore) ListWithRepo(_ context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	var result []*db.SessionWithRepo
+	for _, s := range m.sessions {
+		if repoID == "" || s.RepoID == repoID {
+			result = append(result, &db.SessionWithRepo{Session: s})
+		}
+	}
+	return result, nil
+}
+
 func (m *reconcileMockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }

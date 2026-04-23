@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -159,31 +158,39 @@ func newAutopilotHarness(t *testing.T, fakeClaudeEnv map[string]string, opts ...
 	// workflow leaves the host service's claude subprocess running — it
 	// continues to write handoff files into the temp tree after the test
 	// returns, causing RemoveAll to report "directory not empty" on CI.
+	//
+	// Each factory call gets its own sub-context; cleanup cancels those
+	// contexts rather than poking cmd.Process directly. Reading cmd.Process
+	// from the cleanup goroutine races with os/exec.Cmd.Start() writing it
+	// in the CreateAttempt gRPC handler (which may still be in flight when
+	// the plugin binary is killed) — see the -race report on
+	// TestE2E_Autopilot_Cancel. Context cancellation hands termination back
+	// to os/exec's internal goroutine, which is sequenced safely with Start.
 	var (
-		trackedMu   sync.Mutex
-		trackedCmds []*exec.Cmd
+		trackedMu     sync.Mutex
+		trackedCancel []context.CancelFunc
 	)
 	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, fakeClaude, args...)
+		subCtx, cancel := context.WithCancel(ctx)
+		cmd := exec.CommandContext(subCtx, fakeClaude, args...)
 		cmd.Env = append(os.Environ(), baseEnv...)
+		// claude.Runner overrides cmd.Cancel to Signal(SIGTERM), which
+		// fake_claude.sh traps for immediate exit without writing the
+		// handoff file. Cancelling subCtx drives that path.
 		trackedMu.Lock()
-		trackedCmds = append(trackedCmds, cmd)
+		trackedCancel = append(trackedCancel, cancel)
 		trackedMu.Unlock()
 		return cmd
 	}
 	// Register before any other cleanup that might depend on process exit so
 	// this runs after the plugin binary kill (LIFO) but before sqlDB.Close
-	// and t.TempDir removal. SIGTERM is caught by fake_claude.sh (trap TERM)
-	// and causes immediate exit without writing the handoff file.
+	// and t.TempDir removal.
 	t.Cleanup(func() {
 		trackedMu.Lock()
-		cmds := append([]*exec.Cmd(nil), trackedCmds...)
+		cancels := append([]context.CancelFunc(nil), trackedCancel...)
 		trackedMu.Unlock()
-		for _, cmd := range cmds {
-			if cmd.Process == nil {
-				continue
-			}
-			_ = cmd.Process.Signal(syscall.SIGTERM)
+		for _, c := range cancels {
+			c()
 		}
 		// Brief grace period so the signal handlers run and the runner's
 		// Wait goroutines observe the exit + close log files before RemoveAll.

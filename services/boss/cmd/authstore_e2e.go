@@ -17,15 +17,18 @@ import (
 // print to stderr during tests.
 var errE2ENoTokens = errors.New("e2e memory store: no tokens")
 
-// resolveE2ETokenStore returns an in-memory TokenStore seeded from the
-// BOSS_AUTH_E2E_EMAIL env var when set. This lets the tuitest harness fake
-// a logged-in user in the boss subprocess without touching the OS keychain.
-// Only compiled into builds tagged `e2e` — the production variant in
-// authstore_prod.go always returns nil.
+// resolveE2ETokenStore returns an in-memory TokenStore. When
+// BOSS_AUTH_E2E_EMAIL is set, the store is pre-seeded so the boss
+// subprocess behaves as if that user is already logged in; otherwise an
+// empty store is returned and the CLI behaves as "not logged in". Either
+// way, e2e-tagged builds never reach NewKeychainStore — which would pop
+// the macOS "allow access to Bossanova keychain" prompt on every test
+// run. The production variant in authstore_prod.go always returns nil
+// so the CLI uses the real OS keychain as intended.
 func resolveE2ETokenStore() auth.TokenStore {
 	email := os.Getenv("BOSS_AUTH_E2E_EMAIL")
 	if email == "" {
-		return nil
+		return &memoryTokenStore{}
 	}
 	return &memoryTokenStore{
 		tokens: &auth.Tokens{

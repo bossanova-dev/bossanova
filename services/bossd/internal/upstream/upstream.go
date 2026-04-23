@@ -48,7 +48,8 @@ const defaultOrchestratorURL = "https://orchestrator.bossanova.dev"
 // Unset BOSSD_ORCHESTRATOR_URL uses defaultOrchestratorURL; an explicitly
 // empty value opts out and returns nil (local-only mode). If BOSSD_USER_JWT
 // is not set, falls back to reading the access token from the OS keychain
-// (shared with "boss login").
+// (shared with "boss login"). If BOSSD_DAEMON_ID is not set, falls back to
+// the machine hostname so registration succeeds out of the box.
 func ConfigFromEnv() *Config {
 	url, set := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
 	if !set {
@@ -65,9 +66,14 @@ func ConfigFromEnv() *Config {
 		jwt = loadTokenFromKeychain()
 	}
 
+	daemonID := os.Getenv("BOSSD_DAEMON_ID")
+	if daemonID == "" {
+		daemonID = hostname
+	}
+
 	return &Config{
 		OrchestratorURL: url,
-		DaemonID:        os.Getenv("BOSSD_DAEMON_ID"),
+		DaemonID:        daemonID,
 		Hostname:        hostname,
 		UserJWT:         jwt,
 	}
@@ -222,10 +228,17 @@ const (
 
 // Manager coordinates the daemon's upstream connection to the orchestrator.
 type Manager struct {
-	client   bossanovav1connect.OrchestratorServiceClient
-	config   Config
-	logger   zerolog.Logger
-	sessions SessionLister
+	client     bossanovav1connect.OrchestratorServiceClient
+	httpClient *http.Client // retained so Stop can close idle connections
+	config     Config
+	logger     zerolog.Logger
+	sessions   SessionLister
+
+	// tokenLoader returns a fresh JWT from the OS keychain. It is invoked
+	// on every register() to pick up tokens that "boss login" may have
+	// refreshed externally. Overridable for tests so the test binary
+	// doesn't prompt for macOS keychain access.
+	tokenLoader func() string
 
 	mu           sync.RWMutex
 	connected    bool
@@ -244,17 +257,21 @@ func NewManager(cfg Config, logger zerolog.Logger, sessions SessionLister) *Mana
 	client := bossanovav1connect.NewOrchestratorServiceClient(httpClient, cfg.OrchestratorURL)
 
 	return &Manager{
-		client:   client,
-		config:   cfg,
-		logger:   logger.With().Str("component", "upstream").Logger(),
-		sessions: sessions,
-		stopCh:   make(chan struct{}),
-		done:     make(chan struct{}),
-		syncDone: make(chan struct{}),
+		client:      client,
+		httpClient:  httpClient,
+		config:      cfg,
+		logger:      logger.With().Str("component", "upstream").Logger(),
+		sessions:    sessions,
+		tokenLoader: loadTokenFromKeychain,
+		stopCh:      make(chan struct{}),
+		done:        make(chan struct{}),
+		syncDone:    make(chan struct{}),
 	}
 }
 
 // newManagerWithClient creates a Manager with a custom client (for testing).
+// tokenLoader is left nil so tests don't talk to the real OS keychain —
+// register() uses whatever UserJWT the caller put on cfg.
 func newManagerWithClient(cfg Config, client bossanovav1connect.OrchestratorServiceClient, logger zerolog.Logger, sessions SessionLister) *Manager {
 	return &Manager{
 		client:   client,
@@ -323,11 +340,16 @@ func (m *Manager) stopLoops() {
 }
 
 // Stop terminates the heartbeat and sync loops and waits for them to finish.
+// It also closes any idle HTTP connections so the http2 readLoop goroutines
+// started by the transport during register/heartbeat don't outlive shutdown.
 func (m *Manager) Stop() {
 	m.stopLoops()
 	m.mu.Lock()
 	m.connected = false
 	m.mu.Unlock()
+	if m.httpClient != nil {
+		m.httpClient.CloseIdleConnections()
+	}
 	m.logger.Info().Msg("upstream connection stopped")
 }
 
@@ -353,9 +375,13 @@ func (m *Manager) NotifyLogout() {
 
 // register calls RegisterDaemon with the user's JWT.
 func (m *Manager) register(ctx context.Context) error {
-	// Refresh JWT from keychain if possible (token may have expired since startup).
-	if jwt := loadTokenFromKeychain(); jwt != "" {
-		m.config.UserJWT = jwt
+	// Refresh JWT from keychain if possible (token may have expired since
+	// startup). tokenLoader is nil in tests so we don't prompt the OS
+	// keychain — tests pre-seed cfg.UserJWT directly.
+	if m.tokenLoader != nil {
+		if jwt := m.tokenLoader(); jwt != "" {
+			m.config.UserJWT = jwt
+		}
 	}
 
 	req := connect.NewRequest(&pb.RegisterDaemonRequest{

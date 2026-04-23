@@ -27,6 +27,14 @@ MUTATE_DIR := .mutate
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
 export CGO_CFLAGS ?= -Wno-overriding-deployment-version
 
+# Codesign identity for local macOS builds. Default '-' is ad-hoc, which produces
+# an unstable code identity so macOS keychain "Always Allow" entries don't
+# survive rebuilds. Override with a stable self-signed identity (e.g.
+# `export CODESIGN_IDENTITY=bossanova.dev`) to make Keychain ACLs persist.
+# CI release builds sign with an Apple Developer ID in the release workflow,
+# which supersedes this variable.
+CODESIGN_IDENTITY ?= -
+
 # Version info injected via ldflags
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -139,11 +147,11 @@ build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
 $(BIN_DIR)/boss: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
-	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/boss; fi
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
 $(BIN_DIR)/bossd: $(GEN_STAMP) copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
-	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/bossd; fi
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
 
 ifneq ($(wildcard services/bosso/go.mod),)
 $(BIN_DIR)/bosso: $(GEN_STAMP)
@@ -254,11 +262,11 @@ copy-skills:
 ## Per-module build targets (no generate dep — CI uses committed gen code)
 build-boss: copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
-	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/boss; fi
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
 build-bossd: copy-skills
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
-	@if [ "$$(uname)" = "Darwin" ]; then codesign -s - $(BIN_DIR)/bossd; fi
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
 
 ifneq ($(wildcard services/bosso/go.mod),)
 build-bosso:

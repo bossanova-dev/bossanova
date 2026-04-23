@@ -308,6 +308,10 @@ func TestConfigFromEnvUsesProductionDefaultWhenUnset(t *testing.T) {
 			t.Errorf("restore env: %v", err)
 		}
 	})
+	// Short-circuit the keychain read path — otherwise macOS pops the
+	// "allow access to Bossanova keychain" prompt on every test run. A
+	// non-empty BOSSD_USER_JWT skips loadTokenFromKeychain entirely.
+	t.Setenv("BOSSD_USER_JWT", "test-jwt")
 
 	cfg := ConfigFromEnv()
 	if cfg == nil {
@@ -335,6 +339,31 @@ func TestConfigFromEnvReadsValues(t *testing.T) {
 	}
 	if cfg.UserJWT != "my-jwt" {
 		t.Fatalf("expected JWT 'my-jwt', got %q", cfg.UserJWT)
+	}
+}
+
+func TestConfigFromEnvDefaultsDaemonIDToHostname(t *testing.T) {
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "https://api.example.com")
+	t.Setenv("BOSSD_DAEMON_ID", "")
+	t.Setenv("BOSSD_USER_JWT", "my-jwt")
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	if hostname == "" {
+		t.Skip("hostname unavailable on this machine")
+	}
+
+	cfg := ConfigFromEnv()
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.DaemonID != hostname {
+		t.Fatalf("expected daemon ID to default to hostname %q, got %q", hostname, cfg.DaemonID)
+	}
+	if cfg.Hostname != hostname {
+		t.Fatalf("expected hostname %q, got %q", hostname, cfg.Hostname)
 	}
 }
 

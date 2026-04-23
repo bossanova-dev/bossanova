@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0](https://github.com/recurser/bossanova/compare/v1.6.2...v1.7.0) (2026-04-23)
+
+### Features
+
+* **boss,web:** [[#157](https://github.com/recurser/bossanova/issues/157)] cut clients over to composite display fields ([193c317](https://github.com/recurser/bossanova/commit/193c3174569997cebfe897871f51ef9982d70ded))
+* **bossalib:** [[#157](https://github.com/recurser/bossanova/issues/157)] extract displaystatus.Compute shared algorithm ([505cded](https://github.com/recurser/bossanova/commit/505cded372754bf6ce8a81e7995206da398116f1))
+* **bossd,bosso:** [[#157](https://github.com/recurser/bossanova/issues/157)] sync composite display fields to sessions_registry ([c0d1e04](https://github.com/recurser/bossanova/commit/c0d1e0478a21ab4e3f748ef7960e9b9917618f64))
+* **bossd:** [[#157](https://github.com/recurser/bossanova/issues/157)] add DisplayStatusComputer and wire writers ([b6b1c6d](https://github.com/recurser/bossanova/commit/b6b1c6d3d01c161e7d7204dd8f865dbf4fba7d77))
+* **proto,db:** [[#157](https://github.com/recurser/bossanova/issues/157)] add composite display fields (label, intent, spinner) ([1e38850](https://github.com/recurser/bossanova/commit/1e388506134ded761c2c629b4f7424a97f5e9127))
+* **web:** [[#157](https://github.com/recurser/bossanova/issues/157)] align sessions table columns and status with TUI ([0a81284](https://github.com/recurser/bossanova/commit/0a81284371b77782a423b99a63d434b0d67a5955))
+* **web:** [[#157](https://github.com/recurser/bossanova/issues/157)] brand header with logo and primary color ([3f14796](https://github.com/recurser/bossanova/commit/3f1479624a2d9d9e9f085ba9840a7dd04450a362)), closes [#1A9FFF](https://github.com/recurser/bossanova/issues/1A9FFF)
+* **web:** [[#157](https://github.com/recurser/bossanova/issues/157)] polish layout chrome and unify session status display ([57b7e46](https://github.com/recurser/bossanova/commit/57b7e46706e9629d1a53b48b2c9d4a7c2ff6d553)), closes [#root](https://github.com/recurser/bossanova/issues/root)
+
+### Bug Fixes
+
+* **bossd:** add missing ListWithRepo to mockSessionStore in poller test ([f9ebf24](https://github.com/recurser/bossanova/commit/f9ebf248ed273b75ff9d3157f041f5b51f2832c7))
+* **bossd:** stabilize flaky TestE2E_ClaudeRunner_MultiSubscriber ([3dafa7a](https://github.com/recurser/bossanova/commit/3dafa7a8024ef1ce5e489a4501b10c01b93bb929))
+* **statusdetect:** [[#154](https://github.com/recurser/bossanova/issues/154)] avoid redundant DB lookup in pollOnce ([11da8a8](https://github.com/recurser/bossanova/commit/11da8a8f04f52f594b5fe309e3c5d936c0689229))
+* **statusdetect:** [[#154](https://github.com/recurser/bossanova/issues/154)] report WORKING (not IDLE) when question is suppressed ([4390a26](https://github.com/recurser/bossanova/commit/4390a26747d09b7e66ea72d6c83d59017570c829))
+* **statusdetect:** [[#154](https://github.com/recurser/bossanova/issues/154)] report WORKING for suppressed question at bootstrap ([5a1dd83](https://github.com/recurser/bossanova/commit/5a1dd837f8bd7140b3a9af85c0caeb1a19e918ff))
+* **statusdetect:** [[#154](https://github.com/recurser/bossanova/issues/154)] suppress stale ? question after user has answered ([b76a960](https://github.com/recurser/bossanova/commit/b76a9607898b6d49fae35a2fb11aeeaa682c2462))
+* **web:** [[#157](https://github.com/recurser/bossanova/issues/157)] drop useless case clauses in mapIntent ([4c19b05](https://github.com/recurser/bossanova/commit/4c19b05ae2e4a7253a3085a39dd0aa6f20b3f843))
+* **web:** [[#157](https://github.com/recurser/bossanova/issues/157)] populate composite display fields in test fixtures ([3d05bf9](https://github.com/recurser/bossanova/commit/3d05bf9e638b0ac98bdd8727e5b60303a0bb0d21))
+
 ## [1.6.2](https://github.com/recurser/bossanova/compare/v1.6.1...v1.6.2) (2026-04-23)
 
 ### Bug Fixes

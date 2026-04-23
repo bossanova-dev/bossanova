@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.1](https://github.com/recurser/bossanova/compare/v1.6.0...v1.6.1) (2026-04-23)
+
+### Bug Fixes
+
+* **bossd:** default daemon_id to hostname when BOSSD_DAEMON_ID is unset ([752941a](https://github.com/recurser/bossanova/commit/752941a7edc1730a462359883aa6ea31fb13c602))
+* **tests:** unblock CI failures + stop keychain prompts ([9e47a6a](https://github.com/recurser/bossanova/commit/9e47a6a871504893699cdf54ab4ed6c364199334))
+* **web:** persist session across refresh by forcing AuthKit devMode ([84a77e8](https://github.com/recurser/bossanova/commit/84a77e81e2bc9bbb5e7110b3cdc672ff85758ca7))
+
 ## [1.6.0](https://github.com/recurser/bossanova/compare/v1.5.0...v1.6.0) (2026-04-22)
 
 ### Features

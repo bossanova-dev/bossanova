@@ -72,18 +72,17 @@ func passphrasePath() (string, error) {
 // loadOrCreatePassphrase reads the passphrase file at path, or generates a
 // new random passphrase and writes it with mode 0600 on first use.
 //
-// Creation uses O_CREATE|O_EXCL so two processes (e.g. boss + bossd) racing
-// on a fresh install can't each write a different passphrase and silently
-// overwrite one another — the loser of the race falls back to reading the
-// winner's value.
+// The passphrase is written to a sibling temp file and then atomically
+// link(2)-ed into place. Two processes (e.g. boss + bossd) racing on a fresh
+// install can't each write a different passphrase and silently overwrite one
+// another — the loser of the link race falls back to reading the winner's
+// value. A concurrent reader never observes an empty file at path because
+// the file only appears once its contents are fully written.
 func loadOrCreatePassphrase(path string) (string, error) {
-	if data, err := os.ReadFile(path); err == nil {
-		if len(data) == 0 {
-			return "", fmt.Errorf("keyring passphrase file %s is empty", path)
-		}
-		return string(data), nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("read keyring passphrase: %w", err)
+	if pass, ok, err := readExisting(path); err != nil {
+		return "", err
+	} else if ok {
+		return pass, nil
 	}
 
 	buf := make([]byte, 32)
@@ -92,29 +91,57 @@ func loadOrCreatePassphrase(path string) (string, error) {
 	}
 	passphrase := hex.EncodeToString(buf)
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create keyring passphrase dir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	tmp, err := os.CreateTemp(dir, ".keyring.key.*")
 	if err != nil {
+		return "", fmt.Errorf("create keyring passphrase temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("chmod keyring passphrase temp: %w", err)
+	}
+	if _, err := tmp.Write([]byte(passphrase)); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("write keyring passphrase temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close keyring passphrase temp: %w", err)
+	}
+
+	if err := os.Link(tmpPath, path); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			data, readErr := os.ReadFile(path)
+			pass, ok, readErr := readExisting(path)
 			if readErr != nil {
-				return "", fmt.Errorf("read keyring passphrase after race: %w", readErr)
+				return "", readErr
 			}
-			if len(data) == 0 {
+			if !ok {
 				return "", fmt.Errorf("keyring passphrase file %s is empty", path)
 			}
-			return string(data), nil
+			return pass, nil
 		}
-		return "", fmt.Errorf("create keyring passphrase: %w", err)
-	}
-	if _, err := f.Write([]byte(passphrase)); err != nil {
-		_ = f.Close()
-		return "", fmt.Errorf("write keyring passphrase: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("close keyring passphrase: %w", err)
+		return "", fmt.Errorf("link keyring passphrase: %w", err)
 	}
 	return passphrase, nil
+}
+
+// readExisting returns (passphrase, true, nil) if path holds a non-empty
+// passphrase, (_, false, nil) if path does not exist, and an error otherwise
+// (including when the file exists but is empty).
+func readExisting(path string) (string, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read keyring passphrase: %w", err)
+	}
+	if len(data) == 0 {
+		return "", false, fmt.Errorf("keyring passphrase file %s is empty", path)
+	}
+	return string(data), true, nil
 }

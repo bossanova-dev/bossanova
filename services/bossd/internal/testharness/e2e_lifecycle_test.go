@@ -3,6 +3,7 @@ package testharness_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1104,6 +1105,104 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		}
 		if got := getSessionState(t, h, ctx, sessionID); got != stateBefore {
 			t.Fatalf("merge failure changed state: %v -> %v", stateBefore, got)
+		}
+	})
+
+	// MergeSession local-only path: session has no PR number because the
+	// draft-PR creation failed (e.g. local-only repo with no GitHub remote).
+	// StartSession logs a warning and proceeds, so the session exists with
+	// a branch but PRNumber == nil. The RPC must route to MergeLocalBranch
+	// and NOT call gh pr merge. Pins the new branch added to MergeSession.
+	t.Run("MergeSession local-only path when session has no PR", func(t *testing.T) {
+		h := testharness.New(t)
+		ctx := context.Background()
+		repoID := registerTestRepo(t, h, ctx)
+
+		// Make draft-PR creation fail so StartSession leaves PRNumber=nil.
+		// StartSession's PR creation is already best-effort (warning only),
+		// so this matches the real local-only-repo failure mode.
+		h.VCS.SetCreatePRError(fmt.Errorf("no origin configured"))
+
+		sessionID, _ := h.SeedSessionInState(t, ctx, repoID,
+			pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			"Local-only session", "local plan")
+
+		// Sanity: session really has no PR, but does have a branch.
+		sessResp, err := h.Client.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sessionID}))
+		if err != nil {
+			t.Fatalf("get session: %v", err)
+		}
+		if sessResp.Msg.Session.PrNumber != nil {
+			t.Fatalf("precondition: expected no PR number, got %d", *sessResp.Msg.Session.PrNumber)
+		}
+		if sessResp.Msg.Session.BranchName == "" {
+			t.Fatalf("precondition: expected a branch name, got empty")
+		}
+
+		// Baseline the call count so we only count merge-time calls, not
+		// the draft-PR attempt that fired during StartSession.
+		prCallsBefore := len(h.VCS.MergePRCalls)
+
+		if _, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID})); err != nil {
+			t.Fatalf("local merge: %v", err)
+		}
+
+		if got := len(h.Git.MergeLocalBranchCalls); got != 1 {
+			t.Fatalf("expected 1 MergeLocalBranch call, got %d", got)
+		}
+		call := h.Git.MergeLocalBranchCalls[0]
+		if call.Head != sessResp.Msg.Session.BranchName {
+			t.Errorf("MergeLocalBranch head=%q, want %q", call.Head, sessResp.Msg.Session.BranchName)
+		}
+		if got := len(h.VCS.MergePRCalls); got != prCallsBefore {
+			t.Errorf("MergePR must not run in local-only path, got %d new calls", got-prCallsBefore)
+		}
+	})
+
+	// MergeSession verification failure — the madverts-core regression
+	// case. gh reports the PR as merged with a specific commit, but our
+	// post-merge `merge-base --is-ancestor` check says that commit isn't
+	// on origin/<base>. The RPC must surface the failure rather than
+	// silently mark the merge successful.
+	t.Run("MergeSession detects merge commit missing from origin/<base>", func(t *testing.T) {
+		h := testharness.New(t)
+		ctx := context.Background()
+		repoID := registerTestRepo(t, h, ctx)
+
+		autoMerge := true
+		if _, err := h.Client.UpdateRepo(ctx, connect.NewRequest(&pb.UpdateRepoRequest{
+			Id:           repoID,
+			CanAutoMerge: &autoMerge,
+		})); err != nil {
+			t.Fatalf("update repo: %v", err)
+		}
+
+		sessionID, prNum := h.SeedSessionInState(t, ctx, repoID,
+			pb.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+			"Merge-commit-orphan regression", "plan")
+
+		h.DisplayTracker.Set(sessionID, vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+		// Simulate the madverts scenario: gh says merged with a commit
+		// that isn't on origin/main — e.g. because something force-pushed
+		// origin/main to remove the merge commit.
+		h.VCS.SetPRMergeCommit(prNum, "76b35392orphaned")
+		h.Git.IsAncestorFn = func(_ context.Context, _, _, _ string) (bool, error) { return false, nil }
+
+		_, err := h.Client.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+		if err == nil {
+			t.Fatal("expected MergeSession to error when merge commit is not on origin/<base>")
+		}
+		if code := connect.CodeOf(err); code != connect.CodeInternal {
+			t.Errorf("want CodeInternal, got %v (%v)", code, err)
+		}
+		if !strings.Contains(err.Error(), "verification failed") {
+			t.Errorf("err message should mention verification; got %v", err)
+		}
+		// The verification failure must NOT trigger a local base-branch
+		// sync — there is nothing good to fast-forward to.
+		// (gh already called MergePR once, which is expected.)
+		if got := len(h.VCS.MergePRCalls); got != 1 {
+			t.Errorf("expected exactly 1 MergePR call, got %d", got)
 		}
 	})
 

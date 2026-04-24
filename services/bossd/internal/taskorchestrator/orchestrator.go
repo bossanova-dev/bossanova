@@ -16,6 +16,7 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
 )
 
@@ -32,8 +33,16 @@ type TaskSourceProvider interface {
 // match origin/<base>. Implemented by git.Manager; kept as a narrow
 // interface here to avoid an internal/git import from the orchestrator and
 // to simplify test doubles.
+//
+// EnsureBaseBranchReadyForSync, FetchBase, and IsAncestor participate in
+// auto-merge safety: the pre-check rejects merges against a diverged local
+// base, and the fetch+ancestor pair verify the PR's merge commit actually
+// landed on origin/<base> before the mapping is marked complete.
 type BaseBranchSyncer interface {
 	SyncBaseBranch(ctx context.Context, localPath, base string) error
+	EnsureBaseBranchReadyForSync(ctx context.Context, localPath, base string) error
+	FetchBase(ctx context.Context, localPath, base string) error
+	IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error)
 }
 
 // queuedTask pairs a task item with its repo info for the FIFO queue.
@@ -619,13 +628,54 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 		Str("repo", repo.displayName).
 		Msg("auto-merging PR")
 
-	if err := o.provider.MergePR(ctx, repo.originURL, prNumber, repo.mergeStrategy); err != nil {
+	// Mirror MergeSession's pre-merge invariant: refuse to auto-merge when
+	// the local base has diverged from origin. Dependabot runs unattended,
+	// so surprises here compound silently across many PRs — fail loud and
+	// early instead.
+	if o.baseSyncer != nil && repo.localPath != "" && repo.baseBranch != "" {
+		if err := o.baseSyncer.EnsureBaseBranchReadyForSync(ctx, repo.localPath, repo.baseBranch); err != nil {
+			o.logger.Error().Err(err).
+				Int("pr", prNumber).
+				Str("repo", repo.displayName).
+				Str("local_path", repo.localPath).
+				Str("base", repo.baseBranch).
+				Msg("auto-merge aborted: local base branch not ready for sync")
+			o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+			return
+		}
+	}
+
+	strategy, err := mergepolicy.ResolveStrategy(ctx, o.provider, repo.originURL, repo.mergeStrategy)
+	if err != nil {
+		o.logger.Error().Err(err).
+			Int("pr", prNumber).
+			Str("repo", repo.displayName).
+			Msg("auto-merge aborted: no merge strategy available")
+		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+		return
+	}
+
+	if err := o.provider.MergePR(ctx, repo.originURL, prNumber, strategy); err != nil {
 		o.logger.Error().Err(err).
 			Int("pr", prNumber).
 			Str("repo", repo.displayName).
 			Msg("auto-merge failed")
 		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
 		return
+	}
+
+	// Verify the merge commit is on origin/<base>. If it isn't, gh lied or
+	// something rewrote history — mark the mapping failed so a human looks.
+	if o.baseSyncer != nil && repo.localPath != "" && repo.baseBranch != "" {
+		if err := mergepolicy.VerifyOnBase(ctx, o.provider, o.baseSyncer, repo.localPath, repo.originURL, repo.baseBranch, prNumber); err != nil {
+			o.logger.Error().Err(err).
+				Int("pr", prNumber).
+				Str("repo", repo.displayName).
+				Str("base", repo.baseBranch).
+				Msg("auto-merge verification failed: commit not on base after merge")
+			o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+			return
+		}
 	}
 
 	// Refresh the user's local main repo so subsequent worktrees and
@@ -646,6 +696,7 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 	o.logger.Info().
 		Int("pr", prNumber).
 		Str("repo", repo.displayName).
+		Str("strategy", strategy).
 		Msg("PR auto-merged successfully")
 	o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusCompleted)
 }
@@ -655,7 +706,14 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 // next task when it finishes. We only dequeue here on the error path so
 // the queue advances if session creation fails.
 func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
-	baseBranch := task.GetBaseBranch()
+	// The task's base_branch is advisory: plugins that don't know the repo
+	// configuration set the repo's default branch (or "main" as a historical
+	// fallback). Always prefer the repo's configured default so repos with
+	// non-"main" defaults (master, develop, trunk) aren't silently wrong.
+	baseBranch := repo.baseBranch
+	if baseBranch == "" {
+		baseBranch = task.GetBaseBranch()
+	}
 	if baseBranch == "" {
 		baseBranch = "main"
 	}

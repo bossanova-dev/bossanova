@@ -28,6 +28,11 @@ var ErrBranchExists = errors.New("branch already exists")
 // callers can surface it to the user verbatim.
 var ErrBaseBranchNotReady = errors.New("base branch not ready for sync")
 
+// ErrMergeConflict is returned by MergeLocalBranch when the local merge
+// cannot proceed without conflict resolution. The caller should surface this
+// so the user can resolve the conflict by hand; boss never auto-resolves.
+var ErrMergeConflict = errors.New("merge conflict")
+
 // SetupScriptTimeout is the maximum time allowed for a setup script to run.
 const SetupScriptTimeout = 5 * time.Minute
 
@@ -91,6 +96,25 @@ type WorktreeManager interface {
 	// update via `git fetch origin <base>:<base>` which leaves the working
 	// tree untouched. Also prunes stale remote-tracking refs.
 	SyncBaseBranch(ctx context.Context, localPath, base string) error
+
+	// IsAncestor reports whether ref is an ancestor of target in the repo
+	// at localPath. Returns (false, nil) when it is not an ancestor;
+	// returns an error only on git invocation failures (missing repo, bad
+	// refs). Used by post-merge verification to confirm a PR's merge commit
+	// landed on the base branch.
+	IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error)
+
+	// FetchBase fetches the named base branch from origin so subsequent
+	// reads of refs/remotes/origin/<base> reflect the remote's current
+	// state. Used by post-merge verification.
+	FetchBase(ctx context.Context, localPath, base string) error
+
+	// MergeLocalBranch performs a safe local merge of head into base inside
+	// the repo at localPath. It does not push anywhere. Requires a clean
+	// working tree on base and returns ErrBaseBranchNotReady / ErrMergeConflict
+	// with a human-readable message otherwise. Strategy accepts the same
+	// values as MergePR ("merge", "squash", "rebase"; empty → "merge").
+	MergeLocalBranch(ctx context.Context, localPath, base, head, strategy string) error
 }
 
 // CreateOpts holds the parameters for creating a new worktree.
@@ -500,6 +524,182 @@ func (m *Manager) SyncBaseBranch(ctx context.Context, localPath, base string) er
 		return fmt.Errorf("fast-forward local %s: %w", base, err)
 	}
 	return nil
+}
+
+// FetchBase fetches origin/<base> so refs/remotes/origin/<base> reflects
+// the remote's current tip. Narrower than the `--prune origin` fetch in
+// SyncBaseBranch so it is safe to call on the verification hot path.
+func (m *Manager) FetchBase(ctx context.Context, localPath, base string) error {
+	if base == "" {
+		return fmt.Errorf("base branch is required")
+	}
+	if _, err := runGit(ctx, localPath, "fetch", "origin", base); err != nil {
+		return fmt.Errorf("fetch origin/%s: %w", base, err)
+	}
+	return nil
+}
+
+// IsAncestor reports whether ref is an ancestor of target. A non-ancestor is
+// a normal outcome (returns false, nil); only true invocation failures
+// propagate as errors. Use e.g. ref="<sha>" and target="refs/remotes/origin/main"
+// to verify a post-merge commit actually landed on the remote base.
+func (m *Manager) IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ref, target)
+	cmd.Dir = localPath
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	// merge-base --is-ancestor exits 1 when not an ancestor (no error),
+	// and exits ≥128 when refs are bad or the repo is broken.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("merge-base --is-ancestor %s %s: %w: %s",
+		ref, target, err, strings.TrimSpace(stderr.String()))
+}
+
+// MergeLocalBranch merges head into base inside the repo at localPath. It
+// does NOT push. Invariants enforced before any write:
+//   - base must exist locally
+//   - working tree must be clean on base
+//   - head must exist locally (refs/heads/<head>)
+//   - if origin/<base> exists, local base must be an ancestor (no divergence)
+//
+// On conflict the merge is aborted and ErrMergeConflict is returned so the
+// repo is left in the pre-merge state.
+func (m *Manager) MergeLocalBranch(ctx context.Context, localPath, base, head, strategy string) error {
+	if base == "" {
+		return fmt.Errorf("base branch is required")
+	}
+	if head == "" {
+		return fmt.Errorf("head branch is required")
+	}
+	if strategy == "" {
+		strategy = "merge"
+	}
+	switch strategy {
+	case "merge", "squash", "rebase":
+	default:
+		return fmt.Errorf("unknown merge strategy %q", strategy)
+	}
+
+	if !branchExists(ctx, localPath, base) {
+		return fmt.Errorf("base branch %q does not exist in %s", base, localPath)
+	}
+	if !branchExists(ctx, localPath, head) {
+		return fmt.Errorf("head branch %q does not exist in %s", head, localPath)
+	}
+
+	// If origin exists, refresh remote state and reject if local base has
+	// diverged — the same invariant EnsureBaseBranchReadyForSync enforces
+	// for GitHub-backed merges. Missing origin is fine (local-only repo).
+	originURL, _ := m.DetectOriginURL(ctx, localPath)
+	if originURL != "" {
+		if _, err := runGit(ctx, localPath, "fetch", "origin", base); err != nil {
+			return fmt.Errorf("fetch origin/%s: %w", base, err)
+		}
+		if hasRef(ctx, localPath, "refs/remotes/origin/"+base) {
+			ok, err := m.IsAncestor(ctx, localPath, "refs/heads/"+base, "refs/remotes/origin/"+base)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf(
+					"%w: local %s has diverged from origin/%s; rebase or reset before merging",
+					ErrBaseBranchNotReady, base, base,
+				)
+			}
+		}
+	}
+
+	// Checkout base to run the merge there. Reject if the working tree is
+	// dirty — stashing silently would hide user changes.
+	dirty, err := runGit(ctx, localPath, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	if dirty != "" {
+		return fmt.Errorf(
+			"%w: repo at %s has uncommitted changes; commit or stash before merging",
+			ErrBaseBranchNotReady, localPath,
+		)
+	}
+	if _, err := runGit(ctx, localPath, "checkout", base); err != nil {
+		return fmt.Errorf("checkout %s: %w", base, err)
+	}
+
+	// Fast-forward base from origin if possible, so the merge starts from the
+	// latest base tip.
+	if originURL != "" && hasRef(ctx, localPath, "refs/remotes/origin/"+base) {
+		if _, err := runGit(ctx, localPath, "merge", "--ff-only", "refs/remotes/origin/"+base); err != nil {
+			return fmt.Errorf("ff-only pull of origin/%s: %w", base, err)
+		}
+	}
+
+	switch strategy {
+	case "merge":
+		if _, err := runGit(ctx, localPath,
+			"merge", "--no-ff", "--no-edit",
+			"-m", fmt.Sprintf("Merge branch '%s' into %s", head, base),
+			head,
+		); err != nil {
+			_, _ = runGit(ctx, localPath, "merge", "--abort")
+			return fmt.Errorf("%w: merge --no-ff %s into %s: %v", ErrMergeConflict, head, base, err)
+		}
+	case "squash":
+		if _, err := runGit(ctx, localPath, "merge", "--squash", head); err != nil {
+			_, _ = runGit(ctx, localPath, "reset", "--merge")
+			return fmt.Errorf("%w: merge --squash %s into %s: %v", ErrMergeConflict, head, base, err)
+		}
+		if _, err := runGit(ctx, localPath,
+			"commit", "-m", fmt.Sprintf("Squash-merge branch '%s' into %s", head, base),
+		); err != nil {
+			_, _ = runGit(ctx, localPath, "reset", "--merge")
+			return fmt.Errorf("squash commit: %w", err)
+		}
+	case "rebase":
+		// Rebase the head branch on top of base in a detached worktree-safe
+		// way: rebase head onto base, then ff-merge base to head.
+		if _, err := runGit(ctx, localPath, "rebase", base, head); err != nil {
+			_, _ = runGit(ctx, localPath, "rebase", "--abort")
+			// Get back to base so the repo isn't left on a half-rebased head.
+			_, _ = runGit(ctx, localPath, "checkout", base)
+			return fmt.Errorf("%w: rebase %s onto %s: %v", ErrMergeConflict, head, base, err)
+		}
+		if _, err := runGit(ctx, localPath, "checkout", base); err != nil {
+			return fmt.Errorf("checkout %s after rebase: %w", base, err)
+		}
+		if _, err := runGit(ctx, localPath, "merge", "--ff-only", head); err != nil {
+			return fmt.Errorf("ff-only merge of rebased %s into %s: %w", head, base, err)
+		}
+	}
+
+	// Delete the head branch. For merge and rebase, `-d` safely refuses if
+	// not merged — the invariant holds because both strategies record the
+	// merge relationship in the DAG. Squash records no such relationship,
+	// so `-d` would always refuse; use `-D` since the squash commit above
+	// confirmed the content landed on base.
+	deleteFlag := "-d"
+	if strategy == "squash" {
+		deleteFlag = "-D"
+	}
+	if _, err := runGit(ctx, localPath, "branch", deleteFlag, head); err != nil {
+		m.logger.Warn().Err(err).
+			Str("head", head).
+			Msg("failed to delete merged head branch; continuing")
+	}
+
+	return nil
+}
+
+// hasRef reports whether the given ref resolves in the repo.
+func hasRef(ctx context.Context, repoPath, ref string) bool {
+	_, err := runGit(ctx, repoPath, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
 }
 
 // currentBranch returns the name of the checked-out branch, or ("", true, nil)

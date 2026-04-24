@@ -36,12 +36,36 @@ type MockWorktreeManager struct {
 	// DetectOriginURLResult is returned by DetectOriginURL.
 	DetectOriginURLResult string
 
+	// MergeLocalBranchCalls records every invocation so tests can verify the
+	// local-only merge path of MergeSession.
+	MergeLocalBranchCalls []mergeLocalCall
+	// MergeLocalBranchErr is returned by MergeLocalBranch when non-nil.
+	MergeLocalBranchErr error
+
+	// IsAncestorFn overrides the default IsAncestor behavior (always true)
+	// so tests can simulate verification failures (merge commit not on
+	// origin/<base>, the madverts-core regression case).
+	IsAncestorFn func(ctx context.Context, localPath, ref, target string) (bool, error)
+
+	// FetchBaseErr is returned by FetchBase when non-nil. Used to simulate
+	// network failures during post-merge verification.
+	FetchBaseErr error
+
 	// createErrorOnCall maps 1-indexed Create call numbers to errors.
 	// When the call counter matches, the next Create returns this error
 	// and the entry is consumed.
 	createErrorOnCall map[int]error
 	// pushError is returned by the next Push call when set, then cleared.
 	pushError error
+}
+
+// mergeLocalCall records a single invocation of MergeLocalBranch. Tracked
+// under mu so server and orchestrator goroutines can't race.
+type mergeLocalCall struct {
+	LocalPath string
+	Base      string
+	Head      string
+	Strategy  string
 }
 
 type cloneCall struct {
@@ -193,6 +217,33 @@ func (m *MockWorktreeManager) EnsureBaseBranchReadyForSync(_ context.Context, _,
 
 func (m *MockWorktreeManager) SyncBaseBranch(_ context.Context, _, _ string) error {
 	return nil
+}
+
+func (m *MockWorktreeManager) IsAncestor(ctx context.Context, localPath, ref, target string) (bool, error) {
+	m.mu.Lock()
+	fn := m.IsAncestorFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, localPath, ref, target)
+	}
+	return true, nil
+}
+
+func (m *MockWorktreeManager) MergeLocalBranch(_ context.Context, localPath, base, head, strategy string) error {
+	m.mu.Lock()
+	m.MergeLocalBranchCalls = append(m.MergeLocalBranchCalls, mergeLocalCall{
+		LocalPath: localPath, Base: base, Head: head, Strategy: strategy,
+	})
+	err := m.MergeLocalBranchErr
+	m.mu.Unlock()
+	return err
+}
+
+func (m *MockWorktreeManager) FetchBase(_ context.Context, _, _ string) error {
+	m.mu.Lock()
+	err := m.FetchBaseErr
+	m.mu.Unlock()
+	return err
 }
 
 func (m *MockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {

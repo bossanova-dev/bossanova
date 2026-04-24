@@ -26,6 +26,7 @@ import (
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
@@ -987,14 +988,11 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found: %w", err))
 	}
-	if sess.PRNumber == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("session has no PR to merge"))
-	}
 
 	// Guard against merging while CI is still red or reviews are outstanding.
 	// The webhook-driven tracker is authoritative; fall back to allowing the
 	// merge if the tracker has no entry (gh will itself reject an unmergeable PR).
-	if s.displayTracker != nil {
+	if sess.PRNumber != nil && s.displayTracker != nil {
 		if e := s.displayTracker.Get(sess.ID); e != nil && e.Status != vcs.DisplayStatusPassing {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("PR is not passing"))
 		}
@@ -1012,31 +1010,63 @@ func (s *Server) MergeSession(ctx context.Context, req *connect.Request[pb.Merge
 		baseBranch = repo.DefaultBaseBranch
 	}
 
-	// Verify the main repo can be safely fast-forwarded after the merge.
-	// Doing this BEFORE `gh pr merge` means we never end up with a
-	// successful server-side merge paired with a local repo the user would
-	// need to untangle by hand. The error message is safe to surface.
-	if err := s.worktrees.EnsureBaseBranchReadyForSync(ctx, repo.LocalPath, baseBranch); err != nil {
-		if errors.Is(err, gitpkg.ErrBaseBranchNotReady) {
+	if sess.PRNumber == nil {
+		// Local-only merge path: no PR on a remote, just a local session
+		// branch that needs to land on the repo's base. The session's
+		// branch name is authoritative.
+		if sess.BranchName == "" {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("session has no PR and no branch name to merge"))
+		}
+		if err := s.worktrees.MergeLocalBranch(ctx, repo.LocalPath, baseBranch, sess.BranchName, string(repo.MergeStrategy)); err != nil {
+			if errors.Is(err, gitpkg.ErrBaseBranchNotReady) || errors.Is(err, gitpkg.ErrMergeConflict) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			}
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("local merge: %w", err))
+		}
+	} else {
+		// Verify the main repo can be safely fast-forwarded after the merge.
+		// Doing this BEFORE `gh pr merge` means we never end up with a
+		// successful server-side merge paired with a local repo the user would
+		// need to untangle by hand. The error message is safe to surface.
+		if err := s.worktrees.EnsureBaseBranchReadyForSync(ctx, repo.LocalPath, baseBranch); err != nil {
+			if errors.Is(err, gitpkg.ErrBaseBranchNotReady) {
+				return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+			}
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pre-merge sync check: %w", err))
+		}
+
+		strategy, err := mergepolicy.ResolveStrategy(ctx, s.provider, repo.OriginURL, string(repo.MergeStrategy))
+		if err != nil {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pre-merge sync check: %w", err))
-	}
 
-	if err := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, string(repo.MergeStrategy)); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("merge PR: %w", err))
-	}
+		if err := s.provider.MergePR(ctx, repo.OriginURL, *sess.PRNumber, strategy); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("merge PR: %w", err))
+		}
 
-	// Pull the merged commit into the user's local main repo so subsequent
-	// worktrees, branches, and manual operations on <base> start from the
-	// post-merge tip. The pre-check above makes this the expected happy
-	// path; sync failures are logged but do not fail the RPC because the
-	// server-side merge has already succeeded.
-	if err := s.worktrees.SyncBaseBranch(ctx, repo.LocalPath, baseBranch); err != nil {
-		s.logger.Warn().Err(err).
-			Str("repo", repo.LocalPath).
-			Str("base", baseBranch).
-			Msg("post-merge sync of local base branch failed; run `git fetch` + fast-forward manually")
+		// Verify the merge actually landed on origin/<base>. Catches
+		// post-merge history rewrites, branch-protection races, and any
+		// case where gh reported "merged" but the commit isn't where we
+		// expect — the class of bug that previously went undetected for
+		// days (madverts-core PR #2222).
+		if err := mergepolicy.VerifyOnBase(ctx, s.provider, s.worktrees,
+			repo.LocalPath, repo.OriginURL, baseBranch, *sess.PRNumber,
+		); err != nil {
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("merge verification failed: %w", err))
+		}
+
+		// Pull the merged commit into the user's local main repo so subsequent
+		// worktrees, branches, and manual operations on <base> start from the
+		// post-merge tip. Sync failures are logged — the server-side merge
+		// is already verified to be on origin/<base>.
+		if err := s.worktrees.SyncBaseBranch(ctx, repo.LocalPath, baseBranch); err != nil {
+			s.logger.Warn().Err(err).
+				Str("repo", repo.LocalPath).
+				Str("base", baseBranch).
+				Msg("post-merge sync of local base branch failed; run `git fetch` + fast-forward manually")
+		}
 	}
 
 	// Re-fetch so callers see any server-side side effects; the state

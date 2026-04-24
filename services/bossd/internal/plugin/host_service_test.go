@@ -71,6 +71,12 @@ func (m *mockVCSProvider) MergePR(_ context.Context, _ string, _ int, _ string) 
 func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
 	return nil
 }
+func (m *mockVCSProvider) GetPRMergeCommit(_ context.Context, _ string, _ int) (string, error) {
+	return "", nil
+}
+func (m *mockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
+	return []string{"merge", "squash", "rebase"}, nil
+}
 
 func TestHostServiceListOpenPRs(t *testing.T) {
 	mock := &mockVCSProvider{

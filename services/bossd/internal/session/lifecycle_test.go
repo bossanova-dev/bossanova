@@ -317,6 +317,18 @@ func (m *mockWorktreeManager) EnsureBaseBranchReadyForSync(_ context.Context, _,
 	return nil
 }
 
+func (m *mockWorktreeManager) IsAncestor(_ context.Context, _, _, _ string) (bool, error) {
+	return true, nil
+}
+
+func (m *mockWorktreeManager) MergeLocalBranch(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
+func (m *mockWorktreeManager) FetchBase(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockWorktreeManager) SyncBaseBranch(_ context.Context, _, _ string) error {
 	return nil
 }
@@ -461,6 +473,14 @@ func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ st
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, prID int, _ string) error {
 	m.mergePRCalls = append(m.mergePRCalls, prID)
 	return m.mergePRErr
+}
+
+func (m *mockVCSProvider) GetPRMergeCommit(_ context.Context, _ string, prID int) (string, error) {
+	return fmt.Sprintf("mock-merge-%d", prID), nil
+}
+
+func (m *mockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
+	return []string{"merge", "squash", "rebase"}, nil
 }
 
 // --- Tests ---

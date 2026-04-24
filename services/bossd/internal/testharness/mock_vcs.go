@@ -49,6 +49,29 @@ type MockVCSProvider struct {
 	// MergePRErr is returned by MergePR when set.
 	MergePRErr error
 
+	// PRMergeCommit is returned by GetPRMergeCommit when no per-PR override
+	// is configured via PRMergeCommits. Empty → the mock falls back to a
+	// deterministic "mock-merge-<prID>" sentinel.
+	PRMergeCommit string
+
+	// PRMergeCommits overrides the merge commit on a per-PR basis. Set via
+	// SetPRMergeCommit. Primary use: drive the "merge commit not on base"
+	// negative-path test.
+	PRMergeCommits map[int]string
+
+	// GetPRMergeCommitErr is returned by every GetPRMergeCommit call when
+	// non-nil. Used to simulate vcs.ErrPRNotMerged.
+	GetPRMergeCommitErr error
+
+	// AllowedMergeStrategies is returned by GetAllowedMergeStrategies when
+	// non-nil. nil → the mock returns ["merge","squash","rebase"] so the
+	// configured strategy is always allowed by default.
+	AllowedMergeStrategies []string
+
+	// GetAllowedMergeStrategiesErr is returned by every
+	// GetAllowedMergeStrategies call when non-nil.
+	GetAllowedMergeStrategiesErr error
+
 	// createPRError is returned by the next CreateDraftPR call when set,
 	// then cleared.
 	createPRError error
@@ -177,4 +200,53 @@ func (m *MockVCSProvider) MergePR(ctx context.Context, repoPath string, prID int
 	err := m.MergePRErr
 	m.mu.Unlock()
 	return err
+}
+
+// GetPRMergeCommit returns the mock-configured merge commit for the PR.
+// Defaults to PRMergeCommit (or "mock-merge-<prID>" if unset) so the happy
+// path of post-merge verification works without explicit per-test setup.
+func (m *MockVCSProvider) GetPRMergeCommit(_ context.Context, _ string, prID int) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.GetPRMergeCommitErr != nil {
+		return "", m.GetPRMergeCommitErr
+	}
+	if sha, ok := m.PRMergeCommits[prID]; ok {
+		return sha, nil
+	}
+	if m.PRMergeCommit != "" {
+		return m.PRMergeCommit, nil
+	}
+	return fmt.Sprintf("mock-merge-%d", prID), nil
+}
+
+// SetPRMergeCommit overrides the merge commit returned for a specific PR.
+// Pass sha="" to clear the override and fall back to PRMergeCommit.
+func (m *MockVCSProvider) SetPRMergeCommit(prID int, sha string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.PRMergeCommits == nil {
+		m.PRMergeCommits = make(map[int]string)
+	}
+	if sha == "" {
+		delete(m.PRMergeCommits, prID)
+		return
+	}
+	m.PRMergeCommits[prID] = sha
+}
+
+// GetAllowedMergeStrategies returns AllowedMergeStrategies when set, else
+// ["merge", "squash", "rebase"] so all strategies are permitted by default.
+func (m *MockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.GetAllowedMergeStrategiesErr != nil {
+		return nil, m.GetAllowedMergeStrategiesErr
+	}
+	if m.AllowedMergeStrategies != nil {
+		out := make([]string, len(m.AllowedMergeStrategies))
+		copy(out, m.AllowedMergeStrategies)
+		return out, nil
+	}
+	return []string{"merge", "squash", "rebase"}, nil
 }

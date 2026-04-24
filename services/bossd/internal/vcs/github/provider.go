@@ -520,6 +520,72 @@ func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, strat
 	return nil
 }
 
+// GetPRMergeCommit returns the merge commit SHA GitHub recorded for the PR.
+// Returns vcs.ErrPRNotMerged if the PR is not in MERGED state.
+func (p *Provider) GetPRMergeCommit(ctx context.Context, repoPath string, prID int) (string, error) {
+	out, err := p.runGH(ctx,
+		"pr", "view", strconv.Itoa(prID),
+		"--repo", repoFlag(repoPath),
+		"--json", "state,mergeCommit",
+	)
+	if err != nil {
+		return "", fmt.Errorf("gh pr view: %w", err)
+	}
+
+	var resp struct {
+		State       string `json:"state"`
+		MergeCommit *struct {
+			OID string `json:"oid"`
+		} `json:"mergeCommit"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return "", fmt.Errorf("parse gh pr view JSON: %w", err)
+	}
+
+	if strings.ToUpper(resp.State) != "MERGED" {
+		return "", fmt.Errorf("%w: state=%s", vcs.ErrPRNotMerged, resp.State)
+	}
+	if resp.MergeCommit == nil || resp.MergeCommit.OID == "" {
+		return "", fmt.Errorf("%w: no merge commit recorded", vcs.ErrPRNotMerged)
+	}
+	return resp.MergeCommit.OID, nil
+}
+
+// GetAllowedMergeStrategies returns the strategies the GitHub repo has
+// enabled, ordered "merge", "squash", "rebase" when present. Used as a
+// fallback when the configured strategy is empty or disabled upstream.
+func (p *Provider) GetAllowedMergeStrategies(ctx context.Context, repoPath string) ([]string, error) {
+	nwo := repoFlag(repoPath)
+	out, err := p.runGH(ctx,
+		"api", "repos/"+nwo,
+		"--jq", "{m:.allow_merge_commit,s:.allow_squash_merge,r:.allow_rebase_merge}",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("gh api repo: %w", err)
+	}
+
+	var resp struct {
+		M bool `json:"m"`
+		S bool `json:"s"`
+		R bool `json:"r"`
+	}
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		return nil, fmt.Errorf("parse allowed-strategies JSON: %w", err)
+	}
+
+	var allowed []string
+	if resp.M {
+		allowed = append(allowed, "merge")
+	}
+	if resp.S {
+		allowed = append(allowed, "squash")
+	}
+	if resp.R {
+		allowed = append(allowed, "rebase")
+	}
+	return allowed, nil
+}
+
 // UpdatePRTitle updates the title of an existing pull request.
 func (p *Provider) UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error {
 	_, err := p.runGH(ctx,

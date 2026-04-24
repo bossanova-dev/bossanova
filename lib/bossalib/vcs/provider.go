@@ -2,7 +2,10 @@
 // version control hosting services (GitHub, GitLab, etc.).
 package vcs
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Provider is the interface that VCS hosting implementations must satisfy.
 // GitHub is the initial implementation; GitLab and others can be added later.
@@ -37,4 +40,20 @@ type Provider interface {
 
 	// UpdatePRTitle updates the title of an existing pull/merge request.
 	UpdatePRTitle(ctx context.Context, repoPath string, prID int, title string) error
+
+	// GetPRMergeCommit returns the merge commit SHA the remote has recorded
+	// for the given PR. Returns ErrPRNotMerged if the PR is not in a merged
+	// state. Used by post-merge verification to confirm the merge actually
+	// landed on the base branch.
+	GetPRMergeCommit(ctx context.Context, repoPath string, prID int) (string, error)
+
+	// GetAllowedMergeStrategies returns the strategies enabled on the remote
+	// repository, in the order "merge", "squash", "rebase". Used as a
+	// fallback when the bossanova-configured strategy is empty or disabled
+	// upstream.
+	GetAllowedMergeStrategies(ctx context.Context, repoPath string) ([]string, error)
 }
+
+// ErrPRNotMerged is returned by GetPRMergeCommit when the PR is not in a
+// merged state (still open, closed without merge, etc.).
+var ErrPRNotMerged = errors.New("PR is not merged")

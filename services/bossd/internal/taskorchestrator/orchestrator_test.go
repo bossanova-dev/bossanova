@@ -186,7 +186,9 @@ func (m *mockSessionCreatorOrch) CreateSession(ctx context.Context, opts CreateS
 }
 
 type mockProvider struct {
-	mergeFn func(ctx context.Context, repoPath string, prID int) error
+	mergeFn             func(ctx context.Context, repoPath string, prID int) error
+	mergeCommitFn       func(prID int) (string, error)
+	allowedStrategiesFn func() ([]string, error)
 }
 
 func (m *mockProvider) CreateDraftPR(_ context.Context, _ vcs.CreatePROpts) (*vcs.PRInfo, error) {
@@ -230,6 +232,20 @@ func (m *mockProvider) MergePR(ctx context.Context, repoPath string, prID int, s
 
 func (m *mockProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
 	return nil
+}
+
+func (m *mockProvider) GetPRMergeCommit(_ context.Context, _ string, prID int) (string, error) {
+	if m.mergeCommitFn != nil {
+		return m.mergeCommitFn(prID)
+	}
+	return "mock-merge-commit", nil
+}
+
+func (m *mockProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
+	if m.allowedStrategiesFn != nil {
+		return m.allowedStrategiesFn()
+	}
+	return []string{"merge", "squash", "rebase"}, nil
 }
 
 // mockLivenessChecker implements SessionLivenessChecker for tests.
@@ -457,6 +473,246 @@ func TestRouteTask_AutoMerge_MergeError(t *testing.T) {
 
 	if updatedStatus != models.TaskMappingStatusFailed {
 		t.Errorf("expected status Failed, got %d", updatedStatus)
+	}
+}
+
+// mockBaseSyncer implements BaseBranchSyncer for orchestrator tests that
+// need to drive the new pre-merge check + post-merge verification paths.
+type mockBaseSyncer struct {
+	ensureErr     error
+	fetchErr      error
+	ancestorFn    func(ref, target string) (bool, error)
+	syncErr       error
+	ensureCalls   int
+	syncCalls     int
+	fetchCalls    int
+	ancestorCalls int
+}
+
+func (m *mockBaseSyncer) EnsureBaseBranchReadyForSync(_ context.Context, _, _ string) error {
+	m.ensureCalls++
+	return m.ensureErr
+}
+func (m *mockBaseSyncer) SyncBaseBranch(_ context.Context, _, _ string) error {
+	m.syncCalls++
+	return m.syncErr
+}
+func (m *mockBaseSyncer) FetchBase(_ context.Context, _, _ string) error {
+	m.fetchCalls++
+	return m.fetchErr
+}
+func (m *mockBaseSyncer) IsAncestor(_ context.Context, _, ref, target string) (bool, error) {
+	m.ancestorCalls++
+	if m.ancestorFn != nil {
+		return m.ancestorFn(ref, target)
+	}
+	return true, nil
+}
+
+func TestRouteTask_AutoMerge_VerifiesCommitOnBase(t *testing.T) {
+	// Regression test for the madverts-core incident: gh reported the PR
+	// merged, but the merge commit is not an ancestor of origin/<base>.
+	// The orchestrator must mark the task FAILED in that case rather than
+	// silently marking it Completed.
+	var mergeCalled bool
+	var finalStatus models.TaskMappingStatus
+
+	syncer := &mockBaseSyncer{
+		ancestorFn: func(_, _ string) (bool, error) { return false, nil }, // merge commit NOT on base
+	}
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				mergeCalled = true
+				return nil
+			},
+			mergeCommitFn: func(_ int) (string, error) { return "76b35392", nil },
+		}
+		o.baseSyncer = syncer
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					finalStatus = *params.Status
+				}
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:https://github.com/org/repo:2222",
+		Title:      "Bump foo",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{
+		id:         "r1",
+		originURL:  "https://github.com/org/repo",
+		localPath:  "/tmp/repo",
+		baseBranch: "main",
+	}, "dependabot")
+
+	if !mergeCalled {
+		t.Error("MergePR should have been called")
+	}
+	if finalStatus != models.TaskMappingStatusFailed {
+		t.Errorf("want Failed (verification caught orphaned merge), got status=%d", finalStatus)
+	}
+	if syncer.fetchCalls == 0 {
+		t.Error("FetchBase should have been called as part of verification")
+	}
+	if syncer.ancestorCalls == 0 {
+		t.Error("IsAncestor should have been called as part of verification")
+	}
+	// Sync should NOT have been attempted after verification failure —
+	// there's nothing good to fast-forward to.
+	if syncer.syncCalls != 0 {
+		t.Errorf("SyncBaseBranch should not run after verification failure; got %d calls", syncer.syncCalls)
+	}
+}
+
+func TestRouteTask_AutoMerge_NoStrategyAvailable(t *testing.T) {
+	// When the remote has every merge strategy disabled, resolveMergeStrategy
+	// returns an error. The orchestrator must mark the task failed BEFORE
+	// attempting gh pr merge — gh would just reject with a less clear message.
+	var mergeCalled bool
+	var finalStatus models.TaskMappingStatus
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				mergeCalled = true
+				return nil
+			},
+			allowedStrategiesFn: func() ([]string, error) { return []string{}, nil },
+		}
+		o.baseSyncer = &mockBaseSyncer{}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					finalStatus = *params.Status
+				}
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:https://github.com/org/repo:5",
+		Title:      "Bump",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "https://github.com/org/repo",
+		localPath:     "/tmp/repo",
+		baseBranch:    "main",
+		mergeStrategy: "merge",
+	}, "dependabot")
+
+	if mergeCalled {
+		t.Error("MergePR must not run when no strategy is enabled on the remote")
+	}
+	if finalStatus != models.TaskMappingStatusFailed {
+		t.Errorf("want Failed, got %d", finalStatus)
+	}
+}
+
+func TestRouteTask_AutoMerge_FallsBackStrategy(t *testing.T) {
+	// Configured = "rebase" but remote only allows {merge, squash}. The
+	// orchestrator must substitute "merge" (the first allowed preference)
+	// when calling MergePR rather than passing the disabled config through.
+	var passedStrategy string
+
+	syncer := &mockBaseSyncer{
+		ancestorFn: func(_, _ string) (bool, error) { return true, nil },
+	}
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error { return nil },
+			// mergeFn doesn't receive strategy; use allowedStrategiesFn to
+			// confirm the policy picked something sensible, and intercept
+			// MergePR via a custom mockProvider below.
+			allowedStrategiesFn: func() ([]string, error) { return []string{"merge", "squash"}, nil },
+		}
+		// Wrap the provider so we can capture the strategy argument.
+		orig := o.provider
+		o.provider = &strategyCapturingProvider{Provider: orig, captured: &passedStrategy}
+		o.baseSyncer = syncer
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:https://github.com/org/repo:9",
+		Title:      "Bump",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "https://github.com/org/repo",
+		localPath:     "/tmp/repo",
+		baseBranch:    "main",
+		mergeStrategy: "rebase",
+	}, "dependabot")
+
+	if passedStrategy != "merge" {
+		t.Errorf("want MergePR called with strategy=merge (fallback), got %q", passedStrategy)
+	}
+}
+
+// strategyCapturingProvider wraps any vcs.Provider and records the strategy
+// passed to MergePR. Only MergePR is intercepted — other calls pass through.
+type strategyCapturingProvider struct {
+	vcs.Provider
+	captured *string
+}
+
+func (p *strategyCapturingProvider) MergePR(ctx context.Context, repoPath string, prID int, strategy string) error {
+	*p.captured = strategy
+	return p.Provider.MergePR(ctx, repoPath, prID, strategy)
+}
+
+func TestRouteTask_AutoMerge_RejectsDivergedBase(t *testing.T) {
+	// Auto-merge must not proceed when local <base> has diverged from
+	// origin/<base>. Otherwise the post-merge sync fails silently and the
+	// next auto-merge compounds the problem.
+	var mergeCalled bool
+	var finalStatus models.TaskMappingStatus
+
+	syncer := &mockBaseSyncer{ensureErr: errors.New("base branch not ready for sync: local main has diverged")}
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				mergeCalled = true
+				return nil
+			},
+		}
+		o.baseSyncer = syncer
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					finalStatus = *params.Status
+				}
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:https://github.com/org/repo:7",
+		Title:      "Bump x",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{
+		id:         "r1",
+		originURL:  "https://github.com/org/repo",
+		localPath:  "/tmp/repo",
+		baseBranch: "main",
+	}, "dependabot")
+
+	if mergeCalled {
+		t.Error("MergePR must not be called when pre-check rejects local base divergence")
+	}
+	if finalStatus != models.TaskMappingStatusFailed {
+		t.Errorf("want Failed, got %d", finalStatus)
 	}
 }
 

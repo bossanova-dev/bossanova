@@ -2,6 +2,7 @@ package plugin_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -86,6 +87,14 @@ func (p *testVCSProvider) MergeCalls() []mergePRCall {
 
 func (p *testVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
 	return nil
+}
+
+func (p *testVCSProvider) GetPRMergeCommit(_ context.Context, _ string, prID int) (string, error) {
+	return fmt.Sprintf("mock-merge-%d", prID), nil
+}
+
+func (p *testVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
+	return []string{"merge", "squash", "rebase"}, nil
 }
 
 // taskSourceWithBroker is a host-side GRPCPlugin that registers the HostService

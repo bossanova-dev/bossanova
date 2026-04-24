@@ -421,7 +421,7 @@ func TestRunSetupScript_RejectsPathTraversal(t *testing.T) {
 // commitOnOrigin appends a commit on `branch` in the bare origin repo for
 // `workingRepo`, so a subsequent fetch in `workingRepo` can observe a new
 // upstream tip. Returns the new SHA on origin/<branch>.
-func commitOnOrigin(t *testing.T, workingRepo, branch string) string {
+func commitOnOrigin(t *testing.T, workingRepo, branch string) string { //nolint:unparam // branch is always "main" today, but future tests will push to other branches (e.g. develop)
 	t.Helper()
 
 	// Discover the origin URL (the bare repo path) from the working clone.
@@ -580,6 +580,389 @@ func TestSyncBaseBranch_BaseCheckedOut(t *testing.T) {
 	}
 	if gotSHA != wantSHA {
 		t.Errorf("HEAD at %s, want %s", gotSHA, wantSHA)
+	}
+}
+
+func TestIsAncestor(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	baseSHA, err := runGit(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+
+	ok, err := mgr.IsAncestor(ctx, repo, baseSHA, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("IsAncestor(self): %v", err)
+	}
+	if !ok {
+		t.Error("IsAncestor(self) = false, want true")
+	}
+
+	// Commit on a sibling branch that isn't reachable from main.
+	if _, err := runGit(ctx, repo, "checkout", "-b", "side", baseSHA); err != nil {
+		t.Fatalf("checkout -b side: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "diverged"); err != nil {
+		t.Fatalf("commit on side: %v", err)
+	}
+	divergedSHA, err := runGit(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse side: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	ok, err = mgr.IsAncestor(ctx, repo, divergedSHA, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("IsAncestor(diverged): %v", err)
+	}
+	if ok {
+		t.Error("IsAncestor(diverged commit) = true, want false")
+	}
+}
+
+func TestFetchBase(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Add a commit to origin/main that the local clone hasn't seen.
+	upstreamSHA := commitOnOrigin(t, repo, "main")
+
+	if err := mgr.FetchBase(ctx, repo, "main"); err != nil {
+		t.Fatalf("FetchBase: %v", err)
+	}
+
+	remoteSHA, err := runGit(ctx, repo, "rev-parse", "refs/remotes/origin/main")
+	if err != nil {
+		t.Fatalf("rev-parse origin/main: %v", err)
+	}
+	if remoteSHA != upstreamSHA {
+		t.Errorf("origin/main = %s, want %s", remoteSHA, upstreamSHA)
+	}
+
+	if err := mgr.FetchBase(ctx, repo, ""); err == nil {
+		t.Error("FetchBase with empty base should error")
+	}
+}
+
+func TestMergeLocalBranch_MergeStrategy(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Create a feature branch with a commit.
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout -b feat: %v", err)
+	}
+	featSHA, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "feat commit")
+	_ = featSHA
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	featSHA, err = runGit(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	if err := mgr.MergeLocalBranch(ctx, repo, "main", "feat", "merge"); err != nil {
+		t.Fatalf("MergeLocalBranch: %v", err)
+	}
+
+	// main should be a merge commit with feat's commit as a parent.
+	ok, err := mgr.IsAncestor(ctx, repo, featSHA, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("IsAncestor: %v", err)
+	}
+	if !ok {
+		t.Error("feat commit is not reachable from main after merge")
+	}
+
+	// feat branch should have been deleted (`branch -d` on merged branch).
+	if _, err := runGit(ctx, repo, "rev-parse", "--verify", "refs/heads/feat"); err == nil {
+		t.Error("feat branch still exists; expected it to be deleted post-merge")
+	}
+}
+
+func TestMergeLocalBranch_SquashStrategy(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout -b feat: %v", err)
+	}
+	// Use a real file change so the squash commit has content (empty squash
+	// commits require --allow-empty, which isn't the common case).
+	if err := os.WriteFile(filepath.Join(repo, "feat.txt"), []byte("feat content\n"), 0o644); err != nil {
+		t.Fatalf("write feat.txt: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "add", "feat.txt"); err != nil {
+		t.Fatalf("add feat.txt: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "-m", "feat1"); err != nil {
+		t.Fatalf("commit 1: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	mainBefore, err := runGit(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+
+	if err := mgr.MergeLocalBranch(ctx, repo, "main", "feat", "squash"); err != nil {
+		t.Fatalf("MergeLocalBranch squash: %v", err)
+	}
+
+	mainAfter, err := runGit(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse after: %v", err)
+	}
+	if mainAfter == mainBefore {
+		t.Error("main didn't advance after squash merge")
+	}
+	// Squash produces a single linear commit — main should have exactly one
+	// parent, not two (as a true merge would).
+	parents, err := runGit(ctx, repo, "rev-list", "--parents", "-n", "1", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-list parents: %v", err)
+	}
+	parts := strings.Fields(parents)
+	if len(parts) != 2 { // [commit-sha, parent-sha]
+		t.Errorf("squash merge produced %d parents, want 1: %s", len(parts)-1, parents)
+	}
+	// feat branch deleted after successful squash merge. Squash records no
+	// merge relationship in the DAG, so this exercises the `-D` branch of
+	// the deletion logic.
+	if _, err := runGit(ctx, repo, "rev-parse", "--verify", "refs/heads/feat"); err == nil {
+		t.Error("feat branch still exists after squash merge; expected deletion")
+	}
+}
+
+func TestMergeLocalBranch_RebaseStrategy(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Create feat with real content so rebase has something to replay.
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout feat: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("feat\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "add", "f.txt"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "-m", "feat"); err != nil {
+		t.Fatalf("commit feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	if err := mgr.MergeLocalBranch(ctx, repo, "main", "feat", "rebase"); err != nil {
+		t.Fatalf("rebase merge: %v", err)
+	}
+
+	// Rebase must produce linear history — HEAD has exactly one parent.
+	parents, err := runGit(ctx, repo, "rev-list", "--parents", "-n", "1", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-list: %v", err)
+	}
+	if parts := strings.Fields(parents); len(parts) != 2 {
+		t.Errorf("rebase produced %d parents, want 1 (linear): %s", len(parts)-1, parents)
+	}
+	// feat branch deleted after successful merge.
+	if _, err := runGit(ctx, repo, "rev-parse", "--verify", "refs/heads/feat"); err == nil {
+		t.Error("feat branch still exists after rebase-merge; expected deletion")
+	}
+}
+
+func TestMergeLocalBranch_Rejections(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name       string
+		base       string
+		head       string
+		strategy   string
+		wantSubstr string
+	}{
+		{"empty base", "", "feat", "merge", "base branch is required"},
+		{"empty head", "main", "", "merge", "head branch is required"},
+		{"unknown strategy", "main", "feat", "cherry-pick", "unknown merge strategy"},
+		{"missing base branch", "nope", "feat", "merge", "does not exist"},
+		{"missing head branch", "main", "nope", "merge", "does not exist"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initTestRepo(t)
+			mgr := NewManager(zerolog.Nop())
+			// Every case except "missing head" needs a feat branch to exist,
+			// so create one unconditionally (it's cheap and simplifies setup).
+			if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+				t.Fatalf("checkout feat: %v", err)
+			}
+			if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "f"); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+			if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+				t.Fatalf("checkout main: %v", err)
+			}
+			err := mgr.MergeLocalBranch(ctx, repo, tc.base, tc.head, tc.strategy)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("err = %v; want substring %q", err, tc.wantSubstr)
+			}
+		})
+	}
+}
+
+func TestMergeLocalBranch_RejectsDivergedOrigin(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Push a commit directly to origin (via a throwaway clone) so origin
+	// is ahead of local main.
+	commitOnOrigin(t, repo, "main")
+
+	// Now make a local-main commit without pulling. Local and origin diverge.
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "local-only"); err != nil {
+		t.Fatalf("local commit: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "feat"); err != nil {
+		t.Fatalf("commit feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	err := mgr.MergeLocalBranch(ctx, repo, "main", "feat", "merge")
+	if !errors.Is(err, ErrBaseBranchNotReady) {
+		t.Fatalf("want ErrBaseBranchNotReady, got %v", err)
+	}
+}
+
+func TestMergeLocalBranch_RejectsDirtyTree(t *testing.T) {
+	repo := initTestRepo(t)
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout -b feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "--allow-empty", "-m", "feat"); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+
+	// Create an uncommitted change on main.
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("wip"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "add", "dirty.txt"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+
+	err := mgr.MergeLocalBranch(ctx, repo, "main", "feat", "merge")
+	if !errors.Is(err, ErrBaseBranchNotReady) {
+		t.Fatalf("want ErrBaseBranchNotReady, got %v", err)
+	}
+}
+
+func TestMergeLocalBranch_Conflict(t *testing.T) {
+	// Local-only repo (no origin) so the divergence check doesn't fire —
+	// this test is specifically about conflict handling during the merge
+	// step itself.
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Seed main with a base version of the file.
+	conflictFile := filepath.Join(repo, "conflict.txt")
+	if err := os.WriteFile(conflictFile, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write base: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "add", "conflict.txt"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "-m", "base content"); err != nil {
+		t.Fatalf("commit base: %v", err)
+	}
+
+	// feat branch modifies the file one way.
+	if _, err := runGit(ctx, repo, "checkout", "-b", "feat"); err != nil {
+		t.Fatalf("checkout feat: %v", err)
+	}
+	if err := os.WriteFile(conflictFile, []byte("feat version\n"), 0o644); err != nil {
+		t.Fatalf("write feat: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "-am", "feat change"); err != nil {
+		t.Fatalf("commit feat: %v", err)
+	}
+
+	// main modifies the same line a different way — this is the conflict.
+	if _, err := runGit(ctx, repo, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %v", err)
+	}
+	if err := os.WriteFile(conflictFile, []byte("main version\n"), 0o644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "commit", "-am", "main change"); err != nil {
+		t.Fatalf("commit main: %v", err)
+	}
+
+	// Capture main's SHA pre-merge so we can verify the abort left it untouched.
+	preMergeSHA, err := runGit(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse pre-merge: %v", err)
+	}
+
+	err = mgr.MergeLocalBranch(ctx, repo, "main", "feat", "merge")
+	if !errors.Is(err, ErrMergeConflict) {
+		t.Fatalf("want ErrMergeConflict, got %v", err)
+	}
+
+	// Strong post-abort invariant: HEAD is exactly where it was, and the
+	// working tree is clean. Substring-matching on `status --porcelain`
+	// misses several valid conflict states (UD, DU, AU, DD, etc.), so assert
+	// the real invariant instead.
+	postMergeSHA, _ := runGit(ctx, repo, "rev-parse", "HEAD")
+	if postMergeSHA != preMergeSHA {
+		t.Errorf("HEAD moved after aborted merge: pre=%s post=%s", preMergeSHA, postMergeSHA)
+	}
+	status, _ := runGit(ctx, repo, "status", "--porcelain")
+	if status != "" {
+		t.Errorf("repo left with uncommitted state after abort: %s", status)
 	}
 }
 

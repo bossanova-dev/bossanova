@@ -72,6 +72,12 @@ func (m *reconcileMockProvider) MergePR(context.Context, string, int, string) er
 func (m *reconcileMockProvider) UpdatePRTitle(context.Context, string, int, string) error {
 	return nil
 }
+func (m *reconcileMockProvider) GetPRMergeCommit(context.Context, string, int) (string, error) {
+	return "", nil
+}
+func (m *reconcileMockProvider) GetAllowedMergeStrategies(context.Context, string) ([]string, error) {
+	return []string{"merge", "squash", "rebase"}, nil
+}
 
 // --- reconcile-specific mock session store ---
 

@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0](https://github.com/recurser/bossanova/compare/v1.7.0...v1.8.0) (2026-04-24)
+
+### Features
+
+* **bossd:** [[#163](https://github.com/recurser/bossanova/issues/163)] harden PR merge paths with post-merge verification and local-only support ([490eaba](https://github.com/recurser/bossanova/commit/490eabacae292017d0b0ea760d57e085de38165e)), closes [#2222](https://github.com/recurser/bossanova/issues/2222)
+
+### Bug Fixes
+
+* **bossalib:** eliminate empty-file race in loadOrCreatePassphrase ([523a83d](https://github.com/recurser/bossanova/commit/523a83d65160889e01748183a3fac7f9174a480a))
+* **bossd:** use -D to delete head branch after squash merge ([30b09dd](https://github.com/recurser/bossanova/commit/30b09dd102b2fb95241b8fe483c17b783ca6ba14))
+* **bosso:** [[#164](https://github.com/recurser/bossanova/issues/164)] filter archived sessions on every ProxyListSessions path ([d32b0da](https://github.com/recurser/bossanova/commit/d32b0da78e526d97a4c5a2006542236c34674b2f))
+* **ci:** skip golangci-lint config verify to drop external schema fetch ([c54bdb6](https://github.com/recurser/bossanova/commit/c54bdb635dc665e2a07688008e3e59126f1e3fb5))
+
 ## [1.7.0](https://github.com/recurser/bossanova/compare/v1.6.2...v1.7.0) (2026-04-23)
 
 ### Features

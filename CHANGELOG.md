@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.1](https://github.com/recurser/bossanova/compare/v1.9.0...v1.9.1) (2026-04-25)
+
+### Bug Fixes
+
+* **global:** production env defaults + Fly h2 backend forwarding ([5164729](https://github.com/recurser/bossanova/commit/51647292f9582866cbc10dadd07618411e01cc25))
+
 ## [1.9.0](https://github.com/recurser/bossanova/compare/v1.8.0...v1.9.0) (2026-04-25)
 
 ### Features

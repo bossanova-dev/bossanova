@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.9.0](https://github.com/recurser/bossanova/compare/v1.8.0...v1.9.0) (2026-04-25)
+
+### Features
+
+* **bossd:** [[#162](https://github.com/recurser/bossanova/issues/162)] reverse-stream client (T3.1-T3.6) ([d387a85](https://github.com/recurser/bossanova/commit/d387a852a89c52b05a548106196b6709fc0483da))
+* **bossd:** [[#162](https://github.com/recurser/bossanova/issues/162)] wire stream client into startup ([f645ac1](https://github.com/recurser/bossanova/commit/f645ac17ce279d97794b97677a73eea97a544fe9))
+* **bosso,web:** [[#162](https://github.com/recurser/bossanova/issues/162)] replace last_heartbeat with connected_at on Daemons page ([a1e5c12](https://github.com/recurser/bossanova/commit/a1e5c12a22c9388acb7088b71460f34c6e09ae8a))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] [T4.6] coordinated TransferSession protocol ([7358749](https://github.com/recurser/bossanova/commit/7358749bd45183eae3e33c0206d5cb5c7258fb0e))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] add registry helpers for proxy command dispatch (T4.x) ([677ff5e](https://github.com/recurser/bossanova/commit/677ff5e5f84c667529baff8a451c4cfb9c90abdd))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] add stream/ package scaffolding with Registry and DaemonState ([68c34ba](https://github.com/recurser/bossanova/commit/68c34ba27363683ba3c1a10f5b50530983c1802d))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] daemon stream gRPC handler ([c78e1ac](https://github.com/recurser/bossanova/commit/c78e1ace3a6cfb78c3a5da8724a50628c67386cd)), closes [#1](https://github.com/recurser/bossanova/issues/1)
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] prometheus metrics and structured stream logs ([1be4f54](https://github.com/recurser/bossanova/commit/1be4f545e79466f762d994d1ec95b0eef63b285f))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] registry read methods (ListForUser, GetSession, DaemonsForRepo) ([ff8983e](https://github.com/recurser/bossanova/commit/ff8983eb7be3772435f8adf76cc54a605d9e50a2))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] rewrite Proxy* handlers on stream Registry (T4.1-T4.5,T4.7) ([61b31e2](https://github.com/recurser/bossanova/commit/61b31e2da652a2f0a32d9fab0729268b47d89891))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] soft-eviction timer with drain window ([5f27bef](https://github.com/recurser/bossanova/commit/5f27bef145f14446dbeb3ab621e8a5d42c597885))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] state mutators for stream deltas ([f62cbe3](https://github.com/recurser/bossanova/commit/f62cbe38609dc0f5f0fd5063002a6deab4c7c08d))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] wire DaemonStream into main with HTTP/2 keepalive ([27764a9](https://github.com/recurser/bossanova/commit/27764a9437ea4082c68b144da21ef6f96357d4c0)), closes [#6](https://github.com/recurser/bossanova/issues/6) [#10](https://github.com/recurser/bossanova/issues/10)
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] writer goroutine, SendCommand, and pending-command lifecycle ([874ecac](https://github.com/recurser/bossanova/commit/874ecac12442ce106e9c574501fa264d06f94467))
+* **proto,bossd:** [[#162](https://github.com/recurser/bossanova/issues/162)] [T4.6] TransferConfirmed and TransferCancel commands ([db0a45e](https://github.com/recurser/bossanova/commit/db0a45ebdb55bd79263882b910dd46f397b9c980)), closes [#14](https://github.com/recurser/bossanova/issues/14)
+* **proto:** [[#162](https://github.com/recurser/bossanova/issues/162)] add DaemonStream RPC and remove Heartbeat/SyncSessions ([a6110f1](https://github.com/recurser/bossanova/commit/a6110f14aee56e3fc1cceae23dca2aaab0467175))
+* **proto:** [[#162](https://github.com/recurser/bossanova/issues/162)] add stream.proto with DaemonEvent, OrchestratorCommand, and related messages ([a4628f5](https://github.com/recurser/bossanova/commit/a4628f56dc300b1868e06cfde9703ffd563179ce)), closes [#14](https://github.com/recurser/bossanova/issues/14)
+
+### Bug Fixes
+
+* **bossd,bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] make local reverse-stream + web app work end-to-end ([5507a0b](https://github.com/recurser/bossanova/commit/5507a0bca2668122742950ce14818e9ab9f362f0))
+* **bossd:** [[#162](https://github.com/recurser/bossanova/issues/162)] gofmt TransferHandler doc comment ([196755e](https://github.com/recurser/bossanova/commit/196755e6e9a38b23d21fb65588531874e9211049))
+* **bossd:** [[#162](https://github.com/recurser/bossanova/issues/162)] populate RepoDisplayName on session deltas ([e10ba21](https://github.com/recurser/bossanova/commit/e10ba2155535c205ba18597b4082eb46adb48170))
+* **bossd:** [[#162](https://github.com/recurser/bossanova/issues/162)] publish session deltas + refresh JWT before reconnect ([29fb6bc](https://github.com/recurser/bossanova/commit/29fb6bcfa85dd20257fda06445894718757f41d8))
+* **bossd:** [[#162](https://github.com/recurser/bossanova/issues/162)] self-heal stream on CodeUnauthenticated via re-register ([9b25d46](https://github.com/recurser/bossanova/commit/9b25d4648653182e694a21d35cc2e3899dd38e95))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] close prior.lifecycle race in stream.Registry.Register ([d435246](https://github.com/recurser/bossanova/commit/d4352463b052cf74e96d13526f7cf44a63734550))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] close race between SendCommand and writer exit ([197e25b](https://github.com/recurser/bossanova/commit/197e25ba1c6b45f03e6395a7cc5181b6346462b2))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] count only visible sessions on the Daemons page ([31a83f1](https://github.com/recurser/bossanova/commit/31a83f149495720cbcee283ee60bcdd405c49260))
+* **bosso:** [[#162](https://github.com/recurser/bossanova/issues/162)] repair stale proxy_test.go references ([f46fb1d](https://github.com/recurser/bossanova/commit/f46fb1d44740f85131e8b730c89c0553b73dc5d4))
+* **web:** [[#162](https://github.com/recurser/bossanova/issues/162)] detect finished sessions via state, not displayStatus ([e59f5ed](https://github.com/recurser/bossanova/commit/e59f5ed702aaf0953ae907515a05d0a9ec146ea9))
+* **web:** [[#162](https://github.com/recurser/bossanova/issues/162)] key finished-row styling off displayLabel ([a022d37](https://github.com/recurser/bossanova/commit/a022d372449f006ed5aa4abf8d908f527ba17666))
+* **web:** [[#162](https://github.com/recurser/bossanova/issues/162)] mute and strike-through merged/closed session rows ([18890f0](https://github.com/recurser/bossanova/commit/18890f00c12f4b4df0c0a942a2c998aa13f09429))
+* **web:** [[#162](https://github.com/recurser/bossanova/issues/162)] stable sort for session list (needs-attention, then createdAt) ([e7b8951](https://github.com/recurser/bossanova/commit/e7b8951722fd5bb8d38d25c3867f0fde8eb7f0d4))
+
 ## [1.8.0](https://github.com/recurser/bossanova/compare/v1.7.0...v1.8.0) (2026-04-24)
 
 ### Features

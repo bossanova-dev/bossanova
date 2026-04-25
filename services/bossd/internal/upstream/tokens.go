@@ -29,6 +29,12 @@ type keychainTokens struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
+// defaultWorkOSClientID is the production WorkOS client used when
+// BOSS_WORKOS_CLIENT_ID is unset. Mirrors services/boss/cmd/auth.go so
+// `boss login` and the bossd refresh path agree on the same client out of
+// the box. Override for staging / self-host.
+const defaultWorkOSClientID = "client_01KP805YXXAMZSN2YB4NGXS9XB"
+
 // openKeyring opens the shared bossanova keyring. bossd runs as a daemon
 // with no flag plumbing, so allowInsecure is hard-wired to false here — a
 // broken environment should surface a real error rather than silently
@@ -159,6 +165,9 @@ func (p *KeychainTokenProvider) Refresh(_ context.Context) (string, error) {
 	p.mu.RUnlock()
 
 	clientID := os.Getenv(p.clientIDEnv)
+	if clientID == "" {
+		clientID = defaultWorkOSClientID
+	}
 	if refreshTok == "" || clientID == "" {
 		return "", fmt.Errorf("refresh not configured (empty refresh token or %s)", p.clientIDEnv)
 	}

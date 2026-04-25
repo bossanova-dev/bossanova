@@ -185,6 +185,13 @@ message Session {
   string display_label = 33;          // eg. "working", "checking", "running 2/4", "? question", "stopped"
   DisplayIntent display_intent = 34;  // semantic meaning; clients map to styling
   bool display_spinner = 35;          // whether to render the spinner glyph
+
+  // Transfer coordination markers used by the coordinated TransferSession
+  // protocol (see docs/plans/2026-04-24-reverse-stream-daemon-model.md,
+  // decision #14). When set, the session is hidden from ListForUser on the
+  // orchestrator until the transfer protocol completes.
+  string transferring_to = 36;    // empty if not transferring out
+  string transferring_from = 37;  // empty if not transferring in
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

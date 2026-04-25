@@ -1,8 +1,9 @@
 .PHONY: format test clean generate
 
-## format: Format Go source files
+## format: Format Go source files and run golangci-lint (catches typecheck errors locally)
 format:
 	gofmt -w .
+	golangci-lint run ./...
 
 ## test: Run tests under -race with coverage
 test:

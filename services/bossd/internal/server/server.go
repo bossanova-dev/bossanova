@@ -30,7 +30,6 @@ import (
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
-	"github.com/recurser/bossd/internal/upstream"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -65,7 +64,7 @@ type Server struct {
 	provider           vcs.Provider
 	pluginHost         *plugin.Host
 	completionNotifier session.SessionCompletionNotifier
-	upstreamMgr        *upstream.Manager
+	authNotifier       AuthNotifier
 	logger             zerolog.Logger
 	listener           net.Listener
 	srv                *http.Server
@@ -89,8 +88,20 @@ type Config struct {
 	Provider           vcs.Provider
 	PluginHost         *plugin.Host
 	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
-	UpstreamMgr        *upstream.Manager                 // optional, nil in local-only mode
+	AuthNotifier       AuthNotifier                      // optional, nil in local-only mode
 	Logger             zerolog.Logger
+}
+
+// AuthNotifier is the narrow interface the NotifyAuthChange RPC
+// delegates to. Under the legacy heartbeat Manager this was the full
+// upstream.Manager; under the new StreamClient wiring it's satisfied by
+// a small adapter in cmd/main.go that toggles the stream's
+// reconnect-with-new-token path. Defined here rather than in the
+// upstream package so the server doesn't need to import upstream just
+// to depend on this one interface.
+type AuthNotifier interface {
+	NotifyLogin(ctx context.Context, repoIDs []string) error
+	NotifyLogout()
 }
 
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
@@ -110,7 +121,7 @@ func New(cfg Config) *Server {
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
 		completionNotifier: cfg.CompletionNotifier,
-		upstreamMgr:        cfg.UpstreamMgr,
+		authNotifier:       cfg.AuthNotifier,
 		logger:             cfg.Logger,
 	}
 }
@@ -1906,7 +1917,7 @@ func (s *Server) NotifyAuthChange(ctx context.Context, req *connect.Request[pb.N
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("action must be \"login\" or \"logout\""))
 	}
 
-	if s.upstreamMgr == nil {
+	if s.authNotifier == nil {
 		// No orchestrator configured — nothing to do.
 		return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil
 	}
@@ -1921,12 +1932,12 @@ func (s *Server) NotifyAuthChange(ctx context.Context, req *connect.Request[pb.N
 		for i, r := range repos {
 			repoIDs[i] = r.ID
 		}
-		if err := s.upstreamMgr.NotifyLogin(ctx, repoIDs); err != nil {
+		if err := s.authNotifier.NotifyLogin(ctx, repoIDs); err != nil {
 			s.logger.Warn().Err(err).Msg("upstream connect after login failed")
 			// Non-fatal: daemon still works in local mode.
 		}
 	case "logout":
-		s.upstreamMgr.NotifyLogout()
+		s.authNotifier.NotifyLogout()
 	}
 
 	return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil

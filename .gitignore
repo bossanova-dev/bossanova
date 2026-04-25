@@ -7,6 +7,7 @@ bin/
 
 # Node (prettier only)
 node_modules/
+.node-version
 
 # Protobuf generated code (committed for CI — regenerate with `make generate`)
 # lib/bossalib/gen/
@@ -45,3 +46,4 @@ docs/handoffs/
 # Beads
 .beads/interactions.jsonl
 .beads/issues.jsonl
+.gstack/

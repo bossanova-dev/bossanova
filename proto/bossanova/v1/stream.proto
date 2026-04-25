@@ -1,0 +1,285 @@
+syntax = "proto3";
+
+package bossanova.v1;
+
+option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
+
+import "bossanova/v1/daemon.proto";
+import "bossanova/v1/models.proto";
+import "google/protobuf/timestamp.proto";
+
+// This file defines the messages for the DaemonStream bidirectional RPC.
+// The RPC itself is declared in orchestrator.proto.
+//
+// DaemonEvent: daemon → orchestrator (bossd → bosso)
+// OrchestratorCommand: orchestrator → daemon (bosso → bossd)
+//
+// Protocol:
+//   - On connect, daemon MUST send DaemonSnapshot as the first event.
+//   - Bosso replaces any prior in-memory state for the daemon_id from the snapshot.
+//   - Subsequent events are incremental deltas (SessionDelta, ChatDelta, ...).
+//   - OrchestratorCommands flow bosso → bossd; daemon replies with CommandResult
+//     (correlated by command_id), SessionAttachChunk (for attach), or WebhookAck.
+//
+// See docs/plans/2026-04-24-reverse-stream-daemon-model.md for full design.
+
+// --- Envelope: daemon → orchestrator ---
+
+// DaemonEvent is the oneof envelope for every message a daemon pushes up the
+// stream. Unknown oneof cases are logged and skipped by the orchestrator for
+// forward compatibility.
+message DaemonEvent {
+  oneof event {
+    // Required first event on every connect; bosso replaces any prior snapshot.
+    DaemonSnapshot snapshot = 1;
+    SessionDelta session = 2;
+    ChatDelta chat = 3;
+    // Coalesced ~100ms on the daemon (decision #11). Named *Delta to avoid
+    // collision with the ChatStatus enum in models.proto.
+    ChatStatusDelta status = 4;
+    // Response to a WebhookEvent command from the orchestrator.
+    WebhookAck ack = 5;
+    // Response to Stop/Pause/Resume/Transfer/Attach commands.
+    CommandResult result = 6;
+    // In-band WorkOS JWT refresh. Bosso re-verifies against WorkOS JWKS.
+    TokenRefresh token_refresh = 7;
+    // Stdout/stderr chunk from an active AttachSession.
+    SessionAttachChunk attach_chunk = 8;
+  }
+}
+
+// --- Envelope: orchestrator → daemon ---
+
+// OrchestratorCommand is the envelope for every command bosso sends down the
+// stream. command_id is echoed back in the matching CommandResult, WebhookAck,
+// or SessionAttachChunk.
+message OrchestratorCommand {
+  // Correlates with CommandResult/WebhookAck/SessionAttachChunk responses.
+  string command_id = 1;
+  oneof cmd {
+    StopSessionCommand stop = 2;
+    PauseSessionCommand pause = 3;
+    ResumeSessionCommand resume = 4;
+    // Coordinated transfer protocol (decision #14 in the design doc).
+    TransferSessionCommand transfer = 5;
+    WebhookEvent webhook = 6;
+    // bosso → daemon: start streaming stdout for a session. Replies flow as
+    // SessionAttachChunk events on the daemon→orchestrator side.
+    AttachSessionCommand attach = 7;
+    // Second half of the coordinated transfer protocol (decision #14). Sent
+    // by bosso to the SOURCE daemon after the target's CommandResult has
+    // confirmed a successful resume. The source DELETEs its copy and ACKs
+    // with CommandResult{Ok:true}; this is the only place the UI's "one
+    // copy visible" invariant transitions the visible session from source
+    // to target.
+    TransferConfirmed transfer_confirmed = 8;
+    // Rollback leg of the coordinated transfer protocol (decision #14).
+    // Sent by bosso to EITHER the source (clear transferring_to → session
+    // reappears) or the target (if it already CREATEd → delete the copy)
+    // when any earlier step fails. Idempotent: a daemon that never saw a
+    // matching transferring_to / transferring_from ACKs Ok:true with
+    // no-op.
+    TransferCancel transfer_cancel = 9;
+  }
+}
+
+// --- Snapshot (first event on every connect) ---
+
+// DaemonSnapshot is the required first event on every stream connect. It
+// carries slim metadata only (IDs, state, timestamps, preview strings) — full
+// chat transcripts are fetched on demand via AttachSessionCommand (decision #5).
+message DaemonSnapshot {
+  string daemon_id = 1;
+  string hostname = 2;
+  repeated string repo_ids = 3;
+  // Slim: no full transcripts, just session state + display fields.
+  repeated Session sessions = 4;
+  // Metadata only — see ClaudeChatMetadata.
+  repeated ClaudeChatMetadata chats = 5;
+  // Live chat statuses keyed by claude_id (reuses ChatStatusEntry from daemon.proto).
+  repeated ChatStatusEntry statuses = 6;
+}
+
+// --- Deltas ---
+
+// SessionDelta is a single session lifecycle change. On DELETE, only
+// session.id is populated; on CREATE/UPDATE the full Session is included.
+message SessionDelta {
+  // Kind names are prefixed with KIND_ to satisfy buf STANDARD lint
+  // (enum values must share the enum-name prefix). Wire numbers match the
+  // design doc spec.
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_CREATED = 1;
+    KIND_UPDATED = 2;
+    KIND_DELETED = 3;
+  }
+  Kind kind = 1;
+  // On CREATE/UPDATE: full Session. On DELETE: id only.
+  // Session.transferring_to / transferring_from (models.proto) hide the
+  // session from ListForUser during the coordinated transfer protocol.
+  Session session = 2;
+}
+
+// ChatDelta is a single ClaudeChatMetadata lifecycle change.
+message ChatDelta {
+  // Kind names are prefixed with KIND_ to satisfy buf STANDARD lint.
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_CREATED = 1;
+    KIND_UPDATED = 2;
+    KIND_DELETED = 3;
+  }
+  Kind kind = 1;
+  // On CREATE/UPDATE: full metadata. On DELETE: id only.
+  ClaudeChatMetadata chat = 2;
+}
+
+// ChatStatusDelta reports the live status of a Claude Code chat process.
+// Named *Delta to avoid collision with the ChatStatus enum in models.proto.
+// Coalesced by the daemon in a ~100ms window (decision #11).
+message ChatStatusDelta {
+  string session_id = 1;
+  ChatStatus status = 2;
+  google.protobuf.Timestamp last_output_at = 3;
+}
+
+// --- Slim metadata types ---
+
+// ClaudeChatMetadata is the slim, snapshot-sized view of a Claude chat.
+// NO full transcripts — last_message_preview is a short summary only.
+// Full transcripts are fetched on demand via AttachSessionCommand.
+message ClaudeChatMetadata {
+  string id = 1;
+  string session_id = 2;
+  string claude_id = 3;
+  string title = 4;
+  string daemon_id = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+  // First ~200 characters of the last message. NOT the full message.
+  string last_message_preview = 8;
+}
+
+// --- Command responses ---
+
+// WebhookAck is the daemon's acknowledgement that it received (and dispatched
+// or rejected) a forwarded webhook. command_id correlates to the
+// OrchestratorCommand.command_id that carried the WebhookEvent.
+message WebhookAck {
+  string command_id = 1;
+  bool ok = 2;
+  // Populated when ok == false.
+  string error = 3;
+}
+
+// CommandResult is the daemon's response to Stop/Pause/Resume/Transfer
+// commands. command_id correlates back to the originating OrchestratorCommand.
+message CommandResult {
+  string command_id = 1;
+  bool ok = 2;
+  // Populated when ok == false.
+  string error = 3;
+  oneof payload {
+    // Stop/Pause/Resume return the updated Session.
+    Session session = 4;
+    // Transfer target confirms RESUME with this payload (decision #14).
+    TransferConfirmed transfer_confirmed = 5;
+  }
+}
+
+// TokenRefresh carries a freshly-obtained WorkOS JWT. Bosso re-verifies it
+// against WorkOS JWKS (same path as initial validation) before accepting. On
+// refresh failure, the daemon closes the stream and reconnects.
+//
+// Only the access_token travels on the wire — refresh tokens never cross the
+// stream.
+message TokenRefresh {
+  // Newly-obtained WorkOS JWT.
+  string access_token = 1;
+}
+
+// SessionAttachChunk is a single streaming event from an active AttachSession.
+// Reuses OutputLine / StateChange / SessionEnded from daemon.proto so the
+// orchestrator can forward these verbatim to the proxied AttachSession
+// response.
+message SessionAttachChunk {
+  string session_id = 1;
+  // Correlates back to the originating AttachSessionCommand.
+  string command_id = 2;
+  oneof event {
+    OutputLine output_line = 3;
+    StateChange state_change = 4;
+    SessionEnded session_ended = 5;
+  }
+}
+
+// --- Commands: bosso → bossd ---
+
+// StopSessionCommand asks the daemon to stop a session and emit a
+// CommandResult with the updated Session in the payload.
+message StopSessionCommand {
+  string session_id = 1;
+}
+
+// PauseSessionCommand asks the daemon to pause a session and emit a
+// CommandResult with the updated Session in the payload.
+message PauseSessionCommand {
+  string session_id = 1;
+}
+
+// ResumeSessionCommand asks the daemon to resume a session and emit a
+// CommandResult with the updated Session in the payload.
+message ResumeSessionCommand {
+  string session_id = 1;
+}
+
+// AttachSessionCommand asks the daemon to start streaming stdout/stderr for
+// a session. Replies flow as SessionAttachChunk events carrying the same
+// command_id.
+message AttachSessionCommand {
+  string session_id = 1;
+}
+
+// TransferSessionCommand asks a daemon to take part in a coordinated transfer
+// protocol (decision #14). Source daemon receives this first, pauses, emits a
+// SessionDelta with transferring_to set. Target daemon then receives it,
+// creates the session with transferring_from set, resumes, and replies with
+// CommandResult{TransferConfirmed}.
+message TransferSessionCommand {
+  string session_id = 1;
+  string source_daemon_id = 2;
+  string target_daemon_id = 3;
+}
+
+// TransferConfirmed is the payload sent by the target daemon on successful
+// resume. Bosso uses this to tell the source daemon to DELETE its copy.
+message TransferConfirmed {
+  string session_id = 1;
+  string target_daemon_id = 2;
+}
+
+// TransferCancel is emitted by the source daemon (or by bosso to the source)
+// when any step of the coordinated transfer fails. Clears the
+// transferring_to marker so the session becomes visible on the source again.
+message TransferCancel {
+  string session_id = 1;
+  string reason = 2;
+}
+
+// WebhookEvent is the payload of an OrchestratorCommand that forwards a
+// provider webhook (GitHub, GitLab, ...) to a daemon. Bosso has already
+// HMAC-verified the payload and selected the target daemons from the
+// repo_id → daemon_id index.
+message WebhookEvent {
+  // Origin URL of the repo the webhook fired on (e.g. "https://github.com/owner/repo").
+  string repo_origin_url = 1;
+  // VCS provider: "github", "gitlab", etc.
+  string provider = 2;
+  // Event type, e.g. "pull_request", "push".
+  string event_type = 3;
+  // Raw webhook body. Already HMAC-verified by bosso.
+  bytes payload = 4;
+  // Selected headers for replay context (e.g. X-GitHub-Delivery, X-GitHub-Event).
+  map<string, string> headers = 5;
+}

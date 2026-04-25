@@ -4,6 +4,13 @@ modules:
     lint:
       use:
         - STANDARD
+      # DaemonStream uses DaemonEvent / OrchestratorCommand as oneof envelopes
+      # shared across many event kinds; the RPC-name-based request/response
+      # naming convention does not apply. See stream.proto and
+      # docs/plans/2026-04-24-reverse-stream-daemon-model.md.
+      except:
+        - RPC_REQUEST_STANDARD_NAME
+        - RPC_RESPONSE_STANDARD_NAME
     breaking:
       use:
         - FILE

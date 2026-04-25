@@ -6,6 +6,7 @@ option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 
 import "bossanova/v1/daemon.proto";
 import "bossanova/v1/models.proto";
+import "bossanova/v1/stream.proto";
 import "google/protobuf/timestamp.proto";
 
 // OrchestratorService is the cloud-hosted service that coordinates multiple
@@ -13,9 +14,12 @@ import "google/protobuf/timestamp.proto";
 service OrchestratorService {
   // Daemon registry
   rpc RegisterDaemon(RegisterDaemonRequest) returns (RegisterDaemonResponse);
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // DaemonStream is the long-lived bidirectional channel between a daemon
+  // and the orchestrator. Daemons push session deltas and other events;
+  // the orchestrator pushes commands (proxy RPC invocations, transfer
+  // directives, etc.). Replaces Heartbeat and SyncSessions.
+  rpc DaemonStream(stream DaemonEvent) returns (stream OrchestratorCommand);
   rpc ListDaemons(ListDaemonsRequest) returns (ListDaemonsResponse);
-  rpc SyncSessions(SyncSessionsRequest) returns (SyncSessionsResponse);
 
   // Session transfer between daemons
   rpc TransferSession(TransferSessionRequest) returns (TransferSessionResponse);
@@ -59,15 +63,6 @@ message RegisterDaemonResponse {
   string session_token = 2;
 }
 
-message HeartbeatRequest {
-  string daemon_id = 1;
-  google.protobuf.Timestamp timestamp = 2;
-  // Active session count for load info.
-  int32 active_sessions = 3;
-}
-
-message HeartbeatResponse {}
-
 message ListDaemonsRequest {}
 
 message DaemonInfo {
@@ -75,20 +70,16 @@ message DaemonInfo {
   string hostname = 2;
   repeated string repo_ids = 3;
   int32 active_sessions = 4;
-  google.protobuf.Timestamp last_heartbeat = 5;
+  // Timestamp the current bidirectional stream from the daemon was
+  // established. Resets on every reconnect — the reverse-stream model
+  // has no separate heartbeat; the live stream IS the liveness signal.
+  google.protobuf.Timestamp connected_at = 5;
   bool online = 6;
 }
 
 message ListDaemonsResponse {
   repeated DaemonInfo daemons = 1;
 }
-
-message SyncSessionsRequest {
-  string daemon_id = 1;
-  repeated Session sessions = 2;
-}
-
-message SyncSessionsResponse {}
 
 // --- Session Transfer ---
 

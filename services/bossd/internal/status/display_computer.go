@@ -57,6 +57,22 @@ type DisplayStatusComputer struct {
 	chats     db.ClaudeChatStore
 	workflows db.WorkflowStore
 	logger    zerolog.Logger
+	// onUpdate, when non-nil, is invoked after a successful display-trio
+	// write. It is the chokepoint used to fan recomputed labels out to the
+	// reverse stream — without this, the initial DaemonSnapshot is the
+	// only state bosso ever sees, and labels recomputed after startup
+	// (the display poller's gh-pr-checks results, chat status changes,
+	// workflow transitions) never reach the web UI.
+	onUpdate func(ctx context.Context, sessionID string)
+}
+
+// SetOnUpdate wires a post-write callback. Called after Recompute writes a
+// new (label, intent, spinner) trio to the DB. The callback receives the
+// session_id so it can re-read the full row and project to pb.Session in
+// whatever form the publisher needs — keeping this package free of an
+// upstream / server import.
+func (c *DisplayStatusComputer) SetOnUpdate(fn func(ctx context.Context, sessionID string)) {
+	c.onUpdate = fn
 }
 
 // NewDisplayStatusComputer constructs a computer wired to the given inputs.
@@ -187,6 +203,9 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		// that we don't bother demoting them.
 		c.logger.Warn().Err(err).Str("session_id", sessionID).Msg("recompute: update failed")
 		return nil
+	}
+	if c.onUpdate != nil {
+		c.onUpdate(ctx, sessionID)
 	}
 	return nil
 }

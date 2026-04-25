@@ -13,9 +13,10 @@ LDFLAGS := -s -w \
 	-X github.com/recurser/bossalib/buildinfo.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	-X github.com/recurser/bossalib/buildinfo.Date=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-## format: Format Go source files
+## format: Format Go source files and run golangci-lint (catches typecheck errors locally)
 format:
 	gofmt -w .
+	golangci-lint run ./...
 
 ## test: Run tests under -race with coverage (300s timeout covers E2E TUI tests under race instrumentation)
 test:

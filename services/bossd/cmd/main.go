@@ -3,21 +3,32 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossalib/models"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/skilldata"
@@ -402,10 +413,77 @@ func run(opts runOpts) error {
 	}
 
 	// --- Upstream (optional, cloud mode) ---
+	//
+	// The legacy upstream.Manager (heartbeat + SyncSessions loops) was
+	// replaced in T3.7 by upstream.StreamClient, which opens a single
+	// long-lived DaemonStream and receives commands the orchestrator
+	// pushes. Bootstrap sequence:
+	//   1. Build the Connect client against BOSSD_ORCHESTRATOR_URL.
+	//   2. Call RegisterDaemon with the WorkOS JWT to obtain a
+	//      session_token (bosso persists the daemon's identity).
+	//   3. Construct StreamClient with adapters that wrap the existing
+	//      stores/lifecycle/tmux reader — no new subsystems needed.
+	//   4. Launch Run(ctx) in a tracked goroutine. It owns reconnects,
+	//      token refresh, snapshot, delta forwarding, and command
+	//      dispatch on its own.
+	streamBus := upstream.NewStreamBus(log.Logger)
+	defer streamBus.Close()
 
-	var upstreamMgr *upstream.Manager
+	// Wire the display-status computer's post-write hook into the stream
+	// bus so every Recompute that actually writes a new (label, intent,
+	// spinner) trio fans out a SessionDelta{UPDATED} on the reverse
+	// stream. Without this, bosso only ever sees the initial
+	// DaemonSnapshot — labels recomputed after startup (PR check
+	// results, chat status, workflow transitions) never reach the web UI
+	// and every session shows whatever it computed to before the gh
+	// poller had run, which is uniformly "idle" for sessions whose chat
+	// status is IDLE and whose PR check state is UNSPECIFIED.
+	displayComputer.SetOnUpdate(func(ctx context.Context, sessionID string) {
+		row, err := rawSessions.Get(ctx, sessionID)
+		if err != nil {
+			log.Debug().Err(err).Str("session_id", sessionID).Msg("display update: session lookup failed")
+			return
+		}
+		pbSess := server.SessionToProto(row)
+		// Populate the joined repo display name. bosso applies session
+		// deltas as full replacements (state.go applySessionDelta), so
+		// omitting this would clobber the populated value the initial
+		// DaemonSnapshot set and the web UI would lose the Repo column.
+		if row.RepoID != "" {
+			if r, err := repos.Get(ctx, row.RepoID); err == nil && r != nil {
+				pbSess.RepoDisplayName = r.DisplayName
+			}
+		}
+		streamBus.Publish(upstream.StreamEvent{
+			Session: &upstream.SessionEvent{
+				Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
+				Session: pbSess,
+			},
+		})
+	})
+
+	var streamClient *upstream.StreamClient
+	var authNotifier server.AuthNotifier
 	if cfg := upstream.ConfigFromEnv(); cfg != nil {
-		upstreamMgr = upstream.NewManager(*cfg, log.Logger, sessionLister)
+		// ConnectRPC bidi streams (DaemonStream) require HTTP/2. Over
+		// TLS that's handled via ALPN automatically; over plain HTTP
+		// (local dev against http://localhost:8080) Go's default
+		// transport stays on HTTP/1.1 and bosso's h2c handler rejects
+		// bidi with HTTP 505. When the orchestrator URL is cleartext,
+		// use an h2c-capable Transport so the daemon speaks HTTP/2
+		// directly.
+		httpClient := &http.Client{Timeout: 30 * time.Second}
+		if strings.HasPrefix(cfg.OrchestratorURL, "http://") {
+			httpClient.Transport = &http2.Transport{
+				AllowHTTP: true,
+				DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+					var d net.Dialer
+					return d.DialContext(ctx, network, addr)
+				},
+			}
+			httpClient.Timeout = 0 // streams must not time out
+		}
+		client := bossanovav1connect.NewOrchestratorServiceClient(httpClient, cfg.OrchestratorURL)
 
 		// Gather repo IDs for registration.
 		allRepos, err := repos.List(context.Background())
@@ -417,10 +495,175 @@ func run(opts runOpts) error {
 			repoIDs = append(repoIDs, r.ID)
 		}
 
-		if err := upstreamMgr.Connect(context.Background(), repoIDs); err != nil {
+		// Prefer BOSSD_USER_JWT; fall back to whatever the keychain
+		// holds. Empty is allowed — bosso will reject the handshake and
+		// the outer Run loop will back off, but the daemon stays up in
+		// local-only mode.
+		tokenProvider := upstream.NewKeychainTokenProvider()
+		authToken := cfg.UserJWT
+		if authToken == "" {
+			// If the cached keychain token is expired (or about to be),
+			// proactively refresh via the WorkOS refresh_token before
+			// RegisterDaemon. The periodic refresh loop only runs after
+			// the stream is alive, which is too late — bosso rejects the
+			// initial register with an expired JWT and the whole startup
+			// falls back to local-only mode.
+			exp := tokenProvider.ExpiresAt()
+			if !exp.IsZero() && time.Until(exp) < 60*time.Second {
+				refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if _, err := tokenProvider.Refresh(refreshCtx); err != nil {
+					log.Warn().Err(err).Msg("proactive token refresh before register failed")
+				}
+				refreshCancel()
+			}
+			authToken = tokenProvider.Token()
+		}
+
+		regCtx, regCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		sessionToken, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, authToken, repoIDs)
+		regCancel()
+		if err != nil {
 			// Non-fatal: daemon works in local mode without orchestrator.
-			// Keep upstreamMgr non-nil so NotifyAuthChange can reconnect later.
-			log.Warn().Err(err).Msg("upstream connection failed, running in local-only mode")
+			log.Warn().Err(err).Msg("upstream register failed, running in local-only mode")
+
+			// Diagnostic dump: print the register inputs and the JWT
+			// claims (unverified) so it's obvious when the daemon is
+			// sending an expired or wrong-client token. Access token
+			// itself is not logged — just the claims.
+			iss, sub, aud, expStr, jwtErr := decodeJWTClaimsForLog(authToken)
+			log.Warn().
+				Str("orchestrator_url", cfg.OrchestratorURL).
+				Str("daemon_id", cfg.DaemonID).
+				Str("hostname", cfg.Hostname).
+				Bool("bossd_user_jwt_set", cfg.UserJWT != "").
+				Int("token_len", len(authToken)).
+				Str("boss_workos_client_id", os.Getenv("BOSS_WORKOS_CLIENT_ID")).
+				Str("bosso_workos_client_id", os.Getenv("BOSSO_WORKOS_CLIENT_ID")).
+				Str("jwt_iss", iss).
+				Str("jwt_sub", sub).
+				Str("jwt_aud", aud).
+				Str("jwt_exp", expStr).
+				AnErr("jwt_decode_err", jwtErr).
+				Msg("upstream register diagnostic")
+		} else {
+			log.Info().Str("daemon_id", cfg.DaemonID).Msg("registered with orchestrator")
+
+			// bosso expects BOTH credentials on the stream:
+			//   Authorization: Bearer <WorkOS JWT>   — proves user identity
+			//   X-Daemon-Token: <session_token>      — proves daemon identity
+			// See services/bosso/internal/server/stream.go DaemonStream.
+
+			// Snapshot readers pull from the bossd stores, projecting
+			// to the slim pb types the snapshot expects.
+			snapshotSessions := upstream.NewSessionSnapshotReader(sessionLister)
+			snapshotRepos := upstream.NewRepoSnapshotReader(func(ctx context.Context) ([]string, error) {
+				rs, err := repos.List(ctx)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]string, len(rs))
+				for i, r := range rs {
+					out[i] = r.ID
+				}
+				return out, nil
+			})
+			snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ClaudeChatMetadata, error) {
+				chats, err := claudeChats.ListWithTmuxSession(ctx)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]*bossanovav1.ClaudeChatMetadata, 0, len(chats))
+				for _, c := range chats {
+					out = append(out, &bossanovav1.ClaudeChatMetadata{
+						Id:        c.ID,
+						SessionId: c.SessionID,
+						ClaudeId:  c.ClaudeID,
+						Title:     c.Title,
+						DaemonId:  c.DaemonID,
+						CreatedAt: timestamppb.New(c.CreatedAt),
+					})
+				}
+				return out, nil
+			})
+			snapshotStatuses := upstream.NewStatusSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ChatStatusEntry, error) {
+				// No bulk accessor today — return empty. The chat-status
+				// tracker's public surface is per-claude-id; expanding
+				// it is an independent change, and the coalescer will
+				// fill the orchestrator's map with live deltas shortly
+				// after reconnect.
+				return nil, nil
+			})
+
+			// Command adapters delegate back to the existing
+			// lifecycle/store surfaces.
+			cmdHandler := &upstream.CommandHandlerAdapter{
+				Lifecycle:  lifecycle,
+				Sessions:   sessionGetterAdapter{sessions: sessions},
+				Automation: automationToggleAdapter{sessions: sessions},
+				OnCompletion: func(ctx context.Context, sessionID string) {
+					if orchestrator != nil {
+						orchestrator.HandleSessionCompleted(ctx, sessionID, models.TaskMappingStatusFailed)
+					}
+				},
+			}
+
+			// Attacher bridges to claude.Runner's subscribe/history.
+			attacher := &upstream.SessionAttacherAdapter{
+				Sessions: attachLookupAdapter{sessions: sessions},
+				Claude:   claudeAttachAdapter{runner: claudeRunner},
+				Logger:   log.Logger,
+			}
+
+			// reRegister self-heals from a stale session_token (e.g. another
+			// bossd with the same daemon_id rotated it via UPSERT, or
+			// bosso's daemons row was cleared). The Run loop calls this
+			// after a CodeUnauthenticated handshake; we re-use the fresh
+			// JWT path from startup (tokenProvider auto-refreshes inside
+			// the opener) and gather repoIDs each call so a repo set that
+			// changed since startup is reflected.
+			reRegister := func(ctx context.Context) (string, error) {
+				currentRepos, err := repos.List(ctx)
+				if err != nil {
+					log.Warn().Err(err).Msg("reRegister: repos.List failed; proceeding with empty set")
+					currentRepos = nil
+				}
+				ids := make([]string, 0, len(currentRepos))
+				for _, r := range currentRepos {
+					ids = append(ids, r.ID)
+				}
+				jwt := tokenProvider.Token()
+				if jwt == "" {
+					jwt = cfg.UserJWT
+				}
+				return upstream.Register(ctx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
+			}
+
+			streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
+				Client:       client,
+				AuthToken:    authToken,    // WorkOS JWT → Authorization header
+				SessionToken: sessionToken, // daemon token → X-Daemon-Token header
+				DaemonID:     cfg.DaemonID,
+				Hostname:     cfg.Hostname,
+				Stores: upstream.StreamStores{
+					Sessions: snapshotSessions,
+					Chats:    snapshotChats,
+					Repos:    snapshotRepos,
+					Statuses: snapshotStatuses,
+				},
+				Events:         streamBus,
+				TokenProvider:  tokenProvider,
+				CommandHandler: cmdHandler,
+				Webhooks:       &upstream.NoopWebhookDispatcher{Logger: log.Logger},
+				Attacher:       attacher,
+				ReRegister:     reRegister,
+				Logger:         log.Logger,
+			})
+
+			authNotifier = &streamAuthAdapter{
+				streamClient:  streamClient,
+				tokenProvider: tokenProvider,
+				logger:        log.Logger,
+			}
 		}
 	}
 
@@ -439,7 +682,7 @@ func run(opts runOpts) error {
 		Provider:           ghProvider,
 		PluginHost:         pluginHost,
 		CompletionNotifier: orchestrator,
-		UpstreamMgr:        upstreamMgr,
+		AuthNotifier:       authNotifier,
 		Logger:             log.Logger,
 	})
 
@@ -496,6 +739,18 @@ func run(opts runOpts) error {
 		errCh <- srv.Serve()
 	})
 
+	// Start the upstream StreamClient (no-op in local-only mode).
+	// streamCtx is separate from pollerCtx so we can stop the stream
+	// before the plugin host is torn down, letting orchestrator commands
+	// that ride on it drain cleanly.
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	if streamClient != nil {
+		trackedGo(func() {
+			streamClient.Run(streamCtx)
+		})
+	}
+
 	// --- Ready hook (tests) ---
 
 	if opts.onReady != nil {
@@ -517,10 +772,8 @@ func run(opts runOpts) error {
 	// calls into plugins.
 	pollerCancel()
 
-	// Stop upstream heartbeat.
-	if upstreamMgr != nil {
-		upstreamMgr.Stop()
-	}
+	// Stop upstream StreamClient (if running).
+	streamCancel()
 
 	// Stop plugin host.
 	if err := pluginHost.Stop(); err != nil {
@@ -556,4 +809,153 @@ func run(opts runOpts) error {
 
 	log.Info().Msg("daemon stopped")
 	return nil
+}
+
+// sessionGetterAdapter wires db.SessionStore.Get into the
+// upstream.SessionReader interface used by the command handler adapter.
+type sessionGetterAdapter struct {
+	sessions db.SessionStore
+}
+
+func (a sessionGetterAdapter) GetSession(ctx context.Context, id string) (*bossanovav1.Session, error) {
+	sess, err := a.sessions.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return server.SessionToProto(sess), nil
+}
+
+// automationToggleAdapter exposes db.SessionStore.Update's
+// AutomationEnabled field as a narrow interface so the pause/resume
+// command path doesn't need the full update surface.
+type automationToggleAdapter struct {
+	sessions db.SessionStore
+}
+
+func (a automationToggleAdapter) SetAutomationEnabled(ctx context.Context, sessionID string, enabled bool) error {
+	_, err := a.sessions.Update(ctx, sessionID, db.UpdateSessionParams{AutomationEnabled: &enabled})
+	return err
+}
+
+// attachLookupAdapter resolves a session ID to its current claude
+// session ID and state — the two bits the attacher needs to decide
+// whether to tail or bounce straight to SessionEnded.
+type attachLookupAdapter struct {
+	sessions db.SessionStore
+}
+
+func (a attachLookupAdapter) LookupAttachTarget(ctx context.Context, sessionID string) (string, int32, error) {
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return "", 0, err
+	}
+	claudeID := ""
+	if sess.ClaudeSessionID != nil {
+		claudeID = *sess.ClaudeSessionID
+	}
+	return claudeID, int32(sess.State), nil
+}
+
+// claudeAttachAdapter converts claude.Runner's OutputLine channel into
+// the upstream-package AttachOutputLine shape so the attacher's
+// interface stays free of the claude package.
+type claudeAttachAdapter struct {
+	runner claude.ClaudeRunner
+}
+
+func (a claudeAttachAdapter) IsRunning(claudeSessionID string) bool {
+	return a.runner.IsRunning(claudeSessionID)
+}
+
+func (a claudeAttachAdapter) History(claudeSessionID string) []upstream.AttachOutputLine {
+	lines := a.runner.History(claudeSessionID)
+	out := make([]upstream.AttachOutputLine, len(lines))
+	for i, l := range lines {
+		out[i] = upstream.AttachOutputLine{Text: l.Text, Timestamp: l.Timestamp}
+	}
+	return out
+}
+
+func (a claudeAttachAdapter) Subscribe(ctx context.Context, claudeSessionID string) (<-chan upstream.AttachOutputLine, error) {
+	ch, err := a.runner.Subscribe(ctx, claudeSessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan upstream.AttachOutputLine, 64)
+	go func() {
+		defer close(out)
+		for line := range ch {
+			select {
+			case out <- upstream.AttachOutputLine{Text: line.Text, Timestamp: line.Timestamp}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// streamAuthAdapter implements server.AuthNotifier by reloading
+// credentials from the keychain and signalling the StreamClient to
+// reconnect. The stream's own Run loop picks up the refreshed token on
+// the next handshake, so the adapter only needs to refresh the
+// tokenProvider cache — cancellation of the current stream attempt is
+// implicit in the reconnect-on-error path.
+type streamAuthAdapter struct {
+	streamClient  *upstream.StreamClient
+	tokenProvider *upstream.KeychainTokenProvider
+	logger        zerolog.Logger
+}
+
+// NotifyLogin reloads keychain credentials and nudges the stream to
+// reconnect with the fresh token. The StreamClient's outer Run loop
+// treats any stream error as a reconnect trigger, so forcing a single
+// token-refresh event is sufficient; a full tear-down is overkill.
+func (a *streamAuthAdapter) NotifyLogin(_ context.Context, _ []string) error {
+	if a.tokenProvider != nil {
+		// Best-effort: the stream's outer Run loop reconnects on any
+		// error, so a refresh failure here is not actionable.
+		_, _ = a.tokenProvider.Refresh(context.Background())
+	}
+	return nil
+}
+
+// NotifyLogout is a soft signal today: the stream stays up until the
+// server shuts it down via streamCancel. A future iteration can add an
+// explicit "drop stream" hook; for now the JWT staleness is handled by
+// the refresh loop closing the stream when bosso rejects it.
+func (a *streamAuthAdapter) NotifyLogout() {}
+
+// decodeJWTClaimsForLog extracts iss/sub/aud/exp from an unverified JWT
+// for diagnostic logging. It deliberately does not validate the signature
+// — it's just pulling fields out of the base64url-encoded payload so the
+// log line tells us whether the token is expired, for the wrong client,
+// or malformed. Returns empty strings + err on any parse failure.
+func decodeJWTClaimsForLog(token string) (iss, sub, aud, exp string, err error) {
+	if token == "" {
+		return "", "", "", "", fmt.Errorf("empty token")
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", "", "", "", fmt.Errorf("not a JWT (%d parts)", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("base64 decode payload: %w", err)
+	}
+	var claims struct {
+		Iss string          `json:"iss"`
+		Sub string          `json:"sub"`
+		Aud json.RawMessage `json:"aud"`
+		Exp int64           `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", "", "", "", fmt.Errorf("unmarshal claims: %w", err)
+	}
+	expStr := ""
+	if claims.Exp > 0 {
+		t := time.Unix(claims.Exp, 0)
+		expStr = fmt.Sprintf("%s (in %s)", t.Format(time.RFC3339), time.Until(t).Round(time.Second))
+	}
+	return claims.Iss, claims.Sub, string(claims.Aud), expStr, nil
 }

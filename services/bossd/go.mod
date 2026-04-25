@@ -10,6 +10,7 @@ require (
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/rs/zerolog v1.34.0
 	go.uber.org/goleak v1.3.0
+	golang.org/x/net v0.50.0
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.46.1
@@ -38,7 +39,6 @@ require (
 	github.com/stretchr/testify v1.11.1 // indirect
 	go.opentelemetry.io/otel v1.40.0 // indirect
 	golang.org/x/exp v0.0.0-20260218203240-3dfff04db8fa // indirect
-	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
 	golang.org/x/text v0.34.0 // indirect

@@ -1153,8 +1153,14 @@ type Session struct {
 	DisplayLabel   string        `protobuf:"bytes,33,opt,name=display_label,json=displayLabel,proto3" json:"display_label,omitempty"`                                     // eg. "working", "checking", "running 2/4", "? question", "stopped"
 	DisplayIntent  DisplayIntent `protobuf:"varint,34,opt,name=display_intent,json=displayIntent,proto3,enum=bossanova.v1.DisplayIntent" json:"display_intent,omitempty"` // semantic meaning; clients map to styling
 	DisplaySpinner bool          `protobuf:"varint,35,opt,name=display_spinner,json=displaySpinner,proto3" json:"display_spinner,omitempty"`                              // whether to render the spinner glyph
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Transfer coordination markers used by the coordinated TransferSession
+	// protocol (see docs/plans/2026-04-24-reverse-stream-daemon-model.md,
+	// decision #14). When set, the session is hidden from ListForUser on the
+	// orchestrator until the transfer protocol completes.
+	TransferringTo   string `protobuf:"bytes,36,opt,name=transferring_to,json=transferringTo,proto3" json:"transferring_to,omitempty"`       // empty if not transferring out
+	TransferringFrom string `protobuf:"bytes,37,opt,name=transferring_from,json=transferringFrom,proto3" json:"transferring_from,omitempty"` // empty if not transferring in
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1430,6 +1436,20 @@ func (x *Session) GetDisplaySpinner() bool {
 		return x.DisplaySpinner
 	}
 	return false
+}
+
+func (x *Session) GetTransferringTo() string {
+	if x != nil {
+		return x.TransferringTo
+	}
+	return ""
+}
+
+func (x *Session) GetTransferringFrom() string {
+	if x != nil {
+		return x.TransferringFrom
+	}
+	return ""
 }
 
 // Attempt represents a fix attempt within a session.
@@ -2671,7 +2691,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\x8c\x0e\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\xe2\x0e\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -2715,7 +2735,9 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13pr_display_head_sha\x18  \x01(\tR\x10prDisplayHeadSha\x12#\n" +
 	"\rdisplay_label\x18! \x01(\tR\fdisplayLabel\x12B\n" +
 	"\x0edisplay_intent\x18\" \x01(\x0e2\x1b.bossanova.v1.DisplayIntentR\rdisplayIntent\x12'\n" +
-	"\x0fdisplay_spinner\x18# \x01(\bR\x0edisplaySpinnerB\x14\n" +
+	"\x0fdisplay_spinner\x18# \x01(\bR\x0edisplaySpinner\x12'\n" +
+	"\x0ftransferring_to\x18$ \x01(\tR\x0etransferringTo\x12+\n" +
+	"\x11transferring_from\x18% \x01(\tR\x10transferringFromB\x14\n" +
 	"\x12_claude_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

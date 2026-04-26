@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.10.0](https://github.com/recurser/bossanova/compare/v1.9.1...v1.10.0) (2026-04-26)
+
+### Features
+
+* **bossalib:** [[#173](https://github.com/recurser/bossanova/issues/173)] extract generic pubsub.Bus[T] and migrate bossd StreamBus ([dbaff33](https://github.com/recurser/bossanova/commit/dbaff332991666b85d934a285bf59ac0a6dc5269))
+* **bossd:** [[#173](https://github.com/recurser/bossanova/issues/173)] populate claude_id on ChatStatusDelta and rekey coalescer ([823381d](https://github.com/recurser/bossanova/commit/823381df8d5753f82294caac63a87c40ee357349))
+* **bosso:** [[#173](https://github.com/recurser/bossanova/issues/173)] implement ProxyStreamChats server-streaming handler ([b10dc0b](https://github.com/recurser/bossanova/commit/b10dc0b68c1883a689f4d21104c6a8a5c2a87c97))
+* **bosso:** [[#173](https://github.com/recurser/bossanova/issues/173)] rekey DaemonState.statuses by claude_id and add change-event Subscribe ([413f7ef](https://github.com/recurser/bossanova/commit/413f7ef63e04ed3589cb491e30ae16189c3fcf36))
+* **global:** env-var override for local-dev keyring backend ([9dc36e7](https://github.com/recurser/bossanova/commit/9dc36e752106df2521813944256d6f655b426c14))
+* **proto:** [[#173](https://github.com/recurser/bossanova/issues/173)] add ProxyStreamChats RPC and ChatStatusDelta.claude_id ([05de9d7](https://github.com/recurser/bossanova/commit/05de9d7731e70533a297acae4c63493cdd468523))
+* **web:** [[#173](https://github.com/recurser/bossanova/issues/173)] live ChatListPanel via ProxyStreamChats ([395f04d](https://github.com/recurser/bossanova/commit/395f04dd006d718676de7aa962c7e4449620c5e1))
+
+### Bug Fixes
+
+* **bossalib:** [[#173](https://github.com/recurser/bossanova/issues/173)] restore drop warning hook and tighten StreamBus close lifecycle ([39eae36](https://github.com/recurser/bossanova/commit/39eae36a2555ccab4ede579ad8bcff8a8d6c335a))
+* **bossalib:** tidy go.mod/go.sum after mutation tests added keyring import ([69e20bf](https://github.com/recurser/bossanova/commit/69e20bff3546693d7c7132977136077494736bc4)), closes [#172](https://github.com/recurser/bossanova/issues/172)
+* **bossd:** [[#173](https://github.com/recurser/bossanova/issues/173)] include current chat statuses in DaemonSnapshot ([38ac2e6](https://github.com/recurser/bossanova/commit/38ac2e6f63f7b30cdbd7f12acdc76830bed2b537))
+* **bossd:** [[#173](https://github.com/recurser/bossanova/issues/173)] publish ChatDelta events when chats are created/updated/deleted ([d0273eb](https://github.com/recurser/bossanova/commit/d0273ebb7e24f897d3558d874ab369fa1916ec90))
+* **bosso:** [[#173](https://github.com/recurser/bossanova/issues/173)] broadcast DaemonEvicted on Register replacement path ([cfa41d9](https://github.com/recurser/bossanova/commit/cfa41d90a558b00cede770214c41dfecc4be8d1e))
+* **build:** make `format` depend on `copy-skills` ([3fd3dd6](https://github.com/recurser/bossanova/commit/3fd3dd65188138a3674365aaa77a605fedfdb981))
+* **web:** [[#173](https://github.com/recurser/bossanova/issues/173)] accumulate ProxyStreamChats reconnect backoff across early-error flaps ([c03721e](https://github.com/recurser/bossanova/commit/c03721e29b9d8d89f4033f63ac2c442a1b0313fd))
+* **web:** [[#173](https://github.com/recurser/bossanova/issues/173)] use boolean auth dep to stop SessionDetail effect render loop ([64d7ba7](https://github.com/recurser/bossanova/commit/64d7ba7f8272c5a59fae3fe15801c02ce52b4921))
+* **web:** [[#173](https://github.com/recurser/bossanova/issues/173)] wait for auth before fetching SessionDetail data ([c29722d](https://github.com/recurser/bossanova/commit/c29722d8a438579029bc06dbe6d191f6bf58c7a7))
+
 ## [1.9.1](https://github.com/recurser/bossanova/compare/v1.9.0...v1.9.1) (2026-04-25)
 
 ### Bug Fixes

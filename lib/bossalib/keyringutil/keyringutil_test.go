@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/99designs/keyring"
 )
 
 func TestNew_CreatesRandomPassphrase(t *testing.T) {
@@ -124,6 +126,36 @@ func TestPassphrasePath_IgnoresXDGRuntimeDir(t *testing.T) {
 	want := filepath.Join(home, ".config", "bossanova", "keyring.key")
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestBackends(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want []keyring.BackendType
+	}{
+		{name: "unset returns nil", env: "", want: nil},
+		{name: "file", env: "file", want: []keyring.BackendType{keyring.FileBackend}},
+		{name: "keychain", env: "keychain", want: []keyring.BackendType{keyring.KeychainBackend}},
+		{name: "secret-service", env: "secret-service", want: []keyring.BackendType{keyring.SecretServiceBackend}},
+		{name: "uppercase normalized", env: "FILE", want: []keyring.BackendType{keyring.FileBackend}},
+		{name: "whitespace trimmed", env: "  file  ", want: []keyring.BackendType{keyring.FileBackend}},
+		{name: "unknown falls back to nil", env: "wincred", want: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(backendEnv, tc.env)
+			got := Backends()
+			if len(got) != len(tc.want) {
+				t.Fatalf("Backends() len = %d, want %d (got=%v want=%v)", len(got), len(tc.want), got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("Backends()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
 	}
 }
 

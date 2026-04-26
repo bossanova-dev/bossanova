@@ -63,6 +63,9 @@ const (
 	// OrchestratorServiceProxyResumeSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyResumeSession RPC.
 	OrchestratorServiceProxyResumeSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyResumeSession"
+	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyStreamChats RPC.
+	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
 	// OrchestratorServiceCreateWebhookConfigProcedure is the fully-qualified name of the
 	// OrchestratorService's CreateWebhookConfig RPC.
 	OrchestratorServiceCreateWebhookConfigProcedure = "/bossanova.v1.OrchestratorService/CreateWebhookConfig"
@@ -96,6 +99,11 @@ type OrchestratorServiceClient interface {
 	ProxyStopSession(context.Context, *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error)
 	ProxyPauseSession(context.Context, *connect.Request[v1.ProxyPauseSessionRequest]) (*connect.Response[v1.ProxyPauseSessionResponse], error)
 	ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error)
+	// Streams the live chat list (and per-chat statuses) for a session through
+	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
+	// events to subscribed web clients. Terminates with DaemonOffline if the
+	// owning daemon disconnects.
+	ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error)
 	// Webhook configuration management
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
@@ -176,6 +184,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResumeSession")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
+			httpClient,
+			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStreamChats")),
+			connect.WithClientOptions(opts...),
+		),
 		createWebhookConfig: connect.NewClient[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse](
 			httpClient,
 			baseURL+OrchestratorServiceCreateWebhookConfigProcedure,
@@ -215,6 +229,7 @@ type orchestratorServiceClient struct {
 	proxyStopSession    *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
 	proxyPauseSession   *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
 	proxyResumeSession  *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
+	proxyStreamChats    *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	createWebhookConfig *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
 	listWebhookConfigs  *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
 	deleteWebhookConfig *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
@@ -271,6 +286,11 @@ func (c *orchestratorServiceClient) ProxyResumeSession(ctx context.Context, req 
 	return c.proxyResumeSession.CallUnary(ctx, req)
 }
 
+// ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
+func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
+	return c.proxyStreamChats.CallServerStream(ctx, req)
+}
+
 // CreateWebhookConfig calls bossanova.v1.OrchestratorService.CreateWebhookConfig.
 func (c *orchestratorServiceClient) CreateWebhookConfig(ctx context.Context, req *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error) {
 	return c.createWebhookConfig.CallUnary(ctx, req)
@@ -310,6 +330,11 @@ type OrchestratorServiceHandler interface {
 	ProxyStopSession(context.Context, *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error)
 	ProxyPauseSession(context.Context, *connect.Request[v1.ProxyPauseSessionRequest]) (*connect.Response[v1.ProxyPauseSessionResponse], error)
 	ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error)
+	// Streams the live chat list (and per-chat statuses) for a session through
+	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
+	// events to subscribed web clients. Terminates with DaemonOffline if the
+	// owning daemon disconnects.
+	ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error
 	// Webhook configuration management
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
@@ -386,6 +411,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResumeSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
+		OrchestratorServiceProxyStreamChatsProcedure,
+		svc.ProxyStreamChats,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStreamChats")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceCreateWebhookConfigHandler := connect.NewUnaryHandler(
 		OrchestratorServiceCreateWebhookConfigProcedure,
 		svc.CreateWebhookConfig,
@@ -432,6 +463,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyPauseSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyResumeSessionProcedure:
 			orchestratorServiceProxyResumeSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyStreamChatsProcedure:
+			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceCreateWebhookConfigProcedure:
 			orchestratorServiceCreateWebhookConfigHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListWebhookConfigsProcedure:
@@ -487,6 +520,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyPauseSession(context.Context
 
 func (UnimplementedOrchestratorServiceHandler) ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyResumeSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStreamChats is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error) {

@@ -589,3 +589,113 @@ func TestHasQuestionPrompt_OptionsBrokenByClaudeMarker(t *testing.T) {
 		t.Error("should NOT detect question when ⏺ marker breaks the option run after the selector")
 	}
 }
+
+// TestHasQuestionPrompt_ExactlyOneOption covers the boundary mutation on
+// `count >= 1` (line 211): with `count > 1`, a single option would not
+// trigger detection. Catches CONDITIONALS_BOUNDARY at line 211.
+func TestHasQuestionPrompt_ExactlyOneOption(t *testing.T) {
+	data := `Want this?
+
+  ❯ Yes please
+    Just one option here
+`
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question when selector is followed by exactly one indented option line")
+	}
+}
+
+// TestHasQuestionPrompt_MultipleSelectorsLastIsReal verifies that when several
+// "❯ " glyphs appear (e.g. user prompt history above a real AskUserQuestion),
+// the iteration finds the LAST one with valid options.
+// Catches mutations on selectorRe.FindAllIndex(tail, -1):
+//   - INVERT_NEGATIVES: -1 → 1 returns only the first match (a user prompt
+//     with no options below), failing detection.
+//   - ARITHMETIC: -1 → +1 same story.
+func TestHasQuestionPrompt_MultipleSelectorsLastIsReal(t *testing.T) {
+	data := "❯ what's the plan?\n" +
+		"\n" +
+		"  Read 5 files (ctrl+o to expand)\n" +
+		"\n" +
+		"What should we do?\n" +
+		"\n" +
+		"  ❯ Refactor the API\n" +
+		"    Move all handlers to /v2\n" +
+		"    Use the new error helper\n"
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question on last selector (with options) even when an earlier user-prompt selector exists")
+	}
+}
+
+// TestCountConsecutiveOptionLines_NewlineAtIndexZero covers nl < 0 boundary
+// at line 151. When data starts with '\n', nl=0; the mutation `nl < 0`
+// → `nl <= 0` would treat the entire data as a single line.
+func TestCountConsecutiveOptionLines_NewlineAtIndexZero(t *testing.T) {
+	// Data starts with '\n' (empty first line) followed by two valid option lines.
+	data := []byte("\n  option one\n  option two\n")
+	count, broken := countConsecutiveOptionLines(data)
+	if broken {
+		t.Errorf("should not be broken by marker, got broken=true")
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+}
+
+// TestCountConsecutiveOptionLines_NoTrailingNewline covers the negation-style
+// behavior on `nl < 0` at line 151: the LAST line of input may have no
+// trailing newline, and must still be processed. With mutation `nl >= 0`,
+// the function would never enter the no-newline branch and could mishandle
+// the final line.
+func TestCountConsecutiveOptionLines_NoTrailingNewline(t *testing.T) {
+	// Three indented options, last has no trailing newline.
+	data := []byte("  one\n  two\n  three")
+	count, broken := countConsecutiveOptionLines(data)
+	if broken {
+		t.Errorf("should not be broken by marker, got broken=true")
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3 (last line lacks trailing \\n)", count)
+	}
+}
+
+// TestHasQuestionPrompt_SelectorLineEndAtZero covers line 207 boundary:
+// `lineEnd < 0` vs the mutation `lineEnd <= 0`. The selectorRe match ends
+// right before a '\n' (lineEnd == 0). Unmutated must continue into option
+// counting; mutated would skip (lineEnd <= 0 is true) and miss the prompt.
+//
+// The "?" is mid-sentence so trailingQuestionRe (Pattern 3) does not also
+// fire — isolating Pattern 1 as the only path that can return true.
+func TestHasQuestionPrompt_SelectorLineEndAtZero(t *testing.T) {
+	data := "What's that? OK then:\n" +
+		"  ❯ a\n" +
+		"  option1\n" +
+		"  option2\n"
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question via Pattern 1 when selector char is immediately followed by '\\n' (lineEnd == 0)")
+	}
+}
+
+// TestLastNLines_NewlineAtIndexZero_n1 catches the boundary mutation on
+// line 249 (`i >= 0 && data[i] == '\n'` → `i > 0 && ...`). With n=1 and
+// data="\n", the mutation skips the trailing-newline strip and counts the
+// '\n' as the first line, returning "" instead of "\n".
+func TestLastNLines_NewlineAtIndexZero_n1(t *testing.T) {
+	got := LastNLines([]byte("\n"), 1)
+	want := []byte("\n")
+	if !bytes.Equal(got, want) {
+		t.Errorf("LastNLines(\"\\n\", 1) = %q, want %q", got, want)
+	}
+}
+
+// TestLastNLines_LeadingNewline_n1 catches the boundary mutation on line 252
+// (`for ; i >= 0; i--` → `for ; i > 0; i--`). With data="\nx" and n=1,
+// the unmutated code finds the '\n' at i=0 (count hits n) and returns "x".
+// The mutation stops the loop before i=0, so count never reaches n and the
+// whole input is returned.
+func TestLastNLines_LeadingNewline_n1(t *testing.T) {
+	got := LastNLines([]byte("\nx"), 1)
+	want := []byte("x")
+	if !bytes.Equal(got, want) {
+		t.Errorf("LastNLines(\"\\nx\", 1) = %q, want %q", got, want)
+	}
+}

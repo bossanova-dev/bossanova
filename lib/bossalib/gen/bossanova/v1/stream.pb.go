@@ -728,10 +728,12 @@ func (x *ChatDelta) GetChat() *ClaudeChatMetadata {
 // Named *Delta to avoid collision with the ChatStatus enum in models.proto.
 // Coalesced by the daemon in a ~100ms window (decision #11).
 type ChatStatusDelta struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Status        ChatStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=bossanova.v1.ChatStatus" json:"status,omitempty"`
-	LastOutputAt  *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=last_output_at,json=lastOutputAt,proto3" json:"last_output_at,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	SessionId    string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Status       ChatStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=bossanova.v1.ChatStatus" json:"status,omitempty"`
+	LastOutputAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=last_output_at,json=lastOutputAt,proto3" json:"last_output_at,omitempty"`
+	// Per-chat key. Empty for legacy daemons; new daemons MUST set this.
+	ClaudeId      string `protobuf:"bytes,4,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -785,6 +787,13 @@ func (x *ChatStatusDelta) GetLastOutputAt() *timestamppb.Timestamp {
 		return x.LastOutputAt
 	}
 	return nil
+}
+
+func (x *ChatStatusDelta) GetClaudeId() string {
+	if x != nil {
+		return x.ClaudeId
+	}
+	return ""
 }
 
 // ClaudeChatMetadata is the slim, snapshot-sized view of a Claude chat.
@@ -1729,12 +1738,13 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fKIND_CREATED\x10\x01\x12\x10\n" +
 	"\fKIND_UPDATED\x10\x02\x12\x10\n" +
-	"\fKIND_DELETED\x10\x03\"\xa4\x01\n" +
+	"\fKIND_DELETED\x10\x03\"\xc1\x01\n" +
 	"\x0fChatStatusDelta\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x120\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.bossanova.v1.ChatStatusR\x06status\x12@\n" +
-	"\x0elast_output_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastOutputAt\"\xbb\x02\n" +
+	"\x0elast_output_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\flastOutputAt\x12\x1b\n" +
+	"\tclaude_id\x18\x04 \x01(\tR\bclaudeId\"\xbb\x02\n" +
 	"\x12ClaudeChatMetadata\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +

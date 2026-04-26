@@ -6,117 +6,100 @@
 // pipeline, we keep the two buses separate: publishers push StreamEvents
 // straight into this bus.
 //
-// The bus is intentionally tiny: one subscriber (the stream client),
-// bounded buffer, drop-oldest on overflow. On overflow we drop — the
-// snapshot sent at every reconnect re-establishes truth, so losing a
-// single delta is always recoverable.
+// The bus is intentionally tiny: bounded buffer, drop-oldest on overflow.
+// On overflow we drop AND log a warning — the snapshot sent at every
+// reconnect re-establishes truth, so losing a single delta is always
+// recoverable, but the warning is the only signal that a slow subscriber
+// is causing UI gaps.
+//
+// Implementation note: this type is now a thin wrapper over the generic
+// pubsub.Bus[T] in bossalib so bosso can share the broadcast primitive.
+// The wrapper preserves the existing EventSource shape (Subscribe(ctx)
+// returns a channel; ctx cancellation closes it) which differs from
+// pubsub's (channel, cancelFunc) signature.
 package upstream
 
 import (
 	"context"
 	"sync"
 
+	"github.com/recurser/bossalib/pubsub"
+	"github.com/recurser/bossalib/safego"
 	"github.com/rs/zerolog"
 )
-
-// streamBusBufSize is the per-subscriber buffer. Sized for a full CI
-// burst (N session transitions + N chat creates) without loss.
-const streamBusBufSize = 256
 
 // StreamBus is an in-memory pub/sub bus for StreamEvent. Implements
 // EventSource so the StreamClient can Subscribe directly.
 type StreamBus struct {
-	mu          sync.RWMutex
-	subscribers map[*streamSub]struct{}
-	closed      bool
-	logger      zerolog.Logger
+	bus    *pubsub.Bus[StreamEvent]
+	logger zerolog.Logger
+	// stop is closed by Close() to signal Subscribe-spawned watcher
+	// goroutines to exit even when their ctx never cancels. Without this,
+	// callers that pass a context.Background()-derived ctx would leak the
+	// watcher goroutine for the rest of the process lifetime once Close
+	// has been called.
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
-type streamSub struct {
-	ch     chan StreamEvent
-	cancel context.CancelFunc
-}
-
-// NewStreamBus constructs a bus. The logger is used only for drop
-// warnings; all other paths are silent by design.
+// NewStreamBus constructs a bus. The logger is tagged with
+// component="stream-bus" and used by the OnDrop hook to surface a warning
+// every time a subscriber's buffer overflows — that warning is the only
+// signal that a slow consumer is causing UI gaps, so silent drops are
+// considered an observability regression.
 func NewStreamBus(logger zerolog.Logger) *StreamBus {
+	log := logger.With().Str("component", "stream-bus").Logger()
 	return &StreamBus{
-		subscribers: make(map[*streamSub]struct{}),
-		logger:      logger.With().Str("component", "stream-bus").Logger(),
+		bus: pubsub.New[StreamEvent](pubsub.WithOnDrop[StreamEvent](func() {
+			log.Warn().Msg("stream bus subscriber buffer full, dropping event")
+		})),
+		logger: log,
+		stop:   make(chan struct{}),
 	}
 }
 
-// Publish fans an event out to every current subscriber. A full channel
-// drops the event for that subscriber and logs once per drop — the
-// snapshot pipeline restores truth on the next reconnect so this is
-// safer than blocking the publisher (which could be a lifecycle call).
+// Publish fans an event out to every current subscriber. A full
+// subscriber channel drops the oldest buffered event so the publisher is
+// never blocked — the snapshot pipeline restores truth on the next
+// reconnect, which makes drop-oldest safer than blocking a lifecycle hook.
 func (b *StreamBus) Publish(ev StreamEvent) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
-	if b.closed {
-		return
-	}
-
-	for sub := range b.subscribers {
-		select {
-		case sub.ch <- ev:
-		default:
-			b.logger.Warn().Msg("stream bus subscriber buffer full, dropping event")
-		}
-	}
+	b.bus.Publish(ev)
 }
 
 // Subscribe implements EventSource.Subscribe. The returned channel is
 // closed when ctx is cancelled or Close() is called.
+//
+// The pubsub.Bus subscriber API is (channel, cancelFunc); here we bridge
+// that to the ctx-driven lifecycle by spawning a watcher goroutine that
+// invokes cancel when ctx is done OR when the bus itself is closed. The
+// stop-channel branch prevents a watcher leak when callers pass a
+// long-lived ctx (e.g. context.Background) and rely on Close() for
+// shutdown.
 func (b *StreamBus) Subscribe(ctx context.Context) <-chan StreamEvent {
-	ctx, cancel := context.WithCancel(ctx)
+	ch, cancel := b.bus.Subscribe()
 
-	sub := &streamSub{
-		ch:     make(chan StreamEvent, streamBusBufSize),
-		cancel: cancel,
-	}
-
-	b.mu.Lock()
-	if b.closed {
-		b.mu.Unlock()
+	// Bridge ctx → pubsub cancel. safego.Go gives us panic recovery and a
+	// done channel; we don't need to wait on done because the goroutine's
+	// lifetime is bounded by ctx-or-stop. Cancel is idempotent on the
+	// pubsub side, so racing against bus.Close() is safe.
+	_ = safego.Go(b.logger, func() {
+		select {
+		case <-ctx.Done():
+		case <-b.stop:
+		}
 		cancel()
-		close(sub.ch)
-		return sub.ch
-	}
-	b.subscribers[sub] = struct{}{}
-	b.mu.Unlock()
+	})
 
-	go func() {
-		<-ctx.Done()
-		b.unsubscribe(sub)
-	}()
-
-	return sub.ch
+	return ch
 }
 
-// unsubscribe removes a subscriber and closes its channel.
-func (b *StreamBus) unsubscribe(sub *streamSub) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if _, ok := b.subscribers[sub]; !ok {
-		return
-	}
-	delete(b.subscribers, sub)
-	close(sub.ch)
-}
-
-// Close shuts down the bus. Idempotent.
+// Close shuts down the bus. Idempotent. Closes b.stop first so any
+// in-flight Subscribe watcher goroutines unblock and call their pubsub
+// cancel — that prevents the watcher leak that would otherwise occur for
+// callers with long-lived contexts.
 func (b *StreamBus) Close() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.closed {
-		return
-	}
-	b.closed = true
-	for sub := range b.subscribers {
-		sub.cancel()
-		close(sub.ch)
-	}
-	b.subscribers = nil
+	b.closeOnce.Do(func() {
+		close(b.stop)
+	})
+	b.bus.Close()
 }

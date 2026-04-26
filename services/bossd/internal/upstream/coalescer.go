@@ -9,24 +9,41 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// StatusCoalescer buffers ChatStatusDelta messages per session over a
-// short flush window and emits only the latest entry per session when
+// StatusCoalescer buffers ChatStatusDelta messages per (session, chat)
+// over a short flush window and emits only the latest entry per key when
 // the window expires. Decision #11 in the design doc: the UI doesn't
 // need sub-100ms status update cadence, and collapsing bursts here
 // keeps egress bandwidth (and bosso CPU) proportional to "real" state
 // changes rather than to boss-CLI heartbeat frequency.
 //
-// Keyed by session_id because ChatStatusDelta carries session_id on the
-// wire — matching the routing key the downstream stream uses to fan
-// statuses back out to watchers.
+// Keyed by (session_id, claude_id) so a session with multiple Claude
+// chats — each with its own status — does not collapse to a single
+// per-session entry on the wire. The downstream consumer keys its
+// status map by claude_id, so per-chat fidelity must survive the
+// coalescer.
+//
+// Backward compatibility: legacy daemons (and older publishers within
+// this daemon) may emit a ChatStatusDelta with claude_id == "". Those
+// collapse to a single per-session entry under coalescerKey{sessionID,
+// ""}, preserving the previous session-only behavior for any caller
+// that hasn't been updated yet.
 type StatusCoalescer struct {
 	clock  Clock
 	window time.Duration
 	logger zerolog.Logger
 
 	mu      sync.Mutex
-	pending map[string]*pb.ChatStatusDelta // session_id → latest
+	pending map[coalescerKey]*pb.ChatStatusDelta // (session_id, claude_id) → latest
 	out     chan *pb.ChatStatusDelta
+}
+
+// coalescerKey is the per-chat coalescing key. claudeID may be empty for
+// legacy publishers that haven't been updated to populate it; in that
+// case the key collapses to (sessionID, "") and behaves like the old
+// session-only coalescer.
+type coalescerKey struct {
+	sessionID string
+	claudeID  string
 }
 
 // NewStatusCoalescer creates a coalescer that uses the given clock to
@@ -43,7 +60,7 @@ func NewStatusCoalescer(clock Clock, window time.Duration, logger zerolog.Logger
 		clock:   clock,
 		window:  window,
 		logger:  logger,
-		pending: make(map[string]*pb.ChatStatusDelta),
+		pending: make(map[coalescerKey]*pb.ChatStatusDelta),
 		// Out must be buffered enough to absorb a whole flush without
 		// blocking Run's loop — the subscriber on the other side reads
 		// from a bounded outbound channel, but we'd rather drop here
@@ -58,14 +75,15 @@ func NewStatusCoalescer(clock Clock, window time.Duration, logger zerolog.Logger
 func (c *StatusCoalescer) Out() <-chan *pb.ChatStatusDelta { return c.out }
 
 // Publish inserts or replaces the pending entry for the status's
-// session_id. Safe to call concurrently; flushing and publishing
-// coordinate through the coalescer mutex.
+// (session_id, claude_id) key. Safe to call concurrently; flushing and
+// publishing coordinate through the coalescer mutex.
 func (c *StatusCoalescer) Publish(status *pb.ChatStatusDelta) {
 	if status == nil {
 		return
 	}
+	key := coalescerKey{sessionID: status.GetSessionId(), claudeID: status.GetClaudeId()}
 	c.mu.Lock()
-	c.pending[status.GetSessionId()] = status
+	c.pending[key] = status
 	c.mu.Unlock()
 }
 
@@ -82,7 +100,7 @@ func (c *StatusCoalescer) Drain() []*pb.ChatStatusDelta {
 	for _, s := range c.pending {
 		out = append(out, s)
 	}
-	c.pending = make(map[string]*pb.ChatStatusDelta)
+	c.pending = make(map[coalescerKey]*pb.ChatStatusDelta)
 	return out
 }
 
@@ -98,7 +116,7 @@ func (c *StatusCoalescer) flush() {
 	for _, s := range c.pending {
 		batch = append(batch, s)
 	}
-	c.pending = make(map[string]*pb.ChatStatusDelta)
+	c.pending = make(map[coalescerKey]*pb.ChatStatusDelta)
 	c.mu.Unlock()
 
 	for _, s := range batch {
@@ -107,6 +125,7 @@ func (c *StatusCoalescer) flush() {
 		default:
 			c.logger.Warn().
 				Str("session_id", s.GetSessionId()).
+				Str("claude_id", s.GetClaudeId()).
 				Msg("coalescer out channel full, dropping status delta")
 		}
 	}

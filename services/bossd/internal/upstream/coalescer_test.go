@@ -136,11 +136,12 @@ func TestCoalescer_WithinWindow_SendsLatestOnly(t *testing.T) {
 		c.Run(ctx, in)
 	}()
 
-	// 5 publishes for the same session in quick succession (virtual
+	// 5 publishes for the same (session, chat) in quick succession (virtual
 	// time unchanged). Only the latest should survive the flush.
 	for i := 0; i < 5; i++ {
 		in <- &pb.ChatStatusDelta{
 			SessionId: "s1",
+			ClaudeId:  "c1",
 			Status:    pb.ChatStatus(i%4 + 1), // vary so "latest wins" is meaningful
 		}
 	}
@@ -201,8 +202,16 @@ func TestCoalescer_AcrossSessions_AllEmitted(t *testing.T) {
 		c.Run(ctx, in)
 	}()
 
-	for _, id := range []string{"s1", "s2", "s3"} {
-		in <- &pb.ChatStatusDelta{SessionId: id, Status: pb.ChatStatus_CHAT_STATUS_WORKING}
+	for _, ids := range []struct{ sessionID, claudeID string }{
+		{"s1", "c1"},
+		{"s2", "c2"},
+		{"s3", "c3"},
+	} {
+		in <- &pb.ChatStatusDelta{
+			SessionId: ids.sessionID,
+			ClaudeId:  ids.claudeID,
+			Status:    pb.ChatStatus_CHAT_STATUS_WORKING,
+		}
 	}
 	// Settle before advancing.
 	time.Sleep(20 * time.Millisecond)
@@ -238,8 +247,8 @@ func TestCoalescer_Shutdown_DrainsPending(t *testing.T) {
 
 	// Publish directly (bypass Run) so the test holds Drain's invariant
 	// regardless of ticker timing.
-	c.Publish(&pb.ChatStatusDelta{SessionId: "s1", Status: pb.ChatStatus_CHAT_STATUS_WORKING})
-	c.Publish(&pb.ChatStatusDelta{SessionId: "s2", Status: pb.ChatStatus_CHAT_STATUS_IDLE})
+	c.Publish(&pb.ChatStatusDelta{SessionId: "s1", ClaudeId: "c1", Status: pb.ChatStatus_CHAT_STATUS_WORKING})
+	c.Publish(&pb.ChatStatusDelta{SessionId: "s2", ClaudeId: "c2", Status: pb.ChatStatus_CHAT_STATUS_IDLE})
 
 	drained := c.Drain()
 	if len(drained) != 2 {
@@ -249,4 +258,142 @@ func TestCoalescer_Shutdown_DrainsPending(t *testing.T) {
 	if again := c.Drain(); len(again) != 0 {
 		t.Fatalf("second drain returned %d, want 0", len(again))
 	}
+}
+
+// TestCoalescer_SameSession_DifferentChats_BothEmitted is the critical
+// regression test for the (session_id, claude_id) keying. Two chats in
+// the same session must NOT collapse into a single entry — the
+// downstream consumer keys statuses by claude_id and per-chat fidelity
+// has to survive coalescing.
+func TestCoalescer_SameSession_DifferentChats_BothEmitted(t *testing.T) {
+	clock := newFakeClock()
+	c := NewStatusCoalescer(clock, 100*time.Millisecond, zerolog.Nop())
+
+	in := make(chan *pb.ChatStatusDelta, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		c.Run(ctx, in)
+	}()
+
+	// Same session, two different chats with different statuses. Under
+	// the old session-only keying these would collapse to one entry —
+	// the bug this test exists to prevent.
+	in <- &pb.ChatStatusDelta{
+		SessionId: "s1",
+		ClaudeId:  "c1",
+		Status:    pb.ChatStatus_CHAT_STATUS_WORKING,
+	}
+	in <- &pb.ChatStatusDelta{
+		SessionId: "s1",
+		ClaudeId:  "c2",
+		Status:    pb.ChatStatus_CHAT_STATUS_IDLE,
+	}
+
+	// Settle before advancing so both publishes are in pending.
+	time.Sleep(20 * time.Millisecond)
+	clock.Advance(150 * time.Millisecond)
+
+	gotByClaudeID := map[string]pb.ChatStatus{}
+	deadline := time.After(500 * time.Millisecond)
+	for len(gotByClaudeID) < 2 {
+		select {
+		case s, ok := <-c.Out():
+			if !ok {
+				t.Fatalf("out channel closed early, got=%v", gotByClaudeID)
+			}
+			if s.GetSessionId() != "s1" {
+				t.Fatalf("unexpected session_id %q", s.GetSessionId())
+			}
+			gotByClaudeID[s.GetClaudeId()] = s.GetStatus()
+		case <-deadline:
+			t.Fatalf("expected 2 emissions for distinct claude_ids, got %v", gotByClaudeID)
+		}
+	}
+
+	if got, want := gotByClaudeID["c1"], pb.ChatStatus_CHAT_STATUS_WORKING; got != want {
+		t.Fatalf("c1 status = %v, want %v", got, want)
+	}
+	if got, want := gotByClaudeID["c2"], pb.ChatStatus_CHAT_STATUS_IDLE; got != want {
+		t.Fatalf("c2 status = %v, want %v", got, want)
+	}
+
+	cancel()
+	<-runDone
+}
+
+// TestCoalescer_LegacyEmptyClaudeID_CoalescesUnderSessionKey covers the
+// backward-compat path: an older publisher emits ChatStatusDelta with
+// claude_id == "". Two such deltas for the same session_id must
+// collapse to a single emission (latest wins) because the key
+// coalescerKey{sessionID:"s1", claudeID:""} collides for both. This
+// preserves the previous session-only behavior and avoids fan-out
+// surprises when a legacy daemon is connected.
+func TestCoalescer_LegacyEmptyClaudeID_CoalescesUnderSessionKey(t *testing.T) {
+	clock := newFakeClock()
+	c := NewStatusCoalescer(clock, 100*time.Millisecond, zerolog.Nop())
+
+	in := make(chan *pb.ChatStatusDelta, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		c.Run(ctx, in)
+	}()
+
+	// Two deltas, empty claude_id, different statuses. Latest must win.
+	in <- &pb.ChatStatusDelta{
+		SessionId: "s1",
+		Status:    pb.ChatStatus_CHAT_STATUS_WORKING,
+	}
+	in <- &pb.ChatStatusDelta{
+		SessionId: "s1",
+		Status:    pb.ChatStatus_CHAT_STATUS_IDLE,
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	clock.Advance(150 * time.Millisecond)
+
+	deadline := time.After(500 * time.Millisecond)
+	emissions := 0
+	var last *pb.ChatStatusDelta
+	for emissions == 0 {
+		select {
+		case s, ok := <-c.Out():
+			if !ok {
+				t.Fatalf("out channel closed before any emission")
+			}
+			emissions++
+			last = s
+		case <-deadline:
+			t.Fatalf("no emission after window")
+		}
+		// Drain anything else that lands shortly so the "exactly one"
+		// assertion is meaningful.
+		select {
+		case s, ok := <-c.Out():
+			if ok {
+				emissions++
+				_ = s
+			}
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+	if emissions != 1 {
+		t.Fatalf("expected exactly 1 emission for legacy empty claude_id, got %d", emissions)
+	}
+	if last.GetSessionId() != "s1" || last.GetClaudeId() != "" {
+		t.Fatalf("unexpected emission: session=%q claude=%q", last.GetSessionId(), last.GetClaudeId())
+	}
+	if last.GetStatus() != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Fatalf("expected latest-wins (IDLE), got %v", last.GetStatus())
+	}
+
+	cancel()
+	<-runDone
 }

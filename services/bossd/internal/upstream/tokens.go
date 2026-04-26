@@ -45,6 +45,10 @@ func openKeyring() (keyring.Keyring, error) {
 		KeychainTrustApplication: true,
 		FileDir:                  "~/.config/bossanova/keyring",
 		FilePasswordFunc:         keyring.PromptFunc(keyringutil.New(false)),
+		// Optional override via BOSS_KEYRING_BACKEND. Stays in lock-step
+		// with the boss CLI so a developer who exports the env var sees
+		// the same backend on both processes.
+		AllowedBackends: keyringutil.Backends(),
 	})
 }
 

@@ -439,6 +439,87 @@ func TestPasteText_EmptySessionName(t *testing.T) {
 	}
 }
 
+// TestChatSessionName covers the same > 8 truncation logic as SessionName,
+// applied to the chat-id path.
+func TestChatSessionName(t *testing.T) {
+	tests := []struct {
+		name     string
+		repoID   string
+		claudeID string
+		expected string
+	}{
+		{"both short", "abc", "xyz", "boss-abc-xyz"},
+		{"both exact 8", "12345678", "abcdefgh", "boss-12345678-abcdefgh"},
+		{"both 9 chars truncate", "123456789", "abcdefghi", "boss-12345678-abcdefgh"},
+		{"both long truncate to 8", "0123456789abcdef", "fedcba9876543210", "boss-01234567-fedcba98"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ChatSessionName(tt.repoID, tt.claudeID)
+			if got != tt.expected {
+				t.Errorf("ChatSessionName(%q, %q) = %q, want %q",
+					tt.repoID, tt.claudeID, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSessionName_NineCharBoundary covers the boundary mutation `len > 8`.
+// At exactly 9 characters, the boundary mutates differently than at 8.
+func TestSessionName_NineCharBoundary(t *testing.T) {
+	// 9-char IDs must be truncated to 8.
+	got := SessionName("123456789", "abcdefghi")
+	want := "boss-12345678-abcdefgh"
+	if got != want {
+		t.Errorf("SessionName(9-char): got %q, want %q", got, want)
+	}
+}
+
+// TestCapturePane_Success verifies the success path: a working tmux command
+// returns the captured pane content with no error.
+// Catches mutation: err != nil → err == nil (would return error on success).
+func TestCapturePane_Success(t *testing.T) {
+	mock := &captureOutputFactory{output: "pane content line 1\npane content line 2\n"}
+	c := NewClient(WithCommandFactory(mock.factory))
+
+	out, err := c.CapturePane(context.Background(), "boss-test-sess")
+	if err != nil {
+		t.Fatalf("CapturePane: unexpected error %v", err)
+	}
+	if out != "pane content line 1\npane content line 2\n" {
+		t.Errorf("CapturePane content = %q", out)
+	}
+}
+
+// TestCapturePane_Error verifies that a tmux command failure surfaces as an
+// error. Catches mutation: err != nil → err == nil (would swallow error).
+func TestCapturePane_Error(t *testing.T) {
+	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		// Simulate command failure.
+		return exec.CommandContext(ctx, "false")
+	}))
+
+	out, err := c.CapturePane(context.Background(), "missing-session")
+	if err == nil {
+		t.Fatal("CapturePane: expected error on command failure, got nil")
+	}
+	if out != "" {
+		t.Errorf("CapturePane: expected empty output on error, got %q", out)
+	}
+}
+
+// captureOutputFactory provides a CommandFactory that emits fixed stdout.
+type captureOutputFactory struct {
+	output string
+	calls  [][]string
+}
+
+func (f *captureOutputFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
+	f.calls = append(f.calls, append([]string{name}, args...))
+	// Use printf so output has no trailing newline beyond what we specify.
+	return exec.CommandContext(ctx, "printf", "%s", f.output)
+}
+
 func equalSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

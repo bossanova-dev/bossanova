@@ -117,6 +117,65 @@ func TestCleanup(t *testing.T) {
 	}
 }
 
+func TestSnapshot_FreshAndStale(t *testing.T) {
+	tr := NewTracker()
+	now := time.Now()
+
+	tr.Update("fresh", pb.ChatStatus_CHAT_STATUS_WORKING, now)
+	tr.Update("stale", pb.ChatStatus_CHAT_STATUS_IDLE, now)
+
+	// Backdate the stale entry past StaleThreshold so Snapshot drops it.
+	tr.mu.Lock()
+	tr.entries["stale"].ReceivedAt = now.Add(-2 * StaleThreshold)
+	tr.mu.Unlock()
+
+	snap := tr.Snapshot()
+	if _, ok := snap["fresh"]; !ok {
+		t.Errorf("snapshot missing fresh entry: %+v", snap)
+	}
+	if _, ok := snap["stale"]; ok {
+		t.Errorf("snapshot leaked stale entry: %+v", snap["stale"])
+	}
+	if snap["fresh"].Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("fresh.Status = %v, want WORKING", snap["fresh"].Status)
+	}
+}
+
+func TestSnapshot_ReturnsCopies(t *testing.T) {
+	tr := NewTracker()
+	tr.Update("c1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	snap := tr.Snapshot()
+	// Mutating the returned value must not corrupt the tracker.
+	snap["c1"].Status = pb.ChatStatus_CHAT_STATUS_STOPPED
+
+	got := tr.Get("c1")
+	if got == nil || got.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("snapshot leaked a live pointer; tracker state mutated: got=%+v", got)
+	}
+}
+
+func TestSnapshot_UnchangedWorkingChatVisible(t *testing.T) {
+	// Regression: a chat that's been WORKING since before the daemon's
+	// last bosso reconnect must appear in Snapshot. Update suppresses
+	// the OnUpdate hook on no-op heartbeats — the snapshot is the
+	// recovery path for that case.
+	tr := NewTracker()
+	now := time.Now()
+	tr.Update("long-running", pb.ChatStatus_CHAT_STATUS_WORKING, now)
+	// Heartbeat with the same status; hook would NOT fire here.
+	tr.Update("long-running", pb.ChatStatus_CHAT_STATUS_WORKING, now.Add(time.Second))
+
+	snap := tr.Snapshot()
+	entry, ok := snap["long-running"]
+	if !ok {
+		t.Fatal("Snapshot dropped a non-stale entry whose status hasn't changed")
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("entry.Status = %v, want WORKING", entry.Status)
+	}
+}
+
 func TestConcurrency(t *testing.T) {
 	tr := NewTracker()
 	var wg sync.WaitGroup

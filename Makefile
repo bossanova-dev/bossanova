@@ -282,7 +282,7 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-build,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
 ## format: Format Go code (gofmt + golangci-lint), web code, package.json files, and markdown
-format: lint-check-version
+format: lint-check-version copy-skills
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		pnpm syncpack format; \
 		pnpm syncpack fix; \

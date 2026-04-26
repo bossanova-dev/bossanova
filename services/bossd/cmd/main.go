@@ -148,7 +148,11 @@ func run(opts runOpts) error {
 	repos := db.NewRepoStore(database)
 	rawSessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
-	claudeChats := db.NewClaudeChatStore(database)
+	// Wrap the raw chat store with a notifier so chat lifecycle events
+	// reach the upstream stream bus. OnChange is wired below once
+	// streamBus exists; calls before that point (none today, but the
+	// store is referenced by other subsystems first) no-op safely.
+	claudeChats := db.NewNotifyingClaudeChatStore(db.NewClaudeChatStore(database))
 	taskMappings := db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
 
@@ -166,8 +170,22 @@ func run(opts runOpts) error {
 
 	// Wire the display tracker so its mutations recompute synchronously.
 	displayTracker.SetRecomputer(displayComputer)
+
+	// streamBus is the in-process pub/sub the upstream stream client
+	// drains. Created here (rather than later, where the upstream
+	// machinery is configured) so the chat-status tracker hook below can
+	// publish per-chat status deltas onto it. Closed by the daemon's
+	// shutdown path; see deferred Close() below.
+	streamBus := upstream.NewStreamBus(log.Logger)
+	defer streamBus.Close()
+
 	// Wire the chat-status tracker similarly. It is keyed by claude_id, so
-	// resolve to a session before calling Recompute.
+	// resolve to a session before calling Recompute. In addition to the
+	// display-side recompute (which fans out a SessionDelta UPDATE for the
+	// owning session), publish a ChatStatusDelta to the stream bus so
+	// bosso receives per-chat status updates with claude_id populated.
+	// Without this publisher, ChatStatusDelta events never reach the wire
+	// and the orchestrator's per-chat status map stays empty.
 	chatStatusTracker.SetOnUpdate(func(claudeID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -175,8 +193,54 @@ func run(opts runOpts) error {
 		if err != nil || chat == nil {
 			return
 		}
+		// Publish the per-chat status delta first so the stream sees a
+		// fresh status alongside any session-level UPDATED delta the
+		// recompute below emits via displayComputer.SetOnUpdate.
+		if entry := chatStatusTracker.Get(claudeID); entry != nil {
+			streamBus.Publish(upstream.StreamEvent{
+				Status: &upstream.StatusEvent{
+					Status: &bossanovav1.ChatStatusDelta{
+						SessionId:    chat.SessionID,
+						ClaudeId:     claudeID,
+						Status:       entry.Status,
+						LastOutputAt: timestamppb.New(entry.LastOutputAt),
+					},
+				},
+			})
+		}
 		_ = displayComputer.Recompute(ctx, chat.SessionID)
 	})
+
+	// Wire chat-store mutations onto the stream bus. Without this the
+	// orchestrator only ever sees chats from the initial DaemonSnapshot,
+	// so any chat created/renamed/deleted after the daemon connects is
+	// invisible to the web UI's per-session chat list.
+	claudeChats.OnChange = func(kind db.ChatChangeKind, chat *models.ClaudeChat) {
+		var pbKind bossanovav1.ChatDelta_Kind
+		switch kind {
+		case db.ChatChangeCreated:
+			pbKind = bossanovav1.ChatDelta_KIND_CREATED
+		case db.ChatChangeUpdated:
+			pbKind = bossanovav1.ChatDelta_KIND_UPDATED
+		case db.ChatChangeDeleted:
+			pbKind = bossanovav1.ChatDelta_KIND_DELETED
+		default:
+			return
+		}
+		streamBus.Publish(upstream.StreamEvent{
+			Chat: &upstream.ChatEvent{
+				Kind: pbKind,
+				Chat: &bossanovav1.ClaudeChatMetadata{
+					Id:        chat.ID,
+					SessionId: chat.SessionID,
+					ClaudeId:  chat.ClaudeID,
+					Title:     chat.Title,
+					DaemonId:  chat.DaemonID,
+					CreatedAt: timestamppb.New(chat.CreatedAt),
+				},
+			},
+		})
+	}
 
 	// Create session lister for upstream sync
 	sessionLister := &sessionListerAdapter{sessions: sessions}
@@ -426,8 +490,10 @@ func run(opts runOpts) error {
 	//   4. Launch Run(ctx) in a tracked goroutine. It owns reconnects,
 	//      token refresh, snapshot, delta forwarding, and command
 	//      dispatch on its own.
-	streamBus := upstream.NewStreamBus(log.Logger)
-	defer streamBus.Close()
+	//
+	// streamBus is created earlier (alongside the chat-status tracker
+	// wiring) so the chat-status hook can publish per-chat ChatStatusDelta
+	// events. We reuse that bus here.
 
 	// Wire the display-status computer's post-write hook into the stream
 	// bus so every Recompute that actually writes a new (label, intent,
@@ -586,12 +652,24 @@ func run(opts runOpts) error {
 				return out, nil
 			})
 			snapshotStatuses := upstream.NewStatusSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ChatStatusEntry, error) {
-				// No bulk accessor today — return empty. The chat-status
-				// tracker's public surface is per-claude-id; expanding
-				// it is an independent change, and the coalescer will
-				// fill the orchestrator's map with live deltas shortly
-				// after reconnect.
-				return nil, nil
+				// Walk the tracker's current (non-stale) entries so a
+				// freshly-connected orchestrator inherits per-chat
+				// status without waiting for the next transition. The
+				// Tracker.Update hook suppresses no-op heartbeats, so
+				// long-lived "working" chats that haven't transitioned
+				// since the daemon's last connect would otherwise be
+				// invisible to bosso (and the web UI) until they next
+				// change state.
+				entries := chatStatusTracker.Snapshot()
+				out := make([]*bossanovav1.ChatStatusEntry, 0, len(entries))
+				for claudeID, e := range entries {
+					out = append(out, &bossanovav1.ChatStatusEntry{
+						ClaudeId:     claudeID,
+						Status:       e.Status,
+						LastOutputAt: timestamppb.New(e.LastOutputAt),
+					})
+				}
+				return out, nil
 			})
 
 			// Command adapters delegate back to the existing

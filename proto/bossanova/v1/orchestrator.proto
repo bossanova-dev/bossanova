@@ -31,6 +31,11 @@ service OrchestratorService {
   rpc ProxyStopSession(ProxyStopSessionRequest) returns (ProxyStopSessionResponse);
   rpc ProxyPauseSession(ProxyPauseSessionRequest) returns (ProxyPauseSessionResponse);
   rpc ProxyResumeSession(ProxyResumeSessionRequest) returns (ProxyResumeSessionResponse);
+  // Streams the live chat list (and per-chat statuses) for a session through
+  // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
+  // events to subscribed web clients. Terminates with DaemonOffline if the
+  // owning daemon disconnects.
+  rpc ProxyStreamChats(ProxyStreamChatsRequest) returns (stream ProxyChatListEvent);
 
   // Webhook configuration management
   rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse);
@@ -162,6 +167,52 @@ message ProxyResumeSessionRequest {
 
 message ProxyResumeSessionResponse {
   Session session = 1;
+}
+
+// ProxyStreamChatsRequest selects the session whose chat list (and per-chat
+// statuses) the caller wants to follow. The orchestrator resolves the owning
+// daemon and forwards live ChatDelta / ChatStatusDelta events.
+message ProxyStreamChatsRequest {
+  string session_id = 1;
+}
+
+// ProxyChatListEvent is a single event in the proxied chat-list stream.
+// Bosso sends a ProxyChatListSnapshot first, then forwards live deltas, and
+// finally a DaemonOffline (or a SessionDelta with KIND_DELETED for the
+// watched session) as a terminal event.
+message ProxyChatListEvent {
+  oneof event {
+    // First event on every connect. Replaces any prior client state.
+    ProxyChatListSnapshot snapshot = 1;
+    // Forwarded verbatim from the daemon (defined in stream.proto).
+    ChatDelta chat_delta = 2;
+    // Forwarded verbatim from the daemon (defined in stream.proto).
+    ChatStatusDelta status_delta = 3;
+    // Forwarded only on KIND_DELETED for the watched session — signals the
+    // session itself was removed and the stream should close.
+    SessionDelta session_delta = 4;
+    // Terminal event when the owning daemon disconnects.
+    DaemonOffline daemon_offline = 5;
+  }
+}
+
+// ProxyChatListSnapshot is the required first event on every
+// ProxyStreamChats connection. It carries the current chat list and live
+// per-chat statuses for the requested session.
+message ProxyChatListSnapshot {
+  string session_id = 1;
+  string daemon_id = 2;
+  repeated ClaudeChatMetadata chats = 3;
+  repeated ChatStatusEntry statuses = 4;
+}
+
+// DaemonOffline is the terminal event emitted by the orchestrator when the
+// owning daemon's stream goes offline mid-subscription. The client should
+// treat this as a signal to retry later.
+message DaemonOffline {
+  string daemon_id = 1;
+  // Optional reason for logs/diagnostics.
+  string reason = 2;
 }
 
 // --- Webhook Configuration ---

@@ -142,6 +142,8 @@ message ChatStatusDelta {
   string session_id = 1;
   ChatStatus status = 2;
   google.protobuf.Timestamp last_output_at = 3;
+  // Per-chat key. Empty for legacy daemons; new daemons MUST set this.
+  string claude_id = 4;
 }
 
 // --- Slim metadata types ---

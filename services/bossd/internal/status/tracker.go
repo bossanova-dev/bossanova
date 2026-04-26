@@ -116,6 +116,32 @@ func (t *Tracker) GetBatch(claudeIDs []string) map[string]*Entry {
 	return result
 }
 
+// Snapshot returns a copy of every fresh (non-stale) entry, keyed by
+// claude_id. Stale entries are filtered out — callers receive only chats
+// whose tracker heartbeat is recent enough to trust. Used by the upstream
+// stream's DaemonSnapshot path so a freshly-connected orchestrator inherits
+// the daemon's current per-chat status without waiting for the next
+// status transition (Update suppresses the OnUpdate hook on no-op
+// heartbeats, so long-running chats whose state hasn't moved would
+// otherwise be invisible until they next change).
+func (t *Tracker) Snapshot() map[string]*Entry {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := time.Now()
+	out := make(map[string]*Entry, len(t.entries))
+	for id, e := range t.entries {
+		if now.Sub(e.ReceivedAt) > StaleThreshold {
+			continue
+		}
+		out[id] = &Entry{
+			Status:       e.Status,
+			LastOutputAt: e.LastOutputAt,
+			ReceivedAt:   e.ReceivedAt,
+		}
+	}
+	return out
+}
+
 // Remove deletes the entry for the given claude ID.
 func (t *Tracker) Remove(claudeID string) {
 	t.mu.Lock()

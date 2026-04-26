@@ -171,6 +171,7 @@ func TestSubscribeDeltas_StatusChanged_EmitsChatStatus(t *testing.T) {
 		Status: &StatusEvent{
 			Status: &pb.ChatStatusDelta{
 				SessionId: "s1",
+				ClaudeId:  "c1",
 				Status:    pb.ChatStatus_CHAT_STATUS_WORKING,
 			},
 		},
@@ -180,12 +181,13 @@ func TestSubscribeDeltas_StatusChanged_EmitsChatStatus(t *testing.T) {
 	for _, ev := range got {
 		if s := ev.GetStatus(); s != nil &&
 			s.GetSessionId() == "s1" &&
+			s.GetClaudeId() == "c1" &&
 			s.GetStatus() == pb.ChatStatus_CHAT_STATUS_WORKING {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected chat status delta for s1; got %v", got)
+		t.Fatalf("expected chat status delta for s1/c1; got %v", got)
 	}
 }
 

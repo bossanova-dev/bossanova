@@ -61,6 +61,10 @@ func NewKeychainStore(allowInsecure bool) (*KeychainStore, error) {
 		// per-install random passphrase supplied by keyringutil.
 		FileDir:          "~/.config/bossanova/keyring",
 		FilePasswordFunc: keyring.PromptFunc(keyringutil.New(allowInsecure)),
+		// Optional override via BOSS_KEYRING_BACKEND (e.g. "file" on macOS
+		// for local dev to skip the system Keychain prompt). Nil means
+		// platform default.
+		AllowedBackends: keyringutil.Backends(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open keyring: %w", err)

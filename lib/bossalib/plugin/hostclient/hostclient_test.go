@@ -3,6 +3,7 @@ package hostclient
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -238,5 +239,79 @@ func TestTimeoutErrorIsDeadlineExceeded(t *testing.T) {
 		!strings.Contains(err.Error(), "DeadlineExceeded") &&
 		!strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+}
+
+// fakeClientStream is a stub grpc.ClientStream that returns a configurable
+// error and message from RecvMsg. Other ClientStream methods are unused.
+type fakeClientStream struct {
+	grpc.ClientStream
+	recvErr  error
+	recvLine string
+}
+
+func (f *fakeClientStream) RecvMsg(m any) error {
+	if f.recvErr != nil {
+		return f.recvErr
+	}
+	if resp, ok := m.(*bossanovav1.StreamAttemptOutputResponse); ok {
+		resp.Line = f.recvLine
+	}
+	return nil
+}
+
+// TestAttemptOutputStreamRecv_EOF verifies that an io.EOF from the underlying
+// gRPC stream is propagated as io.EOF.
+// Catches mutation: err != nil → err == nil (line 392) and
+// err == io.EOF → err != io.EOF (line 393).
+func TestAttemptOutputStreamRecv_EOF(t *testing.T) {
+	t.Parallel()
+	s := &attemptOutputStream{stream: &fakeClientStream{recvErr: io.EOF}}
+
+	line, err := s.Recv()
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("expected io.EOF, got %v", err)
+	}
+	if line != "" {
+		t.Errorf("expected empty line on EOF, got %q", line)
+	}
+}
+
+// TestAttemptOutputStreamRecv_OtherError verifies non-EOF errors are returned
+// verbatim (not coerced to io.EOF).
+// Catches mutation: err == io.EOF → err != io.EOF on line 393.
+func TestAttemptOutputStreamRecv_OtherError(t *testing.T) {
+	t.Parallel()
+	wantErr := errors.New("transport closed")
+	s := &attemptOutputStream{stream: &fakeClientStream{recvErr: wantErr}}
+
+	line, err := s.Recv()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if errors.Is(err, io.EOF) {
+		t.Errorf("non-EOF error must not be coerced to io.EOF; got %v", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("expected wrapped error %v, got %v", wantErr, err)
+	}
+	if line != "" {
+		t.Errorf("expected empty line on error, got %q", line)
+	}
+}
+
+// TestAttemptOutputStreamRecv_Success verifies the happy path: a successful
+// RecvMsg returns the message Line with no error.
+// Catches mutation: err != nil → err == nil on line 392 (would return error on success).
+func TestAttemptOutputStreamRecv_Success(t *testing.T) {
+	t.Parallel()
+	s := &attemptOutputStream{stream: &fakeClientStream{recvLine: "hello world"}}
+
+	line, err := s.Recv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if line != "hello world" {
+		t.Errorf("expected %q, got %q", "hello world", line)
 	}
 }

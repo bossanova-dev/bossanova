@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.11.0](https://github.com/recurser/bossanova/compare/v1.10.0...v1.11.0) (2026-04-27)
+
+### Features
+
+* **bossd:** [[#175](https://github.com/recurser/bossanova/issues/175)] add tmux multi-client attach and TerminalStream client for web tmux attach ([c4fa4ff](https://github.com/recurser/bossanova/commit/c4fa4ffee1e7c7654db6665ae44b22e7c7cf100d))
+* **bosso:** [[#175](https://github.com/recurser/bossanova/issues/175)] add /ws/attach + TerminalStream handlers for web tmux attach ([6a20948](https://github.com/recurser/bossanova/commit/6a209482923fb6539efa9bc08285a33a477d7de4))
+* **proto:** [[#175](https://github.com/recurser/bossanova/issues/175)] add TerminalStream RPC and IssueAttachToken for web tmux attach ([32dbc67](https://github.com/recurser/bossanova/commit/32dbc676c3a0fc39eb84b462c1e03f1ec0fdd117))
+* **web:** [[#175](https://github.com/recurser/bossanova/issues/175)] add ChatTerminal page with xterm.js attach client ([ed5ec39](https://github.com/recurser/bossanova/commit/ed5ec3952ef49469bd9cd2b681e8a59a20c5ff5a))
+
+### Bug Fixes
+
+* **bossd:** [[#175](https://github.com/recurser/bossanova/issues/175)] reset TerminalStream backoff after healthy connection ([547848a](https://github.com/recurser/bossanova/commit/547848a54a51ee588ff58d3d65627af6b5c64e7f))
+* **web:** [[#175](https://github.com/recurser/bossanova/issues/175)] update ChatTerminal theme test for always-dark terminal ([8739937](https://github.com/recurser/bossanova/commit/87399373d000a7611c77caef5db931911a46dfe6))
+
 ## [1.10.0](https://github.com/recurser/bossanova/compare/v1.9.1...v1.10.0) (2026-04-26)
 
 ### Features

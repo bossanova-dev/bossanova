@@ -79,7 +79,7 @@ func TestTokenRefresh_BeforeExpiry_EmitsRefreshEvent(t *testing.T) {
 	// Let the refresher reach its first After() call so the fake
 	// clock actually has a timer to fire. Without the wait, Advance
 	// runs before AfterFunc registers and the refresher never wakes.
-	waitForTimers(clock, 1, 200*time.Millisecond)
+	waitForTimer(clock, 200*time.Millisecond)
 
 	// Advance virtual time past the refresh interval. The AfterFunc
 	// callback in the fake clock pushes a timestamp onto the channel
@@ -116,7 +116,7 @@ func TestTokenRefresh_FailureClosesStream(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- client.runTokenRefresher(ctx, outbound) }()
 
-	waitForTimers(clock, 1, 200*time.Millisecond)
+	waitForTimer(clock, 200*time.Millisecond)
 	clock.Advance(100 * time.Millisecond)
 
 	select {

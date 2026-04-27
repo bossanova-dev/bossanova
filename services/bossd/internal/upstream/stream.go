@@ -45,6 +45,42 @@ type streamOpener interface {
 	DaemonStream(ctx context.Context) bidirectionalStream
 }
 
+// SessionTokenHolder is a tiny mutex-protected token cache shared by every
+// opener that needs to send X-Daemon-Token on the wire. The daemon's
+// re-register flow (StreamClient.tryReRegister) calls Set on the holder
+// after RegisterDaemon issues a fresh token; every opener that reads from
+// the same holder picks up the new value transparently on its next dial.
+//
+// The holder exists because there are now TWO openers (DaemonStream and
+// TerminalStream) that present the same daemon session_token and that must
+// stay in lockstep. Without a shared holder, a token rotation would update
+// only DaemonStream's opener and TerminalStream auth would silently fail
+// until the daemon restarted.
+type SessionTokenHolder struct {
+	mu  sync.RWMutex
+	tok string
+}
+
+// NewSessionTokenHolder constructs a holder seeded with the given token.
+// Callers typically pass the SessionToken returned by upstream.Register.
+func NewSessionTokenHolder(tok string) *SessionTokenHolder {
+	return &SessionTokenHolder{tok: tok}
+}
+
+// Get returns the current token. Safe for concurrent callers.
+func (h *SessionTokenHolder) Get() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.tok
+}
+
+// Set replaces the cached token. Safe for concurrent callers.
+func (h *SessionTokenHolder) Set(tok string) {
+	h.mu.Lock()
+	h.tok = tok
+	h.mu.Unlock()
+}
+
 // connectOpener adapts a real bossanovav1connect.OrchestratorServiceClient
 // to the streamOpener interface above. DaemonStream on that client returns
 // a *connect.BidiStreamForClient which already implements bidirectionalStream
@@ -61,22 +97,21 @@ type connectOpener struct {
 	// expires during any reconnect gap > 5 min.
 	tokens TokenProvider
 
-	// sessionToken is the daemon session_token from RegisterDaemon — goes
-	// in X-Daemon-Token. Mutable so StreamClient can rotate it after a
-	// CodeUnauthenticated failure (e.g. another bossd with the same
-	// daemon_id rotated it via UPSERT, or bosso's daemons table was
-	// reset).
-	tokenMu      sync.Mutex
-	sessionToken string
+	// sessionToken holds the daemon session_token from RegisterDaemon
+	// (sent in X-Daemon-Token). Shared with the TerminalStream opener so a
+	// rotation after a stale-token auth failure updates both transparently.
+	sessionToken *SessionTokenHolder
 }
 
 // SetSessionToken swaps the daemon session_token used on subsequent
 // DaemonStream opens. Called by StreamClient.Run after a successful
-// re-register in response to a stale-token auth failure.
+// re-register in response to a stale-token auth failure. Delegates to the
+// shared holder so peer openers (TerminalStream) see the same value.
 func (o *connectOpener) SetSessionToken(tok string) {
-	o.tokenMu.Lock()
-	o.sessionToken = tok
-	o.tokenMu.Unlock()
+	if o.sessionToken == nil {
+		return
+	}
+	o.sessionToken.Set(tok)
 }
 
 // sessionTokenHolder is the capability StreamClient looks for on its
@@ -115,11 +150,10 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 	if jwt != "" {
 		raw.RequestHeader().Set("Authorization", "Bearer "+jwt)
 	}
-	o.tokenMu.Lock()
-	sessionToken := o.sessionToken
-	o.tokenMu.Unlock()
-	if sessionToken != "" {
-		raw.RequestHeader().Set("X-Daemon-Token", sessionToken)
+	if o.sessionToken != nil {
+		if tok := o.sessionToken.Get(); tok != "" {
+			raw.RequestHeader().Set("X-Daemon-Token", tok)
+		}
 	}
 	return connectBidiAdapter{stream: raw}
 }
@@ -346,10 +380,16 @@ type StreamClient struct {
 type StreamClientConfig struct {
 	// Opener is the live ConnectRPC client. If nil, the client will be
 	// built from Client + AuthToken at construction time.
-	Opener       streamOpener
-	Client       bossanovav1connect.OrchestratorServiceClient
-	AuthToken    string // WorkOS JWT for Authorization header
-	SessionToken string // daemon session_token from RegisterDaemon for X-Daemon-Token header
+	Opener    streamOpener
+	Client    bossanovav1connect.OrchestratorServiceClient
+	AuthToken string // WorkOS JWT for Authorization header
+	// SessionToken, when non-nil, is the shared holder for the daemon
+	// session_token sent in X-Daemon-Token. The same holder should be
+	// passed to any peer openers (e.g. TerminalStream) so a rotation
+	// triggered by re-register fans out to all of them. If nil and
+	// Opener is nil, NewStreamClient creates an empty holder; tests that
+	// supply their own Opener can ignore this field.
+	SessionToken *SessionTokenHolder
 
 	// Identity.
 	DaemonID string
@@ -399,10 +439,14 @@ type StreamClientConfig struct {
 func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 	opener := cfg.Opener
 	if opener == nil && cfg.Client != nil {
+		holder := cfg.SessionToken
+		if holder == nil {
+			holder = NewSessionTokenHolder("")
+		}
 		opener = &connectOpener{
 			client:       cfg.Client,
 			authToken:    cfg.AuthToken,
-			sessionToken: cfg.SessionToken,
+			sessionToken: holder,
 			tokens:       cfg.TokenProvider,
 		}
 	}

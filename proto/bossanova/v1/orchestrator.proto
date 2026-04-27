@@ -37,6 +37,26 @@ service OrchestratorService {
   // owning daemon disconnects.
   rpc ProxyStreamChats(ProxyStreamChatsRequest) returns (stream ProxyChatListEvent);
 
+  // IssueAttachToken returns a short-lived JWT bound to (user, session,
+  // chat, scope) that the browser uses to authenticate the /ws/attach
+  // WebSocket handshake. TTL ~5 minutes.
+  rpc IssueAttachToken(IssueAttachTokenRequest) returns (IssueAttachTokenResponse);
+
+  // TerminalStream is the bossd-initiated bidirectional channel that
+  // carries terminal-attach traffic for the web /ws/attach feature.
+  // Daemon opens lazily on the first attach and multiplexes attach_ids
+  // inside it; isolated from the control-plane DaemonStream so keystroke
+  // traffic never starves Stop/Pause/Transfer commands. Auth: per-daemon
+  // X-Daemon-Token + WorkOS JWT, same as DaemonStream.
+  //
+  // Stream-type orientation matches DaemonStream: bossd is the gRPC
+  // client, so the request stream carries daemon→bosso messages
+  // (TerminalServerMessage) and the response stream carries bosso→daemon
+  // messages (TerminalClientMessage). The "Client"/"Server" prefix refers
+  // to the web feature's bosso-server / browser-client perspective, not
+  // the gRPC roles. See docs/plans/2026-04-26-web-tmux-attach.md.
+  rpc TerminalStream(stream TerminalServerMessage) returns (stream TerminalClientMessage);
+
   // Webhook configuration management
   rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse);
   rpc ListWebhookConfigs(ListWebhookConfigsRequest) returns (ListWebhookConfigsResponse);
@@ -213,6 +233,38 @@ message DaemonOffline {
   string daemon_id = 1;
   // Optional reason for logs/diagnostics.
   string reason = 2;
+}
+
+// --- Attach token (web tmux-attach feature) ---
+
+// IssueAttachTokenRequest asks bosso for a short-lived JWT bound to the
+// triple (session_id, chat_id, scope). Bosso validates that
+// chat ∈ session ∈ caller-user before signing the token.
+message IssueAttachTokenRequest {
+  string session_id = 1;
+  string chat_id = 2;
+  // EDITOR or VIEWER. Only EDITOR is used in v1 — VIEWER is accepted and
+  // behaves identically for now (see the plan's deferred items).
+  AttachScope scope = 3;
+}
+
+// IssueAttachTokenResponse carries the freshly-minted attach JWT and its
+// expiry. The browser sends `token` as the second value of the
+// `Sec-WebSocket-Protocol` header on the /ws/attach handshake.
+message IssueAttachTokenResponse {
+  string token = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// AttachScope distinguishes editor (input allowed) from viewer (read-only)
+// attach modes. v1 ships only EDITOR semantics; VIEWER is wire-reserved.
+enum AttachScope {
+  // Default zero value. Bosso MUST reject IssueAttachToken requests with
+  // this scope — do not silently default to EDITOR.
+  ATTACH_SCOPE_UNSPECIFIED = 0;
+  ATTACH_SCOPE_EDITOR = 1;
+  // Accepted but behaves identically to EDITOR in v1.
+  ATTACH_SCOPE_VIEWER = 2;
 }
 
 // --- Webhook Configuration ---

@@ -182,6 +182,66 @@ func (c *Client) KillSession(ctx context.Context, name string) error {
 	return nil
 }
 
+// SetAttachOptions configures tmux session-level options that govern multi-client
+// attach behavior. Called by the web-tmux-attach feature before spawning a
+// `tmux attach` PTY so that the local TUI and N browser tabs can attach
+// concurrently with predictable layout semantics.
+//
+//   - aggressive-resize off: tmux sizes the window to the largest connected
+//     client rather than the smallest. Avoids constant resizing as clients
+//     come and go.
+//   - window-size largest: tmux picks the largest client's geometry as the
+//     authoritative window size. Smaller clients see a viewport into the
+//     larger window (rather than every client shrinking to fit the smallest).
+//
+// Idempotent — safe to call on every attach. Returns an error if either
+// `tmux set-option` invocation fails.
+func (c *Client) SetAttachOptions(ctx context.Context, sessionName string) error {
+	if sessionName == "" {
+		return fmt.Errorf("session name is required")
+	}
+	options := [][2]string{
+		{"aggressive-resize", "off"},
+		{"window-size", "largest"},
+	}
+	for _, opt := range options {
+		cmd := c.cmdFunc(ctx, "tmux", "set-option", "-t", sessionName, opt[0], opt[1])
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			trimmed := strings.TrimSpace(string(out))
+			if trimmed != "" {
+				return fmt.Errorf("tmux set-option %s %s on %q: %s: %w",
+					opt[0], opt[1], sessionName, trimmed, err)
+			}
+			return fmt.Errorf("tmux set-option %s %s on %q: %w",
+				opt[0], opt[1], sessionName, err)
+		}
+	}
+	return nil
+}
+
+// RefreshClient runs `tmux refresh-client -t <session>` to force tmux to
+// redraw all currently-attached clients. The web-tmux-attach feature calls
+// this after a per-attach ring buffer overflow forces a RESYNC: dropping
+// oldest bytes leaves later viewers with a corrupt frame, but a tmux-driven
+// repaint resolves it without needing each attach to negotiate its own
+// resync. Idempotent and cheap — safe to fire-and-forget on every overflow.
+func (c *Client) RefreshClient(ctx context.Context, sessionName string) error {
+	if sessionName == "" {
+		return fmt.Errorf("session name is required")
+	}
+	cmd := c.cmdFunc(ctx, "tmux", "refresh-client", "-t", sessionName)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed != "" {
+			return fmt.Errorf("tmux refresh-client -t %q: %s: %w", sessionName, trimmed, err)
+		}
+		return fmt.Errorf("tmux refresh-client -t %q: %w", sessionName, err)
+	}
+	return nil
+}
+
 // SessionName generates a tmux session name from repository and session IDs.
 // Format: boss-{first8repoID}-{first8sessionID}
 func SessionName(repoID, sessionID string) string {

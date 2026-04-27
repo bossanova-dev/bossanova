@@ -337,6 +337,126 @@ func TestNewSession_SkipsTermProgramWhenTmux(t *testing.T) {
 	}
 }
 
+// TestSetAttachOptions verifies that SetAttachOptions issues the two
+// session-level tmux set-option commands in the expected order with the
+// expected arguments.
+func TestSetAttachOptions(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.SetAttachOptions(ctx, "boss-test-sess"); err != nil {
+		t.Fatalf("SetAttachOptions failed: %v", err)
+	}
+
+	wantCalls := [][]string{
+		{"tmux", "set-option", "-t", "boss-test-sess", "aggressive-resize", "off"},
+		{"tmux", "set-option", "-t", "boss-test-sess", "window-size", "largest"},
+	}
+	if len(mock.calls) != len(wantCalls) {
+		t.Fatalf("expected %d tmux calls, got %d: %v", len(wantCalls), len(mock.calls), mock.calls)
+	}
+	for i, want := range wantCalls {
+		if !equalSlices(mock.calls[i], want) {
+			t.Errorf("call %d: expected %v, got %v", i, want, mock.calls[i])
+		}
+	}
+}
+
+// TestSetAttachOptions_Idempotent verifies that calling SetAttachOptions
+// twice issues the same set of commands the second time — tmux's set-option
+// is naturally idempotent, so the wrapper just needs to not get clever.
+func TestSetAttachOptions_Idempotent(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.SetAttachOptions(ctx, "boss-test-sess"); err != nil {
+		t.Fatalf("first SetAttachOptions failed: %v", err)
+	}
+	firstRun := append([][]string(nil), mock.calls...)
+
+	mock.calls = nil
+	if err := c.SetAttachOptions(ctx, "boss-test-sess"); err != nil {
+		t.Fatalf("second SetAttachOptions failed: %v", err)
+	}
+	secondRun := mock.calls
+
+	if len(firstRun) != len(secondRun) {
+		t.Fatalf("idempotent calls should produce same number of invocations: first=%d second=%d",
+			len(firstRun), len(secondRun))
+	}
+	for i := range firstRun {
+		if !equalSlices(firstRun[i], secondRun[i]) {
+			t.Errorf("call %d differs between runs: first=%v second=%v",
+				i, firstRun[i], secondRun[i])
+		}
+	}
+}
+
+// TestSetAttachOptions_Error verifies that a tmux invocation failure surfaces
+// as an error (not swallowed). Catches mutations like err != nil → err == nil.
+func TestSetAttachOptions_Error(t *testing.T) {
+	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		// Simulate tmux failure.
+		return exec.CommandContext(ctx, "false")
+	}))
+
+	err := c.SetAttachOptions(context.Background(), "boss-test-sess")
+	if err == nil {
+		t.Fatal("expected error when tmux invocation fails, got nil")
+	}
+}
+
+// TestRefreshClient verifies the wrapper issues `tmux refresh-client -t <name>`
+// with the configured session name. Used by the web-tmux-attach client after
+// a ring-buffer overflow to force tmux to repaint all attached viewers.
+func TestRefreshClient(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.RefreshClient(ctx, "boss-test-sess"); err != nil {
+		t.Fatalf("RefreshClient failed: %v", err)
+	}
+
+	want := []string{"tmux", "refresh-client", "-t", "boss-test-sess"}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 tmux call, got %d: %v", len(mock.calls), mock.calls)
+	}
+	if !equalSlices(mock.calls[0], want) {
+		t.Errorf("RefreshClient args: expected %v, got %v", want, mock.calls[0])
+	}
+}
+
+// TestRefreshClient_EmptySessionName guards the empty-name validation so
+// callers can't accidentally invoke `tmux refresh-client -t` with no target.
+func TestRefreshClient_EmptySessionName(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.RefreshClient(ctx, ""); err == nil {
+		t.Fatal("expected error for empty session name, got nil")
+	}
+	if len(mock.calls) != 0 {
+		t.Errorf("expected no tmux calls when session name is empty, got %d", len(mock.calls))
+	}
+}
+
+// TestRefreshClient_Error verifies a tmux invocation failure surfaces as an
+// error rather than being swallowed. Catches mutations like err != nil →
+// err == nil that would silently break the resync repaint flow.
+func TestRefreshClient_Error(t *testing.T) {
+	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "false")
+	}))
+
+	if err := c.RefreshClient(context.Background(), "boss-test-sess"); err == nil {
+		t.Fatal("expected error when tmux invocation fails, got nil")
+	}
+}
+
 func TestHasSession(t *testing.T) {
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))

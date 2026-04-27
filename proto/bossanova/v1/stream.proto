@@ -285,3 +285,108 @@ message WebhookEvent {
   // Selected headers for replay context (e.g. X-GitHub-Delivery, X-GitHub-Event).
   map<string, string> headers = 5;
 }
+
+// --- TerminalStream messages (web-tmux-attach feature) ---
+//
+// These messages travel on the dedicated TerminalStream RPC (declared in
+// orchestrator.proto). TerminalStream is parallel to DaemonStream so that
+// keystroke-rate byte traffic never starves control-plane commands.
+//
+// Directionality (matches DaemonStream's client/server convention — bossd is
+// the gRPC client, bosso is the gRPC server):
+//   - TerminalServerMessage travels daemon → bosso (request stream)
+//   - TerminalClientMessage travels bosso → daemon (response stream)
+//
+// "Client" / "Server" here refer to the bosso-server / browser-client
+// perspective of the web feature, NOT the gRPC client/server roles. See
+// docs/plans/2026-04-26-web-tmux-attach.md for the full design.
+
+// TerminalAttachCommand: bosso → daemon. Carried inside TerminalClientMessage.
+// Asks the daemon to spawn a new tmux attach PTY for the given chat. The
+// attach_id is bosso-generated (UUID); the daemon uses it to multiplex
+// subsequent input/resize/close commands and to tag outbound data chunks.
+message TerminalAttachCommand {
+  // bosso-generated UUID. The daemon does NOT pick routing keys.
+  string attach_id = 1;
+  string chat_id = 2;
+  // Initial PTY size from the browser (xterm.js).
+  uint32 cols = 3;
+  uint32 rows = 4;
+}
+
+// TerminalInputCommand: bosso → daemon. Raw bytes typed by the browser
+// client to be written to the PTY stdin. Payload is opaque to bosso so a
+// future libsodium framing layer can swap in without changing the wire
+// shape.
+message TerminalInputCommand {
+  string attach_id = 1;
+  // Raw PTY input (opaque — ready for E2E later).
+  bytes data = 2;
+}
+
+// TerminalResizeCommand: bosso → daemon. Forwarded from the browser when
+// the xterm viewport size changes. Daemon applies the new size to the PTY
+// (and tmux propagates to all attached clients per the window-size policy).
+message TerminalResizeCommand {
+  string attach_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+}
+
+// TerminalCloseCommand: bosso → daemon. Asks the daemon to tear down the
+// attach (closes PTY, kills the `tmux attach` process — does NOT kill the
+// underlying tmux session running Claude).
+message TerminalCloseCommand {
+  string attach_id = 1;
+}
+
+// TerminalDataChunk: daemon → bosso. Carried inside TerminalServerMessage.
+// Raw PTY output (including VT escape codes) tagged with the attach_id so
+// bosso can route it to the correct WebSocket subscriber.
+message TerminalDataChunk {
+  string attach_id = 1;
+  // Monotonic per attach. Reserved for a future delta-replay upgrade; not
+  // currently used by the consumer beyond debug logging.
+  uint64 seq = 2;
+  // Raw PTY output incl. VT escape codes (opaque — ready for E2E).
+  bytes data = 3;
+  // True when the daemon's per-attach ringbuffer dropped bytes due to a
+  // slow consumer. The browser MUST treat this as a RESYNC signal: the
+  // daemon will follow up with `tmux refresh-client` so all attached
+  // clients redraw fresh state.
+  bool lost = 4;
+}
+
+// TerminalAttachExited: daemon → bosso. Carried inside
+// TerminalServerMessage. Sent when the PTY child exits (tmux session was
+// killed, attach was closed, etc.). exit_code mirrors the underlying
+// process; reason is a free-form string for diagnostics.
+message TerminalAttachExited {
+  string attach_id = 1;
+  int32 exit_code = 2;
+  string reason = 3;
+}
+
+// TerminalClientMessage is the bosso → daemon envelope on the new RPC.
+// Despite the name, this is the gRPC RESPONSE stream type (bosso is the
+// gRPC server). Unknown oneof cases are logged and skipped by the daemon
+// for forward compatibility.
+message TerminalClientMessage {
+  oneof msg {
+    TerminalAttachCommand attach = 1;
+    TerminalInputCommand input = 2;
+    TerminalResizeCommand resize = 3;
+    TerminalCloseCommand close = 4;
+  }
+}
+
+// TerminalServerMessage is the daemon → bosso envelope on the new RPC.
+// Despite the name, this is the gRPC REQUEST stream type (bossd is the
+// gRPC client and initiates the stream). Unknown oneof cases are logged
+// and skipped by bosso for forward compatibility.
+message TerminalServerMessage {
+  oneof msg {
+    TerminalDataChunk data = 1;
+    TerminalAttachExited exited = 2;
+  }
+}

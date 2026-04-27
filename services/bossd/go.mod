@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	connectrpc.com/connect v1.19.1
 	github.com/99designs/keyring v1.2.2
+	github.com/creack/pty/v2 v2.0.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.7.0

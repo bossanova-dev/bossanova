@@ -86,15 +86,15 @@ func (f *fakeClock) pendingTimers() int {
 	return n
 }
 
-// waitForTimers polls until the fake clock has at least n pending
-// timers or the deadline expires. Needed because the goroutine under
+// waitForTimer polls until the fake clock has at least one pending
+// timer or the deadline expires. Needed because the goroutine under
 // test registers its AfterFunc asynchronously relative to the test's
 // next Advance — without this wait, Advance can run while the clock
 // has zero timers, silently firing nothing.
-func waitForTimers(clock *fakeClock, n int, timeout time.Duration) {
+func waitForTimer(clock *fakeClock, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if clock.pendingTimers() >= n {
+		if clock.pendingTimers() >= 1 {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)

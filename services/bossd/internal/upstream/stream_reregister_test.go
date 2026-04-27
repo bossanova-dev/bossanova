@@ -128,7 +128,7 @@ func TestStreamClient_ReRegistersOnStaleSessionToken(t *testing.T) {
 	streamClient := NewStreamClient(StreamClientConfig{
 		Client:       client,
 		AuthToken:    "jwt",
-		SessionToken: "stale-token-that-bosso-does-not-know", // deliberately wrong
+		SessionToken: NewSessionTokenHolder("stale-token-that-bosso-does-not-know"), // deliberately wrong
 		DaemonID:     "daemon-reregister-test",
 		Hostname:     "host",
 		Stores:       stores,

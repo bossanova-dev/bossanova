@@ -529,6 +529,7 @@ func run(opts runOpts) error {
 	})
 
 	var streamClient *upstream.StreamClient
+	var terminalStreamClient *upstream.TerminalStreamClient
 	var authNotifier server.AuthNotifier
 	if cfg := upstream.ConfigFromEnv(); cfg != nil {
 		// ConnectRPC bidi streams (DaemonStream) require HTTP/2. Over
@@ -589,8 +590,12 @@ func run(opts runOpts) error {
 		sessionToken, err := upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, authToken, repoIDs)
 		regCancel()
 		if err != nil {
-			// Non-fatal: daemon works in local mode without orchestrator.
-			log.Warn().Err(err).Msg("upstream register failed, running in local-only mode")
+			// Non-fatal: the stream's outer Run loop sees CodeUnauthenticated
+			// on its first attempt and calls reRegister, which retries with
+			// whatever tokenProvider holds. After `boss login`, NotifyLogin
+			// reloads the keychain so the next reRegister succeeds — no
+			// daemon restart required.
+			log.Warn().Err(err).Msg("upstream register failed; stream will retry via reRegister")
 
 			// Diagnostic dump: print the register inputs and the JWT
 			// claims (unverified) so it's obvious when the daemon is
@@ -613,136 +618,168 @@ func run(opts runOpts) error {
 				Msg("upstream register diagnostic")
 		} else {
 			log.Info().Str("daemon_id", cfg.DaemonID).Msg("registered with orchestrator")
-
-			// bosso expects BOTH credentials on the stream:
-			//   Authorization: Bearer <WorkOS JWT>   — proves user identity
-			//   X-Daemon-Token: <session_token>      — proves daemon identity
-			// See services/bosso/internal/server/stream.go DaemonStream.
-
-			// Snapshot readers pull from the bossd stores, projecting
-			// to the slim pb types the snapshot expects.
-			snapshotSessions := upstream.NewSessionSnapshotReader(sessionLister)
-			snapshotRepos := upstream.NewRepoSnapshotReader(func(ctx context.Context) ([]string, error) {
-				rs, err := repos.List(ctx)
-				if err != nil {
-					return nil, err
-				}
-				out := make([]string, len(rs))
-				for i, r := range rs {
-					out[i] = r.ID
-				}
-				return out, nil
-			})
-			snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ClaudeChatMetadata, error) {
-				chats, err := claudeChats.ListWithTmuxSession(ctx)
-				if err != nil {
-					return nil, err
-				}
-				out := make([]*bossanovav1.ClaudeChatMetadata, 0, len(chats))
-				for _, c := range chats {
-					out = append(out, &bossanovav1.ClaudeChatMetadata{
-						Id:        c.ID,
-						SessionId: c.SessionID,
-						ClaudeId:  c.ClaudeID,
-						Title:     c.Title,
-						DaemonId:  c.DaemonID,
-						CreatedAt: timestamppb.New(c.CreatedAt),
-					})
-				}
-				return out, nil
-			})
-			snapshotStatuses := upstream.NewStatusSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ChatStatusEntry, error) {
-				// Walk the tracker's current (non-stale) entries so a
-				// freshly-connected orchestrator inherits per-chat
-				// status without waiting for the next transition. The
-				// Tracker.Update hook suppresses no-op heartbeats, so
-				// long-lived "working" chats that haven't transitioned
-				// since the daemon's last connect would otherwise be
-				// invisible to bosso (and the web UI) until they next
-				// change state.
-				entries := chatStatusTracker.Snapshot()
-				out := make([]*bossanovav1.ChatStatusEntry, 0, len(entries))
-				for claudeID, e := range entries {
-					out = append(out, &bossanovav1.ChatStatusEntry{
-						ClaudeId:     claudeID,
-						Status:       e.Status,
-						LastOutputAt: timestamppb.New(e.LastOutputAt),
-					})
-				}
-				return out, nil
-			})
-
-			// Command adapters delegate back to the existing
-			// lifecycle/store surfaces.
-			cmdHandler := &upstream.CommandHandlerAdapter{
-				Lifecycle:  lifecycle,
-				Sessions:   sessionGetterAdapter{sessions: sessions},
-				Automation: automationToggleAdapter{sessions: sessions},
-				OnCompletion: func(ctx context.Context, sessionID string) {
-					if orchestrator != nil {
-						orchestrator.HandleSessionCompleted(ctx, sessionID, models.TaskMappingStatusFailed)
-					}
-				},
-			}
-
-			// Attacher bridges to claude.Runner's subscribe/history.
-			attacher := &upstream.SessionAttacherAdapter{
-				Sessions: attachLookupAdapter{sessions: sessions},
-				Claude:   claudeAttachAdapter{runner: claudeRunner},
-				Logger:   log.Logger,
-			}
-
-			// reRegister self-heals from a stale session_token (e.g. another
-			// bossd with the same daemon_id rotated it via UPSERT, or
-			// bosso's daemons row was cleared). The Run loop calls this
-			// after a CodeUnauthenticated handshake; we re-use the fresh
-			// JWT path from startup (tokenProvider auto-refreshes inside
-			// the opener) and gather repoIDs each call so a repo set that
-			// changed since startup is reflected.
-			reRegister := func(ctx context.Context) (string, error) {
-				currentRepos, err := repos.List(ctx)
-				if err != nil {
-					log.Warn().Err(err).Msg("reRegister: repos.List failed; proceeding with empty set")
-					currentRepos = nil
-				}
-				ids := make([]string, 0, len(currentRepos))
-				for _, r := range currentRepos {
-					ids = append(ids, r.ID)
-				}
-				jwt := tokenProvider.Token()
-				if jwt == "" {
-					jwt = cfg.UserJWT
-				}
-				return upstream.Register(ctx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
-			}
-
-			streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
-				Client:       client,
-				AuthToken:    authToken,    // WorkOS JWT → Authorization header
-				SessionToken: sessionToken, // daemon token → X-Daemon-Token header
-				DaemonID:     cfg.DaemonID,
-				Hostname:     cfg.Hostname,
-				Stores: upstream.StreamStores{
-					Sessions: snapshotSessions,
-					Chats:    snapshotChats,
-					Repos:    snapshotRepos,
-					Statuses: snapshotStatuses,
-				},
-				Events:         streamBus,
-				TokenProvider:  tokenProvider,
-				CommandHandler: cmdHandler,
-				Webhooks:       &upstream.NoopWebhookDispatcher{Logger: log.Logger},
-				Attacher:       attacher,
-				ReRegister:     reRegister,
-				Logger:         log.Logger,
-			})
-
-			authNotifier = &streamAuthAdapter{
-				streamClient:  streamClient,
-				tokenProvider: tokenProvider,
-				logger:        log.Logger,
-			}
 		}
+
+		// Always wire up the stream pipeline, regardless of whether the
+		// initial Register succeeded. When it failed, sessionToken is
+		// empty and the stream's outer Run loop will see
+		// CodeUnauthenticated on its first DaemonStream open, then call
+		// reRegister to rotate in a fresh session_token. Combined with
+		// streamAuthAdapter.NotifyLogin reloading the keychain, this
+		// lets a fresh `boss login` recover bossd from a startup auth
+		// failure without restarting the daemon.
+		//
+		// bosso expects BOTH credentials on the stream:
+		//   Authorization: Bearer <WorkOS JWT>   — proves user identity
+		//   X-Daemon-Token: <session_token>      — proves daemon identity
+		// See services/bosso/internal/server/stream.go DaemonStream.
+
+		// Snapshot readers pull from the bossd stores, projecting
+		// to the slim pb types the snapshot expects.
+		snapshotSessions := upstream.NewSessionSnapshotReader(sessionLister)
+		snapshotRepos := upstream.NewRepoSnapshotReader(func(ctx context.Context) ([]string, error) {
+			rs, err := repos.List(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]string, len(rs))
+			for i, r := range rs {
+				out[i] = r.ID
+			}
+			return out, nil
+		})
+		snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ClaudeChatMetadata, error) {
+			chats, err := claudeChats.ListWithTmuxSession(ctx)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]*bossanovav1.ClaudeChatMetadata, 0, len(chats))
+			for _, c := range chats {
+				out = append(out, &bossanovav1.ClaudeChatMetadata{
+					Id:        c.ID,
+					SessionId: c.SessionID,
+					ClaudeId:  c.ClaudeID,
+					Title:     c.Title,
+					DaemonId:  c.DaemonID,
+					CreatedAt: timestamppb.New(c.CreatedAt),
+				})
+			}
+			return out, nil
+		})
+		snapshotStatuses := upstream.NewStatusSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ChatStatusEntry, error) {
+			// Walk the tracker's current (non-stale) entries so a
+			// freshly-connected orchestrator inherits per-chat
+			// status without waiting for the next transition. The
+			// Tracker.Update hook suppresses no-op heartbeats, so
+			// long-lived "working" chats that haven't transitioned
+			// since the daemon's last connect would otherwise be
+			// invisible to bosso (and the web UI) until they next
+			// change state.
+			entries := chatStatusTracker.Snapshot()
+			out := make([]*bossanovav1.ChatStatusEntry, 0, len(entries))
+			for claudeID, e := range entries {
+				out = append(out, &bossanovav1.ChatStatusEntry{
+					ClaudeId:     claudeID,
+					Status:       e.Status,
+					LastOutputAt: timestamppb.New(e.LastOutputAt),
+				})
+			}
+			return out, nil
+		})
+
+		// Command adapters delegate back to the existing
+		// lifecycle/store surfaces.
+		cmdHandler := &upstream.CommandHandlerAdapter{
+			Lifecycle:  lifecycle,
+			Sessions:   sessionGetterAdapter{sessions: sessions},
+			Automation: automationToggleAdapter{sessions: sessions},
+			OnCompletion: func(ctx context.Context, sessionID string) {
+				if orchestrator != nil {
+					orchestrator.HandleSessionCompleted(ctx, sessionID, models.TaskMappingStatusFailed)
+				}
+			},
+		}
+
+		// Attacher bridges to claude.Runner's subscribe/history.
+		attacher := &upstream.SessionAttacherAdapter{
+			Sessions: attachLookupAdapter{sessions: sessions},
+			Claude:   claudeAttachAdapter{runner: claudeRunner},
+			Logger:   log.Logger,
+		}
+
+		// reRegister self-heals from a stale or missing session_token
+		// (another bossd with the same daemon_id rotated it via UPSERT,
+		// bosso's daemons row was cleared, OR the initial Register at
+		// startup failed). The Run loop calls this after a
+		// CodeUnauthenticated handshake; we re-use the fresh JWT path
+		// from startup (tokenProvider auto-refreshes inside the opener)
+		// and gather repoIDs each call so a repo set that changed
+		// since startup is reflected.
+		reRegister := func(ctx context.Context) (string, error) {
+			currentRepos, err := repos.List(ctx)
+			if err != nil {
+				log.Warn().Err(err).Msg("reRegister: repos.List failed; proceeding with empty set")
+				currentRepos = nil
+			}
+			ids := make([]string, 0, len(currentRepos))
+			for _, r := range currentRepos {
+				ids = append(ids, r.ID)
+			}
+			jwt := tokenProvider.Token()
+			if jwt == "" {
+				jwt = cfg.UserJWT
+			}
+			return upstream.Register(ctx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
+		}
+
+		// Shared session_token holder: every opener that sends
+		// X-Daemon-Token reads from this so a re-register-driven
+		// rotation fans out to all of them. When initial Register
+		// failed, sessionToken is "" — the first stream open will be
+		// rejected, reRegister fires, and the holder is populated.
+		sessionTokenHolder := upstream.NewSessionTokenHolder(sessionToken)
+		streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
+			Client:       client,
+			AuthToken:    authToken,          // WorkOS JWT → Authorization header
+			SessionToken: sessionTokenHolder, // daemon token → X-Daemon-Token header
+			DaemonID:     cfg.DaemonID,
+			Hostname:     cfg.Hostname,
+			Stores: upstream.StreamStores{
+				Sessions: snapshotSessions,
+				Chats:    snapshotChats,
+				Repos:    snapshotRepos,
+				Statuses: snapshotStatuses,
+			},
+			Events:         streamBus,
+			TokenProvider:  tokenProvider,
+			CommandHandler: cmdHandler,
+			Webhooks:       &upstream.NoopWebhookDispatcher{Logger: log.Logger},
+			Attacher:       attacher,
+			ReRegister:     reRegister,
+			Logger:         log.Logger,
+		})
+
+		authNotifier = &streamAuthAdapter{
+			streamClient:  streamClient,
+			tokenProvider: tokenProvider,
+			logger:        log.Logger,
+		}
+
+		// TerminalStream is a sibling of DaemonStream — separate bidi
+		// for keystroke / data-chunk traffic so it cannot starve
+		// control-plane commands. Reuses the SAME orchestrator client,
+		// AuthToken, sessionTokenHolder, and TokenProvider so a
+		// re-register-driven session_token rotation fans out to both
+		// streams. Idle until bosso pushes the first attach.
+		terminalStreamClient = upstream.NewTerminalStreamClient(upstream.TerminalStreamClientConfig{
+			Client:        client,
+			AuthToken:     authToken,
+			SessionToken:  sessionTokenHolder,
+			TokenProvider: tokenProvider,
+			TmuxClient:    tmuxClient,
+			Chats:         upstream.NewChatStoreLookup(claudeChats),
+			Logger:        log.Logger,
+		})
 	}
 
 	srv := server.New(server.Config{
@@ -826,6 +863,20 @@ func run(opts runOpts) error {
 	if streamClient != nil {
 		trackedGo(func() {
 			streamClient.Run(streamCtx)
+		})
+	}
+	// Run the TerminalStream client alongside the DaemonStream client.
+	// Each owns its own connect/reconnect loop so a transient bosso
+	// outage on one bidi can't bring the other down — both sit in their
+	// own backoff. Cancellation via streamCtx returns nil from Run on
+	// graceful shutdown; a non-nil return on streamCtx-still-live is a
+	// fatal opener misconfiguration (e.g. nil opener) and is logged
+	// rather than restarted.
+	if terminalStreamClient != nil {
+		trackedGo(func() {
+			if err := terminalStreamClient.Run(streamCtx); err != nil && streamCtx.Err() == nil {
+				log.Error().Err(err).Msg("terminal stream client exited unexpectedly")
+			}
 		})
 	}
 
@@ -985,15 +1036,16 @@ type streamAuthAdapter struct {
 	logger        zerolog.Logger
 }
 
-// NotifyLogin reloads keychain credentials and nudges the stream to
-// reconnect with the fresh token. The StreamClient's outer Run loop
-// treats any stream error as a reconnect trigger, so forcing a single
-// token-refresh event is sufficient; a full tear-down is overkill.
+// NotifyLogin reloads keychain credentials so the running stream picks
+// up the freshly stored tokens from `boss login`. Calling Refresh here
+// would use the in-memory refresh_token, which has been superseded by
+// the new login — WorkOS rejects it with "Session has already ended".
+// Reading the keychain instead picks up the access+refresh pair the CLI
+// just wrote. The next reconnect (or the periodic refresher when the
+// current JWT nears expiry) propagates the new token to bosso.
 func (a *streamAuthAdapter) NotifyLogin(_ context.Context, _ []string) error {
 	if a.tokenProvider != nil {
-		// Best-effort: the stream's outer Run loop reconnects on any
-		// error, so a refresh failure here is not actionable.
-		_, _ = a.tokenProvider.Refresh(context.Background())
+		a.tokenProvider.Reload()
 	}
 	return nil
 }

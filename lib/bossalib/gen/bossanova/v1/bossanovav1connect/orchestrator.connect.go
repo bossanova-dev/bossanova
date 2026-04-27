@@ -66,6 +66,12 @@ const (
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
+	// OrchestratorServiceIssueAttachTokenProcedure is the fully-qualified name of the
+	// OrchestratorService's IssueAttachToken RPC.
+	OrchestratorServiceIssueAttachTokenProcedure = "/bossanova.v1.OrchestratorService/IssueAttachToken"
+	// OrchestratorServiceTerminalStreamProcedure is the fully-qualified name of the
+	// OrchestratorService's TerminalStream RPC.
+	OrchestratorServiceTerminalStreamProcedure = "/bossanova.v1.OrchestratorService/TerminalStream"
 	// OrchestratorServiceCreateWebhookConfigProcedure is the fully-qualified name of the
 	// OrchestratorService's CreateWebhookConfig RPC.
 	OrchestratorServiceCreateWebhookConfigProcedure = "/bossanova.v1.OrchestratorService/CreateWebhookConfig"
@@ -104,6 +110,24 @@ type OrchestratorServiceClient interface {
 	// events to subscribed web clients. Terminates with DaemonOffline if the
 	// owning daemon disconnects.
 	ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error)
+	// IssueAttachToken returns a short-lived JWT bound to (user, session,
+	// chat, scope) that the browser uses to authenticate the /ws/attach
+	// WebSocket handshake. TTL ~5 minutes.
+	IssueAttachToken(context.Context, *connect.Request[v1.IssueAttachTokenRequest]) (*connect.Response[v1.IssueAttachTokenResponse], error)
+	// TerminalStream is the bossd-initiated bidirectional channel that
+	// carries terminal-attach traffic for the web /ws/attach feature.
+	// Daemon opens lazily on the first attach and multiplexes attach_ids
+	// inside it; isolated from the control-plane DaemonStream so keystroke
+	// traffic never starves Stop/Pause/Transfer commands. Auth: per-daemon
+	// X-Daemon-Token + WorkOS JWT, same as DaemonStream.
+	//
+	// Stream-type orientation matches DaemonStream: bossd is the gRPC
+	// client, so the request stream carries daemon→bosso messages
+	// (TerminalServerMessage) and the response stream carries bosso→daemon
+	// messages (TerminalClientMessage). The "Client"/"Server" prefix refers
+	// to the web feature's bosso-server / browser-client perspective, not
+	// the gRPC roles. See docs/plans/2026-04-26-web-tmux-attach.md.
+	TerminalStream(context.Context) *connect.BidiStreamForClient[v1.TerminalServerMessage, v1.TerminalClientMessage]
 	// Webhook configuration management
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
@@ -190,6 +214,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStreamChats")),
 			connect.WithClientOptions(opts...),
 		),
+		issueAttachToken: connect.NewClient[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse](
+			httpClient,
+			baseURL+OrchestratorServiceIssueAttachTokenProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("IssueAttachToken")),
+			connect.WithClientOptions(opts...),
+		),
+		terminalStream: connect.NewClient[v1.TerminalServerMessage, v1.TerminalClientMessage](
+			httpClient,
+			baseURL+OrchestratorServiceTerminalStreamProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("TerminalStream")),
+			connect.WithClientOptions(opts...),
+		),
 		createWebhookConfig: connect.NewClient[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse](
 			httpClient,
 			baseURL+OrchestratorServiceCreateWebhookConfigProcedure,
@@ -230,6 +266,8 @@ type orchestratorServiceClient struct {
 	proxyPauseSession   *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
 	proxyResumeSession  *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
 	proxyStreamChats    *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
+	issueAttachToken    *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
+	terminalStream      *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
 	createWebhookConfig *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
 	listWebhookConfigs  *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
 	deleteWebhookConfig *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
@@ -291,6 +329,16 @@ func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *c
 	return c.proxyStreamChats.CallServerStream(ctx, req)
 }
 
+// IssueAttachToken calls bossanova.v1.OrchestratorService.IssueAttachToken.
+func (c *orchestratorServiceClient) IssueAttachToken(ctx context.Context, req *connect.Request[v1.IssueAttachTokenRequest]) (*connect.Response[v1.IssueAttachTokenResponse], error) {
+	return c.issueAttachToken.CallUnary(ctx, req)
+}
+
+// TerminalStream calls bossanova.v1.OrchestratorService.TerminalStream.
+func (c *orchestratorServiceClient) TerminalStream(ctx context.Context) *connect.BidiStreamForClient[v1.TerminalServerMessage, v1.TerminalClientMessage] {
+	return c.terminalStream.CallBidiStream(ctx)
+}
+
 // CreateWebhookConfig calls bossanova.v1.OrchestratorService.CreateWebhookConfig.
 func (c *orchestratorServiceClient) CreateWebhookConfig(ctx context.Context, req *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error) {
 	return c.createWebhookConfig.CallUnary(ctx, req)
@@ -335,6 +383,24 @@ type OrchestratorServiceHandler interface {
 	// events to subscribed web clients. Terminates with DaemonOffline if the
 	// owning daemon disconnects.
 	ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error
+	// IssueAttachToken returns a short-lived JWT bound to (user, session,
+	// chat, scope) that the browser uses to authenticate the /ws/attach
+	// WebSocket handshake. TTL ~5 minutes.
+	IssueAttachToken(context.Context, *connect.Request[v1.IssueAttachTokenRequest]) (*connect.Response[v1.IssueAttachTokenResponse], error)
+	// TerminalStream is the bossd-initiated bidirectional channel that
+	// carries terminal-attach traffic for the web /ws/attach feature.
+	// Daemon opens lazily on the first attach and multiplexes attach_ids
+	// inside it; isolated from the control-plane DaemonStream so keystroke
+	// traffic never starves Stop/Pause/Transfer commands. Auth: per-daemon
+	// X-Daemon-Token + WorkOS JWT, same as DaemonStream.
+	//
+	// Stream-type orientation matches DaemonStream: bossd is the gRPC
+	// client, so the request stream carries daemon→bosso messages
+	// (TerminalServerMessage) and the response stream carries bosso→daemon
+	// messages (TerminalClientMessage). The "Client"/"Server" prefix refers
+	// to the web feature's bosso-server / browser-client perspective, not
+	// the gRPC roles. See docs/plans/2026-04-26-web-tmux-attach.md.
+	TerminalStream(context.Context, *connect.BidiStream[v1.TerminalServerMessage, v1.TerminalClientMessage]) error
 	// Webhook configuration management
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
@@ -417,6 +483,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyStreamChats")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceIssueAttachTokenHandler := connect.NewUnaryHandler(
+		OrchestratorServiceIssueAttachTokenProcedure,
+		svc.IssueAttachToken,
+		connect.WithSchema(orchestratorServiceMethods.ByName("IssueAttachToken")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceTerminalStreamHandler := connect.NewBidiStreamHandler(
+		OrchestratorServiceTerminalStreamProcedure,
+		svc.TerminalStream,
+		connect.WithSchema(orchestratorServiceMethods.ByName("TerminalStream")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceCreateWebhookConfigHandler := connect.NewUnaryHandler(
 		OrchestratorServiceCreateWebhookConfigProcedure,
 		svc.CreateWebhookConfig,
@@ -465,6 +543,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyResumeSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceIssueAttachTokenProcedure:
+			orchestratorServiceIssueAttachTokenHandler.ServeHTTP(w, r)
+		case OrchestratorServiceTerminalStreamProcedure:
+			orchestratorServiceTerminalStreamHandler.ServeHTTP(w, r)
 		case OrchestratorServiceCreateWebhookConfigProcedure:
 			orchestratorServiceCreateWebhookConfigHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListWebhookConfigsProcedure:
@@ -524,6 +606,14 @@ func (UnimplementedOrchestratorServiceHandler) ProxyResumeSession(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStreamChats is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) IssueAttachToken(context.Context, *connect.Request[v1.IssueAttachTokenRequest]) (*connect.Response[v1.IssueAttachTokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.IssueAttachToken is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) TerminalStream(context.Context, *connect.BidiStream[v1.TerminalServerMessage, v1.TerminalClientMessage]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.TerminalStream is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error) {

@@ -119,8 +119,17 @@ type KeychainTokenProvider struct {
 // without auth (local-only mode) or let bosso reject the handshake.
 func NewKeychainTokenProvider() *KeychainTokenProvider {
 	p := &KeychainTokenProvider{clientIDEnv: "BOSS_WORKOS_CLIENT_ID"}
-	p.loadFromKeychain()
+	p.Reload()
 	return p
+}
+
+// Reload re-reads the keychain entry into the in-memory cache. Used by
+// the auth-change notifier so a fresh `boss login` (which writes new
+// tokens to the keychain) is observable to the running daemon without a
+// restart — calling Refresh here would fail because the cached refresh
+// token has been superseded by the new login.
+func (p *KeychainTokenProvider) Reload() {
+	p.loadFromKeychain()
 }
 
 // loadFromKeychain snapshots the keychain entry into the in-memory cache.

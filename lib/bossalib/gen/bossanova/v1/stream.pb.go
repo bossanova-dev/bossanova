@@ -1689,6 +1689,593 @@ func (x *WebhookEvent) GetHeaders() map[string]string {
 	return nil
 }
 
+// TerminalAttachCommand: bosso → daemon. Carried inside TerminalClientMessage.
+// Asks the daemon to spawn a new tmux attach PTY for the given chat. The
+// attach_id is bosso-generated (UUID); the daemon uses it to multiplex
+// subsequent input/resize/close commands and to tag outbound data chunks.
+type TerminalAttachCommand struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// bosso-generated UUID. The daemon does NOT pick routing keys.
+	AttachId string `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	ChatId   string `protobuf:"bytes,2,opt,name=chat_id,json=chatId,proto3" json:"chat_id,omitempty"`
+	// Initial PTY size from the browser (xterm.js).
+	Cols          uint32 `protobuf:"varint,3,opt,name=cols,proto3" json:"cols,omitempty"`
+	Rows          uint32 `protobuf:"varint,4,opt,name=rows,proto3" json:"rows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalAttachCommand) Reset() {
+	*x = TerminalAttachCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalAttachCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalAttachCommand) ProtoMessage() {}
+
+func (x *TerminalAttachCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalAttachCommand.ProtoReflect.Descriptor instead.
+func (*TerminalAttachCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *TerminalAttachCommand) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalAttachCommand) GetChatId() string {
+	if x != nil {
+		return x.ChatId
+	}
+	return ""
+}
+
+func (x *TerminalAttachCommand) GetCols() uint32 {
+	if x != nil {
+		return x.Cols
+	}
+	return 0
+}
+
+func (x *TerminalAttachCommand) GetRows() uint32 {
+	if x != nil {
+		return x.Rows
+	}
+	return 0
+}
+
+// TerminalInputCommand: bosso → daemon. Raw bytes typed by the browser
+// client to be written to the PTY stdin. Payload is opaque to bosso so a
+// future libsodium framing layer can swap in without changing the wire
+// shape.
+type TerminalInputCommand struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AttachId string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	// Raw PTY input (opaque — ready for E2E later).
+	Data          []byte `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalInputCommand) Reset() {
+	*x = TerminalInputCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalInputCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalInputCommand) ProtoMessage() {}
+
+func (x *TerminalInputCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalInputCommand.ProtoReflect.Descriptor instead.
+func (*TerminalInputCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *TerminalInputCommand) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalInputCommand) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+// TerminalResizeCommand: bosso → daemon. Forwarded from the browser when
+// the xterm viewport size changes. Daemon applies the new size to the PTY
+// (and tmux propagates to all attached clients per the window-size policy).
+type TerminalResizeCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AttachId      string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	Cols          uint32                 `protobuf:"varint,2,opt,name=cols,proto3" json:"cols,omitempty"`
+	Rows          uint32                 `protobuf:"varint,3,opt,name=rows,proto3" json:"rows,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalResizeCommand) Reset() {
+	*x = TerminalResizeCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalResizeCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalResizeCommand) ProtoMessage() {}
+
+func (x *TerminalResizeCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalResizeCommand.ProtoReflect.Descriptor instead.
+func (*TerminalResizeCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *TerminalResizeCommand) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalResizeCommand) GetCols() uint32 {
+	if x != nil {
+		return x.Cols
+	}
+	return 0
+}
+
+func (x *TerminalResizeCommand) GetRows() uint32 {
+	if x != nil {
+		return x.Rows
+	}
+	return 0
+}
+
+// TerminalCloseCommand: bosso → daemon. Asks the daemon to tear down the
+// attach (closes PTY, kills the `tmux attach` process — does NOT kill the
+// underlying tmux session running Claude).
+type TerminalCloseCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AttachId      string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalCloseCommand) Reset() {
+	*x = TerminalCloseCommand{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalCloseCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalCloseCommand) ProtoMessage() {}
+
+func (x *TerminalCloseCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalCloseCommand.ProtoReflect.Descriptor instead.
+func (*TerminalCloseCommand) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *TerminalCloseCommand) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+// TerminalDataChunk: daemon → bosso. Carried inside TerminalServerMessage.
+// Raw PTY output (including VT escape codes) tagged with the attach_id so
+// bosso can route it to the correct WebSocket subscriber.
+type TerminalDataChunk struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AttachId string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	// Monotonic per attach. Reserved for a future delta-replay upgrade; not
+	// currently used by the consumer beyond debug logging.
+	Seq uint64 `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
+	// Raw PTY output incl. VT escape codes (opaque — ready for E2E).
+	Data []byte `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	// True when the daemon's per-attach ringbuffer dropped bytes due to a
+	// slow consumer. The browser MUST treat this as a RESYNC signal: the
+	// daemon will follow up with `tmux refresh-client` so all attached
+	// clients redraw fresh state.
+	Lost          bool `protobuf:"varint,4,opt,name=lost,proto3" json:"lost,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalDataChunk) Reset() {
+	*x = TerminalDataChunk{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalDataChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalDataChunk) ProtoMessage() {}
+
+func (x *TerminalDataChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalDataChunk.ProtoReflect.Descriptor instead.
+func (*TerminalDataChunk) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *TerminalDataChunk) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalDataChunk) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *TerminalDataChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *TerminalDataChunk) GetLost() bool {
+	if x != nil {
+		return x.Lost
+	}
+	return false
+}
+
+// TerminalAttachExited: daemon → bosso. Carried inside
+// TerminalServerMessage. Sent when the PTY child exits (tmux session was
+// killed, attach was closed, etc.). exit_code mirrors the underlying
+// process; reason is a free-form string for diagnostics.
+type TerminalAttachExited struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AttachId      string                 `protobuf:"bytes,1,opt,name=attach_id,json=attachId,proto3" json:"attach_id,omitempty"`
+	ExitCode      int32                  `protobuf:"varint,2,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	Reason        string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalAttachExited) Reset() {
+	*x = TerminalAttachExited{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalAttachExited) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalAttachExited) ProtoMessage() {}
+
+func (x *TerminalAttachExited) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalAttachExited.ProtoReflect.Descriptor instead.
+func (*TerminalAttachExited) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *TerminalAttachExited) GetAttachId() string {
+	if x != nil {
+		return x.AttachId
+	}
+	return ""
+}
+
+func (x *TerminalAttachExited) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *TerminalAttachExited) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// TerminalClientMessage is the bosso → daemon envelope on the new RPC.
+// Despite the name, this is the gRPC RESPONSE stream type (bosso is the
+// gRPC server). Unknown oneof cases are logged and skipped by the daemon
+// for forward compatibility.
+type TerminalClientMessage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Msg:
+	//
+	//	*TerminalClientMessage_Attach
+	//	*TerminalClientMessage_Input
+	//	*TerminalClientMessage_Resize
+	//	*TerminalClientMessage_Close
+	Msg           isTerminalClientMessage_Msg `protobuf_oneof:"msg"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalClientMessage) Reset() {
+	*x = TerminalClientMessage{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalClientMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalClientMessage) ProtoMessage() {}
+
+func (x *TerminalClientMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalClientMessage.ProtoReflect.Descriptor instead.
+func (*TerminalClientMessage) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *TerminalClientMessage) GetMsg() isTerminalClientMessage_Msg {
+	if x != nil {
+		return x.Msg
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetAttach() *TerminalAttachCommand {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_Attach); ok {
+			return x.Attach
+		}
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetInput() *TerminalInputCommand {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_Input); ok {
+			return x.Input
+		}
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetResize() *TerminalResizeCommand {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_Resize); ok {
+			return x.Resize
+		}
+	}
+	return nil
+}
+
+func (x *TerminalClientMessage) GetClose() *TerminalCloseCommand {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalClientMessage_Close); ok {
+			return x.Close
+		}
+	}
+	return nil
+}
+
+type isTerminalClientMessage_Msg interface {
+	isTerminalClientMessage_Msg()
+}
+
+type TerminalClientMessage_Attach struct {
+	Attach *TerminalAttachCommand `protobuf:"bytes,1,opt,name=attach,proto3,oneof"`
+}
+
+type TerminalClientMessage_Input struct {
+	Input *TerminalInputCommand `protobuf:"bytes,2,opt,name=input,proto3,oneof"`
+}
+
+type TerminalClientMessage_Resize struct {
+	Resize *TerminalResizeCommand `protobuf:"bytes,3,opt,name=resize,proto3,oneof"`
+}
+
+type TerminalClientMessage_Close struct {
+	Close *TerminalCloseCommand `protobuf:"bytes,4,opt,name=close,proto3,oneof"`
+}
+
+func (*TerminalClientMessage_Attach) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_Input) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_Resize) isTerminalClientMessage_Msg() {}
+
+func (*TerminalClientMessage_Close) isTerminalClientMessage_Msg() {}
+
+// TerminalServerMessage is the daemon → bosso envelope on the new RPC.
+// Despite the name, this is the gRPC REQUEST stream type (bossd is the
+// gRPC client and initiates the stream). Unknown oneof cases are logged
+// and skipped by bosso for forward compatibility.
+type TerminalServerMessage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Msg:
+	//
+	//	*TerminalServerMessage_Data
+	//	*TerminalServerMessage_Exited
+	Msg           isTerminalServerMessage_Msg `protobuf_oneof:"msg"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TerminalServerMessage) Reset() {
+	*x = TerminalServerMessage{}
+	mi := &file_bossanova_v1_stream_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TerminalServerMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TerminalServerMessage) ProtoMessage() {}
+
+func (x *TerminalServerMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_stream_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TerminalServerMessage.ProtoReflect.Descriptor instead.
+func (*TerminalServerMessage) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_stream_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *TerminalServerMessage) GetMsg() isTerminalServerMessage_Msg {
+	if x != nil {
+		return x.Msg
+	}
+	return nil
+}
+
+func (x *TerminalServerMessage) GetData() *TerminalDataChunk {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalServerMessage_Data); ok {
+			return x.Data
+		}
+	}
+	return nil
+}
+
+func (x *TerminalServerMessage) GetExited() *TerminalAttachExited {
+	if x != nil {
+		if x, ok := x.Msg.(*TerminalServerMessage_Exited); ok {
+			return x.Exited
+		}
+	}
+	return nil
+}
+
+type isTerminalServerMessage_Msg interface {
+	isTerminalServerMessage_Msg()
+}
+
+type TerminalServerMessage_Data struct {
+	Data *TerminalDataChunk `protobuf:"bytes,1,opt,name=data,proto3,oneof"`
+}
+
+type TerminalServerMessage_Exited struct {
+	Exited *TerminalAttachExited `protobuf:"bytes,2,opt,name=exited,proto3,oneof"`
+}
+
+func (*TerminalServerMessage_Data) isTerminalServerMessage_Msg() {}
+
+func (*TerminalServerMessage_Exited) isTerminalServerMessage_Msg() {}
+
 var File_bossanova_v1_stream_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_stream_proto_rawDesc = "" +
@@ -1817,7 +2404,40 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\aheaders\x18\x05 \x03(\v2'.bossanova.v1.WebhookEvent.HeadersEntryR\aheaders\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"u\n" +
+	"\x15TerminalAttachCommand\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x17\n" +
+	"\achat_id\x18\x02 \x01(\tR\x06chatId\x12\x12\n" +
+	"\x04cols\x18\x03 \x01(\rR\x04cols\x12\x12\n" +
+	"\x04rows\x18\x04 \x01(\rR\x04rows\"G\n" +
+	"\x14TerminalInputCommand\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\"\\\n" +
+	"\x15TerminalResizeCommand\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x12\n" +
+	"\x04cols\x18\x02 \x01(\rR\x04cols\x12\x12\n" +
+	"\x04rows\x18\x03 \x01(\rR\x04rows\"3\n" +
+	"\x14TerminalCloseCommand\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\"j\n" +
+	"\x11TerminalDataChunk\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x10\n" +
+	"\x03seq\x18\x02 \x01(\x04R\x03seq\x12\x12\n" +
+	"\x04data\x18\x03 \x01(\fR\x04data\x12\x12\n" +
+	"\x04lost\x18\x04 \x01(\bR\x04lost\"h\n" +
+	"\x14TerminalAttachExited\x12\x1b\n" +
+	"\tattach_id\x18\x01 \x01(\tR\battachId\x12\x1b\n" +
+	"\texit_code\x18\x02 \x01(\x05R\bexitCode\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"\x94\x02\n" +
+	"\x15TerminalClientMessage\x12=\n" +
+	"\x06attach\x18\x01 \x01(\v2#.bossanova.v1.TerminalAttachCommandH\x00R\x06attach\x12:\n" +
+	"\x05input\x18\x02 \x01(\v2\".bossanova.v1.TerminalInputCommandH\x00R\x05input\x12=\n" +
+	"\x06resize\x18\x03 \x01(\v2#.bossanova.v1.TerminalResizeCommandH\x00R\x06resize\x12:\n" +
+	"\x05close\x18\x04 \x01(\v2\".bossanova.v1.TerminalCloseCommandH\x00R\x05closeB\x05\n" +
+	"\x03msg\"\x93\x01\n" +
+	"\x15TerminalServerMessage\x125\n" +
+	"\x04data\x18\x01 \x01(\v2\x1f.bossanova.v1.TerminalDataChunkH\x00R\x04data\x12<\n" +
+	"\x06exited\x18\x02 \x01(\v2\".bossanova.v1.TerminalAttachExitedH\x00R\x06exitedB\x05\n" +
+	"\x03msgB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_stream_proto_rawDescOnce sync.Once
@@ -1832,7 +2452,7 @@ func file_bossanova_v1_stream_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_stream_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_bossanova_v1_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
 var file_bossanova_v1_stream_proto_goTypes = []any{
 	(SessionDelta_Kind)(0),         // 0: bossanova.v1.SessionDelta.Kind
 	(ChatDelta_Kind)(0),            // 1: bossanova.v1.ChatDelta.Kind
@@ -1855,14 +2475,22 @@ var file_bossanova_v1_stream_proto_goTypes = []any{
 	(*TransferConfirmed)(nil),      // 18: bossanova.v1.TransferConfirmed
 	(*TransferCancel)(nil),         // 19: bossanova.v1.TransferCancel
 	(*WebhookEvent)(nil),           // 20: bossanova.v1.WebhookEvent
-	nil,                            // 21: bossanova.v1.WebhookEvent.HeadersEntry
-	(*Session)(nil),                // 22: bossanova.v1.Session
-	(*ChatStatusEntry)(nil),        // 23: bossanova.v1.ChatStatusEntry
-	(ChatStatus)(0),                // 24: bossanova.v1.ChatStatus
-	(*timestamppb.Timestamp)(nil),  // 25: google.protobuf.Timestamp
-	(*OutputLine)(nil),             // 26: bossanova.v1.OutputLine
-	(*StateChange)(nil),            // 27: bossanova.v1.StateChange
-	(*SessionEnded)(nil),           // 28: bossanova.v1.SessionEnded
+	(*TerminalAttachCommand)(nil),  // 21: bossanova.v1.TerminalAttachCommand
+	(*TerminalInputCommand)(nil),   // 22: bossanova.v1.TerminalInputCommand
+	(*TerminalResizeCommand)(nil),  // 23: bossanova.v1.TerminalResizeCommand
+	(*TerminalCloseCommand)(nil),   // 24: bossanova.v1.TerminalCloseCommand
+	(*TerminalDataChunk)(nil),      // 25: bossanova.v1.TerminalDataChunk
+	(*TerminalAttachExited)(nil),   // 26: bossanova.v1.TerminalAttachExited
+	(*TerminalClientMessage)(nil),  // 27: bossanova.v1.TerminalClientMessage
+	(*TerminalServerMessage)(nil),  // 28: bossanova.v1.TerminalServerMessage
+	nil,                            // 29: bossanova.v1.WebhookEvent.HeadersEntry
+	(*Session)(nil),                // 30: bossanova.v1.Session
+	(*ChatStatusEntry)(nil),        // 31: bossanova.v1.ChatStatusEntry
+	(ChatStatus)(0),                // 32: bossanova.v1.ChatStatus
+	(*timestamppb.Timestamp)(nil),  // 33: google.protobuf.Timestamp
+	(*OutputLine)(nil),             // 34: bossanova.v1.OutputLine
+	(*StateChange)(nil),            // 35: bossanova.v1.StateChange
+	(*SessionEnded)(nil),           // 36: bossanova.v1.SessionEnded
 }
 var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	4,  // 0: bossanova.v1.DaemonEvent.snapshot:type_name -> bossanova.v1.DaemonSnapshot
@@ -1881,28 +2509,34 @@ var file_bossanova_v1_stream_proto_depIdxs = []int32{
 	16, // 13: bossanova.v1.OrchestratorCommand.attach:type_name -> bossanova.v1.AttachSessionCommand
 	18, // 14: bossanova.v1.OrchestratorCommand.transfer_confirmed:type_name -> bossanova.v1.TransferConfirmed
 	19, // 15: bossanova.v1.OrchestratorCommand.transfer_cancel:type_name -> bossanova.v1.TransferCancel
-	22, // 16: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
+	30, // 16: bossanova.v1.DaemonSnapshot.sessions:type_name -> bossanova.v1.Session
 	8,  // 17: bossanova.v1.DaemonSnapshot.chats:type_name -> bossanova.v1.ClaudeChatMetadata
-	23, // 18: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
+	31, // 18: bossanova.v1.DaemonSnapshot.statuses:type_name -> bossanova.v1.ChatStatusEntry
 	0,  // 19: bossanova.v1.SessionDelta.kind:type_name -> bossanova.v1.SessionDelta.Kind
-	22, // 20: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
+	30, // 20: bossanova.v1.SessionDelta.session:type_name -> bossanova.v1.Session
 	1,  // 21: bossanova.v1.ChatDelta.kind:type_name -> bossanova.v1.ChatDelta.Kind
 	8,  // 22: bossanova.v1.ChatDelta.chat:type_name -> bossanova.v1.ClaudeChatMetadata
-	24, // 23: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
-	25, // 24: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
-	25, // 25: bossanova.v1.ClaudeChatMetadata.created_at:type_name -> google.protobuf.Timestamp
-	25, // 26: bossanova.v1.ClaudeChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
-	22, // 27: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
+	32, // 23: bossanova.v1.ChatStatusDelta.status:type_name -> bossanova.v1.ChatStatus
+	33, // 24: bossanova.v1.ChatStatusDelta.last_output_at:type_name -> google.protobuf.Timestamp
+	33, // 25: bossanova.v1.ClaudeChatMetadata.created_at:type_name -> google.protobuf.Timestamp
+	33, // 26: bossanova.v1.ClaudeChatMetadata.updated_at:type_name -> google.protobuf.Timestamp
+	30, // 27: bossanova.v1.CommandResult.session:type_name -> bossanova.v1.Session
 	18, // 28: bossanova.v1.CommandResult.transfer_confirmed:type_name -> bossanova.v1.TransferConfirmed
-	26, // 29: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
-	27, // 30: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
-	28, // 31: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
-	21, // 32: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
-	33, // [33:33] is the sub-list for method output_type
-	33, // [33:33] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	34, // 29: bossanova.v1.SessionAttachChunk.output_line:type_name -> bossanova.v1.OutputLine
+	35, // 30: bossanova.v1.SessionAttachChunk.state_change:type_name -> bossanova.v1.StateChange
+	36, // 31: bossanova.v1.SessionAttachChunk.session_ended:type_name -> bossanova.v1.SessionEnded
+	29, // 32: bossanova.v1.WebhookEvent.headers:type_name -> bossanova.v1.WebhookEvent.HeadersEntry
+	21, // 33: bossanova.v1.TerminalClientMessage.attach:type_name -> bossanova.v1.TerminalAttachCommand
+	22, // 34: bossanova.v1.TerminalClientMessage.input:type_name -> bossanova.v1.TerminalInputCommand
+	23, // 35: bossanova.v1.TerminalClientMessage.resize:type_name -> bossanova.v1.TerminalResizeCommand
+	24, // 36: bossanova.v1.TerminalClientMessage.close:type_name -> bossanova.v1.TerminalCloseCommand
+	25, // 37: bossanova.v1.TerminalServerMessage.data:type_name -> bossanova.v1.TerminalDataChunk
+	26, // 38: bossanova.v1.TerminalServerMessage.exited:type_name -> bossanova.v1.TerminalAttachExited
+	39, // [39:39] is the sub-list for method output_type
+	39, // [39:39] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_stream_proto_init() }
@@ -1941,13 +2575,23 @@ func file_bossanova_v1_stream_proto_init() {
 		(*SessionAttachChunk_StateChange)(nil),
 		(*SessionAttachChunk_SessionEnded)(nil),
 	}
+	file_bossanova_v1_stream_proto_msgTypes[25].OneofWrappers = []any{
+		(*TerminalClientMessage_Attach)(nil),
+		(*TerminalClientMessage_Input)(nil),
+		(*TerminalClientMessage_Resize)(nil),
+		(*TerminalClientMessage_Close)(nil),
+	}
+	file_bossanova_v1_stream_proto_msgTypes[26].OneofWrappers = []any{
+		(*TerminalServerMessage_Data)(nil),
+		(*TerminalServerMessage_Exited)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_stream_proto_rawDesc), len(file_bossanova_v1_stream_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   20,
+			NumMessages:   28,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

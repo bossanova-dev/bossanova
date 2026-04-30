@@ -7,7 +7,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.2
 	charm.land/huh/v2 v2.0.3
 	charm.land/lipgloss/v2 v2.0.2
-	connectrpc.com/connect v1.19.1
+	connectrpc.com/connect v1.19.2
 	github.com/99designs/keyring v1.2.2
 	github.com/charmbracelet/x/vt v0.0.0-20260323091123-df7b1bcffcca
 	github.com/creack/pty/v2 v2.0.1

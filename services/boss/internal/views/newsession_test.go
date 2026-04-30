@@ -162,7 +162,7 @@ func (s *stubClient) ResurrectSession(context.Context, string) (*pb.Session, err
 func (s *stubClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubClient) RecordChat(context.Context, string, string, string) (*pb.ClaudeChat, error) {
+func (s *stubClient) RecordChat(context.Context, string, string, string, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *stubClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
@@ -179,32 +179,7 @@ func (s *stubClient) GetChatStatuses(context.Context, string) ([]*pb.ChatStatusE
 func (s *stubClient) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
 	panic("unused")
 }
-func (s *stubClient) StartAutopilot(context.Context, *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubClient) PauseAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubClient) ResumeAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubClient) CancelAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubClient) GetAutopilotStatus(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubClient) ListAutopilotWorkflows(context.Context, *pb.ListAutopilotWorkflowsRequest) ([]*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubClient) StreamAutopilotOutput(context.Context, string) (client.AutopilotOutputStream, error) {
-	panic("unused")
-}
 func (s *stubClient) NotifyAuthChange(context.Context, string) error { return nil }
-
-func (s *stubClient) EnsureTmuxSession(context.Context, string, string, string) (string, string, error) {
-	panic("unused")
-}
 
 // --- Helpers ---
 

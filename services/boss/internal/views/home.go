@@ -365,8 +365,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, func() tea.Msg { return switchViewMsg{view: ViewSettings} }
 		case "t":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewTrash} }
-		case "p":
-			return h, func() tea.Msg { return switchViewMsg{view: ViewAutopilot} }
 		case "l":
 			if h.authMgr == nil {
 				return h, nil
@@ -536,7 +534,7 @@ func (h HomeModel) View() tea.View {
 				actionBar(actions, []string{"[q]uit"})
 		} else {
 			// Repos exist but no sessions - show simplified guidance
-			actions := []string{"[n]ew session", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"}
+			actions := []string{"[n]ew session", "[r]epos", "[s]ettings", "[t]rash"}
 			if la := h.loginAction(); la != "" {
 				actions = append(actions, la)
 			}
@@ -584,7 +582,7 @@ func (h HomeModel) View() tea.View {
 				b.WriteString("\n")
 			}
 		}
-		navActions := []string{"[n]ew", "[p]ilot", "[r]epos", "[s]ettings", "[t]rash"}
+		navActions := []string{"[n]ew", "[r]epos", "[s]ettings", "[t]rash"}
 		if la := h.loginAction(); la != "" {
 			navActions = append(navActions, la)
 		}

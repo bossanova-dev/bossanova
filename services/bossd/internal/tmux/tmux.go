@@ -187,12 +187,18 @@ func (c *Client) KillSession(ctx context.Context, name string) error {
 // `tmux attach` PTY so that the local TUI and N browser tabs can attach
 // concurrently with predictable layout semantics.
 //
-//   - aggressive-resize off: tmux sizes the window to the largest connected
-//     client rather than the smallest. Avoids constant resizing as clients
-//     come and go.
-//   - window-size largest: tmux picks the largest client's geometry as the
-//     authoritative window size. Smaller clients see a viewport into the
-//     larger window (rather than every client shrinking to fit the smallest).
+//   - aggressive-resize on: tmux re-evaluates window geometry on every
+//     client SIGWINCH/attach/detach. Without this, `window-size smallest`
+//     happily shrinks the window when a client reports a smaller size but
+//     refuses to grow it again when that client catches up — both clients
+//     end up stuck at whatever the historical minimum was, which doesn't
+//     match what either of them is currently asking for.
+//   - window-size smallest: tmux clamps the window to the smallest connected
+//     client's geometry. The earlier `largest` value made the bigger client
+//     authoritative, which left smaller clients (the boss TUI alongside a
+//     full-screen browser) silently truncated at the bottom. `smallest` keeps
+//     every client's content fully visible; larger clients pay a stripe of
+//     unused space rather than losing rows.
 //
 // Idempotent — safe to call on every attach. Returns an error if either
 // `tmux set-option` invocation fails.
@@ -201,8 +207,8 @@ func (c *Client) SetAttachOptions(ctx context.Context, sessionName string) error
 		return fmt.Errorf("session name is required")
 	}
 	options := [][2]string{
-		{"aggressive-resize", "off"},
-		{"window-size", "largest"},
+		{"aggressive-resize", "on"},
+		{"window-size", "smallest"},
 	}
 	for _, opt := range options {
 		cmd := c.cmdFunc(ctx, "tmux", "set-option", "-t", sessionName, opt[0], opt[1])
@@ -282,28 +288,4 @@ func (c *Client) CapturePane(ctx context.Context, sessionName string) (string, e
 		return "", fmt.Errorf("capture pane %q: %w", sessionName, err)
 	}
 	return string(out), nil
-}
-
-// PasteText loads text into a private tmux paste buffer and pastes it into
-// the named session's active pane. The -p flag forces bracketed-paste mode,
-// so applications like Claude Code treat the entire text as a single paste
-// (multiline input, no Enter submit). The -d flag deletes the buffer after
-// paste so the text does not leak into later paste history.
-func (c *Client) PasteText(ctx context.Context, sessionName, text string) error {
-	if sessionName == "" {
-		return fmt.Errorf("session name is required")
-	}
-	bufName := "bossanova-prefill-" + sessionName
-
-	loadCmd := c.cmdFunc(ctx, "tmux", "load-buffer", "-b", bufName, "-")
-	loadCmd.Stdin = strings.NewReader(text)
-	if err := loadCmd.Run(); err != nil {
-		return fmt.Errorf("load tmux paste buffer: %w", err)
-	}
-
-	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-b", bufName, "-t", sessionName)
-	if err := pasteCmd.Run(); err != nil {
-		return fmt.Errorf("paste tmux buffer into %q: %w", sessionName, err)
-	}
-	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
@@ -28,10 +29,26 @@ import (
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
 
 var socketCounter atomic.Int64
+
+// Options configures harness construction. Zero-value Options is equivalent
+// to New(t).
+type Options struct {
+	// DBPath, when non-empty, opens a file-backed SQLite DB at that path.
+	// Required for restart-recovery tests that need state to survive a
+	// harness Close + re-open cycle.
+	DBPath string
+	// TmuxCommandFactory, when non-nil, is plumbed into the daemon's
+	// internal tmux.Client so RecordChat can be exercised end-to-end with
+	// canned `tmux` responses. Tests that don't care about tmux can leave
+	// this nil — the daemon then short-circuits ensureChatTmuxSession on
+	// the !Available check.
+	TmuxCommandFactory tmux.CommandFactory
+}
 
 // Harness provides a fully wired bossd daemon for E2E tests.
 type Harness struct {
@@ -42,6 +59,7 @@ type Harness struct {
 	ClaudeChats db.ClaudeChatStore
 	Lifecycle   *session.Lifecycle
 	Server      *server.Server
+	Tmux        *tmux.Client
 	Git         *MockWorktreeManager
 	Claude      *MockClaudeRunner
 	VCS         *MockVCSProvider
@@ -63,7 +81,7 @@ type Harness struct {
 // mock dependencies, and a running ConnectRPC server on a temp Unix socket.
 func New(t *testing.T) *Harness {
 	t.Helper()
-	return newHarness(t, "")
+	return newHarness(t, Options{})
 }
 
 // NewWithDBPath creates a harness backed by a file SQLite database at
@@ -72,13 +90,22 @@ func New(t *testing.T) *Harness {
 // falls back to an in-memory DB (equivalent to New).
 func NewWithDBPath(t *testing.T, dbPath string) *Harness {
 	t.Helper()
-	return newHarness(t, dbPath)
+	return newHarness(t, Options{DBPath: dbPath})
 }
 
-// newHarness is the shared implementation behind New and NewWithDBPath.
-// dbPath="" selects an in-memory database; otherwise the path is opened
-// (and migrated) directly.
-func newHarness(t *testing.T, dbPath string) *Harness {
+// NewWithOptions is the explicit constructor used by tests that need to
+// inject options beyond just the DB path — currently a custom tmux
+// command factory for RecordChat coverage.
+func NewWithOptions(t *testing.T, opts Options) *Harness {
+	t.Helper()
+	return newHarness(t, opts)
+}
+
+// newHarness is the shared implementation behind New, NewWithDBPath, and
+// NewWithOptions. Options.DBPath="" selects an in-memory database;
+// otherwise the path is opened (and migrated) directly.
+func newHarness(t *testing.T, opts Options) *Harness {
+	dbPath := opts.DBPath
 	t.Helper()
 
 	var (
@@ -121,6 +148,16 @@ func newHarness(t *testing.T, dbPath string) *Harness {
 	// DisplayTracker.Set with a non-passing status.
 	display := status.NewDisplayTracker()
 
+	// Tmux client. Tests that need RecordChat to drive tmux pass a custom
+	// command factory; everyone else gets a client whose Available()
+	// returns false, which short-circuits ensureChatTmuxSession.
+	var tmuxClient *tmux.Client
+	if opts.TmuxCommandFactory != nil {
+		tmuxClient = tmux.NewClient(tmux.WithCommandFactory(opts.TmuxCommandFactory))
+	} else {
+		tmuxClient = tmux.NewClient(tmux.WithCommandFactory(unavailableTmuxFactory))
+	}
+
 	// Server.
 	srv := server.New(server.Config{
 		Repos:          repos,
@@ -132,6 +169,7 @@ func newHarness(t *testing.T, dbPath string) *Harness {
 		Claude:         claudeMock,
 		Worktrees:      gitMock,
 		Provider:       vcsMock,
+		Tmux:           tmuxClient,
 		Logger:         logger,
 	})
 
@@ -174,6 +212,7 @@ func newHarness(t *testing.T, dbPath string) *Harness {
 		ClaudeChats:    claudeChats,
 		Lifecycle:      lifecycle,
 		Server:         srv,
+		Tmux:           tmuxClient,
 		Git:            gitMock,
 		Claude:         claudeMock,
 		VCS:            vcsMock,
@@ -391,4 +430,13 @@ func getPRNumber(t *testing.T, h *Harness, ctx context.Context, sessionID string
 func migrationsDir() string {
 	_, filename, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(filename), "..", "..", "migrations")
+}
+
+// unavailableTmuxFactory is the default command factory used by the harness
+// when no tmux behavior is requested. It returns a command that always exits
+// non-zero so tmux.Client.Available reports false and ensureChatTmuxSession
+// short-circuits — preserving the prior "no tmux side effects" behavior of
+// every existing test that doesn't care about tmux.
+func unavailableTmuxFactory(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "false")
 }

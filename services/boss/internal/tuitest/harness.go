@@ -74,7 +74,6 @@ type Option func(*harnessConfig)
 type harnessConfig struct {
 	repos         []*pb.Repo
 	sessions      []*pb.Session
-	workflows     []*pb.AutopilotWorkflow
 	chats         []*pb.ClaudeChat
 	prs           map[string][]*pb.PRSummary
 	trackerIssues map[string][]*pb.TrackerIssue
@@ -93,13 +92,6 @@ func WithRepos(repos ...*pb.Repo) Option {
 func WithSessions(sessions ...*pb.Session) Option {
 	return func(c *harnessConfig) {
 		c.sessions = append(c.sessions, sessions...)
-	}
-}
-
-// WithWorkflows seeds the mock daemon with autopilot workflows.
-func WithWorkflows(workflows ...*pb.AutopilotWorkflow) Option {
-	return func(c *harnessConfig) {
-		c.workflows = append(c.workflows, workflows...)
 	}
 }
 
@@ -163,9 +155,6 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	for _, s := range cfg.sessions {
 		daemon.AddSession(s)
-	}
-	for _, w := range cfg.workflows {
-		daemon.AddWorkflow(w)
 	}
 	for _, c := range cfg.chats {
 		daemon.AddChat(c)

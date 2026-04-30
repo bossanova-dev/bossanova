@@ -393,4 +393,5 @@ message ClaudeChat {
   string title = 4;              // First user prompt or "New chat"
   string daemon_id = 5;          // Originating daemon (empty = local)
   google.protobuf.Timestamp created_at = 6;
+  string tmux_session_name = 7;  // Empty if no tmux session is hosting this chat
 }

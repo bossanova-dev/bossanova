@@ -8,7 +8,7 @@ import "testing"
 // modal dismisses back to a tick-driven view — otherwise daemon statuses
 // silently stop refreshing until the user navigates away and back.
 func TestResumeTickCmd(t *testing.T) {
-	tickDriven := []View{ViewHome, ViewChatPicker, ViewAutopilot}
+	tickDriven := []View{ViewHome, ViewChatPicker}
 	for _, v := range tickDriven {
 		if resumeTickCmd(v) == nil {
 			t.Errorf("resumeTickCmd(%v) returned nil; expected a tick command", v)

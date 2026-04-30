@@ -320,18 +320,18 @@ func (h *Host) GetTaskSources() []TaskSource {
 	return sources
 }
 
-// SetWorkflowDeps injects workflow and attempt dependencies into the host
-// service so that plugins can create/manage workflows and Claude attempts.
-func (h *Host) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, chats db.ClaudeChatStore, runner claude.ClaudeRunner) {
+// SetSessionDeps injects the dependencies needed for session-related RPCs.
+func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chats db.ClaudeChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
 	if h.hostService != nil {
-		h.hostService.SetWorkflowDeps(store, sessions, chats, runner)
+		h.hostService.SetSessionDeps(repos, sessions, chats, tracker, chatTracker)
 	}
 }
 
-// SetSessionDeps injects the dependencies needed for session-related RPCs.
-func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
+// SetClaudeRunner injects the Claude runner used by the StartClaudeRun /
+// WaitClaudeRun host RPCs the repair plugin calls back into.
+func (h *Host) SetClaudeRunner(runner claude.ClaudeRunner) {
 	if h.hostService != nil {
-		h.hostService.SetSessionDeps(repos, sessions, tracker, chatTracker)
+		h.hostService.SetClaudeRunner(runner)
 	}
 }
 

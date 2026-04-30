@@ -1134,7 +1134,8 @@ func TestStartQuickChatSession(t *testing.T) {
 		t.Errorf("expected 0 existing branch worktrees, got %d", len(wt.createdFromExisting))
 	}
 
-	// Verify Claude was NOT started (on-demand via EnsureTmuxSession).
+	// Verify Claude was NOT started — chat launch happens on-demand from
+	// the boss CLI's PTY manager, not from StartSession.
 	if len(cr.started) != 0 {
 		t.Fatalf("expected 0 claude starts, got %d", len(cr.started))
 	}
@@ -1408,62 +1409,5 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 		t.Error("expected non-nil SetupScript when skipSetupScript=false")
 	} else if *wt.createdFromExisting[0].SetupScript != "npm install" {
 		t.Errorf("expected SetupScript 'npm install', got %q", *wt.createdFromExisting[0].SetupScript)
-	}
-}
-
-func TestShouldConsiderPrefill(t *testing.T) {
-	trackerID := "ENG-1"
-	emptyTracker := ""
-
-	tests := []struct {
-		name     string
-		forceNew bool
-		session  *models.Session
-		want     bool
-	}{
-		{
-			name:     "linear session, new chat, plan present",
-			forceNew: true,
-			session:  &models.Session{TrackerID: &trackerID, Plan: "Do something"},
-			want:     true,
-		},
-		{
-			name:     "resume mode (forceNew=false) skips prefill",
-			forceNew: false,
-			session:  &models.Session{TrackerID: &trackerID, Plan: "Do something"},
-			want:     false,
-		},
-		{
-			name:     "non-tracker session skips prefill",
-			forceNew: true,
-			session:  &models.Session{TrackerID: nil, Plan: "Do something"},
-			want:     false,
-		},
-		{
-			name:     "empty tracker id skips prefill",
-			forceNew: true,
-			session:  &models.Session{TrackerID: &emptyTracker, Plan: "Do something"},
-			want:     false,
-		},
-		{
-			name:     "empty plan skips prefill",
-			forceNew: true,
-			session:  &models.Session{TrackerID: &trackerID, Plan: ""},
-			want:     false,
-		},
-		{
-			name:     "nil session",
-			forceNew: true,
-			session:  nil,
-			want:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := shouldConsiderPrefill(tt.forceNew, tt.session); got != tt.want {
-				t.Errorf("shouldConsiderPrefill = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }

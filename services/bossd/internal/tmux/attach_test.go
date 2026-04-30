@@ -314,12 +314,14 @@ func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	}
 
 	att, err := NewTerminalAttach(ctx, AttachConfig{
-		AttachID:       "bp",
-		SessionName:    name,
-		Cols:           200,
-		Rows:           50,
-		TmuxClient:     c,
-		RingBufferSize: 1024,
+		AttachID:    "bp",
+		SessionName: name,
+		Cols:        200,
+		Rows:        50,
+		TmuxClient:  c,
+		// 64 bytes guarantees every PTY read overflows — even slow runners
+		// under -race will see Lost=true raised on essentially every emit.
+		RingBufferSize: 64,
 	})
 	if err != nil {
 		t.Fatalf("NewTerminalAttach: %v", err)
@@ -327,15 +329,20 @@ func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	t.Cleanup(func() { _ = att.Close() })
 
 	// Don't read for a while so the buffer overflows. The Output channel is
-	// buffered (small depth), the ring buffer is 1KB, and `yes` is producing
-	// at full speed — so once the channel buffer fills, the ringbuffer must
-	// drop oldest bytes and the next emitted chunk MUST carry Lost=true.
+	// buffered (small depth), the ring buffer is 64 bytes, and `yes` is
+	// producing at full speed — so once the channel buffer fills, the
+	// ringbuffer must drop oldest bytes and the next emitted chunk MUST
+	// carry Lost=true.
 	time.Sleep(500 * time.Millisecond)
 
-	// Drain Output. The plan invariant: the FIRST chunk emitted AFTER an
-	// overflow has Lost=true, and the very next chunk must reset to
-	// Lost=false. We assert by finding the index of the first lost chunk
-	// and verifying the subsequent chunk has Lost=false.
+	// Drain Output. Under sustained overflow (`yes` pumps far faster than the
+	// tiny ring drains), at least one emitted chunk MUST carry Lost=true. We
+	// deliberately do NOT assert that subsequent chunks reset to Lost=false:
+	// the readLoop can write a fresh overflow into the ring between any two
+	// ReadChunks, so consecutive Lost=true chunks are correct behaviour per
+	// the ringBuffer doc ("subsequent chunks set lost=false until the next
+	// overflow"). The clear-on-emit invariant is exercised deterministically
+	// by TestRingBuffer_LostFlagDoesNotPersistPastOneEmit.
 	deadline := time.After(5 * time.Second)
 	var chunks []*pb.TerminalDataChunk
 loop:
@@ -351,22 +358,15 @@ loop:
 		}
 	}
 
-	firstLostIdx := -1
-	for i, c := range chunks {
+	sawLost := false
+	for _, c := range chunks {
 		if c.Lost {
-			firstLostIdx = i
+			sawLost = true
 			break
 		}
 	}
-	if firstLostIdx < 0 {
+	if !sawLost {
 		t.Fatalf("no chunk had Lost=true after backpressure (got %d chunks)", len(chunks))
-	}
-	if firstLostIdx+1 >= len(chunks) {
-		t.Fatalf("first lost chunk was the last one — need a follow-up to verify the flag clears")
-	}
-	if chunks[firstLostIdx+1].Lost {
-		t.Errorf("Lost flag persisted past one emit: chunks[%d].Lost=true and chunks[%d].Lost=true",
-			firstLostIdx, firstLostIdx+1)
 	}
 }
 
@@ -440,6 +440,7 @@ func TestTerminalAttach_ExitFiresWhenSessionKilled(t *testing.T) {
 
 	if exitFrame == nil {
 		t.Fatal("exit frame was nil")
+		return
 	}
 	if exitFrame.AttachId != "x" {
 		t.Errorf("exit AttachId=%q want %q", exitFrame.AttachId, "x")

@@ -6,7 +6,6 @@ require (
 	connectrpc.com/connect v1.19.1
 	github.com/99designs/keyring v1.2.2
 	github.com/creack/pty/v2 v2.0.1
-	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/rs/zerolog v1.34.0
@@ -26,6 +25,7 @@ require (
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/godbus/dbus v0.0.0-20190726142602-4481cbc300e2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/gsterjov/go-libsecret v0.0.0-20161001094733-a6f4afe4910c // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/kr/pretty v0.3.1 // indirect

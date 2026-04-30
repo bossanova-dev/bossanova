@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fake_claude.sh — stream-json test double for the Claude CLI.
 #
-# Used by E2E tests that need to drive the autopilot/repair plugins without
+# Used by E2E tests that need to drive plugin-side Claude invocations without
 # spawning a real Claude process. The daemon's claude.Runner expects a binary
 # that accepts the standard `--print --verbose --output-format stream-json`
 # flags (plus optional `--resume <uuid>` and `--session-id <uuid>`), reads the
@@ -19,8 +19,8 @@
 #                                          /dev/null
 #   FAKE_CLAUDE_HANDOFF_DIR                write a unique handoff markdown file
 #                                          into this absolute directory before
-#                                          exiting (so the autopilot handoff
-#                                          loop has something to pick up)
+#                                          exiting (so a handoff-watching loop
+#                                          has something to pick up)
 #   FAKE_CLAUDE_SOFT_FAIL    (default 0)   when "1", emit "Unknown skill: fake"
 #                                          as the final line so the orchestrator
 #                                          treats it as a soft failure

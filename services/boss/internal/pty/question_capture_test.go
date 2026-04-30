@@ -3,6 +3,7 @@
 package pty
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"

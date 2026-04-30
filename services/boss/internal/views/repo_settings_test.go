@@ -201,7 +201,7 @@ func (s *stubRepoClient) ResurrectSession(context.Context, string) (*pb.Session,
 func (s *stubRepoClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) RecordChat(context.Context, string, string, string) (*pb.ClaudeChat, error) {
+func (s *stubRepoClient) RecordChat(context.Context, string, string, string, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
@@ -218,32 +218,8 @@ func (s *stubRepoClient) GetChatStatuses(context.Context, string) ([]*pb.ChatSta
 func (s *stubRepoClient) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) StartAutopilot(context.Context, *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubRepoClient) PauseAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubRepoClient) ResumeAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubRepoClient) CancelAutopilot(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubRepoClient) GetAutopilotStatus(context.Context, string) (*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubRepoClient) ListAutopilotWorkflows(context.Context, *pb.ListAutopilotWorkflowsRequest) ([]*pb.AutopilotWorkflow, error) {
-	panic("unused")
-}
-func (s *stubRepoClient) StreamAutopilotOutput(context.Context, string) (client.AutopilotOutputStream, error) {
-	panic("unused")
-}
 func (s *stubRepoClient) NotifyAuthChange(context.Context, string) error { return nil }
 func (s *stubRepoClient) ShutdownDaemon(context.Context) error           { panic("unused") }
-func (s *stubRepoClient) EnsureTmuxSession(context.Context, string, string, string) (string, string, error) {
-	panic("unused")
-}
 func (s *stubRepoClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
 }

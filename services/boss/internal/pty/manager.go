@@ -297,6 +297,13 @@ func (p *Process) HasQuestionPrompt() bool {
 	return hasQuestionPrompt(p.buf.Tail(questionTailSize))
 }
 
+// RecentOutput returns up to the last n bytes of buffered PTY output. Used by
+// callers that need to poll for ready markers (e.g. Claude Code's input-box
+// footer) without leaking the unexported ring buffer.
+func (p *Process) RecentOutput(n int) []byte {
+	return p.buf.Tail(n)
+}
+
 // WriteInput sends user input to the PTY.
 func (p *Process) WriteInput(data []byte) error {
 	_, err := p.ptyFile.Write(data)

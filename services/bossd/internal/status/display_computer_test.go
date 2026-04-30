@@ -155,23 +155,25 @@ func TestRecompute_Matrix(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			sessions, workflows, chats, repos := newTestDB(t)
 			repoID := mustRepo(t, repos)
 			sessID := mustSession(t, sessions, repoID)
 
-			// Set chat tracker entry keyed by claudeID; bind it to the
-			// session by writing the claude_session_id field.
+			// Seed a chat row for the session and a tracker entry keyed by
+			// the same claude_id. Recompute aggregates across every chat in
+			// chats.ListBySession, so the row must exist for the tracker
+			// entry to be visible to the precedence cascade.
 			chatTr := &fakeChatReader{entries: map[string]*Entry{}}
 			if tc.chat != pb.ChatStatus_CHAT_STATUS_UNSPECIFIED {
 				claudeID := "claude-" + sessID
 				chatTr.entries[claudeID] = &Entry{Status: tc.chat, ReceivedAt: time.Now()}
-				ptrToClaude := ptr(claudeID)
-				if _, err := sessions.Update(context.Background(), sessID, db.UpdateSessionParams{
-					ClaudeSessionID: &ptrToClaude,
+				if _, err := chats.Create(context.Background(), db.CreateClaudeChatParams{
+					SessionID: sessID,
+					ClaudeID:  claudeID,
+					Title:     "test chat",
 				}); err != nil {
-					t.Fatalf("set claude_session_id: %v", err)
+					t.Fatalf("create chat: %v", err)
 				}
 			}
 
@@ -229,6 +231,55 @@ func TestRecompute_Matrix(t *testing.T) {
 				t.Errorf("DisplaySpinner = %v, want %v", got.DisplaySpinner, tc.wantSpinner)
 			}
 		})
+	}
+}
+
+// TestRecompute_AggregatesAcrossChats reproduces the bug where a session
+// with two chats — one stopped (the original sess.ClaudeSessionID), one
+// freshly created and actively working — was rendering "draft" on the
+// session list while the chat picker showed "working" on the live chat.
+// Recompute must aggregate across every chat in the session and surface
+// the working chat over the PR's draft display status.
+func TestRecompute_AggregatesAcrossChats(t *testing.T) {
+	sessions, workflows, chats, repos := newTestDB(t)
+	repoID := mustRepo(t, repos)
+	sessID := mustSession(t, sessions, repoID)
+
+	stoppedClaude := "claude-stopped-" + sessID
+	workingClaude := "claude-working-" + sessID
+
+	for _, claudeID := range []string{stoppedClaude, workingClaude} {
+		if _, err := chats.Create(context.Background(), db.CreateClaudeChatParams{
+			SessionID: sessID,
+			ClaudeID:  claudeID,
+			Title:     "chat",
+		}); err != nil {
+			t.Fatalf("create chat %s: %v", claudeID, err)
+		}
+	}
+
+	chatTr := &fakeChatReader{entries: map[string]*Entry{
+		stoppedClaude: {Status: pb.ChatStatus_CHAT_STATUS_STOPPED, ReceivedAt: time.Now()},
+		workingClaude: {Status: pb.ChatStatus_CHAT_STATUS_WORKING, ReceivedAt: time.Now()},
+	}}
+
+	disp := NewDisplayTracker()
+	disp.Set(sessID, vcs.DisplayInfo{Status: vcs.DisplayStatusDraft})
+
+	c := NewDisplayStatusComputer(sessions, disp, chatTr, chats, workflows, zerolog.Nop())
+	if err := c.Recompute(context.Background(), sessID); err != nil {
+		t.Fatalf("recompute: %v", err)
+	}
+
+	got, err := sessions.Get(context.Background(), sessID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.DisplayLabel != "working" {
+		t.Errorf("DisplayLabel = %q, want %q (working chat must outrank PR draft)", got.DisplayLabel, "working")
+	}
+	if !got.DisplaySpinner {
+		t.Errorf("DisplaySpinner = false, want true for working status")
 	}
 }
 
@@ -304,8 +355,6 @@ func TestChatTracker_TriggersOnUpdate(t *testing.T) {
 }
 
 // --- helpers ---
-
-func ptr[T any](v T) *T { return &v }
 
 // countingSessionStore wraps a SessionStore and tallies Update calls.
 type countingSessionStore struct {

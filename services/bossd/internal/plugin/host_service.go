@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/google/uuid"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
-	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
@@ -21,74 +20,79 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// waitClaudeRunPollInterval is how often WaitClaudeRun polls the runner's
+// IsRunning state. Picked to balance responsiveness with idle CPU cost; the
+// repair plugin's only consumer of WaitClaudeRun is single-shot per repair.
+const waitClaudeRunPollInterval = 500 * time.Millisecond
+
 // HostServiceServer implements the HostService gRPC server on the daemon
 // side. Plugins call back to this server via go-plugin's GRPCBroker to
-// query VCS data, manage workflows, and control Claude attempts.
+// query VCS data and session state.
 type HostServiceServer struct {
 	provider       vcs.Provider
-	workflowStore  db.WorkflowStore
 	sessionStore   db.SessionStore
 	claudeChats    db.ClaudeChatStore
-	claude         claude.ClaudeRunner
 	repoStore      db.RepoStore
 	displayTracker *status.DisplayTracker
 	chatTracker    *status.Tracker
+	claudeRunner   claude.ClaudeRunner
 
-	// createWorkflowMu serialises the "check for active workflow + insert"
-	// sequence in CreateWorkflow so that concurrent plugin calls (or duplicate
-	// plugin instances) cannot both observe an idle session and both create a
-	// running workflow. CreateWorkflow is low-QPS so a single mutex is fine.
-	createWorkflowMu sync.Mutex
+	// activeRuns maps session_id → claude_id for the currently-active
+	// repair run on each session. Guarded by runMu. The repair plugin's
+	// in-memory dedup map provides cross-call deduplication; this map is
+	// the daemon's last-line defense against two concurrent StartClaudeRun
+	// calls landing on the same session.
+	runMu      sync.Mutex
+	activeRuns map[string]string
 }
 
 // NewHostServiceServer creates a HostServiceServer that proxies to the
-// given VCS provider. Workflow and attempt functionality requires
-// SetWorkflowDeps to be called before use.
+// given VCS provider. Session-related functionality requires SetSessionDeps
+// to be called before use; repair execution (StartClaudeRun/WaitClaudeRun)
+// requires SetClaudeRunner.
 func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
-	return &HostServiceServer{provider: provider}
-}
-
-// SetWorkflowDeps injects the dependencies needed for workflow and attempt
-// RPCs. This is called after construction so that the existing plugin
-// wiring doesn't need to change until the full wiring is done.
-func (s *HostServiceServer) SetWorkflowDeps(store db.WorkflowStore, sessions db.SessionStore, chats db.ClaudeChatStore, runner claude.ClaudeRunner) {
-	s.workflowStore = store
-	s.sessionStore = sessions
-	s.claudeChats = chats
-	s.claude = runner
+	return &HostServiceServer{
+		provider:   provider,
+		activeRuns: make(map[string]string),
+	}
 }
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs
-// (ListSessions, GetReviewComments, FireSessionEvent).
-func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
+// (ListSessions, GetReviewComments, FireSessionEvent). The chats store is
+// needed to surface per-session HasActiveChat in ListSessions.
+func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chats db.ClaudeChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
 	s.repoStore = repos
 	s.sessionStore = sessions
+	s.claudeChats = chats
 	s.displayTracker = tracker
 	s.chatTracker = chatTracker
 }
 
-// Validate reports any dependencies that SetWorkflowDeps/SetSessionDeps were
-// expected to install but that are still nil. Host.Start calls this before
-// launching plugins so a missing dep fails the daemon loudly at startup
-// instead of surfacing later as an "Unavailable" RPC the first time a
-// plugin tries to call back. The per-handler nil guards are kept as
-// defense-in-depth for anyone using HostServiceServer directly (e.g. tests).
+// SetClaudeRunner injects the Claude runner used by StartClaudeRun /
+// WaitClaudeRun. The repair plugin needs this to drive an actual Claude
+// process when a PR fails. Plugins that only need read-only RPCs can run
+// without it, but Validate() flags the missing dep when there's an active
+// plugin so misconfiguration fails loudly at startup.
+func (s *HostServiceServer) SetClaudeRunner(runner claude.ClaudeRunner) {
+	s.claudeRunner = runner
+}
+
+// Validate reports any dependencies that SetSessionDeps was expected to
+// install but that are still nil. Host.Start calls this before launching
+// plugins so a missing dep fails the daemon loudly at startup instead of
+// surfacing later as an "Unavailable" RPC the first time a plugin tries to
+// call back. The per-handler nil guards are kept as defense-in-depth for
+// anyone using HostServiceServer directly (e.g. tests).
 func (s *HostServiceServer) Validate() error {
 	var missing []string
 	if s.provider == nil {
 		missing = append(missing, "vcs provider")
-	}
-	if s.workflowStore == nil {
-		missing = append(missing, "workflow store")
 	}
 	if s.sessionStore == nil {
 		missing = append(missing, "session store")
 	}
 	if s.claudeChats == nil {
 		missing = append(missing, "claude chat store")
-	}
-	if s.claude == nil {
-		missing = append(missing, "claude runner")
 	}
 	if s.repoStore == nil {
 		missing = append(missing, "repo store")
@@ -98,6 +102,9 @@ func (s *HostServiceServer) Validate() error {
 	}
 	if s.chatTracker == nil {
 		missing = append(missing, "chat tracker")
+	}
+	if s.claudeRunner == nil {
+		missing = append(missing, "claude runner")
 	}
 	if len(missing) == 0 {
 		return nil
@@ -130,30 +137,6 @@ var hostServiceDesc = grpc.ServiceDesc{
 			Handler:    hostServiceListClosedPRsHandler,
 		},
 		{
-			MethodName: "CreateWorkflow",
-			Handler:    hostServiceCreateWorkflowHandler,
-		},
-		{
-			MethodName: "UpdateWorkflow",
-			Handler:    hostServiceUpdateWorkflowHandler,
-		},
-		{
-			MethodName: "GetWorkflow",
-			Handler:    hostServiceGetWorkflowHandler,
-		},
-		{
-			MethodName: "ListWorkflows",
-			Handler:    hostServiceListWorkflowsHandler,
-		},
-		{
-			MethodName: "CreateAttempt",
-			Handler:    hostServiceCreateAttemptHandler,
-		},
-		{
-			MethodName: "GetAttemptStatus",
-			Handler:    hostServiceGetAttemptStatusHandler,
-		},
-		{
 			MethodName: "ListSessions",
 			Handler:    hostServiceListSessionsHandler,
 		},
@@ -169,13 +152,13 @@ var hostServiceDesc = grpc.ServiceDesc{
 			MethodName: "SetRepairStatus",
 			Handler:    hostServiceSetRepairStatusHandler,
 		},
-	},
-	Streams: []grpc.StreamDesc{
 		{
-			StreamName:    "StreamAttemptOutput",
-			Handler:       hostServiceStreamAttemptOutputHandler,
-			ServerStreams: true,
-			ClientStreams: false,
+			MethodName: "StartClaudeRun",
+			Handler:    hostServiceStartClaudeRunHandler,
+		},
+		{
+			MethodName: "WaitClaudeRun",
+			Handler:    hostServiceWaitClaudeRunHandler,
 		},
 	},
 	Metadata: "bossanova/v1/host_service.proto",
@@ -188,17 +171,12 @@ type hostServiceHandler interface {
 	GetCheckResults(context.Context, *bossanovav1.GetCheckResultsRequest) (*bossanovav1.GetCheckResultsResponse, error)
 	GetPRStatus(context.Context, *bossanovav1.GetPRStatusRequest) (*bossanovav1.GetPRStatusResponse, error)
 	ListClosedPRs(context.Context, *bossanovav1.ListClosedPRsRequest) (*bossanovav1.ListClosedPRsResponse, error)
-	CreateWorkflow(context.Context, *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error)
-	UpdateWorkflow(context.Context, *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error)
-	GetWorkflow(context.Context, *bossanovav1.GetWorkflowRequest) (*bossanovav1.GetWorkflowResponse, error)
-	ListWorkflows(context.Context, *bossanovav1.ListWorkflowsRequest) (*bossanovav1.ListWorkflowsResponse, error)
-	CreateAttempt(context.Context, *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error)
-	GetAttemptStatus(context.Context, *bossanovav1.GetAttemptStatusRequest) (*bossanovav1.GetAttemptStatusResponse, error)
-	StreamAttemptOutput(*bossanovav1.StreamAttemptOutputRequest, grpc.ServerStream) error
 	ListSessions(context.Context, *bossanovav1.HostServiceListSessionsRequest) (*bossanovav1.HostServiceListSessionsResponse, error)
 	GetReviewComments(context.Context, *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
 	FireSessionEvent(context.Context, *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
 	SetRepairStatus(context.Context, *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
+	StartClaudeRun(context.Context, *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error)
+	WaitClaudeRun(context.Context, *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error)
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -237,344 +215,6 @@ func hostServiceListClosedPRsHandler(srv any, ctx context.Context, dec func(any)
 		return nil, err
 	}
 	return srv.(hostServiceHandler).ListClosedPRs(ctx, req)
-}
-
-// --- Workflow management handler stubs ---
-
-func hostServiceCreateWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.CreateWorkflowRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).CreateWorkflow(ctx, req)
-}
-
-func hostServiceUpdateWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.UpdateWorkflowRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).UpdateWorkflow(ctx, req)
-}
-
-func hostServiceGetWorkflowHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.GetWorkflowRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).GetWorkflow(ctx, req)
-}
-
-func hostServiceListWorkflowsHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.ListWorkflowsRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).ListWorkflows(ctx, req)
-}
-
-func hostServiceCreateAttemptHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.CreateAttemptRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).CreateAttempt(ctx, req)
-}
-
-func hostServiceGetAttemptStatusHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.GetAttemptStatusRequest)
-	if err := dec(req); err != nil {
-		return nil, err
-	}
-	return srv.(hostServiceHandler).GetAttemptStatus(ctx, req)
-}
-
-func hostServiceStreamAttemptOutputHandler(srv any, stream grpc.ServerStream) error {
-	req := new(bossanovav1.StreamAttemptOutputRequest)
-	if err := stream.RecvMsg(req); err != nil {
-		return err
-	}
-	return srv.(hostServiceHandler).StreamAttemptOutput(req, stream)
-}
-
-// --- Workflow RPC implementations ---
-
-func (s *HostServiceServer) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
-	if s.workflowStore == nil {
-		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
-	}
-
-	// Resolve repo_id from session if not provided (e.g. repair plugin only
-	// knows the session ID).
-	repoID := req.GetRepoId()
-	if repoID == "" && s.sessionStore != nil {
-		sess, err := s.sessionStore.Get(ctx, req.GetSessionId())
-		if err != nil {
-			return nil, fmt.Errorf("create workflow: resolve repo from session: %w", err)
-		}
-		repoID = sess.RepoID
-	}
-
-	var startSHA *string
-	if v := req.GetStartCommitSha(); v != "" {
-		startSHA = &v
-	}
-	var configJSON *string
-	if v := req.GetConfigJson(); v != "" {
-		configJSON = &v
-	}
-
-	// Atomically reject duplicate active workflows for the same session.
-	// Without this, two racing plugin instances (or a plugin restart that
-	// loses in-memory dedup) can both pass their own isSessionIdle check
-	// before either one calls CreateWorkflow, and each one then spawns a
-	// separate Claude chat for the same session. Holding the mutex across
-	// the check + insert closes that race: the second caller sees the first
-	// one's row and gets AlreadyExists. Plugins are expected to treat that
-	// as a soft skip.
-	sessionID := req.GetSessionId()
-	if sessionID != "" {
-		s.createWorkflowMu.Lock()
-		defer s.createWorkflowMu.Unlock()
-
-		active, err := s.workflowStore.ListActiveBySessionIDs(ctx, []string{sessionID})
-		if err != nil {
-			return nil, fmt.Errorf("create workflow: check active: %w", err)
-		}
-		if len(active) > 0 {
-			return nil, grpcstatus.Errorf(codes.AlreadyExists,
-				"workflow already active for session %s (id=%s)", sessionID, active[0].ID)
-		}
-	}
-
-	w, err := s.workflowStore.Create(ctx, db.CreateWorkflowParams{
-		SessionID:      sessionID,
-		RepoID:         repoID,
-		PlanPath:       req.GetPlanPath(),
-		MaxLegs:        int(req.GetMaxLegs()),
-		StartCommitSHA: startSHA,
-		ConfigJSON:     configJSON,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("create workflow: %w", err)
-	}
-
-	return &bossanovav1.CreateWorkflowResponse{
-		Workflow: workflowToProto(w),
-	}, nil
-}
-
-func (s *HostServiceServer) UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error) {
-	if s.workflowStore == nil {
-		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
-	}
-
-	params := db.UpdateWorkflowParams{}
-	if v := req.GetStatus(); v != "" {
-		params.Status = &v
-	}
-	if v := req.GetCurrentStep(); v != "" {
-		params.CurrentStep = &v
-	}
-	if req.FlightLeg != nil {
-		legInt := int(req.GetFlightLeg())
-		params.FlightLeg = &legInt
-	}
-	if req.LastError != nil {
-		v := req.GetLastError()
-		if v == "" {
-			// Explicitly clear the error: outer pointer set, inner nil.
-			params.LastError = new(*string)
-		} else {
-			errStr := &v
-			params.LastError = &errStr
-		}
-	}
-
-	w, err := s.workflowStore.Update(ctx, req.GetId(), params)
-	if err != nil {
-		return nil, fmt.Errorf("update workflow: %w", err)
-	}
-
-	return &bossanovav1.UpdateWorkflowResponse{
-		Workflow: workflowToProto(w),
-	}, nil
-}
-
-func (s *HostServiceServer) GetWorkflow(ctx context.Context, req *bossanovav1.GetWorkflowRequest) (*bossanovav1.GetWorkflowResponse, error) {
-	if s.workflowStore == nil {
-		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
-	}
-
-	w, err := s.workflowStore.Get(ctx, req.GetId())
-	if err != nil {
-		return nil, fmt.Errorf("get workflow: %w", err)
-	}
-
-	return &bossanovav1.GetWorkflowResponse{
-		Workflow: workflowToProto(w),
-	}, nil
-}
-
-func (s *HostServiceServer) ListWorkflows(ctx context.Context, req *bossanovav1.ListWorkflowsRequest) (*bossanovav1.ListWorkflowsResponse, error) {
-	if s.workflowStore == nil {
-		return nil, grpcstatus.Error(codes.Unavailable, "workflow store not configured")
-	}
-
-	var workflows []*bossanovav1.Workflow
-	if statusFilter := req.GetStatusFilter(); statusFilter != "" {
-		ws, err := s.workflowStore.ListByStatus(ctx, statusFilter)
-		if err != nil {
-			return nil, fmt.Errorf("list workflows: %w", err)
-		}
-		for _, w := range ws {
-			workflows = append(workflows, workflowToProto(w))
-		}
-	} else {
-		ws, err := s.workflowStore.List(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list workflows: %w", err)
-		}
-		for _, w := range ws {
-			workflows = append(workflows, workflowToProto(w))
-		}
-	}
-
-	return &bossanovav1.ListWorkflowsResponse{
-		Workflows: workflows,
-	}, nil
-}
-
-// --- Attempt RPC implementations ---
-
-func (s *HostServiceServer) CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
-	if s.claude == nil {
-		return nil, grpcstatus.Error(codes.Unavailable, "claude runner not configured")
-	}
-
-	// Resolve the workflow once (used for both workDir resolution and chat
-	// registration below).
-	workDir := req.GetWorkDir()
-	var wf *models.Workflow
-	if req.GetWorkflowId() != "" && s.workflowStore != nil {
-		wf, _ = s.workflowStore.Get(ctx, req.GetWorkflowId())
-	}
-
-	// Resolve working directory from workflow → session when not provided.
-	if workDir == "" && wf != nil && s.sessionStore != nil {
-		if sess, err := s.sessionStore.Get(ctx, wf.SessionID); err == nil {
-			workDir = sess.WorktreePath
-		}
-	}
-
-	// When this attempt is tied to a workflow, generate a UUID and register
-	// a claude_chats record so the chat appears in the session's chat picker.
-	// The UUID is also passed to Claude via --session-id, creating a real
-	// Claude Code session file for title backfill and potential resume.
-	var chatID string
-	if wf != nil && s.claudeChats != nil {
-		chatID = uuid.New().String()
-		if _, err := s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
-			SessionID: wf.SessionID,
-			ClaudeID:  chatID,
-			Title:     req.GetSkillName(),
-		}); err != nil {
-			log.Warn().Err(err).Str("workflow_id", req.GetWorkflowId()).Msg("chat registration failed")
-			chatID = "" // fall back to auto-generated ID
-		}
-	}
-
-	// Use context.Background() so the Claude process outlives this RPC.
-	// The gRPC request context is cancelled when the RPC returns, which
-	// would immediately kill the long-running Claude subprocess.
-	sessionID, err := s.claude.Start(context.Background(), workDir, req.GetInput(), nil, chatID)
-	if err != nil {
-		// Clean up orphaned chat record if Claude failed to start.
-		if chatID != "" && s.claudeChats != nil {
-			_ = s.claudeChats.DeleteByClaudeID(ctx, chatID)
-		}
-		return nil, fmt.Errorf("start claude: %w", err)
-	}
-
-	return &bossanovav1.CreateAttemptResponse{
-		AttemptId: sessionID,
-	}, nil
-}
-
-func (s *HostServiceServer) GetAttemptStatus(_ context.Context, req *bossanovav1.GetAttemptStatusRequest) (*bossanovav1.GetAttemptStatusResponse, error) {
-	if s.claude == nil {
-		return nil, grpcstatus.Error(codes.Unavailable, "claude runner not configured")
-	}
-
-	attemptID := req.GetAttemptId()
-	running := s.claude.IsRunning(attemptID)
-
-	resp := &bossanovav1.GetAttemptStatusResponse{}
-	if running {
-		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_RUNNING
-	} else if exitErr := s.claude.ExitError(attemptID); exitErr != nil {
-		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_FAILED
-		resp.Error = exitErr.Error()
-	} else {
-		resp.Status = bossanovav1.AttemptRunStatus_ATTEMPT_RUN_STATUS_COMPLETED
-	}
-
-	history := s.claude.History(attemptID)
-	lines := make([]string, len(history))
-	for i, line := range history {
-		lines[i] = line.Text
-	}
-	resp.OutputLines = lines
-
-	return resp, nil
-}
-
-func (s *HostServiceServer) StreamAttemptOutput(req *bossanovav1.StreamAttemptOutputRequest, stream grpc.ServerStream) error {
-	if s.claude == nil {
-		return grpcstatus.Error(codes.Unavailable, "claude runner not configured")
-	}
-
-	ch, err := s.claude.Subscribe(stream.Context(), req.GetAttemptId())
-	if err != nil {
-		return fmt.Errorf("subscribe to attempt: %w", err)
-	}
-
-	for line := range ch {
-		if err := stream.SendMsg(&bossanovav1.StreamAttemptOutputResponse{
-			Line: line.Text,
-		}); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// --- Model converters ---
-
-func workflowToProto(w *models.Workflow) *bossanovav1.Workflow {
-	pb := &bossanovav1.Workflow{
-		Id:          w.ID,
-		SessionId:   w.SessionID,
-		RepoId:      w.RepoID,
-		PlanPath:    w.PlanPath,
-		Status:      string(w.Status),
-		CurrentStep: string(w.CurrentStep),
-		FlightLeg:   int32(w.FlightLeg),
-		MaxLegs:     int32(w.MaxLegs),
-		CreatedAt:   w.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:   w.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-	}
-	if w.LastError != nil {
-		pb.LastError = *w.LastError
-	}
-	if w.StartCommitSHA != nil {
-		pb.StartCommitSha = *w.StartCommitSHA
-	}
-	if w.ConfigJSON != nil {
-		pb.ConfigJson = *w.ConfigJSON
-	}
-	return pb
 }
 
 // --- VCS RPC implementations ---
@@ -952,4 +592,98 @@ func hostServiceFireSessionEventHandler(srv interface{}, ctx context.Context, de
 		return srv.(hostServiceHandler).FireSessionEvent(ctx, req.(*bossanovav1.FireSessionEventRequest))
 	}
 	return interceptor(ctx, in, info, handler)
+}
+
+// StartClaudeRun resolves the session's worktree and starts a Claude process
+// running the given prompt. Returns the generated claude_id.
+//
+// Enforces one active Claude run per session: returns AlreadyExists if a
+// previous run on the same session is still IsRunning. The activeRuns map
+// is the daemon-side source of truth for that invariant; the repair
+// plugin's in-memory dedup map sits in front of this as a courtesy.
+func (s *HostServiceServer) StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error) {
+	if s.claudeRunner == nil {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "claude runner not configured")
+	}
+	if s.sessionStore == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session store not set")
+	}
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	sess, err := s.sessionStore.Get(ctx, sessionID)
+	if err != nil {
+		return nil, grpcstatus.Errorf(codes.NotFound, "session %s: %v", sessionID, err)
+	}
+	if sess.WorktreePath == "" {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "session %s has no worktree path", sessionID)
+	}
+
+	s.runMu.Lock()
+	if existing, ok := s.activeRuns[sessionID]; ok && s.claudeRunner.IsRunning(existing) {
+		s.runMu.Unlock()
+		return nil, grpcstatus.Errorf(codes.AlreadyExists, "claude run already active for session %s", sessionID)
+	}
+	// Stale entry (previous run finished) — fall through and replace.
+	//
+	// Use context.Background, NOT the gRPC handler's ctx: passing ctx would
+	// tie the spawned Claude process's lifetime to this RPC call, which
+	// returns immediately. The runner has its own Stop()/Stop-via-cancel
+	// path for shutdown.
+	claudeID, err := s.claudeRunner.Start(context.Background(), sess.WorktreePath, req.GetPrompt(), nil, "")
+	if err != nil {
+		s.runMu.Unlock()
+		return nil, grpcstatus.Errorf(codes.Internal, "start claude: %v", err)
+	}
+	s.activeRuns[sessionID] = claudeID
+	s.runMu.Unlock()
+
+	return &bossanovav1.StartClaudeRunResponse{ClaudeId: claudeID}, nil
+}
+
+// WaitClaudeRun blocks until the Claude process identified by claude_id exits,
+// then returns the runner's exit error string (empty on clean exit). Honours
+// the caller's context for cancellation — the daemon's plugin shutdown path
+// cancels these contexts so an in-flight repair drains promptly.
+func (s *HostServiceServer) WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error) {
+	if s.claudeRunner == nil {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "claude runner not configured")
+	}
+	claudeID := req.GetClaudeId()
+	if claudeID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "claude_id is required")
+	}
+
+	ticker := time.NewTicker(waitClaudeRunPollInterval)
+	defer ticker.Stop()
+	for s.claudeRunner.IsRunning(claudeID) {
+		select {
+		case <-ctx.Done():
+			return nil, grpcstatus.FromContextError(ctx.Err()).Err()
+		case <-ticker.C:
+		}
+	}
+	var msg string
+	if exitErr := s.claudeRunner.ExitError(claudeID); exitErr != nil {
+		msg = exitErr.Error()
+	}
+	return &bossanovav1.WaitClaudeRunResponse{ExitError: msg}, nil
+}
+
+func hostServiceStartClaudeRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.StartClaudeRunRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).StartClaudeRun(ctx, req)
+}
+
+func hostServiceWaitClaudeRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.WaitClaudeRunRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).WaitClaudeRun(ctx, req)
 }

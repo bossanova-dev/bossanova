@@ -156,25 +156,36 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		}
 	}
 
-	// Resolve chat status. The session's claude_session_id is the claude_id
-	// the tracker is keyed by; fall back to looking up the most-recent chat
-	// for the session if the field isn't set.
+	// Resolve chat status by aggregating across every chat in the session.
+	// A session can have multiple chats — when any one of them is asking a
+	// question or actively working, the session-level label must reflect
+	// that rather than falling through to the PR display status. Reading
+	// only sess.ClaudeSessionID would miss this: that field is written at
+	// session create / resurrect time and is not updated when the user adds
+	// a new chat, so it can keep pointing at a now-stopped chat while a
+	// freshly-created sibling is the one actually working. Precedence
+	// (QUESTION > WORKING > IDLE > STOPPED) mirrors Server.GetSessionStatuses
+	// so the chat picker and the session list agree.
 	chatStatus := pb.ChatStatus_CHAT_STATUS_STOPPED
-	claudeID := ""
-	if sess.ClaudeSessionID != nil {
-		claudeID = *sess.ClaudeSessionID
-	}
-	if claudeID == "" && c.chats != nil {
-		// Pick the most recent chat for the session as the representative
-		// status source. ListBySession is ordered DESC by created_at in the
-		// SQLite store, so chats[0] is the newest.
-		if chats, listErr := c.chats.ListBySession(ctx, sessionID); listErr == nil && len(chats) > 0 {
-			claudeID = chats[0].ClaudeID
-		}
-	}
-	if claudeID != "" && c.chat != nil {
-		if e := c.chat.Get(claudeID); e != nil {
-			chatStatus = e.Status
+	if c.chats != nil && c.chat != nil {
+		chatList, listErr := c.chats.ListBySession(ctx, sessionID)
+		if listErr == nil {
+			for _, chat := range chatList {
+				e := c.chat.Get(chat.ClaudeID)
+				if e == nil {
+					continue
+				}
+				if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
+					chatStatus = pb.ChatStatus_CHAT_STATUS_QUESTION
+					break
+				}
+				if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && chatStatus != pb.ChatStatus_CHAT_STATUS_QUESTION {
+					chatStatus = pb.ChatStatus_CHAT_STATUS_WORKING
+				}
+				if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED {
+					chatStatus = pb.ChatStatus_CHAT_STATUS_IDLE
+				}
+			}
 		}
 	}
 

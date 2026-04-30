@@ -845,7 +845,7 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 
 	// Create a session in ImplementingPlan with a running workflow.
 	sessActive, _ := sessionStore.Create(ctx, CreateSessionParams{
-		RepoID: repo.ID, Title: "Active autopilot",
+		RepoID: repo.ID, Title: "Active workflow",
 		WorktreePath: "/tmp/wt/active", BranchName: "feat/active", BaseBranch: "main",
 	})
 	implState := int(machine.ImplementingPlan)
@@ -862,7 +862,7 @@ func TestSessionStore_AdvanceOrphanedSessions(t *testing.T) {
 
 	// Create a session in ImplementingPlan with NO running workflow (orphaned).
 	sessOrphan, _ := sessionStore.Create(ctx, CreateSessionParams{
-		RepoID: repo.ID, Title: "Orphaned autopilot",
+		RepoID: repo.ID, Title: "Orphaned workflow",
 		WorktreePath: "/tmp/wt/orphan", BranchName: "feat/orphan", BaseBranch: "main",
 	})
 	if _, err := sessionStore.Update(ctx, sessOrphan.ID, UpdateSessionParams{State: &implState}); err != nil {

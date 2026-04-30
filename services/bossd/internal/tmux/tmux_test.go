@@ -350,8 +350,8 @@ func TestSetAttachOptions(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
-		{"tmux", "set-option", "-t", "boss-test-sess", "aggressive-resize", "off"},
-		{"tmux", "set-option", "-t", "boss-test-sess", "window-size", "largest"},
+		{"tmux", "set-option", "-t", "boss-test-sess", "aggressive-resize", "on"},
+		{"tmux", "set-option", "-t", "boss-test-sess", "window-size", "smallest"},
 	}
 	if len(mock.calls) != len(wantCalls) {
 		t.Fatalf("expected %d tmux calls, got %d: %v", len(wantCalls), len(mock.calls), mock.calls)
@@ -519,43 +519,6 @@ func TestCapturePane_ScrollbackFlag(t *testing.T) {
 	expected := []string{"tmux", "capture-pane", "-p", "-S", "-1000", "-t", "boss-test-sess"}
 	if !equalSlices(call, expected) {
 		t.Errorf("CapturePane args: expected %v, got %v", expected, call)
-	}
-}
-
-func TestPasteText_Args(t *testing.T) {
-	mock := &mockCommandFactory{}
-	c := NewClient(WithCommandFactory(mock.factory))
-	ctx := context.Background()
-
-	if err := c.PasteText(ctx, "boss-test-sess", "hello\nworld"); err != nil {
-		t.Fatalf("PasteText failed: %v", err)
-	}
-
-	if len(mock.calls) != 2 {
-		t.Fatalf("expected 2 tmux calls (load-buffer, paste-buffer), got %d: %v", len(mock.calls), mock.calls)
-	}
-
-	wantLoad := []string{"tmux", "load-buffer", "-b", "bossanova-prefill-boss-test-sess", "-"}
-	if !equalSlices(mock.calls[0], wantLoad) {
-		t.Errorf("load-buffer args: expected %v, got %v", wantLoad, mock.calls[0])
-	}
-
-	wantPaste := []string{"tmux", "paste-buffer", "-d", "-p", "-b", "bossanova-prefill-boss-test-sess", "-t", "boss-test-sess"}
-	if !equalSlices(mock.calls[1], wantPaste) {
-		t.Errorf("paste-buffer args: expected %v, got %v", wantPaste, mock.calls[1])
-	}
-}
-
-func TestPasteText_EmptySessionName(t *testing.T) {
-	mock := &mockCommandFactory{}
-	c := NewClient(WithCommandFactory(mock.factory))
-	ctx := context.Background()
-
-	if err := c.PasteText(ctx, "", "hi"); err == nil {
-		t.Fatal("expected error for empty session name, got nil")
-	}
-	if len(mock.calls) != 0 {
-		t.Errorf("expected no tmux calls when session name is empty, got %d", len(mock.calls))
 	}
 }
 

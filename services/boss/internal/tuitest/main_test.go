@@ -53,21 +53,6 @@ func testSessions() []*pb.Session {
 	}
 }
 
-func testWorkflows() []*pb.AutopilotWorkflow {
-	return []*pb.AutopilotWorkflow{
-		{
-			Id:          "wf-001-aaa",
-			Status:      pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING,
-			CurrentStep: pb.WorkflowStep_WORKFLOW_STEP_IMPLEMENT,
-			FlightLeg:   1,
-			MaxLegs:     3,
-			PlanPath:    "/tmp/plans/feature.md",
-			StartedAt:   timestamppb.Now(),
-			UpdatedAt:   timestamppb.Now(),
-		},
-	}
-}
-
 func testChats() []*pb.ClaudeChat {
 	now := time.Now()
 	return []*pb.ClaudeChat{

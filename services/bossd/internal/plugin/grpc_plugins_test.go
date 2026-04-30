@@ -102,3 +102,17 @@ func TestDefaultPluginRPCTimeoutIs30s(t *testing.T) {
 		t.Fatalf("defaultPluginRPCTimeout = %v, want 30s", defaultPluginRPCTimeout)
 	}
 }
+
+func TestPollTasksRPCTimeoutIs90s(t *testing.T) {
+	t.Parallel()
+	// PollTasks needs a looser ceiling than the default: a single poll
+	// recursively shells out to gh per PR/issue, and 30s was insufficient
+	// for repos with 20+ open dependabot PRs. Must remain strictly below
+	// the orchestrator's 2-minute poll interval to avoid overlapping polls.
+	if pollTasksRPCTimeout != 90*time.Second {
+		t.Fatalf("pollTasksRPCTimeout = %v, want 90s", pollTasksRPCTimeout)
+	}
+	if pollTasksRPCTimeout >= 2*time.Minute {
+		t.Fatalf("pollTasksRPCTimeout (%v) must stay below the 2m orchestrator poll interval", pollTasksRPCTimeout)
+	}
+}

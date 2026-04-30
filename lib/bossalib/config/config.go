@@ -19,25 +19,6 @@ type PluginConfig struct {
 	Config  map[string]string `json:"config,omitempty"`
 }
 
-// AutopilotSkills maps workflow steps to skill names.
-type AutopilotSkills struct {
-	Plan      string `json:"plan,omitempty"`
-	Implement string `json:"implement,omitempty"`
-	Handoff   string `json:"handoff,omitempty"`
-	Resume    string `json:"resume,omitempty"`
-	Verify    string `json:"verify,omitempty"`
-	Land      string `json:"land,omitempty"`
-}
-
-// AutopilotConfig holds configuration for the autopilot plugin.
-type AutopilotConfig struct {
-	Skills              AutopilotSkills `json:"skills,omitzero"`
-	HandoffDir          string          `json:"handoff_dir,omitempty"`
-	PollIntervalSeconds int             `json:"poll_interval_seconds,omitempty"`
-	MaxFlightLegs       int             `json:"max_flight_legs,omitempty"`
-	ConfirmLand         bool            `json:"confirm_land,omitempty"`
-}
-
 // RepairSkills maps repair workflow operations to skill names.
 type RepairSkills struct {
 	Repair string `json:"repair,omitempty"`
@@ -49,71 +30,6 @@ type RepairConfig struct {
 	CooldownMinutes      int          `json:"cooldown_minutes,omitempty"`
 	PollIntervalSeconds  int          `json:"poll_interval_seconds,omitempty"`
 	SweepIntervalMinutes int          `json:"sweep_interval_minutes,omitempty"`
-}
-
-var defaultSkills = map[string]string{
-	"plan":      "boss-create-tasks",
-	"implement": "boss-implement",
-	"handoff":   "boss-handoff",
-	"resume":    "boss-resume",
-	"verify":    "boss-verify",
-	"land":      "boss-finalize",
-}
-
-// HandoffDirectory returns the configured handoff directory or the default.
-func (c AutopilotConfig) HandoffDirectory() string {
-	if c.HandoffDir != "" {
-		return c.HandoffDir
-	}
-	return "docs/handoffs"
-}
-
-// PollInterval returns the configured poll interval or the default of 5 seconds.
-func (c AutopilotConfig) PollInterval() time.Duration {
-	if c.PollIntervalSeconds > 0 {
-		return time.Duration(c.PollIntervalSeconds) * time.Second
-	}
-	return 5 * time.Second
-}
-
-// MaxLegs returns the configured max flight legs or the default of 20.
-func (c AutopilotConfig) MaxLegs() int {
-	if c.MaxFlightLegs > 0 {
-		return c.MaxFlightLegs
-	}
-	return 20
-}
-
-// SkillName returns the skill name for a given workflow step,
-// using the configured override or the default.
-func (c AutopilotConfig) SkillName(step string) string {
-	switch step {
-	case "plan":
-		if c.Skills.Plan != "" {
-			return c.Skills.Plan
-		}
-	case "implement":
-		if c.Skills.Implement != "" {
-			return c.Skills.Implement
-		}
-	case "handoff":
-		if c.Skills.Handoff != "" {
-			return c.Skills.Handoff
-		}
-	case "resume":
-		if c.Skills.Resume != "" {
-			return c.Skills.Resume
-		}
-	case "verify":
-		if c.Skills.Verify != "" {
-			return c.Skills.Verify
-		}
-	case "land":
-		if c.Skills.Land != "" {
-			return c.Skills.Land
-		}
-	}
-	return defaultSkills[step]
 }
 
 // CooldownDuration returns the configured cooldown or the default of 1 minute.
@@ -246,13 +162,12 @@ func hasPlatformSuffix(name string) bool {
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
-	DangerouslySkipPermissions bool            `json:"dangerously_skip_permissions"`
-	WorktreeBaseDir            string          `json:"worktree_base_dir"`
-	SkillsDeclined             bool            `json:"skills_declined,omitempty"`
-	PollIntervalSeconds        int             `json:"poll_interval_seconds,omitempty"`
-	Plugins                    []PluginConfig  `json:"plugins,omitempty"`
-	Autopilot                  AutopilotConfig `json:"autopilot,omitzero"`
-	Repair                     RepairConfig    `json:"repair,omitzero"`
+	DangerouslySkipPermissions bool           `json:"dangerously_skip_permissions"`
+	WorktreeBaseDir            string         `json:"worktree_base_dir"`
+	SkillsDeclined             bool           `json:"skills_declined,omitempty"`
+	PollIntervalSeconds        int            `json:"poll_interval_seconds,omitempty"`
+	Plugins                    []PluginConfig `json:"plugins,omitempty"`
+	Repair                     RepairConfig   `json:"repair,omitzero"`
 }
 
 // DisplayPollInterval returns the interval for polling PR display status.

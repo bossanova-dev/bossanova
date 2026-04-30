@@ -72,7 +72,6 @@ func rootCmd() *cobra.Command {
 		logoutCmd(),
 		authStatusCmd(),
 		daemonCmd(),
-		autopilotCmd(),
 	)
 
 	return root

@@ -241,6 +241,7 @@ func TestE2E_GitHub_GetCheckResults_Failing_WithLogs(t *testing.T) {
 	}
 	if failed == nil {
 		t.Fatal("no failing check found in results")
+		return
 	}
 	logs, err := p.GetFailedCheckLogs(context.Background(), testRepo, failed.ID)
 	if err != nil {

@@ -213,188 +213,6 @@ func TestPollIntervalOmittedFromJSON(t *testing.T) {
 	}
 }
 
-func TestAutopilotConfigRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	original := Settings{
-		WorktreeBaseDir: "/test",
-		Autopilot: AutopilotConfig{
-			Skills: AutopilotSkills{
-				Plan:      "custom-plan",
-				Implement: "custom-implement",
-				Handoff:   "custom-handoff",
-				Resume:    "custom-resume",
-				Verify:    "custom-verify",
-				Land:      "custom-land",
-			},
-			HandoffDir:          "my/handoffs",
-			PollIntervalSeconds: 10,
-			MaxFlightLegs:       5,
-			ConfirmLand:         true,
-		},
-	}
-
-	if err := SaveTo(path, original); err != nil {
-		t.Fatalf("SaveTo: %v", err)
-	}
-
-	loaded, err := LoadFrom(path)
-	if err != nil {
-		t.Fatalf("LoadFrom: %v", err)
-	}
-
-	ap := loaded.Autopilot
-	if ap.Skills.Plan != "custom-plan" {
-		t.Errorf("Skills.Plan: got %q, want %q", ap.Skills.Plan, "custom-plan")
-	}
-	if ap.Skills.Implement != "custom-implement" {
-		t.Errorf("Skills.Implement: got %q, want %q", ap.Skills.Implement, "custom-implement")
-	}
-	if ap.Skills.Handoff != "custom-handoff" {
-		t.Errorf("Skills.Handoff: got %q, want %q", ap.Skills.Handoff, "custom-handoff")
-	}
-	if ap.Skills.Resume != "custom-resume" {
-		t.Errorf("Skills.Resume: got %q, want %q", ap.Skills.Resume, "custom-resume")
-	}
-	if ap.Skills.Verify != "custom-verify" {
-		t.Errorf("Skills.Verify: got %q, want %q", ap.Skills.Verify, "custom-verify")
-	}
-	if ap.Skills.Land != "custom-land" {
-		t.Errorf("Skills.Land: got %q, want %q", ap.Skills.Land, "custom-land")
-	}
-	if ap.HandoffDir != "my/handoffs" {
-		t.Errorf("HandoffDir: got %q, want %q", ap.HandoffDir, "my/handoffs")
-	}
-	if ap.PollIntervalSeconds != 10 {
-		t.Errorf("PollIntervalSeconds: got %d, want 10", ap.PollIntervalSeconds)
-	}
-	if ap.MaxFlightLegs != 5 {
-		t.Errorf("MaxFlightLegs: got %d, want 5", ap.MaxFlightLegs)
-	}
-	if !ap.ConfirmLand {
-		t.Error("ConfirmLand: got false, want true")
-	}
-}
-
-func TestAutopilotConfigDefaults(t *testing.T) {
-	var c AutopilotConfig
-
-	if got := c.HandoffDirectory(); got != "docs/handoffs" {
-		t.Errorf("HandoffDirectory(): got %q, want %q", got, "docs/handoffs")
-	}
-	if got := c.PollInterval(); got != 5*time.Second {
-		t.Errorf("PollInterval(): got %v, want %v", got, 5*time.Second)
-	}
-	if got := c.MaxLegs(); got != 20 {
-		t.Errorf("MaxLegs(): got %d, want 20", got)
-	}
-}
-
-func TestAutopilotConfigPartialOverrides(t *testing.T) {
-	c := AutopilotConfig{
-		HandoffDir:    "custom/dir",
-		MaxFlightLegs: 10,
-		// PollIntervalSeconds left at zero — should use default
-	}
-
-	if got := c.HandoffDirectory(); got != "custom/dir" {
-		t.Errorf("HandoffDirectory(): got %q, want %q", got, "custom/dir")
-	}
-	if got := c.PollInterval(); got != 5*time.Second {
-		t.Errorf("PollInterval(): got %v, want %v (default)", got, 5*time.Second)
-	}
-	if got := c.MaxLegs(); got != 10 {
-		t.Errorf("MaxLegs(): got %d, want 10", got)
-	}
-}
-
-func TestAutopilotSkillNameDefaults(t *testing.T) {
-	var c AutopilotConfig
-
-	tests := []struct {
-		step     string
-		expected string
-	}{
-		{"plan", "boss-create-tasks"},
-		{"implement", "boss-implement"},
-		{"handoff", "boss-handoff"},
-		{"resume", "boss-resume"},
-		{"verify", "boss-verify"},
-		{"land", "boss-finalize"},
-		{"unknown", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.step, func(t *testing.T) {
-			if got := c.SkillName(tt.step); got != tt.expected {
-				t.Errorf("SkillName(%q): got %q, want %q", tt.step, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestAutopilotSkillNameOverrides(t *testing.T) {
-	c := AutopilotConfig{
-		Skills: AutopilotSkills{
-			Plan:   "my-plan-skill",
-			Verify: "my-verify-skill",
-		},
-	}
-
-	if got := c.SkillName("plan"); got != "my-plan-skill" {
-		t.Errorf("SkillName(plan): got %q, want %q", got, "my-plan-skill")
-	}
-	if got := c.SkillName("verify"); got != "my-verify-skill" {
-		t.Errorf("SkillName(verify): got %q, want %q", got, "my-verify-skill")
-	}
-	// Non-overridden steps should still return defaults.
-	if got := c.SkillName("implement"); got != "boss-implement" {
-		t.Errorf("SkillName(implement): got %q, want %q", got, "boss-implement")
-	}
-}
-
-func TestAutopilotConfigOmittedWhenZero(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	original := Settings{WorktreeBaseDir: "/test"}
-
-	if err := SaveTo(path, original); err != nil {
-		t.Fatalf("SaveTo: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-
-	if bytes.Contains(data, []byte(`"autopilot"`)) {
-		t.Error("expected autopilot to be omitted from JSON when zero value")
-	}
-}
-
-func TestAutopilotBackwardsCompatible(t *testing.T) {
-	// Settings JSON without an "autopilot" key should load fine.
-	path := filepath.Join(t.TempDir(), "settings.json")
-	jsonData := []byte(`{"dangerously_skip_permissions": false, "worktree_base_dir": "/test"}`)
-	if err := os.WriteFile(path, jsonData, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	loaded, err := LoadFrom(path)
-	if err != nil {
-		t.Fatalf("LoadFrom: %v", err)
-	}
-
-	if loaded.WorktreeBaseDir != "/test" {
-		t.Errorf("WorktreeBaseDir: got %q, want %q", loaded.WorktreeBaseDir, "/test")
-	}
-	// AutopilotConfig should be zero value, defaults should still work.
-	if got := loaded.Autopilot.HandoffDirectory(); got != "docs/handoffs" {
-		t.Errorf("HandoffDirectory(): got %q, want %q", got, "docs/handoffs")
-	}
-	if got := loaded.Autopilot.MaxLegs(); got != 20 {
-		t.Errorf("MaxLegs(): got %d, want 20", got)
-	}
-}
-
 func TestPluginVersionField(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	original := Settings{
@@ -626,9 +444,9 @@ func TestDedupPluginConfigs(t *testing.T) {
 			name: "no duplicates",
 			in: []PluginConfig{
 				{Name: "repair", Path: "/a", Enabled: true},
-				{Name: "autopilot", Path: "/b", Enabled: true},
+				{Name: "linear", Path: "/b", Enabled: true},
 			},
-			wantNames:   []string{"repair", "autopilot"},
+			wantNames:   []string{"repair", "linear"},
 			wantPaths:   []string{"/a", "/b"},
 			wantDropped: false,
 		},
@@ -636,10 +454,10 @@ func TestDedupPluginConfigs(t *testing.T) {
 			name: "duplicate keeps first",
 			in: []PluginConfig{
 				{Name: "repair", Path: "/first", Enabled: true},
-				{Name: "autopilot", Path: "/b", Enabled: true},
+				{Name: "linear", Path: "/b", Enabled: true},
 				{Name: "repair", Path: "/second", Enabled: true},
 			},
-			wantNames:   []string{"repair", "autopilot"},
+			wantNames:   []string{"repair", "linear"},
 			wantPaths:   []string{"/first", "/b"},
 			wantDropped: true,
 		},

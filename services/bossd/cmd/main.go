@@ -342,9 +342,8 @@ func run(opts runOpts) error {
 
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
-	autopilotRunner := claude.NewTmuxRunner(tmuxClient, log.Logger)
-	pluginHost.SetWorkflowDeps(workflows, sessions, claudeChats, autopilotRunner)
-	pluginHost.SetSessionDeps(repos, sessions, displayTracker, chatStatusTracker)
+	pluginHost.SetSessionDeps(repos, sessions, claudeChats, displayTracker, chatStatusTracker)
+	pluginHost.SetClaudeRunner(claudeRunner)
 
 	// Register DisplayTracker onChange callback to notify plugins of status changes
 	displayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.DisplayEntry) {
@@ -796,6 +795,7 @@ func run(opts runOpts) error {
 		Worktrees:          worktrees,
 		Provider:           ghProvider,
 		PluginHost:         pluginHost,
+		Tmux:               tmuxClient,
 		CompletionNotifier: orchestrator,
 		AuthNotifier:       authNotifier,
 		Logger:             log.Logger,

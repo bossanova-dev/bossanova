@@ -10,7 +10,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// defaultPluginRPCTimeout bounds every unary RPC the daemon dispatches to a
+// defaultPluginRPCTimeout bounds most unary RPCs the daemon dispatches to a
 // plugin subprocess. A hung or mis-behaving plugin must not block the daemon
 // indefinitely. Callers that need a tighter bound (e.g. NotifyStatusChange at
 // 5s) wrap the ctx before calling in; callers that legitimately need a longer
@@ -21,6 +21,16 @@ import (
 // future EventSourceService.StreamEvents wiring), its client method must
 // bypass invokePluginUnary to avoid a premature 30s cutoff on the stream.
 const defaultPluginRPCTimeout = 30 * time.Second
+
+// pollTasksRPCTimeout is the looser ceiling for TaskSourceService.PollTasks.
+// PollTasks is iterative: a single call may classify many PRs/issues, with
+// each item triggering a host callback that shells out to the VCS provider
+// (e.g. `gh pr checks`). The deadline propagates from the daemon's outbound
+// PollTasks RPC into those callbacks, so a 30s ceiling caused repos with
+// 20+ open dependabot PRs to fail mid-loop with "context canceled". 90s
+// covers a realistic worst-case sequential traversal while still firmly
+// under the orchestrator's 2-minute poll interval (avoiding pile-up).
+const pollTasksRPCTimeout = 90 * time.Second
 
 // invokePluginUnary forwards to grpc.ClientConn.Invoke with
 // defaultPluginRPCTimeout applied. All daemon → plugin unary RPCs go through
@@ -178,7 +188,7 @@ func (c *taskSourceGRPCClient) PollTasks(ctx context.Context, repoOriginURL stri
 		req.RepoOriginUrl = &repoOriginURL
 	}
 	resp := &bossanovav1.PollTasksResponse{}
-	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.TaskSourceService/PollTasks", req, resp); err != nil {
+	if err := invokePluginUnaryWithTimeout(ctx, c.conn, pollTasksRPCTimeout, "/bossanova.v1.TaskSourceService/PollTasks", req, resp); err != nil {
 		return nil, err
 	}
 	return resp.GetTasks(), nil

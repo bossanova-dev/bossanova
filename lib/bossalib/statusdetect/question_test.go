@@ -147,7 +147,7 @@ func TestHasQuestionPrompt(t *testing.T) {
 			name: "long response with squash commits question",
 			data: "⏺ Here are the recent commits on this branch:\n\n" +
 				"  - c09500f chore: [skip ci] create pull request\n" +
-				"  - 26131cc chore(global): gitignore .beads/issues.jsonl\n" +
+				"  - 26131cc chore(global): tighten lint rules for ignored files\n" +
 				"  - b889553 feat(plugin): [#18] wire previously-rejected PR detection into PollTasks\n" +
 				"  - 2d73d9e docs(plugin): [#18] add implementation plan and flight leg handoffs\n" +
 				"  - ff8498a test(plugin): [#18] add comprehensive test coverage for task source plugin\n" +

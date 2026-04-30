@@ -6,7 +6,6 @@ package hostclient
 import (
 	"context"
 	"fmt"
-	"io"
 	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
@@ -54,31 +53,17 @@ func resolveOptions(opts []ClientOption) clientOptions {
 // Client defines the methods plugins can use to call back into the host service.
 // Both DirectClient and EagerClient implement this interface.
 type Client interface {
-	// Workflow management
-	CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error)
-	UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error)
-	GetWorkflow(ctx context.Context, id string) (*bossanovav1.GetWorkflowResponse, error)
-
-	// Attempt management
-	CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error)
-	GetAttemptStatus(ctx context.Context, attemptID string) (*bossanovav1.GetAttemptStatusResponse, error)
-	StreamAttemptOutput(ctx context.Context, attemptID string) (AttemptOutputStream, error)
-
-	// Workflow listing
-	ListWorkflows(ctx context.Context, statusFilter string) (*bossanovav1.ListWorkflowsResponse, error)
-
-	// Session management (new in auto-repair feature)
+	// Session management
 	ListSessions(ctx context.Context) (*bossanovav1.HostServiceListSessionsResponse, error)
 	GetReviewComments(ctx context.Context, req *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
 	FireSessionEvent(ctx context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
 
 	// Repair status
 	SetRepairStatus(ctx context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
-}
 
-// AttemptOutputStream reads streamed output lines from a Claude attempt.
-type AttemptOutputStream interface {
-	Recv() (string, error)
+	// Repair execution
+	StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error)
+	WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error)
 }
 
 // DirectClient wraps a gRPC connection to the daemon's HostService,
@@ -175,62 +160,6 @@ func (c *EagerClient) connect() (*DirectClient, error) {
 
 // --- EagerClient methods (delegate to inner after connect) ---
 
-func (c *EagerClient) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
-	client, err := c.connect()
-	if err != nil {
-		return nil, err
-	}
-	return client.CreateWorkflow(ctx, req)
-}
-
-func (c *EagerClient) UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error) {
-	client, err := c.connect()
-	if err != nil {
-		return nil, err
-	}
-	return client.UpdateWorkflow(ctx, req)
-}
-
-func (c *EagerClient) GetWorkflow(ctx context.Context, id string) (*bossanovav1.GetWorkflowResponse, error) {
-	client, err := c.connect()
-	if err != nil {
-		return nil, err
-	}
-	return client.GetWorkflow(ctx, id)
-}
-
-func (c *EagerClient) CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
-	client, err := c.connect()
-	if err != nil {
-		return nil, err
-	}
-	return client.CreateAttempt(ctx, req)
-}
-
-func (c *EagerClient) GetAttemptStatus(ctx context.Context, attemptID string) (*bossanovav1.GetAttemptStatusResponse, error) {
-	client, err := c.connect()
-	if err != nil {
-		return nil, err
-	}
-	return client.GetAttemptStatus(ctx, attemptID)
-}
-
-func (c *EagerClient) StreamAttemptOutput(ctx context.Context, attemptID string) (AttemptOutputStream, error) {
-	client, err := c.connect()
-	if err != nil {
-		return nil, err
-	}
-	return client.StreamAttemptOutput(ctx, attemptID)
-}
-
-func (c *EagerClient) ListWorkflows(ctx context.Context, statusFilter string) (*bossanovav1.ListWorkflowsResponse, error) {
-	client, err := c.connect()
-	if err != nil {
-		return nil, err
-	}
-	return client.ListWorkflows(ctx, statusFilter)
-}
-
 func (c *EagerClient) ListSessions(ctx context.Context) (*bossanovav1.HostServiceListSessionsResponse, error) {
 	client, err := c.connect()
 	if err != nil {
@@ -263,6 +192,22 @@ func (c *EagerClient) SetRepairStatus(ctx context.Context, req *bossanovav1.SetR
 	return client.SetRepairStatus(ctx, req)
 }
 
+func (c *EagerClient) StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.StartClaudeRun(ctx, req)
+}
+
+func (c *EagerClient) WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.WaitClaudeRun(ctx, req)
+}
+
 // --- DirectClient methods (gRPC calls) ---
 
 // invokeUnary applies the client's default RPC timeout and forwards to
@@ -273,80 +218,6 @@ func (c *DirectClient) invokeUnary(ctx context.Context, method string, req, resp
 	ctx, cancel := context.WithTimeout(ctx, c.defaultRPCTimeout)
 	defer cancel()
 	return c.conn.Invoke(ctx, method, req, resp)
-}
-
-func (c *DirectClient) CreateWorkflow(ctx context.Context, req *bossanovav1.CreateWorkflowRequest) (*bossanovav1.CreateWorkflowResponse, error) {
-	resp := &bossanovav1.CreateWorkflowResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/CreateWorkflow", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (c *DirectClient) UpdateWorkflow(ctx context.Context, req *bossanovav1.UpdateWorkflowRequest) (*bossanovav1.UpdateWorkflowResponse, error) {
-	resp := &bossanovav1.UpdateWorkflowResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/UpdateWorkflow", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (c *DirectClient) GetWorkflow(ctx context.Context, id string) (*bossanovav1.GetWorkflowResponse, error) {
-	req := &bossanovav1.GetWorkflowRequest{Id: id}
-	resp := &bossanovav1.GetWorkflowResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/GetWorkflow", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (c *DirectClient) CreateAttempt(ctx context.Context, req *bossanovav1.CreateAttemptRequest) (*bossanovav1.CreateAttemptResponse, error) {
-	resp := &bossanovav1.CreateAttemptResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/CreateAttempt", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-func (c *DirectClient) GetAttemptStatus(ctx context.Context, attemptID string) (*bossanovav1.GetAttemptStatusResponse, error) {
-	req := &bossanovav1.GetAttemptStatusRequest{AttemptId: attemptID}
-	resp := &bossanovav1.GetAttemptStatusResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/GetAttemptStatus", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
-// StreamAttemptOutput opens a server-streaming RPC to receive output lines
-// from a running Claude attempt. The stream is intentionally exempt from
-// DefaultRPCTimeout because an attempt can run for many minutes — cancel
-// via the caller-supplied ctx instead.
-func (c *DirectClient) StreamAttemptOutput(ctx context.Context, attemptID string) (AttemptOutputStream, error) {
-	req := &bossanovav1.StreamAttemptOutputRequest{AttemptId: attemptID}
-	streamDesc := &grpc.StreamDesc{
-		StreamName:    "StreamAttemptOutput",
-		ServerStreams: true,
-	}
-	stream, err := c.conn.NewStream(ctx, streamDesc, "/bossanova.v1.HostService/StreamAttemptOutput")
-	if err != nil {
-		return nil, fmt.Errorf("open stream: %w", err)
-	}
-	if err := stream.SendMsg(req); err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
-	}
-	if err := stream.CloseSend(); err != nil {
-		return nil, fmt.Errorf("close send: %w", err)
-	}
-	return &attemptOutputStream{stream: stream}, nil
-}
-
-func (c *DirectClient) ListWorkflows(ctx context.Context, statusFilter string) (*bossanovav1.ListWorkflowsResponse, error) {
-	req := &bossanovav1.ListWorkflowsRequest{StatusFilter: statusFilter}
-	resp := &bossanovav1.ListWorkflowsResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/ListWorkflows", req, resp); err != nil {
-		return nil, err
-	}
-	return resp, nil
 }
 
 func (c *DirectClient) ListSessions(ctx context.Context) (*bossanovav1.HostServiceListSessionsResponse, error) {
@@ -382,25 +253,27 @@ func (c *DirectClient) SetRepairStatus(ctx context.Context, req *bossanovav1.Set
 	return resp, nil
 }
 
-// attemptOutputStream wraps a gRPC ClientStream to implement AttemptOutputStream.
-type attemptOutputStream struct {
-	stream grpc.ClientStream
+func (c *DirectClient) StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error) {
+	resp := &bossanovav1.StartClaudeRunResponse{}
+	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/StartClaudeRun", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
-func (s *attemptOutputStream) Recv() (string, error) {
-	resp := &bossanovav1.StreamAttemptOutputResponse{}
-	if err := s.stream.RecvMsg(resp); err != nil {
-		if err == io.EOF {
-			return "", io.EOF
-		}
-		return "", err
+// WaitClaudeRun is the long-running exception to invokeUnary's per-call
+// timeout: a repair run can take many minutes, so the caller's context is
+// the only deadline. Streams in this package use the same pattern.
+func (c *DirectClient) WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error) {
+	resp := &bossanovav1.WaitClaudeRunResponse{}
+	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitClaudeRun", req, resp); err != nil {
+		return nil, err
 	}
-	return resp.GetLine(), nil
+	return resp, nil
 }
 
 // Compile-time interface checks.
 var (
-	_ Client              = (*EagerClient)(nil)
-	_ Client              = (*DirectClient)(nil)
-	_ AttemptOutputStream = (*attemptOutputStream)(nil)
+	_ Client = (*EagerClient)(nil)
+	_ Client = (*DirectClient)(nil)
 )

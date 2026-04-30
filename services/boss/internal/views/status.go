@@ -145,8 +145,11 @@ func renderMutedPRLink(sess *pb.Session) string {
 	}
 	label := fmt.Sprintf("#%d", *sess.PrNumber)
 	// SGR 38;2;98;98;98 = muted gray foreground (#626262)
+	// SGR 58;2;98;98;98 = matching muted gray underline color (otherwise the
+	// underline picks up whatever SGR 58 was last set, e.g. the row-selected
+	// highlight color, and visually mismatches the strikethrough).
 	// SGR 9 = strikethrough, SGR 4 = underline
-	styled := "\x1b[38;2;98;98;98;9;4m" + label + "\x1b[39;29;24m"
+	styled := "\x1b[38;2;98;98;98;58;2;98;98;98;9;4m" + label + "\x1b[39;59;29;24m"
 	if sess.PrUrl != nil && *sess.PrUrl != "" {
 		return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", *sess.PrUrl, styled)
 	}
@@ -182,9 +185,12 @@ const (
 	// 38;2;98;98;98 = muted gray fg (#626262); 9 = strikethrough.
 	mutedStrikeOpen  = "\x1b[38;2;98;98;98;9m"
 	mutedStrikeClose = "\x1b[39;29m"
-	// Same as above with 4 = underline, used on the tracker label itself.
-	mutedStrikeUnderlineOpen  = "\x1b[38;2;98;98;98;9;4m"
-	mutedStrikeUnderlineClose = "\x1b[39;29;24m"
+	// Same as above with 4 = underline. 58;2;98;98;98 pins the underline
+	// color to muted gray so it matches the strikethrough — otherwise the
+	// underline inherits whatever SGR 58 was last set (e.g. the highlight
+	// color from a selected row), producing a mismatched colored line.
+	mutedStrikeUnderlineOpen  = "\x1b[38;2;98;98;98;58;2;98;98;98;9;4m"
+	mutedStrikeUnderlineClose = "\x1b[39;59;29;24m"
 )
 
 // renderMutedTrackerLink returns the full title styled muted + strikethrough

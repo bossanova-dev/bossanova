@@ -1,0 +1,111 @@
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: gomod
+    directory: /lib/bossalib
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(bossalib)"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: gomod
+    directory: /plugins/bossd-plugin-dependabot
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(plugin-dependabot)"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: gomod
+    directory: /plugins/bossd-plugin-linear
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(plugin-linear)"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: gomod
+    directory: /plugins/bossd-plugin-repair
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(plugin-repair)"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: gomod
+    directory: /services/boss
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(boss)"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: gomod
+    directory: /services/bossd
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(bossd)"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: gomod
+    directory: /services/bosso
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(bosso)"
+      include: scope
+    labels:
+      - dependencies
+      - go
+
+  # pnpm / npm packages
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    labels:
+      - dependencies
+      - javascript
+
+  - package-ecosystem: npm
+    directory: /services/web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(web)"
+      include: scope
+    labels:
+      - dependencies
+      - javascript

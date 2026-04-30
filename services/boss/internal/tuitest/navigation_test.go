@@ -113,23 +113,6 @@ func TestTUI_NavigationRoundTrip_AllViews(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Autopilot: p → esc.
-	if err := h.Driver.SendKey('p'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "No workflows") ||
-			strings.Contains(screen, "Autopilot") ||
-			strings.Contains(screen, "Error")
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEscape(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // chevronOnLine returns true if any screen line contains both the chevron ❯

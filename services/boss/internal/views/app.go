@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
+	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -23,7 +24,6 @@ const (
 	ViewRepoSettings
 	ViewTrash
 	ViewSettings
-	ViewAutopilot
 	ViewSessionSettings
 	ViewLogin
 	ViewBugReport
@@ -34,6 +34,7 @@ type App struct {
 	client          client.BossClient
 	auth            *auth.Manager
 	ctx             context.Context
+	ptyManager      *bosspty.Manager
 	activeView      View
 	home            HomeModel
 	newSession      NewSessionModel
@@ -44,7 +45,6 @@ type App struct {
 	sessionSettings SessionSettingsModel
 	trash           TrashModel
 	settings        SettingsModel
-	autopilot       AutopilotModel
 	attach          AttachModel
 	login           LoginModel
 	bugReport       BugReportModel
@@ -61,6 +61,7 @@ func NewApp(c client.BossClient, authMgr *auth.Manager) App {
 		client:     c,
 		auth:       authMgr,
 		ctx:        ctx,
+		ptyManager: bosspty.NewManager(),
 		activeView: ViewHome,
 		home:       home,
 	}
@@ -82,7 +83,7 @@ func (a *App) SetInitialView(v View) {
 
 // SetAttachSession sets the session ID to attach to. Must be called after SetInitialView(ViewAttach).
 func (a *App) SetAttachSession(sessionID, resumeID string) {
-	a.attach = NewAttachModel(a.client, a.ctx, sessionID, resumeID)
+	a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, sessionID, resumeID)
 }
 
 func (a App) Init() tea.Cmd {
@@ -101,7 +102,7 @@ func (a App) Init() tea.Cmd {
 	default:
 		viewCmd = a.home.Init()
 	}
-	return viewCmd
+	return tea.Batch(viewCmd, heartbeatTickCmd())
 }
 
 // switchViewMsg requests the app to switch to a different view.
@@ -129,8 +130,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.chatPicker.height = msg.Height
 		a.settings.width = msg.Width
 		a.sessionSettings.width = msg.Width
-		a.autopilot.width = msg.Width
-		a.autopilot.height = msg.Height
 		a.login.width = msg.Width
 		a.bugReport.width = msg.Width
 
@@ -148,6 +147,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.activeView = ViewBugReport
 			return a, a.bugReport.Init()
 		}
+
+	case heartbeatTickMsg:
+		// Snapshot the local PTY manager and ship per-chat statuses to bossd
+		// so other clients (web UI, second TUI instance) see this client's
+		// "working/idle/question" state. Re-arm the ticker so the loop is
+		// self-perpetuating.
+		return a, tea.Batch(
+			sendHeartbeatsCmd(a.ctx, a.client, a.ptyManager),
+			heartbeatTickCmd(),
+		)
 
 	case switchViewMsg:
 		a.activeView = msg.view
@@ -187,13 +196,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.settings = NewSettingsModel()
 			a.settings.width = a.width
 			return a, a.settings.Init()
-		case ViewAutopilot:
-			a.autopilot = NewAutopilotModel(a.client, a.ctx)
-			a.autopilot.width = a.width
-			a.autopilot.height = a.height
-			return a, a.autopilot.Init()
 		case ViewAttach:
-			a.attach = NewAttachModel(a.client, a.ctx, msg.sessionID, msg.resumeID)
+			a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, msg.sessionID, msg.resumeID)
 			return a, a.attach.Init()
 		case ViewLogin:
 			a.login = NewLoginModel(a.auth, a.client, a.ctx)
@@ -222,7 +226,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.newSession.Done() {
 			sess := a.newSession.CreatedSession()
 			if sess != nil {
-				a.attach = NewAttachModel(a.client, a.ctx, sess.Id, "")
+				a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, sess.Id, "")
 				a.activeView = ViewAttach
 				return a, a.attach.Init()
 			}
@@ -312,13 +316,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.switchToHome()
 		}
 		return a, cmd
-	case ViewAutopilot:
-		updated, cmd := a.autopilot.Update(msg)
-		a.autopilot = updated.(AutopilotModel)
-		if a.autopilot.Cancelled() {
-			return a, a.switchToHome()
-		}
-		return a, cmd
 	case ViewAttach:
 		updated, cmd := a.attach.Update(msg)
 		a.attach = updated.(AttachModel)
@@ -386,7 +383,7 @@ func (a App) currentDaemonStatuses() map[string]string {
 // to one of these views. Returns nil for views that don't use ticks.
 func resumeTickCmd(v View) tea.Cmd {
 	switch v { //nolint:exhaustive // only tick-driven views participate
-	case ViewHome, ViewChatPicker, ViewAutopilot:
+	case ViewHome, ViewChatPicker:
 		return tickCmd()
 	}
 	return nil
@@ -427,8 +424,6 @@ func (a App) View() tea.View {
 		v = a.trash.View()
 	case ViewSettings:
 		v = a.settings.View()
-	case ViewAutopilot:
-		v = a.autopilot.View()
 	case ViewAttach:
 		v = a.attach.View()
 	case ViewLogin:
@@ -453,8 +448,6 @@ func (a App) View() tea.View {
 			opts.session = a.sessionSettings.session
 		case ViewRepoList:
 			opts.line1 = "Repositories"
-		case ViewAutopilot:
-			opts.line1 = "Autopilot"
 		case ViewTrash:
 			opts.line1 = "Archived Sessions"
 		case ViewSettings:

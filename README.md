@@ -91,13 +91,6 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
       "enabled": true
     }
   ],
-  "autopilot": {
-    "skills": { "plan": "boss-create-tasks", "implement": "boss-implement" },
-    "handoff_dir": "docs/handoffs",
-    "poll_interval_seconds": 5,
-    "max_flight_legs": 20,
-    "confirm_land": false
-  },
   "repair": {
     "skills": { "repair": "boss-repair" },
     "cooldown_minutes": 1,
@@ -121,7 +114,6 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 | `skills_declined` | bool | `false` | Set after the user declines the one-time skills install prompt so it's not shown again. |
 | `poll_interval_seconds` | int | `120` | How often the TUI polls for PR display status, in seconds. |
 | `plugins` | array | auto-discovered | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own binary. |
-| `autopilot` | object | defaults below | Autopilot plugin configuration. |
 | `repair` | object | defaults below | Repair plugin configuration. |
 | `cloud` | object | defaults below | Cloud-sync settings for `bossd` and `boss login`. |
 
@@ -134,21 +126,6 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 | `enabled` | bool | When `false`, the plugin is loaded-but-inert. |
 | `version` | string | Optional version string, informational. |
 | `config` | object | Plugin-specific string key/value pairs. |
-
-### `autopilot` fields
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `skills.plan` | string | `boss-create-tasks` | Skill invoked for the planning step. |
-| `skills.implement` | string | `boss-implement` | Skill for implementation. |
-| `skills.handoff` | string | `boss-handoff` | Skill for flight-leg handoffs. |
-| `skills.resume` | string | `boss-resume` | Skill for resuming after a handoff. |
-| `skills.verify` | string | `boss-verify` | Skill for verification. |
-| `skills.land` | string | `boss-finalize` | Skill for landing a completed flight. |
-| `handoff_dir` | string | `docs/handoffs` | Where handoff docs are written, relative to the repo root. |
-| `poll_interval_seconds` | int | `5` | Poll interval for autopilot status checks. |
-| `max_flight_legs` | int | `20` | Safety cap on flight legs per session. |
-| `confirm_land` | bool | `false` | If true, require confirmation before landing. |
 
 ### `repair` fields
 

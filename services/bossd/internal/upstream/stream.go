@@ -101,6 +101,18 @@ type connectOpener struct {
 	// (sent in X-Daemon-Token). Shared with the TerminalStream opener so a
 	// rotation after a stale-token auth failure updates both transparently.
 	sessionToken *SessionTokenHolder
+
+	logger zerolog.Logger // used for refresh-failure diagnostics in DaemonStream
+}
+
+// reloader is an optional capability on TokenProvider implementations:
+// re-read whatever durable store backs the provider (keychain, file, env)
+// into the in-memory cache. Used by DaemonStream as a recovery hatch — an
+// external `boss login` might have written fresh tokens to the keychain
+// even if the NotifyLogin RPC never reached us (daemon socket busy, boss
+// run from a different machine via -remote, etc.).
+type reloader interface {
+	Reload()
 }
 
 // SetSessionToken swaps the daemon session_token used on subsequent
@@ -137,10 +149,27 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 		// validity window to complete the register handshake.
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
 			if _, err := o.tokens.Refresh(ctx); err != nil {
-				// Fall through with whatever Token() holds — may be the
-				// stale value. bosso will reject and the caller will log
-				// + backoff; logging here too would be duplicative.
-				_ = err
+				// Refresh failed — usually the refresh token is also
+				// expired/revoked, occasionally a transient WorkOS
+				// outage. Log it so the user can tell which: silent
+				// failure here meant the daemon would tight-loop with
+				// only "missing or invalid Authorization header" in the
+				// logs and no clue why. Then fall back to a keychain
+				// reload — picks up an external `boss login` even if
+				// its NotifyLogin RPC was missed.
+				o.logger.Warn().Err(err).Msg("token refresh failed; reloading keychain")
+				if r, ok := o.tokens.(reloader); ok {
+					r.Reload()
+				}
+			}
+		} else if exp.IsZero() {
+			// No expiry recorded — usually means the in-memory cache is
+			// empty (e.g. bossd started before the user ran `boss
+			// login`, or NotifyLogin was missed). Reload from the
+			// keychain so a later `boss login` is picked up here even
+			// without an explicit notification.
+			if r, ok := o.tokens.(reloader); ok {
+				r.Reload()
 			}
 		}
 		if t := o.tokens.Token(); t != "" {
@@ -448,6 +477,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 			authToken:    cfg.AuthToken,
 			sessionToken: holder,
 			tokens:       cfg.TokenProvider,
+			logger:       cfg.Logger.With().Str("component", "stream-opener").Logger(),
 		}
 	}
 	metrics := cfg.Metrics
@@ -498,6 +528,11 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 // escalate.
 func (c *StreamClient) Run(ctx context.Context) {
 	backoff := streamInitialBackoff
+	// authStuck tracks "we're in a sustained CodeUnauthenticated loop where
+	// ReRegister also can't recover" so the next retry's log line drops to
+	// debug. Cleared as soon as the error class changes or a re-register
+	// succeeds.
+	authStuck := false
 	for {
 		if ctx.Err() != nil {
 			return
@@ -513,6 +548,7 @@ func (c *StreamClient) Run(ctx context.Context) {
 			// and try again immediately — this is usually a recycle, not
 			// a sustained outage.
 			backoff = streamInitialBackoff
+			authStuck = false
 		default:
 			c.metrics.IncStreamError(err)
 			// CodeUnauthenticated from the stream means bosso rejected
@@ -521,23 +557,44 @@ func (c *StreamClient) Run(ctx context.Context) {
 			// with the same daemon_id rotated it via UPSERT, or bosso's
 			// daemons row for us was cleared). Without self-healing the
 			// outer loop tight-loops forever presenting the same bad
-			// token. We can't gate this on wasConnected() because
-			// Send(snapshot) succeeds locally before the server's
-			// header-only error arrives on Receive — by then
-			// markConnected has already fired. Call ReRegister on any
-			// Unauthenticated; if the JWT is also bad it'll fail and we
-			// fall through to regular backoff.
-			if connect.CodeOf(err) == connect.CodeUnauthenticated {
-				if c.tryReRegister(ctx) {
-					// Fresh token in hand — retry promptly.
-					backoff = streamInitialBackoff
-				}
+			// token. Call ReRegister on any Unauthenticated; if the JWT
+			// is also bad it'll fail and we fall through to regular
+			// backoff.
+			authFailed := connect.CodeOf(err) == connect.CodeUnauthenticated
+			rotated := false
+			if authFailed {
+				rotated = c.tryReRegister(ctx)
 			}
-			c.logger.Warn().Err(err).Dur("backoff", backoff).Msg("stream closed, reconnecting")
-			// Reset backoff to 1s if we had a successful handshake this
-			// attempt — a handshake success means the connection worked
-			// at least once, so we should retry promptly.
-			if c.wasConnected() {
+			// Reduce log spam on a sustained auth loop: log the first
+			// failure (and any change in error code or rotation outcome)
+			// at warn, then drop to debug while the same condition
+			// repeats. The state-change branch surfaces real progress
+			// (e.g. JWT became valid mid-loop) without burying it.
+			//
+			// Without this: every retry comes back "missing or invalid
+			// Authorization header" at warn and fills the log, even
+			// though there's nothing actionable beyond the first one.
+			suppressLog := authStuck && authFailed && !rotated
+			if suppressLog {
+				c.logger.Debug().Err(err).Dur("backoff", backoff).Msg("stream closed, reconnecting (auth still failing)")
+			} else {
+				c.logger.Warn().Err(err).Dur("backoff", backoff).Msg("stream closed, reconnecting")
+			}
+			authStuck = authFailed && !rotated
+			// Reset backoff only when we actually progressed:
+			//   - non-auth error after a real handshake (one-off flake)
+			//   - auth error but ReRegister got us a fresh token (real
+			//     recovery; retry now while the token is hot)
+			// A bare CodeUnauthenticated where ReRegister also failed
+			// means we're stuck on bad credentials. wasConnected() is
+			// misleading there because Send(snapshot) succeeds locally
+			// before bosso's header-only auth rejection arrives, so
+			// every attempt looks "connected" and would reset the
+			// backoff to 1s — that's what was filling the log.
+			switch {
+			case rotated:
+				backoff = streamInitialBackoff
+			case !authFailed && c.wasConnected():
 				backoff = streamInitialBackoff
 			}
 		}

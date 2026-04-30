@@ -22,31 +22,6 @@ service HostService {
   // ListClosedPRs returns recently-closed (not merged) pull requests.
   rpc ListClosedPRs(ListClosedPRsRequest) returns (ListClosedPRsResponse);
 
-  // --- Workflow Management (autopilot plugin → daemon) ---
-
-  // CreateWorkflow creates a new workflow record.
-  rpc CreateWorkflow(CreateWorkflowRequest) returns (CreateWorkflowResponse);
-
-  // UpdateWorkflow updates a workflow's status, step, or error.
-  rpc UpdateWorkflow(UpdateWorkflowRequest) returns (UpdateWorkflowResponse);
-
-  // GetWorkflow reads a single workflow by ID.
-  rpc GetWorkflow(GetWorkflowRequest) returns (GetWorkflowResponse);
-
-  // ListWorkflows lists workflows with optional status filter.
-  rpc ListWorkflows(ListWorkflowsRequest) returns (ListWorkflowsResponse);
-
-  // --- Attempt Management (autopilot plugin → daemon) ---
-
-  // CreateAttempt starts a Claude process for a workflow flight leg.
-  rpc CreateAttempt(CreateAttemptRequest) returns (CreateAttemptResponse);
-
-  // GetAttemptStatus checks whether a Claude attempt is still running.
-  rpc GetAttemptStatus(GetAttemptStatusRequest) returns (GetAttemptStatusResponse);
-
-  // StreamAttemptOutput streams real-time output from a running Claude attempt.
-  rpc StreamAttemptOutput(StreamAttemptOutputRequest) returns (stream StreamAttemptOutputResponse);
-
   // --- Session & Event Management (plugin → daemon) ---
 
   // ListSessions returns all active sessions with hydrated display status.
@@ -60,6 +35,19 @@ service HostService {
 
   // SetRepairStatus sets or clears the is_repairing flag for a session.
   rpc SetRepairStatus(SetRepairStatusRequest) returns (SetRepairStatusResponse);
+
+  // --- Repair Execution (called by repair plugin) ---
+
+  // StartClaudeRun starts a Claude process in the worktree of the given
+  // session, with the given prompt as the initial message. Returns a
+  // claude_id that can be used with WaitClaudeRun and the existing
+  // attach RPCs. Enforces one active Claude run per session (returns
+  // AlreadyExists if a run is already underway).
+  rpc StartClaudeRun(StartClaudeRunRequest) returns (StartClaudeRunResponse);
+
+  // WaitClaudeRun blocks until the Claude process identified by claude_id
+  // exits. Returns the process's exit error message (empty on clean exit).
+  rpc WaitClaudeRun(WaitClaudeRunRequest) returns (WaitClaudeRunResponse);
 }
 
 // --- ListOpenPRs ---
@@ -110,113 +98,6 @@ message ListClosedPRsResponse {
   repeated PRSummary prs = 1;
 }
 
-// --- Workflow Management (called by autopilot plugin) ---
-
-// CreateWorkflow creates a new workflow record in the daemon's database.
-message CreateWorkflowRequest {
-  string session_id = 1;
-  string repo_id = 2;
-  string plan_path = 3;
-  int32 max_legs = 4;
-  string start_commit_sha = 5;
-  string config_json = 6;
-}
-
-message CreateWorkflowResponse {
-  Workflow workflow = 1;
-}
-
-// UpdateWorkflow updates a workflow's status, step, flight leg, or error.
-message UpdateWorkflowRequest {
-  string id = 1;
-  optional string status = 2;
-  optional string current_step = 3;
-  optional int32 flight_leg = 4;
-  optional string last_error = 5;
-}
-
-message UpdateWorkflowResponse {
-  Workflow workflow = 1;
-}
-
-// GetWorkflow reads a single workflow by ID.
-message GetWorkflowRequest {
-  string id = 1;
-}
-
-message GetWorkflowResponse {
-  Workflow workflow = 1;
-}
-
-// ListWorkflows lists workflows with optional status filter.
-message ListWorkflowsRequest {
-  // Optional filter by status (empty = all).
-  string status_filter = 1;
-}
-
-message ListWorkflowsResponse {
-  repeated Workflow workflows = 1;
-}
-
-// --- Attempt Management (called by autopilot plugin) ---
-
-// CreateAttempt starts a Claude process for a flight leg.
-message CreateAttemptRequest {
-  string workflow_id = 1;
-  string skill_name = 2;
-  string input = 3;
-  string work_dir = 4;
-}
-
-message CreateAttemptResponse {
-  string attempt_id = 1;
-}
-
-// GetAttemptStatus checks whether a Claude attempt is still running.
-message GetAttemptStatusRequest {
-  string attempt_id = 1;
-}
-
-message GetAttemptStatusResponse {
-  AttemptRunStatus status = 1;
-  string error = 2;
-  repeated string output_lines = 3;
-}
-
-// AttemptRunStatus represents the runtime status of a Claude attempt.
-enum AttemptRunStatus {
-  ATTEMPT_RUN_STATUS_UNSPECIFIED = 0;
-  ATTEMPT_RUN_STATUS_RUNNING = 1;
-  ATTEMPT_RUN_STATUS_COMPLETED = 2;
-  ATTEMPT_RUN_STATUS_FAILED = 3;
-}
-
-// StreamAttemptOutput streams real-time output from a running Claude attempt.
-message StreamAttemptOutputRequest {
-  string attempt_id = 1;
-}
-
-message StreamAttemptOutputResponse {
-  string line = 1;
-}
-
-// Workflow represents a persisted autopilot workflow record.
-message Workflow {
-  string id = 1;
-  string session_id = 2;
-  string repo_id = 3;
-  string plan_path = 4;
-  string status = 5;
-  string current_step = 6;
-  int32 flight_leg = 7;
-  int32 max_legs = 8;
-  string last_error = 9;
-  string start_commit_sha = 10;
-  string config_json = 11;
-  string created_at = 12;
-  string updated_at = 13;
-}
-
 // --- ListSessions ---
 
 // HostServiceListSessionsRequest is currently empty as it lists all sessions.
@@ -263,3 +144,24 @@ message SetRepairStatusRequest {
 }
 
 message SetRepairStatusResponse {}
+
+// --- Repair Execution Messages ---
+
+message StartClaudeRunRequest {
+  string session_id = 1;
+  string prompt = 2;
+}
+
+message StartClaudeRunResponse {
+  string claude_id = 1;
+}
+
+message WaitClaudeRunRequest {
+  string claude_id = 1;
+}
+
+message WaitClaudeRunResponse {
+  // Empty on clean exit. Non-empty contains the runner's exit error
+  // (eg. non-zero exit code, killed by signal, etc.).
+  string exit_error = 1;
+}

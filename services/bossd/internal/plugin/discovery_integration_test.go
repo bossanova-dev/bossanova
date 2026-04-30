@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -28,7 +27,6 @@ import (
 // them all up. If a new plugin is added, extend this slice (plus the
 // expected-interface map below) so discovery coverage doesn't silently drift.
 var allPluginNames = []string{
-	"bossd-plugin-autopilot",
 	"bossd-plugin-dependabot",
 	"bossd-plugin-linear",
 	"bossd-plugin-repair",
@@ -37,10 +35,9 @@ var allPluginNames = []string{
 // pluginInterfaces encodes which service each plugin serves. TaskSource and
 // WorkflowService are the only two interfaces the host probes after Dispense;
 // discovery asserts that GetInfo succeeds on exactly the interface we expect
-// for each plugin (so a regression where e.g. autopilot loses its Workflow
-// registration surfaces as a missing service rather than a silent no-op).
+// for each plugin so a regression where a plugin loses its registration
+// surfaces as a missing service rather than a silent no-op.
 var pluginInterfaces = map[string]string{
-	"bossd-plugin-autopilot":  "workflow",
 	"bossd-plugin-repair":     "workflow",
 	"bossd-plugin-dependabot": "task",
 	"bossd-plugin-linear":     "task",
@@ -74,14 +71,6 @@ type discoveryHost struct {
 func newDiscoveryHost(t *testing.T) *discoveryHost {
 	t.Helper()
 
-	tmpDir := t.TempDir()
-
-	_, thisFile, _, _ := runtime.Caller(0)
-	fakeClaude := filepath.Join(filepath.Dir(thisFile), "testdata", "fake_claude.sh")
-	if _, err := os.Stat(fakeClaude); err != nil {
-		t.Fatalf("fake_claude.sh missing at %s: %v", fakeClaude, err)
-	}
-
 	sqlDB, err := db.OpenInMemory()
 	if err != nil {
 		t.Fatalf("open in-memory db: %v", err)
@@ -95,25 +84,12 @@ func newDiscoveryHost(t *testing.T) *discoveryHost {
 	repos := db.NewRepoStore(sqlDB)
 	sessions := db.NewSessionStore(sqlDB)
 	chats := db.NewClaudeChatStore(sqlDB)
-	workflows := db.NewWorkflowStore(sqlDB)
-
-	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, fakeClaude, args...)
-	}
-	runner := claude.NewRunner(
-		zerolog.New(zerolog.NewTestWriter(t)).Level(zerolog.Disabled),
-		claude.WithCommandFactory(factory),
-		claude.WithLogDir(filepath.Join(tmpDir, "claude-logs")),
-	)
-	if err := os.MkdirAll(filepath.Join(tmpDir, "claude-logs"), 0o755); err != nil {
-		t.Fatalf("mkdir claude-logs: %v", err)
-	}
 
 	provider := &testVCSProvider{}
 	bus := eventbus.New(zerolog.Nop())
 	host := pluginpkg.New(bus, provider, zerolog.Nop())
-	host.SetWorkflowDeps(workflows, sessions, chats, runner)
-	host.SetSessionDeps(repos, sessions, status.NewDisplayTracker(), status.NewTracker())
+	host.SetSessionDeps(repos, sessions, chats, status.NewDisplayTracker(), status.NewTracker())
+	host.SetClaudeRunner(claude.NewRunner(zerolog.Nop()))
 
 	// Cleanup runs LIFO: register bus.Close first so host.Stop (registered
 	// second) runs before the bus is torn down — host depends on bus.

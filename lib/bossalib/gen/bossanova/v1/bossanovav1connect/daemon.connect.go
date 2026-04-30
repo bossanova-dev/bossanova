@@ -127,33 +127,9 @@ const (
 	// DaemonServiceDeliverVCSEventProcedure is the fully-qualified name of the DaemonService's
 	// DeliverVCSEvent RPC.
 	DaemonServiceDeliverVCSEventProcedure = "/bossanova.v1.DaemonService/DeliverVCSEvent"
-	// DaemonServiceEnsureTmuxSessionProcedure is the fully-qualified name of the DaemonService's
-	// EnsureTmuxSession RPC.
-	DaemonServiceEnsureTmuxSessionProcedure = "/bossanova.v1.DaemonService/EnsureTmuxSession"
 	// DaemonServiceNotifyAuthChangeProcedure is the fully-qualified name of the DaemonService's
 	// NotifyAuthChange RPC.
 	DaemonServiceNotifyAuthChangeProcedure = "/bossanova.v1.DaemonService/NotifyAuthChange"
-	// DaemonServiceStartAutopilotProcedure is the fully-qualified name of the DaemonService's
-	// StartAutopilot RPC.
-	DaemonServiceStartAutopilotProcedure = "/bossanova.v1.DaemonService/StartAutopilot"
-	// DaemonServicePauseAutopilotProcedure is the fully-qualified name of the DaemonService's
-	// PauseAutopilot RPC.
-	DaemonServicePauseAutopilotProcedure = "/bossanova.v1.DaemonService/PauseAutopilot"
-	// DaemonServiceResumeAutopilotProcedure is the fully-qualified name of the DaemonService's
-	// ResumeAutopilot RPC.
-	DaemonServiceResumeAutopilotProcedure = "/bossanova.v1.DaemonService/ResumeAutopilot"
-	// DaemonServiceCancelAutopilotProcedure is the fully-qualified name of the DaemonService's
-	// CancelAutopilot RPC.
-	DaemonServiceCancelAutopilotProcedure = "/bossanova.v1.DaemonService/CancelAutopilot"
-	// DaemonServiceGetAutopilotStatusProcedure is the fully-qualified name of the DaemonService's
-	// GetAutopilotStatus RPC.
-	DaemonServiceGetAutopilotStatusProcedure = "/bossanova.v1.DaemonService/GetAutopilotStatus"
-	// DaemonServiceListAutopilotWorkflowsProcedure is the fully-qualified name of the DaemonService's
-	// ListAutopilotWorkflows RPC.
-	DaemonServiceListAutopilotWorkflowsProcedure = "/bossanova.v1.DaemonService/ListAutopilotWorkflows"
-	// DaemonServiceStreamAutopilotOutputProcedure is the fully-qualified name of the DaemonService's
-	// StreamAutopilotOutput RPC.
-	DaemonServiceStreamAutopilotOutputProcedure = "/bossanova.v1.DaemonService/StreamAutopilotOutput"
 )
 
 // DaemonServiceClient is a client for the bossanova.v1.DaemonService service.
@@ -197,24 +173,8 @@ type DaemonServiceClient interface {
 	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
-	// Tmux session management (on-demand)
-	EnsureTmuxSession(context.Context, *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error)
 	// Auth change notification (CLI → daemon)
 	NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error)
-	// StartAutopilot begins a new autopilot workflow for a plan file.
-	StartAutopilot(context.Context, *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error)
-	// PauseAutopilot gracefully pauses a running workflow.
-	PauseAutopilot(context.Context, *connect.Request[v1.PauseAutopilotRequest]) (*connect.Response[v1.PauseAutopilotResponse], error)
-	// ResumeAutopilot resumes a paused workflow.
-	ResumeAutopilot(context.Context, *connect.Request[v1.ResumeAutopilotRequest]) (*connect.Response[v1.ResumeAutopilotResponse], error)
-	// CancelAutopilot cancels a workflow.
-	CancelAutopilot(context.Context, *connect.Request[v1.CancelAutopilotRequest]) (*connect.Response[v1.CancelAutopilotResponse], error)
-	// GetAutopilotStatus returns the status of a specific workflow.
-	GetAutopilotStatus(context.Context, *connect.Request[v1.GetAutopilotStatusRequest]) (*connect.Response[v1.GetAutopilotStatusResponse], error)
-	// ListAutopilotWorkflows lists recent autopilot workflows.
-	ListAutopilotWorkflows(context.Context, *connect.Request[v1.ListAutopilotWorkflowsRequest]) (*connect.Response[v1.ListAutopilotWorkflowsResponse], error)
-	// StreamAutopilotOutput streams real-time output from a running workflow.
-	StreamAutopilotOutput(context.Context, *connect.Request[v1.StreamAutopilotOutputRequest]) (*connect.ServerStreamForClient[v1.StreamAutopilotOutputResponse], error)
 }
 
 // NewDaemonServiceClient constructs a client for the bossanova.v1.DaemonService service. By
@@ -420,58 +380,10 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DeliverVCSEvent")),
 			connect.WithClientOptions(opts...),
 		),
-		ensureTmuxSession: connect.NewClient[v1.EnsureTmuxSessionRequest, v1.EnsureTmuxSessionResponse](
-			httpClient,
-			baseURL+DaemonServiceEnsureTmuxSessionProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("EnsureTmuxSession")),
-			connect.WithClientOptions(opts...),
-		),
 		notifyAuthChange: connect.NewClient[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse](
 			httpClient,
 			baseURL+DaemonServiceNotifyAuthChangeProcedure,
 			connect.WithSchema(daemonServiceMethods.ByName("NotifyAuthChange")),
-			connect.WithClientOptions(opts...),
-		),
-		startAutopilot: connect.NewClient[v1.StartAutopilotRequest, v1.StartAutopilotResponse](
-			httpClient,
-			baseURL+DaemonServiceStartAutopilotProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("StartAutopilot")),
-			connect.WithClientOptions(opts...),
-		),
-		pauseAutopilot: connect.NewClient[v1.PauseAutopilotRequest, v1.PauseAutopilotResponse](
-			httpClient,
-			baseURL+DaemonServicePauseAutopilotProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("PauseAutopilot")),
-			connect.WithClientOptions(opts...),
-		),
-		resumeAutopilot: connect.NewClient[v1.ResumeAutopilotRequest, v1.ResumeAutopilotResponse](
-			httpClient,
-			baseURL+DaemonServiceResumeAutopilotProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("ResumeAutopilot")),
-			connect.WithClientOptions(opts...),
-		),
-		cancelAutopilot: connect.NewClient[v1.CancelAutopilotRequest, v1.CancelAutopilotResponse](
-			httpClient,
-			baseURL+DaemonServiceCancelAutopilotProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("CancelAutopilot")),
-			connect.WithClientOptions(opts...),
-		),
-		getAutopilotStatus: connect.NewClient[v1.GetAutopilotStatusRequest, v1.GetAutopilotStatusResponse](
-			httpClient,
-			baseURL+DaemonServiceGetAutopilotStatusProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("GetAutopilotStatus")),
-			connect.WithClientOptions(opts...),
-		),
-		listAutopilotWorkflows: connect.NewClient[v1.ListAutopilotWorkflowsRequest, v1.ListAutopilotWorkflowsResponse](
-			httpClient,
-			baseURL+DaemonServiceListAutopilotWorkflowsProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("ListAutopilotWorkflows")),
-			connect.WithClientOptions(opts...),
-		),
-		streamAutopilotOutput: connect.NewClient[v1.StreamAutopilotOutputRequest, v1.StreamAutopilotOutputResponse](
-			httpClient,
-			baseURL+DaemonServiceStreamAutopilotOutputProcedure,
-			connect.WithSchema(daemonServiceMethods.ByName("StreamAutopilotOutput")),
 			connect.WithClientOptions(opts...),
 		),
 	}
@@ -479,47 +391,39 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // daemonServiceClient implements DaemonServiceClient.
 type daemonServiceClient struct {
-	resolveContext         *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
-	validateRepoPath       *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
-	registerRepo           *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
-	cloneAndRegisterRepo   *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
-	listRepos              *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
-	removeRepo             *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
-	updateRepo             *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
-	listRepoPRs            *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
-	listTrackerIssues      *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
-	createSession          *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
-	getSession             *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
-	listSessions           *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
-	attachSession          *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
-	stopSession            *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
-	pauseSession           *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
-	resumeSession          *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
-	retrySession           *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
-	closeSession           *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
-	mergeSession           *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
-	removeSession          *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
-	updateSession          *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
-	archiveSession         *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
-	resurrectSession       *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
-	emptyTrash             *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
-	recordChat             *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
-	listChats              *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
-	updateChatTitle        *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
-	deleteChat             *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
-	reportChatStatus       *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
-	getChatStatuses        *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
-	getSessionStatuses     *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
-	deliverVCSEvent        *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
-	ensureTmuxSession      *connect.Client[v1.EnsureTmuxSessionRequest, v1.EnsureTmuxSessionResponse]
-	notifyAuthChange       *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
-	startAutopilot         *connect.Client[v1.StartAutopilotRequest, v1.StartAutopilotResponse]
-	pauseAutopilot         *connect.Client[v1.PauseAutopilotRequest, v1.PauseAutopilotResponse]
-	resumeAutopilot        *connect.Client[v1.ResumeAutopilotRequest, v1.ResumeAutopilotResponse]
-	cancelAutopilot        *connect.Client[v1.CancelAutopilotRequest, v1.CancelAutopilotResponse]
-	getAutopilotStatus     *connect.Client[v1.GetAutopilotStatusRequest, v1.GetAutopilotStatusResponse]
-	listAutopilotWorkflows *connect.Client[v1.ListAutopilotWorkflowsRequest, v1.ListAutopilotWorkflowsResponse]
-	streamAutopilotOutput  *connect.Client[v1.StreamAutopilotOutputRequest, v1.StreamAutopilotOutputResponse]
+	resolveContext       *connect.Client[v1.ResolveContextRequest, v1.ResolveContextResponse]
+	validateRepoPath     *connect.Client[v1.ValidateRepoPathRequest, v1.ValidateRepoPathResponse]
+	registerRepo         *connect.Client[v1.RegisterRepoRequest, v1.RegisterRepoResponse]
+	cloneAndRegisterRepo *connect.Client[v1.CloneAndRegisterRepoRequest, v1.CloneAndRegisterRepoResponse]
+	listRepos            *connect.Client[v1.ListReposRequest, v1.ListReposResponse]
+	removeRepo           *connect.Client[v1.RemoveRepoRequest, v1.RemoveRepoResponse]
+	updateRepo           *connect.Client[v1.UpdateRepoRequest, v1.UpdateRepoResponse]
+	listRepoPRs          *connect.Client[v1.ListRepoPRsRequest, v1.ListRepoPRsResponse]
+	listTrackerIssues    *connect.Client[v1.ListTrackerIssuesRequest, v1.ListTrackerIssuesResponse]
+	createSession        *connect.Client[v1.CreateSessionRequest, v1.CreateSessionResponse]
+	getSession           *connect.Client[v1.GetSessionRequest, v1.GetSessionResponse]
+	listSessions         *connect.Client[v1.ListSessionsRequest, v1.ListSessionsResponse]
+	attachSession        *connect.Client[v1.AttachSessionRequest, v1.AttachSessionResponse]
+	stopSession          *connect.Client[v1.StopSessionRequest, v1.StopSessionResponse]
+	pauseSession         *connect.Client[v1.PauseSessionRequest, v1.PauseSessionResponse]
+	resumeSession        *connect.Client[v1.ResumeSessionRequest, v1.ResumeSessionResponse]
+	retrySession         *connect.Client[v1.RetrySessionRequest, v1.RetrySessionResponse]
+	closeSession         *connect.Client[v1.CloseSessionRequest, v1.CloseSessionResponse]
+	mergeSession         *connect.Client[v1.MergeSessionRequest, v1.MergeSessionResponse]
+	removeSession        *connect.Client[v1.RemoveSessionRequest, v1.RemoveSessionResponse]
+	updateSession        *connect.Client[v1.UpdateSessionRequest, v1.UpdateSessionResponse]
+	archiveSession       *connect.Client[v1.ArchiveSessionRequest, v1.ArchiveSessionResponse]
+	resurrectSession     *connect.Client[v1.ResurrectSessionRequest, v1.ResurrectSessionResponse]
+	emptyTrash           *connect.Client[v1.EmptyTrashRequest, v1.EmptyTrashResponse]
+	recordChat           *connect.Client[v1.RecordChatRequest, v1.RecordChatResponse]
+	listChats            *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
+	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
+	deleteChat           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
+	reportChatStatus     *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
+	getChatStatuses      *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
+	getSessionStatuses   *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
+	deliverVCSEvent      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
+	notifyAuthChange     *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -682,49 +586,9 @@ func (c *daemonServiceClient) DeliverVCSEvent(ctx context.Context, req *connect.
 	return c.deliverVCSEvent.CallUnary(ctx, req)
 }
 
-// EnsureTmuxSession calls bossanova.v1.DaemonService.EnsureTmuxSession.
-func (c *daemonServiceClient) EnsureTmuxSession(ctx context.Context, req *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error) {
-	return c.ensureTmuxSession.CallUnary(ctx, req)
-}
-
 // NotifyAuthChange calls bossanova.v1.DaemonService.NotifyAuthChange.
 func (c *daemonServiceClient) NotifyAuthChange(ctx context.Context, req *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error) {
 	return c.notifyAuthChange.CallUnary(ctx, req)
-}
-
-// StartAutopilot calls bossanova.v1.DaemonService.StartAutopilot.
-func (c *daemonServiceClient) StartAutopilot(ctx context.Context, req *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error) {
-	return c.startAutopilot.CallUnary(ctx, req)
-}
-
-// PauseAutopilot calls bossanova.v1.DaemonService.PauseAutopilot.
-func (c *daemonServiceClient) PauseAutopilot(ctx context.Context, req *connect.Request[v1.PauseAutopilotRequest]) (*connect.Response[v1.PauseAutopilotResponse], error) {
-	return c.pauseAutopilot.CallUnary(ctx, req)
-}
-
-// ResumeAutopilot calls bossanova.v1.DaemonService.ResumeAutopilot.
-func (c *daemonServiceClient) ResumeAutopilot(ctx context.Context, req *connect.Request[v1.ResumeAutopilotRequest]) (*connect.Response[v1.ResumeAutopilotResponse], error) {
-	return c.resumeAutopilot.CallUnary(ctx, req)
-}
-
-// CancelAutopilot calls bossanova.v1.DaemonService.CancelAutopilot.
-func (c *daemonServiceClient) CancelAutopilot(ctx context.Context, req *connect.Request[v1.CancelAutopilotRequest]) (*connect.Response[v1.CancelAutopilotResponse], error) {
-	return c.cancelAutopilot.CallUnary(ctx, req)
-}
-
-// GetAutopilotStatus calls bossanova.v1.DaemonService.GetAutopilotStatus.
-func (c *daemonServiceClient) GetAutopilotStatus(ctx context.Context, req *connect.Request[v1.GetAutopilotStatusRequest]) (*connect.Response[v1.GetAutopilotStatusResponse], error) {
-	return c.getAutopilotStatus.CallUnary(ctx, req)
-}
-
-// ListAutopilotWorkflows calls bossanova.v1.DaemonService.ListAutopilotWorkflows.
-func (c *daemonServiceClient) ListAutopilotWorkflows(ctx context.Context, req *connect.Request[v1.ListAutopilotWorkflowsRequest]) (*connect.Response[v1.ListAutopilotWorkflowsResponse], error) {
-	return c.listAutopilotWorkflows.CallUnary(ctx, req)
-}
-
-// StreamAutopilotOutput calls bossanova.v1.DaemonService.StreamAutopilotOutput.
-func (c *daemonServiceClient) StreamAutopilotOutput(ctx context.Context, req *connect.Request[v1.StreamAutopilotOutputRequest]) (*connect.ServerStreamForClient[v1.StreamAutopilotOutputResponse], error) {
-	return c.streamAutopilotOutput.CallServerStream(ctx, req)
 }
 
 // DaemonServiceHandler is an implementation of the bossanova.v1.DaemonService service.
@@ -768,24 +632,8 @@ type DaemonServiceHandler interface {
 	GetSessionStatuses(context.Context, *connect.Request[v1.GetSessionStatusesRequest]) (*connect.Response[v1.GetSessionStatusesResponse], error)
 	// VCS event delivery (orchestrator → daemon via webhook routing)
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
-	// Tmux session management (on-demand)
-	EnsureTmuxSession(context.Context, *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error)
 	// Auth change notification (CLI → daemon)
 	NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error)
-	// StartAutopilot begins a new autopilot workflow for a plan file.
-	StartAutopilot(context.Context, *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error)
-	// PauseAutopilot gracefully pauses a running workflow.
-	PauseAutopilot(context.Context, *connect.Request[v1.PauseAutopilotRequest]) (*connect.Response[v1.PauseAutopilotResponse], error)
-	// ResumeAutopilot resumes a paused workflow.
-	ResumeAutopilot(context.Context, *connect.Request[v1.ResumeAutopilotRequest]) (*connect.Response[v1.ResumeAutopilotResponse], error)
-	// CancelAutopilot cancels a workflow.
-	CancelAutopilot(context.Context, *connect.Request[v1.CancelAutopilotRequest]) (*connect.Response[v1.CancelAutopilotResponse], error)
-	// GetAutopilotStatus returns the status of a specific workflow.
-	GetAutopilotStatus(context.Context, *connect.Request[v1.GetAutopilotStatusRequest]) (*connect.Response[v1.GetAutopilotStatusResponse], error)
-	// ListAutopilotWorkflows lists recent autopilot workflows.
-	ListAutopilotWorkflows(context.Context, *connect.Request[v1.ListAutopilotWorkflowsRequest]) (*connect.Response[v1.ListAutopilotWorkflowsResponse], error)
-	// StreamAutopilotOutput streams real-time output from a running workflow.
-	StreamAutopilotOutput(context.Context, *connect.Request[v1.StreamAutopilotOutputRequest], *connect.ServerStream[v1.StreamAutopilotOutputResponse]) error
 }
 
 // NewDaemonServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -987,58 +835,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DeliverVCSEvent")),
 		connect.WithHandlerOptions(opts...),
 	)
-	daemonServiceEnsureTmuxSessionHandler := connect.NewUnaryHandler(
-		DaemonServiceEnsureTmuxSessionProcedure,
-		svc.EnsureTmuxSession,
-		connect.WithSchema(daemonServiceMethods.ByName("EnsureTmuxSession")),
-		connect.WithHandlerOptions(opts...),
-	)
 	daemonServiceNotifyAuthChangeHandler := connect.NewUnaryHandler(
 		DaemonServiceNotifyAuthChangeProcedure,
 		svc.NotifyAuthChange,
 		connect.WithSchema(daemonServiceMethods.ByName("NotifyAuthChange")),
-		connect.WithHandlerOptions(opts...),
-	)
-	daemonServiceStartAutopilotHandler := connect.NewUnaryHandler(
-		DaemonServiceStartAutopilotProcedure,
-		svc.StartAutopilot,
-		connect.WithSchema(daemonServiceMethods.ByName("StartAutopilot")),
-		connect.WithHandlerOptions(opts...),
-	)
-	daemonServicePauseAutopilotHandler := connect.NewUnaryHandler(
-		DaemonServicePauseAutopilotProcedure,
-		svc.PauseAutopilot,
-		connect.WithSchema(daemonServiceMethods.ByName("PauseAutopilot")),
-		connect.WithHandlerOptions(opts...),
-	)
-	daemonServiceResumeAutopilotHandler := connect.NewUnaryHandler(
-		DaemonServiceResumeAutopilotProcedure,
-		svc.ResumeAutopilot,
-		connect.WithSchema(daemonServiceMethods.ByName("ResumeAutopilot")),
-		connect.WithHandlerOptions(opts...),
-	)
-	daemonServiceCancelAutopilotHandler := connect.NewUnaryHandler(
-		DaemonServiceCancelAutopilotProcedure,
-		svc.CancelAutopilot,
-		connect.WithSchema(daemonServiceMethods.ByName("CancelAutopilot")),
-		connect.WithHandlerOptions(opts...),
-	)
-	daemonServiceGetAutopilotStatusHandler := connect.NewUnaryHandler(
-		DaemonServiceGetAutopilotStatusProcedure,
-		svc.GetAutopilotStatus,
-		connect.WithSchema(daemonServiceMethods.ByName("GetAutopilotStatus")),
-		connect.WithHandlerOptions(opts...),
-	)
-	daemonServiceListAutopilotWorkflowsHandler := connect.NewUnaryHandler(
-		DaemonServiceListAutopilotWorkflowsProcedure,
-		svc.ListAutopilotWorkflows,
-		connect.WithSchema(daemonServiceMethods.ByName("ListAutopilotWorkflows")),
-		connect.WithHandlerOptions(opts...),
-	)
-	daemonServiceStreamAutopilotOutputHandler := connect.NewServerStreamHandler(
-		DaemonServiceStreamAutopilotOutputProcedure,
-		svc.StreamAutopilotOutput,
-		connect.WithSchema(daemonServiceMethods.ByName("StreamAutopilotOutput")),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/bossanova.v1.DaemonService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1107,24 +907,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceGetSessionStatusesHandler.ServeHTTP(w, r)
 		case DaemonServiceDeliverVCSEventProcedure:
 			daemonServiceDeliverVCSEventHandler.ServeHTTP(w, r)
-		case DaemonServiceEnsureTmuxSessionProcedure:
-			daemonServiceEnsureTmuxSessionHandler.ServeHTTP(w, r)
 		case DaemonServiceNotifyAuthChangeProcedure:
 			daemonServiceNotifyAuthChangeHandler.ServeHTTP(w, r)
-		case DaemonServiceStartAutopilotProcedure:
-			daemonServiceStartAutopilotHandler.ServeHTTP(w, r)
-		case DaemonServicePauseAutopilotProcedure:
-			daemonServicePauseAutopilotHandler.ServeHTTP(w, r)
-		case DaemonServiceResumeAutopilotProcedure:
-			daemonServiceResumeAutopilotHandler.ServeHTTP(w, r)
-		case DaemonServiceCancelAutopilotProcedure:
-			daemonServiceCancelAutopilotHandler.ServeHTTP(w, r)
-		case DaemonServiceGetAutopilotStatusProcedure:
-			daemonServiceGetAutopilotStatusHandler.ServeHTTP(w, r)
-		case DaemonServiceListAutopilotWorkflowsProcedure:
-			daemonServiceListAutopilotWorkflowsHandler.ServeHTTP(w, r)
-		case DaemonServiceStreamAutopilotOutputProcedure:
-			daemonServiceStreamAutopilotOutputHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1262,38 +1046,6 @@ func (UnimplementedDaemonServiceHandler) DeliverVCSEvent(context.Context, *conne
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeliverVCSEvent is not implemented"))
 }
 
-func (UnimplementedDaemonServiceHandler) EnsureTmuxSession(context.Context, *connect.Request[v1.EnsureTmuxSessionRequest]) (*connect.Response[v1.EnsureTmuxSessionResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.EnsureTmuxSession is not implemented"))
-}
-
 func (UnimplementedDaemonServiceHandler) NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.NotifyAuthChange is not implemented"))
-}
-
-func (UnimplementedDaemonServiceHandler) StartAutopilot(context.Context, *connect.Request[v1.StartAutopilotRequest]) (*connect.Response[v1.StartAutopilotResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.StartAutopilot is not implemented"))
-}
-
-func (UnimplementedDaemonServiceHandler) PauseAutopilot(context.Context, *connect.Request[v1.PauseAutopilotRequest]) (*connect.Response[v1.PauseAutopilotResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.PauseAutopilot is not implemented"))
-}
-
-func (UnimplementedDaemonServiceHandler) ResumeAutopilot(context.Context, *connect.Request[v1.ResumeAutopilotRequest]) (*connect.Response[v1.ResumeAutopilotResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ResumeAutopilot is not implemented"))
-}
-
-func (UnimplementedDaemonServiceHandler) CancelAutopilot(context.Context, *connect.Request[v1.CancelAutopilotRequest]) (*connect.Response[v1.CancelAutopilotResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CancelAutopilot is not implemented"))
-}
-
-func (UnimplementedDaemonServiceHandler) GetAutopilotStatus(context.Context, *connect.Request[v1.GetAutopilotStatusRequest]) (*connect.Response[v1.GetAutopilotStatusResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetAutopilotStatus is not implemented"))
-}
-
-func (UnimplementedDaemonServiceHandler) ListAutopilotWorkflows(context.Context, *connect.Request[v1.ListAutopilotWorkflowsRequest]) (*connect.Response[v1.ListAutopilotWorkflowsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListAutopilotWorkflows is not implemented"))
-}
-
-func (UnimplementedDaemonServiceHandler) StreamAutopilotOutput(context.Context, *connect.Request[v1.StreamAutopilotOutputRequest], *connect.ServerStream[v1.StreamAutopilotOutputResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.StreamAutopilotOutput is not implemented"))
 }

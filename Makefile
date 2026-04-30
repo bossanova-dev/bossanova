@@ -121,6 +121,12 @@ setup-worktree:
 	else \
 		echo "No .env in $$BOSS_REPO_DIR — skipping"; \
 	fi
+	@if [ -f "$$BOSS_REPO_DIR/.node-version" ]; then \
+		cp "$$BOSS_REPO_DIR/.node-version" "$$BOSS_WORKTREE_DIR/.node-version"; \
+		echo "Copied .node-version into $$BOSS_WORKTREE_DIR"; \
+	else \
+		echo "No .node-version in $$BOSS_REPO_DIR — skipping"; \
+	fi
 
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml

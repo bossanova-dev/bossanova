@@ -2,25 +2,9 @@
 
 This file provides instructions and context for AI coding agents working on this project.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
-## Beads Issue Tracker
+## Task Tracking
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+Use the harness's built-in todo tooling (e.g. `TodoWrite` / `TaskCreate`) for in-session task tracking. There is no external issue tracker for this project; persistent follow-ups belong in commit messages, PR descriptions, or GitHub issues.
 
 ## Session Completion
 
@@ -28,26 +12,23 @@ bd close <id>         # Complete work
 
 **MANDATORY WORKFLOW:**
 
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+1. **Run quality gates** (if code changed) — `make`, `make lint`, `make test` must pass
+2. **Commit** — group changes into logical commits with conventional-commit messages
+3. **PUSH TO REMOTE** — this is MANDATORY:
    ```bash
    git pull --rebase
-   bd dolt push
    git push
    git status  # MUST show "up to date with origin"
    ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+4. **Clean up** — clear stashes, prune remote branches
+5. **Verify** — all changes committed AND pushed
+6. **Hand off** — provide context for next session
 
 **CRITICAL RULES:**
 - Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
+- NEVER stop before pushing — that leaves work stranded locally
+- NEVER say "ready to push when you are" — YOU must push
 - If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
 
 
 ## Build & Test
@@ -72,7 +53,7 @@ Bossanova manages multiple Claude Code sessions across git worktrees. The reposi
 - **bossd** (`services/bossd`) — Background daemon handling session lifecycle, git ops, and plugin dispatch over gRPC.
 - **bosso** (`services/bosso`) — Web UI / HTTP server (Go + Vite/React under `services/bosso/web`).
 - **bossalib** (`lib/bossalib`) — Shared Go library (safego, sqlutil, keyringutil, tuidriver, etc.).
-- **plugins** (`plugins/bossd-plugin-*`) — Out-of-process plugins (autopilot, dependabot, linear, repair) that subscribe to bossd events via gRPC.
+- **plugins** (`plugins/bossd-plugin-*`) — Out-of-process plugins (dependabot, linear, repair) that subscribe to bossd events via gRPC.
 - **proto** — Protobuf definitions compiled to Go via `buf`.
 
 Sessions are isolated in git worktrees; plugins react to events (PR creation, CI failures, merge conflicts) and take autonomous actions.

@@ -175,10 +175,10 @@ func TestRenderMutedTrackerLink(t *testing.T) {
 	url := "https://linear.app/team/issue/FRE-1176"
 	// Shorthands for the raw-ANSI envelopes used in the expected strings.
 	const (
-		ms   = "\x1b[38;2;98;98;98;9m"   // muted + strike open
-		msc  = "\x1b[39;29m"             // muted + strike close
-		msu  = "\x1b[38;2;98;98;98;9;4m" // muted + strike + underline open
-		msuc = "\x1b[39;29;24m"          // muted + strike + underline close
+		ms   = "\x1b[38;2;98;98;98;9m"                 // muted + strike open
+		msc  = "\x1b[39;29m"                           // muted + strike close
+		msu  = "\x1b[38;2;98;98;98;58;2;98;98;98;9;4m" // muted + strike + underline (with matching underline color) open
+		msuc = "\x1b[39;59;29;24m"                     // muted + strike + underline close
 	)
 	target := "[FRE-1176]"
 	styledTarget := msu + target + msuc

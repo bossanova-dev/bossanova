@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -32,7 +31,6 @@ type MockDaemon struct {
 	mu            sync.RWMutex
 	repos         []*pb.Repo
 	sessions      []*pb.Session
-	workflows     []*pb.AutopilotWorkflow
 	chats         []*pb.ClaudeChat
 	prs           map[string][]*pb.PRSummary    // keyed by repo ID
 	trackerIssues map[string][]*pb.TrackerIssue // keyed by repo ID
@@ -51,15 +49,6 @@ type MockDaemon struct {
 	// RPC reads from the per-session channel and forwards to the stream.
 	attachEvents map[string]chan *pb.AttachSessionResponse
 	attachCalls  []*pb.AttachSessionRequest
-
-	// ensureTmuxErr, when non-nil, is returned from every EnsureTmuxSession
-	// call. Lets tests exercise AttachView's error path without depending on
-	// tmux behavior inside the PTY harness.
-	ensureTmuxErr error
-
-	// ensureTmuxCalls records every EnsureTmuxSession request so tests can
-	// assert on which session / mode / claude_id the TUI sent.
-	ensureTmuxCalls []*pb.EnsureTmuxSessionRequest
 
 	// validateRepoPathResp, when non-nil, overrides the default ValidateRepoPath
 	// response (IsValid=true). Lets tests exercise RepoAddView's error-path.
@@ -144,13 +133,6 @@ func (m *MockDaemon) AddSession(sess *pb.Session) {
 	m.sessions = append(m.sessions, sess)
 }
 
-// AddWorkflow adds an autopilot workflow to the mock daemon's in-memory store.
-func (m *MockDaemon) AddWorkflow(w *pb.AutopilotWorkflow) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.workflows = append(m.workflows, w)
-}
-
 // AddChat adds a claude chat to the mock daemon's in-memory store.
 func (m *MockDaemon) AddChat(c *pb.ClaudeChat) {
 	m.mu.Lock()
@@ -205,15 +187,6 @@ func (m *MockDaemon) Repos() []*pb.Repo {
 	defer m.mu.RUnlock()
 	out := make([]*pb.Repo, len(m.repos))
 	copy(out, m.repos)
-	return out
-}
-
-// Workflows returns a copy of the current workflows.
-func (m *MockDaemon) Workflows() []*pb.AutopilotWorkflow {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make([]*pb.AutopilotWorkflow, len(m.workflows))
-	copy(out, m.workflows)
 	return out
 }
 
@@ -471,53 +444,6 @@ func (m *MockDaemon) RegisterRepoCalls() []*pb.RegisterRepoRequest {
 	return out
 }
 
-// --- Autopilot RPCs ---
-
-func (m *MockDaemon) ListAutopilotWorkflows(_ context.Context, _ *connect.Request[pb.ListAutopilotWorkflowsRequest]) (*connect.Response[pb.ListAutopilotWorkflowsResponse], error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return connect.NewResponse(&pb.ListAutopilotWorkflowsResponse{Workflows: m.workflows}), nil
-}
-
-func (m *MockDaemon) PauseAutopilot(_ context.Context, req *connect.Request[pb.PauseAutopilotRequest]) (*connect.Response[pb.PauseAutopilotResponse], error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, w := range m.workflows {
-		if w.Id == req.Msg.WorkflowId {
-			w.Status = pb.WorkflowStatus_WORKFLOW_STATUS_PAUSED
-			w.UpdatedAt = timestamppb.Now()
-			return connect.NewResponse(&pb.PauseAutopilotResponse{Workflow: w}), nil
-		}
-	}
-	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workflow %q not found", req.Msg.WorkflowId))
-}
-
-func (m *MockDaemon) ResumeAutopilot(_ context.Context, req *connect.Request[pb.ResumeAutopilotRequest]) (*connect.Response[pb.ResumeAutopilotResponse], error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, w := range m.workflows {
-		if w.Id == req.Msg.WorkflowId {
-			w.Status = pb.WorkflowStatus_WORKFLOW_STATUS_RUNNING
-			w.UpdatedAt = timestamppb.Now()
-			return connect.NewResponse(&pb.ResumeAutopilotResponse{Workflow: w}), nil
-		}
-	}
-	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workflow %q not found", req.Msg.WorkflowId))
-}
-
-func (m *MockDaemon) CancelAutopilot(_ context.Context, req *connect.Request[pb.CancelAutopilotRequest]) (*connect.Response[pb.CancelAutopilotResponse], error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, w := range m.workflows {
-		if w.Id == req.Msg.WorkflowId {
-			w.Status = pb.WorkflowStatus_WORKFLOW_STATUS_CANCELLED
-			w.UpdatedAt = timestamppb.Now()
-			return connect.NewResponse(&pb.CancelAutopilotResponse{Workflow: w}), nil
-		}
-	}
-	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workflow %q not found", req.Msg.WorkflowId))
-}
-
 // --- Chat RPCs ---
 
 func (m *MockDaemon) DeleteChat(_ context.Context, req *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
@@ -687,54 +613,6 @@ func (m *MockDaemon) RecordChat(context.Context, *connect.Request[pb.RecordChatR
 
 func (m *MockDaemon) DeliverVCSEvent(context.Context, *connect.Request[pb.DeliverVCSEventRequest]) (*connect.Response[pb.DeliverVCSEventResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
-}
-
-func (m *MockDaemon) StartAutopilot(context.Context, *connect.Request[pb.StartAutopilotRequest]) (*connect.Response[pb.StartAutopilotResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
-}
-
-func (m *MockDaemon) GetAutopilotStatus(context.Context, *connect.Request[pb.GetAutopilotStatusRequest]) (*connect.Response[pb.GetAutopilotStatusResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
-}
-
-func (m *MockDaemon) StreamAutopilotOutput(context.Context, *connect.Request[pb.StreamAutopilotOutputRequest], *connect.ServerStream[pb.StreamAutopilotOutputResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
-}
-
-func (m *MockDaemon) EnsureTmuxSession(_ context.Context, req *connect.Request[pb.EnsureTmuxSessionRequest]) (*connect.Response[pb.EnsureTmuxSessionResponse], error) {
-	m.mu.Lock()
-	m.ensureTmuxCalls = append(m.ensureTmuxCalls, req.Msg)
-	injectedErr := m.ensureTmuxErr
-	m.mu.Unlock()
-	if injectedErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, injectedErr)
-	}
-	claudeID := req.Msg.ClaudeId
-	if claudeID == "" {
-		claudeID = uuid.New().String()
-	}
-	return connect.NewResponse(&pb.EnsureTmuxSessionResponse{
-		TmuxSessionName: "boss-mock-tmux",
-		ClaudeId:        claudeID,
-	}), nil
-}
-
-// EnsureTmuxSessionCalls returns a copy of every EnsureTmuxSession request
-// recorded by the mock.
-func (m *MockDaemon) EnsureTmuxSessionCalls() []*pb.EnsureTmuxSessionRequest {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make([]*pb.EnsureTmuxSessionRequest, len(m.ensureTmuxCalls))
-	copy(out, m.ensureTmuxCalls)
-	return out
-}
-
-// SetEnsureTmuxError makes every EnsureTmuxSession call return err. Used by
-// tests that exercise AttachView's error path without depending on tmux.
-func (m *MockDaemon) SetEnsureTmuxError(err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ensureTmuxErr = err
 }
 
 func (m *MockDaemon) NotifyAuthChange(_ context.Context, req *connect.Request[pb.NotifyAuthChangeRequest]) (*connect.Response[pb.NotifyAuthChangeResponse], error) {

@@ -9,14 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"errors"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -30,6 +28,7 @@ import (
 	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -63,6 +62,7 @@ type Server struct {
 	worktrees          gitpkg.WorktreeManager
 	provider           vcs.Provider
 	pluginHost         *plugin.Host
+	tmux               *tmux.Client
 	completionNotifier session.SessionCompletionNotifier
 	authNotifier       AuthNotifier
 	logger             zerolog.Logger
@@ -87,6 +87,7 @@ type Config struct {
 	Worktrees          gitpkg.WorktreeManager
 	Provider           vcs.Provider
 	PluginHost         *plugin.Host
+	Tmux               *tmux.Client
 	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
 	AuthNotifier       AuthNotifier                      // optional, nil in local-only mode
 	Logger             zerolog.Logger
@@ -120,6 +121,7 @@ func New(cfg Config) *Server {
 		worktrees:          cfg.Worktrees,
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
+		tmux:               cfg.Tmux,
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
 		logger:             cfg.Logger,
@@ -751,31 +753,10 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		}
 	}
 
-	// Hydrate active workflow display fields.
-	if s.workflows != nil {
-		activeWorkflows, err := s.workflows.ListActiveBySessionIDs(ctx, sessionIDs)
-		if err == nil {
-			// Build map: session ID → best (highest-priority) active workflow.
-			best := make(map[string]*models.Workflow, len(activeWorkflows))
-			for _, w := range activeWorkflows {
-				if existing, ok := best[w.SessionID]; !ok || workflowPriority(w.Status) > workflowPriority(existing.Status) {
-					best[w.SessionID] = w
-				}
-			}
-			for i, sess := range sessions {
-				if w, ok := best[sess.ID]; ok {
-					// Don't show stale workflow status for sessions with merged/closed PRs.
-					if prEntry, hasEntry := entries[sess.ID]; hasEntry &&
-						(prEntry.Status == vcs.DisplayStatusMerged || prEntry.Status == vcs.DisplayStatusClosed) {
-						continue
-					}
-					pbSessions[i].WorkflowDisplayStatus = workflowStatusToProto(w.Status)
-					pbSessions[i].WorkflowDisplayLeg = int32(w.FlightLeg)
-					pbSessions[i].WorkflowDisplayMaxLegs = int32(w.MaxLegs)
-				}
-			}
-		}
-	}
+	// Workflow display status used to be hydrated from the workflows table,
+	// which was populated by the autopilot plugin. With autopilot gone the
+	// table has no writers, so the derivation has been removed. Phase 4 of
+	// the autopilot removal will reintroduce a repair-driven derivation.
 
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
 }
@@ -1251,16 +1232,78 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required"))
 	}
 
-	chat, err := s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
-		SessionID: msg.SessionId,
-		ClaudeID:  msg.ClaudeId,
-		Title:     msg.Title,
-	})
+	// Idempotent: reuse the existing row if one already exists for this
+	// claude_id (resume case), otherwise insert a new one.
+	chat, err := s.claudeChats.GetByClaudeID(ctx, msg.ClaudeId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", err))
+		chat, err = s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
+			SessionID: msg.SessionId,
+			ClaudeID:  msg.ClaudeId,
+			Title:     msg.Title,
+		})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", err))
+		}
+	}
+
+	// Ensure a tmux session is alive to host the chat. The tmux server is
+	// independent of bossd, so this lets the chat survive bossd restarts —
+	// reattaching just reconnects to the existing tmux session.
+	if err := s.ensureChatTmuxSession(ctx, chat, msg.GetResume()); err != nil {
+		s.logger.Warn().Err(err).
+			Str("claudeID", chat.ClaudeID).
+			Msg("failed to ensure tmux session for chat")
+	} else {
+		// Refetch so the response carries the persisted tmux_session_name.
+		if refreshed, refreshErr := s.claudeChats.GetByClaudeID(ctx, chat.ClaudeID); refreshErr == nil {
+			chat = refreshed
+		}
 	}
 
 	return connect.NewResponse(&pb.RecordChatResponse{Chat: claudeChatToProto(chat)}), nil
+}
+
+// ensureChatTmuxSession guarantees that a `tmux` session named per
+// tmux.ChatSessionName exists and is hosting `claude` for the given chat.
+// Idempotent: a no-op if the session is already alive. Persists the resolved
+// name onto the chat row so kill/list paths can find it later.
+func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.ClaudeChat, resume bool) error {
+	if s.tmux == nil || !s.tmux.Available(ctx) {
+		return nil
+	}
+
+	sess, err := s.sessions.Get(ctx, chat.SessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	tmuxName := tmux.ChatSessionName(sess.RepoID, chat.ClaudeID)
+
+	if !s.tmux.HasSession(ctx, tmuxName) {
+		args := []string{"claude"}
+		if resume {
+			args = append(args, "--resume", chat.ClaudeID)
+		} else {
+			args = append(args, "--session-id", chat.ClaudeID)
+		}
+		cfg, _ := config.Load()
+		if cfg.DangerouslySkipPermissions {
+			args = append(args, "--dangerously-skip-permissions")
+		}
+		if err := s.tmux.NewSession(ctx, tmux.NewSessionOpts{
+			Name:    tmuxName,
+			WorkDir: sess.WorktreePath,
+			Command: args,
+		}); err != nil {
+			return fmt.Errorf("new tmux session: %w", err)
+		}
+	}
+
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
+		if err := s.claudeChats.UpdateTmuxSessionName(ctx, chat.ClaudeID, &tmuxName); err != nil {
+			return fmt.Errorf("persist tmux session name: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Server) ListChats(ctx context.Context, req *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
@@ -1468,110 +1511,6 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 	return connect.NewResponse(&pb.GetSessionStatusesResponse{Statuses: statuses}), nil
 }
 
-// --- Tmux Session Management ---
-
-func (s *Server) EnsureTmuxSession(ctx context.Context, req *connect.Request[pb.EnsureTmuxSessionRequest]) (*connect.Response[pb.EnsureTmuxSessionResponse], error) {
-	msg := req.Msg
-	if msg.SessionId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
-	}
-	if msg.Mode != "new" && msg.Mode != "resume" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("mode must be \"new\" or \"resume\""))
-	}
-	if msg.Mode == "resume" && msg.ClaudeId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required for resume mode"))
-	}
-
-	// If a headless daemon-side Claude process is still running for this
-	// session (started by StartSession), stop it first so we don't end up
-	// with two Claude instances working on the same worktree.
-	sess, err := s.sessions.Get(ctx, msg.SessionId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
-	}
-	if sess.ClaudeSessionID != nil && s.claude.IsRunning(*sess.ClaudeSessionID) {
-		if stopErr := s.claude.Stop(*sess.ClaudeSessionID); stopErr != nil {
-			s.logger.Warn().Err(stopErr).
-				Str("session", msg.SessionId).
-				Str("claudeSession", *sess.ClaudeSessionID).
-				Msg("failed to stop headless Claude before starting tmux session")
-		}
-	}
-
-	// Build Claude command based on mode.
-	var claudeID string
-	var command []string
-
-	switch msg.Mode {
-	case "new":
-		claudeID = uuid.New().String()
-		command = []string{"claude", "--session-id", claudeID}
-	case "resume":
-		claudeID = msg.ClaudeId
-		command = []string{"claude", "--resume", claudeID}
-	}
-
-	// Append --dangerously-skip-permissions when the global config enables it.
-	cfg, cfgErr := config.Load()
-	if cfgErr != nil {
-		s.logger.Warn().Err(cfgErr).Msg("failed to load config for dangerously-skip-permissions check")
-	}
-	if cfg.DangerouslySkipPermissions {
-		command = append(command, "--dangerously-skip-permissions")
-	}
-
-	// For "new" chats, always create a new tmux session (without killing others).
-	// For "resume", reuse the existing tmux session for that chat if alive.
-	forceNew := msg.Mode == "new"
-	tmuxName, err := s.lifecycle.EnsureTmuxSession(ctx, msg.SessionId, claudeID, command, forceNew)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("ensure tmux session: %w", err))
-	}
-
-	// Record the new chat in the DB only after tmux session creation succeeds,
-	// to avoid orphaned chat records if tmux creation fails.
-	if msg.Mode == "new" {
-		chat, createErr := s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
-			SessionID: msg.SessionId,
-			ClaudeID:  claudeID,
-			Title:     "New chat",
-		})
-		if createErr != nil {
-			// Clean up the tmux session to avoid an orphaned process.
-			s.lifecycle.KillTmuxByName(ctx, msg.SessionId, tmuxName)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", createErr))
-		}
-		// Store the tmux session name on the chat record.
-		if err := s.claudeChats.UpdateTmuxSessionName(ctx, chat.ClaudeID, &tmuxName); err != nil {
-			s.logger.Warn().Err(err).
-				Str("claudeID", claudeID).
-				Msg("failed to store tmux session name on new chat")
-		}
-	}
-
-	// Update ClaudeSessionID so that StopSession, ArchiveSession, and the
-	// liveness checker can track the interactive Claude running in tmux.
-	cid := claudeID
-	cidPtr := &cid
-	if _, err := s.sessions.Update(ctx, msg.SessionId, db.UpdateSessionParams{
-		ClaudeSessionID: &cidPtr,
-	}); err != nil {
-		s.logger.Warn().Err(err).
-			Str("session", msg.SessionId).
-			Msg("failed to update ClaudeSessionID for tmux session")
-	}
-
-	// Register with the tmux status poller so it starts tracking this chat.
-	if s.tmuxPoller != nil {
-		s.tmuxPoller.RegisterChat(claudeID)
-	}
-
-	return connect.NewResponse(&pb.EnsureTmuxSessionResponse{
-		TmuxSessionName: tmuxName,
-		ClaudeId:        claudeID,
-	}), nil
-}
-
 // --- Context Resolution ---
 
 func (s *Server) ResolveContext(ctx context.Context, req *connect.Request[pb.ResolveContextRequest]) (*connect.Response[pb.ResolveContextResponse], error) {
@@ -1622,293 +1561,6 @@ func (s *Server) ResolveContext(ctx context.Context, req *connect.Request[pb.Res
 	return connect.NewResponse(resp), nil
 }
 
-// --- Autopilot ---
-
-func (s *Server) StartAutopilot(ctx context.Context, req *connect.Request[pb.StartAutopilotRequest]) (*connect.Response[pb.StartAutopilotResponse], error) {
-	msg := req.Msg
-	if msg.PlanPath == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("plan_path is required"))
-	}
-
-	// Resolve repo and session context from working directory.
-	repoID, sessionID, err := s.resolveAutopilotContext(ctx, msg.WorkingDirectory)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	// Resolve worktree root (needed for both leg counting and config).
-	var rootDir string
-	if sessionID != "" {
-		if sess, err := s.sessions.Get(ctx, sessionID); err == nil && sess.WorktreePath != "" {
-			rootDir = sess.WorktreePath
-		}
-	}
-	if rootDir == "" {
-		if repo, err := s.repos.Get(ctx, repoID); err == nil {
-			rootDir = repo.LocalPath
-		}
-	}
-
-	// Resolve the plan file so we can fail fast on a bad path and use the
-	// resolved location to auto-detect the flight leg count. We check the
-	// session worktree first, then fall back to the CLI's working directory
-	// (handles worktree path mismatch).
-	planAbs, err := resolvePlanFile(msg.PlanPath, rootDir, msg.WorkingDirectory)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
-	}
-
-	// Auto-detect max legs from plan file if not explicitly set.
-	if msg.MaxLegs == 0 {
-		if count := countPlanFlightLegs(planAbs); count > 0 {
-			msg.MaxLegs = count
-			s.logger.Debug().
-				Str("plan", planAbs).
-				Int32("count", count).
-				Msg("auto-detected flight leg count from plan file")
-		}
-	}
-
-	// Build config JSON with work_dir for the plugin.
-	configJSON := fmt.Sprintf(`{"work_dir":%q}`, rootDir)
-
-	// Find the workflow service plugin.
-	wfService := s.getWorkflowService()
-	if wfService == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
-	}
-
-	// Delegate to the plugin.
-	resp, err := wfService.StartWorkflow(ctx, &pb.StartWorkflowRequest{
-		PlanPath:    msg.PlanPath,
-		SessionId:   sessionID,
-		RepoId:      repoID,
-		MaxLegs:     msg.MaxLegs,
-		ConfirmLand: msg.ConfirmLand,
-		ConfigJson:  configJSON,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("start workflow: %w", err))
-	}
-
-	// Read the created workflow from the store.
-	w, err := s.workflows.Get(ctx, resp.GetWorkflowId())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
-	}
-
-	return connect.NewResponse(&pb.StartAutopilotResponse{
-		Workflow: autopilotWorkflowToProto(w),
-	}), nil
-}
-
-func (s *Server) PauseAutopilot(ctx context.Context, req *connect.Request[pb.PauseAutopilotRequest]) (*connect.Response[pb.PauseAutopilotResponse], error) {
-	if req.Msg.WorkflowId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
-	}
-
-	wfService := s.getWorkflowService()
-	if wfService == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
-	}
-
-	if _, err := wfService.PauseWorkflow(ctx, req.Msg.WorkflowId); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pause workflow: %w", err))
-	}
-
-	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
-	}
-
-	return connect.NewResponse(&pb.PauseAutopilotResponse{
-		Workflow: autopilotWorkflowToProto(w),
-	}), nil
-}
-
-func (s *Server) ResumeAutopilot(ctx context.Context, req *connect.Request[pb.ResumeAutopilotRequest]) (*connect.Response[pb.ResumeAutopilotResponse], error) {
-	if req.Msg.WorkflowId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
-	}
-
-	wfService := s.getWorkflowService()
-	if wfService == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
-	}
-
-	if _, err := wfService.ResumeWorkflow(ctx, req.Msg.WorkflowId); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resume workflow: %w", err))
-	}
-
-	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
-	}
-
-	return connect.NewResponse(&pb.ResumeAutopilotResponse{
-		Workflow: autopilotWorkflowToProto(w),
-	}), nil
-}
-
-func (s *Server) CancelAutopilot(ctx context.Context, req *connect.Request[pb.CancelAutopilotRequest]) (*connect.Response[pb.CancelAutopilotResponse], error) {
-	if req.Msg.WorkflowId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
-	}
-
-	wfService := s.getWorkflowService()
-	if wfService == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("autopilot plugin not available"))
-	}
-
-	if _, err := wfService.CancelWorkflow(ctx, req.Msg.WorkflowId); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("cancel workflow: %w", err))
-	}
-
-	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get workflow: %w", err))
-	}
-
-	return connect.NewResponse(&pb.CancelAutopilotResponse{
-		Workflow: autopilotWorkflowToProto(w),
-	}), nil
-}
-
-func (s *Server) GetAutopilotStatus(ctx context.Context, req *connect.Request[pb.GetAutopilotStatusRequest]) (*connect.Response[pb.GetAutopilotStatusResponse], error) {
-	if req.Msg.WorkflowId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
-	}
-
-	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workflow not found: %w", err))
-	}
-
-	return connect.NewResponse(&pb.GetAutopilotStatusResponse{
-		Workflow: autopilotWorkflowToProto(w),
-	}), nil
-}
-
-func (s *Server) ListAutopilotWorkflows(ctx context.Context, req *connect.Request[pb.ListAutopilotWorkflowsRequest]) (*connect.Response[pb.ListAutopilotWorkflowsResponse], error) {
-	var workflows []*models.Workflow
-	var err error
-
-	if req.Msg.IncludeAll {
-		workflows, err = s.workflows.List(ctx)
-	} else {
-		// Show only active workflows (running + paused) by default.
-		running, runErr := s.workflows.ListByStatus(ctx, string(models.WorkflowStatusRunning))
-		if runErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list running workflows: %w", runErr))
-		}
-		paused, pauseErr := s.workflows.ListByStatus(ctx, string(models.WorkflowStatusPaused))
-		if pauseErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list paused workflows: %w", pauseErr))
-		}
-		pending, pendErr := s.workflows.ListByStatus(ctx, string(models.WorkflowStatusPending))
-		if pendErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list pending workflows: %w", pendErr))
-		}
-		workflows = append(workflows, running...)
-		workflows = append(workflows, paused...)
-		workflows = append(workflows, pending...)
-	}
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workflows: %w", err))
-	}
-
-	pbWorkflows := make([]*pb.AutopilotWorkflow, len(workflows))
-	for i, w := range workflows {
-		pbWorkflows[i] = autopilotWorkflowToProto(w)
-	}
-
-	return connect.NewResponse(&pb.ListAutopilotWorkflowsResponse{
-		Workflows: pbWorkflows,
-	}), nil
-}
-
-func (s *Server) StreamAutopilotOutput(ctx context.Context, req *connect.Request[pb.StreamAutopilotOutputRequest], stream *connect.ServerStream[pb.StreamAutopilotOutputResponse]) error {
-	if req.Msg.WorkflowId == "" {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("workflow_id is required"))
-	}
-
-	// Get the workflow to find its session.
-	w, err := s.workflows.Get(ctx, req.Msg.WorkflowId)
-	if err != nil {
-		return connect.NewError(connect.CodeNotFound, fmt.Errorf("workflow not found: %w", err))
-	}
-
-	// Send initial status.
-	if err := stream.Send(&pb.StreamAutopilotOutputResponse{
-		Event: &pb.StreamAutopilotOutputResponse_StatusUpdate{
-			StatusUpdate: autopilotWorkflowToProto(w),
-		},
-	}); err != nil {
-		return err
-	}
-
-	// Find the Claude session for this workflow's boss session.
-	sess, err := s.sessions.Get(ctx, w.SessionID)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
-	}
-
-	if sess.ClaudeSessionID == nil || !s.claude.IsRunning(*sess.ClaudeSessionID) {
-		// No active Claude process — send final status and return.
-		w, _ = s.workflows.Get(ctx, req.Msg.WorkflowId)
-		return stream.Send(&pb.StreamAutopilotOutputResponse{
-			Event: &pb.StreamAutopilotOutputResponse_StatusUpdate{
-				StatusUpdate: autopilotWorkflowToProto(w),
-			},
-		})
-	}
-
-	claudeSessionID := *sess.ClaudeSessionID
-
-	// Send existing ring buffer contents as initial burst.
-	history := s.claude.History(claudeSessionID)
-	for _, line := range history {
-		if err := stream.Send(&pb.StreamAutopilotOutputResponse{
-			Event: &pb.StreamAutopilotOutputResponse_OutputLine{
-				OutputLine: &pb.OutputLine{
-					Text:      line.Text,
-					Timestamp: timestamppb.New(line.Timestamp),
-				},
-			},
-		}); err != nil {
-			return err
-		}
-	}
-
-	// Subscribe to new output lines.
-	ch, err := s.claude.Subscribe(ctx, claudeSessionID)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe: %w", err))
-	}
-
-	// Stream new lines until process exits or client disconnects.
-	for line := range ch {
-		if err := stream.Send(&pb.StreamAutopilotOutputResponse{
-			Event: &pb.StreamAutopilotOutputResponse_OutputLine{
-				OutputLine: &pb.OutputLine{
-					Text:      line.Text,
-					Timestamp: timestamppb.New(line.Timestamp),
-				},
-			},
-		}); err != nil {
-			return err
-		}
-	}
-
-	// Process exited — send final workflow status.
-	w, _ = s.workflows.Get(ctx, req.Msg.WorkflowId)
-	return stream.Send(&pb.StreamAutopilotOutputResponse{
-		Event: &pb.StreamAutopilotOutputResponse_StatusUpdate{
-			StatusUpdate: autopilotWorkflowToProto(w),
-		},
-	})
-}
-
 // --- Auth Change Notification ---
 
 func (s *Server) NotifyAuthChange(ctx context.Context, req *connect.Request[pb.NotifyAuthChangeRequest]) (*connect.Response[pb.NotifyAuthChangeResponse], error) {
@@ -1943,53 +1595,6 @@ func (s *Server) NotifyAuthChange(ctx context.Context, req *connect.Request[pb.N
 	return connect.NewResponse(&pb.NotifyAuthChangeResponse{}), nil
 }
 
-// resolveAutopilotContext resolves a working directory into a repo ID and session ID.
-func (s *Server) resolveAutopilotContext(ctx context.Context, workingDir string) (repoID, sessionID string, err error) {
-	if workingDir == "" {
-		return "", "", fmt.Errorf("working_directory is required")
-	}
-
-	absWD, err := filepath.Abs(workingDir)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve path: %w", err)
-	}
-
-	// Check repos and sessions for a match.
-	repos, err := s.repos.List(ctx)
-	if err != nil {
-		return "", "", fmt.Errorf("list repos: %w", err)
-	}
-
-	for _, repo := range repos {
-		sessions, err := s.sessions.List(ctx, repo.ID)
-		if err != nil {
-			continue
-		}
-		for _, sess := range sessions {
-			if sess.WorktreePath != "" && isSubdirOf(absWD, sess.WorktreePath) {
-				return repo.ID, sess.ID, nil
-			}
-		}
-		if isSubdirOf(absWD, repo.LocalPath) {
-			return repo.ID, "", nil
-		}
-	}
-
-	return "", "", fmt.Errorf("working directory not inside any registered repo: %s", workingDir)
-}
-
-// getWorkflowService returns the first available workflow service plugin.
-func (s *Server) getWorkflowService() plugin.WorkflowService {
-	if s.pluginHost == nil {
-		return nil
-	}
-	services := s.pluginHost.GetWorkflowServices()
-	if len(services) == 0 {
-		return nil
-	}
-	return services[0]
-}
-
 // isSubdirOf checks if child is the same as or a subdirectory of parent.
 func isSubdirOf(child, parent string) bool {
 	// Clean both paths for consistent comparison.
@@ -2003,68 +1608,4 @@ func isSubdirOf(child, parent string) bool {
 	// Ensure parent ends with separator for prefix matching.
 	parentPrefix := parent + string(filepath.Separator)
 	return len(child) > len(parentPrefix) && child[:len(parentPrefix)] == parentPrefix
-}
-
-// resolvePlanFile returns the absolute path to planPath by joining it with
-// each candidate directory in order. Returns an error if the file does not
-// exist (or is a directory) under any candidate.
-func resolvePlanFile(planPath string, candidates ...string) (string, error) {
-	if planPath == "" {
-		return "", fmt.Errorf("plan_path is required")
-	}
-	for _, dir := range candidates {
-		if dir == "" {
-			continue
-		}
-		abs := filepath.Join(dir, planPath)
-		info, err := os.Stat(abs)
-		if err == nil && !info.IsDir() {
-			return abs, nil
-		}
-	}
-	return "", fmt.Errorf("plan file not found: %s", planPath)
-}
-
-// countPlanFlightLegs counts "## Flight Leg" headings and [HANDOFF] markers
-// in a plan file. Returns -1 if the file can't be read, 1 if the file is
-// readable but contains no markers (single-leg plan), or N for N markers.
-// [HANDOFF] markers are heading lines (starting with #) that contain
-// "[handoff]" (case-insensitive). The result is max(flightLegs, handoffs).
-// legHeadingRe matches markdown headings where the text starts with
-// "Leg N" or "Flight Leg N". Sub-headings that merely reference a leg
-// number (e.g. "### Post-Flight Checks for Flight Leg 1") are excluded.
-//
-//	## Flight Leg 1: Setup
-//	### Leg 2: Build
-//	#### Leg  3 — Polish
-var legHeadingRe = regexp.MustCompile(`(?i)^#{1,6}\s+(?:flight\s+)?leg\s+\d+`)
-
-func countPlanFlightLegs(planPath string) int32 {
-	f, err := os.Open(planPath)
-	if err != nil {
-		return -1
-	}
-	defer func() { _ = f.Close() }()
-
-	var flightLegCount, handoffCount int32
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		lower := strings.ToLower(line)
-		if legHeadingRe.MatchString(line) {
-			flightLegCount++
-		}
-		if strings.HasPrefix(line, "#") && strings.Contains(lower, "[handoff]") {
-			handoffCount++
-		}
-	}
-
-	count := flightLegCount
-	if handoffCount > count {
-		count = handoffCount
-	}
-	if count == 0 {
-		return 1
-	}
-	return count
 }

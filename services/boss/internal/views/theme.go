@@ -69,9 +69,12 @@ var cursorColumn = table.Column{Title: " ", Width: 1}
 // bold+faint header, left-padded cells, bold blue foreground for selected row.
 func bossTableStyles() table.Styles {
 	return table.Styles{
-		Header:   lipgloss.NewStyle().Bold(true).Faint(true).Padding(0, 0, 0, 1),
-		Cell:     lipgloss.NewStyle().Padding(0, 0, 0, 1),
-		Selected: lipgloss.NewStyle().Bold(true).Foreground(colorSelected),
+		Header: lipgloss.NewStyle().Bold(true).Faint(true).Padding(0, 0, 0, 1),
+		Cell:   lipgloss.NewStyle().Padding(0, 0, 0, 1),
+		// UnderlineColor matches the foreground so that links inside the row
+		// (which emit raw SGR 4 underline ANSI) inherit the highlight color
+		// instead of the terminal's default underline color.
+		Selected: lipgloss.NewStyle().Bold(true).Foreground(colorSelected).UnderlineColor(colorSelected),
 	}
 }
 

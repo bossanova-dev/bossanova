@@ -2582,15 +2582,16 @@ func (x *AttentionStatus) GetSince() *timestamppb.Timestamp {
 
 // ClaudeChat represents a Claude Code conversation associated with a session.
 type ClaudeChat struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	ClaudeId      string                 `protobuf:"bytes,3,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"` // Claude Code session UUID
-	Title         string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`                       // First user prompt or "New chat"
-	DaemonId      string                 `protobuf:"bytes,5,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"` // Originating daemon (empty = local)
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	SessionId       string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	ClaudeId        string                 `protobuf:"bytes,3,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"` // Claude Code session UUID
+	Title           string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`                       // First user prompt or "New chat"
+	DaemonId        string                 `protobuf:"bytes,5,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"` // Originating daemon (empty = local)
+	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	TmuxSessionName string                 `protobuf:"bytes,7,opt,name=tmux_session_name,json=tmuxSessionName,proto3" json:"tmux_session_name,omitempty"` // Empty if no tmux session is hosting this chat
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ClaudeChat) Reset() {
@@ -2663,6 +2664,13 @@ func (x *ClaudeChat) GetCreatedAt() *timestamppb.Timestamp {
 		return x.CreatedAt
 	}
 	return nil
+}
+
+func (x *ClaudeChat) GetTmuxSessionName() string {
+	if x != nil {
+		return x.TmuxSessionName
+	}
+	return ""
 }
 
 var File_bossanova_v1_models_proto protoreflect.FileDescriptor
@@ -2842,7 +2850,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fneeds_attention\x18\x01 \x01(\bR\x0eneedsAttention\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.bossanova.v1.AttentionReasonR\x06reason\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x120\n" +
-	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xc6\x01\n" +
+	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xf2\x01\n" +
 	"\n" +
 	"ClaudeChat\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -2852,7 +2860,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x05title\x18\x04 \x01(\tR\x05title\x12\x1b\n" +
 	"\tdaemon_id\x18\x05 \x01(\tR\bdaemonId\x129\n" +
 	"\n" +
-	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt*\xb6\x03\n" +
+	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12*\n" +
+	"\x11tmux_session_name\x18\a \x01(\tR\x0ftmuxSessionName*\xb6\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12!\n" +

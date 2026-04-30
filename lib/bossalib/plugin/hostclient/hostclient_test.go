@@ -3,13 +3,11 @@ package hostclient
 import (
 	"context"
 	"errors"
-	"io"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
-	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
 	"go.uber.org/goleak"
 	"google.golang.org/grpc"
@@ -60,7 +58,7 @@ func TestDirectClientAppliesDefaultTimeout(t *testing.T) {
 	defer cleanup()
 
 	start := time.Now()
-	_, err := c.CreateWorkflow(context.Background(), &bossanovav1.CreateWorkflowRequest{})
+	_, err := c.ListSessions(context.Background())
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -84,7 +82,7 @@ func TestDirectClientHonorsCallerDeadline(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := c.CreateWorkflow(ctx, &bossanovav1.CreateWorkflowRequest{})
+	_, err := c.ListSessions(ctx)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -92,33 +90,6 @@ func TestDirectClientHonorsCallerDeadline(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("caller deadline ignored; elapsed %v", elapsed)
-	}
-}
-
-func TestStreamAttemptOutputHasNoDefaultTimeout(t *testing.T) {
-	t.Parallel()
-	// A short DefaultRPCTimeout would prematurely close a stream if the exemption
-	// were missing. The caller-controlled ctx must be the only cancellation signal.
-	c, cleanup := newBufconnDirectClient(t, WithTimeout(50*time.Millisecond))
-	defer cleanup()
-
-	stream, err := c.StreamAttemptOutput(context.Background(), "attempt-1")
-	if err != nil {
-		t.Fatalf("opening stream: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := stream.Recv()
-		done <- err
-	}()
-
-	// If the default timeout applied, Recv would error within ~50ms.
-	select {
-	case err := <-done:
-		t.Fatalf("stream closed unexpectedly: %v", err)
-	case <-time.After(250 * time.Millisecond):
-		// Pass: the stream is still open despite the client's 50ms unary timeout.
 	}
 }
 
@@ -209,7 +180,7 @@ func TestNewEagerClientSurfacesDialError(t *testing.T) {
 	}
 
 	// Any subsequent RPC must return that same error instead of blocking.
-	_, err := c.CreateWorkflow(context.Background(), &bossanovav1.CreateWorkflowRequest{})
+	_, err := c.ListSessions(context.Background())
 	if err == nil {
 		t.Fatal("expected RPC error after failed dial")
 	}
@@ -229,7 +200,7 @@ func TestTimeoutErrorIsDeadlineExceeded(t *testing.T) {
 	c, cleanup := newBufconnDirectClient(t, WithTimeout(80*time.Millisecond))
 	defer cleanup()
 
-	_, err := c.CreateWorkflow(context.Background(), &bossanovav1.CreateWorkflowRequest{})
+	_, err := c.ListSessions(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -239,79 +210,5 @@ func TestTimeoutErrorIsDeadlineExceeded(t *testing.T) {
 		!strings.Contains(err.Error(), "DeadlineExceeded") &&
 		!strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("expected deadline exceeded, got %v", err)
-	}
-}
-
-// fakeClientStream is a stub grpc.ClientStream that returns a configurable
-// error and message from RecvMsg. Other ClientStream methods are unused.
-type fakeClientStream struct {
-	grpc.ClientStream
-	recvErr  error
-	recvLine string
-}
-
-func (f *fakeClientStream) RecvMsg(m any) error {
-	if f.recvErr != nil {
-		return f.recvErr
-	}
-	if resp, ok := m.(*bossanovav1.StreamAttemptOutputResponse); ok {
-		resp.Line = f.recvLine
-	}
-	return nil
-}
-
-// TestAttemptOutputStreamRecv_EOF verifies that an io.EOF from the underlying
-// gRPC stream is propagated as io.EOF.
-// Catches mutation: err != nil → err == nil (line 392) and
-// err == io.EOF → err != io.EOF (line 393).
-func TestAttemptOutputStreamRecv_EOF(t *testing.T) {
-	t.Parallel()
-	s := &attemptOutputStream{stream: &fakeClientStream{recvErr: io.EOF}}
-
-	line, err := s.Recv()
-	if !errors.Is(err, io.EOF) {
-		t.Errorf("expected io.EOF, got %v", err)
-	}
-	if line != "" {
-		t.Errorf("expected empty line on EOF, got %q", line)
-	}
-}
-
-// TestAttemptOutputStreamRecv_OtherError verifies non-EOF errors are returned
-// verbatim (not coerced to io.EOF).
-// Catches mutation: err == io.EOF → err != io.EOF on line 393.
-func TestAttemptOutputStreamRecv_OtherError(t *testing.T) {
-	t.Parallel()
-	wantErr := errors.New("transport closed")
-	s := &attemptOutputStream{stream: &fakeClientStream{recvErr: wantErr}}
-
-	line, err := s.Recv()
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if errors.Is(err, io.EOF) {
-		t.Errorf("non-EOF error must not be coerced to io.EOF; got %v", err)
-	}
-	if !errors.Is(err, wantErr) {
-		t.Errorf("expected wrapped error %v, got %v", wantErr, err)
-	}
-	if line != "" {
-		t.Errorf("expected empty line on error, got %q", line)
-	}
-}
-
-// TestAttemptOutputStreamRecv_Success verifies the happy path: a successful
-// RecvMsg returns the message Line with no error.
-// Catches mutation: err != nil → err == nil on line 392 (would return error on success).
-func TestAttemptOutputStreamRecv_Success(t *testing.T) {
-	t.Parallel()
-	s := &attemptOutputStream{stream: &fakeClientStream{recvLine: "hello world"}}
-
-	line, err := s.Recv()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if line != "hello world" {
-		t.Errorf("expected %q, got %q", "hello world", line)
 	}
 }

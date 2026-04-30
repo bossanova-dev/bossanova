@@ -207,7 +207,7 @@ func (c *RemoteClient) EmptyTrash(_ context.Context, _ *pb.EmptyTrashRequest) (i
 
 // --- Claude Chat Tracking (local only) ---
 
-func (c *RemoteClient) RecordChat(_ context.Context, _, _, _ string) (*pb.ClaudeChat, error) {
+func (c *RemoteClient) RecordChat(_ context.Context, _, _, _ string, _ bool) (*pb.ClaudeChat, error) {
 	return nil, errLocalOnly("RecordChat")
 }
 
@@ -221,12 +221,6 @@ func (c *RemoteClient) UpdateChatTitle(_ context.Context, _, _ string) error {
 
 func (c *RemoteClient) DeleteChat(_ context.Context, _ string) error {
 	return errLocalOnly("DeleteChat")
-}
-
-// --- Tmux Session Management (local only) ---
-
-func (c *RemoteClient) EnsureTmuxSession(_ context.Context, _, _, _ string) (string, string, error) {
-	return "", "", errLocalOnly("EnsureTmuxSession")
 }
 
 // --- Chat Status (local only) ---
@@ -247,36 +241,6 @@ func (c *RemoteClient) GetSessionStatuses(_ context.Context, _ []string) ([]*pb.
 
 func (c *RemoteClient) NotifyAuthChange(_ context.Context, _ string) error {
 	return nil // no-op in remote mode
-}
-
-// --- Autopilot Workflows (local only) ---
-
-func (c *RemoteClient) StartAutopilot(_ context.Context, _ *pb.StartAutopilotRequest) (*pb.AutopilotWorkflow, error) {
-	return nil, errLocalOnly("StartAutopilot")
-}
-
-func (c *RemoteClient) PauseAutopilot(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
-	return nil, errLocalOnly("PauseAutopilot")
-}
-
-func (c *RemoteClient) ResumeAutopilot(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
-	return nil, errLocalOnly("ResumeAutopilot")
-}
-
-func (c *RemoteClient) CancelAutopilot(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
-	return nil, errLocalOnly("CancelAutopilot")
-}
-
-func (c *RemoteClient) GetAutopilotStatus(_ context.Context, _ string) (*pb.AutopilotWorkflow, error) {
-	return nil, errLocalOnly("GetAutopilotStatus")
-}
-
-func (c *RemoteClient) ListAutopilotWorkflows(_ context.Context, _ *pb.ListAutopilotWorkflowsRequest) ([]*pb.AutopilotWorkflow, error) {
-	return nil, errLocalOnly("ListAutopilotWorkflows")
-}
-
-func (c *RemoteClient) StreamAutopilotOutput(_ context.Context, _ string) (AutopilotOutputStream, error) {
-	return nil, errLocalOnly("StreamAutopilotOutput")
 }
 
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.

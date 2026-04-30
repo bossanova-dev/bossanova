@@ -416,6 +416,7 @@ func TestE2E_Dependabot_CreateSessionForMajorBump(t *testing.T) {
 	}
 	if mapping == nil {
 		t.Fatal("expected task mapping to exist for CREATE_SESSION task")
+		return
 	}
 	if mapping.PluginName != "dependabot" {
 		t.Errorf("mapping PluginName = %q, want %q", mapping.PluginName, "dependabot")

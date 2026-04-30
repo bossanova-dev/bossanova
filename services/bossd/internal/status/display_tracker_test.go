@@ -15,6 +15,7 @@ func TestDisplayTracker_Set_and_Get(t *testing.T) {
 	e := tr.Get("sess-1")
 	if e == nil {
 		t.Fatal("expected entry, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusChecking {
 		t.Errorf("Status = %d, want %d", e.Status, vcs.DisplayStatusChecking)
@@ -43,6 +44,7 @@ func TestDisplayTracker_Set_Overwrites(t *testing.T) {
 	e := tr.Get("sess-1")
 	if e == nil {
 		t.Fatal("expected entry, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusMerged {
 		t.Errorf("Status = %d, want %d", e.Status, vcs.DisplayStatusMerged)

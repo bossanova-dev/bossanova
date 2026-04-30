@@ -17,6 +17,7 @@ func TestUpdate_and_Get(t *testing.T) {
 	e := tr.Get("chat-1")
 	if e == nil {
 		t.Fatal("expected entry, got nil")
+		return
 	}
 	if e.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Errorf("expected WORKING, got %v", e.Status)

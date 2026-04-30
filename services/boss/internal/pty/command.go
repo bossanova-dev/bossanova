@@ -16,11 +16,26 @@ import (
 const detachByte = 0x1d      // Ctrl+]
 const detachByteCtrlX = 0x18 // Ctrl+X
 
-// ctrlRBracketCSIu is the kitty keyboard protocol encoding of Ctrl+].
-var ctrlRBracketCSIu = []byte("\x1b[93;5u")
-
-// ctrlXCSIu is the kitty keyboard protocol encoding of Ctrl+X (codepoint 120, modifier 5=Ctrl).
-var ctrlXCSIu = []byte("\x1b[120;5u")
+// detachSequences lists every byte sequence we treat as "user pressed
+// Ctrl+X / Ctrl+]". The same key can arrive in several forms depending on
+// what the inner TUI (Claude Code) negotiated with the user's real
+// terminal:
+//
+//   - Raw control byte (0x18 / 0x1d) when no enhanced keyboard mode is
+//     active.
+//   - kitty keyboard protocol: CSI codepoint;modifier u — "\x1b[120;5u"
+//     for Ctrl+x, "\x1b[93;5u" for Ctrl+].
+//   - xterm modifyOtherKeys=2: CSI 27;modifier;codepoint ~ — Claude Code
+//     enables this when it boots, so on a fresh attach Ctrl+X arrives as
+//     "\x1b[27;5;120~".
+//
+// Any of these in the inbound chunk triggers detach.
+var detachSequences = [][]byte{
+	[]byte("\x1b[120;5u"),    // kitty Ctrl+x
+	[]byte("\x1b[93;5u"),     // kitty Ctrl+]
+	[]byte("\x1b[27;5;120~"), // modifyOtherKeys=2 Ctrl+x
+	[]byte("\x1b[27;5;93~"),  // modifyOtherKeys=2 Ctrl+]
+}
 
 // PTYCommand implements bubbletea's ExecCommand interface.
 // It proxies I/O between the real terminal and a PTY-hosted process,
@@ -155,10 +170,15 @@ func (c *PTYCommand) Run() error {
 						}
 					}
 
-					// Check for CSI u encodings (kitty protocol).
-					if bytes.Contains(data, ctrlXCSIu) || bytes.Contains(data, ctrlRBracketCSIu) {
-						close(detachCh)
-						return
+					// Check for any of the encoded forms (kitty CSI-u or
+					// xterm modifyOtherKeys=2). Claude Code enables one of
+					// these on attach, so the raw byte path above won't
+					// fire on a real terminal.
+					for _, seq := range detachSequences {
+						if bytes.Contains(data, seq) {
+							close(detachCh)
+							return
+						}
 					}
 
 					_ = proc.WriteInput(data)

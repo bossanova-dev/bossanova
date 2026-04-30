@@ -179,6 +179,7 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 	entry := tracker.Get(claudeID)
 	if entry == nil {
 		t.Fatal("expected entry after poll")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
 		t.Errorf("expected QUESTION, got %v", entry.Status)
@@ -211,6 +212,7 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	entry := tracker.Get(claudeID)
 	if entry == nil {
 		t.Fatal("expected entry after poll")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Errorf("expected WORKING, got %v", entry.Status)
@@ -252,6 +254,7 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	entry := tracker.Get(claudeID)
 	if entry == nil {
 		t.Fatal("expected entry after poll")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
 		t.Errorf("expected IDLE, got %v", entry.Status)
@@ -334,6 +337,7 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 	entry := tracker.Get(claudeID)
 	if entry == nil {
 		t.Fatal("expected entry after bootstrap")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
 		t.Errorf("expected IDLE, got %v", entry.Status)
@@ -373,6 +377,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	entry := tracker.Get(claudeID)
 	if entry == nil {
 		t.Fatal("expected entry after bootstrap")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
 		t.Errorf("expected QUESTION, got %v", entry.Status)
@@ -431,6 +436,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 	entry := tracker.Get(claudeID)
 	if entry == nil {
 		t.Fatal("expected entry after bootstrap")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Errorf("expected WORKING (question suppressed, user already answered), got %v", entry.Status)

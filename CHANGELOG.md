@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.0](https://github.com/recurser/bossanova/compare/v1.11.0...v1.12.0) (2026-04-30)
+
+### Features
+
+* **bossd,boss:** host interactive chats in daemon-owned tmux sessions ([fa289fd](https://github.com/recurser/bossanova/commit/fa289fdae1c6912ae975bf3f8fbf6b98c1307707)), closes [#179](https://github.com/recurser/bossanova/issues/179)
+* **global:** [[#179](https://github.com/recurser/bossanova/issues/179)] remove autopilot plugin and beads/bd integration ([e2c2ef8](https://github.com/recurser/bossanova/commit/e2c2ef8b2473a5e7a062c360c84348712a2e9ccf))
+* **repair:** [[#179](https://github.com/recurser/bossanova/issues/179)] restore repair plugin execution via StartClaudeRun/WaitClaudeRun ([2148e2e](https://github.com/recurser/bossanova/commit/2148e2ec1345f87ff42df64fd60dba42df103e78))
+* **web:** [[#181](https://github.com/recurser/bossanova/issues/181)] redesign with full-screen chat terminal + mobile layout + breadcrumbs ([f3b95b4](https://github.com/recurser/bossanova/commit/f3b95b40c4ba5ed64e0a3da06589421210e51d6e))
+
+### Bug Fixes
+
+* **bossd:** [[#179](https://github.com/recurser/bossanova/issues/179)] satisfy SA5011 in remaining test nil checks ([21d5dcf](https://github.com/recurser/bossanova/commit/21d5dcfdc2dd0f539949371f5c352a66c56d2a72))
+* **bossd:** [[#179](https://github.com/recurser/bossanova/issues/179)] satisfy SA5011 in test nil checks ([036ea69](https://github.com/recurser/bossanova/commit/036ea698a4f7d00ddab41a5c0503ffd9e80e07b9))
+* **bossd:** [[#179](https://github.com/recurser/bossanova/issues/179)] satisfy SA5011 in tmux_poller test nil checks ([8f8a9c6](https://github.com/recurser/bossanova/commit/8f8a9c6c7e2b2c95dc09cfb89654547097294e09))
+* **bossd:** [[#181](https://github.com/recurser/bossanova/issues/181)] tmux multi-client window-size policy for boss TUI + web ([4120c4c](https://github.com/recurser/bossanova/commit/4120c4c1a58f0b05c86198bb8fbe819eb96453b5))
+* **bossd:** aggregate chat status across all chats when computing session display label ([61d69d2](https://github.com/recurser/bossanova/commit/61d69d2eb86356306ba0b39abdf755395a9e450d))
+* **bossd:** break auth-loop log spam and self-heal from external boss login ([d0075a7](https://github.com/recurser/bossanova/commit/d0075a7e1d516bba49c90fa4de6d961414421181))
+* **bossd:** bump PollTasks RPC ceiling so dependabot can finish a poll ([1c837b9](https://github.com/recurser/bossanova/commit/1c837b93d65d742144de7e7398da4f9426e7e320))
+* **boss:** pin link underline color so it matches highlight and merged styling ([5594931](https://github.com/recurser/bossanova/commit/559493106ad05336a884b0877be5cf5ffb75d563))
+* **boss:** restore "working" chat status by heartbeating PTY state to bossd ([f70527a](https://github.com/recurser/bossanova/commit/f70527acb2b52ffba7746641bebd906864bc6c1b)), closes [#179](https://github.com/recurser/bossanova/issues/179)
+* **boss:** restore Ctrl+X / Ctrl+] detach for claude attach ([4da7a07](https://github.com/recurser/bossanova/commit/4da7a07041865a94112e940ea6b8ed98ae904d70)), closes [#179](https://github.com/recurser/bossanova/issues/179)
+* **boss:** restore Linear-ticket prefill on first Claude attach ([197e441](https://github.com/recurser/bossanova/commit/197e441363b0a7361c6efc0ae9dbbb6603374bb7)), closes [#134](https://github.com/recurser/bossanova/issues/134) [#179](https://github.com/recurser/bossanova/issues/179) [#181](https://github.com/recurser/bossanova/issues/181)
+* **web:** bump react to 19.2.5 to match react-dom ([e5b1507](https://github.com/recurser/bossanova/commit/e5b15075903764d3daf6d1bc220699d66ef46b8c))
+* **web:** drop deprecated tsconfig baseUrl for TypeScript 6 ([cd0de01](https://github.com/recurser/bossanova/commit/cd0de01966d65fd765aeee6febb494297c81ef37))
+* **web:** improve layout of empty states ([96a7147](https://github.com/recurser/bossanova/commit/96a714791cbcc6a00b449a46576072f5932df8fe))
+
 ## [1.11.0](https://github.com/recurser/bossanova/compare/v1.10.0...v1.11.0) (2026-04-27)
 
 ### Features

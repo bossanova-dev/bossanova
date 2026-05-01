@@ -538,7 +538,13 @@ func run(opts runOpts) error {
 		// bidi with HTTP 505. When the orchestrator URL is cleartext,
 		// use an h2c-capable Transport so the daemon speaks HTTP/2
 		// directly.
-		httpClient := &http.Client{Timeout: 30 * time.Second}
+		// No client-level timeout: DaemonStream and TerminalStream are
+		// long-lived bidi streams — http.Client.Timeout is a hard wall on
+		// the entire request including reading the response body, so any
+		// non-zero value tears the stream every Timeout seconds with
+		// "Client.Timeout exceeded while awaiting headers". Unary callers
+		// (RegisterDaemon) wrap with context.WithTimeout instead.
+		httpClient := &http.Client{}
 		if strings.HasPrefix(cfg.OrchestratorURL, "http://") {
 			httpClient.Transport = &http2.Transport{
 				AllowHTTP: true,
@@ -547,7 +553,6 @@ func run(opts runOpts) error {
 					return d.DialContext(ctx, network, addr)
 				},
 			}
-			httpClient.Timeout = 0 // streams must not time out
 		}
 		client := bossanovav1connect.NewOrchestratorServiceClient(httpClient, cfg.OrchestratorURL)
 
@@ -728,7 +733,9 @@ func run(opts runOpts) error {
 			if jwt == "" {
 				jwt = cfg.UserJWT
 			}
-			return upstream.Register(ctx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
+			regCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			return upstream.Register(regCtx, client, cfg.DaemonID, cfg.Hostname, jwt, ids)
 		}
 
 		// Shared session_token holder: every opener that sends

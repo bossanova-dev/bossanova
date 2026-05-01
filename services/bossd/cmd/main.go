@@ -737,6 +737,12 @@ func run(opts runOpts) error {
 		// failed, sessionToken is "" — the first stream open will be
 		// rejected, reRegister fires, and the holder is populated.
 		sessionTokenHolder := upstream.NewSessionTokenHolder(sessionToken)
+		// Shared auth state: when WorkOS rejects our refresh token as
+		// invalid_grant (the user's session ended) the opener flips this
+		// to NeedsLogin and both Run loops pause until NotifyLogin
+		// clears it after a fresh `boss login`. Without this, the
+		// daemon tight-loops on a dead credential indefinitely.
+		authState := upstream.NewAuthState()
 		streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
 			Client:       client,
 			AuthToken:    authToken,          // WorkOS JWT → Authorization header
@@ -755,26 +761,30 @@ func run(opts runOpts) error {
 			Webhooks:       &upstream.NoopWebhookDispatcher{Logger: log.Logger},
 			Attacher:       attacher,
 			ReRegister:     reRegister,
+			AuthState:      authState,
 			Logger:         log.Logger,
 		})
 
 		authNotifier = &streamAuthAdapter{
 			streamClient:  streamClient,
 			tokenProvider: tokenProvider,
+			authState:     authState,
 			logger:        log.Logger,
 		}
 
 		// TerminalStream is a sibling of DaemonStream — separate bidi
 		// for keystroke / data-chunk traffic so it cannot starve
 		// control-plane commands. Reuses the SAME orchestrator client,
-		// AuthToken, sessionTokenHolder, and TokenProvider so a
-		// re-register-driven session_token rotation fans out to both
-		// streams. Idle until bosso pushes the first attach.
+		// AuthToken, sessionTokenHolder, TokenProvider, and AuthState so
+		// a re-register-driven session_token rotation or an invalid_grant
+		// pause fans out to both streams. Idle until bosso pushes the
+		// first attach.
 		terminalStreamClient = upstream.NewTerminalStreamClient(upstream.TerminalStreamClientConfig{
 			Client:        client,
 			AuthToken:     authToken,
 			SessionToken:  sessionTokenHolder,
 			TokenProvider: tokenProvider,
+			AuthState:     authState,
 			TmuxClient:    tmuxClient,
 			Chats:         upstream.NewChatStoreLookup(claudeChats),
 			Logger:        log.Logger,
@@ -1033,6 +1043,7 @@ func (a claudeAttachAdapter) Subscribe(ctx context.Context, claudeSessionID stri
 type streamAuthAdapter struct {
 	streamClient  *upstream.StreamClient
 	tokenProvider *upstream.KeychainTokenProvider
+	authState     *upstream.AuthState
 	logger        zerolog.Logger
 }
 
@@ -1043,18 +1054,31 @@ type streamAuthAdapter struct {
 // Reading the keychain instead picks up the access+refresh pair the CLI
 // just wrote. The next reconnect (or the periodic refresher when the
 // current JWT nears expiry) propagates the new token to bosso.
+//
+// MarkOK clears the "needs re-login" flag set by the opener when WorkOS
+// rejected the previous refresh token as invalid_grant. The Run loops
+// are blocked on AuthState.Wait() in that case; clearing the flag wakes
+// them so they reconnect with the freshly-loaded keychain credentials.
 func (a *streamAuthAdapter) NotifyLogin(_ context.Context, _ []string) error {
 	if a.tokenProvider != nil {
 		a.tokenProvider.Reload()
 	}
+	if a.authState != nil {
+		a.authState.MarkOK()
+	}
 	return nil
 }
 
-// NotifyLogout is a soft signal today: the stream stays up until the
-// server shuts it down via streamCancel. A future iteration can add an
-// explicit "drop stream" hook; for now the JWT staleness is handled by
-// the refresh loop closing the stream when bosso rejects it.
-func (a *streamAuthAdapter) NotifyLogout() {}
+// NotifyLogout marks the auth state as "needs login" so the Run loops
+// pause on their next iteration, and signals via the same channel any
+// blocked waiter would use. The stream isn't actively cancelled here —
+// the next refresh attempt will fail (no valid refresh token) and the
+// opener's normal path takes over. Idempotent.
+func (a *streamAuthAdapter) NotifyLogout() {
+	if a.authState != nil {
+		a.authState.MarkNeedsLogin()
+	}
+}
 
 // decodeJWTClaimsForLog extracts iss/sub/aud/exp from an unverified JWT
 // for diagnostic logging. It deliberately does not validate the signature

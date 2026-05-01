@@ -94,6 +94,12 @@ type terminalConnectOpener struct {
 	authToken    string // fallback WorkOS JWT — used only when tokens is nil
 	tokens       TokenProvider
 	sessionToken *SessionTokenHolder
+	// authState mirrors the field on connectOpener — flipping NeedsLogin
+	// here pauses the TerminalStreamClient.Run loop on the next iteration
+	// so it stops dialling on a credential WorkOS already rejected. The
+	// production wiring shares one AuthState with the DaemonStream opener.
+	authState *AuthState
+	logger    zerolog.Logger
 }
 
 // TerminalStream opens a new bidi stream with the same auth headers
@@ -109,7 +115,17 @@ func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidi
 		// a long bosso outage doesn't tight-loop on stale credentials.
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
 			if _, err := o.tokens.Refresh(ctx); err != nil {
-				_ = err // logged elsewhere; fall through with stale token
+				// invalid_grant means WorkOS has terminally killed the
+				// refresh token. Mark the shared AuthState so the Run
+				// loop pauses instead of tight-looping on a credential
+				// that will never work. Other refresh failures are
+				// logged by the DaemonStream opener (which runs more
+				// often) — keep this branch quiet to avoid double-warns.
+				if errors.Is(err, ErrAuthExpired) {
+					if o.authState.MarkNeedsLogin() {
+						o.logger.Warn().Err(err).Msg("terminal: token refresh rejected as invalid_grant; pausing stream until re-login")
+					}
+				}
 			}
 		}
 		if t := o.tokens.Token(); t != "" {
@@ -118,6 +134,13 @@ func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidi
 	}
 	if jwt != "" {
 		raw.RequestHeader().Set("Authorization", "Bearer "+jwt)
+	} else if o.authState != nil {
+		// Mirror connectOpener.DaemonStream: no JWT to send means no point
+		// dialling. Mark NeedsLogin so the Run loop pauses; log only on
+		// the state change (the DaemonStream opener typically logs first).
+		if o.authState.MarkNeedsLogin() {
+			o.logger.Warn().Msg("terminal: no upstream credentials available; pausing stream until login")
+		}
 	}
 	if o.sessionToken != nil {
 		if tok := o.sessionToken.Get(); tok != "" {
@@ -225,6 +248,7 @@ func (a *chatStoreAdapter) GetByClaudeID(ctx context.Context, claudeID string) (
 //     to the first attach.
 type TerminalStreamClient struct {
 	opener        terminalStreamOpener
+	authState     *AuthState
 	tmuxClient    *tmux.Client
 	chats         chatLookup
 	attachFactory terminalAttachFactory
@@ -270,6 +294,12 @@ type TerminalStreamClientConfig struct {
 	// JWT. Mirrors StreamClient's behaviour.
 	TokenProvider TokenProvider
 
+	// AuthState, when set, is the shared "needs re-login" flag used by
+	// both stream clients. Production wiring should pass the same
+	// instance as StreamClientConfig.AuthState so a rejection on either
+	// bidi pauses both. Nil keeps the legacy reconnect-forever behaviour.
+	AuthState *AuthState
+
 	// TmuxClient is used for SetAttachOptions on every new attach (via
 	// tmux.NewTerminalAttach) and for RefreshClient after a ring-buffer
 	// overflow forces a RESYNC.
@@ -306,6 +336,8 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 			authToken:    cfg.AuthToken,
 			sessionToken: holder,
 			tokens:       cfg.TokenProvider,
+			authState:    cfg.AuthState,
+			logger:       cfg.Logger.With().Str("component", "terminal-stream-opener").Logger(),
 		}
 	}
 	clock := cfg.Clock
@@ -318,6 +350,7 @@ func NewTerminalStreamClient(cfg TerminalStreamClientConfig) *TerminalStreamClie
 	}
 	return &TerminalStreamClient{
 		opener:        opener,
+		authState:     cfg.AuthState,
 		tmuxClient:    cfg.TmuxClient,
 		chats:         cfg.Chats,
 		attachFactory: factory,
@@ -339,6 +372,23 @@ func (c *TerminalStreamClient) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			c.closeAllAttaches()
 			return nil
+		}
+
+		// Pause when the shared AuthState says the refresh token is
+		// dead. Mirrors StreamClient.Run — keeps the daemon from
+		// hammering bosso with a credential WorkOS already rejected.
+		// Wait until NotifyLogin clears the flag (or ctx cancels).
+		if c.authState != nil && c.authState.NeedsLogin() {
+			c.logger.Warn().Msg("terminal stream paused: re-login required (waiting for boss login)")
+			c.closeAllAttaches()
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-c.authState.Wait():
+				c.logger.Info().Msg("terminal stream resumed after re-login signal")
+			}
+			backoff = terminalStreamInitialBackoff
+			continue
 		}
 
 		startedAt := c.clock.Now()

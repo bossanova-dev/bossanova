@@ -231,12 +231,6 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, re
 		return
 	}
 
-	o.logger.Info().
-		Str("repo", repo.displayName).
-		Str("plugin", pluginName).
-		Int("tasks", len(tasks)).
-		Msg("poll complete")
-
 	for _, task := range tasks {
 		o.processTask(ctx, task, repo, pluginName)
 	}

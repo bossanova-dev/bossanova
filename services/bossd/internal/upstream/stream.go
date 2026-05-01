@@ -102,6 +102,13 @@ type connectOpener struct {
 	// rotation after a stale-token auth failure updates both transparently.
 	sessionToken *SessionTokenHolder
 
+	// authState is the shared "needs re-login" flag. When Refresh returns
+	// ErrAuthExpired, the opener marks this state so the StreamClient.Run
+	// loop pauses instead of tight-looping on a dead refresh token. Shared
+	// with the TerminalStream opener so a rejection on one bidi pauses the
+	// other. nil-safe — local-only / test paths can omit it.
+	authState *AuthState
+
 	logger zerolog.Logger // used for refresh-failure diagnostics in DaemonStream
 }
 
@@ -149,17 +156,27 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 		// validity window to complete the register handshake.
 		if exp := o.tokens.ExpiresAt(); !exp.IsZero() && time.Until(exp) < 60*time.Second {
 			if _, err := o.tokens.Refresh(ctx); err != nil {
-				// Refresh failed — usually the refresh token is also
-				// expired/revoked, occasionally a transient WorkOS
-				// outage. Log it so the user can tell which: silent
-				// failure here meant the daemon would tight-loop with
-				// only "missing or invalid Authorization header" in the
-				// logs and no clue why. Then fall back to a keychain
-				// reload — picks up an external `boss login` even if
-				// its NotifyLogin RPC was missed.
-				o.logger.Warn().Err(err).Msg("token refresh failed; reloading keychain")
-				if r, ok := o.tokens.(reloader); ok {
-					r.Reload()
+				// Distinguish terminal from transient. ErrAuthExpired
+				// means WorkOS told us the refresh token is dead — no
+				// keychain reload will help (the keychain holds the same
+				// dead token), and continuing to dial just produces log
+				// spam at 1 Hz. Mark the shared AuthState so the Run
+				// loop pauses on the next iteration; log only on the
+				// state change so a sustained stuck-loop doesn't spam.
+				//
+				// For transient failures (network, 5xx, malformed body)
+				// keep the original behaviour: log + reload keychain so
+				// an out-of-band `boss login` is picked up even if its
+				// NotifyLogin RPC never reached us.
+				if errors.Is(err, ErrAuthExpired) {
+					if o.authState.MarkNeedsLogin() {
+						o.logger.Warn().Err(err).Msg("token refresh rejected as invalid_grant; pausing stream until re-login")
+					}
+				} else {
+					o.logger.Warn().Err(err).Msg("token refresh failed; reloading keychain")
+					if r, ok := o.tokens.(reloader); ok {
+						r.Reload()
+					}
 				}
 			}
 		} else if exp.IsZero() {
@@ -178,6 +195,17 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 	}
 	if jwt != "" {
 		raw.RequestHeader().Set("Authorization", "Bearer "+jwt)
+	} else if o.authState != nil {
+		// No JWT to send and no static fallback either. Common causes:
+		// keychain was wiped after invalid_grant, daemon started before
+		// the user ran `boss login`, or a transient refresh failure
+		// returned an empty cache. In every case dialling produces a
+		// "missing or invalid Authorization header" rejection that the
+		// Run loop currently retries forever. Mark NeedsLogin so it
+		// pauses on the next iteration; log only on the state change.
+		if o.authState.MarkNeedsLogin() {
+			o.logger.Warn().Msg("no upstream credentials available; pausing stream until login")
+		}
 	}
 	if o.sessionToken != nil {
 		if tok := o.sessionToken.Get(); tok != "" {
@@ -388,6 +416,7 @@ type StreamClient struct {
 	webhooks         WebhookDispatcher
 	attacher         SessionAttacher
 	reRegister       ReRegisterFunc
+	authState        *AuthState
 	daemonID         string
 	hostname         string
 	logger           zerolog.Logger
@@ -447,6 +476,13 @@ type StreamClientConfig struct {
 	// keep the previous tight-loop behaviour.
 	ReRegister ReRegisterFunc
 
+	// AuthState, when set, lets the opener flag a terminal credential
+	// failure (WorkOS invalid_grant) and the Run loop pause until
+	// NotifyLogin clears it. Production wiring should pass the same
+	// AuthState to the TerminalStreamClient so both bidis pause together.
+	// Nil keeps the legacy tight-loop behaviour.
+	AuthState *AuthState
+
 	// Observability / testing knobs.
 	Logger  zerolog.Logger
 	Metrics Metrics
@@ -477,6 +513,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 			authToken:    cfg.AuthToken,
 			sessionToken: holder,
 			tokens:       cfg.TokenProvider,
+			authState:    cfg.AuthState,
 			logger:       cfg.Logger.With().Str("component", "stream-opener").Logger(),
 		}
 	}
@@ -510,6 +547,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		webhooks:         cfg.Webhooks,
 		attacher:         cfg.Attacher,
 		reRegister:       cfg.ReRegister,
+		authState:        cfg.AuthState,
 		daemonID:         cfg.DaemonID,
 		hostname:         cfg.Hostname,
 		logger:           cfg.Logger.With().Str("component", "stream-client").Logger(),
@@ -536,6 +574,26 @@ func (c *StreamClient) Run(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
+		}
+
+		// If the opener has flagged the refresh token as terminally dead,
+		// stop dialling. The previous behaviour was to retry every 1s
+		// forever, filling the log with "invalid credentials". Block on
+		// the AuthState wake channel until NotifyLogin clears it (or ctx
+		// cancels), then drop straight back into the dial path.
+		if c.authState != nil && c.authState.NeedsLogin() {
+			c.logger.Warn().Msg("stream paused: re-login required (waiting for boss login)")
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.authState.Wait():
+				c.logger.Info().Msg("stream resumed after re-login signal")
+			}
+			// Reset backoff and authStuck so the post-login dial doesn't
+			// inherit a long backoff from the paused era.
+			backoff = streamInitialBackoff
+			authStuck = false
+			continue
 		}
 
 		c.markDisconnected()

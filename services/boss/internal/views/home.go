@@ -341,7 +341,16 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, cmd
 
 	case tickMsg:
-		return h, tea.Batch(fetchSessions(h.client, h.ctx), tickCmd())
+		// Re-poll auth status alongside sessions so the menu label
+		// (e.g. [l]ogout vs [l]ogin) catches up after the daemon
+		// clears the keychain on a terminal refresh failure
+		// (invalid_grant). Without this, the TUI keeps showing the
+		// pre-expiry label until the user navigates away and back.
+		cmds := []tea.Cmd{fetchSessions(h.client, h.ctx), tickCmd()}
+		if h.authMgr != nil {
+			cmds = append(cmds, fetchAuthStatus(h.authMgr))
+		}
+		return h, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
 		if h.logoutConfirming {

@@ -9,6 +9,7 @@ package upstream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,13 @@ import (
 	"github.com/99designs/keyring"
 	"github.com/recurser/bossalib/keyringutil"
 )
+
+// ErrAuthExpired is returned (wrapped) by Refresh when WorkOS rejects the
+// stored refresh token as terminally invalid — the user's session has
+// ended and no amount of retrying will recover it. Callers detect this
+// with errors.Is and treat it as "stop retrying, wait for the user to
+// log in again" rather than continuing the normal reconnect/backoff loop.
+var ErrAuthExpired = errors.New("auth expired: re-login required")
 
 // keychainTokens mirrors the boss CLI token structure for keychain reading.
 type keychainTokens struct {
@@ -76,6 +84,19 @@ func refreshWorkOSToken(clientID, refreshToken string) (*keychainTokens, error) 
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// WorkOS returns HTTP 400 with {"error":"invalid_grant"} when the
+		// refresh token has been revoked or its session ended. That's
+		// terminal — wrap with ErrAuthExpired so the stream client can
+		// pause instead of tight-looping on a credential that will never
+		// work again.
+		if resp.StatusCode == http.StatusBadRequest {
+			var errBody struct {
+				Error string `json:"error"`
+			}
+			if json.Unmarshal(body, &errBody) == nil && errBody.Error == "invalid_grant" {
+				return nil, fmt.Errorf("refresh failed (HTTP %d): %s: %w", resp.StatusCode, string(body), ErrAuthExpired)
+			}
+		}
 		return nil, fmt.Errorf("refresh failed (HTTP %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -187,6 +208,23 @@ func (p *KeychainTokenProvider) Refresh(_ context.Context) (string, error) {
 
 	refreshed, err := refreshWorkOSToken(clientID, refreshTok)
 	if err != nil {
+		// invalid_grant means the user's WorkOS session has terminally
+		// ended — there is no recovery short of `boss login`. Clear the
+		// in-memory cache and delete the keychain entry so the boss
+		// CLI's Status() flips to "logged out" and the TUI menu
+		// switches from [l]ogout to [l]ogin. Other refresh failures
+		// (network, 5xx) leave the keychain alone — those are
+		// transient and the next attempt may succeed.
+		if errors.Is(err, ErrAuthExpired) {
+			p.mu.Lock()
+			p.accessToken = ""
+			p.refreshToken = ""
+			p.expiresAt = time.Time{}
+			p.mu.Unlock()
+			if ring, ringErr := openKeyring(); ringErr == nil {
+				_ = ring.Remove("workos-tokens")
+			}
+		}
 		return "", err
 	}
 	if refreshed.RefreshToken == "" {

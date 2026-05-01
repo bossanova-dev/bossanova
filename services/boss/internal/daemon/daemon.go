@@ -103,6 +103,13 @@ func isSocketReachable(socketPath string) bool {
 	return true
 }
 
+// IsSocketReachable is the exported probe used by callers (e.g. the TUI's
+// daemon-wait screen) that need to poll for the daemon coming back online
+// without triggering platformEnsureRunning's launchctl/systemd dance.
+func IsSocketReachable(socketPath string) bool {
+	return isSocketReachable(socketPath)
+}
+
 // waitForSocket polls for the socket to become reachable.
 func waitForSocket(socketPath string, timeout time.Duration) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

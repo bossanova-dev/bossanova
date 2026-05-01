@@ -17,6 +17,7 @@ import (
 
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/boss/internal/preflight"
 	"github.com/recurser/boss/internal/views"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
@@ -58,15 +59,65 @@ func newRemoteClient(cmd *cobra.Command, baseURL string) (client.BossClient, err
 	return client.NewRemote(baseURL, token), nil
 }
 
-func runTUI(cmd *cobra.Command) error {
+// launchTUI runs preflight checks, dials the daemon, builds the App, and
+// starts the Bubble Tea program. Failures from the preflight or the daemon
+// connection are shown as a blocking TUI screen rather than a stderr exit
+// so the user sees the message in the same surface they launched.
+//
+// For local daemon failures the screen polls for the socket coming back
+// and resumes startup automatically once it does — restarting bossd in
+// another terminal is enough to recover without re-running boss.
+//
+// configure runs after the App is constructed and before tea.Run, giving
+// callers a chance to override the initial view or seed view-specific
+// state (e.g. the session id for an attach).
+func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
+	if issue := preflight.CheckTmux(); issue != nil {
+		return views.RunPreflight(*issue)
+	}
 	c, err := newClient(cmd)
 	if err != nil {
-		return err
+		c, err = waitForDaemon(cmd, err)
+		if err != nil {
+			if views.IsPreflightCancelled(err) {
+				return nil
+			}
+			return err
+		}
 	}
 	app := views.NewApp(c, newOptionalAuthManager(cmd))
+	if configure != nil {
+		configure(&app)
+	}
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err
+}
+
+// waitForDaemon decides what to do when the initial newClient call fails.
+// For a local socket it shows the auto-recovering daemon-wait screen and
+// dials again once the socket is back. For remote/--remote or socket-path
+// failures (which don't auto-recover) it falls back to the static preflight
+// screen and propagates the original error.
+func waitForDaemon(cmd *cobra.Command, origErr error) (client.BossClient, error) {
+	issue := *preflight.DaemonIssue(origErr)
+	remote, _ := cmd.Root().Flags().GetString("remote")
+	if remote != "" {
+		return nil, views.RunPreflight(issue)
+	}
+	socketPath, pathErr := client.DefaultSocketPath()
+	if pathErr != nil {
+		return nil, views.RunPreflight(issue)
+	}
+	check := func() bool { return daemon.IsSocketReachable(socketPath) }
+	if err := views.RunDaemonWait(issue, check); err != nil {
+		return nil, err
+	}
+	return client.NewLocal(socketPath), nil
+}
+
+func runTUI(cmd *cobra.Command) error {
+	return launchTUI(cmd, nil)
 }
 
 func runLS(cmd *cobra.Command) error {
@@ -163,40 +214,22 @@ func runLS(cmd *cobra.Command) error {
 }
 
 func runNew(cmd *cobra.Command) error {
-	c, err := newClient(cmd)
-	if err != nil {
-		return err
-	}
-	app := views.NewApp(c, newOptionalAuthManager(cmd))
-	app.SetInitialView(views.ViewNewSession)
-	p := tea.NewProgram(app)
-	_, err = p.Run()
-	return err
+	return launchTUI(cmd, func(app *views.App) {
+		app.SetInitialView(views.ViewNewSession)
+	})
 }
 
 func runAttach(cmd *cobra.Command, sessionID string) error {
-	c, err := newClient(cmd)
-	if err != nil {
-		return err
-	}
-	app := views.NewApp(c, newOptionalAuthManager(cmd))
-	app.SetInitialView(views.ViewAttach)
-	app.SetAttachSession(sessionID, "")
-	p := tea.NewProgram(app)
-	_, err = p.Run()
-	return err
+	return launchTUI(cmd, func(app *views.App) {
+		app.SetInitialView(views.ViewAttach)
+		app.SetAttachSession(sessionID, "")
+	})
 }
 
 func runRepoAdd(cmd *cobra.Command) error {
-	c, err := newClient(cmd)
-	if err != nil {
-		return err
-	}
-	app := views.NewApp(c, newOptionalAuthManager(cmd))
-	app.SetInitialView(views.ViewRepoAdd)
-	p := tea.NewProgram(app)
-	_, err = p.Run()
-	return err
+	return launchTUI(cmd, func(app *views.App) {
+		app.SetInitialView(views.ViewRepoAdd)
+	})
 }
 
 func runRepoLS(cmd *cobra.Command) error {

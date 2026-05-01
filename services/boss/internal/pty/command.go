@@ -133,6 +133,9 @@ func (c *PTYCommand) Run() error {
 		buf := make([]byte, 4096)
 		stdinFd := int(os.Stdin.Fd())
 		cancelFd := int(cancelR.Fd())
+		// pending carries an incomplete terminal-query reply across reads.
+		// See stripTerminalQueryReplies for the leak it defends against.
+		var pending []byte
 		for {
 			// Wait for stdin or cancel pipe using select(2).
 			maxFd := stdinFd
@@ -160,28 +163,43 @@ func (c *PTYCommand) Run() error {
 			if fdIsSet(&readSet, stdinFd) {
 				n, readErr := syscall.Read(stdinFd, buf)
 				if n > 0 {
-					data := buf[:n]
+					// Strip terminal capability-query replies (DA1/DA2/DCS)
+					// that tmux's client startup probes leak onto stdin
+					// during attach. Run before the detach scan so we
+					// inspect the same bytes the PTY will see — pending
+					// carries any incomplete sequence into the next read.
+					var data []byte
+					data, pending = stripTerminalQueryReplies(buf[:n], pending)
 
-					// Check for raw detach bytes (Ctrl+X or Ctrl+]).
-					for _, b := range data {
-						if b == detachByteCtrlX || b == detachByte {
+					if len(data) > 0 {
+						// Check for raw detach bytes (Ctrl+X or Ctrl+]).
+						detached := false
+						for _, b := range data {
+							if b == detachByteCtrlX || b == detachByte {
+								detached = true
+								break
+							}
+						}
+
+						// Check for any of the encoded forms (kitty CSI-u or
+						// xterm modifyOtherKeys=2). Claude Code enables one of
+						// these on attach, so the raw byte path above won't
+						// fire on a real terminal.
+						if !detached {
+							for _, seq := range detachSequences {
+								if bytes.Contains(data, seq) {
+									detached = true
+									break
+								}
+							}
+						}
+						if detached {
 							close(detachCh)
 							return
 						}
-					}
 
-					// Check for any of the encoded forms (kitty CSI-u or
-					// xterm modifyOtherKeys=2). Claude Code enables one of
-					// these on attach, so the raw byte path above won't
-					// fire on a real terminal.
-					for _, seq := range detachSequences {
-						if bytes.Contains(data, seq) {
-							close(detachCh)
-							return
-						}
+						_ = proc.WriteInput(data)
 					}
-
-					_ = proc.WriteInput(data)
 				}
 				if readErr != nil {
 					inputDone <- readErr

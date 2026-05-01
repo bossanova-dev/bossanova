@@ -61,18 +61,35 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 				done <- pcmd.Run()
 			}()
 
+			// Registered last so it runs first in LIFO — kills the cat
+			// process so Run() exits via its <-proc.Done() branch and the
+			// subsequent slave.Close() defer doesn't race with the still-live
+			// reader goroutine when the test below times out.
+			defer func() {
+				if p, ok := mgr.Get("test-detach-" + tc.name); ok {
+					_ = p.cmd.Process.Kill()
+				}
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+				}
+			}()
+
 			time.Sleep(200 * time.Millisecond)
 			if _, err := master.Write(tc.bytes); err != nil {
 				t.Fatalf("write detach bytes: %v", err)
 			}
 
+			// 10s deadline rather than 3s — under -race on a loaded GitHub
+			// runner with multiple test binaries in flight, scheduling
+			// jitter has pushed Run() past 3s on isolated runs.
 			select {
 			case err := <-done:
 				if err != nil {
 					t.Fatalf("Run returned error: %v", err)
 				}
-			case <-time.After(3 * time.Second):
-				t.Fatalf("PTYCommand did not return within 3s of %q", tc.bytes)
+			case <-time.After(10 * time.Second):
+				t.Fatalf("PTYCommand did not return within 10s of %q", tc.bytes)
 			}
 
 			if !pcmd.Detached {
@@ -80,11 +97,6 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 			}
 			if pcmd.ProcessExited {
 				t.Fatal("expected ProcessExited=false (process should still be running after detach)")
-			}
-
-			if p, ok := mgr.Get("test-detach-" + tc.name); ok {
-				_ = p.cmd.Process.Kill()
-				<-p.Done()
 			}
 		})
 	}

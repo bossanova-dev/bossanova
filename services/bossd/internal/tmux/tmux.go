@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -88,7 +89,12 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 	args = append(args, opts.Command...)
 
 	cmd := c.cmdFunc(ctx, "tmux", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("failed to create tmux session %q: %w (stderr: %s)", opts.Name, err, msg)
+		}
 		return fmt.Errorf("failed to create tmux session %q: %w", opts.Name, err)
 	}
 

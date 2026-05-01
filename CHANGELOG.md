@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.1](https://github.com/recurser/bossanova/compare/v1.12.0...v1.12.1) (2026-05-01)
+
+### Bug Fixes
+
+* **bossd,boss:** pause stream on terminal auth failure instead of looping ([ee0d3fe](https://github.com/recurser/bossanova/commit/ee0d3fe755dc6f9ca902c8812b73a6d0687f848d))
+* **web:** hide branch/PR row on quick chats with no branch or PR ([12811b7](https://github.com/recurser/bossanova/commit/12811b75397f2f4f4ce615ce2ca114050e211f9d))
+
 ## [1.12.0](https://github.com/recurser/bossanova/compare/v1.11.0...v1.12.0) (2026-04-30)
 
 ### Features

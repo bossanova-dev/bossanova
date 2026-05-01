@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.2](https://github.com/recurser/bossanova/compare/v1.12.1...v1.12.2) (2026-05-01)
+
+### Bug Fixes
+
+* **bossd:** remove 30s http client timeout that killed bidi streams ([21de859](https://github.com/recurser/bossanova/commit/21de859c3029140047df13366f3ddcc852af327d))
+* **web:** hide created timestamp on mobile chat list ([a0a5ef3](https://github.com/recurser/bossanova/commit/a0a5ef3c0b8fdbb8a500d768583982d4d22e9508))
+
 ## [1.12.1](https://github.com/recurser/bossanova/compare/v1.12.0...v1.12.1) (2026-05-01)
 
 ### Bug Fixes

@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.13.0](https://github.com/recurser/bossanova/compare/v1.12.2...v1.13.0) (2026-05-01)
+
+### Features
+
+* **boss:** auto-recover preflight screen when daemon comes back ([9c69bcd](https://github.com/recurser/bossanova/commit/9c69bcdb40e4397b3aa6174dc491aa1e7ced3729))
+* **web:** polish session UI — pill status, spinner component, focus states ([0b2950f](https://github.com/recurser/bossanova/commit/0b2950fc61c572f06a2b5e360f6c6c742a14862e))
+* **web:** unify error + empty-state alerts and italicize chat titles ([c74a841](https://github.com/recurser/bossanova/commit/c74a841ae5c239687402ddc3c7e653f0c8b1780b))
+
+### Bug Fixes
+
+* **boss:** add preflight check for tmux installation ([6403a9c](https://github.com/recurser/bossanova/commit/6403a9c0690e7d817528cfe997430663b427290b))
+* **bossd:** include tmux stderr in NewSession error ([a9192f0](https://github.com/recurser/bossanova/commit/a9192f0f573befff554b54da112341820a29f4fd))
+* **bosso:** send TerminalCloseCommand on WS disconnect ([62168b2](https://github.com/recurser/bossanova/commit/62168b2c61d9473f5ae302eb4aa1bdf50e2abace))
+* **boss:** strip terminal capability-query replies from PTY stdin ([4f88da9](https://github.com/recurser/bossanova/commit/4f88da96d89f4fd69168f63db9b85418cd7d39df))
+
 ## [1.12.2](https://github.com/recurser/bossanova/compare/v1.12.1...v1.12.2) (2026-05-01)
 
 ### Bug Fixes

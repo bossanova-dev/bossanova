@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.15.0](https://github.com/recurser/bossanova/compare/v1.14.0...v1.15.0) (2026-05-02)
+
+### Features
+
+* **boss:** [[#133](https://github.com/recurser/bossanova/issues/133)] animate spinner inside the Firing toast on cron Run now ([3473852](https://github.com/recurser/bossanova/commit/3473852c1e3558685ffa274233f48ba00a51eb6f))
+* **boss:** [[#133](https://github.com/recurser/bossanova/issues/133)] cron list + form TUI views and [c] home keybinding ([1f61704](https://github.com/recurser/bossanova/commit/1f61704054ce6490f18dc69bc1891502b13ebf96))
+* **boss:** [[#133](https://github.com/recurser/bossanova/issues/133)] show Running… spinner during cron Run now ([ab01649](https://github.com/recurser/bossanova/commit/ab0164909c545a35aeb18b8ab86d05eba2f4141d))
+* **boss:** [[#133](https://github.com/recurser/bossanova/issues/133)] show STATUS column in cron list driven by server-derived status ([1d2e74a](https://github.com/recurser/bossanova/commit/1d2e74a77ed4f086c8fee3bd1679e567c7382c20))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] cron scheduler, hook server, finalize lifecycle ([8db7d2f](https://github.com/recurser/bossanova/commit/8db7d2fd009bcf76eb2eb4d90d18713c5cec3526))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] host cron Claude runs in a tmux session ([7dcd6e0](https://github.com/recurser/bossanova/commit/7dcd6e0fb49dd56aefde77f66ec5f6eab144ae7a))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] wire cron RPC handlers into the gRPC server ([6bf7abe](https://github.com/recurser/bossanova/commit/6bf7abec350eaec3c2ef6a41b7313c3dcb49a4a1))
+* **proto,bossalib:** [[#133](https://github.com/recurser/bossanova/issues/133)] add CronJob + cron RPCs + Finalizing state ([a4c07f0](https://github.com/recurser/bossanova/commit/a4c07f00540b70b9dd947ab0e7588c3a95de7f60))
+* **proto,bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] derive CronJob.last_run_status enum from session + outcome ([b931574](https://github.com/recurser/bossanova/commit/b931574fd3b46ad36619760204f2cfc0e1d24b34))
+* **web:** [[#133](https://github.com/recurser/bossanova/issues/133)] add Card primitive and use it for Plan + confirm dialog ([ca482a8](https://github.com/recurser/bossanova/commit/ca482a8a99c393b00c43a1057d89dbf8b38c42a9))
+* **web:** [[#211](https://github.com/recurser/bossanova/issues/211)] tighten mobile session/chat list and tmux UX ([a0df4e2](https://github.com/recurser/bossanova/commit/a0df4e204c9f50907297f2d2ed3eeccb46e00b7e))
+
+### Bug Fixes
+
+* **boss:** [[#133](https://github.com/recurser/bossanova/issues/133)] clone cron jobs in mock daemon to avoid marshal/mutate race ([674640d](https://github.com/recurser/bossanova/commit/674640dc1b78df9bf3a0319bf26e29f978af96db))
+* **bossalib:** [[#133](https://github.com/recurser/bossanova/issues/133)] add Finalizing to library state conversion maps ([f245b25](https://github.com/recurser/bossanova/commit/f245b25b7a8c6f1762e8766efd4bc0cfd31f7654))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] delete half-started session when StartSession errors ([665a510](https://github.com/recurser/bossanova/commit/665a51033d2b30346a2ad309794fc8113f2ebc18))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] don't classify Stop-hook config as a Claude change ([eb01d02](https://github.com/recurser/bossanova/commit/eb01d021f8072c8be92dbfecb51eb48162748b02))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] match Claude prompt ❯ as cron tmux ready marker ([e87544b](https://github.com/recurser/bossanova/commit/e87544b8c415e488cbbf49a9f221c06c3981ab76))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] plumb hook port via DI instead of disk file ([fcd04c2](https://github.com/recurser/bossanova/commit/fcd04c2307a43770786ff048c647ab6d991b27d3))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] reconcile sessions to existing PRs every 60s ([c4f61f5](https://github.com/recurser/bossanova/commit/c4f61f5153ed9281222228ed80ca3e2a5b97e332))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] show FAILED for cron jobs whose finalize blocked the session ([dabf793](https://github.com/recurser/bossanova/commit/dabf7932251167863f115431317ed8551142ebbd))
+* **bossd:** [[#133](https://github.com/recurser/bossanova/issues/133)] unbreak cron Run now (base branch, ctx, branch collisions) ([4d46d53](https://github.com/recurser/bossanova/commit/4d46d530a75afbb5d23c3eb1ed2b54f57b35068d))
+* **bossd:** [[#205](https://github.com/recurser/bossanova/issues/205)] also ignore .claude/settings.local.json in worktrees ([9305cc1](https://github.com/recurser/bossanova/commit/9305cc17038dba165c54a56ae7a60f8f17e07af9))
+* **proto:** [[#133](https://github.com/recurser/bossanova/issues/133)] add Finalizing state and FinalizeRequested event ([653713e](https://github.com/recurser/bossanova/commit/653713e17e7884701106a4d3e9928f6643530080))
+* **pty:** [[#133](https://github.com/recurser/bossanova/issues/133)] route stdin fd through c.stdin to fix test race ([fb6936a](https://github.com/recurser/bossanova/commit/fb6936a82a94f701f588d6d368e745d56bc60f94))
+* **web:** [[#211](https://github.com/recurser/bossanova/issues/211)] bump specificity so mobile cells actually hide ([6f296fe](https://github.com/recurser/bossanova/commit/6f296fe92a152a9a8e2b1f1da333c907f29a42ad))
+
 ## [1.14.0](https://github.com/recurser/bossanova/compare/v1.13.0...v1.14.0) (2026-05-02)
 
 ### Features

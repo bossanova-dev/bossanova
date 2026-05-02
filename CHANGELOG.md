@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.14.0](https://github.com/recurser/bossanova/compare/v1.13.0...v1.14.0) (2026-05-02)
+
+### Features
+
+* **boss:** [[#201](https://github.com/recurser/bossanova/issues/201)] name your quick chat session ([f5ea2c8](https://github.com/recurser/bossanova/commit/f5ea2c89ae33b7cd3f78f47efb9b74e9bad28e30))
+* **bossalib:** [[#203](https://github.com/recurser/bossanova/issues/203)] detect AskUserQuestion cards without selector chevron ([b331be2](https://github.com/recurser/bossanova/commit/b331be23ce6ccbc4105683340b2672cee5d61666))
+* **bossd:** [[#205](https://github.com/recurser/bossanova/issues/205)] ignore .boss/ in every new worktree ([6a2424d](https://github.com/recurser/bossanova/commit/6a2424dc51f1c6e322d5d3ba17fcc2163d936837))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] esc/ctrl+x back navigation on session detail and chat terminal ([b99d5e8](https://github.com/recurser/bossanova/commit/b99d5e88572e0d989a4f97e011bc0a03ca8439e1))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] keyboard navigation hooks (useGoBackOnKey, useListNavigation) ([7702d2d](https://github.com/recurser/bossanova/commit/7702d2d7c209496011a0ea3ddd72ab709fc66e40))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] keyboard navigation on chat list with TUI active-chat priority ([2b14ea4](https://github.com/recurser/bossanova/commit/2b14ea4a6485e57ac0480c7b73999d03e0eafc9a))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] keyboard navigation on Sessions list ([06ce282](https://github.com/recurser/bossanova/commit/06ce282cb412d23591ab2a601c507ef612ebe000))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] pickInitialChatId selector mirrors TUI active-chat priority ([54281d8](https://github.com/recurser/bossanova/commit/54281d8fe061e20be2d09ef9dd6898f43456c8e0))
+* **web:** [[#204](https://github.com/recurser/bossanova/issues/204)] hamburger menu replaces inline header nav ([b21b3b4](https://github.com/recurser/bossanova/commit/b21b3b4793fdecdf60e0b805468d976c6f171f1c))
+
+### Bug Fixes
+
+* **bossd:** publish SessionDelta_KIND_DELETED on session deletion ([a3378c9](https://github.com/recurser/bossanova/commit/a3378c939e56cc2c4bdebfd2c09dc2275c7148dc))
+* **boss:** strip XTWINOPS replies from PTY stdin too ([16c1dd8](https://github.com/recurser/bossanova/commit/16c1dd8e20fa060145af7696072908835a69e93b))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] address Cursor review feedback on keyboard nav ([b8ce952](https://github.com/recurser/bossanova/commit/b8ce95205398a0be9bed721cd60c28fba09583c7))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] post-launch keyboard navigation fixes ([b2c5cfe](https://github.com/recurser/bossanova/commit/b2c5cfe2abcbc2781de85ae799383f053b56a414))
+* **web:** [[#202](https://github.com/recurser/bossanova/issues/202)] row onKeyDown defers to browser shortcuts on modifiers ([830b59d](https://github.com/recurser/bossanova/commit/830b59dd42fe91f44ccd56779c01d00a0d586de0))
+* **web:** [[#204](https://github.com/recurser/bossanova/issues/204)] cap .app-menu width so long emails truncate ([fd27b8b](https://github.com/recurser/bossanova/commit/fd27b8bde55e20fdd4e0cbf2d67699ba0d4dab1e))
+
 ## [1.13.0](https://github.com/recurser/bossanova/compare/v1.12.2...v1.13.0) (2026-05-01)
 
 ### Features

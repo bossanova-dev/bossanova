@@ -3,7 +3,7 @@ module github.com/recurser/bossalib
 go 1.25.0
 
 require (
-	connectrpc.com/connect v1.19.1
+	connectrpc.com/connect v1.19.2
 	github.com/99designs/keyring v1.2.2
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/pressly/goose/v3 v3.27.0

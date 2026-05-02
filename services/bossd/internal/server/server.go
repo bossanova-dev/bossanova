@@ -22,6 +22,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/mergepolicy"
@@ -54,6 +55,8 @@ type Server struct {
 	attempts           db.AttemptStore
 	claudeChats        db.ClaudeChatStore
 	workflows          db.WorkflowStore
+	cronJobs           db.CronJobStore
+	cronScheduler      *cron.Scheduler
 	chatStatus         *status.Tracker
 	displayTracker     *status.DisplayTracker
 	tmuxPoller         *status.TmuxStatusPoller
@@ -80,6 +83,8 @@ type Config struct {
 	Attempts           db.AttemptStore
 	ClaudeChats        db.ClaudeChatStore
 	Workflows          db.WorkflowStore
+	CronJobs           db.CronJobStore
+	CronScheduler      *cron.Scheduler
 	ChatStatus         *status.Tracker
 	DisplayTracker     *status.DisplayTracker
 	TmuxPoller         *status.TmuxStatusPoller
@@ -121,6 +126,8 @@ func New(cfg Config) *Server {
 		attempts:           cfg.Attempts,
 		claudeChats:        cfg.ClaudeChats,
 		workflows:          cfg.Workflows,
+		cronJobs:           cfg.CronJobs,
+		cronScheduler:      cfg.CronScheduler,
 		chatStatus:         cfg.ChatStatus,
 		displayTracker:     cfg.DisplayTracker,
 		tmuxPoller:         cfg.TmuxPoller,
@@ -586,7 +593,11 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 
 		go func() {
 			defer pw.Close() //nolint:errcheck // best-effort cleanup
-			err := s.lifecycle.StartSession(ctx, sess.ID, headBranch, msg.ForceBranch, false, pw)
+			err := s.lifecycle.StartSession(ctx, sess.ID, session.StartSessionOpts{
+				ExistingBranch: headBranch,
+				ForceBranch:    msg.ForceBranch,
+				SetupOutput:    pw,
+			})
 			done <- lifecycleResult{err: err}
 		}()
 

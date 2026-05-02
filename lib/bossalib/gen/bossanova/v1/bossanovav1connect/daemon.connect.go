@@ -130,6 +130,24 @@ const (
 	// DaemonServiceNotifyAuthChangeProcedure is the fully-qualified name of the DaemonService's
 	// NotifyAuthChange RPC.
 	DaemonServiceNotifyAuthChangeProcedure = "/bossanova.v1.DaemonService/NotifyAuthChange"
+	// DaemonServiceCreateCronJobProcedure is the fully-qualified name of the DaemonService's
+	// CreateCronJob RPC.
+	DaemonServiceCreateCronJobProcedure = "/bossanova.v1.DaemonService/CreateCronJob"
+	// DaemonServiceListCronJobsProcedure is the fully-qualified name of the DaemonService's
+	// ListCronJobs RPC.
+	DaemonServiceListCronJobsProcedure = "/bossanova.v1.DaemonService/ListCronJobs"
+	// DaemonServiceGetCronJobProcedure is the fully-qualified name of the DaemonService's GetCronJob
+	// RPC.
+	DaemonServiceGetCronJobProcedure = "/bossanova.v1.DaemonService/GetCronJob"
+	// DaemonServiceUpdateCronJobProcedure is the fully-qualified name of the DaemonService's
+	// UpdateCronJob RPC.
+	DaemonServiceUpdateCronJobProcedure = "/bossanova.v1.DaemonService/UpdateCronJob"
+	// DaemonServiceDeleteCronJobProcedure is the fully-qualified name of the DaemonService's
+	// DeleteCronJob RPC.
+	DaemonServiceDeleteCronJobProcedure = "/bossanova.v1.DaemonService/DeleteCronJob"
+	// DaemonServiceRunCronJobNowProcedure is the fully-qualified name of the DaemonService's
+	// RunCronJobNow RPC.
+	DaemonServiceRunCronJobNowProcedure = "/bossanova.v1.DaemonService/RunCronJobNow"
 )
 
 // DaemonServiceClient is a client for the bossanova.v1.DaemonService service.
@@ -175,6 +193,20 @@ type DaemonServiceClient interface {
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 	// Auth change notification (CLI → daemon)
 	NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error)
+	// CreateCronJob registers a new scheduled prompt for a repo.
+	CreateCronJob(context.Context, *connect.Request[v1.CreateCronJobRequest]) (*connect.Response[v1.CreateCronJobResponse], error)
+	// ListCronJobs returns cron jobs, optionally filtered by repo.
+	ListCronJobs(context.Context, *connect.Request[v1.ListCronJobsRequest]) (*connect.Response[v1.ListCronJobsResponse], error)
+	// GetCronJob returns a single cron job by id.
+	GetCronJob(context.Context, *connect.Request[v1.GetCronJobRequest]) (*connect.Response[v1.GetCronJobResponse], error)
+	// UpdateCronJob mutates an existing cron job. Mutable fields are optional.
+	UpdateCronJob(context.Context, *connect.Request[v1.UpdateCronJobRequest]) (*connect.Response[v1.UpdateCronJobResponse], error)
+	// DeleteCronJob removes a cron job. Sessions previously spawned by it
+	// have their cron_job_id reset to NULL (no cascade).
+	DeleteCronJob(context.Context, *connect.Request[v1.DeleteCronJobRequest]) (*connect.Response[v1.DeleteCronJobResponse], error)
+	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
+	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
+	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
 }
 
 // NewDaemonServiceClient constructs a client for the bossanova.v1.DaemonService service. By
@@ -386,6 +418,42 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("NotifyAuthChange")),
 			connect.WithClientOptions(opts...),
 		),
+		createCronJob: connect.NewClient[v1.CreateCronJobRequest, v1.CreateCronJobResponse](
+			httpClient,
+			baseURL+DaemonServiceCreateCronJobProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("CreateCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		listCronJobs: connect.NewClient[v1.ListCronJobsRequest, v1.ListCronJobsResponse](
+			httpClient,
+			baseURL+DaemonServiceListCronJobsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListCronJobs")),
+			connect.WithClientOptions(opts...),
+		),
+		getCronJob: connect.NewClient[v1.GetCronJobRequest, v1.GetCronJobResponse](
+			httpClient,
+			baseURL+DaemonServiceGetCronJobProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		updateCronJob: connect.NewClient[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse](
+			httpClient,
+			baseURL+DaemonServiceUpdateCronJobProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("UpdateCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteCronJob: connect.NewClient[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse](
+			httpClient,
+			baseURL+DaemonServiceDeleteCronJobProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("DeleteCronJob")),
+			connect.WithClientOptions(opts...),
+		),
+		runCronJobNow: connect.NewClient[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse](
+			httpClient,
+			baseURL+DaemonServiceRunCronJobNowProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -424,6 +492,12 @@ type daemonServiceClient struct {
 	getSessionStatuses   *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
 	deliverVCSEvent      *connect.Client[v1.DeliverVCSEventRequest, v1.DeliverVCSEventResponse]
 	notifyAuthChange     *connect.Client[v1.NotifyAuthChangeRequest, v1.NotifyAuthChangeResponse]
+	createCronJob        *connect.Client[v1.CreateCronJobRequest, v1.CreateCronJobResponse]
+	listCronJobs         *connect.Client[v1.ListCronJobsRequest, v1.ListCronJobsResponse]
+	getCronJob           *connect.Client[v1.GetCronJobRequest, v1.GetCronJobResponse]
+	updateCronJob        *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
+	deleteCronJob        *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
+	runCronJobNow        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -591,6 +665,36 @@ func (c *daemonServiceClient) NotifyAuthChange(ctx context.Context, req *connect
 	return c.notifyAuthChange.CallUnary(ctx, req)
 }
 
+// CreateCronJob calls bossanova.v1.DaemonService.CreateCronJob.
+func (c *daemonServiceClient) CreateCronJob(ctx context.Context, req *connect.Request[v1.CreateCronJobRequest]) (*connect.Response[v1.CreateCronJobResponse], error) {
+	return c.createCronJob.CallUnary(ctx, req)
+}
+
+// ListCronJobs calls bossanova.v1.DaemonService.ListCronJobs.
+func (c *daemonServiceClient) ListCronJobs(ctx context.Context, req *connect.Request[v1.ListCronJobsRequest]) (*connect.Response[v1.ListCronJobsResponse], error) {
+	return c.listCronJobs.CallUnary(ctx, req)
+}
+
+// GetCronJob calls bossanova.v1.DaemonService.GetCronJob.
+func (c *daemonServiceClient) GetCronJob(ctx context.Context, req *connect.Request[v1.GetCronJobRequest]) (*connect.Response[v1.GetCronJobResponse], error) {
+	return c.getCronJob.CallUnary(ctx, req)
+}
+
+// UpdateCronJob calls bossanova.v1.DaemonService.UpdateCronJob.
+func (c *daemonServiceClient) UpdateCronJob(ctx context.Context, req *connect.Request[v1.UpdateCronJobRequest]) (*connect.Response[v1.UpdateCronJobResponse], error) {
+	return c.updateCronJob.CallUnary(ctx, req)
+}
+
+// DeleteCronJob calls bossanova.v1.DaemonService.DeleteCronJob.
+func (c *daemonServiceClient) DeleteCronJob(ctx context.Context, req *connect.Request[v1.DeleteCronJobRequest]) (*connect.Response[v1.DeleteCronJobResponse], error) {
+	return c.deleteCronJob.CallUnary(ctx, req)
+}
+
+// RunCronJobNow calls bossanova.v1.DaemonService.RunCronJobNow.
+func (c *daemonServiceClient) RunCronJobNow(ctx context.Context, req *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error) {
+	return c.runCronJobNow.CallUnary(ctx, req)
+}
+
 // DaemonServiceHandler is an implementation of the bossanova.v1.DaemonService service.
 type DaemonServiceHandler interface {
 	// Context resolution
@@ -634,6 +738,20 @@ type DaemonServiceHandler interface {
 	DeliverVCSEvent(context.Context, *connect.Request[v1.DeliverVCSEventRequest]) (*connect.Response[v1.DeliverVCSEventResponse], error)
 	// Auth change notification (CLI → daemon)
 	NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error)
+	// CreateCronJob registers a new scheduled prompt for a repo.
+	CreateCronJob(context.Context, *connect.Request[v1.CreateCronJobRequest]) (*connect.Response[v1.CreateCronJobResponse], error)
+	// ListCronJobs returns cron jobs, optionally filtered by repo.
+	ListCronJobs(context.Context, *connect.Request[v1.ListCronJobsRequest]) (*connect.Response[v1.ListCronJobsResponse], error)
+	// GetCronJob returns a single cron job by id.
+	GetCronJob(context.Context, *connect.Request[v1.GetCronJobRequest]) (*connect.Response[v1.GetCronJobResponse], error)
+	// UpdateCronJob mutates an existing cron job. Mutable fields are optional.
+	UpdateCronJob(context.Context, *connect.Request[v1.UpdateCronJobRequest]) (*connect.Response[v1.UpdateCronJobResponse], error)
+	// DeleteCronJob removes a cron job. Sessions previously spawned by it
+	// have their cron_job_id reset to NULL (no cascade).
+	DeleteCronJob(context.Context, *connect.Request[v1.DeleteCronJobRequest]) (*connect.Response[v1.DeleteCronJobResponse], error)
+	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
+	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
+	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
 }
 
 // NewDaemonServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -841,6 +959,42 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("NotifyAuthChange")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceCreateCronJobHandler := connect.NewUnaryHandler(
+		DaemonServiceCreateCronJobProcedure,
+		svc.CreateCronJob,
+		connect.WithSchema(daemonServiceMethods.ByName("CreateCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListCronJobsHandler := connect.NewUnaryHandler(
+		DaemonServiceListCronJobsProcedure,
+		svc.ListCronJobs,
+		connect.WithSchema(daemonServiceMethods.ByName("ListCronJobs")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceGetCronJobHandler := connect.NewUnaryHandler(
+		DaemonServiceGetCronJobProcedure,
+		svc.GetCronJob,
+		connect.WithSchema(daemonServiceMethods.ByName("GetCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceUpdateCronJobHandler := connect.NewUnaryHandler(
+		DaemonServiceUpdateCronJobProcedure,
+		svc.UpdateCronJob,
+		connect.WithSchema(daemonServiceMethods.ByName("UpdateCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceDeleteCronJobHandler := connect.NewUnaryHandler(
+		DaemonServiceDeleteCronJobProcedure,
+		svc.DeleteCronJob,
+		connect.WithSchema(daemonServiceMethods.ByName("DeleteCronJob")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceRunCronJobNowHandler := connect.NewUnaryHandler(
+		DaemonServiceRunCronJobNowProcedure,
+		svc.RunCronJobNow,
+		connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.DaemonService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DaemonServiceResolveContextProcedure:
@@ -909,6 +1063,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeliverVCSEventHandler.ServeHTTP(w, r)
 		case DaemonServiceNotifyAuthChangeProcedure:
 			daemonServiceNotifyAuthChangeHandler.ServeHTTP(w, r)
+		case DaemonServiceCreateCronJobProcedure:
+			daemonServiceCreateCronJobHandler.ServeHTTP(w, r)
+		case DaemonServiceListCronJobsProcedure:
+			daemonServiceListCronJobsHandler.ServeHTTP(w, r)
+		case DaemonServiceGetCronJobProcedure:
+			daemonServiceGetCronJobHandler.ServeHTTP(w, r)
+		case DaemonServiceUpdateCronJobProcedure:
+			daemonServiceUpdateCronJobHandler.ServeHTTP(w, r)
+		case DaemonServiceDeleteCronJobProcedure:
+			daemonServiceDeleteCronJobHandler.ServeHTTP(w, r)
+		case DaemonServiceRunCronJobNowProcedure:
+			daemonServiceRunCronJobNowHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1048,4 +1214,28 @@ func (UnimplementedDaemonServiceHandler) DeliverVCSEvent(context.Context, *conne
 
 func (UnimplementedDaemonServiceHandler) NotifyAuthChange(context.Context, *connect.Request[v1.NotifyAuthChangeRequest]) (*connect.Response[v1.NotifyAuthChangeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.NotifyAuthChange is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) CreateCronJob(context.Context, *connect.Request[v1.CreateCronJobRequest]) (*connect.Response[v1.CreateCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.CreateCronJob is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListCronJobs(context.Context, *connect.Request[v1.ListCronJobsRequest]) (*connect.Response[v1.ListCronJobsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListCronJobs is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetCronJob(context.Context, *connect.Request[v1.GetCronJobRequest]) (*connect.Response[v1.GetCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetCronJob is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) UpdateCronJob(context.Context, *connect.Request[v1.UpdateCronJobRequest]) (*connect.Response[v1.UpdateCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.UpdateCronJob is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) DeleteCronJob(context.Context, *connect.Request[v1.DeleteCronJobRequest]) (*connect.Response[v1.DeleteCronJobResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteCronJob is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RunCronJobNow is not implemented"))
 }

@@ -66,6 +66,12 @@ type WorktreeManager interface {
 	// Push pushes the given branch to the "origin" remote.
 	Push(ctx context.Context, worktreePath, branch string) error
 
+	// Status runs `git status --porcelain` in the given worktree and returns
+	// its trimmed stdout. Empty output means the working tree has no changes
+	// (no untracked or modified files). Used by the cron-finalize path to
+	// decide between the no-changes cleanup branch and the PR branch.
+	Status(ctx context.Context, worktreePath string) (string, error)
+
 	// Clone clones a remote repository to the given local path.
 	Clone(ctx context.Context, cloneURL, localPath string) error
 
@@ -199,9 +205,20 @@ func sanitizeDirName(name string) string {
 
 // bossdManagedExcludePatterns are the gitignore patterns bossd ensures
 // are present in every worktree's $GIT_COMMON_DIR/info/exclude so that
-// bossd-managed artifacts (Claude session logs, etc.) don't pollute
-// `git status` or get accidentally committed.
-var bossdManagedExcludePatterns = []string{".boss/"}
+// bossd-managed artifacts (Claude session logs, hook config, etc.) don't
+// pollute `git status` or get accidentally committed.
+//
+// .claude/settings.local.json is particularly load-bearing: bossd writes
+// the cron Stop-hook config there with a bearer token. Without this
+// exclude, `git status` reported it as untracked, which made the cron
+// finalize pipeline misclassify "do nothing" runs as having Claude
+// changes and route them to pr_failed → Blocked. (services/bossd/
+// internal/session/finalize.go has a parallel in-process filter as
+// belt-and-suspenders.)
+var bossdManagedExcludePatterns = []string{
+	".boss/",
+	".claude/settings.local.json",
+}
 
 // bossdExcludeMarker identifies the block of patterns bossd has added
 // to info/exclude, so the additions are easy to spot and remove by hand.
@@ -463,6 +480,16 @@ func (m *Manager) EmptyCommit(ctx context.Context, worktreePath, message string)
 		return fmt.Errorf("empty commit: %w", err)
 	}
 	return nil
+}
+
+// Status runs `git status --porcelain` in the worktree. runGit already trims
+// trailing whitespace, so empty output indicates a clean tree.
+func (m *Manager) Status(ctx context.Context, worktreePath string) (string, error) {
+	out, err := runGit(ctx, worktreePath, "status", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("git status: %w", err)
+	}
+	return out, nil
 }
 
 func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {

@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/bossd/internal/claude"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/session"
+	"github.com/recurser/bossd/internal/taskorchestrator"
 	"github.com/recurser/bossd/internal/testharness"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -887,16 +888,36 @@ func getSessionState(t *testing.T, h *testharness.Harness, ctx context.Context, 
 	return resp.Msg.Session.State
 }
 
+// registerOpt is a functional option for registerTestRepo.
+type registerOpt func(*registerOpts)
+
+type registerOpts struct {
+	worktreeBaseDir string
+}
+
+// withWorktreeBaseDir overrides the WorktreeBaseDir used by registerTestRepo.
+// When not set, the default "/tmp/worktrees" is used.
+func withWorktreeBaseDir(dir string) registerOpt {
+	return func(o *registerOpts) {
+		o.worktreeBaseDir = dir
+	}
+}
+
 // registerTestRepo is a helper that registers a repo with default test values
-// and returns the repo ID. Used by TestE2E_SessionControlRPCs subtests.
-func registerTestRepo(t *testing.T, h *testharness.Harness, ctx context.Context) string {
+// and returns the repo ID. Used by TestE2E_SessionControlRPCs subtests and
+// cron E2E tests. Pass withWorktreeBaseDir to override the worktree base dir.
+func registerTestRepo(t *testing.T, h *testharness.Harness, ctx context.Context, opts ...registerOpt) string {
 	t.Helper()
+	o := &registerOpts{worktreeBaseDir: "/tmp/worktrees"}
+	for _, opt := range opts {
+		opt(o)
+	}
 	repoDir := testharness.TempRepoDir(t)
 	resp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
 		DisplayName:       "my-app",
 		LocalPath:         repoDir,
 		DefaultBaseBranch: "main",
-		WorktreeBaseDir:   "/tmp/worktrees",
+		WorktreeBaseDir:   o.worktreeBaseDir,
 	}))
 	if err != nil {
 		t.Fatalf("register repo: %v", err)
@@ -1719,5 +1740,65 @@ func TestE2E_EmptyTrash_WithAgeFilter(t *testing.T) {
 	}
 	if branches[recent.branch] {
 		t.Fatalf("recent session's branch %q must NOT appear in EmptyTrash call", recent.branch)
+	}
+}
+
+// TestE2E_PluginSession_DeferPRDefaultsFalse is an FL3-5 regression gate for
+// outside-voice concern #7: plugin-initiated sessions must *not* accidentally
+// defer PR creation. Dependabot, Linear, and repair plugins all flow through
+// taskorchestrator.SessionCreator — the same path we're exercising here —
+// and rely on the zero-valued DeferPR to keep existing behavior.
+//
+// The test drives the plugin path explicitly by constructing a SessionCreator
+// against the harness's lifecycle + mock VCS, invoking it with the subset of
+// CreateSessionOpts a plugin would produce (no DeferPR, no CronJobID), and
+// asserting a draft PR was created up front.
+func TestE2E_PluginSession_DeferPRDefaultsFalse(t *testing.T) {
+	h := testharness.New(t)
+	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
+
+	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "dependabot-repo",
+		LocalPath:         repoDir,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+	repoID := repoResp.Msg.Repo.Id
+
+	creator := taskorchestrator.NewSessionCreator(h.Sessions, h.Lifecycle, zerolog.Nop())
+
+	// Simulate exactly what orchestrator.handleCreateSession builds for a
+	// plugin-discovered task: no DeferPR, no CronJobID, no HookToken.
+	sess, err := creator.CreateSession(ctx, taskorchestrator.CreateSessionOpts{
+		RepoID:     repoID,
+		Title:      "Bump lodash",
+		Plan:       "Fix the CI failure after upgrading lodash",
+		BaseBranch: "main",
+		HeadBranch: "dependabot/npm/lodash-4.17.21",
+	})
+	if err != nil {
+		t.Fatalf("plugin-path create session: %v", err)
+	}
+
+	// Up-front draft PR must have fired — if it didn't, DeferPR leaked from
+	// the cron path into the plugin path.
+	if len(h.VCS.CreateDraftPRCalls) != 1 {
+		t.Fatalf("expected 1 CreateDraftPR call via plugin path, got %d", len(h.VCS.CreateDraftPRCalls))
+	}
+	if !h.VCS.CreateDraftPRCalls[0].Draft {
+		t.Error("expected draft=true for plugin-initiated PR")
+	}
+
+	// CronJobID must remain nil — plugin-initiated sessions must never
+	// acquire a cron linkage by accident.
+	if sess.CronJobID != nil {
+		t.Errorf("expected CronJobID to be nil for plugin session, got %q", *sess.CronJobID)
+	}
+	if sess.PRNumber == nil {
+		t.Error("expected PRNumber to be populated after plugin-path session creation")
 	}
 }

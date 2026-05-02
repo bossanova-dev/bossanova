@@ -3,19 +3,21 @@ package taskorchestrator
 import (
 	"context"
 	"errors"
-	"io"
 	"testing"
 
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // mockSessionStore implements db.SessionStore for testing.
 type mockSessionStore struct {
-	createFn func(ctx context.Context, params db.CreateSessionParams) (*models.Session, error)
-	getFn    func(ctx context.Context, id string) (*models.Session, error)
+	createFn  func(ctx context.Context, params db.CreateSessionParams) (*models.Session, error)
+	getFn     func(ctx context.Context, id string) (*models.Session, error)
+	deleted   []string
+	deleteErr error
 }
 
 func (m *mockSessionStore) Create(ctx context.Context, params db.CreateSessionParams) (*models.Session, error) {
@@ -59,20 +61,29 @@ func (m *mockSessionStore) Resurrect(ctx context.Context, id string) error {
 }
 
 func (m *mockSessionStore) Delete(ctx context.Context, id string) error {
-	return nil
+	m.deleted = append(m.deleted, id)
+	return m.deleteErr
 }
 
 func (m *mockSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64, error) {
 	return 0, nil
 }
 
-// mockSessionStarter implements SessionStarter for testing.
-type mockSessionStarter struct {
-	startSessionFn func(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error
+func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
+	return false, nil
 }
 
-func (m *mockSessionStarter) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error {
-	return m.startSessionFn(ctx, sessionID, existingBranch, forceBranch, skipSetupScript, setupOutput)
+func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
+	return nil, nil
+}
+
+// mockSessionStarter implements SessionStarter for testing.
+type mockSessionStarter struct {
+	startSessionFn func(ctx context.Context, sessionID string, opts session.StartSessionOpts) error
+}
+
+func (m *mockSessionStarter) StartSession(ctx context.Context, sessionID string, opts session.StartSessionOpts) error {
+	return m.startSessionFn(ctx, sessionID, opts)
 }
 
 func TestCreateSession_Success(t *testing.T) {
@@ -96,9 +107,9 @@ func TestCreateSession_Success(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, sessionID string, existingBranch string, _ bool, _ bool, _ io.Writer) error {
+		startSessionFn: func(_ context.Context, sessionID string, opts session.StartSessionOpts) error {
 			capturedSessionID = sessionID
-			capturedBranch = existingBranch
+			capturedBranch = opts.ExistingBranch
 			return nil
 		},
 	}
@@ -146,8 +157,8 @@ func TestCreateSession_NoHeadBranch(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, _ string, existingBranch string, _ bool, _ bool, _ io.Writer) error {
-			capturedBranch = existingBranch
+		startSessionFn: func(_ context.Context, _ string, opts session.StartSessionOpts) error {
+			capturedBranch = opts.ExistingBranch
 			return nil
 		},
 	}
@@ -176,7 +187,7 @@ func TestCreateSession_CreateError(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, _ string, _ string, _ bool, _ bool, _ io.Writer) error {
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
 			t.Fatal("StartSession should not be called when Create fails")
 			return nil
 		},
@@ -209,7 +220,7 @@ func TestCreateSession_StartSessionError(t *testing.T) {
 	}
 
 	starter := &mockSessionStarter{
-		startSessionFn: func(_ context.Context, _ string, _ string, _ bool, _ bool, _ io.Writer) error {
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
 			return errors.New("worktree conflict")
 		},
 	}
@@ -226,5 +237,12 @@ func TestCreateSession_StartSessionError(t *testing.T) {
 	}
 	if want := "start session sess-789: worktree conflict"; err.Error() != want {
 		t.Errorf("got error %q, want %q", err.Error(), want)
+	}
+
+	// The half-started session row must be cleaned up: leaving it behind
+	// produces phantom entries in the home view (a session with no chat,
+	// no PR, stuck in CreatingWorktree) that the user can't recover.
+	if len(store.deleted) != 1 || store.deleted[0] != "sess-789" {
+		t.Errorf("expected Delete(\"sess-789\") to be called once, got %v", store.deleted)
 	}
 }

@@ -4,6 +4,7 @@
 package testharness
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	urlpkg "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +60,7 @@ type Harness struct {
 	Sessions    db.SessionStore
 	Attempts    db.AttemptStore
 	ClaudeChats db.ClaudeChatStore
+	CronJobs    db.CronJobStore
 	Lifecycle   *session.Lifecycle
 	Server      *server.Server
 	Tmux        *tmux.Client
@@ -71,6 +74,10 @@ type Harness struct {
 
 	// Client is a ConnectRPC client connected to the test server.
 	Client bossanovav1connect.DaemonServiceClient
+
+	// HookServer is the loopback hook server wired to the harness's Lifecycle.
+	// It is always started by newHarness; tests use PostStopHook to POST to it.
+	HookServer *server.HookServer
 
 	socketPath string
 	httpServer *http.Server
@@ -136,6 +143,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	sessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
 	claudeChats := db.NewClaudeChatStore(database)
+	cronJobs := db.NewCronJobStore(database)
 
 	// Mocks.
 	logger := zerolog.Nop()
@@ -143,24 +151,28 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	claudeMock := NewMockClaudeRunner()
 	vcsMock := NewMockVCSProvider()
 
-	// Lifecycle.
-	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, gitMock, claudeMock, nil, vcsMock, logger)
-
-	// PR display tracker. Wired through to the server so MergeSession's
-	// "PR is not passing" guard is reachable from tests — entries default
-	// to empty, so merges fall through unless a test explicitly calls
-	// DisplayTracker.Set with a non-passing status.
-	display := status.NewDisplayTracker()
-
-	// Tmux client. Tests that need RecordChat to drive tmux pass a custom
-	// command factory; everyone else gets a client whose Available()
-	// returns false, which short-circuits ensureChatTmuxSession.
+	// Tmux client. Built BEFORE the Lifecycle so we can pass it in as a
+	// dependency for cron-spawned sessions (startCronTmuxChat needs
+	// Available()) as well as RecordChat. Tests that need these paths to
+	// drive tmux pass a custom command factory; everyone else gets a client
+	// whose Available() returns false, which short-circuits both paths and
+	// preserves the prior "no tmux side effects" behaviour for legacy tests.
 	var tmuxClient *tmux.Client
 	if opts.TmuxCommandFactory != nil {
 		tmuxClient = tmux.NewClient(tmux.WithCommandFactory(opts.TmuxCommandFactory))
 	} else {
 		tmuxClient = tmux.NewClient(tmux.WithCommandFactory(unavailableTmuxFactory))
 	}
+
+	// Lifecycle. Wired with tmuxClient so cron-spawned sessions route
+	// through startCronTmuxChat instead of the headless claude.Start path.
+	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, cronJobs, gitMock, claudeMock, tmuxClient, vcsMock, logger)
+
+	// PR display tracker. Wired through to the server so MergeSession's
+	// "PR is not passing" guard is reachable from tests — entries default
+	// to empty, so merges fall through unless a test explicitly calls
+	// DisplayTracker.Set with a non-passing status.
+	display := status.NewDisplayTracker()
 
 	// Server.
 	h := &Harness{}
@@ -214,11 +226,27 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		connect.WithGRPC(),
 	)
 
+	// Hook server — loopback HTTP server that receives Claude Stop-hook POSTs
+	// and dispatches Lifecycle.FinalizeSession. The bound port is plumbed
+	// directly into the lifecycle (same as the daemon entrypoint) so tests
+	// don't need a port file on disk.
+	hookSrv := server.NewHookServer(server.HookServerConfig{
+		Sessions:  sessions,
+		Finalizer: lifecycle,
+		Logger:    logger,
+	})
+	if err := hookSrv.Listen(); err != nil {
+		t.Fatalf("hook server listen: %v", err)
+	}
+	lifecycle.SetHookPort(hookSrv.Port())
+	go func() { _ = hookSrv.Serve() }()
+
 	h.DB = database
 	h.Repos = repos
 	h.Sessions = sessions
 	h.Attempts = attempts
 	h.ClaudeChats = claudeChats
+	h.CronJobs = cronJobs
 	h.Lifecycle = lifecycle
 	h.Server = srv
 	h.Tmux = tmuxClient
@@ -227,6 +255,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.VCS = vcsMock
 	h.DisplayTracker = display
 	h.Client = client
+	h.HookServer = hookSrv
 	h.socketPath = socketPath
 	h.httpServer = httpServer
 	h.listener = ln
@@ -258,6 +287,11 @@ func (h *Harness) DeletedSessionIDs() []string {
 func (h *Harness) Close() {
 	if !h.closed.CompareAndSwap(false, true) {
 		return
+	}
+	if h.HookServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = h.HookServer.Shutdown(ctx)
 	}
 	if h.httpServer != nil {
 		_ = h.httpServer.Close()
@@ -444,6 +478,56 @@ func getPRNumber(t *testing.T, h *Harness, ctx context.Context, sessionID string
 		t.Fatalf("SeedSessionInState: expected PR number on session %s", sessionID)
 	}
 	return int(*resp.Msg.Session.PrNumber)
+}
+
+// SeedCronSession creates a bare session row (no worktree, no branch) with the
+// given hook token set. This is the cheapest way to give the hook server a
+// session to authenticate against in smoke tests for PostStopHook.
+func (h *Harness) SeedCronSession(t *testing.T, repoID, hookToken string) string {
+	t.Helper()
+	ctx := context.Background()
+	sess, err := h.Sessions.Create(ctx, db.CreateSessionParams{
+		RepoID: repoID,
+		Title:  "cron-seed",
+		Plan:   "seed",
+	})
+	if err != nil {
+		t.Fatalf("SeedCronSession create: %v", err)
+	}
+	tok := hookToken
+	tokPtr := &tok
+	if _, err := h.Sessions.Update(ctx, sess.ID, db.UpdateSessionParams{HookToken: &tokPtr}); err != nil {
+		t.Fatalf("SeedCronSession set token: %v", err)
+	}
+	return sess.ID
+}
+
+// SetVCSMode configures the test harness for one of the named VCS failure
+// modes. It sets the VCS provider mode (for NoGitHub and CreatePRFail) and
+// wires up the git mock for VCSModePushFail.
+func (h *Harness) SetVCSMode(mode MockVCSMode) {
+	h.VCS.SetMode(mode)
+	if mode == VCSModePushFail {
+		h.Git.SetPushError(fmt.Errorf("mock: push failed (VCSModePushFail)"))
+	} else {
+		h.Git.SetPushError(nil)
+	}
+}
+
+// PostStopHook POSTs to the harness's loopback hook server at
+// /hooks/finalize/<sessionID> with an Authorization: Bearer <token> header.
+// It uses the bound port on the in-process HookServer directly — no port file
+// I/O needed. The caller is responsible for closing the response body.
+func (h *Harness) PostStopHook(sessionID, token string) (*http.Response, error) {
+	port := h.HookServer.Port()
+	url := fmt.Sprintf("http://127.0.0.1:%d/hooks/finalize/%s", port, urlpkg.PathEscape(sessionID))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(nil))
+	if err != nil {
+		return nil, fmt.Errorf("new request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 5 * time.Second}
+	return client.Do(req)
 }
 
 // migrationsDir returns the absolute path to the bossd migrations directory.

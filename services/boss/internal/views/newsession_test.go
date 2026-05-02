@@ -181,6 +181,18 @@ func (s *stubClient) GetSessionStatuses(context.Context, []string) ([]*pb.Sessio
 }
 func (s *stubClient) NotifyAuthChange(context.Context, string) error { return nil }
 
+func (s *stubClient) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	panic("unused")
+}
+func (s *stubClient) ListCronJobs(context.Context) ([]*pb.CronJob, error) { panic("unused") }
+func (s *stubClient) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	panic("unused")
+}
+func (s *stubClient) DeleteCronJob(context.Context, string) error { panic("unused") }
+func (s *stubClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
+	panic("unused")
+}
+
 // --- Helpers ---
 
 func twoRepos() []*pb.Repo {

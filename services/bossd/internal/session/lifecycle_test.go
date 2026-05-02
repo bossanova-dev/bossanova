@@ -3,7 +3,12 @@ package session
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -14,6 +19,7 @@ import (
 	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
+	"github.com/recurser/bossd/internal/tmux"
 )
 
 // Compile-time interface assertions for test mocks.
@@ -29,6 +35,7 @@ var (
 // --- Mock SessionStore ---
 
 type mockSessionStore struct {
+	mu       sync.Mutex
 	sessions map[string]*models.Session
 }
 
@@ -37,6 +44,8 @@ func newMockSessionStore() *mockSessionStore {
 }
 
 func (m *mockSessionStore) Create(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s := &models.Session{
 		ID:           "sess-1",
 		RepoID:       params.RepoID,
@@ -52,6 +61,8 @@ func (m *mockSessionStore) Create(_ context.Context, params db.CreateSessionPara
 }
 
 func (m *mockSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
 	if !ok {
 		return nil, fmt.Errorf("session %s not found", id)
@@ -92,6 +103,8 @@ func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.
 }
 
 func (m *mockSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
 	if !ok {
 		return nil, fmt.Errorf("session %s not found", id)
@@ -126,6 +139,12 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.TmuxSessionName != nil {
 		s.TmuxSessionName = *params.TmuxSessionName
 	}
+	if params.CronJobID != nil {
+		s.CronJobID = *params.CronJobID
+	}
+	if params.HookToken != nil {
+		s.HookToken = *params.HookToken
+	}
 	return s, nil
 }
 
@@ -148,12 +167,43 @@ func (m *mockSessionStore) Resurrect(_ context.Context, id string) error {
 }
 
 func (m *mockSessionStore) Delete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.sessions, id)
 	return nil
 }
 
 func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
 	return 0, nil
+}
+
+func (m *mockSessionStore) ListByState(_ context.Context, state int) ([]*models.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []*models.Session
+	for _, s := range m.sessions {
+		if int(s.State) == state {
+			result = append(result, s)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockSessionStore) UpdateStateConditional(_ context.Context, id string, newState, expectedState int) (bool, error) {
+	// Mirror the SQL `UPDATE ... WHERE state = ?` atomic check-and-set so the
+	// FinalizeSession idempotency test (concurrent goroutines) sees the same
+	// race-free behavior the real SQLite store provides.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	if int(s.State) != expectedState {
+		return false, nil
+	}
+	s.State = machine.State(newState)
+	return true, nil
 }
 
 // --- Mock RepoStore ---
@@ -220,18 +270,52 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 
 // --- Mock ClaudeChatStore ---
 
-type mockClaudeChatStore struct{}
+// mockClaudeChatStore satisfies db.ClaudeChatStore for lifecycle tests. By
+// default Create / UpdateTmuxSessionName / DeleteByClaudeID succeed and
+// record their parameters so tests can assert on them. Setting createErr,
+// updateTmuxNameErr, etc. forces the corresponding method to return that
+// error instead — used by failure-mode tests for the cron tmux path.
+type mockClaudeChatStore struct {
+	mu                sync.Mutex
+	createCalls       []db.CreateClaudeChatParams
+	tmuxNameUpdates   []tmuxNameUpdate
+	deletedClaudeIDs  []string
+	chatsBySession    map[string][]*models.ClaudeChat // returned by ListBySession when set
+	createErr         error
+	updateTmuxNameErr error
+}
 
-func (m *mockClaudeChatStore) Create(_ context.Context, _ db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
-	return nil, nil
+type tmuxNameUpdate struct {
+	claudeID string
+	name     *string
+}
+
+func (m *mockClaudeChatStore) Create(_ context.Context, params db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createCalls = append(m.createCalls, params)
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
+	return &models.ClaudeChat{
+		ID:        "chat-" + params.ClaudeID,
+		SessionID: params.SessionID,
+		ClaudeID:  params.ClaudeID,
+		Title:     params.Title,
+	}, nil
 }
 
 func (m *mockClaudeChatStore) GetByClaudeID(_ context.Context, _ string) (*models.ClaudeChat, error) {
 	return nil, nil
 }
 
-func (m *mockClaudeChatStore) ListBySession(_ context.Context, _ string) ([]*models.ClaudeChat, error) {
-	return nil, nil
+func (m *mockClaudeChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.ClaudeChat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.chatsBySession == nil {
+		return nil, nil
+	}
+	return m.chatsBySession[sessionID], nil
 }
 
 func (m *mockClaudeChatStore) UpdateTitle(_ context.Context, _, _ string) error {
@@ -242,11 +326,17 @@ func (m *mockClaudeChatStore) UpdateTitleByClaudeID(_ context.Context, _, _ stri
 	return nil
 }
 
-func (m *mockClaudeChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
-	return nil
+func (m *mockClaudeChatStore) UpdateTmuxSessionName(_ context.Context, claudeID string, name *string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tmuxNameUpdates = append(m.tmuxNameUpdates, tmuxNameUpdate{claudeID: claudeID, name: name})
+	return m.updateTmuxNameErr
 }
 
-func (m *mockClaudeChatStore) DeleteByClaudeID(_ context.Context, _ string) error {
+func (m *mockClaudeChatStore) DeleteByClaudeID(_ context.Context, claudeID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deletedClaudeIDs = append(m.deletedClaudeIDs, claudeID)
 	return nil
 }
 
@@ -261,22 +351,32 @@ type mockWorktreeManager struct {
 	createdFromExisting         []gitpkg.CreateFromExistingBranchOpts
 	createFromExistingBranchErr error // if set, CreateFromExistingBranch returns this error
 	archived                    []string
+	archiveErr                  error // if set, Archive returns this error
 	resurrected                 []gitpkg.ResurrectOpts
 	pushed                      []string
-	originURL                   string // returned by DetectOriginURL
+	pushErr                     error    // if set, Push returns this error
+	emptyCommits                []string // worktree paths on which EmptyCommit was invoked
+	originURL                   string   // returned by DetectOriginURL
+	statusOut                   string   // returned by Status
+	statusErr                   error    // if set, Status returns this error
+	worktreePath                string   // override for Create's returned WorktreePath; empty uses the historical fixed path
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
 	m.created = append(m.created, opts)
+	path := m.worktreePath
+	if path == "" {
+		path = "/tmp/worktrees/test-repo/test-session"
+	}
 	return &gitpkg.CreateResult{
-		WorktreePath: "/tmp/worktrees/test-repo/test-session",
+		WorktreePath: path,
 		BranchName:   "test-session",
 	}, nil
 }
 
 func (m *mockWorktreeManager) Archive(_ context.Context, path string) error {
 	m.archived = append(m.archived, path)
-	return nil
+	return m.archiveErr
 }
 
 func (m *mockWorktreeManager) Resurrect(_ context.Context, opts gitpkg.ResurrectOpts) error {
@@ -284,13 +384,18 @@ func (m *mockWorktreeManager) Resurrect(_ context.Context, opts gitpkg.Resurrect
 	return nil
 }
 
-func (m *mockWorktreeManager) EmptyCommit(_ context.Context, _, _ string) error {
+func (m *mockWorktreeManager) EmptyCommit(_ context.Context, worktreePath, _ string) error {
+	m.emptyCommits = append(m.emptyCommits, worktreePath)
 	return nil
 }
 
 func (m *mockWorktreeManager) Push(_ context.Context, _ string, branch string) error {
 	m.pushed = append(m.pushed, branch)
-	return nil
+	return m.pushErr
+}
+
+func (m *mockWorktreeManager) Status(_ context.Context, _ string) (string, error) {
+	return m.statusOut, m.statusErr
 }
 
 func (m *mockWorktreeManager) Clone(_ context.Context, _, _ string) error {
@@ -347,10 +452,11 @@ func (m *mockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts g
 // --- Mock ClaudeRunner ---
 
 type mockClaudeRunner struct {
-	started []mockStartCall
-	stopped []string
-	running map[string]bool
-	nextID  string
+	started  []mockStartCall
+	stopped  []string
+	running  map[string]bool
+	nextID   string
+	startErr error // if set, Start returns this error
 }
 
 type mockStartCall struct {
@@ -368,6 +474,9 @@ func newMockClaudeRunner() *mockClaudeRunner {
 
 func (m *mockClaudeRunner) Start(_ context.Context, workDir, plan string, resume *string, _ string) (string, error) {
 	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume})
+	if m.startErr != nil {
+		return "", m.startErr
+	}
 	id := m.nextID
 	m.running[id] = true
 	return id, nil
@@ -509,9 +618,9 @@ func TestStartSession(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	if err := lc.StartSession(ctx, "sess-1", "", false, false, nil); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -581,10 +690,10 @@ func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) 
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// Pass a branch name that doesn't exist on the remote.
-	if err := lc.StartSession(ctx, "sess-1", "dave/fre-1176", false, false, nil); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{ExistingBranch: "dave/fre-1176"}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -623,7 +732,7 @@ func TestStopSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -664,7 +773,7 @@ func TestArchiveSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ArchiveSession: %v", err)
@@ -727,7 +836,7 @@ func TestResurrectSession(t *testing.T) {
 	oldClaudeID := "claude-old"
 	sess.ClaudeSessionID = &oldClaudeID
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
@@ -770,7 +879,7 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 		// ArchivedAt is nil — not archived.
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	err := lc.ResurrectSession(ctx, "sess-1")
 	if err == nil {
@@ -796,7 +905,7 @@ func TestStopSessionNoClaudeProcess(t *testing.T) {
 		// No ClaudeSessionID.
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StopSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StopSession: %v", err)
@@ -838,7 +947,7 @@ func TestSubmitPR(t *testing.T) {
 		State:        machine.ImplementingPlan,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
 		t.Fatalf("SubmitPR: %v", err)
@@ -915,7 +1024,7 @@ func TestSubmitPR_ExistingPRStillPushesImplementationCommits(t *testing.T) {
 		PRURL:        &existingURL,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
 		t.Fatalf("SubmitPR: %v", err)
@@ -961,7 +1070,7 @@ func TestSubmitPRWrongState(t *testing.T) {
 		State:  machine.CreatingWorktree, // wrong state for SubmitPR
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
 	err := lc.SubmitPR(ctx, "sess-1")
 	if err == nil {
@@ -998,9 +1107,9 @@ func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
 	vp.nextPRInfo = nil
 	vp.createPRErr = vcs.ErrRepoNotReady
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
-	err := lc.StartSession(ctx, "sess-1", "", false, false, nil)
+	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{})
 	if err != nil {
 		t.Fatalf("expected session to start successfully despite PR failure, got: %v", err)
 	}
@@ -1042,10 +1151,13 @@ func TestStartSession_SkipSetupScript_NilsSetupScript(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with an existing branch (dependabot PR path).
-	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, true, nil); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		ExistingBranch:  "dependabot/npm/lodash-4.17.21",
+		SkipSetupScript: true,
+	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -1082,10 +1194,10 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = true with no existing branch (new branch path).
-	if err := lc.StartSession(ctx, "sess-1", "", false, true, nil); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{SkipSetupScript: true}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -1120,7 +1232,7 @@ func TestStartQuickChatSession(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.StartQuickChatSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("StartQuickChatSession: %v", err)
@@ -1177,7 +1289,7 @@ func TestArchiveQuickChatSession(t *testing.T) {
 		ClaudeSessionID: &claudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ArchiveSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ArchiveSession: %v", err)
@@ -1220,7 +1332,7 @@ func TestResurrectQuickChatSession(t *testing.T) {
 		ClaudeSessionID: &oldClaudeID,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	if err := lc.ResurrectSession(ctx, "sess-1"); err != nil {
 		t.Fatalf("ResurrectSession: %v", err)
@@ -1259,7 +1371,7 @@ func TestResolveOriginURL_AlreadySet(t *testing.T) {
 		OriginURL: "git@github.com:owner/repo.git",
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err != nil {
@@ -1284,7 +1396,7 @@ func TestResolveOriginURL_EmptyReDetected(t *testing.T) {
 		OriginURL: "", // empty — needs re-detection
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err != nil {
@@ -1314,7 +1426,7 @@ func TestResolveOriginURL_EmptyNoRemote(t *testing.T) {
 		OriginURL:   "",
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	_, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err == nil {
@@ -1350,9 +1462,9 @@ func TestStartSession_NoPlan_EmptyOriginURL_ReDetected(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, vp, logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
 
-	if err := lc.StartSession(ctx, "sess-1", "", false, false, nil); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -1394,10 +1506,12 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 		State:      machine.CreatingWorktree,
 	}
 
-	lc := NewLifecycle(sessions, repos, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
 	// skipSetupScript = false with existing branch.
-	if err := lc.StartSession(ctx, "sess-1", "dependabot/npm/lodash-4.17.21", false, false, nil); err != nil {
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		ExistingBranch: "dependabot/npm/lodash-4.17.21",
+	}); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
 
@@ -1410,4 +1524,698 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 	} else if *wt.createdFromExisting[0].SetupScript != "npm install" {
 		t.Errorf("expected SetupScript 'npm install', got %q", *wt.createdFromExisting[0].SetupScript)
 	}
+}
+
+// TestStartSession_DeferPRFalse_CreatesDraftPR pins the pre-FL3 behavior: a
+// session with no PR and DeferPR=false (the zero value) must still get an
+// up-front draft PR during StartSession.
+func TestStartSession_DeferPRFalse_CreatesDraftPR(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("expected 1 createPR call with DeferPR=false, got %d", len(vp.createPRCalls))
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.PRNumber == nil {
+		t.Error("expected PRNumber to be populated after up-front draft PR")
+	}
+}
+
+// TestStartSession_DeferPRTrue_SkipsDraftPR verifies the cron-session path:
+// DeferPR=true must suppress the up-front PR creation so the finalize path
+// can later call EnsurePR based on the session's outcome.
+func TestStartSession_DeferPRTrue_SkipsDraftPR(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Nightly audit",
+		Plan:       "Run the audit",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(vp.createPRCalls) != 0 {
+		t.Errorf("expected 0 createPR calls with DeferPR=true, got %d", len(vp.createPRCalls))
+	}
+	if len(wt.emptyCommits) != 0 {
+		t.Errorf("expected 0 empty commits with DeferPR=true, got %d", len(wt.emptyCommits))
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.PRNumber != nil {
+		t.Errorf("expected PRNumber to remain nil, got %v", sess.PRNumber)
+	}
+}
+
+// TestStartSession_CronJobID_Persisted verifies that opts.CronJobID is
+// written onto the session row so the finalize path and cron UI can
+// identify which cron job produced a given session.
+func TestStartSession_CronJobID_Persisted(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockClaudeChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Nightly audit",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		CronJobID: "cron-42",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.CronJobID == nil {
+		t.Fatal("expected CronJobID to be persisted, got nil")
+	}
+	if *sess.CronJobID != "cron-42" {
+		t.Errorf("CronJobID = %q, want %q", *sess.CronJobID, "cron-42")
+	}
+}
+
+// TestStartSession_HookToken_InstallsHookConfig verifies that when
+// StartSessionOpts.HookToken is set, StartSession uses the in-memory
+// hook port supplied via Lifecycle.SetHookPort and writes a Stop-hook
+// config into worktree/.claude/settings.local.json referencing the
+// token + port. The hook server runs in the same process as the
+// lifecycle, so the port is plumbed via dependency injection — there
+// is no port file on disk to read. Non-cron sessions (empty HookToken)
+// skip this path entirely.
+func TestStartSession_HookToken_InstallsHookConfig(t *testing.T) {
+	ctx := context.Background()
+
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockClaudeChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockClaudeRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Nightly audit",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetHookPort(45678)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		CronJobID: "cron-42",
+		HookToken: "secret-token-123",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	settingsPath := filepath.Join(worktreeDir, ".claude", "settings.local.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	body := string(data)
+	for _, want := range []string{"bossd-finalize", "Bearer secret-token-123", "127.0.0.1:45678", "/hooks/finalize/sess-1"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings.local.json missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestEnsurePR_Idempotent verifies EnsurePR is a no-op when the session
+// already has a PR, and creates one when it doesn't — without an extra
+// empty commit (unlike the StartSession up-front path, which needs one to
+// make a PR-less branch diverge from base).
+func TestEnsurePR_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	t.Run("PRAlreadyExists_NoOp", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{}
+		cr := newMockClaudeRunner()
+		vp := newMockVCSProvider()
+
+		repos.repos["repo-1"] = &models.Repo{
+			ID:        "repo-1",
+			LocalPath: "/tmp/repo",
+			OriginURL: "owner/repo",
+		}
+		existingPR := 7
+		existingURL := "https://github.com/owner/repo/pull/7"
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:           "sess-1",
+			RepoID:       "repo-1",
+			Title:        "Has PR",
+			WorktreePath: "/tmp/wt",
+			BranchName:   "br-1",
+			BaseBranch:   "main",
+			PRNumber:     &existingPR,
+			PRURL:        &existingURL,
+		}
+
+		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+			t.Fatalf("EnsurePR: %v", err)
+		}
+
+		if len(vp.createPRCalls) != 0 {
+			t.Errorf("expected 0 createPR calls when PR exists, got %d", len(vp.createPRCalls))
+		}
+		if len(wt.pushed) != 0 {
+			t.Errorf("expected 0 pushes when PR exists, got %d", len(wt.pushed))
+		}
+	})
+
+	t.Run("NoPR_PushesAndCreates", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{}
+		cr := newMockClaudeRunner()
+		vp := newMockVCSProvider()
+
+		repos.repos["repo-1"] = &models.Repo{
+			ID:        "repo-1",
+			LocalPath: "/tmp/repo",
+			OriginURL: "owner/repo",
+		}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:           "sess-1",
+			RepoID:       "repo-1",
+			Title:        "Deferred PR",
+			Plan:         "Do thing",
+			WorktreePath: "/tmp/wt",
+			BranchName:   "br-1",
+			BaseBranch:   "main",
+		}
+
+		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+			t.Fatalf("EnsurePR: %v", err)
+		}
+
+		if len(wt.pushed) != 1 || wt.pushed[0] != "br-1" {
+			t.Errorf("expected push of br-1, got %v", wt.pushed)
+		}
+		// EnsurePR must not produce an empty placeholder commit — Claude
+		// already made real commits by the time finalize calls in.
+		if len(wt.emptyCommits) != 0 {
+			t.Errorf("EnsurePR should not make empty commits, got %d", len(wt.emptyCommits))
+		}
+		if len(vp.createPRCalls) != 1 {
+			t.Fatalf("expected 1 createPR call, got %d", len(vp.createPRCalls))
+		}
+		sess := sessions.sessions["sess-1"]
+		if sess.PRNumber == nil || *sess.PRNumber != 42 {
+			t.Errorf("expected PRNumber = 42, got %v", sess.PRNumber)
+		}
+
+		// Second call must be a no-op (idempotency).
+		prevPushes := len(wt.pushed)
+		prevPRCalls := len(vp.createPRCalls)
+		if err := lc.EnsurePR(ctx, "sess-1"); err != nil {
+			t.Fatalf("EnsurePR second call: %v", err)
+		}
+		if len(wt.pushed) != prevPushes {
+			t.Errorf("second EnsurePR call pushed again: got %d pushes, want %d", len(wt.pushed), prevPushes)
+		}
+		if len(vp.createPRCalls) != prevPRCalls {
+			t.Errorf("second EnsurePR call re-created PR: got %d calls, want %d", len(vp.createPRCalls), prevPRCalls)
+		}
+	})
+}
+
+// --- Cron tmux helpers ---
+
+// recordedTmuxCall is one captured tmux invocation (subcommand + args).
+type recordedTmuxCall struct {
+	subcommand string
+	args       []string
+}
+
+// fakeTmux drives a *tmux.Client via WithCommandFactory so cron tmux tests
+// can assert which subcommands ran and stub their exit status without
+// actually invoking tmux. Specific subcommands can be made to fail via
+// failSubcommand. capture-pane returns capturePaneOutput so the SendPlan
+// ready-marker poll succeeds without sleeping.
+type fakeTmux struct {
+	mu                sync.Mutex
+	calls             []recordedTmuxCall
+	failSubcommand    map[string]bool // subcommand → return non-zero
+	capturePaneOutput string          // output for capture-pane stdout
+	available         bool            // controls whether `tmux -V` succeeds
+}
+
+func newFakeTmux() *fakeTmux {
+	return &fakeTmux{
+		failSubcommand:    map[string]bool{},
+		capturePaneOutput: "Welcome to Claude\n❯\n",
+		available:         true,
+	}
+}
+
+// factory implements tmux.CommandFactory. It records every invocation, then
+// returns a no-op exec.Cmd whose exit status reflects the configured
+// subcommand-level failure flag. capture-pane returns canned stdout so the
+// SendPlan ready-marker wait passes immediately.
+func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	subcommand := ""
+	if len(args) > 0 {
+		subcommand = args[0]
+	}
+	// Treat `tmux -V` as the availability probe, not a subcommand.
+	if subcommand == "-V" {
+		if !f.available {
+			return exec.CommandContext(ctx, "false")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	f.calls = append(f.calls, recordedTmuxCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+
+	if f.failSubcommand[subcommand] {
+		return exec.CommandContext(ctx, "false")
+	}
+	if subcommand == "capture-pane" {
+		return exec.CommandContext(ctx, "printf", "%s", f.capturePaneOutput)
+	}
+	return exec.CommandContext(ctx, "true")
+}
+
+func (f *fakeTmux) hasSubcommand(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c.subcommand == name {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Cron tmux tests ---
+
+// TestStartSession_CronJobID_TmuxAvailable_HappyPath verifies the cron
+// branch of StartSession: when CronJobID is set and tmux is available,
+// it spawns claude inside a tmux session, persists a claude_chats row,
+// invokes SendPlan, and writes the new claude session ID onto the
+// session row.
+func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockClaudeChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	fake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Nightly audit",
+		Plan:       "Run the audit",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		CronJobID: "cron-42",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// The headless claude path must NOT have run.
+	if len(cr.started) != 0 {
+		t.Errorf("expected 0 headless claude.Start calls on cron path, got %d", len(cr.started))
+	}
+
+	// tmux new-session must have been issued with claude --session-id ...
+	var newSessArgs []string
+	for _, c := range fake.calls {
+		if c.subcommand == "new-session" {
+			newSessArgs = c.args
+			break
+		}
+	}
+	if newSessArgs == nil {
+		t.Fatal("expected tmux new-session call, none recorded")
+	}
+	joined := strings.Join(newSessArgs, " ")
+	if !strings.Contains(joined, "claude --session-id ") {
+		t.Errorf("expected new-session args to contain `claude --session-id ...`, got: %s", joined)
+	}
+
+	// claude_chats.Create must have been called once with a matching ClaudeID
+	// and the cron-style title.
+	if len(chats.createCalls) != 1 {
+		t.Fatalf("expected 1 claudeChats.Create call, got %d", len(chats.createCalls))
+	}
+	createdClaudeID := chats.createCalls[0].ClaudeID
+	if createdClaudeID == "" {
+		t.Error("expected non-empty ClaudeID on claudeChats.Create")
+	}
+	if chats.createCalls[0].Title != `Run "Nightly audit"` {
+		t.Errorf(`Title = %q, want %q`, chats.createCalls[0].Title, `Run "Nightly audit"`)
+	}
+	if chats.createCalls[0].SessionID != "sess-1" {
+		t.Errorf("SessionID = %q, want sess-1", chats.createCalls[0].SessionID)
+	}
+
+	// UpdateTmuxSessionName persisted the resolved tmux name onto the chat row.
+	if len(chats.tmuxNameUpdates) != 1 {
+		t.Fatalf("expected 1 UpdateTmuxSessionName call, got %d", len(chats.tmuxNameUpdates))
+	}
+	if chats.tmuxNameUpdates[0].claudeID != createdClaudeID {
+		t.Errorf("UpdateTmuxSessionName claudeID = %q, want %q", chats.tmuxNameUpdates[0].claudeID, createdClaudeID)
+	}
+	if chats.tmuxNameUpdates[0].name == nil || *chats.tmuxNameUpdates[0].name == "" {
+		t.Error("expected non-nil/non-empty tmux name persisted on chat row")
+	}
+
+	// SendPlan must have run: load-buffer + paste-buffer + send-keys.
+	for _, sub := range []string{"load-buffer", "paste-buffer", "send-keys"} {
+		if !fake.hasSubcommand(sub) {
+			t.Errorf("expected tmux %s call from SendPlan, none recorded", sub)
+		}
+	}
+
+	// The new claude session UUID was persisted on the session row.
+	sess := sessions.sessions["sess-1"]
+	if sess.ClaudeSessionID == nil || *sess.ClaudeSessionID != createdClaudeID {
+		t.Errorf("session.ClaudeSessionID = %v, want %q", sess.ClaudeSessionID, createdClaudeID)
+	}
+	if sess.State != machine.ImplementingPlan {
+		t.Errorf("session.State = %v, want ImplementingPlan", sess.State)
+	}
+}
+
+// TestStartSession_CronJobID_TmuxUnavailable_Errors verifies that when
+// tmux is not available, the cron branch returns an error before any
+// tmux session is created or any claude_chats row is written. The
+// scheduler turns this into a fire_failed cron outcome.
+func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockClaudeChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	fake := newFakeTmux()
+	fake.available = false
+	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Nightly audit",
+		Plan:       "Run the audit",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+
+	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		CronJobID: "cron-42",
+	})
+	if err == nil {
+		t.Fatal("expected error when tmux is unavailable on cron path")
+	}
+	if !strings.Contains(err.Error(), "tmux unavailable") {
+		t.Errorf("expected tmux-unavailable error, got: %v", err)
+	}
+
+	// No new-session call should have been issued.
+	if fake.hasSubcommand("new-session") {
+		t.Error("expected no tmux new-session call when tmux unavailable")
+	}
+	// No claude_chats row should have been created.
+	if len(chats.createCalls) != 0 {
+		t.Errorf("expected 0 claudeChats.Create calls when tmux unavailable, got %d", len(chats.createCalls))
+	}
+}
+
+// TestStartSession_CronJobID_ChatCreateFails_KillsTmux verifies the
+// cleanup contract: if claude_chats.Create fails after tmux NewSession
+// already succeeded, the tmux session is killed so we don't leave a
+// running claude process orphaned from any DB row.
+func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockClaudeChatStore{
+		createErr: fmt.Errorf("simulated DB failure"),
+	}
+	wt := &mockWorktreeManager{}
+	cr := newMockClaudeRunner()
+	fake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Nightly audit",
+		Plan:       "Run the audit",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+
+	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		CronJobID: "cron-42",
+	})
+	if err == nil {
+		t.Fatal("expected error when claude_chats.Create fails")
+	}
+
+	if !fake.hasSubcommand("new-session") {
+		t.Error("expected tmux new-session call before chat create failure")
+	}
+	if len(chats.createCalls) != 1 {
+		t.Errorf("expected 1 claudeChats.Create attempt, got %d", len(chats.createCalls))
+	}
+	if !fake.hasSubcommand("kill-session") {
+		t.Error("expected tmux kill-session call to clean up after chat create failure")
+	}
+}
+
+// TestFinalizeNoChanges_KillsChatTmuxSessionsBeforeDelete verifies the
+// cleanup ordering: tmux must be torn down BEFORE the session row is
+// deleted, because claude_chats.session_id is ON DELETE CASCADE — once
+// the row is gone the tmux_session_name is unrecoverable.
+func TestFinalizeNoChanges_KillsChatTmuxSessionsBeforeDelete(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""} // empty = no changes
+	cr := newMockClaudeRunner()
+	vp := newMockVCSProvider()
+
+	tmuxName := "boss-repo1234-claude01"
+	chats := &mockClaudeChatStore{
+		chatsBySession: map[string][]*models.ClaudeChat{
+			"sess-1": {{
+				ID:              "chat-claude-01",
+				SessionID:       "sess-1",
+				ClaudeID:        "claude-01",
+				TmuxSessionName: &tmuxName,
+			}},
+		},
+	}
+
+	// Track the order of operations: kill-session must happen before sessions.Delete.
+	var (
+		op             atomic.Int32
+		killOpIdx      atomic.Int32
+		deleteOpIdx    atomic.Int32
+		fakeTmuxClient = &fakeTmux{
+			failSubcommand:    map[string]bool{},
+			available:         true,
+			capturePaneOutput: "",
+		}
+	)
+	killOpIdx.Store(-1)
+	deleteOpIdx.Store(-1)
+
+	tx := tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := fakeTmuxClient.factory(ctx, name, args...)
+		if len(args) > 0 && args[0] == "kill-session" {
+			killOpIdx.CompareAndSwap(-1, op.Add(1))
+		}
+		return cmd
+	}))
+
+	// Wrap sessions to record when Delete is called relative to kill-session.
+	wrappedSessions := &orderingSessionStore{
+		mockSessionStore: sessions,
+		onDelete: func(_ string) {
+			deleteOpIdx.CompareAndSwap(-1, op.Add(1))
+		},
+	}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := NewLifecycle(wrappedSessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+
+	// kill-session must have run, and must have run before sessions.Delete.
+	if killOpIdx.Load() < 0 {
+		t.Fatal("expected tmux kill-session to be invoked for chat with TmuxSessionName")
+	}
+	if deleteOpIdx.Load() < 0 {
+		t.Fatal("expected sessions.Delete to be invoked")
+	}
+	if killOpIdx.Load() >= deleteOpIdx.Load() {
+		t.Errorf("expected kill-session (op %d) to run before sessions.Delete (op %d)",
+			killOpIdx.Load(), deleteOpIdx.Load())
+	}
+}
+
+// orderingSessionStore wraps mockSessionStore to invoke a callback when
+// Delete fires, so the finalize-cleanup-order test can record sequencing.
+type orderingSessionStore struct {
+	*mockSessionStore
+	onDelete func(id string)
+}
+
+func (o *orderingSessionStore) Delete(ctx context.Context, id string) error {
+	if o.onDelete != nil {
+		o.onDelete(id)
+	}
+	return o.mockSessionStore.Delete(ctx, id)
 }

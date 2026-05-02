@@ -6,12 +6,12 @@ package taskorchestrator
 import (
 	"context"
 	"fmt"
-	"io"
 
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // CreateSessionOpts holds the parameters for creating a new session
@@ -25,11 +25,19 @@ type CreateSessionOpts struct {
 	SkipSetupScript bool   // if true, skip running the repo's setup script (e.g. for dependabot PRs)
 	PRNumber        *int
 	PRURL           *string
+
+	// Cron-session fields. Populated when the scheduler spawns a session.
+	// DeferPR and HookToken are persisted through to StartSession; they take
+	// effect once the StartSessionOpts refactor lands (flight leg 3).
+	CronJobID  string // if non-empty, session was cron-spawned
+	DeferPR    bool   // if true, skip draft-PR creation; wait for the Stop-hook finalize path
+	HookToken  string // if non-empty, written into settings.local.json for the Stop hook
+	BranchName string // if non-empty, overrides the title-derived branch name (cron uses a unique per-fire suffix)
 }
 
 // SessionStarter abstracts the lifecycle's StartSession method for testability.
 type SessionStarter interface {
-	StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error
+	StartSession(ctx context.Context, sessionID string, opts session.StartSessionOpts) error
 }
 
 // SessionCreator abstracts session creation so the orchestrator can
@@ -81,7 +89,24 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		Str("title", opts.Title).
 		Msg("created session, starting lifecycle")
 
-	if err := c.lifecycle.StartSession(ctx, sess.ID, opts.HeadBranch, false, opts.SkipSetupScript, nil); err != nil {
+	if err := c.lifecycle.StartSession(ctx, sess.ID, session.StartSessionOpts{
+		ExistingBranch:  opts.HeadBranch,
+		SkipSetupScript: opts.SkipSetupScript,
+		CronJobID:       opts.CronJobID,
+		DeferPR:         opts.DeferPR,
+		HookToken:       opts.HookToken,
+		BranchName:      opts.BranchName,
+	}); err != nil {
+		// StartSession failed mid-flight (e.g. worktree create, hook config
+		// write, or claude.Start). Drop the half-started session row so it
+		// doesn't surface as a phantom in the home view — empty chat list,
+		// no PR, stuck in an early state — that the user can't recover. The
+		// cron scheduler still records fire_failed via its own caller.
+		if delErr := c.sessions.Delete(ctx, sess.ID); delErr != nil {
+			c.logger.Warn().Err(delErr).
+				Str("session", sess.ID).
+				Msg("clean up half-started session after StartSession failure")
+		}
 		return nil, fmt.Errorf("start session %s: %w", sess.ID, err)
 	}
 

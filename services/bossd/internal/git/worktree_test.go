@@ -243,6 +243,63 @@ func TestCreate_IgnoresBossDir(t *testing.T) {
 	}
 }
 
+// TestCreate_IgnoresClaudeSettingsLocal verifies that the bossd Stop-hook
+// config at .claude/settings.local.json is git-ignored in every newly
+// created worktree. bossd writes that file with a bearer token; without
+// the ignore, `git status` shows it as untracked which (a) misclassifies
+// "no changes" cron runs as having Claude changes and (b) risks `git add
+// .` ever staging the token. Pairs with the in-process porcelain filter
+// in services/bossd/internal/session/finalize.go.
+func TestCreate_IgnoresClaudeSettingsLocal(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Ignore hook config",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Drop a fake hook-config file so check-ignore has something concrete
+	// to match against (the file bossd actually writes carries a bearer
+	// token; we don't need real content here).
+	claudeDir := filepath.Join(result.WorktreePath, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	hookFile := filepath.Join(claudeDir, "settings.local.json")
+	if err := os.WriteFile(hookFile, []byte(`{"hooks":{}}`), 0o644); err != nil {
+		t.Fatalf("write settings.local.json: %v", err)
+	}
+
+	cmd := exec.Command("git", "check-ignore", "-v", ".claude/settings.local.json")
+	cmd.Dir = result.WorktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf(".claude/settings.local.json is not ignored. git check-ignore output:\n%s\nerr: %v", out, err)
+	}
+	if !strings.Contains(string(out), ".claude/settings.local.json") {
+		t.Errorf("check-ignore output does not mention the hook config: %s", out)
+	}
+
+	// `git status --porcelain` must be clean — the hook config must NOT
+	// surface as untracked, otherwise the finalize pipeline misclassifies it.
+	status, err := runGit(ctx, result.WorktreePath, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if status != "" {
+		t.Errorf("expected clean status, got: %q", status)
+	}
+}
+
 // TestCreate_IgnoreIsIdempotent verifies that creating multiple worktrees
 // of the same repo does not append duplicate .boss/ entries to
 // .git/info/exclude (which is shared via $GIT_COMMON_DIR).

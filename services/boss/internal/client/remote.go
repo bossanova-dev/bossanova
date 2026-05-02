@@ -243,6 +243,28 @@ func (c *RemoteClient) NotifyAuthChange(_ context.Context, _ string) error {
 	return nil // no-op in remote mode
 }
 
+// --- Cron Jobs (local only) ---
+
+func (c *RemoteClient) CreateCronJob(_ context.Context, _ *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	return nil, errLocalOnly("CreateCronJob")
+}
+
+func (c *RemoteClient) ListCronJobs(_ context.Context) ([]*pb.CronJob, error) {
+	return nil, errLocalOnly("ListCronJobs")
+}
+
+func (c *RemoteClient) UpdateCronJob(_ context.Context, _ *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	return nil, errLocalOnly("UpdateCronJob")
+}
+
+func (c *RemoteClient) DeleteCronJob(_ context.Context, _ string) error {
+	return errLocalOnly("DeleteCronJob")
+}
+
+func (c *RemoteClient) RunCronJobNow(_ context.Context, _ string) (*pb.RunCronJobNowResponse, error) {
+	return nil, errLocalOnly("RunCronJobNow")
+}
+
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.
 type remoteAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.ProxyAttachSessionResponse]

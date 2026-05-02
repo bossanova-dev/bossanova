@@ -1,6 +1,10 @@
 package server
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -8,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/db"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -296,6 +301,264 @@ func TestAttentionStatusToProto(t *testing.T) {
 			t.Errorf("Reason = %v, want REVIEW_REQUESTED", got.Reason)
 		}
 	})
+}
+
+// fakeSessionStore is a minimal SessionStore used only by cronJobStatus.
+// Adapted from the cron package's scheduler_test.go fake.
+type fakeSessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]*models.Session
+	getErr   error // force every Get to return this error
+}
+
+func newFakeSessionStore() *fakeSessionStore {
+	return &fakeSessionStore{sessions: map[string]*models.Session{}}
+}
+
+func (f *fakeSessionStore) put(sess *models.Session) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessions[sess.ID] = sess
+}
+
+func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	s, ok := f.sessions[id]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return s, nil
+}
+
+// Stub out the rest of SessionStore. cronJobStatus only calls Get.
+func (f *fakeSessionStore) Create(_ context.Context, _ db.CreateSessionParams) (*models.Session, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) List(_ context.Context, _ string) ([]*models.Session, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) ListActive(_ context.Context, _ string) ([]*models.Session, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) ListWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) Update(_ context.Context, _ string, _ db.UpdateSessionParams) (*models.Session, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) Archive(_ context.Context, _ string) error   { panic("not used") }
+func (f *fakeSessionStore) Resurrect(_ context.Context, _ string) error { panic("not used") }
+func (f *fakeSessionStore) Delete(_ context.Context, _ string) error    { panic("not used") }
+func (f *fakeSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
+	panic("not used")
+}
+func (f *fakeSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
+	panic("not used")
+}
+
+func TestCronJobStatus(t *testing.T) {
+	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+	sessID := "sess-active"
+	archivedSessID := "sess-archived"
+	mergedSessID := "sess-merged"
+	closedSessID := "sess-closed"
+	blockedSessID := "sess-blocked"
+	missingSessID := "sess-missing"
+	emptySessID := ""
+
+	prFailed := models.CronJobOutcomePRFailed
+	chatSpawnFailed := models.CronJobOutcomeChatSpawnFailed
+	cleanupFailed := models.CronJobOutcomeCleanupFailed
+	fireFailed := models.CronJobOutcomeFireFailed
+	prCreated := models.CronJobOutcomePRCreated
+	deletedNoChanges := models.CronJobOutcomeDeletedNoChanges
+	prSkippedNoGitHub := models.CronJobOutcomePRSkippedNoGitHub
+	failedRecovered := models.CronJobOutcomeFailedRecovered
+
+	// Seed the fake store with sessions in various lifecycle states.
+	store := newFakeSessionStore()
+	store.put(&models.Session{ID: sessID, State: machine.ImplementingPlan})
+	store.put(&models.Session{ID: archivedSessID, State: machine.ImplementingPlan, ArchivedAt: &now})
+	store.put(&models.Session{ID: mergedSessID, State: machine.Merged})
+	store.put(&models.Session{ID: closedSessID, State: machine.Closed})
+	store.put(&models.Session{ID: blockedSessID, State: machine.Blocked})
+
+	// errStore returns an error from every Get — covers the lookup-error fall-through.
+	errStore := newFakeSessionStore()
+	errStore.getErr = errors.New("db down")
+
+	tests := []struct {
+		name  string
+		job   *models.CronJob
+		store db.SessionStore
+		want  pb.CronJobStatus
+	}{
+		{
+			name:  "never run, no outcome -> IDLE",
+			job:   &models.CronJob{},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "never run (empty session id), no outcome -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &emptySessID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "session active (not archived, not terminal) -> RUNNING",
+			job:   &models.CronJob{LastRunSessionID: &sessID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_RUNNING,
+		},
+		{
+			name:  "session active beats stale failure outcome -> RUNNING",
+			job:   &models.CronJob{LastRunSessionID: &sessID, LastRunOutcome: &prFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_RUNNING,
+		},
+		{
+			name:  "session archived, failure outcome -> FAILED",
+			job:   &models.CronJob{LastRunSessionID: &archivedSessID, LastRunOutcome: &prFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "session archived, success outcome -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &archivedSessID, LastRunOutcome: &prCreated},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "session merged, failure outcome -> FAILED",
+			job:   &models.CronJob{LastRunSessionID: &mergedSessID, LastRunOutcome: &prFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "session merged, success outcome -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &mergedSessID, LastRunOutcome: &prCreated},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "session closed, failure outcome -> FAILED",
+			job:   &models.CronJob{LastRunSessionID: &closedSessID, LastRunOutcome: &prFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "session closed, success outcome -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &closedSessID, LastRunOutcome: &prCreated},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			// Blocked is the state FinalizeSession transitions a session to
+			// after a failure outcome. STATUS must surface that as FAILED so
+			// the user sees the failure rather than a frozen RUNNING row.
+			name:  "session blocked, failure outcome -> FAILED",
+			job:   &models.CronJob{LastRunSessionID: &blockedSessID, LastRunOutcome: &chatSpawnFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "session blocked, no outcome -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &blockedSessID},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "session lookup not-found, failure outcome -> FAILED",
+			job:   &models.CronJob{LastRunSessionID: &missingSessID, LastRunOutcome: &prFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "session lookup error, failure outcome -> FAILED",
+			job:   &models.CronJob{LastRunSessionID: &sessID, LastRunOutcome: &prFailed},
+			store: errStore,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "session lookup error, success outcome -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &sessID, LastRunOutcome: &prCreated},
+			store: errStore,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		// Each failure outcome -> FAILED (when no active session).
+		{
+			name:  "outcome pr_failed -> FAILED",
+			job:   &models.CronJob{LastRunOutcome: &prFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "outcome chat_spawn_failed -> FAILED",
+			job:   &models.CronJob{LastRunOutcome: &chatSpawnFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "outcome cleanup_failed -> FAILED",
+			job:   &models.CronJob{LastRunOutcome: &cleanupFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		{
+			name:  "outcome fire_failed -> FAILED",
+			job:   &models.CronJob{LastRunOutcome: &fireFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		// Each success/idle outcome -> IDLE.
+		{
+			name:  "outcome pr_created -> IDLE",
+			job:   &models.CronJob{LastRunOutcome: &prCreated},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "outcome deleted_no_changes -> IDLE",
+			job:   &models.CronJob{LastRunOutcome: &deletedNoChanges},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "outcome pr_skipped_no_github -> IDLE",
+			job:   &models.CronJob{LastRunOutcome: &prSkippedNoGitHub},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "outcome failed_recovered -> IDLE",
+			job:   &models.CronJob{LastRunOutcome: &failedRecovered},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cronJobStatus(context.Background(), tt.job, tt.store)
+			if got != tt.want {
+				t.Errorf("cronJobStatus = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestIsSubdirOf(t *testing.T) {

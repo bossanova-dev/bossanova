@@ -33,6 +33,9 @@ type MockWorktreeManager struct {
 	// PushFunc overrides the default Push behavior when set.
 	PushFunc func(ctx context.Context, worktreePath, branch string) error
 
+	// StatusFunc overrides the default Status behavior when set.
+	StatusFunc func(ctx context.Context, worktreePath string) (string, error)
+
 	// DetectOriginURLResult is returned by DetectOriginURL.
 	DetectOriginURLResult string
 
@@ -102,6 +105,15 @@ func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts
 
 	if hasInjected {
 		return nil, injectedErr
+	}
+
+	// Real `git worktree add ... origin/<base>` fails with an unhelpful
+	// "invalid reference" error when BaseBranch is empty. Reject here so
+	// tests catch any caller that forgets to populate it (e.g. the original
+	// cron-scheduler bug where `Repos.Get(...).DefaultBaseBranch` was
+	// never consulted).
+	if opts.BaseBranch == "" {
+		return nil, fmt.Errorf("MockWorktreeManager.Create: BaseBranch is empty (the real git command would fail with 'invalid reference: origin/')")
 	}
 
 	if m.CreateFunc != nil {
@@ -197,6 +209,13 @@ func (m *MockWorktreeManager) SetPushError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pushError = err
+}
+
+func (m *MockWorktreeManager) Status(ctx context.Context, worktreePath string) (string, error) {
+	if m.StatusFunc != nil {
+		return m.StatusFunc(ctx, worktreePath)
+	}
+	return "", nil
 }
 
 func (m *MockWorktreeManager) DetectOriginURL(ctx context.Context, repoPath string) (string, error) {

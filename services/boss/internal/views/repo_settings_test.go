@@ -226,3 +226,14 @@ func (s *stubRepoClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, 
 func (s *stubRepoClient) ListTrackerIssues(context.Context, string, string) ([]*pb.TrackerIssue, error) {
 	panic("unused")
 }
+func (s *stubRepoClient) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) ListCronJobs(context.Context) ([]*pb.CronJob, error) { panic("unused") }
+func (s *stubRepoClient) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) DeleteCronJob(context.Context, string) error { panic("unused") }
+func (s *stubRepoClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
+	panic("unused")
+}

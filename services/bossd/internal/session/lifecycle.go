@@ -25,18 +25,37 @@ type Lifecycle struct {
 	sessions    db.SessionStore
 	repos       db.RepoStore
 	claudeChats db.ClaudeChatStore
+	cronJobs    db.CronJobStore
 	worktrees   gitpkg.WorktreeManager
 	claude      claude.ClaudeRunner
 	tmux        *tmux.Client
 	provider    vcs.Provider
 	logger      zerolog.Logger
+
+	// hookPort is the loopback TCP port of the daemon's Stop-hook server.
+	// Stamped via SetHookPort once the hook server has bound, before any
+	// session that needs a HookToken is started. Zero means "not yet set"
+	// and StartSession will error out rather than write a config that
+	// points at no listener.
+	hookPort int
 }
 
-// NewLifecycle creates a new session lifecycle orchestrator.
+// SetHookPort records the hook server's bound loopback port so
+// StartSession can stamp it into a worktree's settings.local.json when
+// installing the Stop-hook config. Called from the daemon entrypoint
+// after hookSrv.Listen() succeeds.
+func (l *Lifecycle) SetHookPort(port int) {
+	l.hookPort = port
+}
+
+// NewLifecycle creates a new session lifecycle orchestrator. cronJobs may be
+// nil for callers that never spawn cron-linked sessions (tests, legacy flows);
+// FinalizeSession requires it and will error if it's absent.
 func NewLifecycle(
 	sessions db.SessionStore,
 	repos db.RepoStore,
 	claudeChats db.ClaudeChatStore,
+	cronJobs db.CronJobStore,
 	worktrees gitpkg.WorktreeManager,
 	claude claude.ClaudeRunner,
 	tmux *tmux.Client,
@@ -47,6 +66,7 @@ func NewLifecycle(
 		sessions:    sessions,
 		repos:       repos,
 		claudeChats: claudeChats,
+		cronJobs:    cronJobs,
 		worktrees:   worktrees,
 		claude:      claude,
 		tmux:        tmux,
@@ -55,16 +75,59 @@ func NewLifecycle(
 	}
 }
 
+// StartSessionOpts bundles the optional inputs to StartSession. Each field
+// has a zero-value default that preserves the historical behavior, so
+// callers only need to populate the fields they care about.
+type StartSessionOpts struct {
+	// ExistingBranch, when non-empty, makes the worktree check out that
+	// branch instead of creating a fresh one (used for existing PR sessions).
+	ExistingBranch string
+
+	// ForceBranch removes any pre-existing branch with the derived name
+	// before creating the new worktree.
+	ForceBranch bool
+
+	// SkipSetupScript bypasses the repo's configured setup script
+	// (e.g. for dependabot PRs that should not run user code).
+	SkipSetupScript bool
+
+	// SetupOutput receives streamed setup-script output, when non-nil.
+	SetupOutput io.Writer
+
+	// DeferPR skips the immediate draft-PR creation that StartSession
+	// otherwise performs for sessions without a PR. The Stop-hook
+	// finalize path is responsible for calling EnsurePR later.
+	DeferPR bool
+
+	// CronJobID, when non-empty, marks this session as cron-spawned
+	// (persisted on the session record once the schema/store land).
+	CronJobID string
+
+	// HookToken, when non-empty, is the secret written into the
+	// worktree's settings.local.json so the Stop hook can authenticate
+	// to the bossd hook server. Plumbed through in flight leg 5.
+	HookToken string
+
+	// BranchName, when non-empty, overrides the default title-derived
+	// branch name. Used by the cron path so each fire gets a unique
+	// branch (e.g. cron-<slug>-<unix>) and a previous run's orphaned
+	// branch can't trip ErrBranchExists on the next fire. Ignored when
+	// ExistingBranch is set.
+	BranchName string
+}
+
 // StartSession creates a worktree, starts a Claude process, and fires
 // state machine events. It updates the session record with the worktree
 // path, branch name, and Claude session ID.
 //
-// If existingBranch is non-empty, the worktree checks out that branch
-// instead of creating a new one (used for existing PR sessions).
-//
-// If forceBranch is true and a branch with the derived name already exists,
-// it will be removed before creating the new worktree.
-func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existingBranch string, forceBranch bool, skipSetupScript bool, setupOutput io.Writer) error {
+// See StartSessionOpts for how to customize behavior. The zero-value opts
+// preserve historical defaults: a fresh branch, setup script enabled,
+// and an immediate draft PR for sessions without one.
+func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts StartSessionOpts) error {
+	existingBranch := opts.ExistingBranch
+	forceBranch := opts.ForceBranch
+	skipSetupScript := opts.SkipSetupScript
+	setupOutput := opts.SetupOutput
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
@@ -78,11 +141,23 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 	// Initialize state machine at CreatingWorktree.
 	sm := machine.New(machine.CreatingWorktree)
 
-	// Update session state to CreatingWorktree.
+	// Update session state to CreatingWorktree and stamp the cron_job_id
+	// when the cron scheduler spawned us. The cron linkage is set here
+	// (rather than by the task orchestrator) so it's guaranteed to land
+	// before any finalize path observes the row.
 	creatingState := int(machine.CreatingWorktree)
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+	updateParams := db.UpdateSessionParams{
 		State: &creatingState,
-	}); err != nil {
+	}
+	if opts.CronJobID != "" {
+		cronJobID := &opts.CronJobID
+		updateParams.CronJobID = &cronJobID
+	}
+	if opts.HookToken != "" {
+		hookToken := &opts.HookToken
+		updateParams.HookToken = &hookToken
+	}
+	if _, err := l.sessions.Update(ctx, sessionID, updateParams); err != nil {
 		return fmt.Errorf("set creating_worktree state: %w", err)
 	}
 
@@ -134,6 +209,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 			WorktreeBaseDir:   repo.WorktreeBaseDir,
 			RepoName:          repo.DisplayName,
 			Title:             session.Title,
+			BranchName:        opts.BranchName,
 			SetupScript:       setupScript,
 			SetupScriptOutput: setupOutput,
 			Force:             forceBranch,
@@ -149,6 +225,25 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 		BranchName:   &result.BranchName,
 	}); err != nil {
 		return fmt.Errorf("update worktree path: %w", err)
+	}
+
+	// Install the Stop-hook config for cron-spawned sessions. This must
+	// happen after the setup script ran (otherwise a script-written
+	// settings.local.json would be clobbered by a non-merge write
+	// elsewhere) and before claude.Start (so Claude reads the config on
+	// startup). Non-cron sessions have an empty HookToken and skip this
+	// path entirely, preserving historical behaviour.
+	if opts.HookToken != "" {
+		if l.hookPort == 0 {
+			return fmt.Errorf("hook port not configured: SetHookPort must be called before starting sessions with a HookToken")
+		}
+		if err := claude.WriteHookConfig(result.WorktreePath, sessionID, opts.HookToken, l.hookPort); err != nil {
+			return fmt.Errorf("write hook config: %w", err)
+		}
+		l.logger.Info().
+			Str("session", sessionID).
+			Int("hookPort", l.hookPort).
+			Msg("installed Stop-hook config in worktree")
 	}
 
 	// Fire WorktreeCreated → StartingClaude.
@@ -168,10 +263,20 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 		Str("worktree", result.WorktreePath).
 		Msg("starting claude")
 
-	// Start Claude process.
-	claudeSessionID, err := l.claude.Start(ctx, result.WorktreePath, session.Plan, nil, "")
-	if err != nil {
-		return fmt.Errorf("start claude: %w", err)
+	// Start Claude. Cron-spawned sessions run in a tmux-hosted Claude UI so
+	// the user can attach to the live session, while interactive sessions
+	// stay on the headless `claude --print` path used historically.
+	var claudeSessionID string
+	if opts.CronJobID != "" {
+		claudeSessionID, err = l.startCronTmuxChat(ctx, sessionID, opts, session, result)
+		if err != nil {
+			return fmt.Errorf("start cron tmux chat: %w", err)
+		}
+	} else {
+		claudeSessionID, err = l.claude.Start(ctx, result.WorktreePath, session.Plan, nil, "")
+		if err != nil {
+			return fmt.Errorf("start claude: %w", err)
+		}
 	}
 
 	// Update session with Claude session ID.
@@ -198,7 +303,10 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, existing
 	// both plain "new PR" sessions and tracker-sourced sessions (e.g.
 	// Linear tickets) — the latter carry a Plan but still need a PR up
 	// front for visibility.
-	if session.PRNumber == nil {
+	//
+	// Cron-spawned sessions opt out via opts.DeferPR — the Stop-hook
+	// finalize path calls EnsurePR once the run actually produces commits.
+	if session.PRNumber == nil && !opts.DeferPR {
 		if err := l.createDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName, session, repo); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
@@ -449,6 +557,72 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 		Int("prNumber", prInfo.Number).
 		Str("prURL", prInfo.URL).
 		Msg("draft PR created during session setup")
+
+	return nil
+}
+
+// EnsurePR pushes the session's branch and creates a draft PR if one does
+// not already exist. It is idempotent: if session.PRNumber is already set,
+// the call is a no-op. Used by the cron-finalize path (FL4) once the
+// session has produced real commits, where DeferPR=true skipped the
+// up-front PR creation.
+//
+// Unlike createDraftPR, EnsurePR does NOT make an empty placeholder commit:
+// callers invoke it after Claude has produced its own commits.
+func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
+	session, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	if session.PRNumber != nil {
+		return nil
+	}
+
+	repo, err := l.repos.Get(ctx, session.RepoID)
+	if err != nil {
+		return fmt.Errorf("get repo: %w", err)
+	}
+
+	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+		return fmt.Errorf("resolve origin URL: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Str("branch", session.BranchName).
+		Msg("ensuring PR: pushing branch")
+
+	if err := l.worktrees.Push(ctx, session.WorktreePath, session.BranchName); err != nil {
+		return fmt.Errorf("push branch: %w", err)
+	}
+
+	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
+		RepoPath:   repo.OriginURL,
+		HeadBranch: session.BranchName,
+		BaseBranch: session.BaseBranch,
+		Title:      session.Title,
+		Body:       session.Plan,
+		Draft:      true,
+	})
+	if err != nil {
+		return fmt.Errorf("create draft PR: %w", err)
+	}
+
+	prNumber := &prInfo.Number
+	prURL := &prInfo.URL
+	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		PRNumber: &prNumber,
+		PRURL:    &prURL,
+	}); err != nil {
+		return fmt.Errorf("update PR info: %w", err)
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Int("prNumber", prInfo.Number).
+		Str("prURL", prInfo.URL).
+		Msg("draft PR ensured")
 
 	return nil
 }

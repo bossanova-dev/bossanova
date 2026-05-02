@@ -57,6 +57,28 @@ service DaemonService {
 
   // Auth change notification (CLI → daemon)
   rpc NotifyAuthChange(NotifyAuthChangeRequest) returns (NotifyAuthChangeResponse);
+
+  // --- Cron jobs ---
+
+  // CreateCronJob registers a new scheduled prompt for a repo.
+  rpc CreateCronJob(CreateCronJobRequest) returns (CreateCronJobResponse);
+
+  // ListCronJobs returns cron jobs, optionally filtered by repo.
+  rpc ListCronJobs(ListCronJobsRequest) returns (ListCronJobsResponse);
+
+  // GetCronJob returns a single cron job by id.
+  rpc GetCronJob(GetCronJobRequest) returns (GetCronJobResponse);
+
+  // UpdateCronJob mutates an existing cron job. Mutable fields are optional.
+  rpc UpdateCronJob(UpdateCronJobRequest) returns (UpdateCronJobResponse);
+
+  // DeleteCronJob removes a cron job. Sessions previously spawned by it
+  // have their cron_job_id reset to NULL (no cascade).
+  rpc DeleteCronJob(DeleteCronJobRequest) returns (DeleteCronJobResponse);
+
+  // RunCronJobNow fires a cron job immediately, ignoring its schedule.
+  // Subject to the same overlap and concurrency-cap rules as scheduled fires.
+  rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
 }
 
 // --- Context Resolution ---
@@ -440,3 +462,65 @@ message NotifyAuthChangeRequest {
 
 message NotifyAuthChangeResponse {}
 
+// --- Cron jobs ---
+
+message CreateCronJobRequest {
+  string repo_id  = 1;
+  string name     = 2;
+  string prompt   = 3;
+  string schedule = 4;
+  string timezone = 5;   // optional IANA tz; empty = daemon-local
+  bool   enabled  = 6;
+}
+
+message CreateCronJobResponse {
+  CronJob cron_job = 1;
+}
+
+message ListCronJobsRequest {
+  // Optional repo filter. Empty returns all cron jobs across all repos.
+  optional string repo_id = 1;
+}
+
+message ListCronJobsResponse {
+  repeated CronJob cron_jobs = 1;
+}
+
+message GetCronJobRequest {
+  string id = 1;
+}
+
+message GetCronJobResponse {
+  CronJob cron_job = 1;
+}
+
+message UpdateCronJobRequest {
+  string id = 1;
+  optional string name     = 2;
+  optional string prompt   = 3;
+  optional string schedule = 4;
+  optional string timezone = 5;
+  optional bool   enabled  = 6;
+}
+
+message UpdateCronJobResponse {
+  CronJob cron_job = 1;
+}
+
+message DeleteCronJobRequest {
+  string id = 1;
+}
+
+message DeleteCronJobResponse {}
+
+message RunCronJobNowRequest {
+  string id = 1;
+}
+
+message RunCronJobNowResponse {
+  // Session spawned for this manual fire. Empty if the fire was skipped
+  // (overlap with a still-running session).
+  optional Session session = 1;
+  // Reason the fire was skipped, when session is unset.
+  string skipped_reason = 2;
+}

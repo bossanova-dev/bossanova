@@ -27,6 +27,8 @@ const (
 	ViewSessionSettings
 	ViewLogin
 	ViewBugReport
+	ViewCron
+	ViewCronForm
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
@@ -48,6 +50,8 @@ type App struct {
 	attach          AttachModel
 	login           LoginModel
 	bugReport       BugReportModel
+	cronList        CronListModel
+	cronForm        CronFormModel
 	width           int
 	height          int
 	quitting        bool
@@ -132,6 +136,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessionSettings.width = msg.Width
 		a.login.width = msg.Width
 		a.bugReport.width = msg.Width
+		a.cronList.width = msg.Width
+		a.cronList.height = msg.Height
+		a.cronForm.width = msg.Width
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -208,6 +215,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.home.width = a.width
 			a.home.height = a.height
 			return a, a.home.Init()
+		case ViewCron:
+			a.cronList = NewCronListModel(a.client, a.ctx)
+			a.cronList.width = a.width
+			a.cronList.height = a.height
+			return a, a.cronList.Init()
+		case ViewCronForm:
+			a.cronForm = NewCronFormModel(a.client, a.ctx)
+			a.cronForm.width = a.width
+			return a, a.cronForm.Init()
 		}
 		return a, nil
 	}
@@ -349,6 +365,43 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, resumeTickCmd(a.activeView)
 		}
 		return a, cmd
+	case ViewCron:
+		updated, cmd := a.cronList.Update(msg)
+		a.cronList = updated.(CronListModel)
+		if a.cronList.Cancelled() {
+			return a, a.switchToHome()
+		}
+		// cronFormOpenMsg is emitted by CronListModel as a Cmd; when it
+		// arrives here as a message we open the cron form.
+		if ofm, ok := msg.(cronFormOpenMsg); ok {
+			a.activeView = ViewCronForm
+			a.cronForm = NewCronFormModel(a.client, a.ctx)
+			a.cronForm.job = ofm.job
+			a.cronForm.width = a.width
+			return a, a.cronForm.Init()
+		}
+		return a, cmd
+	case ViewCronForm:
+		updated, cmd := a.cronForm.Update(msg)
+		a.cronForm = updated.(CronFormModel)
+		if a.cronForm.Cancelled() {
+			// Return to cron list without refreshing (user cancelled).
+			a.activeView = ViewCron
+			a.cronList = NewCronListModel(a.client, a.ctx)
+			a.cronList.width = a.width
+			a.cronList.height = a.height
+			return a, a.cronList.Init()
+		}
+		// cronFormDoneMsg is emitted by CronFormModel as a Cmd; when it
+		// arrives here as a message we return to the cron list and refresh.
+		if _, ok := msg.(cronFormDoneMsg); ok {
+			a.activeView = ViewCron
+			a.cronList = NewCronListModel(a.client, a.ctx)
+			a.cronList.width = a.width
+			a.cronList.height = a.height
+			return a, a.cronList.Init()
+		}
+		return a, cmd
 	}
 
 	return a, nil
@@ -430,6 +483,10 @@ func (a App) View() tea.View {
 		v = a.login.View()
 	case ViewBugReport:
 		v = a.bugReport.View()
+	case ViewCron:
+		v = a.cronList.View()
+	case ViewCronForm:
+		v = a.cronForm.View()
 	default:
 		v = tea.NewView("Unknown view")
 	}
@@ -460,6 +517,8 @@ func (a App) View() tea.View {
 			opts.line1 = "Login"
 		case ViewBugReport:
 			opts.line1 = "Report a bug"
+		case ViewCron:
+			opts.line1 = "Scheduled Jobs"
 		}
 		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}

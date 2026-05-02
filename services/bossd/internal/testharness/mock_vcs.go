@@ -2,6 +2,7 @@ package testharness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -9,11 +10,32 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
+// MockVCSMode controls how the MockVCSProvider responds to operations.
+// Use SetMode to activate the desired mode; VCSModeSuccess is the default.
+type MockVCSMode int
+
+const (
+	// VCSModeSuccess is the default — all operations succeed.
+	VCSModeSuccess MockVCSMode = iota
+	// VCSModeNoGitHub makes GitHubNWO-gated calls behave as if the repo has no
+	// GitHub remote. Concretely: CreateDraftPR returns an error flagged as
+	// ErrNoGitHub so the lifecycle knows to skip the PR path.
+	VCSModeNoGitHub
+	// VCSModePushFail causes every Push call to return an error.
+	VCSModePushFail
+	// VCSModeCreatePRFail causes every CreateDraftPR call to return an error.
+	VCSModeCreatePRFail
+)
+
 var _ vcs.Provider = (*MockVCSProvider)(nil)
+
+// ErrNoGitHub is returned by CreateDraftPR when mode is VCSModeNoGitHub.
+var ErrNoGitHub = errors.New("no GitHub remote configured")
 
 // MockVCSProvider is a mock VCS provider for E2E tests.
 type MockVCSProvider struct {
-	mu sync.Mutex
+	mu   sync.Mutex
+	mode MockVCSMode
 
 	CreateDraftPRCalls      []vcs.CreatePROpts
 	MarkReadyForReviewCalls []markReadyCall
@@ -99,15 +121,33 @@ func NewMockVCSProvider() *MockVCSProvider {
 	}
 }
 
+// SetMode switches the provider to one of the named failure modes.
+// VCSModeSuccess restores normal (all-pass) behavior.
+func (m *MockVCSProvider) SetMode(mode MockVCSMode) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mode = mode
+}
+
 func (m *MockVCSProvider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	m.mu.Lock()
 	m.CreateDraftPRCalls = append(m.CreateDraftPRCalls, opts)
 	injectedErr := m.createPRError
 	m.createPRError = nil
+	mode := m.mode
 	m.mu.Unlock()
 
 	if injectedErr != nil {
 		return nil, injectedErr
+	}
+	switch mode {
+	case VCSModeSuccess, VCSModePushFail:
+		// Success: fall through to normal behavior.
+		// PushFail: push failure is handled on the git mock; PR creation proceeds.
+	case VCSModeNoGitHub:
+		return nil, ErrNoGitHub
+	case VCSModeCreatePRFail:
+		return nil, errors.New("mock: CreateDraftPR failed (VCSModeCreatePRFail)")
 	}
 
 	if m.CreateDraftPRFunc != nil {

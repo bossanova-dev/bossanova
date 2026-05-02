@@ -175,6 +175,7 @@ func TestStateRoundTrip(t *testing.T) {
 		machine.Blocked,
 		machine.Merged,
 		machine.Closed,
+		machine.Finalizing,
 	}
 
 	for _, s := range states {

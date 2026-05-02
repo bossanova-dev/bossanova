@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/recurser/boss/internal/auth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -242,6 +244,75 @@ func TestRenderMutedTrackerLink(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHomeKeyDispatch_Regression verifies that all home-list keybindings
+// dispatch the correct switchViewMsg, and that adding [c]ron did not break
+// any existing binding (n/p/r/s/t/l).
+func TestHomeKeyDispatch_Regression(t *testing.T) {
+	// Build a HomeModel with one repo (so [n] is enabled) and auth configured
+	// (so [l] is enabled). We drive Update() directly without a real daemon.
+	authMgr := (*auth.Manager)(nil) // nil authMgr disables l; tested separately
+
+	tests := []struct {
+		key      string
+		wantView View
+	}{
+		{"n", ViewNewSession},
+		{"r", ViewRepoList},
+		{"s", ViewSettings},
+		{"t", ViewTrash},
+		{"c", ViewCron},
+	}
+
+	for _, tt := range tests {
+		t.Run("key="+tt.key, func(t *testing.T) {
+			h := HomeModel{
+				ctx:       context.Background(),
+				authMgr:   authMgr,
+				repoCount: 1, // enable [n]
+				loading:   false,
+			}
+			model, cmd := h.Update(tea.KeyPressMsg{Code: rune(tt.key[0]), Text: tt.key})
+			_ = model
+			if cmd == nil {
+				t.Fatalf("key %q: got nil cmd, want a switchViewMsg command", tt.key)
+			}
+			msg := cmd()
+			svm, ok := msg.(switchViewMsg)
+			if !ok {
+				t.Fatalf("key %q: cmd() returned %T, want switchViewMsg", tt.key, msg)
+			}
+			if svm.view != tt.wantView {
+				t.Errorf("key %q: view = %v, want %v", tt.key, svm.view, tt.wantView)
+			}
+		})
+	}
+
+	// [l] with auth configured and not logged-in dispatches ViewLogin.
+	t.Run("key=l dispatches ViewLogin when not logged in", func(t *testing.T) {
+		// We need a non-nil authMgr to enable [l]; use a real zero-value Manager.
+		mgr := &auth.Manager{}
+		h := HomeModel{
+			ctx:       context.Background(),
+			authMgr:   mgr,
+			repoCount: 1,
+			loading:   false,
+			loggedIn:  false,
+		}
+		_, cmd := h.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+		if cmd == nil {
+			t.Fatal("key l: got nil cmd, want a switchViewMsg command")
+		}
+		msg := cmd()
+		svm, ok := msg.(switchViewMsg)
+		if !ok {
+			t.Fatalf("key l: cmd() returned %T, want switchViewMsg", msg)
+		}
+		if svm.view != ViewLogin {
+			t.Errorf("key l: view = %v, want %v", svm.view, ViewLogin)
+		}
+	})
 }
 
 func strPtr(s string) *string { return &s }

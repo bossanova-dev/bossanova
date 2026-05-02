@@ -1,7 +1,6 @@
 package pty
 
 import (
-	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -40,14 +39,6 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 			}
 			defer master.Close() //nolint:errcheck // best-effort cleanup in test
 			defer slave.Close()  //nolint:errcheck // best-effort cleanup in test
-
-			origStdin, origStdout := os.Stdin, os.Stdout
-			os.Stdin = slave
-			os.Stdout = slave
-			defer func() {
-				os.Stdin = origStdin
-				os.Stdout = origStdout
-			}()
 
 			mgr := NewManager()
 			cmd := exec.Command("cat")

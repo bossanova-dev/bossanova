@@ -22,7 +22,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// SessionState represents the 12 states of the session lifecycle.
+// SessionState represents the 13 states of the session lifecycle.
 type SessionState int32
 
 const (
@@ -39,6 +39,7 @@ const (
 	SessionState_SESSION_STATE_BLOCKED           SessionState = 10
 	SessionState_SESSION_STATE_MERGED            SessionState = 11
 	SessionState_SESSION_STATE_CLOSED            SessionState = 12
+	SessionState_SESSION_STATE_FINALIZING        SessionState = 13
 )
 
 // Enum value maps for SessionState.
@@ -57,6 +58,7 @@ var (
 		10: "SESSION_STATE_BLOCKED",
 		11: "SESSION_STATE_MERGED",
 		12: "SESSION_STATE_CLOSED",
+		13: "SESSION_STATE_FINALIZING",
 	}
 	SessionState_value = map[string]int32{
 		"SESSION_STATE_UNSPECIFIED":       0,
@@ -72,6 +74,7 @@ var (
 		"SESSION_STATE_BLOCKED":           10,
 		"SESSION_STATE_MERGED":            11,
 		"SESSION_STATE_CLOSED":            12,
+		"SESSION_STATE_FINALIZING":        13,
 	}
 )
 
@@ -102,26 +105,27 @@ func (SessionState) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{0}
 }
 
-// SessionEvent represents the 15 events that trigger state transitions.
+// SessionEvent represents the 16 events that trigger state transitions.
 type SessionEvent int32
 
 const (
-	SessionEvent_SESSION_EVENT_UNSPECIFIED       SessionEvent = 0
-	SessionEvent_SESSION_EVENT_WORKTREE_CREATED  SessionEvent = 1
-	SessionEvent_SESSION_EVENT_CLAUDE_STARTED    SessionEvent = 2
-	SessionEvent_SESSION_EVENT_BRANCH_PUSHED     SessionEvent = 3
-	SessionEvent_SESSION_EVENT_PR_OPENED         SessionEvent = 4
-	SessionEvent_SESSION_EVENT_PLAN_COMPLETE     SessionEvent = 5
-	SessionEvent_SESSION_EVENT_CHECKS_PASSED     SessionEvent = 6
-	SessionEvent_SESSION_EVENT_CHECKS_FAILED     SessionEvent = 7
-	SessionEvent_SESSION_EVENT_CONFLICT_DETECTED SessionEvent = 8
-	SessionEvent_SESSION_EVENT_REVIEW_SUBMITTED  SessionEvent = 9
-	SessionEvent_SESSION_EVENT_FIX_COMPLETE      SessionEvent = 10
-	SessionEvent_SESSION_EVENT_FIX_FAILED        SessionEvent = 11
-	SessionEvent_SESSION_EVENT_BLOCK             SessionEvent = 12
-	SessionEvent_SESSION_EVENT_UNBLOCK           SessionEvent = 13
-	SessionEvent_SESSION_EVENT_PR_MERGED         SessionEvent = 14
-	SessionEvent_SESSION_EVENT_PR_CLOSED         SessionEvent = 15
+	SessionEvent_SESSION_EVENT_UNSPECIFIED        SessionEvent = 0
+	SessionEvent_SESSION_EVENT_WORKTREE_CREATED   SessionEvent = 1
+	SessionEvent_SESSION_EVENT_CLAUDE_STARTED     SessionEvent = 2
+	SessionEvent_SESSION_EVENT_BRANCH_PUSHED      SessionEvent = 3
+	SessionEvent_SESSION_EVENT_PR_OPENED          SessionEvent = 4
+	SessionEvent_SESSION_EVENT_PLAN_COMPLETE      SessionEvent = 5
+	SessionEvent_SESSION_EVENT_CHECKS_PASSED      SessionEvent = 6
+	SessionEvent_SESSION_EVENT_CHECKS_FAILED      SessionEvent = 7
+	SessionEvent_SESSION_EVENT_CONFLICT_DETECTED  SessionEvent = 8
+	SessionEvent_SESSION_EVENT_REVIEW_SUBMITTED   SessionEvent = 9
+	SessionEvent_SESSION_EVENT_FIX_COMPLETE       SessionEvent = 10
+	SessionEvent_SESSION_EVENT_FIX_FAILED         SessionEvent = 11
+	SessionEvent_SESSION_EVENT_BLOCK              SessionEvent = 12
+	SessionEvent_SESSION_EVENT_UNBLOCK            SessionEvent = 13
+	SessionEvent_SESSION_EVENT_PR_MERGED          SessionEvent = 14
+	SessionEvent_SESSION_EVENT_PR_CLOSED          SessionEvent = 15
+	SessionEvent_SESSION_EVENT_FINALIZE_REQUESTED SessionEvent = 16
 )
 
 // Enum value maps for SessionEvent.
@@ -143,24 +147,26 @@ var (
 		13: "SESSION_EVENT_UNBLOCK",
 		14: "SESSION_EVENT_PR_MERGED",
 		15: "SESSION_EVENT_PR_CLOSED",
+		16: "SESSION_EVENT_FINALIZE_REQUESTED",
 	}
 	SessionEvent_value = map[string]int32{
-		"SESSION_EVENT_UNSPECIFIED":       0,
-		"SESSION_EVENT_WORKTREE_CREATED":  1,
-		"SESSION_EVENT_CLAUDE_STARTED":    2,
-		"SESSION_EVENT_BRANCH_PUSHED":     3,
-		"SESSION_EVENT_PR_OPENED":         4,
-		"SESSION_EVENT_PLAN_COMPLETE":     5,
-		"SESSION_EVENT_CHECKS_PASSED":     6,
-		"SESSION_EVENT_CHECKS_FAILED":     7,
-		"SESSION_EVENT_CONFLICT_DETECTED": 8,
-		"SESSION_EVENT_REVIEW_SUBMITTED":  9,
-		"SESSION_EVENT_FIX_COMPLETE":      10,
-		"SESSION_EVENT_FIX_FAILED":        11,
-		"SESSION_EVENT_BLOCK":             12,
-		"SESSION_EVENT_UNBLOCK":           13,
-		"SESSION_EVENT_PR_MERGED":         14,
-		"SESSION_EVENT_PR_CLOSED":         15,
+		"SESSION_EVENT_UNSPECIFIED":        0,
+		"SESSION_EVENT_WORKTREE_CREATED":   1,
+		"SESSION_EVENT_CLAUDE_STARTED":     2,
+		"SESSION_EVENT_BRANCH_PUSHED":      3,
+		"SESSION_EVENT_PR_OPENED":          4,
+		"SESSION_EVENT_PLAN_COMPLETE":      5,
+		"SESSION_EVENT_CHECKS_PASSED":      6,
+		"SESSION_EVENT_CHECKS_FAILED":      7,
+		"SESSION_EVENT_CONFLICT_DETECTED":  8,
+		"SESSION_EVENT_REVIEW_SUBMITTED":   9,
+		"SESSION_EVENT_FIX_COMPLETE":       10,
+		"SESSION_EVENT_FIX_FAILED":         11,
+		"SESSION_EVENT_BLOCK":              12,
+		"SESSION_EVENT_UNBLOCK":            13,
+		"SESSION_EVENT_PR_MERGED":          14,
+		"SESSION_EVENT_PR_CLOSED":          15,
+		"SESSION_EVENT_FINALIZE_REQUESTED": 16,
 	}
 )
 
@@ -943,6 +949,61 @@ func (x ChatStatus) Number() protoreflect.EnumNumber {
 // Deprecated: Use ChatStatus.Descriptor instead.
 func (ChatStatus) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{14}
+}
+
+// CronJobStatus is the derived run-status for a cron job, computed from
+// the previous run's session state and recorded outcome. Not persisted —
+// `last_run_outcome` (string) remains the audit field on disk.
+type CronJobStatus int32
+
+const (
+	CronJobStatus_CRON_JOB_STATUS_UNSPECIFIED CronJobStatus = 0
+	CronJobStatus_CRON_JOB_STATUS_IDLE        CronJobStatus = 1
+	CronJobStatus_CRON_JOB_STATUS_RUNNING     CronJobStatus = 2
+	CronJobStatus_CRON_JOB_STATUS_FAILED      CronJobStatus = 3
+)
+
+// Enum value maps for CronJobStatus.
+var (
+	CronJobStatus_name = map[int32]string{
+		0: "CRON_JOB_STATUS_UNSPECIFIED",
+		1: "CRON_JOB_STATUS_IDLE",
+		2: "CRON_JOB_STATUS_RUNNING",
+		3: "CRON_JOB_STATUS_FAILED",
+	}
+	CronJobStatus_value = map[string]int32{
+		"CRON_JOB_STATUS_UNSPECIFIED": 0,
+		"CRON_JOB_STATUS_IDLE":        1,
+		"CRON_JOB_STATUS_RUNNING":     2,
+		"CRON_JOB_STATUS_FAILED":      3,
+	}
+)
+
+func (x CronJobStatus) Enum() *CronJobStatus {
+	p := new(CronJobStatus)
+	*p = x
+	return p
+}
+
+func (x CronJobStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CronJobStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_bossanova_v1_models_proto_enumTypes[15].Descriptor()
+}
+
+func (CronJobStatus) Type() protoreflect.EnumType {
+	return &file_bossanova_v1_models_proto_enumTypes[15]
+}
+
+func (x CronJobStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CronJobStatus.Descriptor instead.
+func (CronJobStatus) EnumDescriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{15}
 }
 
 // Repo represents a registered Git repository.
@@ -2673,6 +2734,163 @@ func (x *ClaudeChat) GetTmuxSessionName() string {
 	return ""
 }
 
+// CronJob represents a scheduled prompt that fires on a cron expression.
+//
+// At fire time, bossd spawns a new session in a fresh worktree with
+// PR creation deferred. When Claude's Stop hook fires, the daemon
+// finalizes the run: empty diff -> delete worktree; non-empty diff +
+// GitHub origin -> push and open PR; otherwise preserve the worktree.
+type CronJob struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	RepoId           string                 `protobuf:"bytes,2,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	Name             string                 `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
+	Prompt           string                 `protobuf:"bytes,4,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	Schedule         string                 `protobuf:"bytes,5,opt,name=schedule,proto3" json:"schedule,omitempty"` // 5-field cron expression (or @daily, @hourly, etc.)
+	Timezone         string                 `protobuf:"bytes,6,opt,name=timezone,proto3" json:"timezone,omitempty"` // optional IANA tz name; empty = daemon-local
+	Enabled          bool                   `protobuf:"varint,7,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	LastRunSessionId string                 `protobuf:"bytes,8,opt,name=last_run_session_id,json=lastRunSessionId,proto3" json:"last_run_session_id,omitempty"` // empty if never run
+	LastRunAt        *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=last_run_at,json=lastRunAt,proto3" json:"last_run_at,omitempty"`
+	LastRunOutcome   string                 `protobuf:"bytes,10,opt,name=last_run_outcome,json=lastRunOutcome,proto3" json:"last_run_outcome,omitempty"` // one of: deleted_no_changes, pr_created,
+	// pr_skipped_no_github, pr_failed,
+	// chat_spawn_failed, cleanup_failed,
+	// failed_recovered, fire_failed
+	NextRunAt     *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
+	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	LastRunStatus CronJobStatus          `protobuf:"varint,14,opt,name=last_run_status,json=lastRunStatus,proto3,enum=bossanova.v1.CronJobStatus" json:"last_run_status,omitempty"` // derived; not persisted
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CronJob) Reset() {
+	*x = CronJob{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CronJob) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CronJob) ProtoMessage() {}
+
+func (x *CronJob) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CronJob.ProtoReflect.Descriptor instead.
+func (*CronJob) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *CronJob) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *CronJob) GetRepoId() string {
+	if x != nil {
+		return x.RepoId
+	}
+	return ""
+}
+
+func (x *CronJob) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CronJob) GetPrompt() string {
+	if x != nil {
+		return x.Prompt
+	}
+	return ""
+}
+
+func (x *CronJob) GetSchedule() string {
+	if x != nil {
+		return x.Schedule
+	}
+	return ""
+}
+
+func (x *CronJob) GetTimezone() string {
+	if x != nil {
+		return x.Timezone
+	}
+	return ""
+}
+
+func (x *CronJob) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *CronJob) GetLastRunSessionId() string {
+	if x != nil {
+		return x.LastRunSessionId
+	}
+	return ""
+}
+
+func (x *CronJob) GetLastRunAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastRunAt
+	}
+	return nil
+}
+
+func (x *CronJob) GetLastRunOutcome() string {
+	if x != nil {
+		return x.LastRunOutcome
+	}
+	return ""
+}
+
+func (x *CronJob) GetNextRunAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextRunAt
+	}
+	return nil
+}
+
+func (x *CronJob) GetCreatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return nil
+}
+
+func (x *CronJob) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return nil
+}
+
+func (x *CronJob) GetLastRunStatus() CronJobStatus {
+	if x != nil {
+		return x.LastRunStatus
+	}
+	return CronJobStatus_CRON_JOB_STATUS_UNSPECIFIED
+}
+
 var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
@@ -2861,7 +3079,25 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\tdaemon_id\x18\x05 \x01(\tR\bdaemonId\x129\n" +
 	"\n" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12*\n" +
-	"\x11tmux_session_name\x18\a \x01(\tR\x0ftmuxSessionName*\xb6\x03\n" +
+	"\x11tmux_session_name\x18\a \x01(\tR\x0ftmuxSessionName\"\xbc\x04\n" +
+	"\aCronJob\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
+	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +
+	"\x04name\x18\x03 \x01(\tR\x04name\x12\x16\n" +
+	"\x06prompt\x18\x04 \x01(\tR\x06prompt\x12\x1a\n" +
+	"\bschedule\x18\x05 \x01(\tR\bschedule\x12\x1a\n" +
+	"\btimezone\x18\x06 \x01(\tR\btimezone\x12\x18\n" +
+	"\aenabled\x18\a \x01(\bR\aenabled\x12-\n" +
+	"\x13last_run_session_id\x18\b \x01(\tR\x10lastRunSessionId\x12:\n" +
+	"\vlast_run_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tlastRunAt\x12(\n" +
+	"\x10last_run_outcome\x18\n" +
+	" \x01(\tR\x0elastRunOutcome\x12:\n" +
+	"\vnext_run_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\tnextRunAt\x129\n" +
+	"\n" +
+	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
+	"\n" +
+	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12C\n" +
+	"\x0flast_run_status\x18\x0e \x01(\x0e2\x1b.bossanova.v1.CronJobStatusR\rlastRunStatus*\xd4\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12!\n" +
@@ -2876,7 +3112,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x15SESSION_STATE_BLOCKED\x10\n" +
 	"\x12\x18\n" +
 	"\x14SESSION_STATE_MERGED\x10\v\x12\x18\n" +
-	"\x14SESSION_STATE_CLOSED\x10\f*\x89\x04\n" +
+	"\x14SESSION_STATE_CLOSED\x10\f\x12\x1c\n" +
+	"\x18SESSION_STATE_FINALIZING\x10\r*\xaf\x04\n" +
 	"\fSessionEvent\x12\x1d\n" +
 	"\x19SESSION_EVENT_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eSESSION_EVENT_WORKTREE_CREATED\x10\x01\x12 \n" +
@@ -2894,7 +3131,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13SESSION_EVENT_BLOCK\x10\f\x12\x19\n" +
 	"\x15SESSION_EVENT_UNBLOCK\x10\r\x12\x1b\n" +
 	"\x17SESSION_EVENT_PR_MERGED\x10\x0e\x12\x1b\n" +
-	"\x17SESSION_EVENT_PR_CLOSED\x10\x0f*~\n" +
+	"\x17SESSION_EVENT_PR_CLOSED\x10\x0f\x12$\n" +
+	" SESSION_EVENT_FINALIZE_REQUESTED\x10\x10*~\n" +
 	"\vCheckStatus\x12\x1c\n" +
 	"\x18CHECK_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13CHECK_STATUS_QUEUED\x10\x01\x12\x1c\n" +
@@ -2982,7 +3220,12 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13CHAT_STATUS_WORKING\x10\x01\x12\x14\n" +
 	"\x10CHAT_STATUS_IDLE\x10\x02\x12\x17\n" +
 	"\x13CHAT_STATUS_STOPPED\x10\x03\x12\x18\n" +
-	"\x14CHAT_STATUS_QUESTION\x10\x04B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x14CHAT_STATUS_QUESTION\x10\x04*\x83\x01\n" +
+	"\rCronJobStatus\x12\x1f\n" +
+	"\x1bCRON_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14CRON_JOB_STATUS_IDLE\x10\x01\x12\x1b\n" +
+	"\x17CRON_JOB_STATUS_RUNNING\x10\x02\x12\x1a\n" +
+	"\x16CRON_JOB_STATUS_FAILED\x10\x03B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_models_proto_rawDescOnce sync.Once
@@ -2996,8 +3239,8 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_models_proto_rawDescData
 }
 
-var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 15)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 16)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),             // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),             // 1: bossanova.v1.SessionEvent
@@ -3014,64 +3257,71 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(WorkflowStatus)(0),           // 12: bossanova.v1.WorkflowStatus
 	(WorkflowStep)(0),             // 13: bossanova.v1.WorkflowStep
 	(ChatStatus)(0),               // 14: bossanova.v1.ChatStatus
-	(*Repo)(nil),                  // 15: bossanova.v1.Repo
-	(*Session)(nil),               // 16: bossanova.v1.Session
-	(*Attempt)(nil),               // 17: bossanova.v1.Attempt
-	(*PRStatus)(nil),              // 18: bossanova.v1.PRStatus
-	(*CheckResult)(nil),           // 19: bossanova.v1.CheckResult
-	(*ReviewComment)(nil),         // 20: bossanova.v1.ReviewComment
-	(*PRSummary)(nil),             // 21: bossanova.v1.PRSummary
-	(*CreatePROpts)(nil),          // 22: bossanova.v1.CreatePROpts
-	(*PRInfo)(nil),                // 23: bossanova.v1.PRInfo
-	(*TrackerIssue)(nil),          // 24: bossanova.v1.TrackerIssue
-	(*VCSEvent)(nil),              // 25: bossanova.v1.VCSEvent
-	(*ChecksPassedEvent)(nil),     // 26: bossanova.v1.ChecksPassedEvent
-	(*ChecksFailedEvent)(nil),     // 27: bossanova.v1.ChecksFailedEvent
-	(*ConflictDetectedEvent)(nil), // 28: bossanova.v1.ConflictDetectedEvent
-	(*ReviewSubmittedEvent)(nil),  // 29: bossanova.v1.ReviewSubmittedEvent
-	(*PRMergedEvent)(nil),         // 30: bossanova.v1.PRMergedEvent
-	(*PRClosedEvent)(nil),         // 31: bossanova.v1.PRClosedEvent
-	(*AttentionStatus)(nil),       // 32: bossanova.v1.AttentionStatus
-	(*ClaudeChat)(nil),            // 33: bossanova.v1.ClaudeChat
-	(*timestamppb.Timestamp)(nil), // 34: google.protobuf.Timestamp
+	(CronJobStatus)(0),            // 15: bossanova.v1.CronJobStatus
+	(*Repo)(nil),                  // 16: bossanova.v1.Repo
+	(*Session)(nil),               // 17: bossanova.v1.Session
+	(*Attempt)(nil),               // 18: bossanova.v1.Attempt
+	(*PRStatus)(nil),              // 19: bossanova.v1.PRStatus
+	(*CheckResult)(nil),           // 20: bossanova.v1.CheckResult
+	(*ReviewComment)(nil),         // 21: bossanova.v1.ReviewComment
+	(*PRSummary)(nil),             // 22: bossanova.v1.PRSummary
+	(*CreatePROpts)(nil),          // 23: bossanova.v1.CreatePROpts
+	(*PRInfo)(nil),                // 24: bossanova.v1.PRInfo
+	(*TrackerIssue)(nil),          // 25: bossanova.v1.TrackerIssue
+	(*VCSEvent)(nil),              // 26: bossanova.v1.VCSEvent
+	(*ChecksPassedEvent)(nil),     // 27: bossanova.v1.ChecksPassedEvent
+	(*ChecksFailedEvent)(nil),     // 28: bossanova.v1.ChecksFailedEvent
+	(*ConflictDetectedEvent)(nil), // 29: bossanova.v1.ConflictDetectedEvent
+	(*ReviewSubmittedEvent)(nil),  // 30: bossanova.v1.ReviewSubmittedEvent
+	(*PRMergedEvent)(nil),         // 31: bossanova.v1.PRMergedEvent
+	(*PRClosedEvent)(nil),         // 32: bossanova.v1.PRClosedEvent
+	(*AttentionStatus)(nil),       // 33: bossanova.v1.AttentionStatus
+	(*ClaudeChat)(nil),            // 34: bossanova.v1.ClaudeChat
+	(*CronJob)(nil),               // 35: bossanova.v1.CronJob
+	(*timestamppb.Timestamp)(nil), // 36: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
-	34, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	34, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	36, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	36, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	4,  // 3: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
-	34, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	34, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	34, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	36, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	36, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	36, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	11, // 7: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
-	32, // 8: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
+	33, // 8: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	12, // 9: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
 	9,  // 10: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
 	7,  // 11: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
 	8,  // 12: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	34, // 13: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	34, // 14: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	36, // 13: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	36, // 14: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 15: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	2,  // 16: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	3,  // 17: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
 	6,  // 18: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
 	5,  // 19: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
-	26, // 20: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
-	27, // 21: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
-	28, // 22: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
-	29, // 23: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
-	30, // 24: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
-	31, // 25: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
-	19, // 26: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
-	20, // 27: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
+	27, // 20: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
+	28, // 21: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
+	29, // 22: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
+	30, // 23: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
+	31, // 24: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
+	32, // 25: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
+	20, // 26: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
+	21, // 27: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
 	10, // 28: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	34, // 29: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
-	34, // 30: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	31, // [31:31] is the sub-list for method output_type
-	31, // [31:31] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	36, // 29: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	36, // 30: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	36, // 31: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	36, // 32: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	36, // 33: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	36, // 34: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	15, // 35: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
+	36, // [36:36] is the sub-list for method output_type
+	36, // [36:36] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }
@@ -3098,8 +3348,8 @@ func file_bossanova_v1_models_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
-			NumEnums:      15,
-			NumMessages:   19,
+			NumEnums:      16,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -360,6 +360,45 @@ func (c *LocalClient) NotifyAuthChange(ctx context.Context, action string) error
 	return err
 }
 
+// --- Cron Jobs ---
+
+func (c *LocalClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	resp, err := c.rpc.CreateCronJob(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.CronJob, nil
+}
+
+func (c *LocalClient) ListCronJobs(ctx context.Context) ([]*pb.CronJob, error) {
+	resp, err := c.rpc.ListCronJobs(ctx, connect.NewRequest(&pb.ListCronJobsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.CronJobs, nil
+}
+
+func (c *LocalClient) UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	resp, err := c.rpc.UpdateCronJob(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.CronJob, nil
+}
+
+func (c *LocalClient) DeleteCronJob(ctx context.Context, id string) error {
+	_, err := c.rpc.DeleteCronJob(ctx, connect.NewRequest(&pb.DeleteCronJobRequest{Id: id}))
+	return err
+}
+
+func (c *LocalClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error) {
+	resp, err := c.rpc.RunCronJobNow(ctx, connect.NewRequest(&pb.RunCronJobNowRequest{Id: id}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // localAttachStream wraps the DaemonService AttachSession stream.
 type localAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.AttachSessionResponse]

@@ -361,8 +361,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "q":
-			return h, tea.Quit
 		case "n":
 			if h.repoCount == 0 {
 				return h, nil
@@ -374,6 +372,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return h, func() tea.Msg { return switchViewMsg{view: ViewSettings} }
 		case "t":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewTrash} }
+		case "c":
+			return h, func() tea.Msg { return switchViewMsg{view: ViewCron} }
 		case "l":
 			if h.authMgr == nil {
 				return h, nil
@@ -402,6 +402,8 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, h.resolveAutoEnter(sess.Id)
 			}
 			return h, nil
+		case "q":
+			return h, tea.Quit
 		}
 
 		// Forward navigation keys to the table.
@@ -543,7 +545,7 @@ func (h HomeModel) View() tea.View {
 				actionBar(actions, []string{"[q]uit"})
 		} else {
 			// Repos exist but no sessions - show simplified guidance
-			actions := []string{"[n]ew session", "[r]epos", "[s]ettings", "[t]rash"}
+			actions := []string{"[n]ew session", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
 			if la := h.loginAction(); la != "" {
 				actions = append(actions, la)
 			}
@@ -591,7 +593,7 @@ func (h HomeModel) View() tea.View {
 				b.WriteString("\n")
 			}
 		}
-		navActions := []string{"[n]ew", "[r]epos", "[s]ettings", "[t]rash"}
+		navActions := []string{"[n]ew", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
 		if la := h.loginAction(); la != "" {
 			navActions = append(navActions, la)
 		}

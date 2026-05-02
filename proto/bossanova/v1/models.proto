@@ -6,7 +6,7 @@ option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 
 import "google/protobuf/timestamp.proto";
 
-// SessionState represents the 12 states of the session lifecycle.
+// SessionState represents the 13 states of the session lifecycle.
 enum SessionState {
   SESSION_STATE_UNSPECIFIED = 0;
   SESSION_STATE_CREATING_WORKTREE = 1;
@@ -21,9 +21,10 @@ enum SessionState {
   SESSION_STATE_BLOCKED = 10;
   SESSION_STATE_MERGED = 11;
   SESSION_STATE_CLOSED = 12;
+  SESSION_STATE_FINALIZING = 13;
 }
 
-// SessionEvent represents the 15 events that trigger state transitions.
+// SessionEvent represents the 16 events that trigger state transitions.
 enum SessionEvent {
   SESSION_EVENT_UNSPECIFIED = 0;
   SESSION_EVENT_WORKTREE_CREATED = 1;
@@ -41,6 +42,7 @@ enum SessionEvent {
   SESSION_EVENT_UNBLOCK = 13;
   SESSION_EVENT_PR_MERGED = 14;
   SESSION_EVENT_PR_CLOSED = 15;
+  SESSION_EVENT_FINALIZE_REQUESTED = 16;
 }
 
 // CheckStatus represents the status of a CI check run.
@@ -394,4 +396,40 @@ message ClaudeChat {
   string daemon_id = 5;          // Originating daemon (empty = local)
   google.protobuf.Timestamp created_at = 6;
   string tmux_session_name = 7;  // Empty if no tmux session is hosting this chat
+}
+
+// CronJobStatus is the derived run-status for a cron job, computed from
+// the previous run's session state and recorded outcome. Not persisted —
+// `last_run_outcome` (string) remains the audit field on disk.
+enum CronJobStatus {
+  CRON_JOB_STATUS_UNSPECIFIED = 0;
+  CRON_JOB_STATUS_IDLE        = 1;
+  CRON_JOB_STATUS_RUNNING     = 2;
+  CRON_JOB_STATUS_FAILED      = 3;
+}
+
+// CronJob represents a scheduled prompt that fires on a cron expression.
+//
+// At fire time, bossd spawns a new session in a fresh worktree with
+// PR creation deferred. When Claude's Stop hook fires, the daemon
+// finalizes the run: empty diff -> delete worktree; non-empty diff +
+// GitHub origin -> push and open PR; otherwise preserve the worktree.
+message CronJob {
+  string id                  = 1;
+  string repo_id             = 2;
+  string name                = 3;
+  string prompt              = 4;
+  string schedule            = 5;   // 5-field cron expression (or @daily, @hourly, etc.)
+  string timezone            = 6;   // optional IANA tz name; empty = daemon-local
+  bool   enabled             = 7;
+  string last_run_session_id = 8;   // empty if never run
+  google.protobuf.Timestamp last_run_at  = 9;
+  string last_run_outcome    = 10;  // one of: deleted_no_changes, pr_created,
+                                    // pr_skipped_no_github, pr_failed,
+                                    // chat_spawn_failed, cleanup_failed,
+                                    // failed_recovered, fire_failed
+  google.protobuf.Timestamp next_run_at  = 11;
+  google.protobuf.Timestamp created_at   = 12;
+  google.protobuf.Timestamp updated_at   = 13;
+  CronJobStatus last_run_status = 14;  // derived; not persisted
 }

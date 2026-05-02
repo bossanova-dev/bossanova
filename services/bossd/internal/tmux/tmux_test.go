@@ -2,8 +2,13 @@ package tmux
 
 import (
 	"context"
+	"io"
 	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // mockCommandFactory captures the command arguments for testing.
@@ -613,4 +618,335 @@ func equalSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// sendPlanRecordingFactory is a CommandFactory that records each tmux
+// invocation in order, lets callers stub per-subcommand outputs and exit
+// status, captures the stdin handed to load-buffer, and varies
+// capture-pane output across calls so tests can model "marker appears on
+// poll N" scenarios.
+type sendPlanRecordingFactory struct {
+	mu    sync.Mutex
+	calls []sendPlanCall
+
+	// capturePaneOutputs is consumed in order; once exhausted, the last
+	// value is reused. Empty slice → empty stdout for every call.
+	capturePaneOutputs []string
+	captureCallIdx     atomic.Int32
+
+	// failOnSubcommand maps a subcommand (e.g. "send-keys") to the call
+	// index at which it should exit non-zero. Default: never fail.
+	failOnSubcommand map[string]int
+}
+
+type sendPlanCall struct {
+	subcommand string
+	args       []string
+}
+
+func (f *sendPlanRecordingFactory) factory(ctx context.Context, name string, args ...string) *exec.Cmd {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	subcommand := ""
+	if len(args) > 0 {
+		subcommand = args[0]
+	}
+	f.calls = append(f.calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+
+	if failIdx, ok := f.failOnSubcommand[subcommand]; ok && failIdx == subcommandSeenIndex(f.calls, subcommand)-1 {
+		return exec.CommandContext(ctx, "false")
+	}
+
+	switch subcommand {
+	case "capture-pane":
+		idx := int(f.captureCallIdx.Add(1)) - 1
+		out := ""
+		if len(f.capturePaneOutputs) > 0 {
+			if idx >= len(f.capturePaneOutputs) {
+				out = f.capturePaneOutputs[len(f.capturePaneOutputs)-1]
+			} else {
+				out = f.capturePaneOutputs[idx]
+			}
+		}
+		return exec.CommandContext(ctx, "printf", "%s", out)
+	case "load-buffer":
+		// `cat` drains whatever stdin SendPlan assigns and exits 0.
+		// Stdin contents aren't asserted by this factory's tests — see
+		// TestSendPlan_LoadBufferReceivesPlanStdin for that coverage.
+		cmd := exec.CommandContext(ctx, "cat")
+		cmd.Stdout = io.Discard
+		return cmd
+	default:
+		return exec.CommandContext(ctx, "true")
+	}
+}
+
+// subcommandSeenIndex returns the 1-based occurrence count of subcommand
+// in calls so far (i.e. "this is the Nth time we've seen this subcommand").
+func subcommandSeenIndex(calls []sendPlanCall, subcommand string) int {
+	n := 0
+	for _, c := range calls {
+		if c.subcommand == subcommand {
+			n++
+		}
+	}
+	return n
+}
+
+// callsCopy returns a copy of the recorded call log.
+func (f *sendPlanRecordingFactory) callsCopy() []sendPlanCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]sendPlanCall, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+// TestSendPlan_HappyPath_Order verifies SendPlan issues capture-pane (poll
+// loop), load-buffer, paste-buffer, send-keys in order with the right args.
+func TestSendPlan_HappyPath_Order(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		// Marker missing on first poll, present on second — exercises the
+		// poll loop without waiting the full deadline.
+		capturePaneOutputs: []string{
+			"Welcome to Claude\n",
+			"Welcome to Claude\n❯\n",
+		},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.sendPlan(context.Background(), "boss-test-sess", "do the thing", sendPlanOpts{
+		deadline:     2 * time.Second,
+		pollInterval: 5 * time.Millisecond,
+	}); err != nil {
+		t.Fatalf("SendPlan: unexpected error: %v", err)
+	}
+
+	calls := fake.callsCopy()
+	// Must have at least 2 capture-pane calls (poll loop) followed by
+	// load-buffer, paste-buffer, send-keys.
+	subcommands := make([]string, len(calls))
+	for i, c := range calls {
+		subcommands[i] = c.subcommand
+	}
+
+	// Verify the tail order.
+	wantTail := []string{"load-buffer", "paste-buffer", "send-keys"}
+	if len(calls) < len(wantTail) {
+		t.Fatalf("expected at least %d calls, got %d: %v", len(wantTail), len(calls), subcommands)
+	}
+	gotTail := subcommands[len(calls)-len(wantTail):]
+	if !equalSlices(gotTail, wantTail) {
+		t.Errorf("tail subcommands = %v, want %v (full sequence: %v)", gotTail, wantTail, subcommands)
+	}
+
+	// Verify ≥ 2 capture-pane calls preceded the tail.
+	captureCount := 0
+	for _, s := range subcommands[:len(calls)-len(wantTail)] {
+		if s == "capture-pane" {
+			captureCount++
+		}
+	}
+	if captureCount < 2 {
+		t.Errorf("expected ≥ 2 capture-pane polls before paste, got %d (subcommands: %v)", captureCount, subcommands)
+	}
+
+	// Verify args on the trailing commands.
+	loadCall := calls[len(calls)-3]
+	if !equalSlices(loadCall.args, []string{"-"}) {
+		t.Errorf("load-buffer args = %v, want [-]", loadCall.args)
+	}
+	pasteCall := calls[len(calls)-2]
+	if !equalSlices(pasteCall.args, []string{"-d", "-p", "-t", "boss-test-sess"}) {
+		t.Errorf("paste-buffer args = %v, want [-d -p -t boss-test-sess]", pasteCall.args)
+	}
+	enterCall := calls[len(calls)-1]
+	if !equalSlices(enterCall.args, []string{"-t", "boss-test-sess", "Enter"}) {
+		t.Errorf("send-keys args = %v, want [-t boss-test-sess Enter]", enterCall.args)
+	}
+}
+
+// TestSendPlan_ReadyMarkerNeverAppears_Errors verifies the deadline path:
+// if capture-pane never returns the marker, SendPlan returns an error
+// without trying load-buffer / paste-buffer / send-keys.
+func TestSendPlan_ReadyMarkerNeverAppears_Errors(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{"Welcome to Claude — still loading\n"},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	// Use a tight deadline so the test runs quickly.
+	err := c.sendPlan(context.Background(), "boss-test-sess", "plan body", sendPlanOpts{
+		deadline:     50 * time.Millisecond,
+		pollInterval: 5 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected error when ready marker never appears, got nil")
+	}
+	if !strings.Contains(err.Error(), "ready marker") {
+		t.Errorf("expected error to mention ready marker, got: %v", err)
+	}
+
+	// Should have polled capture-pane multiple times but never invoked
+	// any of the paste-related subcommands.
+	calls := fake.callsCopy()
+	for _, c := range calls {
+		switch c.subcommand {
+		case "load-buffer", "paste-buffer", "send-keys":
+			t.Errorf("expected no %s call when marker never appears, got: %v", c.subcommand, c.args)
+		}
+	}
+}
+
+// TestSendPlan_CustomStatuslineReady_Succeeds reproduces the failure mode
+// from a real cron run against a Claude Code instance with a customised
+// statusline. The default footer hint ("? for shortcuts") is replaced by
+// the user's statusline (PR badge, /effort tag, model summary), so the
+// only stable readiness signal in the captured pane is the input-box
+// prompt indicator (❯). SendPlan must detect that and proceed.
+func TestSendPlan_CustomStatuslineReady_Succeeds(t *testing.T) {
+	const customStatuslinePane = ` ▐▛███▜▌   Claude Code v2.1.126
+▝▜█████▛▘  Opus 4.7 (1M context) · Claude Max
+  ▘▘ ▝▝    ~/.bossanova/worktrees/bossanova/add-a-scheduling-feature
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  Opus 4.7 (1M context) | /Users/dave/.bossanova/worktrees/bossanova/add-a-sc…
+  PR #133
+                                                             ◉ xhigh · /effort
+`
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{customStatuslinePane},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.sendPlan(context.Background(), "boss-test-sess", "the plan", sendPlanOpts{
+		deadline:     500 * time.Millisecond,
+		pollInterval: 5 * time.Millisecond,
+	}); err != nil {
+		t.Fatalf("SendPlan against custom-statusline pane: unexpected error: %v", err)
+	}
+
+	// All three paste subcommands must have run — confirms the marker
+	// poll resolved and SendPlan didn't abort early.
+	calls := fake.callsCopy()
+	wantTail := []string{"load-buffer", "paste-buffer", "send-keys"}
+	if len(calls) < len(wantTail) {
+		t.Fatalf("expected at least %d tail calls, got %d", len(wantTail), len(calls))
+	}
+	gotTail := make([]string, len(wantTail))
+	for i, c := range calls[len(calls)-len(wantTail):] {
+		gotTail[i] = c.subcommand
+	}
+	if !equalSlices(gotTail, wantTail) {
+		t.Errorf("tail subcommands = %v, want %v", gotTail, wantTail)
+	}
+}
+
+// TestSendPlan_TimeoutErrorIncludesPaneContents verifies that when the
+// ready marker never appears, the resulting error embeds the last captured
+// pane so operators can diagnose what Claude was actually showing without
+// having to re-run with extra instrumentation. Without this, the cron
+// failure path was opaque ("ready marker not seen") because the daemon
+// also kills the tmux session as cleanup, leaving nothing to attach to.
+func TestSendPlan_TimeoutErrorIncludesPaneContents(t *testing.T) {
+	const fingerprint = "AUTH-PROMPT-VISIBLE-IN-PANE"
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{"Welcome to Claude\n" + fingerprint + "\nplease re-authenticate"},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	err := c.sendPlan(context.Background(), "boss-test-sess", "plan body", sendPlanOpts{
+		deadline:     50 * time.Millisecond,
+		pollInterval: 5 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), fingerprint) {
+		t.Errorf("expected timeout error to include captured pane content (looking for %q), got: %v",
+			fingerprint, err)
+	}
+}
+
+// TestSendPlan_PasteBufferFails_Errors verifies the failure mode where one
+// of the tmux subcommands (paste-buffer) returns non-zero. SendPlan must
+// surface that as an error.
+func TestSendPlan_PasteBufferFails_Errors(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{"Welcome to Claude\n❯\n"},
+		failOnSubcommand: map[string]int{
+			"paste-buffer": 0, // first paste-buffer call fails
+		},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	err := c.sendPlan(context.Background(), "boss-test-sess", "plan body", sendPlanOpts{
+		deadline:     time.Second,
+		pollInterval: 5 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected error when paste-buffer fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "paste-buffer") {
+		t.Errorf("expected paste-buffer error, got: %v", err)
+	}
+}
+
+// TestSendPlan_EmptySessionName_Errors guards the input validation so a
+// caller can't accidentally send a plan to no target.
+func TestSendPlan_EmptySessionName_Errors(t *testing.T) {
+	c := NewClient()
+	err := c.SendPlan(context.Background(), "", "plan body")
+	if err == nil {
+		t.Fatal("expected error for empty session name, got nil")
+	}
+}
+
+// TestSendPlan_LoadBufferReceivesPlanStdin verifies that SendPlan pipes
+// the plan through tmux load-buffer's stdin (rather than as an argv).
+// We use a real shell command (`cat > tmpfile`) to capture stdin.
+func TestSendPlan_LoadBufferReceivesPlanStdin(t *testing.T) {
+	tmpFile := t.TempDir() + "/load-buffer-stdin"
+
+	captureCalls := atomic.Int32{}
+	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "capture-pane" {
+			captureCalls.Add(1)
+			return exec.CommandContext(ctx, "printf", "%s", "Welcome\n❯\n")
+		}
+		if len(args) > 0 && args[0] == "load-buffer" {
+			// Drain stdin into tmpFile so the test can assert on it.
+			return exec.CommandContext(ctx, "sh", "-c", "cat > "+tmpFile)
+		}
+		return exec.CommandContext(ctx, "true")
+	}))
+
+	plan := "the plan body\nwith multiple lines"
+	if err := c.sendPlan(context.Background(), "boss-test", plan, sendPlanOpts{
+		deadline:     time.Second,
+		pollInterval: 5 * time.Millisecond,
+	}); err != nil {
+		t.Fatalf("SendPlan: %v", err)
+	}
+
+	got, err := readFile(tmpFile)
+	if err != nil {
+		t.Fatalf("read stdin capture: %v", err)
+	}
+	if got != plan {
+		t.Errorf("load-buffer stdin = %q, want %q", got, plan)
+	}
+}
+
+// readFile is a tiny helper that returns a file's contents as a string.
+// Inlined here to avoid pulling os into the test imports just for this.
+func readFile(path string) (string, error) {
+	f, err := exec.Command("cat", path).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(f), nil
 }

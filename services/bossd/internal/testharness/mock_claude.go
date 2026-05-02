@@ -3,6 +3,8 @@ package testharness
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,6 +59,75 @@ type mockProcess struct {
 func NewMockClaudeRunner() *MockClaudeRunner {
 	return &MockClaudeRunner{
 		sessions: make(map[string]*mockProcess),
+	}
+}
+
+// WithChanges configures the runner so that the next Start call writes
+// filename (relative to the workDir supplied to Start) with the given content
+// before "exiting" cleanly. The session process is registered and marked
+// running=false immediately so the lifecycle sees a clean exit without blocking.
+//
+// WithChanges wires into StartFunc, replacing any previous StartFunc value.
+// Call NoChanges() to reset to the default (do-nothing) behavior.
+func (m *MockClaudeRunner) WithChanges(filename, content string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.StartFunc = func(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error) {
+		id := sessionID
+		if id == "" {
+			id = fmt.Sprintf("claude-mock-%d", m.counter.Add(1))
+		}
+		// Write the file into the worktree.
+		dest := filepath.Join(workDir, filename)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return "", fmt.Errorf("mock claude: mkdir %s: %w", filepath.Dir(dest), err)
+		}
+		if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
+			return "", fmt.Errorf("mock claude: write %s: %w", dest, err)
+		}
+		// Register the session in completed state (not running).
+		m.mu.Lock()
+		m.sessions[id] = &mockProcess{
+			sessionID: id,
+			workDir:   workDir,
+			plan:      plan,
+			running:   false,
+		}
+		m.mu.Unlock()
+		return id, nil
+	}
+}
+
+// WithRunningSession resets StartFunc to nil so the next Start call uses the
+// default behavior: register the process as running=true and return
+// immediately. This is useful in overlap tests where the first session must
+// stay alive to block the second tick.
+func (m *MockClaudeRunner) WithRunningSession() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.StartFunc = nil
+}
+
+// NoChanges configures the runner so that Start exits cleanly without
+// touching the worktree. This is the default when no StartFunc is set, but
+// NoChanges makes the intent explicit and clears any previous WithChanges.
+func (m *MockClaudeRunner) NoChanges() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.StartFunc = func(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error) {
+		id := sessionID
+		if id == "" {
+			id = fmt.Sprintf("claude-mock-%d", m.counter.Add(1))
+		}
+		m.mu.Lock()
+		m.sessions[id] = &mockProcess{
+			sessionID: id,
+			workDir:   workDir,
+			plan:      plan,
+			running:   false,
+		}
+		m.mu.Unlock()
+		return id, nil
 	}
 }
 

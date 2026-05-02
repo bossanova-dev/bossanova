@@ -59,6 +59,8 @@ type Session struct {
 	AttemptCount      int
 	BlockedReason     *string
 	ArchivedAt        *time.Time
+	CronJobID         *string
+	HookToken         *string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 

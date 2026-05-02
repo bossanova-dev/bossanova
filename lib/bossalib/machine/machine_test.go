@@ -416,10 +416,19 @@ func TestAllStatesReachable(t *testing.T) {
 	}
 	reached[m4.State()] = true
 
+	// Finalizing via FinalizeRequested from ImplementingPlan
+	m5 := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, ClaudeStarted, FinalizeRequested} {
+		if err := m5.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	reached[m5.State()] = true
+
 	allStates := []State{
 		CreatingWorktree, StartingClaude, PushingBranch, OpeningDraftPR,
 		ImplementingPlan, AwaitingChecks, FixingChecks, GreenDraft,
-		ReadyForReview, Blocked, Merged, Closed,
+		ReadyForReview, Blocked, Merged, Closed, Finalizing,
 	}
 
 	for _, s := range allStates {
@@ -448,6 +457,82 @@ func TestInvalidTransitionReturnsError(t *testing.T) {
 	m := New(CreatingWorktree)
 	if err := m.Fire(ChecksPassed); err == nil {
 		t.Fatal("expected error firing ChecksPassed from CreatingWorktree")
+	}
+}
+
+func TestFinalizeRequestedFromImplementingPlan(t *testing.T) {
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, ClaudeStarted} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, ImplementingPlan)
+
+	if err := m.Fire(FinalizeRequested); err != nil {
+		t.Fatalf("Fire(FinalizeRequested): %v", err)
+	}
+	assertState(t, m, Finalizing)
+}
+
+func TestFinalizeRequestedFromNonImplementingPlanRejected(t *testing.T) {
+	// FinalizeRequested is only valid from ImplementingPlan. The DB-level
+	// conditional UPDATE (state=Finalizing WHERE state=ImplementingPlan) is
+	// the authoritative idempotency gate, but the state machine must also
+	// reject stray FinalizeRequested events from every other state.
+	rejectFrom := []struct {
+		initial State
+		setup   []Event
+	}{
+		{CreatingWorktree, nil},
+		{StartingClaude, []Event{WorktreeCreated}},
+		{PushingBranch, []Event{WorktreeCreated, ClaudeStarted, PlanComplete}},
+		{AwaitingChecks, []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened}},
+	}
+	for _, tc := range rejectFrom {
+		t.Run(tc.initial.String(), func(t *testing.T) {
+			m := New(CreatingWorktree)
+			for _, e := range tc.setup {
+				if err := m.Fire(e); err != nil {
+					t.Fatalf("setup Fire(%s): %v", e, err)
+				}
+			}
+			assertState(t, m, tc.initial)
+			if err := m.Fire(FinalizeRequested); err == nil {
+				t.Fatalf("expected error firing FinalizeRequested from %s", tc.initial)
+			}
+		})
+	}
+}
+
+func TestFinalizingExits(t *testing.T) {
+	// Finalizing is a waiting disposition. External events (PR merged/closed by
+	// the user, or an explicit Block from FinalizeSession on a fatal outcome)
+	// still need to drive it to a terminal state.
+	cases := []struct {
+		name  string
+		event Event
+		want  State
+	}{
+		{"PRMerged", PRMerged, Merged},
+		{"PRClosed", PRClosed, Closed},
+		{"Block", Block, Blocked},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(CreatingWorktree)
+			for _, e := range []Event{WorktreeCreated, ClaudeStarted, FinalizeRequested} {
+				if err := m.Fire(e); err != nil {
+					t.Fatalf("setup Fire(%s): %v", e, err)
+				}
+			}
+			assertState(t, m, Finalizing)
+
+			if err := m.Fire(tc.event); err != nil {
+				t.Fatalf("Fire(%s): %v", tc.event, err)
+			}
+			assertState(t, m, tc.want)
+		})
 	}
 }
 
@@ -605,6 +690,32 @@ func TestNewWithContext_NonZeroMaxAttempts(t *testing.T) {
 
 	if m.Context().MaxAttempts != 10 {
 		t.Fatalf("MaxAttempts = %d, want 10 (preserved)", m.Context().MaxAttempts)
+	}
+}
+
+func TestFinalizingNoProgressEvents(t *testing.T) {
+	// Finalizing tracks its detailed outcome via cron_job.last_run_outcome,
+	// not via the state machine. Mid-flow events (plan/check/fix, Unblock,
+	// or a repeat FinalizeRequested) must not transition out of Finalizing.
+	m := NewWithContext(Finalizing, &SessionContext{})
+	invalidEvents := []Event{
+		PlanComplete, ChecksPassed, ChecksFailed, ConflictDetected,
+		ReviewSubmitted, FixComplete, FixFailed, Unblock,
+		WorktreeCreated, ClaudeStarted, BranchPushed, PROpened, FinalizeRequested,
+	}
+	for _, e := range invalidEvents {
+		if m.CanFire(e) {
+			t.Errorf("Finalizing should not permit %s", e)
+		}
+	}
+}
+
+func TestFinalizingStateString(t *testing.T) {
+	if Finalizing.String() != "finalizing" {
+		t.Fatalf("got %q, want %q", Finalizing.String(), "finalizing")
+	}
+	if FinalizeRequested.String() != "finalize_requested" {
+		t.Fatalf("got %q, want %q", FinalizeRequested.String(), "finalize_requested")
 	}
 }
 

@@ -33,6 +33,7 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/skilldata"
 	"github.com/recurser/bossd/internal/claude"
+	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/plugin"
@@ -155,6 +156,7 @@ func run(opts runOpts) error {
 	claudeChats := db.NewNotifyingClaudeChatStore(db.NewClaudeChatStore(database))
 	taskMappings := db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
+	cronJobs := db.NewCronJobStore(database)
 
 	// The display-status computer needs to read the bare stores; wrap them
 	// after construction so the computer's own writes don't recurse through
@@ -304,7 +306,18 @@ func run(opts runOpts) error {
 	claudeRunner := claude.NewRunner(log.Logger)
 	tmuxClient := tmux.NewClient()
 	ghProvider := github.New(log.Logger)
-	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, worktrees, claudeRunner, tmuxClient, ghProvider, log.Logger)
+	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, cronJobs, worktrees, claudeRunner, tmuxClient, ghProvider, log.Logger)
+
+	// Recover sessions left in Finalizing from a previous daemon crash.
+	// They can't be safely re-driven (we don't know whether EnsurePR ran
+	// or whether the finalize chat was spawned), so we record
+	// failed_recovered on their cron_job and transition them to Blocked
+	// for the operator to investigate. Worktrees are preserved.
+	if n, err := lifecycle.RecoverFinalizingSessions(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to recover Finalizing sessions")
+	} else if n > 0 {
+		log.Info().Int("count", n).Msg("recovered sessions stuck in Finalizing from previous run")
+	}
 
 	// Reconcile sessions that were created before their PR existed (or
 	// where PR creation happened out-of-band). Matches by branch name.
@@ -445,9 +458,11 @@ func run(opts runOpts) error {
 	// --- Task Orchestrator ---
 
 	sessionCreator := taskorchestrator.NewSessionCreator(sessions, lifecycle, log.Logger)
-	// Warn if tmux is not available — interactive sessions will fail at attach time.
+	// Warn if tmux is not available — interactive sessions will fail at attach
+	// time, and cron fires will record fire_failed (cron-spawned sessions are
+	// hosted in tmux with no headless fallback).
 	if !tmuxClient.Available(context.Background()) {
-		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work")
+		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work, and cron fires will record fire_failed")
 	}
 
 	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, claudeChats, claudeRunner, tmuxClient)
@@ -455,6 +470,19 @@ func run(opts runOpts) error {
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
 	)
+
+	// --- Cron Scheduler ---
+
+	cronScheduler := cronpkg.New(cronpkg.Config{
+		Store:    cronJobs,
+		Sessions: sessions,
+		Repos:    repos,
+		Creator:  sessionCreator,
+		Logger:   log.Logger,
+	})
+	if err := cronScheduler.Start(context.Background()); err != nil {
+		return fmt.Errorf("cron scheduler: %w", err)
+	}
 
 	// Wire the orchestrator as the completion notifier for the dispatcher
 	// and server so that terminal session states unblock the per-repo task queue.
@@ -804,6 +832,8 @@ func run(opts runOpts) error {
 		Attempts:           attempts,
 		ClaudeChats:        claudeChats,
 		Workflows:          workflows,
+		CronJobs:           cronJobs,
+		CronScheduler:      cronScheduler,
 		ChatStatus:         chatStatusTracker,
 		DisplayTracker:     displayTracker,
 		TmuxPoller:         tmuxStatusPoller,
@@ -872,6 +902,34 @@ func run(opts runOpts) error {
 		}
 	})
 
+	// Periodically reconcile sessions that are missing a PR number against
+	// existing PRs on the same branch. The same call also runs once at
+	// startup (above), but a long-lived daemon needs to keep reconciling:
+	// the cron-tmux finalize path can race or surface a PR via a path
+	// that doesn't write back to the session row, leaving the UI showing
+	// "no PR" for a session whose branch already has one. 60s is a
+	// compromise — fast enough that the gap is barely visible, slow
+	// enough that the GitHub list-PRs cost stays small (the inner branch
+	// only fires when there ARE orphaned sessions).
+	trackedGo(func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				if n, err := session.ReconcilePRAssociations(
+					pollerCtx, sessions, repos, ghProvider, log.Logger,
+				); err != nil {
+					log.Warn().Err(err).Msg("periodic reconcile: failed")
+				} else if n > 0 {
+					log.Info().Int64("count", n).Msg("periodic reconcile: linked sessions to existing PRs")
+				}
+			}
+		}
+	})
+
 	// Bind the socket and initialize the http.Server synchronously so
 	// Shutdown below cannot race with the serving goroutine's write to
 	// the internal server field.
@@ -879,11 +937,32 @@ func run(opts runOpts) error {
 		return fmt.Errorf("server listen: %w", err)
 	}
 
+	// --- Hook Server (loopback HTTP for Claude Stop-hook notifications) ---
+
+	hookSrv := server.NewHookServer(server.HookServerConfig{
+		Sessions:  sessions,
+		Finalizer: lifecycle,
+		Logger:    log.Logger,
+	})
+	if err := hookSrv.Listen(); err != nil {
+		return fmt.Errorf("hook server listen: %w", err)
+	}
+	// Plumb the bound port into the lifecycle so cron-spawned sessions can
+	// stamp it into settings.local.json without the lifecycle having to
+	// read it back from a file written by the same process.
+	lifecycle.SetHookPort(hookSrv.Port())
+	log.Info().Int("port", hookSrv.Port()).Msg("hook server listening on 127.0.0.1")
+
 	// Start serving in a goroutine.
 	errCh := make(chan error, 1)
 	trackedGo(func() {
 		log.Info().Str("socket", socketPath).Msg("starting server")
 		errCh <- srv.Serve()
+	})
+	trackedGo(func() {
+		if err := hookSrv.Serve(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("hook server exited unexpectedly")
+		}
 	})
 
 	// Start the upstream StreamClient (no-op in local-only mode).
@@ -936,6 +1015,14 @@ func run(opts runOpts) error {
 	// Stop upstream StreamClient (if running).
 	streamCancel()
 
+	// Stop the cron scheduler and wait for in-flight fires to finish. Bound
+	// the wait so a stuck CreateSession cannot delay overall shutdown.
+	cronStopCtx, cronStopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := cronScheduler.Stop(cronStopCtx); err != nil {
+		log.Warn().Err(err).Msg("cron scheduler stop timed out")
+	}
+	cronStopCancel()
+
 	// Stop plugin host.
 	if err := pluginHost.Stop(); err != nil {
 		log.Warn().Err(err).Msg("plugin host stop error")
@@ -948,6 +1035,11 @@ func run(opts runOpts) error {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
+	}
+
+	// Shut down the hook server and remove its port file.
+	if err := hookSrv.Shutdown(ctx); err != nil {
+		log.Warn().Err(err).Msg("hook server shutdown error")
 	}
 
 	// Clean up socket file.

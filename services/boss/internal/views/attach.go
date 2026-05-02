@@ -263,16 +263,18 @@ func tmuxSessionAlive(name string) bool {
 //     (tea.Exec calls Manager.GetOrStart on its own goroutine, so there is a
 //     small race window between this goroutine starting and the entry being
 //     in the map).
-//  2. Wait for Claude Code's footer ready marker ("? for shortcuts") to
-//     appear in the PTY output. If the marker never shows up within the
+//  2. Wait for Claude Code's input-box prompt indicator (❯) to appear
+//     in the PTY output. If the marker never shows up within the
 //     deadline, paste anyway — same fail-open policy as the daemon-side
-//     prefill that this replaces.
+//     prefill that this replaces. We match on the prompt character
+//     rather than the default footer so users with custom statuslines
+//     (which replace the footer entirely) still get the prefill.
 //  3. Write \x1b[200~ + plan + \x1b[201~ to the PTY. Bracketed paste tells
 //     Claude "treat this as paste, not keystrokes," so it lands in the input
 //     box without auto-submitting.
 func prefillClaudeInput(ctx context.Context, manager *bosspty.Manager, claudeID, plan string) {
 	const (
-		readyMarker      = "? for shortcuts"
+		readyMarker      = "❯"
 		recentBufferSize = 4096
 		processWait      = 3 * time.Second
 		readyWait        = 2 * time.Second

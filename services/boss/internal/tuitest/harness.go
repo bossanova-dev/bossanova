@@ -72,13 +72,16 @@ type Harness struct {
 type Option func(*harnessConfig)
 
 type harnessConfig struct {
-	repos         []*pb.Repo
-	sessions      []*pb.Session
-	chats         []*pb.ClaudeChat
-	prs           map[string][]*pb.PRSummary
-	trackerIssues map[string][]*pb.TrackerIssue
-	args          []string
-	loggedInEmail string
+	repos          []*pb.Repo
+	sessions       []*pb.Session
+	chats          []*pb.ClaudeChat
+	cronJobs       []*pb.CronJob
+	prs            map[string][]*pb.PRSummary
+	trackerIssues  map[string][]*pb.TrackerIssue
+	args           []string
+	loggedInEmail  string
+	terminalWidth  int
+	terminalHeight int
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -112,6 +115,13 @@ func WithPRs(repoID string, prs ...*pb.PRSummary) Option {
 	}
 }
 
+// WithCronJobs seeds the mock daemon with cron jobs.
+func WithCronJobs(jobs ...*pb.CronJob) Option {
+	return func(c *harnessConfig) {
+		c.cronJobs = append(c.cronJobs, jobs...)
+	}
+}
+
 // WithTrackerIssues seeds the mock daemon with Linear/tracker issues for a repo.
 func WithTrackerIssues(repoID string, issues ...*pb.TrackerIssue) Option {
 	return func(c *harnessConfig) {
@@ -129,6 +139,15 @@ func WithTrackerIssues(repoID string, issues ...*pb.TrackerIssue) Option {
 func WithLoggedInUser(email string) Option {
 	return func(c *harnessConfig) {
 		c.loggedInEmail = email
+	}
+}
+
+// WithTerminalSize overrides the PTY dimensions for the TUI driver.
+// Useful for tests that need more screen real estate (e.g. long forms).
+func WithTerminalSize(width, height int) Option {
+	return func(c *harnessConfig) {
+		c.terminalWidth = width
+		c.terminalHeight = height
 	}
 }
 
@@ -159,6 +178,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 	for _, c := range cfg.chats {
 		daemon.AddChat(c)
 	}
+	for _, j := range cfg.cronJobs {
+		daemon.AddCronJob(j)
+	}
 	for repoID, prs := range cfg.prs {
 		daemon.AddPRs(repoID, prs)
 	}
@@ -185,11 +207,19 @@ func New(t *testing.T, opts ...Option) *Harness {
 		env = append(env, "BOSS_AUTH_E2E_EMAIL="+cfg.loggedInEmail)
 	}
 
+	width := 120
+	if cfg.terminalWidth > 0 {
+		width = cfg.terminalWidth
+	}
+	height := 30
+	if cfg.terminalHeight > 0 {
+		height = cfg.terminalHeight
+	}
 	driver, err := tuidriver.New(tuidriver.Options{
 		Command: bossBinaryPath,
 		Env:     env,
-		Width:   120,
-		Height:  30,
+		Width:   width,
+		Height:  height,
 		Args:    cfg.args,
 	})
 	if err != nil {

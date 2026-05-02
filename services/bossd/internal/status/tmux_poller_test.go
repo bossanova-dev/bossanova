@@ -98,6 +98,12 @@ func (m *mockSessionStore) Delete(_ context.Context, _ string) error    { return
 func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
 	return 0, nil
 }
+func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
+	return nil, nil
+}
+func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
+	return false, nil
+}
 
 // --- mock tmux command factory ---
 // Uses scripts that write to temp files to simulate tmux has-session and capture-pane.

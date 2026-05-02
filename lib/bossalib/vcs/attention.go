@@ -57,7 +57,7 @@ func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionSt
 
 	case machine.CreatingWorktree, machine.StartingClaude, machine.PushingBranch,
 		machine.OpeningDraftPR, machine.ImplementingPlan, machine.AwaitingChecks,
-		machine.Merged, machine.Closed:
+		machine.Merged, machine.Closed, machine.Finalizing:
 		// These states don't require human attention.
 	}
 

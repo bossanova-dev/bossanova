@@ -52,6 +52,12 @@ func (m *mockSessionStoreLiveness) Delete(_ context.Context, _ string) error { r
 func (m *mockSessionStoreLiveness) AdvanceOrphanedSessions(_ context.Context) (int64, error) {
 	return 0, nil
 }
+func (m *mockSessionStoreLiveness) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
+	return false, nil
+}
+func (m *mockSessionStoreLiveness) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
+	return nil, nil
+}
 
 // --- mock claude runner for liveness tests ---
 

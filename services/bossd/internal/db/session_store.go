@@ -23,6 +23,24 @@ func NewSessionStore(db *sql.DB) *SQLiteSessionStore {
 	return &SQLiteSessionStore{db: db}
 }
 
+// UpdateStateConditional performs the idempotency-gate conditional UPDATE
+// used by FinalizeSession: exactly one row is affected only if the session
+// was still in expectedState when we arrived.
+func (s *SQLiteSessionStore) UpdateStateConditional(ctx context.Context, id string, newState, expectedState int) (bool, error) {
+	now := sqlutil.TimeNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET state = ?, updated_at = ? WHERE id = ? AND state = ?`,
+		newState, now, id, expectedState)
+	if err != nil {
+		return false, fmt.Errorf("update state conditional: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return n == 1, nil
+}
+
 func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionParams) (*models.Session, error) {
 	id, err := sqlutil.NewID()
 	if err != nil {
@@ -55,6 +73,15 @@ func (s *SQLiteSessionStore) List(ctx context.Context, repoID string) ([]*models
 	}
 	query := sessionSelectSQL + " WHERE s.repo_id = ? ORDER BY s.created_at DESC"
 	return s.querySessionList(ctx, query, repoID)
+}
+
+// ListByState returns every session currently in the given state, regardless
+// of repo or archived status. Used by the daemon-startup recovery path to
+// find sessions left in transient states (e.g. Finalizing) when the daemon
+// crashed.
+func (s *SQLiteSessionStore) ListByState(ctx context.Context, state int) ([]*models.Session, error) {
+	query := sessionSelectSQL + " WHERE s.state = ? ORDER BY s.updated_at DESC"
+	return s.querySessionList(ctx, query, state)
 }
 
 func (s *SQLiteSessionStore) ListActive(ctx context.Context, repoID string) ([]*models.Session, error) {
@@ -199,6 +226,14 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "archived_at = ?")
 		args = append(args, *params.ArchivedAt)
 	}
+	if params.CronJobID != nil {
+		sets = append(sets, "cron_job_id = ?")
+		args = append(args, *params.CronJobID)
+	}
+	if params.HookToken != nil {
+		sets = append(sets, "hook_token = ?")
+		args = append(args, *params.HookToken)
+	}
 	if params.DisplayLabel != nil {
 		sets = append(sets, "display_label = ?")
 		args = append(args, *params.DisplayLabel)
@@ -332,7 +367,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at,
+	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner
 	FROM sessions s`
 
@@ -342,7 +377,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 // still appears with an empty display name.
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.created_at, s.updated_at,
+	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner,
 	COALESCE(r.display_name, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
@@ -359,7 +394,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
-		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt,
+		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner,
 		&repoDisplayName)
 	if err != nil {
@@ -394,7 +429,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
-		&sess.BlockedReason, &archivedAt, &createdAt, &updatedAt,
+		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner)
 	if err != nil {
 		return nil, err

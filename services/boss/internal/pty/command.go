@@ -72,11 +72,23 @@ func (c *PTYCommand) SetStdout(w io.Writer) { c.stdout = w }
 // SetStderr is called by bubbletea before Run().
 func (c *PTYCommand) SetStderr(w io.Writer) { c.stderr = w }
 
+// stdinFile returns the *os.File backing stdin — c.stdin if SetStdin was
+// called with one (the production path: bubbletea passes os.Stdin), and
+// os.Stdin as a fallback. Reading the global os.Stdin from inside Run()
+// races with tests that swap os.Stdin to inject a PTY slave, so route
+// every fd lookup through this helper.
+func (c *PTYCommand) stdinFile() *os.File {
+	if f, ok := c.stdin.(*os.File); ok {
+		return f
+	}
+	return os.Stdin
+}
+
 // Run blocks until the user detaches or the process exits.
 func (c *PTYCommand) Run() error {
 	// Put the real terminal in raw mode so keystrokes are forwarded
 	// immediately without echo. The PTY slave handles its own modes.
-	fd := int(os.Stdin.Fd())
+	fd := int(c.stdinFile().Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return err
@@ -131,7 +143,7 @@ func (c *PTYCommand) Run() error {
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 4096)
-		stdinFd := int(os.Stdin.Fd())
+		stdinFd := int(c.stdinFile().Fd())
 		cancelFd := int(cancelR.Fd())
 		// pending carries an incomplete terminal-query reply across reads.
 		// See stripTerminalQueryReplies for the leak it defends against.

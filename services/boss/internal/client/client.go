@@ -79,6 +79,13 @@ type BossClient interface {
 
 	// Auth change notification
 	NotifyAuthChange(ctx context.Context, action string) error
+
+	// Cron jobs
+	CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error)
+	ListCronJobs(ctx context.Context) ([]*pb.CronJob, error)
+	UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error)
+	DeleteCronJob(ctx context.Context, id string) error
+	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
 }
 
 // CreateSessionStream abstracts a server-streaming create session response.

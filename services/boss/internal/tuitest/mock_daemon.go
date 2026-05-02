@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -32,6 +34,7 @@ type MockDaemon struct {
 	repos         []*pb.Repo
 	sessions      []*pb.Session
 	chats         []*pb.ClaudeChat
+	cronJobs      map[string]*pb.CronJob        // keyed by cron job ID
 	prs           map[string][]*pb.PRSummary    // keyed by repo ID
 	trackerIssues map[string][]*pb.TrackerIssue // keyed by repo ID
 
@@ -64,6 +67,27 @@ type MockDaemon struct {
 	// daemon after the user authenticated or signed out.
 	notifyAuthChangeCalls []string
 
+	// cronJobCounter is used to generate deterministic cron job IDs.
+	cronJobCounter int
+
+	// createCronJobCalls records every CreateCronJob request.
+	createCronJobCalls []*pb.CreateCronJobRequest
+
+	// updateCronJobCalls records every UpdateCronJob request.
+	updateCronJobCalls []*pb.UpdateCronJobRequest
+
+	// deleteCronJobCalls records every DeleteCronJob id.
+	deleteCronJobCalls []string
+
+	// runCronJobNowCalls records every RunCronJobNow id.
+	runCronJobNowCalls []string
+
+	// runCronJobNowMode controls RunCronJobNow behaviour.
+	// "" or "alwaysRun" → return a synthesized Session.
+	// "alwaysSkip" → return a skipped response with runCronJobNowSkipReason.
+	runCronJobNowMode       string
+	runCronJobNowSkipReason string
+
 	socketPath string
 	httpServer *http.Server
 	listener   net.Listener
@@ -93,6 +117,7 @@ func NewMockDaemon(t *testing.T) *MockDaemon {
 	m := &MockDaemon{
 		socketPath:    socketPath,
 		listener:      ln,
+		cronJobs:      make(map[string]*pb.CronJob),
 		prs:           make(map[string][]*pb.PRSummary),
 		trackerIssues: make(map[string][]*pb.TrackerIssue),
 		attachEvents:  make(map[string]chan *pb.AttachSessionResponse),
@@ -188,6 +213,64 @@ func (m *MockDaemon) Repos() []*pb.Repo {
 	out := make([]*pb.Repo, len(m.repos))
 	copy(out, m.repos)
 	return out
+}
+
+// AddCronJob seeds the mock daemon with a cron job.
+func (m *MockDaemon) AddCronJob(job *pb.CronJob) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cronJobs[job.Id] = job
+}
+
+// CronJobs returns a snapshot of all cron jobs in the mock.
+func (m *MockDaemon) CronJobs() map[string]*pb.CronJob {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]*pb.CronJob, len(m.cronJobs))
+	for k, v := range m.cronJobs {
+		out[k] = v
+	}
+	return out
+}
+
+// CreateCronJobCallCount returns how many CreateCronJob calls were received.
+func (m *MockDaemon) CreateCronJobCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.createCronJobCalls)
+}
+
+// UpdateCronJobCalls returns a copy of every UpdateCronJob request recorded.
+func (m *MockDaemon) UpdateCronJobCalls() []*pb.UpdateCronJobRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.UpdateCronJobRequest, len(m.updateCronJobCalls))
+	copy(out, m.updateCronJobCalls)
+	return out
+}
+
+// DeleteCronJobCallCount returns how many DeleteCronJob calls were received.
+func (m *MockDaemon) DeleteCronJobCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.deleteCronJobCalls)
+}
+
+// RunCronJobNowCallCount returns how many RunCronJobNow calls were received.
+func (m *MockDaemon) RunCronJobNowCallCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.runCronJobNowCalls)
+}
+
+// SetRunCronJobNowMode configures RunCronJobNow behaviour.
+// mode "alwaysSkip" returns a skipped response with skipReason populated.
+// Any other value (including "") causes a synthesized Session to be returned.
+func (m *MockDaemon) SetRunCronJobNowMode(mode string, skipReason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.runCronJobNowMode = mode
+	m.runCronJobNowSkipReason = skipReason
 }
 
 // --- DaemonServiceHandler implementation ---
@@ -630,6 +713,117 @@ func (m *MockDaemon) NotifyAuthChangeCalls() []string {
 	out := make([]string, len(m.notifyAuthChangeCalls))
 	copy(out, m.notifyAuthChangeCalls)
 	return out
+}
+
+// --- Cron job RPCs ---
+
+func (m *MockDaemon) CreateCronJob(_ context.Context, req *connect.Request[pb.CreateCronJobRequest]) (*connect.Response[pb.CreateCronJobResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.createCronJobCalls = append(m.createCronJobCalls, req.Msg)
+	m.cronJobCounter++
+	job := &pb.CronJob{
+		Id:        fmt.Sprintf("cron-%d", m.cronJobCounter),
+		RepoId:    req.Msg.RepoId,
+		Name:      req.Msg.Name,
+		Prompt:    req.Msg.Prompt,
+		Schedule:  req.Msg.Schedule,
+		Timezone:  req.Msg.Timezone,
+		Enabled:   req.Msg.Enabled,
+		CreatedAt: timestamppb.Now(),
+		UpdatedAt: timestamppb.Now(),
+	}
+	m.cronJobs[job.Id] = job
+	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: proto.Clone(job).(*pb.CronJob)}), nil
+}
+
+func (m *MockDaemon) ListCronJobs(_ context.Context, req *connect.Request[pb.ListCronJobsRequest]) (*connect.Response[pb.ListCronJobsResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.cronJobs))
+	for id := range m.cronJobs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*pb.CronJob, 0, len(ids))
+	for _, id := range ids {
+		job := m.cronJobs[id]
+		if req.Msg.RepoId != nil && *req.Msg.RepoId != "" && job.RepoId != *req.Msg.RepoId {
+			continue
+		}
+		// Clone so concurrent writers (e.g. UpdateCronJob) cannot race with
+		// the response marshaler.
+		out = append(out, proto.Clone(job).(*pb.CronJob))
+	}
+	return connect.NewResponse(&pb.ListCronJobsResponse{CronJobs: out}), nil
+}
+
+func (m *MockDaemon) GetCronJob(_ context.Context, req *connect.Request[pb.GetCronJobRequest]) (*connect.Response[pb.GetCronJobResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	job, ok := m.cronJobs[req.Msg.Id]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job %q not found", req.Msg.Id))
+	}
+	return connect.NewResponse(&pb.GetCronJobResponse{CronJob: proto.Clone(job).(*pb.CronJob)}), nil
+}
+
+func (m *MockDaemon) UpdateCronJob(_ context.Context, req *connect.Request[pb.UpdateCronJobRequest]) (*connect.Response[pb.UpdateCronJobResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updateCronJobCalls = append(m.updateCronJobCalls, proto.Clone(req.Msg).(*pb.UpdateCronJobRequest))
+	job, ok := m.cronJobs[req.Msg.Id]
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job %q not found", req.Msg.Id))
+	}
+	if req.Msg.Name != nil {
+		job.Name = *req.Msg.Name
+	}
+	if req.Msg.Prompt != nil {
+		job.Prompt = *req.Msg.Prompt
+	}
+	if req.Msg.Schedule != nil {
+		job.Schedule = *req.Msg.Schedule
+	}
+	if req.Msg.Timezone != nil {
+		job.Timezone = *req.Msg.Timezone
+	}
+	if req.Msg.Enabled != nil {
+		job.Enabled = *req.Msg.Enabled
+	}
+	job.UpdatedAt = timestamppb.Now()
+	// Clone before returning: connect-go marshals the response after we
+	// release the lock, and a subsequent UpdateCronJob would otherwise mutate
+	// the same pointer concurrently with the in-flight marshal.
+	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: proto.Clone(job).(*pb.CronJob)}), nil
+}
+
+func (m *MockDaemon) DeleteCronJob(_ context.Context, req *connect.Request[pb.DeleteCronJobRequest]) (*connect.Response[pb.DeleteCronJobResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deleteCronJobCalls = append(m.deleteCronJobCalls, req.Msg.Id)
+	if _, ok := m.cronJobs[req.Msg.Id]; !ok {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job %q not found", req.Msg.Id))
+	}
+	delete(m.cronJobs, req.Msg.Id)
+	return connect.NewResponse(&pb.DeleteCronJobResponse{}), nil
+}
+
+func (m *MockDaemon) RunCronJobNow(_ context.Context, req *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.runCronJobNowCalls = append(m.runCronJobNowCalls, req.Msg.Id)
+	if m.runCronJobNowMode == "alwaysSkip" {
+		return connect.NewResponse(&pb.RunCronJobNowResponse{
+			SkippedReason: m.runCronJobNowSkipReason,
+		}), nil
+	}
+	// Default: alwaysRun — return a synthesized session.
+	sess := &pb.Session{
+		Id:    fmt.Sprintf("cron-run-%s", req.Msg.Id),
+		State: pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+	}
+	return connect.NewResponse(&pb.RunCronJobNowResponse{Session: sess}), nil
 }
 
 // removeSocket removes a socket file, ignoring "not exist" errors.

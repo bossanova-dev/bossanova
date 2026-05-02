@@ -1,5 +1,5 @@
 // Package machine provides the session state machine for the Bossanova
-// session lifecycle. It defines 12 states, 15 event triggers, guards, and
+// session lifecycle. It defines 13 states, 16 event triggers, guards, and
 // actions using qmuntal/stateless.
 package machine
 
@@ -26,6 +26,7 @@ const (
 	Blocked
 	Merged
 	Closed
+	Finalizing
 )
 
 // Event represents a session event trigger.
@@ -47,6 +48,7 @@ const (
 	Unblock
 	PRMerged
 	PRClosed
+	FinalizeRequested
 )
 
 // MaxAttempts is the default maximum number of fix attempts before blocking.
@@ -179,6 +181,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 
 	sm.Configure(ImplementingPlan).
 		PermitDynamic(PlanComplete, m.planCompleteDestination).
+		Permit(FinalizeRequested, Finalizing).
 		Permit(Block, Blocked).
 		Permit(PRClosed, Closed)
 
@@ -237,6 +240,15 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 	sm.Configure(Merged)
 
 	sm.Configure(Closed)
+
+	// Finalizing is entered from ImplementingPlan when the Stop hook fires.
+	// The detailed outcome is tracked out-of-band via cron_job.last_run_outcome.
+	// Outbound transitions mirror the other non-fix states so the session can
+	// still be observed to a terminal disposition (merged, closed, or blocked).
+	sm.Configure(Finalizing).
+		Permit(PRMerged, Merged).
+		Permit(PRClosed, Closed).
+		Permit(Block, Blocked)
 
 	return sm
 }
@@ -300,6 +312,8 @@ func (s State) String() string {
 		return "merged"
 	case Closed:
 		return "closed"
+	case Finalizing:
+		return "finalizing"
 	default:
 		return "unknown"
 	}
@@ -337,6 +351,8 @@ func (e Event) String() string {
 		return "pr_merged"
 	case PRClosed:
 		return "pr_closed"
+	case FinalizeRequested:
+		return "finalize_requested"
 	default:
 		return "unknown"
 	}

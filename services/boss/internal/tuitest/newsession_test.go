@@ -1,6 +1,7 @@
 package tuitest_test
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestTUI_NewSessionView_TypeSelect(t *testing.T) {
 	// Should show session type options.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "Create a new PR") ||
-			strings.Contains(screen, "Quick chat")
+			strings.Contains(screen, "Quick Chat")
 	}); err != nil {
 		t.Fatalf("expected type select; screen:\n%s", h.Driver.Screen())
 	}
@@ -83,7 +84,7 @@ func TestTUI_NewSessionView_SingleRepoSkipsSelect(t *testing.T) {
 	// With only 1 repo, should skip repo select and go directly to type select.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "Create a new PR") ||
-			strings.Contains(screen, "Quick chat") ||
+			strings.Contains(screen, "Quick Chat") ||
 			strings.Contains(screen, "Starting a new session")
 	}); err != nil {
 		t.Fatalf("expected type select (skipped repo select); screen:\n%s", h.Driver.Screen())
@@ -114,8 +115,8 @@ func TestTUI_NewSessionView_FormPhase_EscGoesBackToTypeSelect(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Should be on the form phase with "Session title".
-	if err := h.Driver.WaitForText(waitTimeout, "Session title"); err != nil {
+	// Should be on the form phase with "Session name".
+	if err := h.Driver.WaitForText(waitTimeout, "Session name"); err != nil {
 		t.Fatalf("expected form phase; screen:\n%s", h.Driver.Screen())
 	}
 
@@ -166,7 +167,7 @@ func TestTUI_NewSessionView_SubmitCreatesSession(t *testing.T) {
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Session title"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Session name"); err != nil {
 		t.Fatalf("expected form phase; screen:\n%s", h.Driver.Screen())
 	}
 
@@ -206,6 +207,139 @@ func TestTUI_NewSessionView_SubmitCreatesSession(t *testing.T) {
 	}
 	if req.PrNumber != nil {
 		t.Fatalf("CreateSession.PrNumber = %v, want nil for NewPR flow", req.PrNumber)
+	}
+}
+
+// navigateToQuickChatForm presses 'n' on home (single repo skips repo select),
+// navigates to the "Quick Chat" type-select row (third option after NewPR and
+// ExistingPR), and presses Enter to advance into the form phase. Returns once
+// the form is visible.
+func navigateToQuickChatForm(t *testing.T, h *tuitest.Harness) {
+	t.Helper()
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Quick Chat"); err != nil {
+		t.Fatalf("expected type select; screen:\n%s", h.Driver.Screen())
+	}
+	// Quick Chat is the third row (index 2): NewPR, ExistingPR, QuickChat.
+	if err := h.Driver.SendKey('j'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('j'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Session name"); err != nil {
+		t.Fatalf("expected Quick Chat form; screen:\n%s", h.Driver.Screen())
+	}
+}
+
+// TestTUI_NewSessionView_QuickChat_NameTyped walks the full Quick Chat flow
+// with a user-supplied name: repo (auto-picked, single repo), type select
+// → Quick Chat, name entry, submit. Asserts the captured CreateSessionRequest
+// has the typed Title and QuickChat == true.
+func TestTUI_NewSessionView_QuickChat_NameTyped(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...), // single repo skips repo select
+	)
+	navigateToQuickChatForm(t, h)
+
+	if err := h.Driver.SendString("fixing the auth bug"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(waitTimeout)
+	var req *pb.CreateSessionRequest
+	for time.Now().Before(deadline) {
+		req = h.Daemon.LastCreateSession()
+		if req != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if req == nil {
+		t.Fatalf("CreateSession was never called; screen:\n%s", h.Driver.Screen())
+	}
+	if req.Title != "fixing the auth bug" {
+		t.Fatalf("CreateSession.Title = %q, want %q", req.Title, "fixing the auth bug")
+	}
+	if !req.QuickChat {
+		t.Fatalf("CreateSession.QuickChat = false, want true for Quick Chat flow")
+	}
+}
+
+// TestTUI_NewSessionView_QuickChat_EmptyName confirms that submitting the
+// Quick Chat form with no input falls back to a timestamped default title.
+func TestTUI_NewSessionView_QuickChat_EmptyName(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...), // single repo skips repo select
+	)
+	navigateToQuickChatForm(t, h)
+
+	// Press Enter without typing anything — empty submission is legal for Quick Chat.
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(waitTimeout)
+	var req *pb.CreateSessionRequest
+	for time.Now().Before(deadline) {
+		req = h.Daemon.LastCreateSession()
+		if req != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if req == nil {
+		t.Fatalf("CreateSession was never called; screen:\n%s", h.Driver.Screen())
+	}
+	if !req.QuickChat {
+		t.Fatalf("CreateSession.QuickChat = false, want true for Quick Chat flow")
+	}
+	matched, err := regexp.MatchString(`^Quick Chat \d{4}-\d{2}-\d{2} \d{2}:\d{2}$`, req.Title)
+	if err != nil {
+		t.Fatalf("regexp.MatchString error: %v", err)
+	}
+	if !matched {
+		t.Fatalf("CreateSession.Title = %q, want it to match `^Quick Chat \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$`", req.Title)
+	}
+}
+
+// TestTUI_NewSessionView_QuickChat_EscReturnsToTypeSelect verifies that Esc
+// from the Quick Chat name-entry form returns the user to the type-select
+// table rather than firing a session create or popping back home.
+func TestTUI_NewSessionView_QuickChat_EscReturnsToTypeSelect(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...), // single repo skips repo select
+	)
+	navigateToQuickChatForm(t, h)
+
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should see the type-select rows again.
+	if err := h.Driver.WaitForText(waitTimeout, "Create a new PR"); err != nil {
+		t.Fatalf("expected type select after esc from Quick Chat form; screen:\n%s", h.Driver.Screen())
+	}
+	screen := h.Driver.Screen()
+	if !strings.Contains(screen, "Quick Chat") {
+		t.Fatalf("expected 'Quick Chat' row in type select; screen:\n%s", screen)
+	}
+	if strings.Contains(screen, "no active sessions") {
+		t.Fatalf("should not have returned to home; screen:\n%s", screen)
+	}
+	if h.Daemon.LastCreateSession() != nil {
+		t.Fatalf("CreateSession should not have been called when esc was pressed")
 	}
 }
 

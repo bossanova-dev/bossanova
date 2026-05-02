@@ -18,9 +18,12 @@ format:
 	gofmt -w .
 	golangci-lint run ./...
 
-## test: Run tests under -race with coverage (300s timeout covers E2E TUI tests under race instrumentation)
+# Race detector is opt-in locally (slow). CI sets RACE=1; locally use `RACE=1 make test`.
+RACE_FLAG := $(if $(RACE),-race,)
+
+## test: Run tests with coverage (set RACE=1 to enable race detector; 300s timeout covers E2E TUI tests under race instrumentation)
 test:
-	go test -race -timeout 300s -coverprofile=coverage.out ./...
+	go test $(RACE_FLAG) -timeout 300s -coverprofile=coverage.out ./...
 
 ## dev: Run the boss CLI TUI in dev mode (generates protos first if needed)
 dev:

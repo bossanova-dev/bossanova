@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -75,6 +76,9 @@ type Harness struct {
 	httpServer *http.Server
 	listener   net.Listener
 	closed     atomic.Bool
+
+	deletedMu       sync.Mutex
+	deletedSessions []string
 }
 
 // New creates a new E2E test harness with an in-memory database,
@@ -159,6 +163,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	}
 
 	// Server.
+	h := &Harness{}
 	srv := server.New(server.Config{
 		Repos:          repos,
 		Sessions:       sessions,
@@ -170,7 +175,12 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		Worktrees:      gitMock,
 		Provider:       vcsMock,
 		Tmux:           tmuxClient,
-		Logger:         logger,
+		OnSessionDeleted: func(_ context.Context, sessionID string) {
+			h.deletedMu.Lock()
+			defer h.deletedMu.Unlock()
+			h.deletedSessions = append(h.deletedSessions, sessionID)
+		},
+		Logger: logger,
 	})
 
 	// Start server on a temp Unix socket.
@@ -204,30 +214,40 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		connect.WithGRPC(),
 	)
 
-	h := &Harness{
-		DB:             database,
-		Repos:          repos,
-		Sessions:       sessions,
-		Attempts:       attempts,
-		ClaudeChats:    claudeChats,
-		Lifecycle:      lifecycle,
-		Server:         srv,
-		Tmux:           tmuxClient,
-		Git:            gitMock,
-		Claude:         claudeMock,
-		VCS:            vcsMock,
-		DisplayTracker: display,
-		Client:         client,
-		socketPath:     socketPath,
-		httpServer:     httpServer,
-		listener:       ln,
-	}
+	h.DB = database
+	h.Repos = repos
+	h.Sessions = sessions
+	h.Attempts = attempts
+	h.ClaudeChats = claudeChats
+	h.Lifecycle = lifecycle
+	h.Server = srv
+	h.Tmux = tmuxClient
+	h.Git = gitMock
+	h.Claude = claudeMock
+	h.VCS = vcsMock
+	h.DisplayTracker = display
+	h.Client = client
+	h.socketPath = socketPath
+	h.httpServer = httpServer
+	h.listener = ln
 
 	// Single cleanup hook ensures Close runs at test teardown even when
 	// the test forgets to call it explicitly. Close is idempotent.
 	t.Cleanup(func() { h.Close() })
 
 	return h
+}
+
+// DeletedSessionIDs returns a snapshot of session IDs the daemon has
+// reported deleted via the Server's OnSessionDeleted hook. The slice is
+// returned in invocation order; tests assert on it to verify that
+// SessionDelta_KIND_DELETED would be published for each removed session.
+func (h *Harness) DeletedSessionIDs() []string {
+	h.deletedMu.Lock()
+	defer h.deletedMu.Unlock()
+	out := make([]string, len(h.deletedSessions))
+	copy(out, h.deletedSessions)
+	return out
 }
 
 // Close shuts down the harness's HTTP server, closes the database, and

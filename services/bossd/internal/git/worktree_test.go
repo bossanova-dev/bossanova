@@ -193,6 +193,178 @@ func TestCreateWithSetupScript(t *testing.T) {
 	}
 }
 
+// TestCreate_IgnoresBossDir verifies that after a worktree is created,
+// the .boss/ directory used for Claude session state is git-ignored
+// inside that worktree (so it doesn't pollute `git status`).
+func TestCreate_IgnoresBossDir(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Ignore boss",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Drop a fake .boss/ entry so check-ignore has something to match.
+	bossDir := filepath.Join(result.WorktreePath, ".boss")
+	if err := os.MkdirAll(bossDir, 0o755); err != nil {
+		t.Fatalf("mkdir .boss: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bossDir, "claude.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write claude.log: %v", err)
+	}
+
+	// `git check-ignore` exits 0 when the path is ignored, 1 when not.
+	cmd := exec.Command("git", "check-ignore", "-v", ".boss/claude.log")
+	cmd.Dir = result.WorktreePath
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf(".boss/claude.log is not ignored. git check-ignore output:\n%s\nerr: %v", out, err)
+	}
+	if !strings.Contains(string(out), ".boss") {
+		t.Errorf("check-ignore output does not mention .boss: %s", out)
+	}
+
+	// `git status --porcelain` should be clean (no untracked .boss).
+	status, err := runGit(ctx, result.WorktreePath, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if status != "" {
+		t.Errorf("expected clean status, got: %q", status)
+	}
+}
+
+// TestCreate_IgnoreIsIdempotent verifies that creating multiple worktrees
+// of the same repo does not append duplicate .boss/ entries to
+// .git/info/exclude (which is shared via $GIT_COMMON_DIR).
+func TestCreate_IgnoreIsIdempotent(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	for i, title := range []string{"first", "second", "third"} {
+		if _, err := mgr.Create(ctx, CreateOpts{
+			RepoPath:        repoDir,
+			BaseBranch:      "main",
+			WorktreeBaseDir: wtBase,
+			RepoName:        "my-repo",
+			Title:           title,
+		}); err != nil {
+			t.Fatalf("Create #%d (%q): %v", i, title, err)
+		}
+	}
+
+	excludePath := filepath.Join(repoDir, ".git", "info", "exclude")
+	body, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude: %v", err)
+	}
+	count := strings.Count(string(body), ".boss/")
+	if count != 1 {
+		t.Errorf(".boss/ appears %d times in info/exclude, want 1. Body:\n%s", count, body)
+	}
+}
+
+// TestCreate_IgnorePreservesExistingExcludes verifies that adding our
+// pattern doesn't clobber pre-existing user content in info/exclude.
+func TestCreate_IgnorePreservesExistingExcludes(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Seed info/exclude with a user pattern.
+	excludePath := filepath.Join(repoDir, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		t.Fatalf("mkdir info: %v", err)
+	}
+	const userPattern = "user-private.txt\n"
+	if err := os.WriteFile(excludePath, []byte(userPattern), 0o644); err != nil {
+		t.Fatalf("seed exclude: %v", err)
+	}
+
+	if _, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Preserve user",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	body, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude: %v", err)
+	}
+	if !strings.Contains(string(body), "user-private.txt") {
+		t.Errorf("user pattern lost. Body:\n%s", body)
+	}
+	if !strings.Contains(string(body), ".boss/") {
+		t.Errorf(".boss/ pattern not added. Body:\n%s", body)
+	}
+}
+
+// TestCreateFromExistingBranch_IgnoresBossDir verifies the same ignore
+// behavior is applied when creating a worktree from an existing branch
+// (e.g. for PR review sessions).
+func TestCreateFromExistingBranch_IgnoresBossDir(t *testing.T) {
+	repoDir := initTestRepo(t)
+
+	// Create a branch on origin so CreateFromExistingBranch can fetch it.
+	for _, args := range [][]string{
+		{"checkout", "-b", "feature"},
+		{"commit", "--allow-empty", "-m", "feature"},
+		{"push", "origin", "feature"},
+		{"checkout", "main"},
+		{"branch", "-D", "feature"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.CreateFromExistingBranch(ctx, CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      "feature",
+	})
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch: %v", err)
+	}
+
+	bossDir := filepath.Join(result.WorktreePath, ".boss")
+	if err := os.MkdirAll(bossDir, 0o755); err != nil {
+		t.Fatalf("mkdir .boss: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bossDir, "claude.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write claude.log: %v", err)
+	}
+
+	cmd := exec.Command("git", "check-ignore", "-v", ".boss/claude.log")
+	cmd.Dir = result.WorktreePath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf(".boss/claude.log not ignored. output:\n%s\nerr: %v", out, err)
+	}
+}
+
 func TestArchive(t *testing.T) {
 	repoDir := initTestRepo(t)
 	wtBase := filepath.Join(t.TempDir(), "worktrees")
@@ -308,6 +480,60 @@ func TestResurrect(t *testing.T) {
 	// Worktree directory should be back.
 	if _, err := os.Stat(result.WorktreePath); err != nil {
 		t.Errorf("worktree dir not found after resurrect: %v", err)
+	}
+}
+
+// TestResurrect_IgnoresBossDir covers the case where a worktree predates
+// the .boss/ ignore feature (or info/exclude was hand-cleaned): Resurrect
+// must re-apply the bossd-managed exclude so .boss/ doesn't show up in
+// `git status` after the worktree comes back.
+func TestResurrect_IgnoresBossDir(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Resurrect ignore",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.Archive(ctx, result.WorktreePath); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// Simulate a stale info/exclude (worktree predates the feature, or
+	// user wiped the file by hand) by truncating it.
+	excludePath := filepath.Join(repoDir, ".git", "info", "exclude")
+	if err := os.WriteFile(excludePath, nil, 0o644); err != nil {
+		t.Fatalf("truncate exclude: %v", err)
+	}
+
+	if err := mgr.Resurrect(ctx, ResurrectOpts{
+		RepoPath:     repoDir,
+		WorktreePath: result.WorktreePath,
+		BranchName:   result.BranchName,
+	}); err != nil {
+		t.Fatalf("Resurrect: %v", err)
+	}
+
+	bossDir := filepath.Join(result.WorktreePath, ".boss")
+	if err := os.MkdirAll(bossDir, 0o755); err != nil {
+		t.Fatalf("mkdir .boss: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bossDir, "claude.log"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write claude.log: %v", err)
+	}
+
+	cmd := exec.Command("git", "check-ignore", "-v", ".boss/claude.log")
+	cmd.Dir = result.WorktreePath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf(".boss/claude.log not ignored after Resurrect. output:\n%s\nerr: %v", out, err)
 	}
 }
 

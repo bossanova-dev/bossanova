@@ -224,6 +224,72 @@ func TestHasQuestionPrompt(t *testing.T) {
 				"  6. Chat about this\n",
 			want: true,
 		},
+		{
+			// Pattern 4 (additive): AskUserQuestion card rendered without a
+			// left-column chevron cursor. Same structural signals as the
+			// existing office-hours fixture (☐ header + question + numbered
+			// options) but no chevron on any option line. Note: the existing
+			// Pattern 3 (trailing-? fallback) actually catches this shape on
+			// its own, but Pattern 1 cannot — guards against regressions if
+			// Pattern 1 were ever generalized to drop its chevron requirement.
+			name: "chevronless card without ⏺ marker",
+			data: "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n" +
+				" ☐ Highlight style\n" +
+				"\n" +
+				"2B — How should the selected row be highlighted (the 'in our primary color' part)?\n" +
+				"\n" +
+				"ELI10: The TUI's selected row uses bold + blue foreground on the text.\n" +
+				"\n" +
+				"Recommendation: A (background tint + accent left border + bold text).\n" +
+				"\n" +
+				" 1. A) Background tint + left\n" +
+				"   accent border + bold text\n" +
+				"   (recommended)\n" +
+				" 2. B) Strict TUI parity —\n" +
+				"   bold + blue text only\n" +
+				" 3. C) Background tint only,\n" +
+				"   no left border\n" +
+				"\n" +
+				"                                  Notes: press n to add notes\n",
+			want: true,
+		},
+		{
+			// Pattern 4 (the user-reported miss): chevronless card with a
+			// later ⏺ response marker BELOW the question. This is the shape
+			// that defeats the existing detector:
+			//   - Pattern 1 can't fire (no chevron on an option line).
+			//   - Pattern 2 finds the LAST ⏺ below the card; the text after
+			//     that marker has no trailing "?", so Pattern 2 hits its
+			//     early-return-false branch and short-circuits Pattern 3.
+			//   - Pattern 3 (trailing-? fallback) is never reached.
+			// The card's ☐ header + question with "?" + 2+ numbered options
+			// is the structural signal Pattern 4 keys on.
+			name: "chevronless card with ⏺ marker below (user reported miss)",
+			data: "⏺ Here's an outline of the design choices.\n" +
+				"\n" +
+				"─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n" +
+				" ☐ Highlight style\n" +
+				"\n" +
+				"2B — How should the selected row be highlighted (the 'in our primary color' part)?\n" +
+				"\n" +
+				"ELI10: The TUI's selected row uses bold + blue foreground on the text.\n" +
+				"\n" +
+				"Recommendation: A (background tint + accent left border + bold text).\n" +
+				"\n" +
+				" 1. A) Background tint + left\n" +
+				"   accent border + bold text\n" +
+				"   (recommended)\n" +
+				" 2. B) Strict TUI parity —\n" +
+				"   bold + blue text only\n" +
+				" 3. C) Background tint only,\n" +
+				"   no left border\n" +
+				"\n" +
+				"                                  Notes: press n to add notes\n" +
+				"\n" +
+				"⏺ Working… (3s · ↑ 0 tokens)\n" +
+				"  Opus 4.7 | Context: 89% remaining\n",
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -421,6 +487,62 @@ func TestHasQuestionPrompt_FalsePositiveScrollback(t *testing.T) {
 		"⏺ Done! I've fixed the bug in main.go by correcting the off-by-one error on line 42.\n"
 	if HasQuestionPrompt([]byte(data)) {
 		t.Error("should not detect question: latest response after ⏺ has no trailing '?'")
+	}
+}
+
+func TestHasQuestionPrompt_ChevronlessCardNegatives(t *testing.T) {
+	// Pattern 4 keys on three signals together: a "☐ <title>" header, a "?"
+	// in the question region, and 2+ consecutive numbered options at the same
+	// indent. These negative cases each break one of those signals and must
+	// not flip status to "question".
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			// Claude Code TODO lists also use ☐ but are a stack of task lines
+			// with no question text and no numbered option block.
+			name: "TODO list rendering with ☐ glyphs",
+			data: "⏺ Update Todos\n" +
+				"  ⎿  ☐ Investigate the bug in the parser\n" +
+				"     ☐ Write a failing test\n" +
+				"     ☐ Fix the off-by-one error\n" +
+				"     ☒ Read the spec\n",
+		},
+		{
+			// Numbered prose without a ☐ header must not match. Pattern 4
+			// requires the card title; this rules out routine numbered lists
+			// in tool output, changelogs, or response text.
+			name: "numbered list without ☐ header",
+			data: "⏺ Here's what changed in this release.\n" +
+				"\n" +
+				" 1. Faster startup\n" +
+				" 2. New theme\n" +
+				" 3. Bug fixes\n",
+		},
+		{
+			// User answered the card; Claude has rendered a new ⏺ response
+			// below with no remaining option block. Pattern 4 must not fire
+			// just because the ☐ header is still in scrollback.
+			name: "answered card with response below",
+			data: "─────────────────────────────────────────────────────────────────\n" +
+				" ☐ Highlight style\n" +
+				"\n" +
+				"How should the row be highlighted?\n" +
+				"\n" +
+				"⏺ Got it — going with option A.\n" +
+				"  ⎿  Updated tr.css with the accent border.\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if HasQuestionPrompt([]byte(tt.data)) {
+				clean := StripANSI([]byte(tt.data))
+				tail := LastNLines(clean, 30)
+				t.Errorf("should NOT detect question\n  clean: %q\n  tail: %q",
+					string(clean), string(tail))
+			}
+		})
 	}
 }
 

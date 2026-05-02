@@ -197,6 +197,70 @@ func sanitizeDirName(name string) string {
 	return s
 }
 
+// bossdManagedExcludePatterns are the gitignore patterns bossd ensures
+// are present in every worktree's $GIT_COMMON_DIR/info/exclude so that
+// bossd-managed artifacts (Claude session logs, etc.) don't pollute
+// `git status` or get accidentally committed.
+var bossdManagedExcludePatterns = []string{".boss/"}
+
+// bossdExcludeMarker identifies the block of patterns bossd has added
+// to info/exclude, so the additions are easy to spot and remove by hand.
+const bossdExcludeMarker = "# bossd-managed: ignore worktree-local artifacts"
+
+// ensureGitInfoExclude appends the given patterns to the worktree's
+// $GIT_COMMON_DIR/info/exclude, idempotently. Patterns already present
+// (anywhere in the file) are skipped. Pre-existing content is preserved.
+//
+// info/exclude lives in $GIT_COMMON_DIR, which for linked worktrees is
+// the main repo's .git directory — so applying this once for any
+// worktree of a repo benefits every other worktree of that same repo.
+func ensureGitInfoExclude(ctx context.Context, worktreePath string, patterns []string) error {
+	commonDir, err := runGit(ctx, worktreePath, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("resolve git common dir: %w", err)
+	}
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(worktreePath, commonDir)
+	}
+	excludePath := filepath.Join(commonDir, "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		return fmt.Errorf("create info dir: %w", err)
+	}
+
+	existing, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read exclude: %w", err)
+	}
+
+	have := make(map[string]bool)
+	for line := range strings.SplitSeq(string(existing), "\n") {
+		have[strings.TrimSpace(line)] = true
+	}
+	var missing []string
+	for _, p := range patterns {
+		if !have[p] {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	var buf bytes.Buffer
+	buf.Write(existing)
+	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
+		buf.WriteByte('\n')
+	}
+	buf.WriteString(bossdExcludeMarker)
+	buf.WriteByte('\n')
+	for _, p := range missing {
+		buf.WriteString(p)
+		buf.WriteByte('\n')
+	}
+
+	return os.WriteFile(excludePath, buf.Bytes(), 0o644)
+}
+
 // runGit runs a git command in the given directory and returns stdout.
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
@@ -277,6 +341,12 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		return nil, fmt.Errorf("worktree add: %w", err)
 	}
 
+	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
+	// downstream step writes into them.
+	if err := ensureGitInfoExclude(ctx, wtPath, bossdManagedExcludePatterns); err != nil {
+		return nil, fmt.Errorf("ensure info/exclude: %w", err)
+	}
+
 	// Run setup script if provided.
 	if opts.SetupScript != nil && *opts.SetupScript != "" {
 		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
@@ -343,6 +413,12 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 		"worktree", "add", opts.WorktreePath, opts.BranchName,
 	); err != nil {
 		return fmt.Errorf("worktree add: %w", err)
+	}
+
+	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored — covers
+	// worktrees that predate this feature or had info/exclude cleared.
+	if err := ensureGitInfoExclude(ctx, opts.WorktreePath, bossdManagedExcludePatterns); err != nil {
+		return fmt.Errorf("ensure info/exclude: %w", err)
 	}
 
 	// Run setup script if provided.
@@ -763,6 +839,12 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 		"worktree", "add", wtPath, opts.BranchName,
 	); err != nil {
 		return nil, fmt.Errorf("worktree add: %w", err)
+	}
+
+	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
+	// downstream step writes into them.
+	if err := ensureGitInfoExclude(ctx, wtPath, bossdManagedExcludePatterns); err != nil {
+		return nil, fmt.Errorf("ensure info/exclude: %w", err)
 	}
 
 	// Run setup script if provided.

@@ -5,9 +5,12 @@ format:
 	gofmt -w .
 	golangci-lint run ./...
 
-## test: Run tests under -race with coverage
+# Race detector is opt-in locally (slow). CI sets RACE=1; locally use `RACE=1 make test`.
+RACE_FLAG := $(if $(RACE),-race,)
+
+## test: Run tests with coverage (set RACE=1 to enable race detector)
 test:
-	go test -race -timeout 300s -coverprofile=coverage.out ./...
+	go test $(RACE_FLAG) -timeout 300s -coverprofile=coverage.out ./...
 
 ## clean: Remove generated code and copied skills
 clean:

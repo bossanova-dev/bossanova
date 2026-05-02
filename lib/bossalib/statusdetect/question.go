@@ -133,6 +133,67 @@ var optionStopMarkers = map[rune]bool{
 	'❯': true, // another prompt entry (U+276F)
 }
 
+// cardHeaderRe matches an AskUserQuestion card title row "☐ <title>". ☐ is
+// U+2610 (BALLOT BOX). Claude Code's TODO list also uses this glyph, so this
+// regex is only one of several signals -- Pattern 4 also requires a numbered
+// option block and "?" in the question region between header and options.
+var cardHeaderRe = regexp.MustCompile(`(?m)^[ \t]*☐ \S`)
+
+// numberedOptionRe matches a left-column numbered option line (1+ leading
+// spaces, then digits, ".", 1+ spaces, then non-whitespace). The capture
+// group is the integer used to verify that consecutive options form a
+// strictly-increasing run (1., 2., 3., ...).
+var numberedOptionRe = regexp.MustCompile(`(?m)^[ ]+([0-9]+)\.[ ]+\S`)
+
+// countConsecutiveNumberedOptions walks data line-by-line and counts how many
+// numbered-option lines (1., 2., 3., ...) appear at the same indent with
+// strictly-increasing integers. Blank lines and indented continuation lines
+// (lines that are not a new numbered option but are still indented) are
+// allowed between options. A line whose first non-space rune is one of
+// optionStopMarkers (⎿ ⏺ · ✻ ❯) aborts the run and sets brokenByMarker.
+func countConsecutiveNumberedOptions(data []byte) (count int, brokenByMarker bool) {
+	prev := 0
+	for len(data) > 0 {
+		nl := bytes.IndexByte(data, '\n')
+		var line []byte
+		if nl < 0 {
+			line = data
+			data = nil
+		} else {
+			line = data[:nl]
+			data = data[nl+1:]
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		trimmed := bytes.TrimLeft(line, " \t")
+		if r, _ := utf8.DecodeRune(trimmed); optionStopMarkers[r] {
+			return count, true
+		}
+		m := numberedOptionRe.FindSubmatch(line)
+		if m == nil {
+			// Non-blank, non-option, non-marker line. Allow it as a
+			// continuation only if it starts with whitespace; a line at
+			// column 0 ends the run.
+			if line[0] != ' ' && line[0] != '\t' {
+				return count, false
+			}
+			continue
+		}
+		// Parse the captured integer.
+		n := 0
+		for _, c := range m[1] {
+			n = n*10 + int(c-'0')
+		}
+		if n != prev+1 {
+			return count, false
+		}
+		prev = n
+		count++
+	}
+	return count, false
+}
+
 // countConsecutiveOptionLines counts how many consecutive indented option
 // lines follow a selector. Walks forward line-by-line, skipping blank lines
 // (real prompts may have blank-separated option blocks). Returns:
@@ -171,12 +232,13 @@ func countConsecutiveOptionLines(data []byte) (count int, brokenByMarker bool) {
 }
 
 // HasQuestionPrompt checks whether the last portion of PTY output looks like
-// a Claude Code question prompt. It detects three patterns:
+// a Claude Code question prompt. It detects four patterns:
 //  1. AskUserQuestion/permission prompt: selector cursor + consecutive options
-//  2. Conversational question: Claude response ending with ?
-//  3. Fallback: trailing "?" in recent output when response marker is outside the tail
+//  2. Question card by structure: ☐ header + numbered options + "?", no chevron required
+//  3. Conversational question: Claude response ending with ?
+//  4. Fallback: trailing "?" in recent output when response marker is outside the tail
 //
-// All three patterns require a "?" somewhere in the cleaned tail -- a real
+// All four patterns require a "?" somewhere in the cleaned tail -- a real
 // question always has one (in the question text above the selector, or in
 // the response itself).
 func HasQuestionPrompt(data []byte) bool {
@@ -214,7 +276,33 @@ func HasQuestionPrompt(data []byte) bool {
 		}
 	}
 
-	// Pattern 2: Claude response ending with a question mark.
+	// Pattern 2: AskUserQuestion card detected by structure -- \u2610 header with a
+	// "?" in the question region followed by 2+ consecutive numbered options.
+	// Catches cards rendered without the bubbletea selector cursor on a
+	// left-column option line. Must run before the response-marker pattern
+	// below, because that pattern's early-return-false branch fires whenever
+	// the LAST \u23FA in the buffer has no trailing "?", which would swallow this
+	// card whenever the conversation has a \u23FA marker below it (working spinner,
+	// status chrome, or post-card response text).
+	if header := cardHeaderRe.FindIndex(cleanedTail); header != nil {
+		afterHeader := cleanedTail[header[1]:]
+		if optMatch := numberedOptionRe.FindIndex(afterHeader); optMatch != nil {
+			questionRegion := afterHeader[:optMatch[0]]
+			if bytes.ContainsRune(questionRegion, '?') {
+				// `brokenByMarker` is intentionally ignored here: a Claude
+				// marker (⏺ etc.) AFTER the option run is just status chrome
+				// below the card. What matters is that the run itself
+				// produced 2+ strictly-increasing options before any marker
+				// interrupted it.
+				count, _ := countConsecutiveNumberedOptions(afterHeader[optMatch[0]:])
+				if count >= 2 {
+					return true
+				}
+			}
+		}
+	}
+
+	// Pattern 3: Claude response ending with a question mark.
 	// Find the last response marker and check if the text from there to the end
 	// contains a trailing "?".
 	if idx := bytes.LastIndex(clean, []byte("\u23FA")); idx >= 0 {
@@ -226,7 +314,7 @@ func HasQuestionPrompt(data []byte) bool {
 		return false
 	}
 
-	// Pattern 3: Fallback when response marker is outside the detection tail.
+	// Pattern 4: Fallback when response marker is outside the detection tail.
 	// Claude Code's TUI renders dividers, status bars, and cursor positioning
 	// after the response text. With wide terminals or re-renders, this
 	// post-response content can push the marker out of the tail buffer.

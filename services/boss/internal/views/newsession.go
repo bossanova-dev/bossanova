@@ -114,7 +114,7 @@ func (m *NewSessionModel) buildSessionTypeOptions() []sessionTypeOption {
 	opts := []sessionTypeOption{
 		{"Create a new PR", "Start a fresh branch and pull request", sessionTypeNewPR},
 		{"Work on an existing PR", "Attach to an open pull request", sessionTypeExistingPR},
-		{"Quick chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
+		{"Quick Chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
 	}
 
 	// Add Linear issue option if repo has Linear API key configured
@@ -444,7 +444,7 @@ func (m *NewSessionModel) buildForm() {
 		m.form = huh.NewForm(
 			huh.NewGroup(
 				huh.NewInput().
-					Title("Session title").
+					Title("Session name").
 					Placeholder("What are you working on?").
 					Value(&m.fd.title).
 					Validate(func(s string) error {
@@ -456,7 +456,17 @@ func (m *NewSessionModel) buildForm() {
 			),
 		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
 
-	case sessionTypeQuickChat, sessionTypeExistingPR, sessionTypeExecutePlan, sessionTypeLinearTicket:
+	case sessionTypeQuickChat:
+		m.form = huh.NewForm(
+			huh.NewGroup(
+				huh.NewInput().
+					Title("Session name").
+					Placeholder("Quick Chat").
+					Value(&m.fd.title),
+			),
+		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+
+	case sessionTypeExistingPR, sessionTypeExecutePlan, sessionTypeLinearTicket:
 		// No form needed for these types.
 	}
 }
@@ -816,8 +826,9 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 	switch m.selectedType {
 	case sessionTypeQuickChat:
-		// No form needed — create session directly.
-		return *m, m.startCreating()
+		m.phase = newSessionPhaseForm
+		m.buildForm()
+		return *m, m.form.Init()
 	case sessionTypeExistingPR:
 		// Fetch PRs, then show PR selector table.
 		m.phase = newSessionPhaseLoading
@@ -895,7 +906,14 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 
 	switch m.selectedType {
 	case sessionTypeQuickChat:
-		req.Title = "Quick chat"
+		var title string
+		if m.fd != nil {
+			title = strings.TrimSpace(m.fd.title)
+		}
+		if title == "" {
+			title = "Quick Chat " + time.Now().Format("2006-01-02 15:04")
+		}
+		req.Title = title
 		req.QuickChat = true
 	case sessionTypeNewPR:
 		req.Title = m.fd.title

@@ -178,9 +178,10 @@ test: $(GEN_STAMP) copy-skills
 		$(MAKE) -C $$mod test; \
 	done
 
-## test-race: Run the full test suite under -race (alias for test; per-module
-## targets always enable -race, so this exists for discoverability / CI).
-test-race: test
+## test-race: Run the full test suite under -race (sets RACE=1 for sub-makes).
+## Race detector is opt-in: `make test` skips it; `make test-race` or `RACE=1 make test` enables it.
+test-race:
+	@$(MAKE) test RACE=1
 
 ## Per-module test targets (no generate dep — CI uses committed gen code)
 test-bossalib: copy-skills

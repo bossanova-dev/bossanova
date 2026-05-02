@@ -65,6 +65,7 @@ type Server struct {
 	tmux               *tmux.Client
 	completionNotifier session.SessionCompletionNotifier
 	authNotifier       AuthNotifier
+	onSessionDeleted   func(context.Context, string)
 	logger             zerolog.Logger
 	listener           net.Listener
 	srv                *http.Server
@@ -90,7 +91,14 @@ type Config struct {
 	Tmux               *tmux.Client
 	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
 	AuthNotifier       AuthNotifier                      // optional, nil in local-only mode
-	Logger             zerolog.Logger
+	// OnSessionDeleted, when non-nil, is invoked after a session row is
+	// removed from the local DB. cmd/main.go wires this to publish a
+	// SessionDelta_KIND_DELETED on the reverse stream so bosso's in-memory
+	// Registry stops surfacing the deleted session in the web UI. Without
+	// this callback bosso only learns about deletions on daemon reconnect
+	// (when it replaces its state with a fresh DaemonSnapshot).
+	OnSessionDeleted func(context.Context, string)
+	Logger           zerolog.Logger
 }
 
 // AuthNotifier is the narrow interface the NotifyAuthChange RPC
@@ -124,6 +132,7 @@ func New(cfg Config) *Server {
 		tmux:               cfg.Tmux,
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
+		onSessionDeleted:   cfg.OnSessionDeleted,
 		logger:             cfg.Logger,
 	}
 }
@@ -621,6 +630,9 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		}
 		// Delete the orphaned session record.
 		_ = s.sessions.Delete(ctx, sess.ID)
+		if s.onSessionDeleted != nil {
+			s.onSessionDeleted(ctx, sess.ID)
+		}
 		if errors.Is(err, gitpkg.ErrBranchExists) {
 			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
 		}
@@ -1103,6 +1115,9 @@ func (s *Server) RemoveSession(ctx context.Context, req *connect.Request[pb.Remo
 	if err := s.sessions.Delete(ctx, req.Msg.Id); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("remove session: %w", err))
 	}
+	if s.onSessionDeleted != nil {
+		s.onSessionDeleted(ctx, req.Msg.Id)
+	}
 
 	return connect.NewResponse(&pb.RemoveSessionResponse{}), nil
 }
@@ -1205,6 +1220,9 @@ func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTr
 		}
 		if err := s.sessions.Delete(ctx, sess.ID); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete archived session %s: %w", sess.ID, err))
+		}
+		if s.onSessionDeleted != nil {
+			s.onSessionDeleted(ctx, sess.ID)
 		}
 		deleted++
 	}

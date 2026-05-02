@@ -7,10 +7,11 @@ package pty
 const maxPendingFilterBytes = 256
 
 // stripTerminalQueryReplies removes terminal capability-query responses
-// from a stdin chunk. Three patterns are filtered:
+// from a stdin chunk. Four patterns are filtered:
 //
 //   - DA1 reply:        \x1b[?<digits/semicolons>c
 //   - DA2 reply:        \x1b[><digits/semicolons>c
+//   - XTWINOPS reply:   \x1b[<digits/semicolons>t
 //   - DCS reply (incl.  \x1bP><something>|<text>\x1b\\
 //     XTVERSION):
 //
@@ -89,12 +90,29 @@ func matchQueryReply(buf []byte) (end int, matched, complete bool) {
 		if len(buf) < 3 {
 			return 0, false, false
 		}
-		if buf[2] != '?' && buf[2] != '>' {
-			return 0, false, true
+		// Three reply shapes start with ESC [:
+		//   ESC [ ? <digits;...> c    DA1 reply
+		//   ESC [ > <digits;...> c    DA2 reply
+		//   ESC [   <digits;...> t    XTWINOPS reply (window/text-area size)
+		// Pick the expected terminator and where params start. Anything else
+		// (arrow keys ESC[A, kitty CSI-u ESC[120;5u, modifyOtherKeys
+		// ESC[27;5;120~, bracketed-paste ESC[200~) falls through to passthrough.
+		var startParams int
+		var terminator byte
+		switch buf[2] {
+		case '?', '>':
+			startParams = 3
+			terminator = 'c'
+		default:
+			if buf[2] < '0' || buf[2] > '9' {
+				return 0, false, true
+			}
+			startParams = 2
+			terminator = 't'
 		}
-		for j := 3; j < len(buf); j++ {
+		for j := startParams; j < len(buf); j++ {
 			b := buf[j]
-			if b == 'c' {
+			if b == terminator {
 				return j + 1, true, true
 			}
 			if (b < '0' || b > '9') && b != ';' {

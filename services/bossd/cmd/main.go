@@ -815,7 +815,22 @@ func run(opts runOpts) error {
 		Tmux:               tmuxClient,
 		CompletionNotifier: orchestrator,
 		AuthNotifier:       authNotifier,
-		Logger:             log.Logger,
+		// Publish a SessionDelta_KIND_DELETED on the reverse stream for
+		// every session row removed from the DB (failed setup cleanup,
+		// RemoveSession, EmptyTrash). Without this, bosso's in-memory
+		// Registry retains the session until the daemon reconnects and
+		// replaces its state from a fresh DaemonSnapshot — so failed
+		// sessions linger as "stopped" rows in the web UI long after the
+		// local TUI has lost sight of them.
+		OnSessionDeleted: func(_ context.Context, sessionID string) {
+			streamBus.Publish(upstream.StreamEvent{
+				Session: &upstream.SessionEvent{
+					Kind:    bossanovav1.SessionDelta_KIND_DELETED,
+					Session: &bossanovav1.Session{Id: sessionID},
+				},
+			})
+		},
+		Logger: log.Logger,
 	})
 
 	// Start poller and dispatcher.

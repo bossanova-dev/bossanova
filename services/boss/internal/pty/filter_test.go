@@ -69,6 +69,37 @@ func TestStripTerminalQueryReplies(t *testing.T) {
 			want: []byte{},
 		},
 		{
+			// Reply to XTWINOPS "CSI 18 t" (report text-area size in chars).
+			// Outer terminal answers "CSI 8 ; rows ; cols t".
+			name: "xtwinops_text_area_reply",
+			data: []byte("\x1b[8;59;215t"),
+			want: []byte{},
+		},
+		{
+			// Reply to XTWINOPS "CSI 14 t" (report window size in pixels).
+			// Outer terminal answers "CSI 4 ; height ; width t".
+			name: "xtwinops_pixel_reply",
+			data: []byte("\x1b[4;1080;1920t"),
+			want: []byte{},
+		},
+		{
+			name: "xtwinops_reply_mixed_with_keystrokes",
+			data: []byte("ab\x1b[8;59;215tcd"),
+			want: []byte("abcd"),
+		},
+		{
+			name:    "xtwinops_split_in_params",
+			data:    []byte("\x1b[8;59"),
+			want:    []byte{},
+			newPend: []byte("\x1b[8;59"),
+		},
+		{
+			name:    "pending_xtwinops_completed_in_next_chunk",
+			pending: []byte("\x1b[8;59"),
+			data:    []byte(";215thello"),
+			want:    []byte("hello"),
+		},
+		{
 			name:    "esc_alone_at_end_held",
 			data:    []byte("ab\x1b"),
 			want:    []byte("ab"),

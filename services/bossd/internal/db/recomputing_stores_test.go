@@ -52,7 +52,7 @@ func TestRecomputingSessionStore_TriggersOnClaudeSessionIDOnlyUpdate(t *testing.
 	claude := "claude-abc"
 	pClaude := &claude
 	if _, err := store.Update(context.Background(), sess.ID, UpdateSessionParams{
-		ClaudeSessionID: &pClaude,
+		AgentSessionID: &pClaude,
 	}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestIsComputerSelfWrite_TableDriven(t *testing.T) {
 		},
 		{
 			name:   "claude session id only is NOT self-write",
-			params: UpdateSessionParams{ClaudeSessionID: &pClaude},
+			params: UpdateSessionParams{AgentSessionID: &pClaude},
 			want:   false,
 		},
 		{

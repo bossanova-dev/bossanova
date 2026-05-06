@@ -79,6 +79,7 @@ type CreateSessionParams struct {
 	WorktreePath string
 	BranchName   string
 	BaseBranch   string
+	AgentName    string // Agent plugin name; empty falls back to "claude".
 	PRNumber     *int
 	PRURL        *string
 	TrackerID    *string
@@ -91,7 +92,7 @@ type UpdateSessionParams struct {
 	State             *int
 	WorktreePath      *string
 	BranchName        *string
-	ClaudeSessionID   **string
+	AgentSessionID    **string
 	PRNumber          **int
 	PRURL             **string
 	TrackerID         **string
@@ -144,23 +145,24 @@ type SessionStore interface {
 	AdvanceOrphanedSessions(ctx context.Context) (int64, error)
 }
 
-// CreateClaudeChatParams holds the parameters for creating a new Claude chat record.
-type CreateClaudeChatParams struct {
-	SessionID string
-	ClaudeID  string
-	Title     string
+// CreateAgentChatParams holds the parameters for creating a new agent chat record.
+type CreateAgentChatParams struct {
+	SessionID      string
+	AgentSessionID string
+	AgentName      string // Agent plugin name; empty falls back to "claude".
+	Title          string
 }
 
-// ClaudeChatStore defines the interface for Claude chat persistence.
-type ClaudeChatStore interface {
-	Create(ctx context.Context, params CreateClaudeChatParams) (*models.ClaudeChat, error)
-	GetByClaudeID(ctx context.Context, claudeID string) (*models.ClaudeChat, error)
-	ListBySession(ctx context.Context, sessionID string) ([]*models.ClaudeChat, error)
+// AgentChatStore defines the interface for agent chat persistence.
+type AgentChatStore interface {
+	Create(ctx context.Context, params CreateAgentChatParams) (*models.AgentChat, error)
+	GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error)
+	ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error)
 	UpdateTitle(ctx context.Context, id string, title string) error
-	UpdateTitleByClaudeID(ctx context.Context, claudeID string, title string) error
-	UpdateTmuxSessionName(ctx context.Context, claudeID string, name *string) error
-	DeleteByClaudeID(ctx context.Context, claudeID string) error
-	ListWithTmuxSession(ctx context.Context) ([]*models.ClaudeChat, error)
+	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
+	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
+	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
+	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
 }
 
 // CreateAttemptParams holds the parameters for creating a new attempt.

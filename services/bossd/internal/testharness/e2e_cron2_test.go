@@ -77,7 +77,7 @@ func TestE2ECron_DaemonRestart_ReloadsAndFires(t *testing.T) {
 	defer h2.Close()
 
 	useTempWorktrees(t, h2)
-	h2.Claude.NoChanges()
+	h2.Agent.NoChanges()
 
 	// Build a fresh scheduler from the second harness — this mirrors the
 	// daemon boot path. Use MaxConcurrent=1 for determinism.
@@ -223,7 +223,7 @@ func TestE2ECron_HookAuth(t *testing.T) {
 	useTempWorktrees(t, h)
 
 	// Claude writes changes so the happy path produces pr_created.
-	h.Claude.WithChanges("out.txt", "data")
+	h.Agent.WithChanges("out.txt", "data")
 	h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
 		return "M out.txt\n", nil
 	}
@@ -300,7 +300,7 @@ func TestE2ECron_HookAuth(t *testing.T) {
 		ctx2 := context.Background()
 		repoID2 := registerTestRepo(t, h2, ctx2, withWorktreeBaseDir(t.TempDir()))
 		useTempWorktrees(t, h2)
-		h2.Claude.WithChanges("out.txt", "data")
+		h2.Agent.WithChanges("out.txt", "data")
 		h2.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
 			return "M out.txt\n", nil
 		}
@@ -400,7 +400,7 @@ func TestE2ECron_ConcurrencyCap(t *testing.T) {
 
 	// WithRunningSession: sessions stay alive (don't exit) so the overlap check
 	// would block a second tick for the *same* job. Each job is distinct here.
-	h.Claude.WithRunningSession()
+	h.Agent.WithRunningSession()
 
 	const numJobs = 5
 	for i := 0; i < numJobs; i++ {
@@ -467,7 +467,7 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		useTempWorktrees(t, h)
 
 		// Changes exist; push fails.
-		h.Claude.WithChanges("result.txt", "data")
+		h.Agent.WithChanges("result.txt", "data")
 		h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
 			return "M result.txt\n", nil
 		}
@@ -523,7 +523,7 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		useTempWorktrees(t, h)
 
 		// Changes exist; CreateDraftPR fails.
-		h.Claude.WithChanges("result.txt", "data")
+		h.Agent.WithChanges("result.txt", "data")
 		h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
 			return "M result.txt\n", nil
 		}
@@ -579,11 +579,11 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		useTempWorktrees(t, h)
 
 		// Changes present, PR creation succeeds, but the finalize chat start fails.
-		// Note: cron-spawned sessions no longer call h.Claude.Start during the
+		// Note: cron-spawned sessions no longer call h.Agent.Start during the
 		// implementing-plan path — that's now handled by startCronTmuxChat
 		// (tmux + SendPlan). Only StartFinalizeChat still calls Start, so
 		// SetSpawnError below targets that one and only call.
-		h.Claude.WithChanges("result.txt", "data")
+		h.Agent.WithChanges("result.txt", "data")
 		h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
 			return "M result.txt\n", nil
 		}
@@ -605,7 +605,7 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		}
 
 		// Tick fires the implementing-plan session via startCronTmuxChat
-		// (tmux + SendPlan). h.Claude.Start is NOT called on this path, so
+		// (tmux + SendPlan). h.Agent.Start is NOT called on this path, so
 		// SetSpawnError below stays armed for the next Start invocation —
 		// which is StartFinalizeChat after the stop hook fires.
 		sched.Tick(tickTime)
@@ -619,7 +619,7 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		// StartFinalizeChat) returns an error. SetSpawnError fires once
 		// and clears, and StartFinalizeChat is the only Start invocation
 		// in this flow now that cron-spawned sessions skip headless claude.
-		h.Claude.SetSpawnError(errors.New("mock: finalize chat spawn failed"))
+		h.Agent.SetSpawnError(errors.New("mock: finalize chat spawn failed"))
 
 		resp, err := h.PostStopHook(sess.ID, *sess.HookToken)
 		if err != nil {

@@ -18,13 +18,13 @@ import (
 // working/idle/question statuses into the status tracker.
 type TmuxStatusPoller struct {
 	tracker  *Tracker
-	chats    db.ClaudeChatStore
+	chats    db.AgentChatStore
 	sessions db.SessionStore
 	tmux     *tmux.Client
 	logger   zerolog.Logger
 
 	mu           sync.Mutex
-	prevCaptures map[string]captureEntry // claudeID -> previous capture
+	prevCaptures map[string]captureEntry // agentSessionID -> previous capture
 
 	done chan struct{} // closed when Run's goroutine exits
 }
@@ -36,7 +36,7 @@ type captureEntry struct {
 
 // NewTmuxStatusPoller creates a new poller. sessions may be nil in tests that
 // don't exercise the transcript-aware question-suppression path.
-func NewTmuxStatusPoller(tracker *Tracker, chats db.ClaudeChatStore, sessions db.SessionStore, tmux *tmux.Client, logger zerolog.Logger) *TmuxStatusPoller {
+func NewTmuxStatusPoller(tracker *Tracker, chats db.AgentChatStore, sessions db.SessionStore, tmux *tmux.Client, logger zerolog.Logger) *TmuxStatusPoller {
 	return &TmuxStatusPoller{
 		tracker:      tracker,
 		chats:        chats,
@@ -80,35 +80,35 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	// to work from the previous captures map to know which chats to check.
 	// On top of that, scan for newly active chats from the tracker's entries.
 	p.mu.Lock()
-	activeClaudes := make(map[string]*models.ClaudeChat) // claudeID -> chat
-	for claudeID := range p.prevCaptures {
-		activeClaudes[claudeID] = nil
+	activeClaudes := make(map[string]*models.AgentChat) // agentSessionID -> chat
+	for agentSessionID := range p.prevCaptures {
+		activeClaudes[agentSessionID] = nil
 	}
 	p.mu.Unlock()
 
 	// Look up tmux session names for known active chats.
-	for claudeID := range activeClaudes {
-		chat, err := p.chats.GetByClaudeID(ctx, claudeID)
+	for agentSessionID := range activeClaudes {
+		chat, err := p.chats.GetByAgentSessionID(ctx, agentSessionID)
 		if err != nil || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			// Chat removed or no longer has a tmux session.
 			p.mu.Lock()
-			delete(p.prevCaptures, claudeID)
+			delete(p.prevCaptures, agentSessionID)
 			p.mu.Unlock()
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
 			// Tmux session died.
 			p.mu.Lock()
-			delete(p.prevCaptures, claudeID)
+			delete(p.prevCaptures, agentSessionID)
 			p.mu.Unlock()
 			continue
 		}
-		activeClaudes[claudeID] = chat
+		activeClaudes[agentSessionID] = chat
 	}
 
 	// Capture pane and detect status for each active chat.
 	now := time.Now()
-	for claudeID, chat := range activeClaudes {
+	for agentSessionID, chat := range activeClaudes {
 		if chat == nil {
 			continue
 		}
@@ -116,7 +116,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		content, err := p.tmux.CapturePane(ctx, tmuxName)
 		if err != nil {
 			p.logger.Debug().Err(err).
-				Str("claudeID", claudeID).
+				Str("agentSessionID", agentSessionID).
 				Str("tmuxSession", tmuxName).
 				Msg("failed to capture tmux pane")
 			continue
@@ -128,7 +128,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		questionSuppressed := paneShowsQuestion && p.userAnsweredChat(ctx, chat)
 
 		p.mu.Lock()
-		prev, hasPrev := p.prevCaptures[claudeID]
+		prev, hasPrev := p.prevCaptures[agentSessionID]
 
 		var status pb.ChatStatus
 		switch {
@@ -152,29 +152,29 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 
 		// Update capture entry: only update timestamp when content changed.
 		if !hasPrev || content != prev.content {
-			p.prevCaptures[claudeID] = captureEntry{content: content, at: now}
+			p.prevCaptures[agentSessionID] = captureEntry{content: content, at: now}
 		}
 		p.mu.Unlock()
 
-		p.tracker.Update(claudeID, status, now)
+		p.tracker.Update(agentSessionID, status, now)
 	}
 }
 
 // RegisterChat adds a chat to the polling set. Called when a new tmux session
 // is created so the poller starts tracking it immediately.
-func (p *TmuxStatusPoller) RegisterChat(claudeID string) {
+func (p *TmuxStatusPoller) RegisterChat(agentSessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, ok := p.prevCaptures[claudeID]; !ok {
-		p.prevCaptures[claudeID] = captureEntry{}
+	if _, ok := p.prevCaptures[agentSessionID]; !ok {
+		p.prevCaptures[agentSessionID] = captureEntry{}
 	}
 }
 
 // UnregisterChat removes a chat from the polling set.
-func (p *TmuxStatusPoller) UnregisterChat(claudeID string) {
+func (p *TmuxStatusPoller) UnregisterChat(agentSessionID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.prevCaptures, claudeID)
+	delete(p.prevCaptures, agentSessionID)
 }
 
 // Bootstrap discovers pre-existing tmux sessions from the database and seeds
@@ -202,7 +202,7 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 		content, err := p.tmux.CapturePane(ctx, tmuxName)
 		if err != nil {
 			p.logger.Debug().Err(err).
-				Str("claudeID", chat.ClaudeID).
+				Str("agentSessionID", chat.AgentSessionID).
 				Str("tmuxSession", tmuxName).
 				Msg("bootstrap: failed to capture tmux pane")
 			continue
@@ -225,12 +225,12 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 		}
 
 		p.mu.Lock()
-		p.prevCaptures[chat.ClaudeID] = captureEntry{content: content, at: pastTime}
+		p.prevCaptures[chat.AgentSessionID] = captureEntry{content: content, at: pastTime}
 		p.mu.Unlock()
 
-		p.tracker.Update(chat.ClaudeID, status, now)
+		p.tracker.Update(chat.AgentSessionID, status, now)
 		p.logger.Debug().
-			Str("claudeID", chat.ClaudeID).
+			Str("agentSessionID", chat.AgentSessionID).
 			Str("tmuxSession", tmuxName).
 			Str("status", status.String()).
 			Msg("bootstrap: seeded chat status")
@@ -246,7 +246,7 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 // resolves the chat's session, derives the transcript path, and consults
 // lastTurnIsUser. Any lookup failure returns false (fail-open: the caller
 // keeps reporting QUESTION based on pane content alone).
-func (p *TmuxStatusPoller) userAnsweredChat(ctx context.Context, chat *models.ClaudeChat) bool {
+func (p *TmuxStatusPoller) userAnsweredChat(ctx context.Context, chat *models.AgentChat) bool {
 	if p.sessions == nil || chat == nil {
 		return false
 	}
@@ -254,7 +254,7 @@ func (p *TmuxStatusPoller) userAnsweredChat(ctx context.Context, chat *models.Cl
 	if err != nil || sess == nil || sess.WorktreePath == "" {
 		return false
 	}
-	path, err := transcriptPath(sess.WorktreePath, chat.ClaudeID)
+	path, err := transcriptPath(sess.WorktreePath, chat.AgentSessionID)
 	if err != nil {
 		return false
 	}

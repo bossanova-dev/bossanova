@@ -67,10 +67,15 @@ type BossClient interface {
 	EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
 
 	// Claude chat tracking
-	RecordChat(ctx context.Context, sessionID, claudeID, title string, resume bool) (*pb.ClaudeChat, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool) (*pb.ClaudeChat, error)
 	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
-	UpdateChatTitle(ctx context.Context, claudeID, title string) error
-	DeleteChat(ctx context.Context, claudeID string) error
+	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
+	DeleteChat(ctx context.Context, agentSessionID string) error
+	// WakeChat asks the daemon to bring a stopped chat back online. sessionID
+	// is required for the remote-orchestrator authz check; LocalClient ignores
+	// it. The returned outcome lets the UI distinguish ALREADY_LIVE / RESUMED /
+	// FRESH_FALLBACK so it can render the right confirmation.
+	WakeChat(ctx context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error)
 
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error

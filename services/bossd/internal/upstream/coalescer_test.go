@@ -140,9 +140,9 @@ func TestCoalescer_WithinWindow_SendsLatestOnly(t *testing.T) {
 	// time unchanged). Only the latest should survive the flush.
 	for i := 0; i < 5; i++ {
 		in <- &pb.ChatStatusDelta{
-			SessionId: "s1",
-			ClaudeId:  "c1",
-			Status:    pb.ChatStatus(i%4 + 1), // vary so "latest wins" is meaningful
+			SessionId:      "s1",
+			AgentSessionId: "c1",
+			Status:         pb.ChatStatus(i%4 + 1), // vary so "latest wins" is meaningful
 		}
 	}
 
@@ -202,15 +202,15 @@ func TestCoalescer_AcrossSessions_AllEmitted(t *testing.T) {
 		c.Run(ctx, in)
 	}()
 
-	for _, ids := range []struct{ sessionID, claudeID string }{
+	for _, ids := range []struct{ sessionID, agentSessionID string }{
 		{"s1", "c1"},
 		{"s2", "c2"},
 		{"s3", "c3"},
 	} {
 		in <- &pb.ChatStatusDelta{
-			SessionId: ids.sessionID,
-			ClaudeId:  ids.claudeID,
-			Status:    pb.ChatStatus_CHAT_STATUS_WORKING,
+			SessionId:      ids.sessionID,
+			AgentSessionId: ids.agentSessionID,
+			Status:         pb.ChatStatus_CHAT_STATUS_WORKING,
 		}
 	}
 	// Settle before advancing.
@@ -247,8 +247,8 @@ func TestCoalescer_Shutdown_DrainsPending(t *testing.T) {
 
 	// Publish directly (bypass Run) so the test holds Drain's invariant
 	// regardless of ticker timing.
-	c.Publish(&pb.ChatStatusDelta{SessionId: "s1", ClaudeId: "c1", Status: pb.ChatStatus_CHAT_STATUS_WORKING})
-	c.Publish(&pb.ChatStatusDelta{SessionId: "s2", ClaudeId: "c2", Status: pb.ChatStatus_CHAT_STATUS_IDLE})
+	c.Publish(&pb.ChatStatusDelta{SessionId: "s1", AgentSessionId: "c1", Status: pb.ChatStatus_CHAT_STATUS_WORKING})
+	c.Publish(&pb.ChatStatusDelta{SessionId: "s2", AgentSessionId: "c2", Status: pb.ChatStatus_CHAT_STATUS_IDLE})
 
 	drained := c.Drain()
 	if len(drained) != 2 {
@@ -283,14 +283,14 @@ func TestCoalescer_SameSession_DifferentChats_BothEmitted(t *testing.T) {
 	// the old session-only keying these would collapse to one entry —
 	// the bug this test exists to prevent.
 	in <- &pb.ChatStatusDelta{
-		SessionId: "s1",
-		ClaudeId:  "c1",
-		Status:    pb.ChatStatus_CHAT_STATUS_WORKING,
+		SessionId:      "s1",
+		AgentSessionId: "c1",
+		Status:         pb.ChatStatus_CHAT_STATUS_WORKING,
 	}
 	in <- &pb.ChatStatusDelta{
-		SessionId: "s1",
-		ClaudeId:  "c2",
-		Status:    pb.ChatStatus_CHAT_STATUS_IDLE,
+		SessionId:      "s1",
+		AgentSessionId: "c2",
+		Status:         pb.ChatStatus_CHAT_STATUS_IDLE,
 	}
 
 	// Settle before advancing so both publishes are in pending.
@@ -308,7 +308,7 @@ func TestCoalescer_SameSession_DifferentChats_BothEmitted(t *testing.T) {
 			if s.GetSessionId() != "s1" {
 				t.Fatalf("unexpected session_id %q", s.GetSessionId())
 			}
-			gotByClaudeID[s.GetClaudeId()] = s.GetStatus()
+			gotByClaudeID[s.GetAgentSessionId()] = s.GetStatus()
 		case <-deadline:
 			t.Fatalf("expected 2 emissions for distinct claude_ids, got %v", gotByClaudeID)
 		}
@@ -329,7 +329,7 @@ func TestCoalescer_SameSession_DifferentChats_BothEmitted(t *testing.T) {
 // backward-compat path: an older publisher emits ChatStatusDelta with
 // claude_id == "". Two such deltas for the same session_id must
 // collapse to a single emission (latest wins) because the key
-// coalescerKey{sessionID:"s1", claudeID:""} collides for both. This
+// coalescerKey{sessionID:"s1", agentSessionID:""} collides for both. This
 // preserves the previous session-only behavior and avoids fan-out
 // surprises when a legacy daemon is connected.
 func TestCoalescer_LegacyEmptyClaudeID_CoalescesUnderSessionKey(t *testing.T) {
@@ -387,8 +387,8 @@ func TestCoalescer_LegacyEmptyClaudeID_CoalescesUnderSessionKey(t *testing.T) {
 	if emissions != 1 {
 		t.Fatalf("expected exactly 1 emission for legacy empty claude_id, got %d", emissions)
 	}
-	if last.GetSessionId() != "s1" || last.GetClaudeId() != "" {
-		t.Fatalf("unexpected emission: session=%q claude=%q", last.GetSessionId(), last.GetClaudeId())
+	if last.GetSessionId() != "s1" || last.GetAgentSessionId() != "" {
+		t.Fatalf("unexpected emission: session=%q claude=%q", last.GetSessionId(), last.GetAgentSessionId())
 	}
 	if last.GetStatus() != pb.ChatStatus_CHAT_STATUS_IDLE {
 		t.Fatalf("expected latest-wins (IDLE), got %v", last.GetStatus())

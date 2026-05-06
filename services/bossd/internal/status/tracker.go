@@ -32,7 +32,7 @@ type Tracker struct {
 	// loose function to avoid a status → db dependency on a concrete
 	// resolver type, and to keep this package free of cross-package
 	// imports for chat lookup.
-	onUpdate func(claudeID string)
+	onUpdate func(agentSessionID string)
 }
 
 // NewTracker creates a new empty Tracker.
@@ -43,10 +43,10 @@ func NewTracker() *Tracker {
 }
 
 // Update upserts a heartbeat for the given claude ID.
-func (t *Tracker) Update(claudeID string, status pb.ChatStatus, lastOutputAt time.Time) {
+func (t *Tracker) Update(agentSessionID string, status pb.ChatStatus, lastOutputAt time.Time) {
 	t.mu.Lock()
-	prev, hadPrev := t.entries[claudeID]
-	t.entries[claudeID] = &Entry{
+	prev, hadPrev := t.entries[agentSessionID]
+	t.entries[agentSessionID] = &Entry{
 		Status:       status,
 		LastOutputAt: lastOutputAt,
 		ReceivedAt:   time.Now(),
@@ -57,7 +57,7 @@ func (t *Tracker) Update(claudeID string, status pb.ChatStatus, lastOutputAt tim
 	// Fire the hook only when the status actually changed — avoids burning
 	// a recompute on every 3-second heartbeat when nothing's moved.
 	if hook != nil && (!hadPrev || prev.Status != status) {
-		hook(claudeID)
+		hook(agentSessionID)
 	}
 }
 
@@ -65,7 +65,7 @@ func (t *Tracker) Update(claudeID string, status pb.ChatStatus, lastOutputAt tim
 // changes. The wiring lives in cmd/main.go and resolves claude_id →
 // sessionID before delegating to DisplayStatusComputer.Recompute. Tests
 // usually leave this nil.
-func (t *Tracker) SetOnUpdate(fn func(claudeID string)) {
+func (t *Tracker) SetOnUpdate(fn func(agentSessionID string)) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.onUpdate = fn
@@ -73,10 +73,10 @@ func (t *Tracker) SetOnUpdate(fn func(claudeID string)) {
 
 // Get returns the cached entry for the given claude ID, or nil if not found
 // or stale (older than StaleThreshold).
-func (t *Tracker) Get(claudeID string) *Entry {
+func (t *Tracker) Get(agentSessionID string) *Entry {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	e, ok := t.entries[claudeID]
+	e, ok := t.entries[agentSessionID]
 	if !ok {
 		return nil
 	}
@@ -88,12 +88,12 @@ func (t *Tracker) Get(claudeID string) *Entry {
 
 // GetBatch returns entries for multiple claude IDs. Stale entries are
 // returned as stopped.
-func (t *Tracker) GetBatch(claudeIDs []string) map[string]*Entry {
+func (t *Tracker) GetBatch(agentSessionIDs []string) map[string]*Entry {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	result := make(map[string]*Entry, len(claudeIDs))
+	result := make(map[string]*Entry, len(agentSessionIDs))
 	now := time.Now()
-	for _, id := range claudeIDs {
+	for _, id := range agentSessionIDs {
 		e, ok := t.entries[id]
 		if !ok {
 			continue
@@ -143,10 +143,10 @@ func (t *Tracker) Snapshot() map[string]*Entry {
 }
 
 // Remove deletes the entry for the given claude ID.
-func (t *Tracker) Remove(claudeID string) {
+func (t *Tracker) Remove(agentSessionID string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.entries, claudeID)
+	delete(t.entries, agentSessionID)
 }
 
 // Cleanup removes all stale entries (older than StaleThreshold).

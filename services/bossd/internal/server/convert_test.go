@@ -114,7 +114,7 @@ func TestRepoToProto_NilSetupScript(t *testing.T) {
 
 func TestSessionToProto(t *testing.T) {
 	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
-	claudeID := "claude-123"
+	agentSessionID := "claude-123"
 	prNum := 42
 	prURL := "https://github.com/owner/repo/pull/42"
 	blocked := "CI failed"
@@ -128,7 +128,7 @@ func TestSessionToProto(t *testing.T) {
 		BranchName:        "fix-bug",
 		BaseBranch:        "main",
 		State:             machine.ImplementingPlan,
-		ClaudeSessionID:   &claudeID,
+		AgentSessionID:    &agentSessionID,
 		PRNumber:          &prNum,
 		PRURL:             &prURL,
 		LastCheckState:    machine.CheckStatePassed,
@@ -150,8 +150,8 @@ func TestSessionToProto(t *testing.T) {
 	if p.Title != "Fix bug" {
 		t.Errorf("Title = %q", p.Title)
 	}
-	if p.ClaudeSessionId == nil || *p.ClaudeSessionId != "claude-123" {
-		t.Errorf("ClaudeSessionId = %v", p.ClaudeSessionId)
+	if p.AgentSessionId == nil || *p.AgentSessionId != "claude-123" {
+		t.Errorf("AgentSessionId = %v", p.AgentSessionId)
 	}
 	if p.PrNumber == nil || *p.PrNumber != 42 {
 		t.Errorf("PrNumber = %v", p.PrNumber)
@@ -180,8 +180,8 @@ func TestSessionToProto_NilOptionals(t *testing.T) {
 		State:  machine.CreatingWorktree,
 	}
 	p := SessionToProto(sess)
-	if p.ClaudeSessionId != nil {
-		t.Errorf("ClaudeSessionId should be nil")
+	if p.AgentSessionId != nil {
+		t.Errorf("AgentSessionId should be nil")
 	}
 	if p.PrNumber != nil {
 		t.Errorf("PrNumber should be nil")
@@ -199,24 +199,24 @@ func TestSessionToProto_NilOptionals(t *testing.T) {
 
 func TestClaudeChatToProto(t *testing.T) {
 	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
-	chat := &models.ClaudeChat{
-		ID:        "chat-1",
-		SessionID: "sess-1",
-		ClaudeID:  "claude-abc",
-		Title:     "Chat title",
-		DaemonID:  "daemon-1",
-		CreatedAt: now,
+	chat := &models.AgentChat{
+		ID:             "chat-1",
+		SessionID:      "sess-1",
+		AgentSessionID: "claude-abc",
+		Title:          "Chat title",
+		DaemonID:       "daemon-1",
+		CreatedAt:      now,
 	}
 
-	p := claudeChatToProto(chat)
+	p := agentChatToProto(chat)
 	if p.Id != "chat-1" {
 		t.Errorf("Id = %q", p.Id)
 	}
 	if p.SessionId != "sess-1" {
 		t.Errorf("SessionId = %q", p.SessionId)
 	}
-	if p.ClaudeId != "claude-abc" {
-		t.Errorf("ClaudeId = %q", p.ClaudeId)
+	if p.AgentSessionId != "claude-abc" {
+		t.Errorf("AgentSessionId = %q", p.AgentSessionId)
 	}
 	if p.Title != "Chat title" {
 		t.Errorf("Title = %q", p.Title)

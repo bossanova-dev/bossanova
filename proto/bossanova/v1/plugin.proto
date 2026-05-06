@@ -364,3 +364,122 @@ message NotifyStatusChangeRequest {
 }
 
 message NotifyStatusChangeResponse {}
+
+// --- AgentRunnerService ---
+
+// AgentRunnerService is served by coding-agent plugins (e.g. claude,
+// opencode, codex). The daemon spawns one such plugin and routes session
+// runs through it.
+service AgentRunnerService {
+  rpc GetInfo(AgentRunnerServiceGetInfoRequest)
+      returns (AgentRunnerServiceGetInfoResponse);
+
+  // Spawn the agent in work_dir with plan piped to stdin. log_path is
+  // bossd-owned (under the daemon's data dir, NOT the worktree); the
+  // plugin opens it with openat(O_NOFOLLOW) and writes one NDJSON line
+  // per output line: {"ts": "...", "text": "..."}. resume_id (optional)
+  // makes the agent resume that session. session_id (optional) makes the
+  // plugin use it; otherwise the plugin generates one. Returns the
+  // resolved session ID.
+  rpc StartRun(StartAgentRunRequest) returns (StartAgentRunResponse);
+
+  // Send SIGTERM (then SIGKILL after WaitDelay) to the named run.
+  rpc StopRun(StopAgentRunRequest) returns (StopAgentRunResponse);
+
+  // Liveness check.
+  rpc IsRunning(IsAgentRunningRequest) returns (IsAgentRunningResponse);
+
+  // Final exit status. exit_error is empty on clean exit. is_complete
+  // is false if the run is still active.
+  rpc ExitStatus(AgentExitStatusRequest) returns (AgentExitStatusResponse);
+
+  // Configure the agent's "tell bossd when the run finishes" hook. For
+  // Claude this writes .claude/settings.local.json. Returns
+  // is_supported=false for agents without one.
+  rpc ConfigureFinalizeHook(ConfigureFinalizeHookRequest)
+      returns (ConfigureFinalizeHookResponse);
+
+  // Build the argv for an interactive (tmux-hosted) launch. argv MUST
+  // tee stdout/stderr to log_path so AttachSession can read it.
+  rpc BuildInteractiveCommand(BuildInteractiveCommandRequest)
+      returns (BuildInteractiveCommandResponse);
+
+  // Files in workDir that the agent owns (e.g. .claude/settings.local.json).
+  // bossd unions these into git-status filtering.
+  rpc ListIgnoredDirtyFiles(ListIgnoredDirtyFilesRequest)
+      returns (ListIgnoredDirtyFilesResponse);
+
+  // Title from the agent's transcript for a given run.
+  rpc GetChatTitle(GetChatTitleRequest) returns (GetChatTitleResponse);
+}
+
+message AgentRunnerServiceGetInfoRequest {}
+message AgentRunnerServiceGetInfoResponse {
+  PluginInfo info = 1;
+}
+
+message StartAgentRunRequest {
+  string work_dir = 1;
+  string plan = 2;
+  optional string resume_id = 3;
+  string session_id = 4;   // empty = plugin generates
+  string log_path = 5;     // bossd-owned, openat(O_NOFOLLOW)
+}
+message StartAgentRunResponse {
+  string session_id = 1;   // resolved session ID
+}
+
+message StopAgentRunRequest {
+  string session_id = 1;
+}
+message StopAgentRunResponse {}
+
+message IsAgentRunningRequest {
+  string session_id = 1;
+}
+message IsAgentRunningResponse {
+  bool running = 1;
+}
+
+message AgentExitStatusRequest {
+  string session_id = 1;
+}
+message AgentExitStatusResponse {
+  bool is_complete = 1;
+  string exit_error = 2; // empty on clean exit
+}
+
+message ConfigureFinalizeHookRequest {
+  string work_dir = 1;
+  string session_id = 2;
+  string hook_token = 3;
+  int32 hook_port = 4;
+}
+message ConfigureFinalizeHookResponse {
+  bool is_supported = 1;
+}
+
+message BuildInteractiveCommandRequest {
+  string session_id = 1;
+  bool resume = 2;
+  string log_path = 3;     // argv MUST tee output here
+}
+message BuildInteractiveCommandResponse {
+  repeated string argv = 1;
+}
+
+message ListIgnoredDirtyFilesRequest {
+  string work_dir = 1;
+}
+message ListIgnoredDirtyFilesResponse {
+  repeated string paths = 1; // relative to work_dir
+}
+
+message GetChatTitleRequest {
+  string work_dir = 1;
+  string session_id = 2;
+}
+message GetChatTitleResponse {
+  bool supported = 1;
+  string title = 2;
+}

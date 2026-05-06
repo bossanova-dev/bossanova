@@ -20,6 +20,39 @@ func testHost() *Host {
 	return New(bus, nil, zerolog.Nop())
 }
 
+func TestPluginEnvFromConfig(t *testing.T) {
+	cfg := config.PluginConfig{
+		Name: "claude",
+		Config: map[string]string{
+			"dangerously_skip_permissions": "true",
+			"some_other_key":               "value",
+		},
+	}
+	env := pluginEnvFromConfig(cfg)
+
+	got := map[string]string{}
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			t.Fatalf("malformed env entry %q", kv)
+		}
+		got[k] = v
+	}
+	if got["BOSS_PLUGIN_dangerously_skip_permissions"] != "true" {
+		t.Errorf("BOSS_PLUGIN_dangerously_skip_permissions = %q, want %q", got["BOSS_PLUGIN_dangerously_skip_permissions"], "true")
+	}
+	if got["BOSS_PLUGIN_some_other_key"] != "value" {
+		t.Errorf("BOSS_PLUGIN_some_other_key = %q, want %q", got["BOSS_PLUGIN_some_other_key"], "value")
+	}
+}
+
+func TestPluginEnvFromConfig_EmptyConfig(t *testing.T) {
+	cfg := config.PluginConfig{Name: "claude"}
+	if env := pluginEnvFromConfig(cfg); len(env) != 0 {
+		t.Errorf("pluginEnvFromConfig with nil Config = %v, want empty", env)
+	}
+}
+
 func TestStartEmptyPlugins(t *testing.T) {
 	h := testHost()
 

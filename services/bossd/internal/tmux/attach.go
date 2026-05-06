@@ -39,7 +39,7 @@ type AttachConfig struct {
 
 	// SessionName is the persisted tmux session name from the chat row.
 	// MUST be the authoritative `tmux_session_name` field — do NOT recompute
-	// from `ChatSessionName(repoID, claudeID)` (truncates to 8 chars and
+	// from `ChatSessionName(repoID, agentSessionID)` (truncates to 8 chars and
 	// risks collisions across sessions; see plan Codex catch #5).
 	SessionName string
 

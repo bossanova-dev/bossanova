@@ -59,11 +59,11 @@ func sendHeartbeatsCmd(ctx context.Context, c client.BossClient, manager *bosspt
 			return nil
 		}
 		reports := make([]*pb.ChatStatusReport, 0, len(statuses))
-		for claudeID, info := range statuses {
+		for agentSessionID, info := range statuses {
 			reports = append(reports, &pb.ChatStatusReport{
-				ClaudeId:     claudeID,
-				Status:       ptyStatusToChatStatus(info.Status),
-				LastOutputAt: timestamppb.New(info.LastWrite),
+				AgentSessionId: agentSessionID,
+				Status:         ptyStatusToChatStatus(info.Status),
+				LastOutputAt:   timestamppb.New(info.LastWrite),
 			})
 		}
 		_ = c.ReportChatStatus(ctx, reports)

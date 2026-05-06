@@ -92,8 +92,8 @@ func TestHarness_CreateSession(t *testing.T) {
 	}
 
 	// Verify the mock Claude process was started.
-	if sess.ClaudeSessionId == nil || *sess.ClaudeSessionId == "" {
-		t.Fatal("expected Claude session ID to be set")
+	if sess.AgentSessionId == nil || *sess.AgentSessionId == "" {
+		t.Fatal("expected agent session ID to be set")
 	}
 
 	// Session should be in ImplementingPlan state.

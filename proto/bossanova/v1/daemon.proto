@@ -46,6 +46,11 @@ service DaemonService {
   rpc ListChats(ListChatsRequest) returns (ListChatsResponse);
   rpc UpdateChatTitle(UpdateChatTitleRequest) returns (UpdateChatTitleResponse);
   rpc DeleteChat(DeleteChatRequest) returns (DeleteChatResponse);
+  // WakeChat brings a previously-started chat back to life when its tmux
+  // session has died (host reboot, manual kill, OOM). Idempotent under
+  // concurrent calls via per-chat singleflight. Decides --resume vs
+  // --session-id by pre-flight stat of the Claude transcript file.
+  rpc WakeChat(WakeChatRequest) returns (WakeChatResponse);
 
   // Chat status (cross-client heartbeat sharing)
   rpc ReportChatStatus(ReportChatStatusRequest) returns (ReportChatStatusResponse);
@@ -200,6 +205,8 @@ message CreateSessionRequest {
   // External issue tracker fields.
   optional string tracker_id = 9;    // External issue ID (eg. "FRE-1176")
   optional string tracker_url = 10;  // URL to issue in external tracker
+  // Agent plugin to run this session under. Empty → server-chosen default agent.
+  optional string agent_name = 11;
 }
 
 message CreateSessionResponse {
@@ -365,12 +372,12 @@ message EmptyTrashResponse {
 
 message RecordChatRequest {
   string session_id = 1;
-  string claude_id = 2;   // Claude Code session UUID
+  string agent_session_id = 2;   // Agent session UUID
   string title = 3;       // First user prompt or "New chat"
-  // resume signals that claude_id refers to an existing Claude session that
-  // should be resumed (claude --resume) rather than created fresh
-  // (claude --session-id). Used by the daemon when minting the tmux session
-  // host for the chat — ignored if the tmux session already exists.
+  // resume signals that agent_session_id refers to an existing agent session
+  // that should be resumed via the coding agent's --resume flag rather than
+  // created fresh. Used by the daemon when minting the tmux session host for
+  // the chat — ignored if the tmux session already exists.
   bool resume = 4;
 }
 
@@ -387,23 +394,42 @@ message ListChatsResponse {
 }
 
 message UpdateChatTitleRequest {
-  string claude_id = 1;  // Claude Code session UUID
+  string agent_session_id = 1;  // Agent session UUID
   string title = 2;
 }
 
 message UpdateChatTitleResponse {}
 
 message DeleteChatRequest {
-  string claude_id = 1;  // Claude Code session UUID
+  string agent_session_id = 1;  // Agent session UUID
 }
 
 message DeleteChatResponse {}
+
+message WakeChatRequest {
+  // agent_session_id of the chat to wake. Chat must already exist
+  // (previously started via RecordChat).
+  string agent_session_id = 1;
+  // If true, skip --resume even if the transcript exists. Default false.
+  bool force_fresh = 2;
+}
+
+message WakeChatResponse {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_ALREADY_LIVE = 1;
+    OUTCOME_RESUMED = 2;
+    OUTCOME_FRESH_FALLBACK = 3;
+  }
+  Outcome outcome = 1;
+  string tmux_session_name = 2;
+}
 
 // --- Chat Status (cross-client heartbeat sharing) ---
 
 // ChatStatusReport is a single heartbeat from an owning client.
 message ChatStatusReport {
-  string claude_id = 1;        // Claude Code session UUID
+  string agent_session_id = 1; // Agent session UUID
   ChatStatus status = 2;       // Current process status
   google.protobuf.Timestamp last_output_at = 3; // Last PTY output time
 }
@@ -420,7 +446,7 @@ message GetChatStatusesRequest {
 
 // ChatStatusEntry is a single chat's cached status.
 message ChatStatusEntry {
-  string claude_id = 1;
+  string agent_session_id = 1;
   ChatStatus status = 2;
   google.protobuf.Timestamp last_output_at = 3;
 }

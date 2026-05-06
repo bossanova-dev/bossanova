@@ -136,7 +136,20 @@ type CommandHandlerAdapter struct {
 	Lifecycle    LifecycleStopper
 	Sessions     SessionReader
 	Automation   AutomationToggler
+	Waker        ChatWaker
 	OnCompletion func(ctx context.Context, sessionID string) // optional, mirrors task orchestrator hook
+}
+
+// ChatWaker is the slice of *server.Server the WakeChat path needs. The
+// adapter takes it as a narrow interface so cmd/main.go can plug in the
+// real server without dragging the whole server package into upstream
+// (preserving the same import-cycle-avoidance pattern used by the other
+// command handlers in this file).
+type ChatWaker interface {
+	// WakeChatStream returns the proto-level Outcome and the persisted
+	// tmux session name. The errorCode classifies any failure so the
+	// dispatcher can attach a typed CommandResult.error_code.
+	WakeChatStream(ctx context.Context, agentSessionID string, forceFresh bool) (pb.WakeChatResult_Outcome, string, pb.CommandResult_ErrorCode, error)
 }
 
 // Stop implements SessionCommandHandler.Stop.
@@ -174,6 +187,18 @@ func (a *CommandHandlerAdapter) Pause(ctx context.Context, sessionID string) (*p
 		return nil, nil
 	}
 	return a.Sessions.GetSession(ctx, sessionID)
+}
+
+// WakeChat implements SessionCommandHandler.WakeChat by delegating to the
+// configured ChatWaker (typically *server.Server).
+func (a *CommandHandlerAdapter) WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (pb.WakeChatResult_Outcome, string, pb.CommandResult_ErrorCode, error) {
+	if agentSessionID == "" {
+		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("wake_chat: agent_session_id required")
+	}
+	if a.Waker == nil {
+		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("wake_chat: waker not wired")
+	}
+	return a.Waker.WakeChatStream(ctx, agentSessionID, forceFresh)
 }
 
 // Resume implements SessionCommandHandler.Resume by re-enabling automation.
@@ -216,7 +241,7 @@ func (d *NoopWebhookDispatcher) Dispatch(_ context.Context, ev *pb.WebhookEvent)
 
 // --- Session attacher (tmux reader) ---
 
-// AttachOutputLine mirrors claude.OutputLine without depending on the
+// AttachOutputLine mirrors agent.OutputLine without depending on the
 // claude package — adapters.go would otherwise need an import cycle
 // (claude has no reason to know about upstream, and tests prefer a
 // small concrete type).
@@ -225,10 +250,10 @@ type AttachOutputLine struct {
 	Timestamp time.Time
 }
 
-// ClaudeAttachReader is the slice of claude.Runner the attacher needs.
+// AgentAttachReader is the slice of claude.Runner the attacher needs.
 // Matching the subscribe + history surface lets the stream attach reuse
 // the same in-process broadcaster the local socket AttachSession uses.
-type ClaudeAttachReader interface {
+type AgentAttachReader interface {
 	IsRunning(claudeSessionID string) bool
 	History(claudeSessionID string) []AttachOutputLine
 	Subscribe(ctx context.Context, claudeSessionID string) (<-chan AttachOutputLine, error)
@@ -248,7 +273,7 @@ type SessionAttachSessionLookup interface {
 // forward them verbatim to its own AttachSession proxy.
 type SessionAttacherAdapter struct {
 	Sessions SessionAttachSessionLookup
-	Claude   ClaudeAttachReader
+	Agent    AgentAttachReader
 	Logger   zerolog.Logger
 }
 
@@ -257,7 +282,7 @@ type SessionAttacherAdapter struct {
 // ctx lifetime; the adapter closes the returned channel when the claude
 // subscriber closes or ctx is cancelled.
 func (a *SessionAttacherAdapter) Attach(ctx context.Context, sessionID, commandID string) (<-chan *pb.SessionAttachChunk, error) {
-	if a.Sessions == nil || a.Claude == nil {
+	if a.Sessions == nil || a.Agent == nil {
 		return nil, errors.New("attacher: dependencies not wired")
 	}
 
@@ -281,7 +306,7 @@ func (a *SessionAttacherAdapter) Attach(ctx context.Context, sessionID, commandI
 	}
 
 	// No live process — emit StateChange + SessionEnded and close.
-	if claudeSessionID == "" || !a.Claude.IsRunning(claudeSessionID) {
+	if claudeSessionID == "" || !a.Agent.IsRunning(claudeSessionID) {
 		safego.Go(a.Logger, func() {
 			defer close(out)
 			select {
@@ -306,7 +331,7 @@ func (a *SessionAttacherAdapter) Attach(ctx context.Context, sessionID, commandI
 
 	// Live process — subscribe and pump.
 	subCtx, cancelSub := context.WithCancel(ctx)
-	sub, err := a.Claude.Subscribe(subCtx, claudeSessionID)
+	sub, err := a.Agent.Subscribe(subCtx, claudeSessionID)
 	if err != nil {
 		cancelSub()
 		close(out)
@@ -325,7 +350,7 @@ func (a *SessionAttacherAdapter) Attach(ctx context.Context, sessionID, commandI
 		}
 
 		// 2. Replay history.
-		for _, line := range a.Claude.History(claudeSessionID) {
+		for _, line := range a.Agent.History(claudeSessionID) {
 			chunk := &pb.SessionAttachChunk{
 				SessionId: sessionID,
 				CommandId: commandID,

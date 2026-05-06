@@ -57,16 +57,16 @@ func testChats() []*pb.ClaudeChat {
 	now := time.Now()
 	return []*pb.ClaudeChat{
 		{
-			ClaudeId:  "claude-111",
-			SessionId: "sess-aaa-111",
-			Title:     "Initial implementation",
-			CreatedAt: timestamppb.New(now), // most recent → sorted first by TUI
+			AgentSessionId: "claude-111",
+			SessionId:      "sess-aaa-111",
+			Title:          "Initial implementation",
+			CreatedAt:      timestamppb.New(now), // most recent → sorted first by TUI
 		},
 		{
-			ClaudeId:  "claude-222",
-			SessionId: "sess-aaa-111",
-			Title:     "Follow-up review",
-			CreatedAt: timestamppb.New(now.Add(-time.Hour)), // older → sorted second
+			AgentSessionId: "claude-222",
+			SessionId:      "sess-aaa-111",
+			Title:          "Follow-up review",
+			CreatedAt:      timestamppb.New(now.Add(-time.Hour)), // older → sorted second
 		},
 	}
 }

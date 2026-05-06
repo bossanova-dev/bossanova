@@ -84,26 +84,26 @@ func TestFixLoopHandleCheckFailure(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
 	prNum := 42
-	claudeID := "claude-old"
+	agentSessionID := "claude-old"
 	repos.repos["repo-1"] = &models.Repo{
 		ID:        "repo-1",
 		OriginURL: "owner/repo",
 	}
 	sessions.sessions["sess-1"] = &models.Session{
-		ID:              "sess-1",
-		RepoID:          "repo-1",
-		State:           machine.FixingChecks,
-		AttemptCount:    1,
-		PRNumber:        &prNum,
-		WorktreePath:    "/tmp/worktrees/test-repo/test",
-		BranchName:      "test",
-		BaseBranch:      "main",
-		ClaudeSessionID: &claudeID,
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		State:          machine.FixingChecks,
+		AttemptCount:   1,
+		PRNumber:       &prNum,
+		WorktreePath:   "/tmp/worktrees/test-repo/test",
+		BranchName:     "test",
+		BaseBranch:     "main",
+		AgentSessionID: &agentSessionID,
 	}
 
 	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
@@ -155,7 +155,7 @@ func TestFixLoopHandleConflict(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
@@ -203,7 +203,7 @@ func TestFixLoopHandleReviewFeedback(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
@@ -254,7 +254,7 @@ func TestFixLoopWrongState(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
@@ -283,7 +283,7 @@ func TestFixLoopPerSessionMutex(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
@@ -310,7 +310,7 @@ func TestIntegrationChecksFailedFixLoop(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
@@ -361,7 +361,7 @@ func TestIntegrationConflictFixLoop(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
@@ -396,7 +396,7 @@ func TestIntegrationReviewFeedbackFixLoop(t *testing.T) {
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 

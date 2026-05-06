@@ -3,9 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +14,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/tmux"
@@ -26,9 +24,9 @@ import (
 var (
 	_ db.SessionStore        = (*mockSessionStore)(nil)
 	_ db.RepoStore           = (*mockRepoStore)(nil)
-	_ db.ClaudeChatStore     = (*mockClaudeChatStore)(nil)
+	_ db.AgentChatStore      = (*mockAgentChatStore)(nil)
 	_ gitpkg.WorktreeManager = (*mockWorktreeManager)(nil)
-	_ claude.ClaudeRunner    = (*mockClaudeRunner)(nil)
+	_ agent.AgentRunner      = (*mockAgentRunner)(nil)
 	_ vcs.Provider           = (*mockVCSProvider)(nil)
 )
 
@@ -118,8 +116,8 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.BranchName != nil {
 		s.BranchName = *params.BranchName
 	}
-	if params.ClaudeSessionID != nil {
-		s.ClaudeSessionID = *params.ClaudeSessionID
+	if params.AgentSessionID != nil {
+		s.AgentSessionID = *params.AgentSessionID
 	}
 	if params.PRNumber != nil {
 		s.PRNumber = *params.PRNumber
@@ -268,48 +266,48 @@ func (m *mockRepoStore) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-// --- Mock ClaudeChatStore ---
+// --- Mock AgentChatStore ---
 
-// mockClaudeChatStore satisfies db.ClaudeChatStore for lifecycle tests. By
-// default Create / UpdateTmuxSessionName / DeleteByClaudeID succeed and
+// mockAgentChatStore satisfies db.AgentChatStore for lifecycle tests. By
+// default Create / UpdateTmuxSessionName / DeleteByAgentSessionID succeed and
 // record their parameters so tests can assert on them. Setting createErr,
 // updateTmuxNameErr, etc. forces the corresponding method to return that
 // error instead — used by failure-mode tests for the cron tmux path.
-type mockClaudeChatStore struct {
-	mu                sync.Mutex
-	createCalls       []db.CreateClaudeChatParams
-	tmuxNameUpdates   []tmuxNameUpdate
-	deletedClaudeIDs  []string
-	chatsBySession    map[string][]*models.ClaudeChat // returned by ListBySession when set
-	createErr         error
-	updateTmuxNameErr error
+type mockAgentChatStore struct {
+	mu                     sync.Mutex
+	createCalls            []db.CreateAgentChatParams
+	tmuxNameUpdates        []tmuxNameUpdate
+	deletedAgentSessionIDs []string
+	chatsBySession         map[string][]*models.AgentChat // returned by ListBySession when set
+	createErr              error
+	updateTmuxNameErr      error
 }
 
 type tmuxNameUpdate struct {
-	claudeID string
-	name     *string
+	agentSessionID string
+	name           *string
 }
 
-func (m *mockClaudeChatStore) Create(_ context.Context, params db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
+func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createCalls = append(m.createCalls, params)
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
-	return &models.ClaudeChat{
-		ID:        "chat-" + params.ClaudeID,
-		SessionID: params.SessionID,
-		ClaudeID:  params.ClaudeID,
-		Title:     params.Title,
+	return &models.AgentChat{
+		ID:             "chat-" + params.AgentSessionID,
+		SessionID:      params.SessionID,
+		AgentSessionID: params.AgentSessionID,
+		Title:          params.Title,
 	}, nil
 }
 
-func (m *mockClaudeChatStore) GetByClaudeID(_ context.Context, _ string) (*models.ClaudeChat, error) {
+func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, _ string) (*models.AgentChat, error) {
 	return nil, nil
 }
 
-func (m *mockClaudeChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.ClaudeChat, error) {
+func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.chatsBySession == nil {
@@ -318,29 +316,29 @@ func (m *mockClaudeChatStore) ListBySession(_ context.Context, sessionID string)
 	return m.chatsBySession[sessionID], nil
 }
 
-func (m *mockClaudeChatStore) UpdateTitle(_ context.Context, _, _ string) error {
+func (m *mockAgentChatStore) UpdateTitle(_ context.Context, _, _ string) error {
 	return nil
 }
 
-func (m *mockClaudeChatStore) UpdateTitleByClaudeID(_ context.Context, _, _ string) error {
+func (m *mockAgentChatStore) UpdateTitleByAgentSessionID(_ context.Context, _, _ string) error {
 	return nil
 }
 
-func (m *mockClaudeChatStore) UpdateTmuxSessionName(_ context.Context, claudeID string, name *string) error {
+func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessionID string, name *string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.tmuxNameUpdates = append(m.tmuxNameUpdates, tmuxNameUpdate{claudeID: claudeID, name: name})
+	m.tmuxNameUpdates = append(m.tmuxNameUpdates, tmuxNameUpdate{agentSessionID: agentSessionID, name: name})
 	return m.updateTmuxNameErr
 }
 
-func (m *mockClaudeChatStore) DeleteByClaudeID(_ context.Context, claudeID string) error {
+func (m *mockAgentChatStore) DeleteByAgentSessionID(_ context.Context, agentSessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.deletedClaudeIDs = append(m.deletedClaudeIDs, claudeID)
+	m.deletedAgentSessionIDs = append(m.deletedAgentSessionIDs, agentSessionID)
 	return nil
 }
 
-func (m *mockClaudeChatStore) ListWithTmuxSession(_ context.Context) ([]*models.ClaudeChat, error) {
+func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
 	return nil, nil
 }
 
@@ -449,9 +447,9 @@ func (m *mockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts g
 	}, nil
 }
 
-// --- Mock ClaudeRunner ---
+// --- Mock AgentRunner ---
 
-type mockClaudeRunner struct {
+type mockAgentRunner struct {
 	started  []mockStartCall
 	stopped  []string
 	running  map[string]bool
@@ -465,14 +463,14 @@ type mockStartCall struct {
 	resume  *string
 }
 
-func newMockClaudeRunner() *mockClaudeRunner {
-	return &mockClaudeRunner{
+func newMockAgentRunner() *mockAgentRunner {
+	return &mockAgentRunner{
 		running: make(map[string]bool),
 		nextID:  "claude-123",
 	}
 }
 
-func (m *mockClaudeRunner) Start(_ context.Context, workDir, plan string, resume *string, _ string) (string, error) {
+func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _ string) (string, error) {
 	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume})
 	if m.startErr != nil {
 		return "", m.startErr
@@ -482,27 +480,27 @@ func (m *mockClaudeRunner) Start(_ context.Context, workDir, plan string, resume
 	return id, nil
 }
 
-func (m *mockClaudeRunner) Stop(sessionID string) error {
+func (m *mockAgentRunner) Stop(sessionID string) error {
 	m.stopped = append(m.stopped, sessionID)
 	delete(m.running, sessionID)
 	return nil
 }
 
-func (m *mockClaudeRunner) IsRunning(sessionID string) bool {
+func (m *mockAgentRunner) IsRunning(sessionID string) bool {
 	return m.running[sessionID]
 }
 
-func (m *mockClaudeRunner) ExitError(_ string) error {
+func (m *mockAgentRunner) ExitError(_ string) error {
 	return nil
 }
 
-func (m *mockClaudeRunner) Subscribe(_ context.Context, _ string) (<-chan claude.OutputLine, error) {
-	ch := make(chan claude.OutputLine)
+func (m *mockAgentRunner) Subscribe(_ context.Context, _ string) (<-chan agent.OutputLine, error) {
+	ch := make(chan agent.OutputLine)
 	close(ch)
 	return ch, nil
 }
 
-func (m *mockClaudeRunner) History(_ string) []claude.OutputLine {
+func (m *mockAgentRunner) History(_ string) []agent.OutputLine {
 	return nil
 }
 
@@ -599,7 +597,7 @@ func TestStartSession(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	// Set up test data.
@@ -660,8 +658,8 @@ func TestStartSession(t *testing.T) {
 	if sess.BranchName != "test-session" {
 		t.Errorf("branch name = %q, want test-session", sess.BranchName)
 	}
-	if sess.ClaudeSessionID == nil || *sess.ClaudeSessionID != "claude-123" {
-		t.Errorf("claude session id = %v, want claude-123", sess.ClaudeSessionID)
+	if sess.AgentSessionID == nil || *sess.AgentSessionID != "claude-123" {
+		t.Errorf("claude session id = %v, want claude-123", sess.AgentSessionID)
 	}
 }
 
@@ -672,7 +670,7 @@ func TestStartSession_ExistingBranchNotOnRemote_FallsBackToCreate(t *testing.T) 
 	wt := &mockWorktreeManager{
 		createFromExistingBranchErr: fmt.Errorf("fetch branch: git fetch origin dave/fre-1176: exit status 128: fatal: couldn't find remote ref dave/fre-1176"),
 	}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -719,17 +717,17 @@ func TestStopSession(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
-	claudeID := "claude-123"
-	cr.running[claudeID] = true
+	agentSessionID := "claude-123"
+	cr.running[agentSessionID] = true
 
 	sessions.sessions["sess-1"] = &models.Session{
-		ID:              "sess-1",
-		RepoID:          "repo-1",
-		State:           machine.ImplementingPlan,
-		ClaudeSessionID: &claudeID,
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		State:          machine.ImplementingPlan,
+		AgentSessionID: &agentSessionID,
 	}
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
@@ -754,7 +752,7 @@ func TestArchiveSession(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -762,15 +760,15 @@ func TestArchiveSession(t *testing.T) {
 		LocalPath: "/tmp/repo",
 	}
 
-	claudeID := "claude-123"
-	cr.running[claudeID] = true
+	agentSessionID := "claude-123"
+	cr.running[agentSessionID] = true
 
 	sessions.sessions["sess-1"] = &models.Session{
-		ID:              "sess-1",
-		RepoID:          "repo-1",
-		State:           machine.ImplementingPlan,
-		WorktreePath:    "/tmp/worktrees/test-repo/test",
-		ClaudeSessionID: &claudeID,
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		State:          machine.ImplementingPlan,
+		WorktreePath:   "/tmp/worktrees/test-repo/test",
+		AgentSessionID: &agentSessionID,
 	}
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
@@ -795,7 +793,7 @@ func TestResurrectSession(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -834,7 +832,7 @@ func TestResurrectSession(t *testing.T) {
 	sessions.sessions["sess-1"] = sess
 
 	oldClaudeID := "claude-old"
-	sess.ClaudeSessionID = &oldClaudeID
+	sess.AgentSessionID = &oldClaudeID
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
@@ -869,7 +867,7 @@ func TestResurrectSessionNotArchived(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	sessions.sessions["sess-1"] = &models.Session{
@@ -895,7 +893,7 @@ func TestStopSessionNoClaudeProcess(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	sessions.sessions["sess-1"] = &models.Session{
@@ -927,7 +925,7 @@ func TestSubmitPR(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
@@ -1000,7 +998,7 @@ func TestSubmitPR_ExistingPRStillPushesImplementationCommits(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
@@ -1055,7 +1053,7 @@ func TestSubmitPRWrongState(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
@@ -1083,7 +1081,7 @@ func TestStartSession_NoPlan_CreateDraftPRFailsRepoNotReady(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
@@ -1132,7 +1130,7 @@ func TestStartSession_SkipSetupScript_NilsSetupScript(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	setupCmd := "npm install"
@@ -1175,7 +1173,7 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	setupCmd := "npm install"
@@ -1215,7 +1213,7 @@ func TestStartQuickChatSession(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -1270,7 +1268,7 @@ func TestArchiveQuickChatSession(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -1278,15 +1276,15 @@ func TestArchiveQuickChatSession(t *testing.T) {
 		LocalPath: "/tmp/repo",
 	}
 
-	claudeID := "claude-123"
-	cr.running[claudeID] = true
+	agentSessionID := "claude-123"
+	cr.running[agentSessionID] = true
 
 	sessions.sessions["sess-1"] = &models.Session{
-		ID:              "sess-1",
-		RepoID:          "repo-1",
-		State:           machine.ImplementingPlan,
-		WorktreePath:    "/tmp/repo", // same as repo.LocalPath → quick chat
-		ClaudeSessionID: &claudeID,
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		State:          machine.ImplementingPlan,
+		WorktreePath:   "/tmp/repo", // same as repo.LocalPath → quick chat
+		AgentSessionID: &agentSessionID,
 	}
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
@@ -1311,7 +1309,7 @@ func TestResurrectQuickChatSession(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -1322,14 +1320,14 @@ func TestResurrectQuickChatSession(t *testing.T) {
 	archTime := models.Session{}.CreatedAt
 	oldClaudeID := "claude-old"
 	sessions.sessions["sess-1"] = &models.Session{
-		ID:              "sess-1",
-		RepoID:          "repo-1",
-		Title:           "Quick chat",
-		WorktreePath:    "/tmp/repo", // same as repo.LocalPath → quick chat
-		BranchName:      "",
-		State:           machine.ImplementingPlan,
-		ArchivedAt:      &archTime,
-		ClaudeSessionID: &oldClaudeID,
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		Title:          "Quick chat",
+		WorktreePath:   "/tmp/repo", // same as repo.LocalPath → quick chat
+		BranchName:     "",
+		State:          machine.ImplementingPlan,
+		ArchivedAt:     &archTime,
+		AgentSessionID: &oldClaudeID,
 	}
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
@@ -1362,7 +1360,7 @@ func TestResolveOriginURL_AlreadySet(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -1387,7 +1385,7 @@ func TestResolveOriginURL_EmptyReDetected(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{originURL: "git@github.com:owner/repo.git"}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -1416,7 +1414,7 @@ func TestResolveOriginURL_EmptyNoRemote(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{originURL: ""} // no remote configured
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -1442,7 +1440,7 @@ func TestStartSession_NoPlan_EmptyOriginURL_ReDetected(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{originURL: "git@github.com:owner/repo.git"}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
@@ -1487,7 +1485,7 @@ func TestStartSession_NoSkipSetupScript_PassesSetupScript(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	logger := zerolog.Nop()
 
 	setupCmd := "npm install"
@@ -1534,7 +1532,7 @@ func TestStartSession_DeferPRFalse_CreatesDraftPR(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
@@ -1577,7 +1575,7 @@ func TestStartSession_DeferPRTrue_SkipsDraftPR(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
@@ -1622,9 +1620,9 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	chats := &mockClaudeChatStore{}
+	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
 	logger := zerolog.Nop()
 
@@ -1661,24 +1659,22 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 	}
 }
 
-// TestStartSession_HookToken_InstallsHookConfig verifies that when
-// StartSessionOpts.HookToken is set, StartSession uses the in-memory
-// hook port supplied via Lifecycle.SetHookPort and writes a Stop-hook
-// config into worktree/.claude/settings.local.json referencing the
-// token + port. The hook server runs in the same process as the
-// lifecycle, so the port is plumbed via dependency injection — there
-// is no port file on disk to read. Non-cron sessions (empty HookToken)
-// skip this path entirely.
-func TestStartSession_HookToken_InstallsHookConfig(t *testing.T) {
+// TestStartSession_HookToken_CallsConfigureFinalizeHook verifies that when
+// StartSessionOpts.HookToken is set, StartSession delegates Stop-hook
+// configuration to the agent plugin via ConfigureFinalizeHook RPC,
+// passing the worktree path, session ID, token, and port. The actual file
+// write happens inside the plugin (tested there); lifecycle only verifies
+// the RPC contract. Non-cron sessions (empty HookToken) skip this path.
+func TestStartSession_HookToken_CallsConfigureFinalizeHook(t *testing.T) {
 	ctx := context.Background()
 
 	worktreeDir := t.TempDir()
 
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	chats := &mockClaudeChatStore{}
+	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
 	logger := zerolog.Nop()
 
@@ -1695,10 +1691,13 @@ func TestStartSession_HookToken_InstallsHookConfig(t *testing.T) {
 		Title:      "Nightly audit",
 		BaseBranch: "main",
 		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
 	}
 
+	fa := newFakeAgent()
 	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		DeferPR:   true,
@@ -1708,16 +1707,22 @@ func TestStartSession_HookToken_InstallsHookConfig(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	settingsPath := filepath.Join(worktreeDir, ".claude", "settings.local.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("read settings: %v", err)
+	// Verify ConfigureFinalizeHook RPC was called with the correct args.
+	req := fa.LastConfigureHookReq
+	if req == nil {
+		t.Fatal("ConfigureFinalizeHook was not called")
 	}
-	body := string(data)
-	for _, want := range []string{"bossd-finalize", "Bearer secret-token-123", "127.0.0.1:45678", "/hooks/finalize/sess-1"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("settings.local.json missing %q:\n%s", want, body)
-		}
+	if req.WorkDir != worktreeDir {
+		t.Errorf("WorkDir = %q, want %q", req.WorkDir, worktreeDir)
+	}
+	if req.SessionId != "sess-1" {
+		t.Errorf("SessionId = %q, want %q", req.SessionId, "sess-1")
+	}
+	if req.HookToken != "secret-token-123" {
+		t.Errorf("HookToken = %q, want %q", req.HookToken, "secret-token-123")
+	}
+	if req.HookPort != 45678 {
+		t.Errorf("HookPort = %d, want %d", req.HookPort, 45678)
 	}
 }
 
@@ -1733,7 +1738,7 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 		sessions := newMockSessionStore()
 		repos := newMockRepoStore()
 		wt := &mockWorktreeManager{}
-		cr := newMockClaudeRunner()
+		cr := newMockAgentRunner()
 		vp := newMockVCSProvider()
 
 		repos.repos["repo-1"] = &models.Repo{
@@ -1772,7 +1777,7 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 		sessions := newMockSessionStore()
 		repos := newMockRepoStore()
 		wt := &mockWorktreeManager{}
-		cr := newMockClaudeRunner()
+		cr := newMockAgentRunner()
 		vp := newMockVCSProvider()
 
 		repos.repos["repo-1"] = &models.Repo{
@@ -1909,9 +1914,9 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	chats := &mockClaudeChatStore{}
+	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	fake := newFakeTmux()
 	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
@@ -1965,11 +1970,11 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	// claude_chats.Create must have been called once with a matching ClaudeID
 	// and the cron-style title.
 	if len(chats.createCalls) != 1 {
-		t.Fatalf("expected 1 claudeChats.Create call, got %d", len(chats.createCalls))
+		t.Fatalf("expected 1 agentChats.Create call, got %d", len(chats.createCalls))
 	}
-	createdClaudeID := chats.createCalls[0].ClaudeID
-	if createdClaudeID == "" {
-		t.Error("expected non-empty ClaudeID on claudeChats.Create")
+	createdAgentSessionID := chats.createCalls[0].AgentSessionID
+	if createdAgentSessionID == "" {
+		t.Error("expected non-empty ClaudeID on agentChats.Create")
 	}
 	if chats.createCalls[0].Title != `Run "Nightly audit"` {
 		t.Errorf(`Title = %q, want %q`, chats.createCalls[0].Title, `Run "Nightly audit"`)
@@ -1982,8 +1987,8 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 	if len(chats.tmuxNameUpdates) != 1 {
 		t.Fatalf("expected 1 UpdateTmuxSessionName call, got %d", len(chats.tmuxNameUpdates))
 	}
-	if chats.tmuxNameUpdates[0].claudeID != createdClaudeID {
-		t.Errorf("UpdateTmuxSessionName claudeID = %q, want %q", chats.tmuxNameUpdates[0].claudeID, createdClaudeID)
+	if chats.tmuxNameUpdates[0].agentSessionID != createdAgentSessionID {
+		t.Errorf("UpdateTmuxSessionName agentSessionID = %q, want %q", chats.tmuxNameUpdates[0].agentSessionID, createdAgentSessionID)
 	}
 	if chats.tmuxNameUpdates[0].name == nil || *chats.tmuxNameUpdates[0].name == "" {
 		t.Error("expected non-nil/non-empty tmux name persisted on chat row")
@@ -1998,8 +2003,8 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 
 	// The new claude session UUID was persisted on the session row.
 	sess := sessions.sessions["sess-1"]
-	if sess.ClaudeSessionID == nil || *sess.ClaudeSessionID != createdClaudeID {
-		t.Errorf("session.ClaudeSessionID = %v, want %q", sess.ClaudeSessionID, createdClaudeID)
+	if sess.AgentSessionID == nil || *sess.AgentSessionID != createdAgentSessionID {
+		t.Errorf("session.AgentSessionID = %v, want %q", sess.AgentSessionID, createdAgentSessionID)
 	}
 	if sess.State != machine.ImplementingPlan {
 		t.Errorf("session.State = %v, want ImplementingPlan", sess.State)
@@ -2014,9 +2019,9 @@ func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	chats := &mockClaudeChatStore{}
+	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	fake := newFakeTmux()
 	fake.available = false
 	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
@@ -2057,7 +2062,7 @@ func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
 	}
 	// No claude_chats row should have been created.
 	if len(chats.createCalls) != 0 {
-		t.Errorf("expected 0 claudeChats.Create calls when tmux unavailable, got %d", len(chats.createCalls))
+		t.Errorf("expected 0 agentChats.Create calls when tmux unavailable, got %d", len(chats.createCalls))
 	}
 }
 
@@ -2069,11 +2074,11 @@ func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	chats := &mockClaudeChatStore{
+	chats := &mockAgentChatStore{
 		createErr: fmt.Errorf("simulated DB failure"),
 	}
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	fake := newFakeTmux()
 	tx := tmux.NewClient(tmux.WithCommandFactory(fake.factory))
 	logger := zerolog.Nop()
@@ -2108,7 +2113,7 @@ func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
 		t.Error("expected tmux new-session call before chat create failure")
 	}
 	if len(chats.createCalls) != 1 {
-		t.Errorf("expected 1 claudeChats.Create attempt, got %d", len(chats.createCalls))
+		t.Errorf("expected 1 agentChats.Create attempt, got %d", len(chats.createCalls))
 	}
 	if !fake.hasSubcommand("kill-session") {
 		t.Error("expected tmux kill-session call to clean up after chat create failure")
@@ -2126,16 +2131,16 @@ func TestFinalizeNoChanges_KillsChatTmuxSessionsBeforeDelete(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: ""} // empty = no changes
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 
 	tmuxName := "boss-repo1234-claude01"
-	chats := &mockClaudeChatStore{
-		chatsBySession: map[string][]*models.ClaudeChat{
+	chats := &mockAgentChatStore{
+		chatsBySession: map[string][]*models.AgentChat{
 			"sess-1": {{
 				ID:              "chat-claude-01",
 				SessionID:       "sess-1",
-				ClaudeID:        "claude-01",
+				AgentSessionID:  "claude-01",
 				TmuxSessionName: &tmuxName,
 			}},
 		},
@@ -2218,4 +2223,112 @@ func (o *orderingSessionStore) Delete(ctx context.Context, id string) error {
 		o.onDelete(id)
 	}
 	return o.mockSessionStore.Delete(ctx, id)
+}
+
+// TestSetAgents_RoutesByAgentName verifies that a Lifecycle wired with
+// multiple agent clients routes ConfigureFinalizeHook to the client whose
+// name matches the session's AgentName — the production multi-agent path
+// when more than one bossd-plugin-<agent> is installed.
+func TestSetAgents_RoutesByAgentName(t *testing.T) {
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockAgentRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-opencode"] = &models.Session{
+		ID:         "sess-opencode",
+		RepoID:     "repo-1",
+		Title:      "opencode session",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "opencode",
+	}
+
+	claudeAgent := newFakeAgent()
+	openCodeAgent := newFakeAgent()
+
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{
+		"claude":   claudeAgent,
+		"opencode": openCodeAgent,
+	})
+
+	if err := lc.StartSession(ctx, "sess-opencode", StartSessionOpts{
+		DeferPR:   true,
+		CronJobID: "cron-1",
+		HookToken: "tok",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if openCodeAgent.LastConfigureHookReq == nil {
+		t.Fatal("expected ConfigureFinalizeHook on opencode agent")
+	}
+	if claudeAgent.LastConfigureHookReq != nil {
+		t.Fatal("did not expect ConfigureFinalizeHook on claude agent")
+	}
+}
+
+// TestSetAgents_UnknownAgentErrors verifies that StartSession surfaces a
+// clear error when the session's AgentName has no matching client in the
+// registry — defense in depth in case CreateSession ever persists a name
+// for which no plugin is loaded.
+func TestSetAgents_UnknownAgentErrors(t *testing.T) {
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockAgentRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Unknown agent",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "ghost",
+	}
+
+	claudeAgent := newFakeAgent()
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": claudeAgent})
+
+	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		CronJobID: "cron-1",
+		HookToken: "tok",
+	})
+	if err == nil {
+		t.Fatal("expected error when AgentName has no registered client")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error %q should mention the missing agent name", err)
+	}
 }

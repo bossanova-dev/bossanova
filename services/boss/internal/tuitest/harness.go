@@ -151,6 +151,15 @@ func WithTerminalSize(width, height int) Option {
 	}
 }
 
+// WithArgs sets the CLI arguments passed to the boss subprocess. Useful for
+// tests that exercise subcommands like `boss new --agent <name>` directly,
+// bypassing the home screen entry point.
+func WithArgs(args ...string) Option {
+	return func(c *harnessConfig) {
+		c.args = append(c.args, args...)
+	}
+}
+
 // New creates a test harness with a mock daemon and TUI driver.
 // It requires BuildBoss to have been called from TestMain.
 func New(t *testing.T, opts ...Option) *Harness {

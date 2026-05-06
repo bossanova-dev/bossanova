@@ -12,7 +12,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/taskorchestrator"
@@ -90,7 +90,7 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 	if sess.State != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
 		t.Fatalf("expected IMPLEMENTING_PLAN, got %v", sess.State)
 	}
-	if sess.ClaudeSessionId == nil || *sess.ClaudeSessionId == "" {
+	if sess.AgentSessionId == nil || *sess.AgentSessionId == "" {
 		t.Fatal("expected Claude session ID")
 	}
 	if sess.WorktreePath == "" {
@@ -109,8 +109,8 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 	}
 
 	// --- Step 3: Simulate Claude output ---
-	claudeID := *sess.ClaudeSessionId
-	if err := h.Claude.EmitOutput(claudeID, claude.OutputLine{
+	agentSessionID := *sess.AgentSessionId
+	if err := h.Agent.EmitOutput(agentSessionID, agent.OutputLine{
 		Text:      `{"type":"assistant","content":"Implementing avatar upload..."}`,
 		Timestamp: time.Now(),
 	}); err != nil {
@@ -118,7 +118,7 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 	}
 
 	// Verify output is in history.
-	history := h.Claude.History(claudeID)
+	history := h.Agent.History(agentSessionID)
 	if len(history) != 1 {
 		t.Fatalf("expected 1 history line, got %d", len(history))
 	}
@@ -344,7 +344,7 @@ func TestE2E_ArchiveAndResurrect(t *testing.T) {
 	}
 
 	// Verify a new Claude process was started (2 total: original + resurrect).
-	if resResp.Msg.Session.ClaudeSessionId == nil {
+	if resResp.Msg.Session.AgentSessionId == nil {
 		t.Fatal("expected new Claude session ID")
 	}
 }
@@ -745,15 +745,15 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 
 	// Record a chat.
 	chatResp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  "claude-chat-001",
-		Title:     "First chat",
+		SessionId:      sessionID,
+		AgentSessionId: "claude-chat-001",
+		Title:          "First chat",
 	}))
 	if err != nil {
 		t.Fatalf("record chat: %v", err)
 	}
-	if chatResp.Msg.Chat.ClaudeId != "claude-chat-001" {
-		t.Fatalf("expected claude_id = %q, got %q", "claude-chat-001", chatResp.Msg.Chat.ClaudeId)
+	if chatResp.Msg.Chat.AgentSessionId != "claude-chat-001" {
+		t.Fatalf("expected agent_session_id = %q, got %q", "claude-chat-001", chatResp.Msg.Chat.AgentSessionId)
 	}
 	if chatResp.Msg.Chat.Title != "First chat" {
 		t.Fatalf("expected title = %q, got %q", "First chat", chatResp.Msg.Chat.Title)
@@ -761,9 +761,9 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 
 	// Record a second chat.
 	_, err = h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  "claude-chat-002",
-		Title:     "Second chat",
+		SessionId:      sessionID,
+		AgentSessionId: "claude-chat-002",
+		Title:          "Second chat",
 	}))
 	if err != nil {
 		t.Fatalf("record second chat: %v", err)
@@ -782,8 +782,8 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 
 	// Update chat title by claude_id.
 	_, err = h.Client.UpdateChatTitle(ctx, connect.NewRequest(&pb.UpdateChatTitleRequest{
-		ClaudeId: "claude-chat-001",
-		Title:    "Updated first chat",
+		AgentSessionId: "claude-chat-001",
+		Title:          "Updated first chat",
 	}))
 	if err != nil {
 		t.Fatalf("update chat title: %v", err)
@@ -798,7 +798,7 @@ func TestE2E_ChatTrackingLifecycle(t *testing.T) {
 	}
 	found := false
 	for _, c := range listResp.Msg.Chats {
-		if c.ClaudeId == "claude-chat-001" && c.Title == "Updated first chat" {
+		if c.AgentSessionId == "claude-chat-001" && c.Title == "Updated first chat" {
 			found = true
 			break
 		}
@@ -815,19 +815,19 @@ func TestE2E_RecordChat_ValidationErrors(t *testing.T) {
 
 	t.Run("missing session_id", func(t *testing.T) {
 		_, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-			ClaudeId: "claude-001",
+			AgentSessionId: "claude-001",
 		}))
 		if err == nil {
 			t.Fatal("expected error for missing session_id")
 		}
 	})
 
-	t.Run("missing claude_id", func(t *testing.T) {
+	t.Run("missing agent_session_id", func(t *testing.T) {
 		_, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
 			SessionId: "sess-1",
 		}))
 		if err == nil {
-			t.Fatal("expected error for missing claude_id")
+			t.Fatal("expected error for missing agent_session_id")
 		}
 	})
 }
@@ -943,7 +943,7 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("get session: %v", err)
 		}
-		claudeID := *getResp.Msg.Session.ClaudeSessionId
+		agentSessionID := *getResp.Msg.Session.AgentSessionId
 
 		if _, err := h.Client.StopSession(ctx, connect.NewRequest(&pb.StopSessionRequest{Id: sessionID})); err != nil {
 			t.Fatalf("stop session: %v", err)
@@ -952,14 +952,14 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		// Claude runner must have received a Stop call for this session's
 		// Claude ID.
 		found := false
-		for _, id := range h.Claude.Stopped {
-			if id == claudeID {
+		for _, id := range h.Agent.Stopped {
+			if id == agentSessionID {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Fatalf("expected Claude session %q in Stopped slice, got %v", claudeID, h.Claude.Stopped)
+			t.Fatalf("expected Claude session %q in Stopped slice, got %v", agentSessionID, h.Agent.Stopped)
 		}
 
 		// Session should now be CLOSED (lifecycle.StopSession transitions it).
@@ -1004,8 +1004,8 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		}
 
 		// Neither Claude nor VCS should have been touched.
-		if len(h.Claude.Stopped) != 0 {
-			t.Fatalf("retry should not stop Claude, got %v", h.Claude.Stopped)
+		if len(h.Agent.Stopped) != 0 {
+			t.Fatalf("retry should not stop Claude, got %v", h.Agent.Stopped)
 		}
 		if len(h.VCS.MergePRCalls) != 0 {
 			t.Fatalf("retry should not merge, got %v", h.VCS.MergePRCalls)
@@ -1270,8 +1270,8 @@ func TestE2E_SessionControlRPCs(t *testing.T) {
 		}
 
 		// Pause/Resume must not touch the Claude runner.
-		if len(h.Claude.Stopped) != 0 {
-			t.Fatalf("pause/resume should not stop Claude, got %v", h.Claude.Stopped)
+		if len(h.Agent.Stopped) != 0 {
+			t.Fatalf("pause/resume should not stop Claude, got %v", h.Agent.Stopped)
 		}
 	})
 }
@@ -1299,17 +1299,17 @@ func TestE2E_AttachSession_StreamsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	claudeID := *getResp.Msg.Session.ClaudeSessionId
+	agentSessionID := *getResp.Msg.Session.AgentSessionId
 
 	// Arm the subscribe hook before attaching so the first (only) call
 	// from the AttachSession handler is captured.
-	h.Claude.SubscribedCh = make(chan string, 1)
+	h.Agent.SubscribedCh = make(chan string, 1)
 
 	// Pre-seed the mock's ring buffer. The server's AttachSession handler
 	// flushes history before subscribing, so these three lines are
 	// guaranteed to appear in the initial burst.
 	for i := 0; i < 3; i++ {
-		if err := h.Claude.EmitOutputLine(claudeID, fmt.Sprintf("line %d", i+1)); err != nil {
+		if err := h.Agent.EmitOutputLine(agentSessionID, fmt.Sprintf("line %d", i+1)); err != nil {
 			t.Fatalf("emit line %d: %v", i+1, err)
 		}
 	}
@@ -1330,14 +1330,14 @@ func TestE2E_AttachSession_StreamsEvents(t *testing.T) {
 	// the client by this point because Subscribe is called after the
 	// history-burst loop in server.AttachSession.
 	select {
-	case <-h.Claude.SubscribedCh:
+	case <-h.Agent.SubscribedCh:
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for server Subscribe: %v", ctx.Err())
 	}
 
 	// Closing the subscribe channel drives the handler's for-range to
 	// exit; the handler then sends SessionEnded and returns.
-	if err := h.Claude.Stop(claudeID); err != nil {
+	if err := h.Agent.Stop(agentSessionID); err != nil {
 		t.Fatalf("stop claude: %v", err)
 	}
 
@@ -1424,10 +1424,10 @@ func TestE2E_CreateSession_QuickChat(t *testing.T) {
 	if sess.WorktreePath != repoDir {
 		t.Errorf("quick chat WorktreePath=%q; expected repo base %q", sess.WorktreePath, repoDir)
 	}
-	// Quick chat starts Claude on-demand at attach time, not at create, so
-	// ClaudeSessionId is unset on the created session.
-	if sess.ClaudeSessionId != nil && *sess.ClaudeSessionId != "" {
-		t.Errorf("quick chat should defer Claude start; got ClaudeSessionId=%q", *sess.ClaudeSessionId)
+	// Quick chat starts the agent on-demand at attach time, not at create, so
+	// AgentSessionId is unset on the created session.
+	if sess.AgentSessionId != nil && *sess.AgentSessionId != "" {
+		t.Errorf("quick chat should defer agent start; got AgentSessionId=%q", *sess.AgentSessionId)
 	}
 	if sess.State != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
 		t.Errorf("expected IMPLEMENTING_PLAN, got %v", sess.State)

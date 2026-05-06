@@ -127,10 +127,10 @@ func TestMockClaude_WithChanges(t *testing.T) {
 	h := testharness.New(t)
 	workDir := t.TempDir()
 
-	h.Claude.WithChanges("result.txt", "hello from claude")
+	h.Agent.WithChanges("result.txt", "hello from claude")
 
 	ctx := context.Background()
-	id, err := h.Claude.Start(ctx, workDir, "do the thing", nil, "test-session-id")
+	id, err := h.Agent.Start(ctx, workDir, "do the thing", nil, "test-session-id")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -147,12 +147,12 @@ func TestMockClaude_WithChanges(t *testing.T) {
 	}
 
 	// The session should not be running (exited cleanly).
-	if h.Claude.IsRunning(id) {
+	if h.Agent.IsRunning(id) {
 		t.Error("session should not be running after WithChanges start")
 	}
 
 	// Exactly one start should have been recorded (double-append regression guard).
-	if got := len(h.Claude.Started); got != 1 {
+	if got := len(h.Agent.Started); got != 1 {
 		t.Errorf("WithChanges: len(Started) = %d, want 1 (double-append?)", got)
 	}
 }
@@ -163,10 +163,10 @@ func TestMockClaude_NoChanges(t *testing.T) {
 	h := testharness.New(t)
 	workDir := t.TempDir()
 
-	h.Claude.NoChanges()
+	h.Agent.NoChanges()
 
 	ctx := context.Background()
-	id, err := h.Claude.Start(ctx, workDir, "do nothing", nil, "test-session-id-2")
+	id, err := h.Agent.Start(ctx, workDir, "do nothing", nil, "test-session-id-2")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -187,12 +187,12 @@ func TestMockClaude_NoChanges(t *testing.T) {
 		t.Errorf("NoChanges: unexpected files in workDir: %v", names)
 	}
 
-	if h.Claude.IsRunning(id) {
+	if h.Agent.IsRunning(id) {
 		t.Error("session should not be running after NoChanges start")
 	}
 
 	// Exactly one start should have been recorded (double-append regression guard).
-	if got := len(h.Claude.Started); got != 1 {
+	if got := len(h.Agent.Started); got != 1 {
 		t.Errorf("NoChanges: len(Started) = %d, want 1 (double-append?)", got)
 	}
 }

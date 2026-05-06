@@ -170,6 +170,9 @@ func (s *stubClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error
 }
 func (s *stubClient) UpdateChatTitle(context.Context, string, string) error { panic("unused") }
 func (s *stubClient) DeleteChat(context.Context, string) error              { panic("unused") }
+func (s *stubClient) WakeChat(context.Context, string, string, bool) (*pb.WakeChatResponse, error) {
+	panic("unused")
+}
 func (s *stubClient) ReportChatStatus(context.Context, []*pb.ChatStatusReport) error {
 	panic("unused")
 }

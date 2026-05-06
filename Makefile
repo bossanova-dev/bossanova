@@ -1,7 +1,8 @@
-.PHONY: all build build-all clean copy-skills deps format generate lint \
+.PHONY: all build build-all clean deps format generate lint \
 	lint-check-version \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
-	plugins plugins-all release setup-worktree split stage-release test test-race
+	plugins plugins-all release setup-worktree split stage-release test test-race \
+	test-integration-bossd
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all plugins-all
@@ -49,9 +50,6 @@ PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml
 GEN_STAMP := .generate.stamp
 WEB_DEPS_STAMP := node_modules/.modules.yaml
 
-# Skill files destination (shared by boss and bossd via bossalib)
-SKILLS_SRC := .claude/skills
-SKILLS_DST := lib/bossalib/skilldata/skills
 
 claude:
 	claude --dangerously-skip-permissions
@@ -127,6 +125,7 @@ setup-worktree:
 	else \
 		echo "No .node-version in $$BOSS_REPO_DIR — skipping"; \
 	fi
+	direnv allow
 
 ## web-deps: Install web dependencies (needed for protoc-gen-es plugin)
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
@@ -151,11 +150,11 @@ endif
 ## build: Build service binaries (generates protos first if needed)
 build: $(addprefix $(BIN_DIR)/,$(SERVICE_BINS))
 
-$(BIN_DIR)/boss: $(GEN_STAMP) copy-skills
+$(BIN_DIR)/boss: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
-$(BIN_DIR)/bossd: $(GEN_STAMP) copy-skills
+$(BIN_DIR)/bossd: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
 
@@ -172,7 +171,7 @@ $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $@ ./plugins/bossd-plugin-$*
 
 ## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP) copy-skills
+test: $(GEN_STAMP)
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
 		$(MAKE) -C $$mod test; \
@@ -184,17 +183,21 @@ test-race:
 	@$(MAKE) test RACE=1
 
 ## Per-module test targets (no generate dep — CI uses committed gen code)
-test-bossalib: copy-skills
+test-bossalib:
 	$(MAKE) -C lib/bossalib test
 
-test-boss: copy-skills
+test-boss:
 	$(MAKE) -C services/boss test
 
-test-bossd: copy-skills
+test-bossd:
 	$(MAKE) -C services/bossd test
 
+## test-integration-bossd: Run bossd integration tests (requires tmux on PATH; gated by 'integration' build tag)
+test-integration-bossd:
+	cd services/bossd && go test -tags=integration -race ./internal/server/... -count=1
+
 ifneq ($(wildcard services/bosso/go.mod),)
-test-bosso: copy-skills
+test-bosso:
 	$(MAKE) -C services/bosso test
 endif
 
@@ -221,7 +224,7 @@ lint-check-version:
 	fi
 
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
-lint: lint-check-version $(GEN_STAMP) copy-skills
+lint: lint-check-version $(GEN_STAMP)
 	buf lint
 	@for mod in $(MODULES); do \
 		echo "==> Linting $$mod"; \
@@ -232,17 +235,17 @@ lint: lint-check-version $(GEN_STAMP) copy-skills
 lint-proto:
 	buf lint
 
-lint-bossalib: lint-check-version copy-skills
+lint-bossalib: lint-check-version
 	cd lib/bossalib && golangci-lint run ./...
 
-lint-boss: lint-check-version copy-skills
+lint-boss: lint-check-version
 	cd services/boss && golangci-lint run ./...
 
-lint-bossd: lint-check-version copy-skills
+lint-bossd: lint-check-version
 	cd services/bossd && golangci-lint run ./...
 
 ifneq ($(wildcard services/bosso/go.mod),)
-lint-bosso: lint-check-version copy-skills
+lint-bosso: lint-check-version
 	cd services/bosso && golangci-lint run ./...
 endif
 
@@ -254,24 +257,12 @@ endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-lint,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
-## copy-skills: Copy boss skill files into bossalib for embedding
-copy-skills:
-	rm -rf $(SKILLS_DST)
-	mkdir -p $(SKILLS_DST)
-	for dir in $(SKILLS_SRC)/boss $(SKILLS_SRC)/boss-*; do \
-		[ -d "$$dir" ] || continue; \
-		name=$$(basename $$dir); \
-		mkdir -p $(SKILLS_DST)/$$name; \
-		cp -R $$dir/* $(SKILLS_DST)/$$name/; \
-	done
-	@touch $(SKILLS_DST)/.gitkeep
-
 ## Per-module build targets (no generate dep — CI uses committed gen code)
-build-boss: copy-skills
+build-boss:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/boss ./services/boss/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/boss; fi
 
-build-bossd: copy-skills
+build-bossd:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
 
@@ -289,7 +280,7 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-build,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
 ## format: Format Go code (gofmt + golangci-lint), web code, package.json files, and markdown
-format: lint-check-version copy-skills
+format: lint-check-version
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		pnpm syncpack format; \
 		pnpm syncpack fix; \
@@ -312,7 +303,7 @@ DIST_BINS := boss bossd
 # Plugins for distribution (auto-detected)
 DIST_PLUGINS := $(PLUGIN_BINS)
 
-build-all: $(GEN_STAMP) copy-skills
+build-all: $(GEN_STAMP)
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%%/*}; \
 		arch=$${platform##*/}; \
@@ -344,7 +335,6 @@ plugins-all: $(GEN_STAMP)
 clean:
 	rm -rf $(BIN_DIR)
 	rm -f $(GEN_STAMP)
-	rm -rf $(SKILLS_DST)
 	rm -rf $(MUTATE_DIR)
 	@for mod in $(MODULES); do \
 		$(MAKE) -C $$mod clean; \
@@ -376,7 +366,7 @@ split:
 MUTATE_TIMEOUT := 30
 
 ## mutate: Run mutation testing across all modules
-mutate: $(GEN_STAMP) copy-skills
+mutate: $(GEN_STAMP)
 	@mkdir -p $(MUTATE_DIR)
 	@root=$$(git rev-parse --show-toplevel); \
 	failed=0; \
@@ -403,7 +393,7 @@ mutate: $(GEN_STAMP) copy-skills
 	if [ "$$failed" = "1" ]; then exit 1; fi
 
 ## mutate-diff: Mutation testing on changed code only (fast, for PRs)
-mutate-diff: $(GEN_STAMP) copy-skills
+mutate-diff: $(GEN_STAMP)
 	@mkdir -p $(MUTATE_DIR)
 	@root=$$(git rev-parse --show-toplevel); \
 	for mod in $(MODULES); do \
@@ -489,13 +479,13 @@ define run-mutate-module
 	done
 endef
 
-mutate-bossalib: copy-skills
+mutate-bossalib:
 	$(call run-mutate-module,lib/bossalib,bossalib,$(MUTATE_TIMEOUT))
 
-mutate-boss: copy-skills
+mutate-boss:
 	$(call run-mutate-module,services/boss,boss,$(MUTATE_TIMEOUT))
 
-mutate-bossd: copy-skills
+mutate-bossd:
 	$(call run-mutate-module,services/bossd,bossd,$(MUTATE_TIMEOUT))
 
 ifneq ($(wildcard services/bosso/go.mod),)

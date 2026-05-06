@@ -181,6 +181,10 @@ type NewSessionModel struct {
 	forceBranch         bool
 	confirmingOverwrite bool
 
+	// initialAgent overrides the per-session agent at create time. Empty
+	// means "let the daemon fall back to Settings.DefaultAgent".
+	initialAgent string
+
 	// Streaming create session
 	createStream client.CreateSessionStream
 	setupLines   []string
@@ -207,6 +211,13 @@ func NewNewSessionModel(c client.BossClient, ctx context.Context) NewSessionMode
 		prFilter:    newListFilter(),
 		issueFilter: newListFilter(),
 	}
+}
+
+// SetInitialAgent overrides the agent for the session created by this wizard.
+// Empty means "use Settings.DefaultAgent" — the daemon falls back automatically
+// when the request omits agent_name.
+func (m *NewSessionModel) SetInitialAgent(name string) {
+	m.initialAgent = name
 }
 
 func (m NewSessionModel) Init() tea.Cmd {
@@ -902,6 +913,12 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		RepoId:      repo.Id,
 		BaseBranch:  repo.DefaultBaseBranch,
 		ForceBranch: m.forceBranch,
+	}
+	if m.initialAgent != "" {
+		// Copy to a local so req.AgentName points at request-owned memory,
+		// not the model field (which may be mutated later).
+		agent := m.initialAgent
+		req.AgentName = &agent
 	}
 
 	switch m.selectedType {

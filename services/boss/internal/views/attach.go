@@ -11,16 +11,16 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/google/uuid"
-	"github.com/recurser/boss/internal/claude"
+	"github.com/recurser/boss/internal/agent"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// claudeFinishedMsg signals that the interactive Claude process has exited or
+// agentFinishedMsg signals that the interactive Claude process has exited or
 // the user has detached from it.
-type claudeFinishedMsg struct {
+type agentFinishedMsg struct {
 	err      error
 	detached bool
 }
@@ -44,17 +44,17 @@ type attachErrMsg struct {
 
 // AttachModel launches an interactive Claude Code TUI in the session's worktree.
 type AttachModel struct {
-	client    client.BossClient
-	ctx       context.Context
-	manager   *bosspty.Manager
-	sessionID string
-	resumeID  string // Claude Code session UUID to resume (empty = new chat)
-	claudeID  string // The Claude Code session UUID actually launched
+	client         client.BossClient
+	ctx            context.Context
+	manager        *bosspty.Manager
+	sessionID      string
+	resumeID       string // Claude Code session UUID to resume (empty = new chat)
+	agentSessionID string // The Claude Code session UUID actually launched
 
 	session   *pb.Session
 	launching bool  // true while fetching session
 	returned  bool  // true after claude exits
-	claudeErr error // error from claude process (if any)
+	agentErr  error // error from claude process (if any)
 	detach    bool
 	err       error
 	width     int
@@ -121,11 +121,11 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and the post-#179 "direct exec" replacement quietly lost.
 		resume := m.resumeID != ""
 		if resume {
-			m.claudeID = m.resumeID
+			m.agentSessionID = m.resumeID
 		} else {
-			m.claudeID = uuid.New().String()
+			m.agentSessionID = uuid.New().String()
 		}
-		chat, err := m.client.RecordChat(m.ctx, m.sessionID, m.claudeID, "New chat", resume)
+		chat, err := m.client.RecordChat(m.ctx, m.sessionID, m.agentSessionID, "New chat", resume)
 		if err != nil {
 			m.err = fmt.Errorf("record chat: %w", err)
 			return m, nil
@@ -140,15 +140,15 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// bound to detach-client by the daemon's bindDetachKeys, so the
 		// keystroke detaches the client cleanly and the exec returns 0.
 		// We distinguish "user detached" from "claude exited" in
-		// claudeFinishedMsg by probing tmux has-session afterwards.
-		claudeCmd := exec.Command("tmux", "attach", "-t", tmuxName)
-		claudeCmd.Dir = msg.session.GetWorktreePath()
+		// agentFinishedMsg by probing tmux has-session afterwards.
+		agentCmd := exec.Command("tmux", "attach", "-t", tmuxName)
+		agentCmd.Dir = msg.session.GetWorktreePath()
 
-		m.manager.RegisterSession(m.claudeID, m.sessionID)
-		ptycmd := bosspty.NewPTYCommand(m.manager, m.claudeID, claudeCmd)
+		m.manager.RegisterSession(m.agentSessionID, m.sessionID)
+		ptycmd := bosspty.NewPTYCommand(m.manager, m.agentSessionID, agentCmd)
 
 		if prefillPlan != "" {
-			go prefillClaudeInput(m.ctx, m.manager, m.claudeID, prefillPlan)
+			go prefillClaudeInput(m.ctx, m.manager, m.agentSessionID, prefillPlan)
 		}
 
 		return m, tea.Exec(ptycmd, func(err error) tea.Msg {
@@ -163,10 +163,10 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Both should agree under normal use; a permissive OR means we
 			// never strand a still-alive chat behind an "ended" UI.
 			detached := ptycmd.Detached || tmuxSessionAlive(tmuxName)
-			return claudeFinishedMsg{err: err, detached: detached}
+			return agentFinishedMsg{err: err, detached: detached}
 		})
 
-	case claudeFinishedMsg:
+	case agentFinishedMsg:
 		if msg.detached {
 			// User pressed Ctrl+X or Ctrl+] — process is still running in
 			// the background; drop back to the caller's view.
@@ -174,7 +174,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.returned = true
-		m.claudeErr = msg.err
+		m.agentErr = msg.err
 		// Auto-detach back to home screen.
 		m.detach = true
 		// Best-effort: update chat title from JSONL and report stopped status.
@@ -207,18 +207,18 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // updateChatTitle reads the Claude JSONL file and updates the chat title via RPC.
 // If the session was never used (no real user message), it deletes the orphan record.
 func (m AttachModel) updateChatTitle() tea.Cmd {
-	if m.claudeID == "" || m.session == nil {
+	if m.agentSessionID == "" || m.session == nil {
 		return nil
 	}
-	claudeID := m.claudeID
+	agentSessionID := m.agentSessionID
 	worktreePath := m.session.GetWorktreePath()
 	return func() tea.Msg {
-		title := claude.ChatTitle(worktreePath, claudeID)
+		title := agent.ChatTitle(worktreePath, agentSessionID)
 		if title != "" {
-			_ = m.client.UpdateChatTitle(m.ctx, claudeID, title)
+			_ = m.client.UpdateChatTitle(m.ctx, agentSessionID, title)
 		} else {
 			// No real user message — session was never used. Remove the orphan.
-			_ = m.client.DeleteChat(m.ctx, claudeID)
+			_ = m.client.DeleteChat(m.ctx, agentSessionID)
 		}
 		return chatTitleUpdatedMsg{}
 	}
@@ -227,15 +227,15 @@ func (m AttachModel) updateChatTitle() tea.Cmd {
 // reportStopped sends a fire-and-forget stopped status to the daemon so other
 // clients see the change immediately.
 func (m AttachModel) reportStopped() tea.Cmd {
-	if m.claudeID == "" {
+	if m.agentSessionID == "" {
 		return nil
 	}
-	claudeID := m.claudeID
+	agentSessionID := m.agentSessionID
 	return func() tea.Msg {
 		_ = m.client.ReportChatStatus(m.ctx, []*pb.ChatStatusReport{{
-			ClaudeId:     claudeID,
-			Status:       pb.ChatStatus_CHAT_STATUS_STOPPED,
-			LastOutputAt: timestamppb.Now(),
+			AgentSessionId: agentSessionID,
+			Status:         pb.ChatStatus_CHAT_STATUS_STOPPED,
+			LastOutputAt:   timestamppb.Now(),
 		}})
 		return nil
 	}
@@ -259,7 +259,7 @@ func tmuxSessionAlive(name string) bool {
 // is a UX degradation, not a reason to abort the attach.
 //
 // Flow:
-//  1. Wait for the bosspty.Manager to register the *Process for claudeID
+//  1. Wait for the bosspty.Manager to register the *Process for agentSessionID
 //     (tea.Exec calls Manager.GetOrStart on its own goroutine, so there is a
 //     small race window between this goroutine starting and the entry being
 //     in the map).
@@ -272,7 +272,7 @@ func tmuxSessionAlive(name string) bool {
 //  3. Write \x1b[200~ + plan + \x1b[201~ to the PTY. Bracketed paste tells
 //     Claude "treat this as paste, not keystrokes," so it lands in the input
 //     box without auto-submitting.
-func prefillClaudeInput(ctx context.Context, manager *bosspty.Manager, claudeID, plan string) {
+func prefillClaudeInput(ctx context.Context, manager *bosspty.Manager, agentSessionID, plan string) {
 	const (
 		readyMarker      = "❯"
 		recentBufferSize = 4096
@@ -285,7 +285,7 @@ func prefillClaudeInput(ctx context.Context, manager *bosspty.Manager, claudeID,
 	var proc *bosspty.Process
 	procDeadline := time.Now().Add(processWait)
 	for {
-		if p, ok := manager.Get(claudeID); ok {
+		if p, ok := manager.Get(agentSessionID); ok {
 			proc = p
 			break
 		}
@@ -327,8 +327,8 @@ func (m AttachModel) Detached() bool { return m.detach }
 // SessionID returns the session ID for navigation after detach.
 func (m AttachModel) SessionID() string { return m.sessionID }
 
-// ClaudeID returns the Claude Code session UUID for navigation after detach.
-func (m AttachModel) ClaudeID() string { return m.claudeID }
+// AgentSessionID returns the agent session UUID for navigation after detach.
+func (m AttachModel) AgentSessionID() string { return m.agentSessionID }
 
 func (m AttachModel) View() tea.View {
 	if m.err != nil {
@@ -351,8 +351,8 @@ func (m AttachModel) View() tea.View {
 
 	if m.returned {
 		var b strings.Builder
-		if m.claudeErr != nil {
-			b.WriteString(renderError(fmt.Sprintf("Claude Code exited with error: %v", m.claudeErr), m.width))
+		if m.agentErr != nil {
+			b.WriteString(renderError(fmt.Sprintf("Claude Code exited with error: %v", m.agentErr), m.width))
 		} else {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Claude Code session ended."))
 		}

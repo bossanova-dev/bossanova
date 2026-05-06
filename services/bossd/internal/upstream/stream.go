@@ -257,6 +257,13 @@ type SessionCommandHandler interface {
 	Stop(ctx context.Context, sessionID string) (*pb.Session, error)
 	Pause(ctx context.Context, sessionID string) (*pb.Session, error)
 	Resume(ctx context.Context, sessionID string) (*pb.Session, error)
+	// WakeChat brings a stopped chat's tmux+claude back to life. Returns
+	// the chosen outcome (already_live / resumed / fresh_fallback) and the
+	// persisted tmux session name. errorCode classifies any failure so
+	// the dispatcher can attach a typed CommandResult.error_code (the
+	// proxy maps it back to the right ConnectRPC code without parsing
+	// the human-readable error string).
+	WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (outcome pb.WakeChatResult_Outcome, tmuxName string, errorCode pb.CommandResult_ErrorCode, err error)
 }
 
 // WebhookDispatcher forwards a webhook payload to whatever in-daemon

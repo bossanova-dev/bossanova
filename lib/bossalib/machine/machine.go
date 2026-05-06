@@ -15,7 +15,7 @@ type State int
 
 const (
 	CreatingWorktree State = iota + 1
-	StartingClaude
+	StartingAgent
 	PushingBranch
 	OpeningDraftPR
 	ImplementingPlan
@@ -34,7 +34,7 @@ type Event int
 
 const (
 	WorktreeCreated Event = iota + 1
-	ClaudeStarted
+	AgentStarted
 	BranchPushed
 	PROpened
 	PlanComplete
@@ -172,11 +172,11 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 	// --- Happy path: setup states ---
 
 	sm.Configure(CreatingWorktree).
-		Permit(WorktreeCreated, StartingClaude).
+		Permit(WorktreeCreated, StartingAgent).
 		Permit(PRClosed, Closed)
 
-	sm.Configure(StartingClaude).
-		Permit(ClaudeStarted, ImplementingPlan).
+	sm.Configure(StartingAgent).
+		Permit(AgentStarted, ImplementingPlan).
 		Permit(PRClosed, Closed)
 
 	sm.Configure(ImplementingPlan).
@@ -290,8 +290,8 @@ func (s State) String() string {
 	switch s {
 	case CreatingWorktree:
 		return "creating_worktree"
-	case StartingClaude:
-		return "starting_claude"
+	case StartingAgent:
+		return "starting_agent"
 	case PushingBranch:
 		return "pushing_branch"
 	case OpeningDraftPR:
@@ -323,8 +323,8 @@ func (e Event) String() string {
 	switch e {
 	case WorktreeCreated:
 		return "worktree_created"
-	case ClaudeStarted:
-		return "claude_started"
+	case AgentStarted:
+		return "agent_started"
 	case BranchPushed:
 		return "branch_pushed"
 	case PROpened:

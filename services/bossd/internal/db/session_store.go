@@ -47,12 +47,16 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 		return nil, fmt.Errorf("new session id: %w", err)
 	}
 	now := sqlutil.TimeNow()
+	agentName := params.AgentName
+	if agentName == "" {
+		agentName = "claude"
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, agent_name, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Title, params.Plan,
 		params.WorktreePath, params.BranchName, params.BaseBranch,
-		int(machine.CreatingWorktree), params.PRNumber, params.PRURL,
+		int(machine.CreatingWorktree), agentName, params.PRNumber, params.PRURL,
 		params.TrackerID, params.TrackerURL, now, now,
 	)
 	if err != nil {
@@ -182,9 +186,9 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "branch_name = ?")
 		args = append(args, *params.BranchName)
 	}
-	if params.ClaudeSessionID != nil {
-		sets = append(sets, "claude_session_id = ?")
-		args = append(args, *params.ClaudeSessionID)
+	if params.AgentSessionID != nil {
+		sets = append(sets, "agent_session_id = ?")
+		args = append(args, *params.AgentSessionID)
 	}
 	if params.PRNumber != nil {
 		sets = append(sets, "pr_number = ?")
@@ -326,7 +330,7 @@ func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM workflows WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete workflows: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM claude_chats WHERE session_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chats WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete claude chats: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE session_id = ?`, id); err != nil {
@@ -366,9 +370,9 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 }
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
-	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
+	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.display_spinner
+	s.display_label, s.display_intent, s.display_spinner, s.agent_name
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -376,9 +380,9 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 // LEFT JOIN keeps sessions whose repo was concurrently deleted — the row
 // still appears with an empty display name.
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
-	s.state, s.claude_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
+	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.display_spinner,
+	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
 	COALESCE(r.display_name, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -391,11 +395,11 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 	var repoDisplayName string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
-		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
+		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
-		&sess.DisplayLabel, &displayIntent, &displaySpinner,
+		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
 		&repoDisplayName)
 	if err != nil {
 		return nil, "", err
@@ -426,11 +430,11 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var displaySpinner int
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
-		&state, &sess.ClaudeSessionID, &sess.PRNumber, &sess.PRURL,
+		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
-		&sess.DisplayLabel, &displayIntent, &displaySpinner)
+		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName)
 	if err != nil {
 		return nil, err
 	}

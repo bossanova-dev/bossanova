@@ -533,12 +533,12 @@ func (m *MockDaemon) DeleteChat(_ context.Context, req *connect.Request[pb.Delet
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for i, c := range m.chats {
-		if c.ClaudeId == req.Msg.ClaudeId {
+		if c.AgentSessionId == req.Msg.AgentSessionId {
 			m.chats = append(m.chats[:i], m.chats[i+1:]...)
 			return connect.NewResponse(&pb.DeleteChatResponse{}), nil
 		}
 	}
-	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat %q not found", req.Msg.ClaudeId))
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat %q not found", req.Msg.AgentSessionId))
 }
 
 func (m *MockDaemon) UpdateChatTitle(_ context.Context, _ *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
@@ -691,6 +691,10 @@ func (m *MockDaemon) MergeSession(context.Context, *connect.Request[pb.MergeSess
 }
 
 func (m *MockDaemon) RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+func (m *MockDaemon) WakeChat(context.Context, *connect.Request[pb.WakeChatRequest]) (*connect.Response[pb.WakeChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 

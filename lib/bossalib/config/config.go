@@ -162,12 +162,61 @@ func hasPlatformSuffix(name string) bool {
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
-	DangerouslySkipPermissions bool           `json:"dangerously_skip_permissions"`
-	WorktreeBaseDir            string         `json:"worktree_base_dir"`
-	SkillsDeclined             bool           `json:"skills_declined,omitempty"`
-	PollIntervalSeconds        int            `json:"poll_interval_seconds,omitempty"`
-	Plugins                    []PluginConfig `json:"plugins,omitempty"`
-	Repair                     RepairConfig   `json:"repair,omitzero"`
+	WorktreeBaseDir     string         `json:"worktree_base_dir"`
+	DefaultAgent        string         `json:"default_agent,omitempty"`
+	SkillsDeclined      bool           `json:"skills_declined,omitempty"`
+	PollIntervalSeconds int            `json:"poll_interval_seconds,omitempty"`
+	Plugins             []PluginConfig `json:"plugins,omitempty"`
+	Repair              RepairConfig   `json:"repair,omitzero"`
+}
+
+// PluginConfigBool reads a boolean-valued entry from a named plugin's
+// Config map. Returns false when the plugin isn't configured, the key is
+// absent, or the value isn't "true".
+func PluginConfigBool(s *Settings, pluginName, key string) bool {
+	if s == nil {
+		return false
+	}
+	for _, p := range s.Plugins {
+		if p.Name == pluginName {
+			return p.Config[key] == "true"
+		}
+	}
+	return false
+}
+
+// SetPluginConfigBool writes a boolean-valued entry into a named plugin's
+// Config map. When value is true it stores "true"; when false it removes
+// the key entirely so the JSON stays clean. If the named plugin isn't yet
+// in s.Plugins, an entry is appended so the toggle isn't silently lost
+// before `boss config init` runs (init later fills in Path/Enabled, while
+// the Config map is preserved by name).
+func SetPluginConfigBool(s *Settings, pluginName, key string, value bool) {
+	if s == nil {
+		return
+	}
+	for i := range s.Plugins {
+		if s.Plugins[i].Name != pluginName {
+			continue
+		}
+		if value {
+			if s.Plugins[i].Config == nil {
+				s.Plugins[i].Config = map[string]string{}
+			}
+			s.Plugins[i].Config[key] = "true"
+		} else if s.Plugins[i].Config != nil {
+			delete(s.Plugins[i].Config, key)
+		}
+		return
+	}
+	if !value {
+		// Removing a key from a not-yet-configured plugin is a no-op.
+		return
+	}
+	s.Plugins = append(s.Plugins, PluginConfig{
+		Name:   pluginName,
+		Config: map[string]string{key: "true"},
+	})
 }
 
 // DisplayPollInterval returns the interval for polling PR display status.
@@ -183,8 +232,8 @@ func (s Settings) DisplayPollInterval() time.Duration {
 func DefaultSettings() Settings {
 	home, _ := os.UserHomeDir()
 	return Settings{
-		DangerouslySkipPermissions: false,
-		WorktreeBaseDir:            filepath.Join(home, ".bossanova", "worktrees"),
+		WorktreeBaseDir: filepath.Join(home, ".bossanova", "worktrees"),
+		DefaultAgent:    "claude",
 	}
 }
 
@@ -226,6 +275,14 @@ func LoadFrom(path string) (Settings, error) {
 	s := DefaultSettings()
 	if err := json.Unmarshal(data, &s); err != nil {
 		return DefaultSettings(), err
+	}
+	// Backfill DefaultAgent if the file explicitly sets it to "" — that's the
+	// only case this branch covers, since files that omit the key entirely
+	// already inherit "claude" from the DefaultSettings() seed used as the
+	// unmarshal target above. Downstream code can't tolerate an empty agent
+	// name, so normalise both shapes to "claude".
+	if s.DefaultAgent == "" {
+		s.DefaultAgent = "claude"
 	}
 	return s, nil
 }

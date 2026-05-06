@@ -17,7 +17,7 @@ const activeThreshold = 5 * time.Second
 type Manager struct {
 	mu        sync.Mutex
 	processes map[string]*Process
-	sessions  map[string]string // claudeID → sessionID
+	sessions  map[string]string // agentSessionID → sessionID
 }
 
 // NewManager creates a new process manager.
@@ -29,10 +29,10 @@ func NewManager() *Manager {
 }
 
 // RegisterSession associates a Claude process ID with a session ID.
-func (m *Manager) RegisterSession(claudeID, sessionID string) {
+func (m *Manager) RegisterSession(agentSessionID, sessionID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessions[claudeID] = sessionID
+	m.sessions[agentSessionID] = sessionID
 }
 
 // Status constants returned by SessionStatus and ProcessStatus.
@@ -51,11 +51,11 @@ func (m *Manager) SessionStatus(sessionID string) string {
 	defer m.mu.Unlock()
 
 	best := StatusStopped
-	for claudeID, sid := range m.sessions {
+	for agentSessionID, sid := range m.sessions {
 		if sid != sessionID {
 			continue
 		}
-		p, ok := m.processes[claudeID]
+		p, ok := m.processes[agentSessionID]
 		if !ok {
 			continue
 		}
@@ -145,9 +145,9 @@ func (m *Manager) IsRunning(id string) bool {
 }
 
 // ProcessStatus returns the status for a specific claude process.
-func (m *Manager) ProcessStatus(claudeID string) string {
+func (m *Manager) ProcessStatus(agentSessionID string) string {
 	m.mu.Lock()
-	p, ok := m.processes[claudeID]
+	p, ok := m.processes[agentSessionID]
 	m.mu.Unlock()
 	if !ok {
 		return StatusStopped

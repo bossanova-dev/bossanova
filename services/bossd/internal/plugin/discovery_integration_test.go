@@ -14,7 +14,6 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/migrate"
-	"github.com/recurser/bossd/internal/claude"
 	"github.com/recurser/bossd/internal/db"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
@@ -83,13 +82,12 @@ func newDiscoveryHost(t *testing.T) *discoveryHost {
 
 	repos := db.NewRepoStore(sqlDB)
 	sessions := db.NewSessionStore(sqlDB)
-	chats := db.NewClaudeChatStore(sqlDB)
+	chats := db.NewAgentChatStore(sqlDB)
 
 	provider := &testVCSProvider{}
 	bus := eventbus.New(zerolog.Nop())
 	host := pluginpkg.New(bus, provider, zerolog.Nop())
 	host.SetSessionDeps(repos, sessions, chats, status.NewDisplayTracker(), status.NewTracker())
-	host.SetClaudeRunner(claude.NewRunner(zerolog.Nop()))
 
 	// Cleanup runs LIFO: register bus.Close first so host.Stop (registered
 	// second) runs before the bus is torn down — host depends on bus.

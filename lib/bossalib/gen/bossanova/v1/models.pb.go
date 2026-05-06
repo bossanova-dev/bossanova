@@ -28,7 +28,7 @@ type SessionState int32
 const (
 	SessionState_SESSION_STATE_UNSPECIFIED       SessionState = 0
 	SessionState_SESSION_STATE_CREATING_WORKTREE SessionState = 1
-	SessionState_SESSION_STATE_STARTING_CLAUDE   SessionState = 2
+	SessionState_SESSION_STATE_STARTING_AGENT    SessionState = 2
 	SessionState_SESSION_STATE_PUSHING_BRANCH    SessionState = 3
 	SessionState_SESSION_STATE_OPENING_DRAFT_PR  SessionState = 4
 	SessionState_SESSION_STATE_IMPLEMENTING_PLAN SessionState = 5
@@ -47,7 +47,7 @@ var (
 	SessionState_name = map[int32]string{
 		0:  "SESSION_STATE_UNSPECIFIED",
 		1:  "SESSION_STATE_CREATING_WORKTREE",
-		2:  "SESSION_STATE_STARTING_CLAUDE",
+		2:  "SESSION_STATE_STARTING_AGENT",
 		3:  "SESSION_STATE_PUSHING_BRANCH",
 		4:  "SESSION_STATE_OPENING_DRAFT_PR",
 		5:  "SESSION_STATE_IMPLEMENTING_PLAN",
@@ -63,7 +63,7 @@ var (
 	SessionState_value = map[string]int32{
 		"SESSION_STATE_UNSPECIFIED":       0,
 		"SESSION_STATE_CREATING_WORKTREE": 1,
-		"SESSION_STATE_STARTING_CLAUDE":   2,
+		"SESSION_STATE_STARTING_AGENT":    2,
 		"SESSION_STATE_PUSHING_BRANCH":    3,
 		"SESSION_STATE_OPENING_DRAFT_PR":  4,
 		"SESSION_STATE_IMPLEMENTING_PLAN": 5,
@@ -111,7 +111,7 @@ type SessionEvent int32
 const (
 	SessionEvent_SESSION_EVENT_UNSPECIFIED        SessionEvent = 0
 	SessionEvent_SESSION_EVENT_WORKTREE_CREATED   SessionEvent = 1
-	SessionEvent_SESSION_EVENT_CLAUDE_STARTED     SessionEvent = 2
+	SessionEvent_SESSION_EVENT_AGENT_STARTED      SessionEvent = 2
 	SessionEvent_SESSION_EVENT_BRANCH_PUSHED      SessionEvent = 3
 	SessionEvent_SESSION_EVENT_PR_OPENED          SessionEvent = 4
 	SessionEvent_SESSION_EVENT_PLAN_COMPLETE      SessionEvent = 5
@@ -133,7 +133,7 @@ var (
 	SessionEvent_name = map[int32]string{
 		0:  "SESSION_EVENT_UNSPECIFIED",
 		1:  "SESSION_EVENT_WORKTREE_CREATED",
-		2:  "SESSION_EVENT_CLAUDE_STARTED",
+		2:  "SESSION_EVENT_AGENT_STARTED",
 		3:  "SESSION_EVENT_BRANCH_PUSHED",
 		4:  "SESSION_EVENT_PR_OPENED",
 		5:  "SESSION_EVENT_PLAN_COMPLETE",
@@ -152,7 +152,7 @@ var (
 	SessionEvent_value = map[string]int32{
 		"SESSION_EVENT_UNSPECIFIED":        0,
 		"SESSION_EVENT_WORKTREE_CREATED":   1,
-		"SESSION_EVENT_CLAUDE_STARTED":     2,
+		"SESSION_EVENT_AGENT_STARTED":      2,
 		"SESSION_EVENT_BRANCH_PUSHED":      3,
 		"SESSION_EVENT_PR_OPENED":          4,
 		"SESSION_EVENT_PLAN_COMPLETE":      5,
@@ -1163,7 +1163,7 @@ func (x *Repo) GetLinearApiKey() string {
 	return ""
 }
 
-// Session represents a Claude coding session.
+// Session represents a coding-agent session.
 type Session struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	Id                string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1174,7 +1174,7 @@ type Session struct {
 	BranchName        string                 `protobuf:"bytes,6,opt,name=branch_name,json=branchName,proto3" json:"branch_name,omitempty"`
 	BaseBranch        string                 `protobuf:"bytes,7,opt,name=base_branch,json=baseBranch,proto3" json:"base_branch,omitempty"`
 	State             SessionState           `protobuf:"varint,8,opt,name=state,proto3,enum=bossanova.v1.SessionState" json:"state,omitempty"`
-	ClaudeSessionId   *string                `protobuf:"bytes,9,opt,name=claude_session_id,json=claudeSessionId,proto3,oneof" json:"claude_session_id,omitempty"`
+	AgentSessionId    *string                `protobuf:"bytes,9,opt,name=agent_session_id,json=agentSessionId,proto3,oneof" json:"agent_session_id,omitempty"`
 	PrNumber          *int32                 `protobuf:"varint,10,opt,name=pr_number,json=prNumber,proto3,oneof" json:"pr_number,omitempty"`
 	PrUrl             *string                `protobuf:"bytes,11,opt,name=pr_url,json=prUrl,proto3,oneof" json:"pr_url,omitempty"`
 	LastCheckState    ChecksOverall          `protobuf:"varint,12,opt,name=last_check_state,json=lastCheckState,proto3,enum=bossanova.v1.ChecksOverall" json:"last_check_state,omitempty"`
@@ -1220,8 +1220,10 @@ type Session struct {
 	// orchestrator until the transfer protocol completes.
 	TransferringTo   string `protobuf:"bytes,36,opt,name=transferring_to,json=transferringTo,proto3" json:"transferring_to,omitempty"`       // empty if not transferring out
 	TransferringFrom string `protobuf:"bytes,37,opt,name=transferring_from,json=transferringFrom,proto3" json:"transferring_from,omitempty"` // empty if not transferring in
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+	AgentName     string `protobuf:"bytes,38,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1310,9 +1312,9 @@ func (x *Session) GetState() SessionState {
 	return SessionState_SESSION_STATE_UNSPECIFIED
 }
 
-func (x *Session) GetClaudeSessionId() string {
-	if x != nil && x.ClaudeSessionId != nil {
-		return *x.ClaudeSessionId
+func (x *Session) GetAgentSessionId() string {
+	if x != nil && x.AgentSessionId != nil {
+		return *x.AgentSessionId
 	}
 	return ""
 }
@@ -1509,6 +1511,13 @@ func (x *Session) GetTransferringTo() string {
 func (x *Session) GetTransferringFrom() string {
 	if x != nil {
 		return x.TransferringFrom
+	}
+	return ""
+}
+
+func (x *Session) GetAgentName() string {
+	if x != nil {
+		return x.AgentName
 	}
 	return ""
 }
@@ -2646,13 +2655,15 @@ type ClaudeChat struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Id              string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	SessionId       string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	ClaudeId        string                 `protobuf:"bytes,3,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"` // Claude Code session UUID
-	Title           string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`                       // First user prompt or "New chat"
-	DaemonId        string                 `protobuf:"bytes,5,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"` // Originating daemon (empty = local)
+	AgentSessionId  string                 `protobuf:"bytes,3,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"` // Agent session UUID
+	Title           string                 `protobuf:"bytes,4,opt,name=title,proto3" json:"title,omitempty"`                                           // First user prompt or "New chat"
+	DaemonId        string                 `protobuf:"bytes,5,opt,name=daemon_id,json=daemonId,proto3" json:"daemon_id,omitempty"`                     // Originating daemon (empty = local)
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	TmuxSessionName string                 `protobuf:"bytes,7,opt,name=tmux_session_name,json=tmuxSessionName,proto3" json:"tmux_session_name,omitempty"` // Empty if no tmux session is hosting this chat
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+	AgentName     string `protobuf:"bytes,8,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClaudeChat) Reset() {
@@ -2699,9 +2710,9 @@ func (x *ClaudeChat) GetSessionId() string {
 	return ""
 }
 
-func (x *ClaudeChat) GetClaudeId() string {
+func (x *ClaudeChat) GetAgentSessionId() string {
 	if x != nil {
-		return x.ClaudeId
+		return x.AgentSessionId
 	}
 	return ""
 }
@@ -2730,6 +2741,13 @@ func (x *ClaudeChat) GetCreatedAt() *timestamppb.Timestamp {
 func (x *ClaudeChat) GetTmuxSessionName() string {
 	if x != nil {
 		return x.TmuxSessionName
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetAgentName() string {
+	if x != nil {
+		return x.AgentName
 	}
 	return ""
 }
@@ -2917,7 +2935,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\xe2\x0e\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\xfe\x0e\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -2928,8 +2946,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"branchName\x12\x1f\n" +
 	"\vbase_branch\x18\a \x01(\tR\n" +
 	"baseBranch\x120\n" +
-	"\x05state\x18\b \x01(\x0e2\x1a.bossanova.v1.SessionStateR\x05state\x12/\n" +
-	"\x11claude_session_id\x18\t \x01(\tH\x00R\x0fclaudeSessionId\x88\x01\x01\x12 \n" +
+	"\x05state\x18\b \x01(\x0e2\x1a.bossanova.v1.SessionStateR\x05state\x12-\n" +
+	"\x10agent_session_id\x18\t \x01(\tH\x00R\x0eagentSessionId\x88\x01\x01\x12 \n" +
 	"\tpr_number\x18\n" +
 	" \x01(\x05H\x01R\bprNumber\x88\x01\x01\x12\x1a\n" +
 	"\x06pr_url\x18\v \x01(\tH\x02R\x05prUrl\x88\x01\x01\x12E\n" +
@@ -2963,8 +2981,10 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0edisplay_intent\x18\" \x01(\x0e2\x1b.bossanova.v1.DisplayIntentR\rdisplayIntent\x12'\n" +
 	"\x0fdisplay_spinner\x18# \x01(\bR\x0edisplaySpinner\x12'\n" +
 	"\x0ftransferring_to\x18$ \x01(\tR\x0etransferringTo\x12+\n" +
-	"\x11transferring_from\x18% \x01(\tR\x10transferringFromB\x14\n" +
-	"\x12_claude_session_idB\f\n" +
+	"\x11transferring_from\x18% \x01(\tR\x10transferringFrom\x12\x1d\n" +
+	"\n" +
+	"agent_name\x18& \x01(\tR\tagentNameB\x13\n" +
+	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
 	"\a_pr_urlB\x11\n" +
@@ -3068,18 +3088,20 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fneeds_attention\x18\x01 \x01(\bR\x0eneedsAttention\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.bossanova.v1.AttentionReasonR\x06reason\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x120\n" +
-	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xf2\x01\n" +
+	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\x9e\x02\n" +
 	"\n" +
 	"ClaudeChat\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1b\n" +
-	"\tclaude_id\x18\x03 \x01(\tR\bclaudeId\x12\x14\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12(\n" +
+	"\x10agent_session_id\x18\x03 \x01(\tR\x0eagentSessionId\x12\x14\n" +
 	"\x05title\x18\x04 \x01(\tR\x05title\x12\x1b\n" +
 	"\tdaemon_id\x18\x05 \x01(\tR\bdaemonId\x129\n" +
 	"\n" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12*\n" +
-	"\x11tmux_session_name\x18\a \x01(\tR\x0ftmuxSessionName\"\xbc\x04\n" +
+	"\x11tmux_session_name\x18\a \x01(\tR\x0ftmuxSessionName\x12\x1d\n" +
+	"\n" +
+	"agent_name\x18\b \x01(\tR\tagentName\"\xbc\x04\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +
@@ -3097,11 +3119,11 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12C\n" +
-	"\x0flast_run_status\x18\x0e \x01(\x0e2\x1b.bossanova.v1.CronJobStatusR\rlastRunStatus*\xd4\x03\n" +
+	"\x0flast_run_status\x18\x0e \x01(\x0e2\x1b.bossanova.v1.CronJobStatusR\rlastRunStatus*\xd3\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
-	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12!\n" +
-	"\x1dSESSION_STATE_STARTING_CLAUDE\x10\x02\x12 \n" +
+	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12 \n" +
+	"\x1cSESSION_STATE_STARTING_AGENT\x10\x02\x12 \n" +
 	"\x1cSESSION_STATE_PUSHING_BRANCH\x10\x03\x12\"\n" +
 	"\x1eSESSION_STATE_OPENING_DRAFT_PR\x10\x04\x12#\n" +
 	"\x1fSESSION_STATE_IMPLEMENTING_PLAN\x10\x05\x12!\n" +
@@ -3113,11 +3135,11 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x12\x18\n" +
 	"\x14SESSION_STATE_MERGED\x10\v\x12\x18\n" +
 	"\x14SESSION_STATE_CLOSED\x10\f\x12\x1c\n" +
-	"\x18SESSION_STATE_FINALIZING\x10\r*\xaf\x04\n" +
+	"\x18SESSION_STATE_FINALIZING\x10\r*\xae\x04\n" +
 	"\fSessionEvent\x12\x1d\n" +
 	"\x19SESSION_EVENT_UNSPECIFIED\x10\x00\x12\"\n" +
-	"\x1eSESSION_EVENT_WORKTREE_CREATED\x10\x01\x12 \n" +
-	"\x1cSESSION_EVENT_CLAUDE_STARTED\x10\x02\x12\x1f\n" +
+	"\x1eSESSION_EVENT_WORKTREE_CREATED\x10\x01\x12\x1f\n" +
+	"\x1bSESSION_EVENT_AGENT_STARTED\x10\x02\x12\x1f\n" +
 	"\x1bSESSION_EVENT_BRANCH_PUSHED\x10\x03\x12\x1b\n" +
 	"\x17SESSION_EVENT_PR_OPENED\x10\x04\x12\x1f\n" +
 	"\x1bSESSION_EVENT_PLAN_COMPLETE\x10\x05\x12\x1f\n" +

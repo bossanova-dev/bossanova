@@ -139,7 +139,7 @@ func TestBuildSnapshot_ChatMetadataHasPreviewNotFullBody(t *testing.T) {
 	chat := &pb.ClaudeChatMetadata{
 		Id:                 "c1",
 		SessionId:          "s1",
-		ClaudeId:           "claude-1",
+		AgentSessionId:     "claude-1",
 		LastMessagePreview: clamped,
 	}
 
@@ -201,7 +201,7 @@ func TestBuildSnapshot_SizeUnder100KBWithRealisticLoad(t *testing.T) {
 		chats[i] = &pb.ClaudeChatMetadata{
 			Id:                 fmt.Sprintf("c-%d", i),
 			SessionId:          fmt.Sprintf("s-%d", i%numSessions),
-			ClaudeId:           fmt.Sprintf("claude-%d", i),
+			AgentSessionId:     fmt.Sprintf("claude-%d", i),
 			Title:              "a chat",
 			DaemonId:           "daemon-1",
 			CreatedAt:          now,
@@ -213,9 +213,9 @@ func TestBuildSnapshot_SizeUnder100KBWithRealisticLoad(t *testing.T) {
 	statuses := make([]*pb.ChatStatusEntry, totalChats)
 	for i := range statuses {
 		statuses[i] = &pb.ChatStatusEntry{
-			ClaudeId:     fmt.Sprintf("claude-%d", i),
-			Status:       pb.ChatStatus_CHAT_STATUS_WORKING,
-			LastOutputAt: now,
+			AgentSessionId: fmt.Sprintf("claude-%d", i),
+			Status:         pb.ChatStatus_CHAT_STATUS_WORKING,
+			LastOutputAt:   now,
 		}
 	}
 

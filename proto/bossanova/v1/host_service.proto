@@ -36,18 +36,19 @@ service HostService {
   // SetRepairStatus sets or clears the is_repairing flag for a session.
   rpc SetRepairStatus(SetRepairStatusRequest) returns (SetRepairStatusResponse);
 
-  // --- Repair Execution (called by repair plugin) ---
+  // --- Agent Execution (called by repair plugin) ---
 
-  // StartClaudeRun starts a Claude process in the worktree of the given
-  // session, with the given prompt as the initial message. Returns a
-  // claude_id that can be used with WaitClaudeRun and the existing
-  // attach RPCs. Enforces one active Claude run per session (returns
-  // AlreadyExists if a run is already underway).
-  rpc StartClaudeRun(StartClaudeRunRequest) returns (StartClaudeRunResponse);
+  // StartAgentRun spawns an agent run for the given session. The daemon
+  // resolves the worktree path and bossd-owned log path internally and
+  // forwards to the loaded AgentRunner plugin. Returns the resolved
+  // session ID. Names use the "Host" suffix to avoid clashing with
+  // AgentRunnerService.StartRun's StartAgentRunRequest in plugin.proto.
+  rpc StartAgentRun(StartAgentRunHostRequest) returns (StartAgentRunHostResponse);
 
-  // WaitClaudeRun blocks until the Claude process identified by claude_id
-  // exits. Returns the process's exit error message (empty on clean exit).
-  rpc WaitClaudeRun(WaitClaudeRunRequest) returns (WaitClaudeRunResponse);
+  // WaitAgentRun blocks until the named agent run exits. Returns the exit
+  // error message (empty on clean exit).
+  rpc WaitAgentRun(WaitAgentRunHostRequest) returns (WaitAgentRunHostResponse);
+
 }
 
 // --- ListOpenPRs ---
@@ -145,23 +146,29 @@ message SetRepairStatusRequest {
 
 message SetRepairStatusResponse {}
 
-// --- Repair Execution Messages ---
+// --- StartAgentRun ---
 
-message StartClaudeRunRequest {
+message StartAgentRunHostRequest {
+  // Session ID whose worktree should host the run.
   string session_id = 1;
+  // Prompt to feed the agent.
   string prompt = 2;
 }
 
-message StartClaudeRunResponse {
-  string claude_id = 1;
+message StartAgentRunHostResponse {
+  // Resolved session ID returned by the loaded AgentRunner plugin.
+  string agent_session_id = 1;
 }
 
-message WaitClaudeRunRequest {
-  string claude_id = 1;
+// --- WaitAgentRun ---
+
+message WaitAgentRunHostRequest {
+  // Session ID returned from StartAgentRun (the agent's session ID).
+  string agent_session_id = 1;
 }
 
-message WaitClaudeRunResponse {
-  // Empty on clean exit. Non-empty contains the runner's exit error
-  // (eg. non-zero exit code, killed by signal, etc.).
+message WaitAgentRunHostResponse {
+  // Empty on clean exit, otherwise the agent's exit error string.
   string exit_error = 1;
 }
+

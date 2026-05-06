@@ -2533,6 +2533,878 @@ func (*NotifyStatusChangeResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{43}
 }
 
+type AgentRunnerServiceGetInfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentRunnerServiceGetInfoRequest) Reset() {
+	*x = AgentRunnerServiceGetInfoRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentRunnerServiceGetInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentRunnerServiceGetInfoRequest) ProtoMessage() {}
+
+func (x *AgentRunnerServiceGetInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentRunnerServiceGetInfoRequest.ProtoReflect.Descriptor instead.
+func (*AgentRunnerServiceGetInfoRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{44}
+}
+
+type AgentRunnerServiceGetInfoResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Info          *PluginInfo            `protobuf:"bytes,1,opt,name=info,proto3" json:"info,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentRunnerServiceGetInfoResponse) Reset() {
+	*x = AgentRunnerServiceGetInfoResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentRunnerServiceGetInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentRunnerServiceGetInfoResponse) ProtoMessage() {}
+
+func (x *AgentRunnerServiceGetInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentRunnerServiceGetInfoResponse.ProtoReflect.Descriptor instead.
+func (*AgentRunnerServiceGetInfoResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *AgentRunnerServiceGetInfoResponse) GetInfo() *PluginInfo {
+	if x != nil {
+		return x.Info
+	}
+	return nil
+}
+
+type StartAgentRunRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkDir       string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	Plan          string                 `protobuf:"bytes,2,opt,name=plan,proto3" json:"plan,omitempty"`
+	ResumeId      *string                `protobuf:"bytes,3,opt,name=resume_id,json=resumeId,proto3,oneof" json:"resume_id,omitempty"`
+	SessionId     string                 `protobuf:"bytes,4,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"` // empty = plugin generates
+	LogPath       string                 `protobuf:"bytes,5,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"`       // bossd-owned, openat(O_NOFOLLOW)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartAgentRunRequest) Reset() {
+	*x = StartAgentRunRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartAgentRunRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartAgentRunRequest) ProtoMessage() {}
+
+func (x *StartAgentRunRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartAgentRunRequest.ProtoReflect.Descriptor instead.
+func (*StartAgentRunRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *StartAgentRunRequest) GetWorkDir() string {
+	if x != nil {
+		return x.WorkDir
+	}
+	return ""
+}
+
+func (x *StartAgentRunRequest) GetPlan() string {
+	if x != nil {
+		return x.Plan
+	}
+	return ""
+}
+
+func (x *StartAgentRunRequest) GetResumeId() string {
+	if x != nil && x.ResumeId != nil {
+		return *x.ResumeId
+	}
+	return ""
+}
+
+func (x *StartAgentRunRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *StartAgentRunRequest) GetLogPath() string {
+	if x != nil {
+		return x.LogPath
+	}
+	return ""
+}
+
+type StartAgentRunResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"` // resolved session ID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartAgentRunResponse) Reset() {
+	*x = StartAgentRunResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartAgentRunResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartAgentRunResponse) ProtoMessage() {}
+
+func (x *StartAgentRunResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartAgentRunResponse.ProtoReflect.Descriptor instead.
+func (*StartAgentRunResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *StartAgentRunResponse) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type StopAgentRunRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopAgentRunRequest) Reset() {
+	*x = StopAgentRunRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopAgentRunRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopAgentRunRequest) ProtoMessage() {}
+
+func (x *StopAgentRunRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopAgentRunRequest.ProtoReflect.Descriptor instead.
+func (*StopAgentRunRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *StopAgentRunRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type StopAgentRunResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StopAgentRunResponse) Reset() {
+	*x = StopAgentRunResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StopAgentRunResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StopAgentRunResponse) ProtoMessage() {}
+
+func (x *StopAgentRunResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StopAgentRunResponse.ProtoReflect.Descriptor instead.
+func (*StopAgentRunResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{49}
+}
+
+type IsAgentRunningRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IsAgentRunningRequest) Reset() {
+	*x = IsAgentRunningRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IsAgentRunningRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IsAgentRunningRequest) ProtoMessage() {}
+
+func (x *IsAgentRunningRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IsAgentRunningRequest.ProtoReflect.Descriptor instead.
+func (*IsAgentRunningRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *IsAgentRunningRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type IsAgentRunningResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Running       bool                   `protobuf:"varint,1,opt,name=running,proto3" json:"running,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IsAgentRunningResponse) Reset() {
+	*x = IsAgentRunningResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IsAgentRunningResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IsAgentRunningResponse) ProtoMessage() {}
+
+func (x *IsAgentRunningResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IsAgentRunningResponse.ProtoReflect.Descriptor instead.
+func (*IsAgentRunningResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *IsAgentRunningResponse) GetRunning() bool {
+	if x != nil {
+		return x.Running
+	}
+	return false
+}
+
+type AgentExitStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentExitStatusRequest) Reset() {
+	*x = AgentExitStatusRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentExitStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentExitStatusRequest) ProtoMessage() {}
+
+func (x *AgentExitStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentExitStatusRequest.ProtoReflect.Descriptor instead.
+func (*AgentExitStatusRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *AgentExitStatusRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type AgentExitStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IsComplete    bool                   `protobuf:"varint,1,opt,name=is_complete,json=isComplete,proto3" json:"is_complete,omitempty"`
+	ExitError     string                 `protobuf:"bytes,2,opt,name=exit_error,json=exitError,proto3" json:"exit_error,omitempty"` // empty on clean exit
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentExitStatusResponse) Reset() {
+	*x = AgentExitStatusResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentExitStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentExitStatusResponse) ProtoMessage() {}
+
+func (x *AgentExitStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentExitStatusResponse.ProtoReflect.Descriptor instead.
+func (*AgentExitStatusResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *AgentExitStatusResponse) GetIsComplete() bool {
+	if x != nil {
+		return x.IsComplete
+	}
+	return false
+}
+
+func (x *AgentExitStatusResponse) GetExitError() string {
+	if x != nil {
+		return x.ExitError
+	}
+	return ""
+}
+
+type ConfigureFinalizeHookRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkDir       string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	HookToken     string                 `protobuf:"bytes,3,opt,name=hook_token,json=hookToken,proto3" json:"hook_token,omitempty"`
+	HookPort      int32                  `protobuf:"varint,4,opt,name=hook_port,json=hookPort,proto3" json:"hook_port,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigureFinalizeHookRequest) Reset() {
+	*x = ConfigureFinalizeHookRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigureFinalizeHookRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigureFinalizeHookRequest) ProtoMessage() {}
+
+func (x *ConfigureFinalizeHookRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigureFinalizeHookRequest.ProtoReflect.Descriptor instead.
+func (*ConfigureFinalizeHookRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *ConfigureFinalizeHookRequest) GetWorkDir() string {
+	if x != nil {
+		return x.WorkDir
+	}
+	return ""
+}
+
+func (x *ConfigureFinalizeHookRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ConfigureFinalizeHookRequest) GetHookToken() string {
+	if x != nil {
+		return x.HookToken
+	}
+	return ""
+}
+
+func (x *ConfigureFinalizeHookRequest) GetHookPort() int32 {
+	if x != nil {
+		return x.HookPort
+	}
+	return 0
+}
+
+type ConfigureFinalizeHookResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IsSupported   bool                   `protobuf:"varint,1,opt,name=is_supported,json=isSupported,proto3" json:"is_supported,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigureFinalizeHookResponse) Reset() {
+	*x = ConfigureFinalizeHookResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigureFinalizeHookResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigureFinalizeHookResponse) ProtoMessage() {}
+
+func (x *ConfigureFinalizeHookResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigureFinalizeHookResponse.ProtoReflect.Descriptor instead.
+func (*ConfigureFinalizeHookResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *ConfigureFinalizeHookResponse) GetIsSupported() bool {
+	if x != nil {
+		return x.IsSupported
+	}
+	return false
+}
+
+type BuildInteractiveCommandRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Resume        bool                   `protobuf:"varint,2,opt,name=resume,proto3" json:"resume,omitempty"`
+	LogPath       string                 `protobuf:"bytes,3,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"` // argv MUST tee output here
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BuildInteractiveCommandRequest) Reset() {
+	*x = BuildInteractiveCommandRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BuildInteractiveCommandRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BuildInteractiveCommandRequest) ProtoMessage() {}
+
+func (x *BuildInteractiveCommandRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BuildInteractiveCommandRequest.ProtoReflect.Descriptor instead.
+func (*BuildInteractiveCommandRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *BuildInteractiveCommandRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *BuildInteractiveCommandRequest) GetResume() bool {
+	if x != nil {
+		return x.Resume
+	}
+	return false
+}
+
+func (x *BuildInteractiveCommandRequest) GetLogPath() string {
+	if x != nil {
+		return x.LogPath
+	}
+	return ""
+}
+
+type BuildInteractiveCommandResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Argv          []string               `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BuildInteractiveCommandResponse) Reset() {
+	*x = BuildInteractiveCommandResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BuildInteractiveCommandResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BuildInteractiveCommandResponse) ProtoMessage() {}
+
+func (x *BuildInteractiveCommandResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BuildInteractiveCommandResponse.ProtoReflect.Descriptor instead.
+func (*BuildInteractiveCommandResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *BuildInteractiveCommandResponse) GetArgv() []string {
+	if x != nil {
+		return x.Argv
+	}
+	return nil
+}
+
+type ListIgnoredDirtyFilesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkDir       string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIgnoredDirtyFilesRequest) Reset() {
+	*x = ListIgnoredDirtyFilesRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIgnoredDirtyFilesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIgnoredDirtyFilesRequest) ProtoMessage() {}
+
+func (x *ListIgnoredDirtyFilesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIgnoredDirtyFilesRequest.ProtoReflect.Descriptor instead.
+func (*ListIgnoredDirtyFilesRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ListIgnoredDirtyFilesRequest) GetWorkDir() string {
+	if x != nil {
+		return x.WorkDir
+	}
+	return ""
+}
+
+type ListIgnoredDirtyFilesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Paths         []string               `protobuf:"bytes,1,rep,name=paths,proto3" json:"paths,omitempty"` // relative to work_dir
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListIgnoredDirtyFilesResponse) Reset() {
+	*x = ListIgnoredDirtyFilesResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListIgnoredDirtyFilesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListIgnoredDirtyFilesResponse) ProtoMessage() {}
+
+func (x *ListIgnoredDirtyFilesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListIgnoredDirtyFilesResponse.ProtoReflect.Descriptor instead.
+func (*ListIgnoredDirtyFilesResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *ListIgnoredDirtyFilesResponse) GetPaths() []string {
+	if x != nil {
+		return x.Paths
+	}
+	return nil
+}
+
+type GetChatTitleRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkDir       string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetChatTitleRequest) Reset() {
+	*x = GetChatTitleRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetChatTitleRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetChatTitleRequest) ProtoMessage() {}
+
+func (x *GetChatTitleRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetChatTitleRequest.ProtoReflect.Descriptor instead.
+func (*GetChatTitleRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *GetChatTitleRequest) GetWorkDir() string {
+	if x != nil {
+		return x.WorkDir
+	}
+	return ""
+}
+
+func (x *GetChatTitleRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+type GetChatTitleResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Supported     bool                   `protobuf:"varint,1,opt,name=supported,proto3" json:"supported,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetChatTitleResponse) Reset() {
+	*x = GetChatTitleResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetChatTitleResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetChatTitleResponse) ProtoMessage() {}
+
+func (x *GetChatTitleResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetChatTitleResponse.ProtoReflect.Descriptor instead.
+func (*GetChatTitleResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *GetChatTitleResponse) GetSupported() bool {
+	if x != nil {
+		return x.Supported
+	}
+	return false
+}
+
+func (x *GetChatTitleResponse) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
 var File_bossanova_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_plugin_proto_rawDesc = "" +
@@ -2700,7 +3572,66 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12B\n" +
 	"\x0edisplay_status\x18\x02 \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\rdisplayStatus\x12!\n" +
 	"\fhas_failures\x18\x03 \x01(\bR\vhasFailures\"\x1c\n" +
-	"\x1aNotifyStatusChangeResponse*\x82\x01\n" +
+	"\x1aNotifyStatusChangeResponse\"\"\n" +
+	" AgentRunnerServiceGetInfoRequest\"Q\n" +
+	"!AgentRunnerServiceGetInfoResponse\x12,\n" +
+	"\x04info\x18\x01 \x01(\v2\x18.bossanova.v1.PluginInfoR\x04info\"\xaf\x01\n" +
+	"\x14StartAgentRunRequest\x12\x19\n" +
+	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x12\n" +
+	"\x04plan\x18\x02 \x01(\tR\x04plan\x12 \n" +
+	"\tresume_id\x18\x03 \x01(\tH\x00R\bresumeId\x88\x01\x01\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x04 \x01(\tR\tsessionId\x12\x19\n" +
+	"\blog_path\x18\x05 \x01(\tR\alogPathB\f\n" +
+	"\n" +
+	"_resume_id\"6\n" +
+	"\x15StartAgentRunResponse\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"4\n" +
+	"\x13StopAgentRunRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\x16\n" +
+	"\x14StopAgentRunResponse\"6\n" +
+	"\x15IsAgentRunningRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"2\n" +
+	"\x16IsAgentRunningResponse\x12\x18\n" +
+	"\arunning\x18\x01 \x01(\bR\arunning\"7\n" +
+	"\x16AgentExitStatusRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"Y\n" +
+	"\x17AgentExitStatusResponse\x12\x1f\n" +
+	"\vis_complete\x18\x01 \x01(\bR\n" +
+	"isComplete\x12\x1d\n" +
+	"\n" +
+	"exit_error\x18\x02 \x01(\tR\texitError\"\x94\x01\n" +
+	"\x1cConfigureFinalizeHookRequest\x12\x19\n" +
+	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1d\n" +
+	"\n" +
+	"hook_token\x18\x03 \x01(\tR\thookToken\x12\x1b\n" +
+	"\thook_port\x18\x04 \x01(\x05R\bhookPort\"B\n" +
+	"\x1dConfigureFinalizeHookResponse\x12!\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"r\n" +
+	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
+	"\x06resume\x18\x02 \x01(\bR\x06resume\x12\x19\n" +
+	"\blog_path\x18\x03 \x01(\tR\alogPath\"5\n" +
+	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
+	"\x04argv\x18\x01 \x03(\tR\x04argv\"9\n" +
+	"\x1cListIgnoredDirtyFilesRequest\x12\x19\n" +
+	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\"5\n" +
+	"\x1dListIgnoredDirtyFilesResponse\x12\x14\n" +
+	"\x05paths\x18\x01 \x03(\tR\x05paths\"O\n" +
+	"\x13GetChatTitleRequest\x12\x19\n" +
+	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\"J\n" +
+	"\x14GetChatTitleResponse\x12\x1c\n" +
+	"\tsupported\x18\x01 \x01(\bR\tsupported\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title*\x82\x01\n" +
 	"\n" +
 	"TaskAction\x12\x1b\n" +
 	"\x17TASK_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
@@ -2732,7 +3663,18 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0eResumeWorkflow\x12#.bossanova.v1.ResumeWorkflowRequest\x1a$.bossanova.v1.ResumeWorkflowResponse\x12[\n" +
 	"\x0eCancelWorkflow\x12#.bossanova.v1.CancelWorkflowRequest\x1a$.bossanova.v1.CancelWorkflowResponse\x12d\n" +
 	"\x11GetWorkflowStatus\x12&.bossanova.v1.GetWorkflowStatusRequest\x1a'.bossanova.v1.GetWorkflowStatusResponse\x12g\n" +
-	"\x12NotifyStatusChange\x12'.bossanova.v1.NotifyStatusChangeRequest\x1a(.bossanova.v1.NotifyStatusChangeResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x12NotifyStatusChange\x12'.bossanova.v1.NotifyStatusChangeRequest\x1a(.bossanova.v1.NotifyStatusChangeResponse2\x8d\a\n" +
+	"\x12AgentRunnerService\x12j\n" +
+	"\aGetInfo\x12..bossanova.v1.AgentRunnerServiceGetInfoRequest\x1a/.bossanova.v1.AgentRunnerServiceGetInfoResponse\x12S\n" +
+	"\bStartRun\x12\".bossanova.v1.StartAgentRunRequest\x1a#.bossanova.v1.StartAgentRunResponse\x12P\n" +
+	"\aStopRun\x12!.bossanova.v1.StopAgentRunRequest\x1a\".bossanova.v1.StopAgentRunResponse\x12V\n" +
+	"\tIsRunning\x12#.bossanova.v1.IsAgentRunningRequest\x1a$.bossanova.v1.IsAgentRunningResponse\x12Y\n" +
+	"\n" +
+	"ExitStatus\x12$.bossanova.v1.AgentExitStatusRequest\x1a%.bossanova.v1.AgentExitStatusResponse\x12p\n" +
+	"\x15ConfigureFinalizeHook\x12*.bossanova.v1.ConfigureFinalizeHookRequest\x1a+.bossanova.v1.ConfigureFinalizeHookResponse\x12v\n" +
+	"\x17BuildInteractiveCommand\x12,.bossanova.v1.BuildInteractiveCommandRequest\x1a-.bossanova.v1.BuildInteractiveCommandResponse\x12p\n" +
+	"\x15ListIgnoredDirtyFiles\x12*.bossanova.v1.ListIgnoredDirtyFilesRequest\x1a+.bossanova.v1.ListIgnoredDirtyFilesResponse\x12U\n" +
+	"\fGetChatTitle\x12!.bossanova.v1.GetChatTitleRequest\x1a\".bossanova.v1.GetChatTitleResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_plugin_proto_rawDescOnce sync.Once
@@ -2747,7 +3689,7 @@ func file_bossanova_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
 var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(TaskAction)(0),                           // 0: bossanova.v1.TaskAction
 	(TaskItemStatus)(0),                       // 1: bossanova.v1.TaskItemStatus
@@ -2795,12 +3737,30 @@ var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(*WorkflowStatusInfo)(nil),                // 43: bossanova.v1.WorkflowStatusInfo
 	(*NotifyStatusChangeRequest)(nil),         // 44: bossanova.v1.NotifyStatusChangeRequest
 	(*NotifyStatusChangeResponse)(nil),        // 45: bossanova.v1.NotifyStatusChangeResponse
-	nil,                                       // 46: bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
-	(*TrackerIssue)(nil),                      // 47: bossanova.v1.TrackerIssue
-	(*timestamppb.Timestamp)(nil),             // 48: google.protobuf.Timestamp
-	(WorkflowStatus)(0),                       // 49: bossanova.v1.WorkflowStatus
-	(WorkflowStep)(0),                         // 50: bossanova.v1.WorkflowStep
-	(DisplayStatus)(0),                        // 51: bossanova.v1.DisplayStatus
+	(*AgentRunnerServiceGetInfoRequest)(nil),  // 46: bossanova.v1.AgentRunnerServiceGetInfoRequest
+	(*AgentRunnerServiceGetInfoResponse)(nil), // 47: bossanova.v1.AgentRunnerServiceGetInfoResponse
+	(*StartAgentRunRequest)(nil),              // 48: bossanova.v1.StartAgentRunRequest
+	(*StartAgentRunResponse)(nil),             // 49: bossanova.v1.StartAgentRunResponse
+	(*StopAgentRunRequest)(nil),               // 50: bossanova.v1.StopAgentRunRequest
+	(*StopAgentRunResponse)(nil),              // 51: bossanova.v1.StopAgentRunResponse
+	(*IsAgentRunningRequest)(nil),             // 52: bossanova.v1.IsAgentRunningRequest
+	(*IsAgentRunningResponse)(nil),            // 53: bossanova.v1.IsAgentRunningResponse
+	(*AgentExitStatusRequest)(nil),            // 54: bossanova.v1.AgentExitStatusRequest
+	(*AgentExitStatusResponse)(nil),           // 55: bossanova.v1.AgentExitStatusResponse
+	(*ConfigureFinalizeHookRequest)(nil),      // 56: bossanova.v1.ConfigureFinalizeHookRequest
+	(*ConfigureFinalizeHookResponse)(nil),     // 57: bossanova.v1.ConfigureFinalizeHookResponse
+	(*BuildInteractiveCommandRequest)(nil),    // 58: bossanova.v1.BuildInteractiveCommandRequest
+	(*BuildInteractiveCommandResponse)(nil),   // 59: bossanova.v1.BuildInteractiveCommandResponse
+	(*ListIgnoredDirtyFilesRequest)(nil),      // 60: bossanova.v1.ListIgnoredDirtyFilesRequest
+	(*ListIgnoredDirtyFilesResponse)(nil),     // 61: bossanova.v1.ListIgnoredDirtyFilesResponse
+	(*GetChatTitleRequest)(nil),               // 62: bossanova.v1.GetChatTitleRequest
+	(*GetChatTitleResponse)(nil),              // 63: bossanova.v1.GetChatTitleResponse
+	nil,                                       // 64: bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
+	(*TrackerIssue)(nil),                      // 65: bossanova.v1.TrackerIssue
+	(*timestamppb.Timestamp)(nil),             // 66: google.protobuf.Timestamp
+	(WorkflowStatus)(0),                       // 67: bossanova.v1.WorkflowStatus
+	(WorkflowStep)(0),                         // 68: bossanova.v1.WorkflowStep
+	(DisplayStatus)(0),                        // 69: bossanova.v1.DisplayStatus
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	2,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
@@ -2809,18 +3769,18 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	11, // 3: bossanova.v1.PollTasksResponse.tasks:type_name -> bossanova.v1.TaskItem
 	0,  // 4: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
 	1,  // 5: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
-	46, // 6: bossanova.v1.ListAvailableIssuesRequest.config:type_name -> bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
-	47, // 7: bossanova.v1.ListAvailableIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
+	64, // 6: bossanova.v1.ListAvailableIssuesRequest.config:type_name -> bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
+	65, // 7: bossanova.v1.ListAvailableIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
 	18, // 8: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
-	48, // 9: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
+	66, // 9: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
 	19, // 10: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
 	20, // 11: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
 	21, // 12: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
 	22, // 13: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
 	11, // 14: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
 	25, // 15: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
-	48, // 16: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
-	48, // 17: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
+	66, // 16: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
+	66, // 17: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
 	28, // 18: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
 	29, // 19: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
 	30, // 20: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
@@ -2830,47 +3790,66 @@ var file_bossanova_v1_plugin_proto_depIdxs = []int32{
 	43, // 24: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
 	43, // 25: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
 	43, // 26: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	49, // 27: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
-	50, // 28: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
-	48, // 29: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
-	51, // 30: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
-	3,  // 31: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
-	9,  // 32: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
-	12, // 33: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
-	14, // 34: bossanova.v1.TaskSourceService.ListAvailableIssues:input_type -> bossanova.v1.ListAvailableIssuesRequest
-	5,  // 35: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
-	16, // 36: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
-	7,  // 37: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
-	23, // 38: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
-	26, // 39: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
-	31, // 40: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
-	33, // 41: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
-	35, // 42: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
-	37, // 43: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
-	39, // 44: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
-	41, // 45: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
-	44, // 46: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
-	4,  // 47: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
-	10, // 48: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
-	13, // 49: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
-	15, // 50: bossanova.v1.TaskSourceService.ListAvailableIssues:output_type -> bossanova.v1.ListAvailableIssuesResponse
-	6,  // 51: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
-	17, // 52: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
-	8,  // 53: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
-	24, // 54: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
-	27, // 55: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
-	32, // 56: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
-	34, // 57: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
-	36, // 58: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
-	38, // 59: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
-	40, // 60: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
-	42, // 61: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
-	45, // 62: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
-	47, // [47:63] is the sub-list for method output_type
-	31, // [31:47] is the sub-list for method input_type
-	31, // [31:31] is the sub-list for extension type_name
-	31, // [31:31] is the sub-list for extension extendee
-	0,  // [0:31] is the sub-list for field type_name
+	67, // 27: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
+	68, // 28: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
+	66, // 29: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
+	69, // 30: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
+	2,  // 31: bossanova.v1.AgentRunnerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	3,  // 32: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
+	9,  // 33: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
+	12, // 34: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
+	14, // 35: bossanova.v1.TaskSourceService.ListAvailableIssues:input_type -> bossanova.v1.ListAvailableIssuesRequest
+	5,  // 36: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
+	16, // 37: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
+	7,  // 38: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
+	23, // 39: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
+	26, // 40: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
+	31, // 41: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
+	33, // 42: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
+	35, // 43: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
+	37, // 44: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
+	39, // 45: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
+	41, // 46: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
+	44, // 47: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
+	46, // 48: bossanova.v1.AgentRunnerService.GetInfo:input_type -> bossanova.v1.AgentRunnerServiceGetInfoRequest
+	48, // 49: bossanova.v1.AgentRunnerService.StartRun:input_type -> bossanova.v1.StartAgentRunRequest
+	50, // 50: bossanova.v1.AgentRunnerService.StopRun:input_type -> bossanova.v1.StopAgentRunRequest
+	52, // 51: bossanova.v1.AgentRunnerService.IsRunning:input_type -> bossanova.v1.IsAgentRunningRequest
+	54, // 52: bossanova.v1.AgentRunnerService.ExitStatus:input_type -> bossanova.v1.AgentExitStatusRequest
+	56, // 53: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:input_type -> bossanova.v1.ConfigureFinalizeHookRequest
+	58, // 54: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:input_type -> bossanova.v1.BuildInteractiveCommandRequest
+	60, // 55: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:input_type -> bossanova.v1.ListIgnoredDirtyFilesRequest
+	62, // 56: bossanova.v1.AgentRunnerService.GetChatTitle:input_type -> bossanova.v1.GetChatTitleRequest
+	4,  // 57: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
+	10, // 58: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
+	13, // 59: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
+	15, // 60: bossanova.v1.TaskSourceService.ListAvailableIssues:output_type -> bossanova.v1.ListAvailableIssuesResponse
+	6,  // 61: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
+	17, // 62: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
+	8,  // 63: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
+	24, // 64: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
+	27, // 65: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
+	32, // 66: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
+	34, // 67: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
+	36, // 68: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
+	38, // 69: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
+	40, // 70: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
+	42, // 71: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
+	45, // 72: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
+	47, // 73: bossanova.v1.AgentRunnerService.GetInfo:output_type -> bossanova.v1.AgentRunnerServiceGetInfoResponse
+	49, // 74: bossanova.v1.AgentRunnerService.StartRun:output_type -> bossanova.v1.StartAgentRunResponse
+	51, // 75: bossanova.v1.AgentRunnerService.StopRun:output_type -> bossanova.v1.StopAgentRunResponse
+	53, // 76: bossanova.v1.AgentRunnerService.IsRunning:output_type -> bossanova.v1.IsAgentRunningResponse
+	55, // 77: bossanova.v1.AgentRunnerService.ExitStatus:output_type -> bossanova.v1.AgentExitStatusResponse
+	57, // 78: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:output_type -> bossanova.v1.ConfigureFinalizeHookResponse
+	59, // 79: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:output_type -> bossanova.v1.BuildInteractiveCommandResponse
+	61, // 80: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:output_type -> bossanova.v1.ListIgnoredDirtyFilesResponse
+	63, // 81: bossanova.v1.AgentRunnerService.GetChatTitle:output_type -> bossanova.v1.GetChatTitleResponse
+	57, // [57:82] is the sub-list for method output_type
+	32, // [32:57] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_plugin_proto_init() }
@@ -2892,15 +3871,16 @@ func file_bossanova_v1_plugin_proto_init() {
 		(*JobAction_CreateSession)(nil),
 		(*JobAction_NoOp)(nil),
 	}
+	file_bossanova_v1_plugin_proto_msgTypes[46].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_plugin_proto_rawDesc), len(file_bossanova_v1_plugin_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   45,
+			NumMessages:   63,
 			NumExtensions: 0,
-			NumServices:   4,
+			NumServices:   5,
 		},
 		GoTypes:           file_bossanova_v1_plugin_proto_goTypes,
 		DependencyIndexes: file_bossanova_v1_plugin_proto_depIdxs,

@@ -117,18 +117,22 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 		return
 	}
 
-	var checks []vcs.CheckResult
-	if results, err := p.provider.GetCheckResults(ctx, repoPath, prNumber); err != nil {
-		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get check results")
-	} else {
-		checks = results
+	// On any inputs error, skip the update rather than recomputing with empty
+	// results. A transient GitHub API blip would otherwise collapse a
+	// "Failing" or "Rejected" row to "Idle" / "Passing" — silently
+	// disabling the repair plugin (which only triggers on
+	// FAILING/CONFLICT/REJECTED). The previous tracker entry sticks; the
+	// next poll cycle retries.
+	checks, err := p.provider.GetCheckResults(ctx, repoPath, prNumber)
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get check results; preserving previous status")
+		return
 	}
 
-	var reviews []vcs.ReviewComment
-	if comments, err := p.provider.GetReviewComments(ctx, repoPath, prNumber); err != nil {
-		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get review comments")
-	} else {
-		reviews = comments
+	reviews, err := p.provider.GetReviewComments(ctx, repoPath, prNumber)
+	if err != nil {
+		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get review comments; preserving previous status")
+		return
 	}
 
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)

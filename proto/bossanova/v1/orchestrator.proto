@@ -31,6 +31,9 @@ service OrchestratorService {
   rpc ProxyStopSession(ProxyStopSessionRequest) returns (ProxyStopSessionResponse);
   rpc ProxyPauseSession(ProxyPauseSessionRequest) returns (ProxyPauseSessionResponse);
   rpc ProxyResumeSession(ProxyResumeSessionRequest) returns (ProxyResumeSessionResponse);
+  // Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
+  // reverse stream and waits for CommandResult{WakeChatResult}.
+  rpc ProxyWakeChat(ProxyWakeChatRequest) returns (ProxyWakeChatResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -187,6 +190,24 @@ message ProxyResumeSessionRequest {
 
 message ProxyResumeSessionResponse {
   Session session = 1;
+}
+
+// ProxyWakeChatRequest identifies the chat to wake. Both session_id and
+// agent_session_id are required: bosso scopes the chat lookup across both
+// (and the authenticated user) to prevent a caller in possession of just
+// an agent_session_id from waking a chat in another user's session.
+message ProxyWakeChatRequest {
+  string session_id = 1;
+  string agent_session_id = 2;
+  // If true, the daemon will skip --resume even when a transcript exists.
+  bool force_fresh = 3;
+}
+
+message ProxyWakeChatResponse {
+  // Mirrors WakeChatResult.Outcome from stream.proto so callers don't
+  // need to import the stream-internal type.
+  WakeChatResult.Outcome outcome = 1;
+  string tmux_session_name = 2;
 }
 
 // ProxyStreamChatsRequest selects the session whose chat list (and per-chat

@@ -31,10 +31,10 @@ type fakeChatReader struct {
 	entries map[string]*Entry
 }
 
-func (f *fakeChatReader) Get(claudeID string) *Entry { return f.entries[claudeID] }
+func (f *fakeChatReader) Get(agentSessionID string) *Entry { return f.entries[agentSessionID] }
 
 // newTestDB spins up an in-memory SQLite store with migrations applied.
-func newTestDB(t *testing.T) (db.SessionStore, db.WorkflowStore, db.ClaudeChatStore, db.RepoStore) {
+func newTestDB(t *testing.T) (db.SessionStore, db.WorkflowStore, db.AgentChatStore, db.RepoStore) {
 	t.Helper()
 	database, err := db.OpenInMemory()
 	if err != nil {
@@ -44,7 +44,7 @@ func newTestDB(t *testing.T) (db.SessionStore, db.WorkflowStore, db.ClaudeChatSt
 	if err := migrate.Run(database, os.DirFS(migrationsDir())); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return db.NewSessionStore(database), db.NewWorkflowStore(database), db.NewClaudeChatStore(database), db.NewRepoStore(database)
+	return db.NewSessionStore(database), db.NewWorkflowStore(database), db.NewAgentChatStore(database), db.NewRepoStore(database)
 }
 
 func mustRepo(t *testing.T, repos db.RepoStore) string {
@@ -166,12 +166,12 @@ func TestRecompute_Matrix(t *testing.T) {
 			// entry to be visible to the precedence cascade.
 			chatTr := &fakeChatReader{entries: map[string]*Entry{}}
 			if tc.chat != pb.ChatStatus_CHAT_STATUS_UNSPECIFIED {
-				claudeID := "claude-" + sessID
-				chatTr.entries[claudeID] = &Entry{Status: tc.chat, ReceivedAt: time.Now()}
-				if _, err := chats.Create(context.Background(), db.CreateClaudeChatParams{
-					SessionID: sessID,
-					ClaudeID:  claudeID,
-					Title:     "test chat",
+				agentSessionID := "claude-" + sessID
+				chatTr.entries[agentSessionID] = &Entry{Status: tc.chat, ReceivedAt: time.Now()}
+				if _, err := chats.Create(context.Background(), db.CreateAgentChatParams{
+					SessionID:      sessID,
+					AgentSessionID: agentSessionID,
+					Title:          "test chat",
 				}); err != nil {
 					t.Fatalf("create chat: %v", err)
 				}
@@ -235,7 +235,7 @@ func TestRecompute_Matrix(t *testing.T) {
 }
 
 // TestRecompute_AggregatesAcrossChats reproduces the bug where a session
-// with two chats — one stopped (the original sess.ClaudeSessionID), one
+// with two chats — one stopped (the original sess.AgentSessionID), one
 // freshly created and actively working — was rendering "draft" on the
 // session list while the chat picker showed "working" on the live chat.
 // Recompute must aggregate across every chat in the session and surface
@@ -248,13 +248,13 @@ func TestRecompute_AggregatesAcrossChats(t *testing.T) {
 	stoppedClaude := "claude-stopped-" + sessID
 	workingClaude := "claude-working-" + sessID
 
-	for _, claudeID := range []string{stoppedClaude, workingClaude} {
-		if _, err := chats.Create(context.Background(), db.CreateClaudeChatParams{
-			SessionID: sessID,
-			ClaudeID:  claudeID,
-			Title:     "chat",
+	for _, agentSessionID := range []string{stoppedClaude, workingClaude} {
+		if _, err := chats.Create(context.Background(), db.CreateAgentChatParams{
+			SessionID:      sessID,
+			AgentSessionID: agentSessionID,
+			Title:          "chat",
 		}); err != nil {
-			t.Fatalf("create chat %s: %v", claudeID, err)
+			t.Fatalf("create chat %s: %v", agentSessionID, err)
 		}
 	}
 

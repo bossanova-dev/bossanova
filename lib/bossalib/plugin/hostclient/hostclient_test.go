@@ -186,6 +186,27 @@ func TestNewEagerClientSurfacesDialError(t *testing.T) {
 	}
 }
 
+func TestNewEagerClientWithBrokerIDReturnsNonNil(t *testing.T) {
+	t.Parallel()
+	// blocker is closed in the defer so the background goroutine exits before
+	// goleak.VerifyNone runs.
+	blocker := make(chan struct{})
+	defer close(blocker)
+
+	dial := func() (*grpc.ClientConn, error) {
+		<-blocker
+		return nil, errors.New("unblocked-with-error")
+	}
+
+	// newEagerClientFromDialer is the testable core; NewEagerClientWithBrokerID
+	// delegates to it with broker.Dial(brokerID). We verify here that a non-1
+	// broker ID (simulated via dialer) produces a non-nil *EagerClient.
+	c := newEagerClientFromDialer(dial, zerolog.Nop())
+	if c == nil {
+		t.Fatal("expected non-nil EagerClient")
+	}
+}
+
 func TestBrokerDialTimeoutDefault(t *testing.T) {
 	t.Parallel()
 	// Pins the production default. If this intentionally changes, the

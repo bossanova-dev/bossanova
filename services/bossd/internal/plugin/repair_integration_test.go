@@ -2,26 +2,209 @@ package plugin_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	goplugin "github.com/hashicorp/go-plugin"
-	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/migrate"
 	sharedplugin "github.com/recurser/bossalib/plugin"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/plugin/pluginharness"
 	"github.com/recurser/bossd/internal/status"
 )
+
+// execRunner is a minimal AgentRunner used by the repair integration test.
+// It runs real subprocesses via the provided commandFactory without depending
+// on the deleted Runner struct.
+type execRunner struct {
+	mu      sync.RWMutex
+	procs   map[string]*execProc
+	cmdFunc func(ctx context.Context, name string, args ...string) *exec.Cmd
+	logDir  string
+}
+
+type execProc struct {
+	cmd     *exec.Cmd
+	cancel  context.CancelFunc
+	done    chan struct{}
+	exitErr error
+}
+
+func newExecRunner(cmdFunc func(ctx context.Context, name string, args ...string) *exec.Cmd, logDir string) *execRunner {
+	return &execRunner{
+		procs:   make(map[string]*execProc),
+		cmdFunc: cmdFunc,
+		logDir:  logDir,
+	}
+}
+
+func (r *execRunner) Start(ctx context.Context, workDir, plan string, _ *string, sessionID string) (string, error) {
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	}
+	procCtx, cancel := context.WithCancel(ctx)
+	cmd := r.cmdFunc(procCtx, "claude")
+	cmd.Dir = workDir
+	cmd.Stdin = strings.NewReader(plan)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 10 * time.Second
+
+	if r.logDir != "" {
+		if err := os.MkdirAll(r.logDir, 0o755); err != nil {
+			cancel()
+			return "", fmt.Errorf("mkdir logDir: %w", err)
+		}
+		lf, err := os.Create(filepath.Join(r.logDir, sessionID+".log"))
+		if err != nil {
+			cancel()
+			return "", fmt.Errorf("create log file: %w", err)
+		}
+		cmd.Stdout = lf
+		cmd.Stderr = lf
+	}
+
+	p := &execProc{cmd: cmd, cancel: cancel, done: make(chan struct{})}
+	r.mu.Lock()
+	r.procs[sessionID] = p
+	r.mu.Unlock()
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		r.mu.Lock()
+		delete(r.procs, sessionID)
+		r.mu.Unlock()
+		return "", fmt.Errorf("start: %w", err)
+	}
+
+	go func() {
+		p.exitErr = cmd.Wait()
+		close(p.done)
+	}()
+
+	return sessionID, nil
+}
+
+func (r *execRunner) Stop(sessionID string) error {
+	r.mu.RLock()
+	p, ok := r.procs[sessionID]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+	p.cancel()
+	<-p.done
+	return nil
+}
+
+func (r *execRunner) IsRunning(sessionID string) bool {
+	r.mu.RLock()
+	p, ok := r.procs[sessionID]
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
+}
+
+func (r *execRunner) ExitError(sessionID string) error {
+	r.mu.RLock()
+	p, ok := r.procs[sessionID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	select {
+	case <-p.done:
+		return p.exitErr
+	default:
+		return nil
+	}
+}
+
+func (r *execRunner) Subscribe(_ context.Context, _ string) (<-chan agent.OutputLine, error) {
+	ch := make(chan agent.OutputLine)
+	close(ch)
+	return ch, nil
+}
+
+func (r *execRunner) History(_ string) []agent.OutputLine { return nil }
+
+var _ agent.AgentRunner = (*execRunner)(nil)
+
+// fakeAgentClient wraps a claude.Runner so the host's StartAgentRun /
+// WaitAgentRun handlers can drive a real fake-claude process without
+// having to spin up a separate AgentRunner plugin subprocess. The repair
+// plugin still talks to the host over real gRPC; this fake just stands in
+// for what bossd-plugin-claude would normally provide.
+type fakeAgentClient struct {
+	runner agent.AgentRunner
+}
+
+var _ agent.AgentRunnerClient = (*fakeAgentClient)(nil)
+
+func newFakeAgentClient(runner agent.AgentRunner) *fakeAgentClient {
+	return &fakeAgentClient{runner: runner}
+}
+
+func (f *fakeAgentClient) StartRun(ctx context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
+	id, err := f.runner.Start(ctx, req.GetWorkDir(), req.GetPlan(), nil, "")
+	if err != nil {
+		return nil, err
+	}
+	return &bossanovav1.StartAgentRunResponse{SessionId: id}, nil
+}
+
+func (f *fakeAgentClient) StopRun(_ context.Context, req *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
+	_ = f.runner.Stop(req.GetSessionId())
+	return &bossanovav1.StopAgentRunResponse{}, nil
+}
+
+func (f *fakeAgentClient) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
+	return &bossanovav1.IsAgentRunningResponse{Running: f.runner.IsRunning(req.GetSessionId())}, nil
+}
+
+func (f *fakeAgentClient) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
+	id := req.GetSessionId()
+	if f.runner.IsRunning(id) {
+		return &bossanovav1.AgentExitStatusResponse{IsComplete: false}, nil
+	}
+	resp := &bossanovav1.AgentExitStatusResponse{IsComplete: true}
+	if err := f.runner.ExitError(id); err != nil {
+		resp.ExitError = err.Error()
+	}
+	return resp, nil
+}
+
+func (f *fakeAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
+	return &bossanovav1.ConfigureFinalizeHookResponse{}, nil
+}
+func (f *fakeAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
+}
+func (f *fakeAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
+	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
+}
+func (f *fakeAgentClient) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
+	return &bossanovav1.GetChatTitleResponse{}, nil
+}
 
 // TestRepairPlugin_DrivesClaudeRunOnFailingStatus is the smoke test for the
 // Phase 4A wiring: when the daemon notifies the repair plugin of a FAILING
@@ -67,7 +250,7 @@ func TestRepairPlugin_DrivesClaudeRunOnFailingStatus(t *testing.T) {
 
 	repos := db.NewRepoStore(sqlDB)
 	sessions := db.NewSessionStore(sqlDB)
-	chats := db.NewClaudeChatStore(sqlDB)
+	chats := db.NewAgentChatStore(sqlDB)
 
 	ctx := context.Background()
 	repo, err := repos.Create(ctx, db.CreateRepoParams{
@@ -107,18 +290,17 @@ func TestRepairPlugin_DrivesClaudeRunOnFailingStatus(t *testing.T) {
 		)
 		return cmd
 	}
-	runner := claude.NewRunner(
-		zerolog.New(zerolog.NewTestWriter(t)).Level(zerolog.Disabled),
-		claude.WithCommandFactory(factory),
-		claude.WithLogDir(logsDir),
-	)
+	runner := newExecRunner(factory, logsDir)
 
 	displayTracker := status.NewDisplayTracker()
 	chatTracker := status.NewTracker()
 
 	hostService := pluginpkg.NewHostServiceServer(&testVCSProvider{})
 	hostService.SetSessionDeps(repos, sessions, chats, displayTracker, chatTracker)
-	hostService.SetClaudeRunner(runner)
+	hostService.SetAgentClients(map[string]agent.AgentRunnerClient{
+		"claude": newFakeAgentClient(runner),
+	})
+	hostService.SetAgentLogsDir(logsDir)
 
 	binPath := pluginharness.BuildPlugin(t, "bossd-plugin-repair")
 	pluginMap := goplugin.PluginSet{

@@ -286,14 +286,14 @@ func SessionName(repoID, sessionID string) string {
 }
 
 // ChatSessionName generates a tmux session name unique to a specific chat.
-// Format: boss-{first8repoID}-{first8claudeID}
+// Format: boss-{first8repoID}-{first8agentSessionID}
 // This ensures each chat within a session gets its own tmux session.
-func ChatSessionName(repoID, claudeID string) string {
+func ChatSessionName(repoID, agentSessionID string) string {
 	repoShort := repoID
 	if len(repoShort) > 8 {
 		repoShort = repoShort[:8]
 	}
-	chatShort := claudeID
+	chatShort := agentSessionID
 	if len(chatShort) > 8 {
 		chatShort = chatShort[:8]
 	}

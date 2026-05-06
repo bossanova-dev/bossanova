@@ -54,7 +54,7 @@ func TestRepoRoundTrip(t *testing.T) {
 }
 
 func TestSessionRoundTrip(t *testing.T) {
-	claude := "claude-abc"
+	agentSessID := "claude-abc"
 	prNum := 42
 	prURL := "https://github.com/test/repo/pull/42"
 	blocked := "max attempts reached"
@@ -69,7 +69,8 @@ func TestSessionRoundTrip(t *testing.T) {
 		BranchName:        "fix/login-bug",
 		BaseBranch:        "main",
 		State:             machine.Blocked,
-		ClaudeSessionID:   &claude,
+		AgentSessionID:    &agentSessID,
+		AgentName:         "claude",
 		PRNumber:          &prNum,
 		PRURL:             &prURL,
 		LastCheckState:    machine.CheckStateFailed,
@@ -108,6 +109,9 @@ func TestSessionRoundTrip(t *testing.T) {
 	if back.ArchivedAt == nil || !back.ArchivedAt.Equal(*orig.ArchivedAt) {
 		t.Errorf("ArchivedAt = %v, want %v", back.ArchivedAt, orig.ArchivedAt)
 	}
+	if back.AgentName != orig.AgentName {
+		t.Errorf("AgentName = %q, want %q", back.AgentName, orig.AgentName)
+	}
 }
 
 func TestSessionRoundTrip_NilOptionals(t *testing.T) {
@@ -121,8 +125,8 @@ func TestSessionRoundTrip_NilOptionals(t *testing.T) {
 	proto := SessionToProto(orig)
 	back := SessionFromProto(proto)
 
-	if back.ClaudeSessionID != nil {
-		t.Errorf("ClaudeSessionID = %v, want nil", back.ClaudeSessionID)
+	if back.AgentSessionID != nil {
+		t.Errorf("AgentSessionID = %v, want nil", back.AgentSessionID)
 	}
 	if back.PRNumber != nil {
 		t.Errorf("PRNumber = %v, want nil", back.PRNumber)
@@ -164,7 +168,7 @@ func TestAttemptRoundTrip(t *testing.T) {
 func TestStateRoundTrip(t *testing.T) {
 	states := []machine.State{
 		machine.CreatingWorktree,
-		machine.StartingClaude,
+		machine.StartingAgent,
 		machine.PushingBranch,
 		machine.OpeningDraftPR,
 		machine.ImplementingPlan,

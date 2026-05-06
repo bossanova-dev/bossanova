@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -10,7 +11,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/rs/zerolog/log"
@@ -20,10 +21,10 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// waitClaudeRunPollInterval is how often WaitClaudeRun polls the runner's
-// IsRunning state. Picked to balance responsiveness with idle CPU cost; the
-// repair plugin's only consumer of WaitClaudeRun is single-shot per repair.
-const waitClaudeRunPollInterval = 500 * time.Millisecond
+// waitAgentRunPollInterval is how often WaitAgentRun polls the loaded
+// AgentRunner plugin's ExitStatus. Picked to balance responsiveness with
+// idle CPU cost; the repair plugin's only consumer is single-shot per repair.
+const waitAgentRunPollInterval = 500 * time.Millisecond
 
 // HostServiceServer implements the HostService gRPC server on the daemon
 // side. Plugins call back to this server via go-plugin's GRPCBroker to
@@ -31,50 +32,95 @@ const waitClaudeRunPollInterval = 500 * time.Millisecond
 type HostServiceServer struct {
 	provider       vcs.Provider
 	sessionStore   db.SessionStore
-	claudeChats    db.ClaudeChatStore
+	agentChats     db.AgentChatStore
 	repoStore      db.RepoStore
 	displayTracker *status.DisplayTracker
 	chatTracker    *status.Tracker
-	claudeRunner   claude.ClaudeRunner
 
-	// activeRuns maps session_id → claude_id for the currently-active
+	// agentClients is the per-name registry of AgentRunnerClient gRPC
+	// clients (one per loaded AgentRunner plugin, keyed by the plugin's
+	// configured Name — matching session.AgentName). StartAgentRun /
+	// WaitAgentRun look up the right client based on the session record's
+	// AgentName so non-agent plugins (like bossd-plugin-repair) don't need
+	// a direct broker channel into each agent plugin's process. An empty
+	// map means no AgentRunner plugins are loaded; per-handler nil guards
+	// surface that as FailedPrecondition.
+	agentClients map[string]agent.AgentRunnerClient
+	// agentLogsDir is the bossd-owned directory where the agent plugin
+	// writes per-session NDJSON log files. Forwarded into StartRun.LogPath.
+	agentLogsDir string
+
+	// activeRuns maps session_id → activeRun for the currently-active
 	// repair run on each session. Guarded by runMu. The repair plugin's
 	// in-memory dedup map provides cross-call deduplication; this map is
-	// the daemon's last-line defense against two concurrent StartClaudeRun
+	// the daemon's last-line defense against two concurrent StartAgentRun
 	// calls landing on the same session.
-	runMu      sync.Mutex
-	activeRuns map[string]string
+	//
+	// agentSessionByID is the reverse index from agent_session_id back to
+	// the agent plugin name that started it — needed by WaitAgentRun, which
+	// only receives the agent_session_id and must route the ExitStatus poll
+	// to the right plugin client. Populated atomically with activeRuns.
+	runMu            sync.Mutex
+	activeRuns       map[string]activeRun
+	agentSessionByID map[string]string
+}
+
+// activeRun records the agent plugin name and agent session ID for an
+// in-flight StartAgentRun on a given boss session. agentName lets
+// WaitAgentRun and isAgentRunning route the follow-up RPCs to the right
+// plugin client when multiple agent plugins are loaded.
+type activeRun struct {
+	agentName      string
+	agentSessionID string
 }
 
 // NewHostServiceServer creates a HostServiceServer that proxies to the
 // given VCS provider. Session-related functionality requires SetSessionDeps
-// to be called before use; repair execution (StartClaudeRun/WaitClaudeRun)
-// requires SetClaudeRunner.
+// to be called before use; agent execution (StartAgentRun/WaitAgentRun)
+// requires SetAgentClients + SetAgentLogsDir.
 func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 	return &HostServiceServer{
-		provider:   provider,
-		activeRuns: make(map[string]string),
+		provider:         provider,
+		activeRuns:       make(map[string]activeRun),
+		agentSessionByID: make(map[string]string),
+		agentClients:     map[string]agent.AgentRunnerClient{},
 	}
 }
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs
 // (ListSessions, GetReviewComments, FireSessionEvent). The chats store is
 // needed to surface per-session HasActiveChat in ListSessions.
-func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chats db.ClaudeChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
+func (s *HostServiceServer) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chats db.AgentChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
 	s.repoStore = repos
 	s.sessionStore = sessions
-	s.claudeChats = chats
+	s.agentChats = chats
 	s.displayTracker = tracker
 	s.chatTracker = chatTracker
 }
 
-// SetClaudeRunner injects the Claude runner used by StartClaudeRun /
-// WaitClaudeRun. The repair plugin needs this to drive an actual Claude
-// process when a PR fails. Plugins that only need read-only RPCs can run
-// without it, but Validate() flags the missing dep when there's an active
-// plugin so misconfiguration fails loudly at startup.
-func (s *HostServiceServer) SetClaudeRunner(runner claude.ClaudeRunner) {
-	s.claudeRunner = runner
+// SetAgentClients injects the per-name registry of AgentRunnerClient gRPC
+// clients (one per loaded AgentRunner plugin, keyed by plugin Name —
+// matching session.AgentName). The repair plugin's StartAgentRun /
+// WaitAgentRun host RPCs look up the right client based on the session
+// record's AgentName so non-agent plugins don't need a direct broker
+// channel into each agent plugin. A nil or empty map disables the agent
+// path entirely; per-handler nil guards surface that as FailedPrecondition
+// when a plugin actually tries to use it.
+//
+// Concurrency: called exactly once during daemon startup, before plugins
+// begin issuing host RPCs. Not safe for concurrent re-injection.
+func (s *HostServiceServer) SetAgentClients(m map[string]agent.AgentRunnerClient) {
+	if m == nil {
+		s.agentClients = map[string]agent.AgentRunnerClient{}
+		return
+	}
+	s.agentClients = m
+}
+
+// SetAgentLogsDir sets the bossd-owned directory where the agent plugin
+// writes per-session NDJSON log files. Required alongside SetAgentClients.
+func (s *HostServiceServer) SetAgentLogsDir(dir string) {
+	s.agentLogsDir = dir
 }
 
 // Validate reports any dependencies that SetSessionDeps was expected to
@@ -91,8 +137,8 @@ func (s *HostServiceServer) Validate() error {
 	if s.sessionStore == nil {
 		missing = append(missing, "session store")
 	}
-	if s.claudeChats == nil {
-		missing = append(missing, "claude chat store")
+	if s.agentChats == nil {
+		missing = append(missing, "agent chat store")
 	}
 	if s.repoStore == nil {
 		missing = append(missing, "repo store")
@@ -103,9 +149,10 @@ func (s *HostServiceServer) Validate() error {
 	if s.chatTracker == nil {
 		missing = append(missing, "chat tracker")
 	}
-	if s.claudeRunner == nil {
-		missing = append(missing, "claude runner")
-	}
+	// agentClients / agentLogsDir are intentionally not validated here:
+	// they're injected post-Start (main.go calls SetAgentClients after the
+	// AgentRunner plugins have been dispensed). Per-handler nil guards in
+	// StartAgentRun / WaitAgentRun surface the missing dep at call time.
 	if len(missing) == 0 {
 		return nil
 	}
@@ -153,12 +200,12 @@ var hostServiceDesc = grpc.ServiceDesc{
 			Handler:    hostServiceSetRepairStatusHandler,
 		},
 		{
-			MethodName: "StartClaudeRun",
-			Handler:    hostServiceStartClaudeRunHandler,
+			MethodName: "StartAgentRun",
+			Handler:    hostServiceStartAgentRunHandler,
 		},
 		{
-			MethodName: "WaitClaudeRun",
-			Handler:    hostServiceWaitClaudeRunHandler,
+			MethodName: "WaitAgentRun",
+			Handler:    hostServiceWaitAgentRunHandler,
 		},
 	},
 	Metadata: "bossanova/v1/host_service.proto",
@@ -175,8 +222,8 @@ type hostServiceHandler interface {
 	GetReviewComments(context.Context, *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error)
 	FireSessionEvent(context.Context, *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error)
 	SetRepairStatus(context.Context, *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
-	StartClaudeRun(context.Context, *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error)
-	WaitClaudeRun(context.Context, *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error)
+	StartAgentRun(context.Context, *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error)
+	WaitAgentRun(context.Context, *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error)
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -338,14 +385,14 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			// On DB error, assume active (fail closed) to prevent advancing
 			// sessions that may have a live Claude Code process.
 			hasActiveChat := false
-			if s.claudeChats != nil && s.chatTracker != nil {
-				chats, err := s.claudeChats.ListBySession(ctx, sess.ID)
+			if s.agentChats != nil && s.chatTracker != nil {
+				chats, err := s.agentChats.ListBySession(ctx, sess.ID)
 				if err != nil {
 					log.Warn().Err(err).Str("session_id", sess.ID).Msg("failed to list chats for active chat check, assuming active")
 					hasActiveChat = true
 				} else {
 					for _, chat := range chats {
-						if chatEntry := s.chatTracker.Get(chat.ClaudeID); chatEntry != nil {
+						if chatEntry := s.chatTracker.Get(chat.AgentSessionID); chatEntry != nil {
 							hasActiveChat = true
 							break
 						}
@@ -594,16 +641,21 @@ func hostServiceFireSessionEventHandler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
-// StartClaudeRun resolves the session's worktree and starts a Claude process
-// running the given prompt. Returns the generated claude_id.
+// StartAgentRun resolves the session's worktree and starts an agent run via
+// the loaded AgentRunner plugin. Returns the resolved session ID (named
+// claude_id in the proto for compatibility with the repair plugin's
+// existing variable name).
 //
-// Enforces one active Claude run per session: returns AlreadyExists if a
+// Enforces one active agent run per session: returns AlreadyExists if a
 // previous run on the same session is still IsRunning. The activeRuns map
 // is the daemon-side source of truth for that invariant; the repair
 // plugin's in-memory dedup map sits in front of this as a courtesy.
-func (s *HostServiceServer) StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error) {
-	if s.claudeRunner == nil {
-		return nil, grpcstatus.Error(codes.FailedPrecondition, "claude runner not configured")
+func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error) {
+	if len(s.agentClients) == 0 {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	if s.agentLogsDir == "" {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent logs dir not configured")
 	}
 	if s.sessionStore == nil {
 		return nil, grpcstatus.Error(codes.Internal, "session store not set")
@@ -621,69 +673,126 @@ func (s *HostServiceServer) StartClaudeRun(ctx context.Context, req *bossanovav1
 		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "session %s has no worktree path", sessionID)
 	}
 
+	// Route to the agent plugin matching the session's recorded AgentName.
+	// Sessions persisted before the multi-agent migration may have an empty
+	// AgentName here; the SQLite store's ""→"claude" fallback (Task 1)
+	// keeps that case working as long as bossd-plugin-claude is loaded.
+	client, ok := s.agentClients[sess.AgentName]
+	if !ok || client == nil {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "agent %q not configured", sess.AgentName)
+	}
+
 	s.runMu.Lock()
-	if existing, ok := s.activeRuns[sessionID]; ok && s.claudeRunner.IsRunning(existing) {
+	if existing, ok := s.activeRuns[sessionID]; ok && s.isAgentRunning(existing.agentName, existing.agentSessionID) {
 		s.runMu.Unlock()
-		return nil, grpcstatus.Errorf(codes.AlreadyExists, "claude run already active for session %s", sessionID)
+		return nil, grpcstatus.Errorf(codes.AlreadyExists, "agent run already active for session %s", sessionID)
 	}
 	// Stale entry (previous run finished) — fall through and replace.
 	//
 	// Use context.Background, NOT the gRPC handler's ctx: passing ctx would
-	// tie the spawned Claude process's lifetime to this RPC call, which
-	// returns immediately. The runner has its own Stop()/Stop-via-cancel
-	// path for shutdown.
-	claudeID, err := s.claudeRunner.Start(context.Background(), sess.WorktreePath, req.GetPrompt(), nil, "")
+	// tie the spawned process's lifetime to this RPC call, which returns
+	// immediately. The agent plugin has its own Stop / shutdown path.
+	startReq := &bossanovav1.StartAgentRunRequest{
+		WorkDir: sess.WorktreePath,
+		Plan:    req.GetPrompt(),
+		LogPath: filepath.Join(s.agentLogsDir, "repair-"+sessionID+".log"),
+	}
+	startResp, err := client.StartRun(context.Background(), startReq)
 	if err != nil {
 		s.runMu.Unlock()
-		return nil, grpcstatus.Errorf(codes.Internal, "start claude: %v", err)
+		return nil, grpcstatus.Errorf(codes.Internal, "start agent: %v", err)
 	}
-	s.activeRuns[sessionID] = claudeID
+	resolved := startResp.GetSessionId()
+	if prev, ok := s.activeRuns[sessionID]; ok {
+		// Drop the reverse-index entry from the previous (now-stale) run so
+		// it doesn't leak when a session is repaired multiple times.
+		delete(s.agentSessionByID, prev.agentSessionID)
+	}
+	s.activeRuns[sessionID] = activeRun{agentName: sess.AgentName, agentSessionID: resolved}
+	s.agentSessionByID[resolved] = sess.AgentName
 	s.runMu.Unlock()
 
-	return &bossanovav1.StartClaudeRunResponse{ClaudeId: claudeID}, nil
+	return &bossanovav1.StartAgentRunHostResponse{AgentSessionId: resolved}, nil
 }
 
-// WaitClaudeRun blocks until the Claude process identified by claude_id exits,
-// then returns the runner's exit error string (empty on clean exit). Honours
-// the caller's context for cancellation — the daemon's plugin shutdown path
-// cancels these contexts so an in-flight repair drains promptly.
-func (s *HostServiceServer) WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error) {
-	if s.claudeRunner == nil {
-		return nil, grpcstatus.Error(codes.FailedPrecondition, "claude runner not configured")
+// isAgentRunning reports whether the named agent plugin still has an
+// active run for the given agent session ID. RPC errors (and a missing
+// client) are treated as "not running" so a transient failure or unloaded
+// plugin doesn't permanently wedge a session behind a stale activeRuns
+// entry.
+func (s *HostServiceServer) isAgentRunning(agentName, agentSessionID string) bool {
+	client, ok := s.agentClients[agentName]
+	if !ok || client == nil {
+		return false
 	}
-	claudeID := req.GetClaudeId()
-	if claudeID == "" {
-		return nil, grpcstatus.Error(codes.InvalidArgument, "claude_id is required")
+	resp, err := client.IsRunning(context.Background(), &bossanovav1.IsAgentRunningRequest{SessionId: agentSessionID})
+	if err != nil {
+		return false
+	}
+	return resp.GetRunning()
+}
+
+// WaitAgentRun blocks until the agent run identified by agent_session_id
+// exits, then returns the agent's exit error string (empty on clean exit).
+// Honours the caller's context for cancellation — the daemon's plugin
+// shutdown path cancels these contexts so an in-flight repair drains
+// promptly.
+//
+// The agent_session_id is reverse-mapped to the originating agent plugin
+// via agentSessionByID (populated by StartAgentRun). When the mapping is
+// missing — e.g. a daemon restart between StartAgentRun and WaitAgentRun
+// dropped in-memory state — we fall back to "agent client not configured"
+// rather than guessing.
+func (s *HostServiceServer) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error) {
+	if len(s.agentClients) == 0 {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "agent client not configured")
+	}
+	agentSessionID := req.GetAgentSessionId()
+	if agentSessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_session_id is required")
 	}
 
-	ticker := time.NewTicker(waitClaudeRunPollInterval)
+	s.runMu.Lock()
+	agentName, ok := s.agentSessionByID[agentSessionID]
+	s.runMu.Unlock()
+	if !ok {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "no agent client recorded for agent session %s", agentSessionID)
+	}
+	client, ok := s.agentClients[agentName]
+	if !ok || client == nil {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "agent %q not configured", agentName)
+	}
+
+	ticker := time.NewTicker(waitAgentRunPollInterval)
 	defer ticker.Stop()
-	for s.claudeRunner.IsRunning(claudeID) {
+	for {
+		es, err := client.ExitStatus(ctx, &bossanovav1.AgentExitStatusRequest{SessionId: agentSessionID})
+		if err != nil {
+			return nil, grpcstatus.Errorf(codes.Internal, "exit status: %v", err)
+		}
+		if es.GetIsComplete() {
+			return &bossanovav1.WaitAgentRunHostResponse{ExitError: es.GetExitError()}, nil
+		}
 		select {
 		case <-ctx.Done():
 			return nil, grpcstatus.FromContextError(ctx.Err()).Err()
 		case <-ticker.C:
 		}
 	}
-	var msg string
-	if exitErr := s.claudeRunner.ExitError(claudeID); exitErr != nil {
-		msg = exitErr.Error()
-	}
-	return &bossanovav1.WaitClaudeRunResponse{ExitError: msg}, nil
 }
 
-func hostServiceStartClaudeRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.StartClaudeRunRequest)
+func hostServiceStartAgentRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.StartAgentRunHostRequest)
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).StartClaudeRun(ctx, req)
+	return srv.(hostServiceHandler).StartAgentRun(ctx, req)
 }
 
-func hostServiceWaitClaudeRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
-	req := new(bossanovav1.WaitClaudeRunRequest)
+func hostServiceWaitAgentRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.WaitAgentRunHostRequest)
 	if err := dec(req); err != nil {
 		return nil, err
 	}
-	return srv.(hostServiceHandler).WaitClaudeRun(ctx, req)
+	return srv.(hostServiceHandler).WaitAgentRun(ctx, req)
 }

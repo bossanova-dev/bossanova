@@ -41,8 +41,8 @@ type sessionArchivedMsg struct {
 // autoEnterResolvedMsg carries the result of checking if a session has exactly
 // one active Claude process (for direct attach) or needs the chat picker.
 type autoEnterResolvedMsg struct {
-	sessionID string
-	claudeID  string // non-empty if exactly one active chat found
+	sessionID      string
+	agentSessionID string // non-empty if exactly one active chat found
 }
 
 // authStatusMsg carries the result of checking auth status.
@@ -318,12 +318,12 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case autoEnterResolvedMsg:
-		if msg.claudeID != "" {
+		if msg.agentSessionID != "" {
 			return h, func() tea.Msg {
 				return switchViewMsg{
 					view:      ViewAttach,
 					sessionID: msg.sessionID,
-					resumeID:  msg.claudeID,
+					resumeID:  msg.agentSessionID,
 				}
 			}
 		}
@@ -467,7 +467,7 @@ func StateLabel(state pb.SessionState) string {
 	switch state {
 	case pb.SessionState_SESSION_STATE_CREATING_WORKTREE:
 		return "creating"
-	case pb.SessionState_SESSION_STATE_STARTING_CLAUDE:
+	case pb.SessionState_SESSION_STATE_STARTING_AGENT:
 		return "starting"
 	case pb.SessionState_SESSION_STATE_PUSHING_BRANCH:
 		return "pushing"
@@ -630,14 +630,14 @@ func (h HomeModel) resolveAutoEnter(sessionID string) tea.Cmd {
 		var activeID string
 		activeCount := 0
 		for _, chat := range chats {
-			daemon := statuses[chat.ClaudeId]
+			daemon := statuses[chat.AgentSessionId]
 			if daemon == statusWorking || daemon == statusIdle || daemon == statusQuestion {
-				activeID = chat.ClaudeId
+				activeID = chat.AgentSessionId
 				activeCount++
 			}
 		}
 		if activeCount == 1 {
-			return autoEnterResolvedMsg{sessionID: sessionID, claudeID: activeID}
+			return autoEnterResolvedMsg{sessionID: sessionID, agentSessionID: activeID}
 		}
 		return autoEnterResolvedMsg{sessionID: sessionID}
 	}

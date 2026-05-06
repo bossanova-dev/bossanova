@@ -63,6 +63,9 @@ const (
 	// OrchestratorServiceProxyResumeSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyResumeSession RPC.
 	OrchestratorServiceProxyResumeSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyResumeSession"
+	// OrchestratorServiceProxyWakeChatProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyWakeChat RPC.
+	OrchestratorServiceProxyWakeChatProcedure = "/bossanova.v1.OrchestratorService/ProxyWakeChat"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -105,6 +108,9 @@ type OrchestratorServiceClient interface {
 	ProxyStopSession(context.Context, *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error)
 	ProxyPauseSession(context.Context, *connect.Request[v1.ProxyPauseSessionRequest]) (*connect.Response[v1.ProxyPauseSessionResponse], error)
 	ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error)
+	// Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
+	// reverse stream and waits for CommandResult{WakeChatResult}.
+	ProxyWakeChat(context.Context, *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -208,6 +214,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResumeSession")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyWakeChat: connect.NewClient[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyWakeChatProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyWakeChat")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -265,6 +277,7 @@ type orchestratorServiceClient struct {
 	proxyStopSession    *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
 	proxyPauseSession   *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
 	proxyResumeSession  *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
+	proxyWakeChat       *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
 	proxyStreamChats    *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken    *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream      *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -324,6 +337,11 @@ func (c *orchestratorServiceClient) ProxyResumeSession(ctx context.Context, req 
 	return c.proxyResumeSession.CallUnary(ctx, req)
 }
 
+// ProxyWakeChat calls bossanova.v1.OrchestratorService.ProxyWakeChat.
+func (c *orchestratorServiceClient) ProxyWakeChat(ctx context.Context, req *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error) {
+	return c.proxyWakeChat.CallUnary(ctx, req)
+}
+
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
 func (c *orchestratorServiceClient) ProxyStreamChats(ctx context.Context, req *connect.Request[v1.ProxyStreamChatsRequest]) (*connect.ServerStreamForClient[v1.ProxyChatListEvent], error) {
 	return c.proxyStreamChats.CallServerStream(ctx, req)
@@ -378,6 +396,9 @@ type OrchestratorServiceHandler interface {
 	ProxyStopSession(context.Context, *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error)
 	ProxyPauseSession(context.Context, *connect.Request[v1.ProxyPauseSessionRequest]) (*connect.Response[v1.ProxyPauseSessionResponse], error)
 	ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error)
+	// Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
+	// reverse stream and waits for CommandResult{WakeChatResult}.
+	ProxyWakeChat(context.Context, *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -477,6 +498,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyResumeSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyWakeChatHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyWakeChatProcedure,
+		svc.ProxyWakeChat,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyWakeChat")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -541,6 +568,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyPauseSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyResumeSessionProcedure:
 			orchestratorServiceProxyResumeSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyWakeChatProcedure:
+			orchestratorServiceProxyWakeChatHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -602,6 +631,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyPauseSession(context.Context
 
 func (UnimplementedOrchestratorServiceHandler) ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyResumeSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyWakeChat(context.Context, *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyWakeChat is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

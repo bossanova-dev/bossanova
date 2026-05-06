@@ -57,8 +57,8 @@ func SessionToProto(s *models.Session) *pb.Session {
 		DisplayIntent:     pb.DisplayIntent(s.DisplayIntent),
 		DisplaySpinner:    s.DisplaySpinner,
 	}
-	if s.ClaudeSessionID != nil {
-		p.ClaudeSessionId = s.ClaudeSessionID
+	if s.AgentSessionID != nil {
+		p.AgentSessionId = s.AgentSessionID
 	}
 	if s.PRNumber != nil {
 		n := int32(*s.PRNumber)
@@ -85,15 +85,16 @@ func SessionToProto(s *models.Session) *pb.Session {
 	return p
 }
 
-// claudeChatToProto converts a domain ClaudeChat to its protobuf representation.
-func claudeChatToProto(c *models.ClaudeChat) *pb.ClaudeChat {
+// agentChatToProto converts a domain AgentChat to its protobuf representation.
+func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 	out := &pb.ClaudeChat{
-		Id:        c.ID,
-		SessionId: c.SessionID,
-		ClaudeId:  c.ClaudeID,
-		Title:     c.Title,
-		DaemonId:  c.DaemonID,
-		CreatedAt: timestamppb.New(c.CreatedAt),
+		Id:             c.ID,
+		SessionId:      c.SessionID,
+		AgentSessionId: c.AgentSessionID,
+		AgentName:      c.AgentName,
+		Title:          c.Title,
+		DaemonId:       c.DaemonID,
+		CreatedAt:      timestamppb.New(c.CreatedAt),
 	}
 	if c.TmuxSessionName != nil {
 		out.TmuxSessionName = *c.TmuxSessionName

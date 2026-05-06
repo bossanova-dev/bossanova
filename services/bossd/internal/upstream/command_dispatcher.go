@@ -48,6 +48,8 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchWebhook(ctx, cmdID, cmd.GetWebhook())
 	case *pb.OrchestratorCommand_Attach:
 		return c.dispatchAttach(ctx, cmdID, cmd.GetAttach(), outbound)
+	case *pb.OrchestratorCommand_WakeChat:
+		return c.dispatchWakeChat(ctx, cmdID, cmd.GetWakeChat())
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -233,6 +235,33 @@ func (c *StreamClient) dispatchAttach(
 	return commandOK(cmdID, nil)
 }
 
+// dispatchWakeChat routes the WakeChatCommand to the configured handler
+// and packages the (outcome, tmuxName) into a CommandResult{WakeChatResult}
+// payload. Failures attach the handler-classified ErrorCode so bosso can
+// map back to the right ConnectRPC code (CodeNotFound, etc.) without
+// parsing the human-readable `error` string.
+func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *pb.WakeChatCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	outcome, tmuxName, errorCode, err := c.commandHandler.WakeChat(ctx, req.GetAgentSessionId(), req.GetForceFresh())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), errorCode)
+	}
+	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+		Result: &pb.CommandResult{
+			CommandId: cmdID,
+			Ok:        true,
+			Payload: &pb.CommandResult_WakeChat{
+				WakeChat: &pb.WakeChatResult{
+					Outcome:         outcome,
+					TmuxSessionName: tmuxName,
+				},
+			},
+		},
+	}}
+}
+
 // commandOK builds a success CommandResult. session may be nil for
 // commands whose response doesn't include a session payload (e.g.
 // attach start).
@@ -244,11 +273,18 @@ func commandOK(cmdID string, session *pb.Session) *pb.DaemonEvent {
 	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: result}}
 }
 
-// commandErr wraps an error message into a failed CommandResult. Kept
-// as a helper so every dispatcher path produces the same shape.
+// commandErr wraps an error message into a failed CommandResult with
+// ERROR_CODE_UNSPECIFIED. Use commandErrCode when the failure mode is
+// known (e.g. NOT_FOUND) so bosso can map back to the right ConnectRPC
+// code without parsing the human-readable message.
 func commandErr(cmdID, msg string) *pb.DaemonEvent {
+	return commandErrCode(cmdID, msg, pb.CommandResult_ERROR_CODE_UNSPECIFIED)
+}
+
+// commandErrCode is commandErr with a typed error_code attached.
+func commandErrCode(cmdID, msg string, code pb.CommandResult_ErrorCode) *pb.DaemonEvent {
 	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
-		Result: &pb.CommandResult{CommandId: cmdID, Ok: false, Error: msg},
+		Result: &pb.CommandResult{CommandId: cmdID, Ok: false, Error: msg, ErrorCode: code},
 	}}
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,8 +32,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/skilldata"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	cronpkg "github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -111,6 +111,18 @@ type runOpts struct {
 	// listening and all startup goroutines have been launched. Runs on a
 	// separate goroutine so it cannot block shutdown.
 	onReady func()
+
+	// onBootstrapComplete, if non-nil, fires synchronously immediately
+	// after TmuxStatusPoller.Bootstrap returns and before srv.Serve is
+	// scheduled. Used by tests to pin the Bootstrap-before-Serve init
+	// ordering invariant: a regression that started Serve first would be
+	// caught by an OnServeStart firing while OnBootstrapComplete has not.
+	onBootstrapComplete func()
+
+	// onServeStart, if non-nil, fires synchronously inside the Serve
+	// goroutine just before srv.Serve is invoked. Pairs with
+	// onBootstrapComplete to assert init ordering.
+	onServeStart func()
 }
 
 func run(opts runOpts) error {
@@ -153,7 +165,7 @@ func run(opts runOpts) error {
 	// reach the upstream stream bus. OnChange is wired below once
 	// streamBus exists; calls before that point (none today, but the
 	// store is referenced by other subsystems first) no-op safely.
-	claudeChats := db.NewNotifyingClaudeChatStore(db.NewClaudeChatStore(database))
+	agentChats := db.NewNotifyingAgentChatStore(db.NewAgentChatStore(database))
 	taskMappings := db.NewTaskMappingStore(database)
 	rawWorkflows := db.NewWorkflowStore(database)
 	cronJobs := db.NewCronJobStore(database)
@@ -165,7 +177,7 @@ func run(opts runOpts) error {
 	chatStatusTracker := status.NewTracker()
 	displayTracker := status.NewDisplayTracker()
 	displayComputer := status.NewDisplayStatusComputer(
-		rawSessions, displayTracker, chatStatusTracker, claudeChats, rawWorkflows, log.Logger,
+		rawSessions, displayTracker, chatStatusTracker, agentChats, rawWorkflows, log.Logger,
 	)
 	var sessions db.SessionStore = db.NewRecomputingSessionStore(rawSessions, displayComputer)
 	var workflows db.WorkflowStore = db.NewRecomputingWorkflowStore(rawWorkflows, displayComputer)
@@ -188,24 +200,24 @@ func run(opts runOpts) error {
 	// bosso receives per-chat status updates with claude_id populated.
 	// Without this publisher, ChatStatusDelta events never reach the wire
 	// and the orchestrator's per-chat status map stays empty.
-	chatStatusTracker.SetOnUpdate(func(claudeID string) {
+	chatStatusTracker.SetOnUpdate(func(agentSessionID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		chat, err := claudeChats.GetByClaudeID(ctx, claudeID)
+		chat, err := agentChats.GetByAgentSessionID(ctx, agentSessionID)
 		if err != nil || chat == nil {
 			return
 		}
 		// Publish the per-chat status delta first so the stream sees a
 		// fresh status alongside any session-level UPDATED delta the
 		// recompute below emits via displayComputer.SetOnUpdate.
-		if entry := chatStatusTracker.Get(claudeID); entry != nil {
+		if entry := chatStatusTracker.Get(agentSessionID); entry != nil {
 			streamBus.Publish(upstream.StreamEvent{
 				Status: &upstream.StatusEvent{
 					Status: &bossanovav1.ChatStatusDelta{
-						SessionId:    chat.SessionID,
-						ClaudeId:     claudeID,
-						Status:       entry.Status,
-						LastOutputAt: timestamppb.New(entry.LastOutputAt),
+						SessionId:      chat.SessionID,
+						AgentSessionId: agentSessionID,
+						Status:         entry.Status,
+						LastOutputAt:   timestamppb.New(entry.LastOutputAt),
 					},
 				},
 			})
@@ -217,7 +229,7 @@ func run(opts runOpts) error {
 	// orchestrator only ever sees chats from the initial DaemonSnapshot,
 	// so any chat created/renamed/deleted after the daemon connects is
 	// invisible to the web UI's per-session chat list.
-	claudeChats.OnChange = func(kind db.ChatChangeKind, chat *models.ClaudeChat) {
+	agentChats.OnChange = func(kind db.ChatChangeKind, chat *models.AgentChat) {
 		var pbKind bossanovav1.ChatDelta_Kind
 		switch kind {
 		case db.ChatChangeCreated:
@@ -233,12 +245,13 @@ func run(opts runOpts) error {
 			Chat: &upstream.ChatEvent{
 				Kind: pbKind,
 				Chat: &bossanovav1.ClaudeChatMetadata{
-					Id:        chat.ID,
-					SessionId: chat.SessionID,
-					ClaudeId:  chat.ClaudeID,
-					Title:     chat.Title,
-					DaemonId:  chat.DaemonID,
-					CreatedAt: timestamppb.New(chat.CreatedAt),
+					Id:             chat.ID,
+					SessionId:      chat.SessionID,
+					AgentSessionId: chat.AgentSessionID,
+					AgentName:      chat.AgentName,
+					Title:          chat.Title,
+					DaemonId:       chat.DaemonID,
+					CreatedAt:      timestamppb.New(chat.CreatedAt),
 				},
 			},
 		})
@@ -303,21 +316,8 @@ func run(opts runOpts) error {
 	// --- Lifecycle ---
 
 	worktrees := gitpkg.NewManager(log.Logger)
-	claudeRunner := claude.NewRunner(log.Logger)
 	tmuxClient := tmux.NewClient()
 	ghProvider := github.New(log.Logger)
-	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, cronJobs, worktrees, claudeRunner, tmuxClient, ghProvider, log.Logger)
-
-	// Recover sessions left in Finalizing from a previous daemon crash.
-	// They can't be safely re-driven (we don't know whether EnsurePR ran
-	// or whether the finalize chat was spawned), so we record
-	// failed_recovered on their cron_job and transition them to Blocked
-	// for the operator to investigate. Worktrees are preserved.
-	if n, err := lifecycle.RecoverFinalizingSessions(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("failed to recover Finalizing sessions")
-	} else if n > 0 {
-		log.Info().Int("count", n).Msg("recovered sessions stuck in Finalizing from previous run")
-	}
 
 	// Reconcile sessions that were created before their PR existed (or
 	// where PR creation happened out-of-band). Matches by branch name.
@@ -339,11 +339,12 @@ func run(opts runOpts) error {
 
 	settings, _ := config.Load()
 
-	// Update boss skills if they were previously installed by the CLI.
-	if skillsDir, err := skilldata.DefaultSkillsDir(); err == nil && skilldata.BossSkillsInstalled(skillsDir) {
-		if err := skilldata.ExtractSkills(skillsDir, skilldata.SkillsFS); err != nil {
-			log.Warn().Err(err).Msg("failed to update skills")
-		}
+	// Bossd-owned log dir for agent runs. Lives outside the worktree so a
+	// hostile/buggy plugin can't path-traverse via symlinks. Plugin opens
+	// log files here with O_NOFOLLOW (Task 7).
+	agentLogsDir := filepath.Join(filepath.Dir(settings.WorktreeBaseDir), "agent-logs")
+	if err := os.MkdirAll(agentLogsDir, 0o700); err != nil {
+		return fmt.Errorf("create agent-logs dir %s: %w", agentLogsDir, err)
 	}
 
 	displayPoller := session.NewDisplayPoller(
@@ -355,8 +356,7 @@ func run(opts runOpts) error {
 
 	pluginBus := eventbus.New(log.Logger)
 	pluginHost := plugin.New(pluginBus, ghProvider, log.Logger)
-	pluginHost.SetSessionDeps(repos, sessions, claudeChats, displayTracker, chatStatusTracker)
-	pluginHost.SetClaudeRunner(claudeRunner)
+	pluginHost.SetSessionDeps(repos, sessions, agentChats, displayTracker, chatStatusTracker)
 
 	// Register DisplayTracker onChange callback to notify plugins of status changes
 	displayTracker.SetOnChange(func(sessionID string, oldEntry, newEntry *status.DisplayEntry) {
@@ -399,6 +399,66 @@ func run(opts runOpts) error {
 	if err := pluginHost.Start(context.Background(), pluginCfgs); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)
+	}
+
+	loadedAgents := pluginHost.AgentRunners()
+	agentClients := map[string]agent.AgentRunnerClient{}
+	pluginRunners := map[string]agent.AgentRunner{}
+	var agentRunner agent.AgentRunner
+	if len(loadedAgents) == 0 {
+		// No agent plugin loaded: daemon stays healthy but session creation
+		// will fail. Operators install bossd-plugin-claude (or another
+		// AgentRunner plugin) and restart.
+		log.Warn().Msg("no AgentRunner plugin loaded; sessions cannot be started until an agent plugin is installed")
+		agentRunner = agent.NoopRunner{}
+	} else {
+		// Build per-agent registries: agent.AgentRunnerClient (for
+		// ConfigureFinalizeHook etc.) and agent.AgentRunner (for the
+		// Dispatcher's per-session routing). The dispensed plugin client
+		// satisfies both interfaces — plugin.AgentRunner is a superset of
+		// agent.AgentRunnerClient (it adds GetInfo) — so a type assertion
+		// is enough to bridge the package boundary.
+		tailer := agent.NewTailer(log.Logger)
+		for name, raw := range loadedAgents {
+			client, ok := raw.(agent.AgentRunnerClient)
+			if !ok {
+				log.Warn().Str("plugin", name).Msg("agent plugin does not satisfy AgentRunnerClient; skipping")
+				continue
+			}
+			agentClients[name] = client
+			pluginRunners[name] = agent.NewPluginRunner(client, tailer, agentLogsDir, log.Logger)
+		}
+		pluginHost.SetAgentClients(agentClients)
+		pluginHost.SetAgentLogsDir(agentLogsDir)
+
+		// Dispatcher routes Start/Stop/IsRunning by reading the session's
+		// AgentName from SQLite. The lookup closure runs per-call against
+		// the live session store; an empty AgentName falls back to
+		// settings.DefaultAgent (Task 3, defaults to "claude").
+		lookup := func(sessionID string) (string, error) {
+			sess, err := sessions.Get(context.Background(), sessionID)
+			if err != nil {
+				return "", err
+			}
+			return sess.AgentName, nil
+		}
+		agentRunner = agent.NewDispatcher(pluginRunners, lookup, settings.DefaultAgent, log.Logger)
+	}
+
+	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
+	if len(agentClients) > 0 {
+		lifecycle.SetAgents(agentClients)
+	}
+
+	// Recover sessions left in Finalizing from a previous daemon crash.
+	// They can't be safely re-driven (we don't know whether EnsurePR ran
+	// or whether the finalize chat was spawned), so we record
+	// failed_recovered on their cron_job and transition them to Blocked
+	// for the operator to investigate. Worktrees are preserved.
+	if n, err := lifecycle.RecoverFinalizingSessions(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to recover Finalizing sessions")
+	} else if n > 0 {
+		log.Info().Int("count", n).Msg("recovered sessions stuck in Finalizing from previous run")
 	}
 
 	// shutdownWG tracks daemon goroutines so we can wait for them to exit cleanly.
@@ -465,7 +525,15 @@ func run(opts runOpts) error {
 		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work, and cron fires will record fire_failed")
 	}
 
-	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, claudeChats, claudeRunner, tmuxClient)
+	// The Dispatcher already routes per-session internally, so the
+	// agentForSession closure can return it unconditionally — the
+	// LivenessChecker accepts the function shape (rather than a single
+	// runner) so non-dispatcher wirings (e.g. unit tests) can still
+	// supply a per-session resolution.
+	agentForSession := func(_ *models.Session) agent.AgentRunner {
+		return agentRunner
+	}
+	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
@@ -490,7 +558,7 @@ func run(opts runOpts) error {
 
 	// --- Tmux Status Poller ---
 
-	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, claudeChats, sessions, tmuxClient, log.Logger)
+	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, log.Logger)
 
 	// --- Server ---
 
@@ -558,6 +626,7 @@ func run(opts runOpts) error {
 	var streamClient *upstream.StreamClient
 	var terminalStreamClient *upstream.TerminalStreamClient
 	var authNotifier server.AuthNotifier
+	var cmdHandlerStream *upstream.CommandHandlerAdapter
 	if cfg := upstream.ConfigFromEnv(); cfg != nil {
 		// ConnectRPC bidi streams (DaemonStream) require HTTP/2. Over
 		// TLS that's handled via ALPN automatically; over plain HTTP
@@ -681,19 +750,20 @@ func run(opts runOpts) error {
 			return out, nil
 		})
 		snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ClaudeChatMetadata, error) {
-			chats, err := claudeChats.ListWithTmuxSession(ctx)
+			chats, err := agentChats.ListWithTmuxSession(ctx)
 			if err != nil {
 				return nil, err
 			}
 			out := make([]*bossanovav1.ClaudeChatMetadata, 0, len(chats))
 			for _, c := range chats {
 				out = append(out, &bossanovav1.ClaudeChatMetadata{
-					Id:        c.ID,
-					SessionId: c.SessionID,
-					ClaudeId:  c.ClaudeID,
-					Title:     c.Title,
-					DaemonId:  c.DaemonID,
-					CreatedAt: timestamppb.New(c.CreatedAt),
+					Id:             c.ID,
+					SessionId:      c.SessionID,
+					AgentSessionId: c.AgentSessionID,
+					AgentName:      c.AgentName,
+					Title:          c.Title,
+					DaemonId:       c.DaemonID,
+					CreatedAt:      timestamppb.New(c.CreatedAt),
 				})
 			}
 			return out, nil
@@ -709,11 +779,11 @@ func run(opts runOpts) error {
 			// change state.
 			entries := chatStatusTracker.Snapshot()
 			out := make([]*bossanovav1.ChatStatusEntry, 0, len(entries))
-			for claudeID, e := range entries {
+			for agentSessionID, e := range entries {
 				out = append(out, &bossanovav1.ChatStatusEntry{
-					ClaudeId:     claudeID,
-					Status:       e.Status,
-					LastOutputAt: timestamppb.New(e.LastOutputAt),
+					AgentSessionId: agentSessionID,
+					Status:         e.Status,
+					LastOutputAt:   timestamppb.New(e.LastOutputAt),
 				})
 			}
 			return out, nil
@@ -731,11 +801,16 @@ func run(opts runOpts) error {
 				}
 			},
 		}
+		// Surface the adapter to the outer scope so we can attach
+		// the chat-waker once srv exists. Keeping the assignment here
+		// (rather than inside StreamClient construction) keeps the
+		// happy path uncluttered when no orchestrator is configured.
+		cmdHandlerStream = cmdHandler
 
 		// Attacher bridges to claude.Runner's subscribe/history.
 		attacher := &upstream.SessionAttacherAdapter{
 			Sessions: attachLookupAdapter{sessions: sessions},
-			Claude:   claudeAttachAdapter{runner: claudeRunner},
+			Agent:    claudeAttachAdapter{runner: agentRunner},
 			Logger:   log.Logger,
 		}
 
@@ -821,7 +896,7 @@ func run(opts runOpts) error {
 			TokenProvider: tokenProvider,
 			AuthState:     authState,
 			TmuxClient:    tmuxClient,
-			Chats:         upstream.NewChatStoreLookup(claudeChats),
+			Chats:         upstream.NewChatStoreLookup(agentChats),
 			Logger:        log.Logger,
 		})
 	}
@@ -830,7 +905,7 @@ func run(opts runOpts) error {
 		Repos:              repos,
 		Sessions:           sessions,
 		Attempts:           attempts,
-		ClaudeChats:        claudeChats,
+		AgentChats:         agentChats,
 		Workflows:          workflows,
 		CronJobs:           cronJobs,
 		CronScheduler:      cronScheduler,
@@ -838,7 +913,7 @@ func run(opts runOpts) error {
 		DisplayTracker:     displayTracker,
 		TmuxPoller:         tmuxStatusPoller,
 		Lifecycle:          lifecycle,
-		Claude:             claudeRunner,
+		Agent:              agentRunner,
 		Worktrees:          worktrees,
 		Provider:           ghProvider,
 		PluginHost:         pluginHost,
@@ -863,6 +938,16 @@ func run(opts runOpts) error {
 		Logger: log.Logger,
 	})
 
+	// Wire the chat-waker on the existing CommandHandlerAdapter now that
+	// the server is constructed. Done post-hoc rather than at adapter
+	// construction time because the adapter is built before srv.New
+	// (it's passed into the StreamClient configuration above) — and
+	// CommandHandlerAdapter is a pointer, so this mutates the same
+	// instance the StreamClient's interface dispatches through.
+	if cmdHandlerStream != nil {
+		cmdHandlerStream.Waker = srv
+	}
+
 	// Start poller and dispatcher.
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
@@ -883,6 +968,9 @@ func run(opts runOpts) error {
 	// the polling loop, so sessions from before a daemon restart show correct
 	// status (idle/question) instead of defaulting to unknown.
 	tmuxStatusPoller.Bootstrap(context.Background())
+	if opts.onBootstrapComplete != nil {
+		opts.onBootstrapComplete()
+	}
 
 	// Start tmux status poller (captures pane content to detect question/idle/working).
 	tmuxStatusPoller.Run(pollerCtx)
@@ -957,6 +1045,9 @@ func run(opts runOpts) error {
 	errCh := make(chan error, 1)
 	trackedGo(func() {
 		log.Info().Str("socket", socketPath).Msg("starting server")
+		if opts.onServeStart != nil {
+			opts.onServeStart()
+		}
 		errCh <- srv.Serve()
 	})
 	trackedGo(func() {
@@ -1102,18 +1193,18 @@ func (a attachLookupAdapter) LookupAttachTarget(ctx context.Context, sessionID s
 	if err != nil {
 		return "", 0, err
 	}
-	claudeID := ""
-	if sess.ClaudeSessionID != nil {
-		claudeID = *sess.ClaudeSessionID
+	agentSessionID := ""
+	if sess.AgentSessionID != nil {
+		agentSessionID = *sess.AgentSessionID
 	}
-	return claudeID, int32(sess.State), nil
+	return agentSessionID, int32(sess.State), nil
 }
 
 // claudeAttachAdapter converts claude.Runner's OutputLine channel into
 // the upstream-package AttachOutputLine shape so the attacher's
 // interface stays free of the claude package.
 type claudeAttachAdapter struct {
-	runner claude.ClaudeRunner
+	runner agent.AgentRunner
 }
 
 func (a claudeAttachAdapter) IsRunning(claudeSessionID string) bool {

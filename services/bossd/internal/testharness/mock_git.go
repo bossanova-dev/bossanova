@@ -3,6 +3,7 @@ package testharness
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -122,8 +123,11 @@ func (m *MockWorktreeManager) Create(ctx context.Context, opts gitpkg.CreateOpts
 
 	// Default: generate a worktree path and branch name from the title.
 	branch := sanitize(opts.Title)
+	path := fmt.Sprintf("/tmp/worktrees/%s/%s", sanitize(opts.RepoName), branch)
+	// Materialise on disk so callers that stat the path (spawnChatTmux) work.
+	_ = os.MkdirAll(path, 0o755)
 	return &gitpkg.CreateResult{
-		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s/%s", sanitize(opts.RepoName), branch),
+		WorktreePath: path,
 		BranchName:   branch,
 	}, nil
 }
@@ -269,8 +273,10 @@ func (m *MockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts g
 	m.mu.Lock()
 	m.CreateFromExistingBranchCalls = append(m.CreateFromExistingBranchCalls, opts)
 	m.mu.Unlock()
+	path := fmt.Sprintf("/tmp/worktrees/%s", opts.BranchName)
+	_ = os.MkdirAll(path, 0o755)
 	return &gitpkg.CreateResult{
-		WorktreePath: fmt.Sprintf("/tmp/worktrees/%s", opts.BranchName),
+		WorktreePath: path,
 		BranchName:   opts.BranchName,
 	}, nil
 }

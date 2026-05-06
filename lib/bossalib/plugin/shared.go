@@ -30,6 +30,21 @@ const (
 	PluginTypeEventSource = "event_source"
 	PluginTypeScheduler   = "scheduler"
 	PluginTypeWorkflow    = "workflow"
+	PluginTypeAgentRunner = "agent_runner"
+)
+
+// BrokerID constants identify the broker channel each plugin type uses to
+// expose host-side services back to the daemon. Plugin types that don't
+// share a process can reuse the same ID; types that may be loaded
+// alongside each other in the same plugin host MUST have distinct IDs to
+// avoid yamux stream collisions.
+//
+// AgentRunner specifically may run alongside TaskSource (e.g. linear) and
+// Workflow (e.g. repair) in the same daemon, so it gets its own ID.
+const (
+	BrokerIDTaskSourceHostService  uint32 = 1
+	BrokerIDWorkflowHostService    uint32 = 1
+	BrokerIDAgentRunnerHostService uint32 = 2
 )
 
 // NewHandshakeForPlugin returns the HandshakeConfig that a plugin subprocess

@@ -129,15 +129,15 @@ func TestConfigInitPreservesExistingSettings(t *testing.T) {
 
 	// Create existing settings with non-plugin config
 	existingSettings := config.Settings{
-		DangerouslySkipPermissions: true,
-		WorktreeBaseDir:            "/custom/worktrees",
-		PollIntervalSeconds:        120,
+		WorktreeBaseDir:     "/custom/worktrees",
+		PollIntervalSeconds: 120,
 		Plugins: []config.PluginConfig{
 			{
 				Name:    "alpha",
 				Path:    "/old/path/alpha",
 				Enabled: false,
 				Version: "0.0.1",
+				Config:  map[string]string{"dangerously_skip_permissions": "true"},
 			},
 		},
 	}
@@ -160,9 +160,6 @@ func TestConfigInitPreservesExistingSettings(t *testing.T) {
 		t.Fatalf("LoadFrom: %v", err)
 	}
 
-	if !s.DangerouslySkipPermissions {
-		t.Error("DangerouslySkipPermissions: got false, want true (preserved)")
-	}
 	if s.WorktreeBaseDir != "/custom/worktrees" {
 		t.Errorf("WorktreeBaseDir: got %q, want %q (preserved)", s.WorktreeBaseDir, "/custom/worktrees")
 	}

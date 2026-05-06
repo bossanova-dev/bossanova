@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ func TestFinalizeSession_NoOpWhenNotImplementing(t *testing.T) {
 			sessions := newMockSessionStore()
 			repos := newMockRepoStore()
 			wt := &mockWorktreeManager{}
-			cr := newMockClaudeRunner()
+			cr := newMockAgentRunner()
 			vp := newMockVCSProvider()
 
 			sessions.sessions["sess-1"] = &models.Session{
@@ -77,7 +78,7 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: ""} // empty = no changes
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 
@@ -143,7 +144,7 @@ func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
 			sessions := newMockSessionStore()
 			repos := newMockRepoStore()
 			wt := &mockWorktreeManager{statusOut: tc.statusOut}
-			cr := newMockClaudeRunner()
+			cr := newMockAgentRunner()
 			vp := newMockVCSProvider()
 			cron := &recordingCronJobStore{}
 
@@ -195,7 +196,7 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: "?? new.txt"} // untracked file
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 
@@ -250,10 +251,10 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: " M file.go"} // modified file
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
-	chats := &recordingClaudeChatStore{}
+	chats := &recordingAgentChatStore{}
 
 	repos.repos["repo-1"] = &models.Repo{
 		ID:        "repo-1",
@@ -327,7 +328,7 @@ func TestFinalizeSession_PRFailed(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: " M file.go"}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	vp.createPRErr = fmt.Errorf("github 503: service unavailable")
 	cron := &recordingCronJobStore{}
@@ -389,7 +390,7 @@ func TestFinalizeSession_ChatSpawnFailed(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: " M file.go"}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	cr.startErr = fmt.Errorf("claude binary not found")
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
@@ -453,7 +454,7 @@ func TestFinalizeSession_CleanupFailed(t *testing.T) {
 		statusOut:  "", // no changes — would normally trigger deleted_no_changes
 		archiveErr: fmt.Errorf("permission denied removing worktree"),
 	}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 
@@ -504,7 +505,7 @@ func TestFinalizeSession_Idempotency(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: ""} // empty → deleted_no_changes path
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 
@@ -593,7 +594,7 @@ func TestRecoverFinalizingSessions(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 
@@ -664,7 +665,7 @@ func TestRecoverFinalizingSessions_NoneStuck(t *testing.T) {
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
-	cr := newMockClaudeRunner()
+	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 
@@ -688,16 +689,16 @@ func TestRecoverFinalizingSessions_NoneStuck(t *testing.T) {
 
 // --- helpers ---
 
-// recordingClaudeChatStore captures Create calls so tests can assert that
+// recordingAgentChatStore captures Create calls so tests can assert that
 // the finalize chat row was written with the right session/claude IDs.
-type recordingClaudeChatStore struct {
-	mockClaudeChatStore
-	created []db.CreateClaudeChatParams
+type recordingAgentChatStore struct {
+	mockAgentChatStore
+	created []db.CreateAgentChatParams
 }
 
-func (r *recordingClaudeChatStore) Create(_ context.Context, params db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
+func (r *recordingAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
 	r.created = append(r.created, params)
-	return &models.ClaudeChat{ID: "chat-" + params.ClaudeID, SessionID: params.SessionID, ClaudeID: params.ClaudeID, Title: params.Title}, nil
+	return &models.AgentChat{ID: "chat-" + params.AgentSessionID, SessionID: params.SessionID, AgentSessionID: params.AgentSessionID, Title: params.Title}, nil
 }
 
 // recordingCronJobStore captures UpdateLastRun calls so tests can assert
@@ -741,3 +742,22 @@ func (s *stubCronJobStore) UpdateLastRun(context.Context, string, db.UpdateCronJ
 	return nil
 }
 func (s *stubCronJobStore) Delete(context.Context, string) error { return nil }
+
+// TestStripBossdManagedFiles_UsesPluginContributions verifies that the
+// parameterised helper correctly filters both hardcoded and plugin-supplied
+// paths, leaving unmanaged entries intact.
+func TestStripBossdManagedFiles_UsesPluginContributions(t *testing.T) {
+	porcelain := strings.Join([]string{
+		"?? .claude/settings.local.json",
+		"?? README.md",
+		"?? plugin/custom-token.json",
+	}, "\n")
+	got := stripBossdManagedFilesWith(porcelain, []string{
+		".claude/settings.local.json",
+		"plugin/custom-token.json",
+	})
+	want := "?? README.md"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

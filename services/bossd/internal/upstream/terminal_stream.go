@@ -187,14 +187,14 @@ func defaultTerminalAttachFactory(ctx context.Context, cfg tmux.AttachConfig) (t
 
 // chatLookup returns the persisted tmux_session_name for the given
 // claude_id. Constrained to the one method the client needs — keeps tests
-// from having to implement the full ClaudeChatStore surface.
+// from having to implement the full AgentChatStore surface.
 //
 // MUST read the persisted `tmux_session_name` field on the chat row. Do
-// NOT recompute via tmux.ChatSessionName(repoID, claudeID) — see plan
+// NOT recompute via tmux.ChatSessionName(repoID, agentSessionID) — see plan
 // Codex catch #5: the recomputed name is truncated to 8 chars per
 // component and risks collisions across sessions.
 type chatLookup interface {
-	GetByClaudeID(ctx context.Context, claudeID string) (chatRow, error)
+	GetByAgentSessionID(ctx context.Context, agentSessionID string) (chatRow, error)
 }
 
 // chatRow is the thin projection of models.ClaudeChat the client cares
@@ -204,17 +204,17 @@ type chatRow struct {
 	TmuxSessionName *string
 }
 
-// chatStoreAdapter wraps the real db.ClaudeChatStore so it satisfies the
+// chatStoreAdapter wraps the real db.AgentChatStore so it satisfies the
 // minimal chatLookup interface above. Production wiring builds this; tests
 // pass their own fake chatLookup directly.
 type chatStoreAdapter struct {
-	store db.ClaudeChatStore
+	store db.AgentChatStore
 }
 
 // NewChatStoreLookup builds a chatLookup backed by the daemon's real
-// ClaudeChatStore. Exported because Task A4's main.go wiring needs to
+// AgentChatStore. Exported because Task A4's main.go wiring needs to
 // construct a TerminalStreamClient with the live store.
-func NewChatStoreLookup(store db.ClaudeChatStore) ChatLookup {
+func NewChatStoreLookup(store db.AgentChatStore) ChatLookup {
 	return &chatStoreAdapter{store: store}
 }
 
@@ -222,8 +222,8 @@ func NewChatStoreLookup(store db.ClaudeChatStore) ChatLookup {
 // interface. Task A4 wires a concrete adapter into the client config.
 type ChatLookup = chatLookup
 
-func (a *chatStoreAdapter) GetByClaudeID(ctx context.Context, claudeID string) (chatRow, error) {
-	c, err := a.store.GetByClaudeID(ctx, claudeID)
+func (a *chatStoreAdapter) GetByAgentSessionID(ctx context.Context, agentSessionID string) (chatRow, error) {
+	c, err := a.store.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil {
 		return chatRow{}, err
 	}
@@ -571,7 +571,7 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 	c.mu.Unlock()
 
-	row, err := c.chats.GetByClaudeID(ctx, chatID)
+	row, err := c.chats.GetByAgentSessionID(ctx, chatID)
 	if err != nil {
 		// Wire-side `Reason` MUST be a fixed string. The full error stays
 		// in the daemon log for triage, but the browser never sees driver
@@ -590,7 +590,7 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 	}
 	if row.TmuxSessionName == nil || *row.TmuxSessionName == "" {
 		// Plan Codex catch #3: empty/nil tmux_session_name → clean error
-		// rather than silently using ChatSessionName(repoID, claudeID).
+		// rather than silently using ChatSessionName(repoID, agentSessionID).
 		c.sendExited(ctx, outbound, attachID, "tmux session not ready")
 		return
 	}

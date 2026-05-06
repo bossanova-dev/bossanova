@@ -215,6 +215,15 @@ func sanitizeDirName(name string) string {
 // changes and route them to pr_failed → Blocked. (services/bossd/
 // internal/session/finalize.go has a parallel in-process filter as
 // belt-and-suspenders.)
+//
+// TODO(task20): .claude/settings.local.json is plugin-owned (declared by
+// bossd-plugin-claude via ListIgnoredDirtyFiles). The correct fix is to
+// query the agent client here and pass the union to ensureGitInfoExclude.
+// That requires threading an AgentRunnerClient through Manager.Create, which
+// crosses the git→claude package boundary — deferred until a future task
+// adds the wiring. The in-process filter in finalize.go (which does call
+// ListIgnoredDirtyFiles) is the primary fix; this exclude entry is
+// belt-and-suspenders.
 var bossdManagedExcludePatterns = []string{
 	".boss/",
 	".claude/settings.local.json",

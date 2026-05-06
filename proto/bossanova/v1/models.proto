@@ -10,7 +10,7 @@ import "google/protobuf/timestamp.proto";
 enum SessionState {
   SESSION_STATE_UNSPECIFIED = 0;
   SESSION_STATE_CREATING_WORKTREE = 1;
-  SESSION_STATE_STARTING_CLAUDE = 2;
+  SESSION_STATE_STARTING_AGENT = 2;
   SESSION_STATE_PUSHING_BRANCH = 3;
   SESSION_STATE_OPENING_DRAFT_PR = 4;
   SESSION_STATE_IMPLEMENTING_PLAN = 5;
@@ -28,7 +28,7 @@ enum SessionState {
 enum SessionEvent {
   SESSION_EVENT_UNSPECIFIED = 0;
   SESSION_EVENT_WORKTREE_CREATED = 1;
-  SESSION_EVENT_CLAUDE_STARTED = 2;
+  SESSION_EVENT_AGENT_STARTED = 2;
   SESSION_EVENT_BRANCH_PUSHED = 3;
   SESSION_EVENT_PR_OPENED = 4;
   SESSION_EVENT_PLAN_COMPLETE = 5;
@@ -127,7 +127,7 @@ message Repo {
   reserved 16;
 }
 
-// Session represents a Claude coding session.
+// Session represents a coding-agent session.
 message Session {
   string id = 1;
   string repo_id = 2;
@@ -137,7 +137,7 @@ message Session {
   string branch_name = 6;
   string base_branch = 7;
   SessionState state = 8;
-  optional string claude_session_id = 9;
+  optional string agent_session_id = 9;
   optional int32 pr_number = 10;
   optional string pr_url = 11;
   ChecksOverall last_check_state = 12;
@@ -194,6 +194,9 @@ message Session {
   // orchestrator until the transfer protocol completes.
   string transferring_to = 36;    // empty if not transferring out
   string transferring_from = 37;  // empty if not transferring in
+
+  // Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+  string agent_name = 38;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -391,11 +394,13 @@ enum ChatStatus {
 message ClaudeChat {
   string id = 1;
   string session_id = 2;
-  string claude_id = 3;          // Claude Code session UUID
+  string agent_session_id = 3;   // Agent session UUID
   string title = 4;              // First user prompt or "New chat"
   string daemon_id = 5;          // Originating daemon (empty = local)
   google.protobuf.Timestamp created_at = 6;
   string tmux_session_name = 7;  // Empty if no tmux session is hosting this chat
+  // Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+  string agent_name = 8;
 }
 
 // CronJobStatus is the derived run-status for a cron job, computed from

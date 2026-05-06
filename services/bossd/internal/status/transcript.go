@@ -20,13 +20,13 @@ func pathToProjectKey(path string) string {
 	return strings.NewReplacer("/", "-", ".", "-").Replace(path)
 }
 
-// transcriptPath resolves ~/.claude/projects/<key>/<claudeID>.jsonl.
-func transcriptPath(worktreePath, claudeID string) (string, error) {
+// transcriptPath resolves ~/.claude/projects/<key>/<agentSessionID>.jsonl.
+func transcriptPath(worktreePath, agentSessionID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claude", "projects", pathToProjectKey(worktreePath), claudeID+".jsonl"), nil
+	return filepath.Join(home, ".claude", "projects", pathToProjectKey(worktreePath), agentSessionID+".jsonl"), nil
 }
 
 // lastTurnIsUser reports whether the most recent meaningful entry in the
@@ -127,4 +127,25 @@ func hasUserTextBlock(raw json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// TranscriptExists reports whether the Claude Code JSONL transcript for the
+// given (worktree, agentSessionID) is present on disk. Used by wake-up logic
+// to decide between `claude --resume` (transcript present) and
+// `claude --session-id` (transcript missing — fresh fallback).
+//
+// Mirrors Claude Code's project-key encoding (see pathToProjectKey). If the
+// home dir is unreadable or the file is absent, returns false. Errors are
+// not surfaced — wake-up treats "can't tell" as "transcript missing", which
+// is the safe default (fresh start over silently lying about a resume).
+func TranscriptExists(worktreePath, agentSessionID string) bool {
+	path, err := transcriptPath(worktreePath, agentSessionID)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir() && info.Size() > 0
 }

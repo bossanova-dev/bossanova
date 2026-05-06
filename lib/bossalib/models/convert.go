@@ -53,7 +53,8 @@ func SessionToProto(s *Session) *pb.Session {
 		BranchName:        s.BranchName,
 		BaseBranch:        s.BaseBranch,
 		State:             stateToProto(s.State),
-		ClaudeSessionId:   s.ClaudeSessionID,
+		AgentSessionId:    s.AgentSessionID,
+		AgentName:         s.AgentName,
 		PrNumber:          intPtrToInt32Ptr(s.PRNumber),
 		PrUrl:             s.PRURL,
 		LastCheckState:    checkStateToProto(s.LastCheckState),
@@ -83,7 +84,8 @@ func SessionFromProto(p *pb.Session) *Session {
 		BranchName:        p.BranchName,
 		BaseBranch:        p.BaseBranch,
 		State:             stateFromProto(p.State),
-		ClaudeSessionID:   p.ClaudeSessionId,
+		AgentSessionID:    p.AgentSessionId,
+		AgentName:         p.AgentName,
 		PRNumber:          int32PtrToIntPtr(p.PrNumber),
 		PRURL:             p.PrUrl,
 		LastCheckState:    checkStateFromProto(p.LastCheckState),
@@ -137,7 +139,7 @@ func AttemptFromProto(p *pb.Attempt) *Attempt {
 
 var stateToProtoMap = map[machine.State]pb.SessionState{
 	machine.CreatingWorktree: pb.SessionState_SESSION_STATE_CREATING_WORKTREE,
-	machine.StartingClaude:   pb.SessionState_SESSION_STATE_STARTING_CLAUDE,
+	machine.StartingAgent:    pb.SessionState_SESSION_STATE_STARTING_AGENT,
 	machine.PushingBranch:    pb.SessionState_SESSION_STATE_PUSHING_BRANCH,
 	machine.OpeningDraftPR:   pb.SessionState_SESSION_STATE_OPENING_DRAFT_PR,
 	machine.ImplementingPlan: pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
@@ -153,7 +155,7 @@ var stateToProtoMap = map[machine.State]pb.SessionState{
 
 var stateFromProtoMap = map[pb.SessionState]machine.State{
 	pb.SessionState_SESSION_STATE_CREATING_WORKTREE: machine.CreatingWorktree,
-	pb.SessionState_SESSION_STATE_STARTING_CLAUDE:   machine.StartingClaude,
+	pb.SessionState_SESSION_STATE_STARTING_AGENT:    machine.StartingAgent,
 	pb.SessionState_SESSION_STATE_PUSHING_BRANCH:    machine.PushingBranch,
 	pb.SessionState_SESSION_STATE_OPENING_DRAFT_PR:  machine.OpeningDraftPR,
 	pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN: machine.ImplementingPlan,

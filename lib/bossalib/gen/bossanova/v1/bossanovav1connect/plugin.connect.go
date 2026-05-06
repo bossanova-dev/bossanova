@@ -29,6 +29,8 @@ const (
 	SchedulerServiceName = "bossanova.v1.SchedulerService"
 	// WorkflowServiceName is the fully-qualified name of the WorkflowService service.
 	WorkflowServiceName = "bossanova.v1.WorkflowService"
+	// AgentRunnerServiceName is the fully-qualified name of the AgentRunnerService service.
+	AgentRunnerServiceName = "bossanova.v1.AgentRunnerService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -86,6 +88,33 @@ const (
 	// WorkflowServiceNotifyStatusChangeProcedure is the fully-qualified name of the WorkflowService's
 	// NotifyStatusChange RPC.
 	WorkflowServiceNotifyStatusChangeProcedure = "/bossanova.v1.WorkflowService/NotifyStatusChange"
+	// AgentRunnerServiceGetInfoProcedure is the fully-qualified name of the AgentRunnerService's
+	// GetInfo RPC.
+	AgentRunnerServiceGetInfoProcedure = "/bossanova.v1.AgentRunnerService/GetInfo"
+	// AgentRunnerServiceStartRunProcedure is the fully-qualified name of the AgentRunnerService's
+	// StartRun RPC.
+	AgentRunnerServiceStartRunProcedure = "/bossanova.v1.AgentRunnerService/StartRun"
+	// AgentRunnerServiceStopRunProcedure is the fully-qualified name of the AgentRunnerService's
+	// StopRun RPC.
+	AgentRunnerServiceStopRunProcedure = "/bossanova.v1.AgentRunnerService/StopRun"
+	// AgentRunnerServiceIsRunningProcedure is the fully-qualified name of the AgentRunnerService's
+	// IsRunning RPC.
+	AgentRunnerServiceIsRunningProcedure = "/bossanova.v1.AgentRunnerService/IsRunning"
+	// AgentRunnerServiceExitStatusProcedure is the fully-qualified name of the AgentRunnerService's
+	// ExitStatus RPC.
+	AgentRunnerServiceExitStatusProcedure = "/bossanova.v1.AgentRunnerService/ExitStatus"
+	// AgentRunnerServiceConfigureFinalizeHookProcedure is the fully-qualified name of the
+	// AgentRunnerService's ConfigureFinalizeHook RPC.
+	AgentRunnerServiceConfigureFinalizeHookProcedure = "/bossanova.v1.AgentRunnerService/ConfigureFinalizeHook"
+	// AgentRunnerServiceBuildInteractiveCommandProcedure is the fully-qualified name of the
+	// AgentRunnerService's BuildInteractiveCommand RPC.
+	AgentRunnerServiceBuildInteractiveCommandProcedure = "/bossanova.v1.AgentRunnerService/BuildInteractiveCommand"
+	// AgentRunnerServiceListIgnoredDirtyFilesProcedure is the fully-qualified name of the
+	// AgentRunnerService's ListIgnoredDirtyFiles RPC.
+	AgentRunnerServiceListIgnoredDirtyFilesProcedure = "/bossanova.v1.AgentRunnerService/ListIgnoredDirtyFiles"
+	// AgentRunnerServiceGetChatTitleProcedure is the fully-qualified name of the AgentRunnerService's
+	// GetChatTitle RPC.
+	AgentRunnerServiceGetChatTitleProcedure = "/bossanova.v1.AgentRunnerService/GetChatTitle"
 )
 
 // TaskSourceServiceClient is a client for the bossanova.v1.TaskSourceService service.
@@ -712,4 +741,320 @@ func (UnimplementedWorkflowServiceHandler) GetWorkflowStatus(context.Context, *c
 
 func (UnimplementedWorkflowServiceHandler) NotifyStatusChange(context.Context, *connect.Request[v1.NotifyStatusChangeRequest]) (*connect.Response[v1.NotifyStatusChangeResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.WorkflowService.NotifyStatusChange is not implemented"))
+}
+
+// AgentRunnerServiceClient is a client for the bossanova.v1.AgentRunnerService service.
+type AgentRunnerServiceClient interface {
+	GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error)
+	// Spawn the agent in work_dir with plan piped to stdin. log_path is
+	// bossd-owned (under the daemon's data dir, NOT the worktree); the
+	// plugin opens it with openat(O_NOFOLLOW) and writes one NDJSON line
+	// per output line: {"ts": "...", "text": "..."}. resume_id (optional)
+	// makes the agent resume that session. session_id (optional) makes the
+	// plugin use it; otherwise the plugin generates one. Returns the
+	// resolved session ID.
+	StartRun(context.Context, *connect.Request[v1.StartAgentRunRequest]) (*connect.Response[v1.StartAgentRunResponse], error)
+	// Send SIGTERM (then SIGKILL after WaitDelay) to the named run.
+	StopRun(context.Context, *connect.Request[v1.StopAgentRunRequest]) (*connect.Response[v1.StopAgentRunResponse], error)
+	// Liveness check.
+	IsRunning(context.Context, *connect.Request[v1.IsAgentRunningRequest]) (*connect.Response[v1.IsAgentRunningResponse], error)
+	// Final exit status. exit_error is empty on clean exit. is_complete
+	// is false if the run is still active.
+	ExitStatus(context.Context, *connect.Request[v1.AgentExitStatusRequest]) (*connect.Response[v1.AgentExitStatusResponse], error)
+	// Configure the agent's "tell bossd when the run finishes" hook. For
+	// Claude this writes .claude/settings.local.json. Returns
+	// is_supported=false for agents without one.
+	ConfigureFinalizeHook(context.Context, *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error)
+	// Build the argv for an interactive (tmux-hosted) launch. argv MUST
+	// tee stdout/stderr to log_path so AttachSession can read it.
+	BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error)
+	// Files in workDir that the agent owns (e.g. .claude/settings.local.json).
+	// bossd unions these into git-status filtering.
+	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
+	// Title from the agent's transcript for a given run.
+	GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error)
+}
+
+// NewAgentRunnerServiceClient constructs a client for the bossanova.v1.AgentRunnerService service.
+// By default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped
+// responses, and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
+// connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) AgentRunnerServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	agentRunnerServiceMethods := v1.File_bossanova_v1_plugin_proto.Services().ByName("AgentRunnerService").Methods()
+	return &agentRunnerServiceClient{
+		getInfo: connect.NewClient[v1.AgentRunnerServiceGetInfoRequest, v1.AgentRunnerServiceGetInfoResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceGetInfoProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("GetInfo")),
+			connect.WithClientOptions(opts...),
+		),
+		startRun: connect.NewClient[v1.StartAgentRunRequest, v1.StartAgentRunResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceStartRunProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("StartRun")),
+			connect.WithClientOptions(opts...),
+		),
+		stopRun: connect.NewClient[v1.StopAgentRunRequest, v1.StopAgentRunResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceStopRunProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("StopRun")),
+			connect.WithClientOptions(opts...),
+		),
+		isRunning: connect.NewClient[v1.IsAgentRunningRequest, v1.IsAgentRunningResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceIsRunningProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("IsRunning")),
+			connect.WithClientOptions(opts...),
+		),
+		exitStatus: connect.NewClient[v1.AgentExitStatusRequest, v1.AgentExitStatusResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceExitStatusProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("ExitStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		configureFinalizeHook: connect.NewClient[v1.ConfigureFinalizeHookRequest, v1.ConfigureFinalizeHookResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceConfigureFinalizeHookProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("ConfigureFinalizeHook")),
+			connect.WithClientOptions(opts...),
+		),
+		buildInteractiveCommand: connect.NewClient[v1.BuildInteractiveCommandRequest, v1.BuildInteractiveCommandResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceBuildInteractiveCommandProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("BuildInteractiveCommand")),
+			connect.WithClientOptions(opts...),
+		),
+		listIgnoredDirtyFiles: connect.NewClient[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceListIgnoredDirtyFilesProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("ListIgnoredDirtyFiles")),
+			connect.WithClientOptions(opts...),
+		),
+		getChatTitle: connect.NewClient[v1.GetChatTitleRequest, v1.GetChatTitleResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceGetChatTitleProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("GetChatTitle")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// agentRunnerServiceClient implements AgentRunnerServiceClient.
+type agentRunnerServiceClient struct {
+	getInfo                 *connect.Client[v1.AgentRunnerServiceGetInfoRequest, v1.AgentRunnerServiceGetInfoResponse]
+	startRun                *connect.Client[v1.StartAgentRunRequest, v1.StartAgentRunResponse]
+	stopRun                 *connect.Client[v1.StopAgentRunRequest, v1.StopAgentRunResponse]
+	isRunning               *connect.Client[v1.IsAgentRunningRequest, v1.IsAgentRunningResponse]
+	exitStatus              *connect.Client[v1.AgentExitStatusRequest, v1.AgentExitStatusResponse]
+	configureFinalizeHook   *connect.Client[v1.ConfigureFinalizeHookRequest, v1.ConfigureFinalizeHookResponse]
+	buildInteractiveCommand *connect.Client[v1.BuildInteractiveCommandRequest, v1.BuildInteractiveCommandResponse]
+	listIgnoredDirtyFiles   *connect.Client[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse]
+	getChatTitle            *connect.Client[v1.GetChatTitleRequest, v1.GetChatTitleResponse]
+}
+
+// GetInfo calls bossanova.v1.AgentRunnerService.GetInfo.
+func (c *agentRunnerServiceClient) GetInfo(ctx context.Context, req *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error) {
+	return c.getInfo.CallUnary(ctx, req)
+}
+
+// StartRun calls bossanova.v1.AgentRunnerService.StartRun.
+func (c *agentRunnerServiceClient) StartRun(ctx context.Context, req *connect.Request[v1.StartAgentRunRequest]) (*connect.Response[v1.StartAgentRunResponse], error) {
+	return c.startRun.CallUnary(ctx, req)
+}
+
+// StopRun calls bossanova.v1.AgentRunnerService.StopRun.
+func (c *agentRunnerServiceClient) StopRun(ctx context.Context, req *connect.Request[v1.StopAgentRunRequest]) (*connect.Response[v1.StopAgentRunResponse], error) {
+	return c.stopRun.CallUnary(ctx, req)
+}
+
+// IsRunning calls bossanova.v1.AgentRunnerService.IsRunning.
+func (c *agentRunnerServiceClient) IsRunning(ctx context.Context, req *connect.Request[v1.IsAgentRunningRequest]) (*connect.Response[v1.IsAgentRunningResponse], error) {
+	return c.isRunning.CallUnary(ctx, req)
+}
+
+// ExitStatus calls bossanova.v1.AgentRunnerService.ExitStatus.
+func (c *agentRunnerServiceClient) ExitStatus(ctx context.Context, req *connect.Request[v1.AgentExitStatusRequest]) (*connect.Response[v1.AgentExitStatusResponse], error) {
+	return c.exitStatus.CallUnary(ctx, req)
+}
+
+// ConfigureFinalizeHook calls bossanova.v1.AgentRunnerService.ConfigureFinalizeHook.
+func (c *agentRunnerServiceClient) ConfigureFinalizeHook(ctx context.Context, req *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error) {
+	return c.configureFinalizeHook.CallUnary(ctx, req)
+}
+
+// BuildInteractiveCommand calls bossanova.v1.AgentRunnerService.BuildInteractiveCommand.
+func (c *agentRunnerServiceClient) BuildInteractiveCommand(ctx context.Context, req *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error) {
+	return c.buildInteractiveCommand.CallUnary(ctx, req)
+}
+
+// ListIgnoredDirtyFiles calls bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles.
+func (c *agentRunnerServiceClient) ListIgnoredDirtyFiles(ctx context.Context, req *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error) {
+	return c.listIgnoredDirtyFiles.CallUnary(ctx, req)
+}
+
+// GetChatTitle calls bossanova.v1.AgentRunnerService.GetChatTitle.
+func (c *agentRunnerServiceClient) GetChatTitle(ctx context.Context, req *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error) {
+	return c.getChatTitle.CallUnary(ctx, req)
+}
+
+// AgentRunnerServiceHandler is an implementation of the bossanova.v1.AgentRunnerService service.
+type AgentRunnerServiceHandler interface {
+	GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error)
+	// Spawn the agent in work_dir with plan piped to stdin. log_path is
+	// bossd-owned (under the daemon's data dir, NOT the worktree); the
+	// plugin opens it with openat(O_NOFOLLOW) and writes one NDJSON line
+	// per output line: {"ts": "...", "text": "..."}. resume_id (optional)
+	// makes the agent resume that session. session_id (optional) makes the
+	// plugin use it; otherwise the plugin generates one. Returns the
+	// resolved session ID.
+	StartRun(context.Context, *connect.Request[v1.StartAgentRunRequest]) (*connect.Response[v1.StartAgentRunResponse], error)
+	// Send SIGTERM (then SIGKILL after WaitDelay) to the named run.
+	StopRun(context.Context, *connect.Request[v1.StopAgentRunRequest]) (*connect.Response[v1.StopAgentRunResponse], error)
+	// Liveness check.
+	IsRunning(context.Context, *connect.Request[v1.IsAgentRunningRequest]) (*connect.Response[v1.IsAgentRunningResponse], error)
+	// Final exit status. exit_error is empty on clean exit. is_complete
+	// is false if the run is still active.
+	ExitStatus(context.Context, *connect.Request[v1.AgentExitStatusRequest]) (*connect.Response[v1.AgentExitStatusResponse], error)
+	// Configure the agent's "tell bossd when the run finishes" hook. For
+	// Claude this writes .claude/settings.local.json. Returns
+	// is_supported=false for agents without one.
+	ConfigureFinalizeHook(context.Context, *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error)
+	// Build the argv for an interactive (tmux-hosted) launch. argv MUST
+	// tee stdout/stderr to log_path so AttachSession can read it.
+	BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error)
+	// Files in workDir that the agent owns (e.g. .claude/settings.local.json).
+	// bossd unions these into git-status filtering.
+	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
+	// Title from the agent's transcript for a given run.
+	GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error)
+}
+
+// NewAgentRunnerServiceHandler builds an HTTP handler from the service implementation. It returns
+// the path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	agentRunnerServiceMethods := v1.File_bossanova_v1_plugin_proto.Services().ByName("AgentRunnerService").Methods()
+	agentRunnerServiceGetInfoHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceGetInfoProcedure,
+		svc.GetInfo,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("GetInfo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceStartRunHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceStartRunProcedure,
+		svc.StartRun,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("StartRun")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceStopRunHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceStopRunProcedure,
+		svc.StopRun,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("StopRun")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceIsRunningHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceIsRunningProcedure,
+		svc.IsRunning,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("IsRunning")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceExitStatusHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceExitStatusProcedure,
+		svc.ExitStatus,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("ExitStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceConfigureFinalizeHookHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceConfigureFinalizeHookProcedure,
+		svc.ConfigureFinalizeHook,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("ConfigureFinalizeHook")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceBuildInteractiveCommandHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceBuildInteractiveCommandProcedure,
+		svc.BuildInteractiveCommand,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("BuildInteractiveCommand")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceListIgnoredDirtyFilesHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceListIgnoredDirtyFilesProcedure,
+		svc.ListIgnoredDirtyFiles,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("ListIgnoredDirtyFiles")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceGetChatTitleHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceGetChatTitleProcedure,
+		svc.GetChatTitle,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("GetChatTitle")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/bossanova.v1.AgentRunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case AgentRunnerServiceGetInfoProcedure:
+			agentRunnerServiceGetInfoHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceStartRunProcedure:
+			agentRunnerServiceStartRunHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceStopRunProcedure:
+			agentRunnerServiceStopRunHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceIsRunningProcedure:
+			agentRunnerServiceIsRunningHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceExitStatusProcedure:
+			agentRunnerServiceExitStatusHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceConfigureFinalizeHookProcedure:
+			agentRunnerServiceConfigureFinalizeHookHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceBuildInteractiveCommandProcedure:
+			agentRunnerServiceBuildInteractiveCommandHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceListIgnoredDirtyFilesProcedure:
+			agentRunnerServiceListIgnoredDirtyFilesHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceGetChatTitleProcedure:
+			agentRunnerServiceGetChatTitleHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedAgentRunnerServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedAgentRunnerServiceHandler struct{}
+
+func (UnimplementedAgentRunnerServiceHandler) GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.GetInfo is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) StartRun(context.Context, *connect.Request[v1.StartAgentRunRequest]) (*connect.Response[v1.StartAgentRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.StartRun is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) StopRun(context.Context, *connect.Request[v1.StopAgentRunRequest]) (*connect.Response[v1.StopAgentRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.StopRun is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) IsRunning(context.Context, *connect.Request[v1.IsAgentRunningRequest]) (*connect.Response[v1.IsAgentRunningResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.IsRunning is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) ExitStatus(context.Context, *connect.Request[v1.AgentExitStatusRequest]) (*connect.Response[v1.AgentExitStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ExitStatus is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) ConfigureFinalizeHook(context.Context, *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ConfigureFinalizeHook is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.BuildInteractiveCommand is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.GetChatTitle is not implemented"))
 }

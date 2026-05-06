@@ -19,7 +19,8 @@ func NewHandshake(cookieValue string) goplugin.HandshakeConfig {
 }
 
 // NewPluginMap builds a plugin set with the given HostServiceServer injected
-// into plugin types that need host callbacks (TaskSource, WorkflowService).
+// into plugin types that need host callbacks (TaskSource, WorkflowService,
+// AgentRunner).
 // This allows the plugin subprocess to call back to the host via the
 // go-plugin broker.
 func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
@@ -28,6 +29,7 @@ func NewPluginMap(hostService *HostServiceServer) goplugin.PluginSet {
 		sharedplugin.PluginTypeEventSource: &EventSourceGRPCPlugin{},
 		sharedplugin.PluginTypeScheduler:   &SchedulerGRPCPlugin{},
 		sharedplugin.PluginTypeWorkflow:    &WorkflowServiceGRPCPlugin{HostService: hostService},
+		sharedplugin.PluginTypeAgentRunner: &AgentRunnerGRPCPlugin{HostService: hostService},
 	}
 }
 

@@ -11,8 +11,8 @@ func TestHappyPath(t *testing.T) {
 		event Event
 		want  State
 	}{
-		{WorktreeCreated, StartingClaude},
-		{ClaudeStarted, ImplementingPlan},
+		{WorktreeCreated, StartingAgent},
+		{AgentStarted, ImplementingPlan},
 		{PlanComplete, PushingBranch},
 		{BranchPushed, OpeningDraftPR},
 		{PROpened, AwaitingChecks},
@@ -41,8 +41,8 @@ func TestHappyPathNoPlan(t *testing.T) {
 		event Event
 		want  State
 	}{
-		{WorktreeCreated, StartingClaude},
-		{ClaudeStarted, ImplementingPlan},
+		{WorktreeCreated, StartingAgent},
+		{AgentStarted, ImplementingPlan},
 		{PlanComplete, AwaitingChecks}, // skips PushingBranch → OpeningDraftPR
 		{ChecksPassed, GreenDraft},
 		{PlanComplete, ReadyForReview},
@@ -62,7 +62,7 @@ func TestHappyPathNoPlan(t *testing.T) {
 func TestPlanCompleteWithoutHasPR(t *testing.T) {
 	// Default (HasPR=false): PlanComplete goes to PushingBranch.
 	m := New(CreatingWorktree)
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -79,7 +79,7 @@ func TestFixLoopChecksFailed(t *testing.T) {
 	m := New(CreatingWorktree)
 
 	// Get to awaiting_checks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -116,7 +116,7 @@ func TestMaxAttemptsBlocks(t *testing.T) {
 	m.ctx.MaxAttempts = 2
 
 	// Get to awaiting_checks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -148,7 +148,7 @@ func TestUnblockResetsAttempts(t *testing.T) {
 	m.ctx.MaxAttempts = 1
 
 	// Get to awaiting_checks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -177,7 +177,7 @@ func TestConflictDetected(t *testing.T) {
 	m := New(CreatingWorktree)
 
 	// Get to awaiting_checks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -193,7 +193,7 @@ func TestReviewSubmittedFromGreenDraft(t *testing.T) {
 	m := New(CreatingWorktree)
 
 	// Get to green_draft
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -210,7 +210,7 @@ func TestReviewSubmittedFromReadyForReview(t *testing.T) {
 	m := New(CreatingWorktree)
 
 	// Get to ready_for_review
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -229,13 +229,13 @@ func TestPRClosedFromAnyState(t *testing.T) {
 		setup   []Event
 	}{
 		{CreatingWorktree, nil},
-		{StartingClaude, []Event{WorktreeCreated}},
-		{ImplementingPlan, []Event{WorktreeCreated, ClaudeStarted}},
-		{PushingBranch, []Event{WorktreeCreated, ClaudeStarted, PlanComplete}},
-		{OpeningDraftPR, []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed}},
-		{AwaitingChecks, []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened}},
-		{GreenDraft, []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed}},
-		{ReadyForReview, []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete}},
+		{StartingAgent, []Event{WorktreeCreated}},
+		{ImplementingPlan, []Event{WorktreeCreated, AgentStarted}},
+		{PushingBranch, []Event{WorktreeCreated, AgentStarted, PlanComplete}},
+		{OpeningDraftPR, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed}},
+		{AwaitingChecks, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened}},
+		{GreenDraft, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed}},
+		{ReadyForReview, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete}},
 	}
 
 	for _, tc := range closableStates {
@@ -258,7 +258,7 @@ func TestPRClosedFromAnyState(t *testing.T) {
 
 func TestBlockFromImplementingPlan(t *testing.T) {
 	m := New(CreatingWorktree)
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -275,7 +275,7 @@ func TestFixFailedUnderMaxReturnsToAwaiting(t *testing.T) {
 	m := New(CreatingWorktree)
 
 	// Get to fixing_checks via conflict
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ConflictDetected} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ConflictDetected} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -294,7 +294,7 @@ func TestFixFailedAtMaxBlocks(t *testing.T) {
 	m.ctx.MaxAttempts = 1
 
 	// Get to awaiting_checks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -311,7 +311,7 @@ func TestCheckStateTracking(t *testing.T) {
 	m := New(CreatingWorktree)
 
 	// Get to awaiting_checks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -379,11 +379,11 @@ func TestAllStatesReachable(t *testing.T) {
 	// Verify all 12 states can be reached via valid transitions
 	reached := make(map[State]bool)
 
-	// Happy path reaches: CreatingWorktree, StartingClaude, ImplementingPlan,
+	// Happy path reaches: CreatingWorktree, StartingAgent, ImplementingPlan,
 	// PushingBranch, OpeningDraftPR, AwaitingChecks, GreenDraft, ReadyForReview, Merged
 	m := New(CreatingWorktree)
 	reached[m.State()] = true
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete, PRMerged} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete, PRMerged} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -392,7 +392,7 @@ func TestAllStatesReachable(t *testing.T) {
 
 	// FixingChecks via check failure
 	m2 := New(CreatingWorktree)
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ChecksFailed} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksFailed} {
 		if err := m2.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -402,7 +402,7 @@ func TestAllStatesReachable(t *testing.T) {
 	// Blocked via max attempts
 	m3 := New(CreatingWorktree)
 	m3.ctx.MaxAttempts = 1
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened, ChecksFailed} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksFailed} {
 		if err := m3.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -418,7 +418,7 @@ func TestAllStatesReachable(t *testing.T) {
 
 	// Finalizing via FinalizeRequested from ImplementingPlan
 	m5 := New(CreatingWorktree)
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, FinalizeRequested} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, FinalizeRequested} {
 		if err := m5.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -426,7 +426,7 @@ func TestAllStatesReachable(t *testing.T) {
 	reached[m5.State()] = true
 
 	allStates := []State{
-		CreatingWorktree, StartingClaude, PushingBranch, OpeningDraftPR,
+		CreatingWorktree, StartingAgent, PushingBranch, OpeningDraftPR,
 		ImplementingPlan, AwaitingChecks, FixingChecks, GreenDraft,
 		ReadyForReview, Blocked, Merged, Closed, Finalizing,
 	}
@@ -440,7 +440,7 @@ func TestAllStatesReachable(t *testing.T) {
 
 func TestPRMergedFromAwaitingChecks(t *testing.T) {
 	m := New(CreatingWorktree)
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -462,7 +462,7 @@ func TestInvalidTransitionReturnsError(t *testing.T) {
 
 func TestFinalizeRequestedFromImplementingPlan(t *testing.T) {
 	m := New(CreatingWorktree)
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -485,9 +485,9 @@ func TestFinalizeRequestedFromNonImplementingPlanRejected(t *testing.T) {
 		setup   []Event
 	}{
 		{CreatingWorktree, nil},
-		{StartingClaude, []Event{WorktreeCreated}},
-		{PushingBranch, []Event{WorktreeCreated, ClaudeStarted, PlanComplete}},
-		{AwaitingChecks, []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened}},
+		{StartingAgent, []Event{WorktreeCreated}},
+		{PushingBranch, []Event{WorktreeCreated, AgentStarted, PlanComplete}},
+		{AwaitingChecks, []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened}},
 	}
 	for _, tc := range rejectFrom {
 		t.Run(tc.initial.String(), func(t *testing.T) {
@@ -521,7 +521,7 @@ func TestFinalizingExits(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := New(CreatingWorktree)
-			for _, e := range []Event{WorktreeCreated, ClaudeStarted, FinalizeRequested} {
+			for _, e := range []Event{WorktreeCreated, AgentStarted, FinalizeRequested} {
 				if err := m.Fire(e); err != nil {
 					t.Fatalf("setup Fire(%s): %v", e, err)
 				}
@@ -558,7 +558,7 @@ func TestRetryOrBlock_ExactlyAtMaxAttempts(t *testing.T) {
 	m.ctx.MaxAttempts = 3
 
 	// Get to FixingChecks with AttemptCount = 2
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -596,7 +596,7 @@ func TestRetryOrBlock_JustUnderMaxAttempts(t *testing.T) {
 	m.ctx.MaxAttempts = 5
 
 	// Get to FixingChecks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -635,7 +635,7 @@ func TestFixOrBlock_ExactlyAtMaxAttempts(t *testing.T) {
 	m.ctx.MaxAttempts = 2
 
 	// Get to AwaitingChecks
-	for _, e := range []Event{WorktreeCreated, ClaudeStarted, PlanComplete, BranchPushed, PROpened} {
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened} {
 		if err := m.Fire(e); err != nil {
 			t.Fatalf("Fire(%s): %v", e, err)
 		}
@@ -701,7 +701,7 @@ func TestFinalizingNoProgressEvents(t *testing.T) {
 	invalidEvents := []Event{
 		PlanComplete, ChecksPassed, ChecksFailed, ConflictDetected,
 		ReviewSubmitted, FixComplete, FixFailed, Unblock,
-		WorktreeCreated, ClaudeStarted, BranchPushed, PROpened, FinalizeRequested,
+		WorktreeCreated, AgentStarted, BranchPushed, PROpened, FinalizeRequested,
 	}
 	for _, e := range invalidEvents {
 		if m.CanFire(e) {

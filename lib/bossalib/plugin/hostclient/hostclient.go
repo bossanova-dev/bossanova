@@ -61,9 +61,11 @@ type Client interface {
 	// Repair status
 	SetRepairStatus(ctx context.Context, req *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
 
-	// Repair execution
-	StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error)
-	WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error)
+	// Agent execution. Forwards to the daemon, which delegates to the loaded
+	// AgentRunner plugin (e.g. bossd-plugin-claude). Used by the repair
+	// plugin to spawn a one-shot agent run on a session's worktree.
+	StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error)
+	WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error)
 }
 
 // DirectClient wraps a gRPC connection to the daemon's HostService,
@@ -95,12 +97,24 @@ type EagerClient struct {
 }
 
 // NewEagerClient creates a new eager host service client that dials the host
-// service in the background via the go-plugin broker. This must be called
-// immediately in GRPCServer to avoid the broker's 5-second timeout.
-// Pass WithTimeout(d) to override the default per-call RPC timeout.
+// service in the background via the go-plugin broker using broker ID 1.
+// This must be called immediately in GRPCServer to avoid the broker's
+// 5-second timeout. Pass WithTimeout(d) to override the default per-call RPC
+// timeout.
 func NewEagerClient(broker *goplugin.GRPCBroker, logger zerolog.Logger, opts ...ClientOption) *EagerClient {
+	return NewEagerClientWithBrokerID(broker, logger, 1, opts...)
+}
+
+// NewEagerClientWithBrokerID creates a new eager host service client that
+// dials the host service in the background via the go-plugin broker on the
+// given brokerID. This must be called immediately in GRPCServer to avoid the
+// broker's 5-second timeout. Plugin types that share a daemon with other
+// plugins must use a distinct broker ID (see BrokerID* constants in the
+// plugin package). Pass WithTimeout(d) to override the default per-call RPC
+// timeout.
+func NewEagerClientWithBrokerID(broker *goplugin.GRPCBroker, logger zerolog.Logger, brokerID uint32, opts ...ClientOption) *EagerClient {
 	return newEagerClientFromDialer(func() (*grpc.ClientConn, error) {
-		return broker.Dial(1)
+		return broker.Dial(brokerID)
 	}, logger, opts...)
 }
 
@@ -192,20 +206,20 @@ func (c *EagerClient) SetRepairStatus(ctx context.Context, req *bossanovav1.SetR
 	return client.SetRepairStatus(ctx, req)
 }
 
-func (c *EagerClient) StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error) {
+func (c *EagerClient) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
 	}
-	return client.StartClaudeRun(ctx, req)
+	return client.StartAgentRun(ctx, req)
 }
 
-func (c *EagerClient) WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error) {
+func (c *EagerClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error) {
 	client, err := c.connect()
 	if err != nil {
 		return nil, err
 	}
-	return client.WaitClaudeRun(ctx, req)
+	return client.WaitAgentRun(ctx, req)
 }
 
 // --- DirectClient methods (gRPC calls) ---
@@ -253,20 +267,20 @@ func (c *DirectClient) SetRepairStatus(ctx context.Context, req *bossanovav1.Set
 	return resp, nil
 }
 
-func (c *DirectClient) StartClaudeRun(ctx context.Context, req *bossanovav1.StartClaudeRunRequest) (*bossanovav1.StartClaudeRunResponse, error) {
-	resp := &bossanovav1.StartClaudeRunResponse{}
-	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/StartClaudeRun", req, resp); err != nil {
+func (c *DirectClient) StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error) {
+	resp := &bossanovav1.StartAgentRunHostResponse{}
+	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/StartAgentRun", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// WaitClaudeRun is the long-running exception to invokeUnary's per-call
-// timeout: a repair run can take many minutes, so the caller's context is
-// the only deadline. Streams in this package use the same pattern.
-func (c *DirectClient) WaitClaudeRun(ctx context.Context, req *bossanovav1.WaitClaudeRunRequest) (*bossanovav1.WaitClaudeRunResponse, error) {
-	resp := &bossanovav1.WaitClaudeRunResponse{}
-	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitClaudeRun", req, resp); err != nil {
+// WaitAgentRun bypasses the default RPC timeout because agent runs can
+// legitimately take many minutes (or longer). Lifetime is controlled by the
+// caller's ctx — the repair plugin cancels it on shutdown to drain.
+func (c *DirectClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error) {
+	resp := &bossanovav1.WaitAgentRunHostResponse{}
+	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitAgentRun", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

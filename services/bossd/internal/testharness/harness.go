@@ -28,6 +28,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
@@ -55,18 +56,18 @@ type Options struct {
 
 // Harness provides a fully wired bossd daemon for E2E tests.
 type Harness struct {
-	DB          *sql.DB
-	Repos       db.RepoStore
-	Sessions    db.SessionStore
-	Attempts    db.AttemptStore
-	ClaudeChats db.ClaudeChatStore
-	CronJobs    db.CronJobStore
-	Lifecycle   *session.Lifecycle
-	Server      *server.Server
-	Tmux        *tmux.Client
-	Git         *MockWorktreeManager
-	Claude      *MockClaudeRunner
-	VCS         *MockVCSProvider
+	DB         *sql.DB
+	Repos      db.RepoStore
+	Sessions   db.SessionStore
+	Attempts   db.AttemptStore
+	AgentChats db.AgentChatStore
+	CronJobs   db.CronJobStore
+	Lifecycle  *session.Lifecycle
+	Server     *server.Server
+	Tmux       *tmux.Client
+	Git        *MockWorktreeManager
+	Agent      *MockAgentRunner
+	VCS        *MockVCSProvider
 	// DisplayTracker backs the MergeSession "PR is not passing" guard. Leave
 	// entries empty to let merges through (the guard skips when no entry
 	// exists); call DisplayTracker.Set with a non-passing status to block.
@@ -142,13 +143,13 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	repos := db.NewRepoStore(database)
 	sessions := db.NewSessionStore(database)
 	attempts := db.NewAttemptStore(database)
-	claudeChats := db.NewClaudeChatStore(database)
+	agentChats := db.NewAgentChatStore(database)
 	cronJobs := db.NewCronJobStore(database)
 
 	// Mocks.
 	logger := zerolog.Nop()
 	gitMock := NewMockWorktreeManager()
-	claudeMock := NewMockClaudeRunner()
+	agentMock := NewMockAgentRunner()
 	vcsMock := NewMockVCSProvider()
 
 	// Tmux client. Built BEFORE the Lifecycle so we can pass it in as a
@@ -166,7 +167,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 
 	// Lifecycle. Wired with tmuxClient so cron-spawned sessions route
 	// through startCronTmuxChat instead of the headless claude.Start path.
-	lifecycle := session.NewLifecycle(sessions, repos, claudeChats, cronJobs, gitMock, claudeMock, tmuxClient, vcsMock, logger)
+	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, gitMock, agentMock, tmuxClient, vcsMock, logger)
 
 	// PR display tracker. Wired through to the server so MergeSession's
 	// "PR is not passing" guard is reachable from tests — entries default
@@ -180,10 +181,10 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		Repos:          repos,
 		Sessions:       sessions,
 		Attempts:       attempts,
-		ClaudeChats:    claudeChats,
+		AgentChats:     agentChats,
 		DisplayTracker: display,
 		Lifecycle:      lifecycle,
-		Claude:         claudeMock,
+		Agent:          agentMock,
 		Worktrees:      gitMock,
 		Provider:       vcsMock,
 		Tmux:           tmuxClient,
@@ -239,19 +240,22 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		t.Fatalf("hook server listen: %v", err)
 	}
 	lifecycle.SetHookPort(hookSrv.Port())
+	lifecycle.SetAgents(map[string]agent.AgentRunnerClient{
+		"claude": &MockAgentClient{},
+	})
 	go func() { _ = hookSrv.Serve() }()
 
 	h.DB = database
 	h.Repos = repos
 	h.Sessions = sessions
 	h.Attempts = attempts
-	h.ClaudeChats = claudeChats
+	h.AgentChats = agentChats
 	h.CronJobs = cronJobs
 	h.Lifecycle = lifecycle
 	h.Server = srv
 	h.Tmux = tmuxClient
 	h.Git = gitMock
-	h.Claude = claudeMock
+	h.Agent = agentMock
 	h.VCS = vcsMock
 	h.DisplayTracker = display
 	h.Client = client

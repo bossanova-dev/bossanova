@@ -80,6 +80,9 @@ message OrchestratorCommand {
     // matching transferring_to / transferring_from ACKs Ok:true with
     // no-op.
     TransferCancel transfer_cancel = 9;
+    // bosso → daemon: bring a chat's tmux+claude back to life. Replies
+    // with CommandResult{WakeChatResult} carrying the Outcome enum.
+    WakeChatCommand wake_chat = 10;
   }
 }
 
@@ -96,7 +99,7 @@ message DaemonSnapshot {
   repeated Session sessions = 4;
   // Metadata only — see ClaudeChatMetadata.
   repeated ClaudeChatMetadata chats = 5;
-  // Live chat statuses keyed by claude_id (reuses ChatStatusEntry from daemon.proto).
+  // Live chat statuses keyed by agent_session_id (reuses ChatStatusEntry from daemon.proto).
   repeated ChatStatusEntry statuses = 6;
 }
 
@@ -143,7 +146,7 @@ message ChatStatusDelta {
   ChatStatus status = 2;
   google.protobuf.Timestamp last_output_at = 3;
   // Per-chat key. Empty for legacy daemons; new daemons MUST set this.
-  string claude_id = 4;
+  string agent_session_id = 4;
 }
 
 // --- Slim metadata types ---
@@ -154,13 +157,15 @@ message ChatStatusDelta {
 message ClaudeChatMetadata {
   string id = 1;
   string session_id = 2;
-  string claude_id = 3;
+  string agent_session_id = 3;
   string title = 4;
   string daemon_id = 5;
   google.protobuf.Timestamp created_at = 6;
   google.protobuf.Timestamp updated_at = 7;
   // First ~200 characters of the last message. NOT the full message.
   string last_message_preview = 8;
+  // Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
+  string agent_name = 9;
 }
 
 // --- Command responses ---
@@ -178,16 +183,33 @@ message WebhookAck {
 // CommandResult is the daemon's response to Stop/Pause/Resume/Transfer
 // commands. command_id correlates back to the originating OrchestratorCommand.
 message CommandResult {
+  // ErrorCode is a typed channel for failure-mode signalling so bosso can
+  // map daemon errors back to ConnectRPC codes without parsing the human-
+  // readable `error` string. Append-only — old daemons emit
+  // ERROR_CODE_UNSPECIFIED, which bosso treats as CodeAborted (the
+  // historical default before this field existed).
+  enum ErrorCode {
+    ERROR_CODE_UNSPECIFIED = 0;
+    ERROR_CODE_NOT_FOUND = 1;
+    ERROR_CODE_FAILED_PRECONDITION = 2;
+  }
+
   string command_id = 1;
   bool ok = 2;
-  // Populated when ok == false.
+  // Populated when ok == false. Human-readable; do NOT match on it for
+  // routing — use error_code instead.
   string error = 3;
   oneof payload {
     // Stop/Pause/Resume return the updated Session.
     Session session = 4;
     // Transfer target confirms RESUME with this payload (decision #14).
     TransferConfirmed transfer_confirmed = 5;
+    // WakeChat returns the Outcome enum + the persisted tmux session name.
+    WakeChatResult wake_chat = 6;
   }
+  // Populated when ok == false. Lets bosso map structured failures
+  // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
+  ErrorCode error_code = 7;
 }
 
 // TokenRefresh carries a freshly-obtained WorkOS JWT. Bosso re-verifies it
@@ -241,6 +263,33 @@ message ResumeSessionCommand {
 // command_id.
 message AttachSessionCommand {
   string session_id = 1;
+}
+
+// WakeChatCommand asks the daemon to bring a chat's tmux+claude back to
+// life. The daemon replies with CommandResult carrying a WakeChatResult
+// payload. Idempotent under concurrent calls (per-chat singleflight on
+// the daemon).
+message WakeChatCommand {
+  // agent_session_id of the chat to wake. The chat must already exist
+  // (previously started via RecordChat).
+  string agent_session_id = 1;
+  // If true, skip --resume even if the transcript exists. Default false.
+  bool force_fresh = 2;
+}
+
+// WakeChatResult is the payload sent in a CommandResult for a successful
+// WakeChatCommand. Mirrors the daemon's WakeChatResponse with a stream-
+// scoped Outcome enum (kept separate from daemon.proto's enum to avoid a
+// cross-package import here).
+message WakeChatResult {
+  enum Outcome {
+    OUTCOME_UNSPECIFIED = 0;
+    OUTCOME_ALREADY_LIVE = 1;
+    OUTCOME_RESUMED = 2;
+    OUTCOME_FRESH_FALLBACK = 3;
+  }
+  Outcome outcome = 1;
+  string tmux_session_name = 2;
 }
 
 // TransferSessionCommand asks a daemon to take part in a coordinated transfer

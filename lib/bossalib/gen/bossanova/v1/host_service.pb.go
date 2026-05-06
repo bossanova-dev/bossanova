@@ -763,28 +763,30 @@ func (*SetRepairStatusResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{15}
 }
 
-type StartClaudeRunRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Prompt        string                 `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
+type StartAgentRunHostRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Session ID whose worktree should host the run.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Prompt to feed the agent.
+	Prompt        string `protobuf:"bytes,2,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *StartClaudeRunRequest) Reset() {
-	*x = StartClaudeRunRequest{}
+func (x *StartAgentRunHostRequest) Reset() {
+	*x = StartAgentRunHostRequest{}
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *StartClaudeRunRequest) String() string {
+func (x *StartAgentRunHostRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*StartClaudeRunRequest) ProtoMessage() {}
+func (*StartAgentRunHostRequest) ProtoMessage() {}
 
-func (x *StartClaudeRunRequest) ProtoReflect() protoreflect.Message {
+func (x *StartAgentRunHostRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -796,46 +798,47 @@ func (x *StartClaudeRunRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use StartClaudeRunRequest.ProtoReflect.Descriptor instead.
-func (*StartClaudeRunRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use StartAgentRunHostRequest.ProtoReflect.Descriptor instead.
+func (*StartAgentRunHostRequest) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{16}
 }
 
-func (x *StartClaudeRunRequest) GetSessionId() string {
+func (x *StartAgentRunHostRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
 	}
 	return ""
 }
 
-func (x *StartClaudeRunRequest) GetPrompt() string {
+func (x *StartAgentRunHostRequest) GetPrompt() string {
 	if x != nil {
 		return x.Prompt
 	}
 	return ""
 }
 
-type StartClaudeRunResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClaudeId      string                 `protobuf:"bytes,1,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+type StartAgentRunHostResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Resolved session ID returned by the loaded AgentRunner plugin.
+	AgentSessionId string `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
-func (x *StartClaudeRunResponse) Reset() {
-	*x = StartClaudeRunResponse{}
+func (x *StartAgentRunHostResponse) Reset() {
+	*x = StartAgentRunHostResponse{}
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *StartClaudeRunResponse) String() string {
+func (x *StartAgentRunHostResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*StartClaudeRunResponse) ProtoMessage() {}
+func (*StartAgentRunHostResponse) ProtoMessage() {}
 
-func (x *StartClaudeRunResponse) ProtoReflect() protoreflect.Message {
+func (x *StartAgentRunHostResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -847,39 +850,40 @@ func (x *StartClaudeRunResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use StartClaudeRunResponse.ProtoReflect.Descriptor instead.
-func (*StartClaudeRunResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use StartAgentRunHostResponse.ProtoReflect.Descriptor instead.
+func (*StartAgentRunHostResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *StartClaudeRunResponse) GetClaudeId() string {
+func (x *StartAgentRunHostResponse) GetAgentSessionId() string {
 	if x != nil {
-		return x.ClaudeId
+		return x.AgentSessionId
 	}
 	return ""
 }
 
-type WaitClaudeRunRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClaudeId      string                 `protobuf:"bytes,1,opt,name=claude_id,json=claudeId,proto3" json:"claude_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+type WaitAgentRunHostRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Session ID returned from StartAgentRun (the agent's session ID).
+	AgentSessionId string `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
-func (x *WaitClaudeRunRequest) Reset() {
-	*x = WaitClaudeRunRequest{}
+func (x *WaitAgentRunHostRequest) Reset() {
+	*x = WaitAgentRunHostRequest{}
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *WaitClaudeRunRequest) String() string {
+func (x *WaitAgentRunHostRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*WaitClaudeRunRequest) ProtoMessage() {}
+func (*WaitAgentRunHostRequest) ProtoMessage() {}
 
-func (x *WaitClaudeRunRequest) ProtoReflect() protoreflect.Message {
+func (x *WaitAgentRunHostRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -891,41 +895,40 @@ func (x *WaitClaudeRunRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use WaitClaudeRunRequest.ProtoReflect.Descriptor instead.
-func (*WaitClaudeRunRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use WaitAgentRunHostRequest.ProtoReflect.Descriptor instead.
+func (*WaitAgentRunHostRequest) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{18}
 }
 
-func (x *WaitClaudeRunRequest) GetClaudeId() string {
+func (x *WaitAgentRunHostRequest) GetAgentSessionId() string {
 	if x != nil {
-		return x.ClaudeId
+		return x.AgentSessionId
 	}
 	return ""
 }
 
-type WaitClaudeRunResponse struct {
+type WaitAgentRunHostResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Empty on clean exit. Non-empty contains the runner's exit error
-	// (eg. non-zero exit code, killed by signal, etc.).
+	// Empty on clean exit, otherwise the agent's exit error string.
 	ExitError     string `protobuf:"bytes,1,opt,name=exit_error,json=exitError,proto3" json:"exit_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *WaitClaudeRunResponse) Reset() {
-	*x = WaitClaudeRunResponse{}
+func (x *WaitAgentRunHostResponse) Reset() {
+	*x = WaitAgentRunHostResponse{}
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *WaitClaudeRunResponse) String() string {
+func (x *WaitAgentRunHostResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*WaitClaudeRunResponse) ProtoMessage() {}
+func (*WaitAgentRunHostResponse) ProtoMessage() {}
 
-func (x *WaitClaudeRunResponse) ProtoReflect() protoreflect.Message {
+func (x *WaitAgentRunHostResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_bossanova_v1_host_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -937,12 +940,12 @@ func (x *WaitClaudeRunResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use WaitClaudeRunResponse.ProtoReflect.Descriptor instead.
-func (*WaitClaudeRunResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use WaitAgentRunHostResponse.ProtoReflect.Descriptor instead.
+func (*WaitAgentRunHostResponse) Descriptor() ([]byte, []int) {
 	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{19}
 }
 
-func (x *WaitClaudeRunResponse) GetExitError() string {
+func (x *WaitAgentRunHostResponse) GetExitError() string {
 	if x != nil {
 		return x.ExitError
 	}
@@ -990,18 +993,18 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12!\n" +
 	"\fis_repairing\x18\x02 \x01(\bR\visRepairing\"\x19\n" +
-	"\x17SetRepairStatusResponse\"N\n" +
-	"\x15StartClaudeRunRequest\x12\x1d\n" +
+	"\x17SetRepairStatusResponse\"Q\n" +
+	"\x18StartAgentRunHostRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
-	"\x06prompt\x18\x02 \x01(\tR\x06prompt\"5\n" +
-	"\x16StartClaudeRunResponse\x12\x1b\n" +
-	"\tclaude_id\x18\x01 \x01(\tR\bclaudeId\"3\n" +
-	"\x14WaitClaudeRunRequest\x12\x1b\n" +
-	"\tclaude_id\x18\x01 \x01(\tR\bclaudeId\"6\n" +
-	"\x15WaitClaudeRunResponse\x12\x1d\n" +
+	"\x06prompt\x18\x02 \x01(\tR\x06prompt\"E\n" +
+	"\x19StartAgentRunHostResponse\x12(\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"C\n" +
+	"\x17WaitAgentRunHostRequest\x12(\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"9\n" +
+	"\x18WaitAgentRunHostResponse\x12\x1d\n" +
 	"\n" +
-	"exit_error\x18\x01 \x01(\tR\texitError2\xbc\a\n" +
+	"exit_error\x18\x01 \x01(\tR\texitError2\xc6\a\n" +
 	"\vHostService\x12R\n" +
 	"\vListOpenPRs\x12 .bossanova.v1.ListOpenPRsRequest\x1a!.bossanova.v1.ListOpenPRsResponse\x12^\n" +
 	"\x0fGetCheckResults\x12$.bossanova.v1.GetCheckResultsRequest\x1a%.bossanova.v1.GetCheckResultsResponse\x12R\n" +
@@ -1010,9 +1013,9 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\fListSessions\x12,.bossanova.v1.HostServiceListSessionsRequest\x1a-.bossanova.v1.HostServiceListSessionsResponse\x12d\n" +
 	"\x11GetReviewComments\x12&.bossanova.v1.GetReviewCommentsRequest\x1a'.bossanova.v1.GetReviewCommentsResponse\x12a\n" +
 	"\x10FireSessionEvent\x12%.bossanova.v1.FireSessionEventRequest\x1a&.bossanova.v1.FireSessionEventResponse\x12^\n" +
-	"\x0fSetRepairStatus\x12$.bossanova.v1.SetRepairStatusRequest\x1a%.bossanova.v1.SetRepairStatusResponse\x12[\n" +
-	"\x0eStartClaudeRun\x12#.bossanova.v1.StartClaudeRunRequest\x1a$.bossanova.v1.StartClaudeRunResponse\x12X\n" +
-	"\rWaitClaudeRun\x12\".bossanova.v1.WaitClaudeRunRequest\x1a#.bossanova.v1.WaitClaudeRunResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x0fSetRepairStatus\x12$.bossanova.v1.SetRepairStatusRequest\x1a%.bossanova.v1.SetRepairStatusResponse\x12`\n" +
+	"\rStartAgentRun\x12&.bossanova.v1.StartAgentRunHostRequest\x1a'.bossanova.v1.StartAgentRunHostResponse\x12]\n" +
+	"\fWaitAgentRun\x12%.bossanova.v1.WaitAgentRunHostRequest\x1a&.bossanova.v1.WaitAgentRunHostResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_host_service_proto_rawDescOnce sync.Once
@@ -1044,10 +1047,10 @@ var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*FireSessionEventResponse)(nil),        // 13: bossanova.v1.FireSessionEventResponse
 	(*SetRepairStatusRequest)(nil),          // 14: bossanova.v1.SetRepairStatusRequest
 	(*SetRepairStatusResponse)(nil),         // 15: bossanova.v1.SetRepairStatusResponse
-	(*StartClaudeRunRequest)(nil),           // 16: bossanova.v1.StartClaudeRunRequest
-	(*StartClaudeRunResponse)(nil),          // 17: bossanova.v1.StartClaudeRunResponse
-	(*WaitClaudeRunRequest)(nil),            // 18: bossanova.v1.WaitClaudeRunRequest
-	(*WaitClaudeRunResponse)(nil),           // 19: bossanova.v1.WaitClaudeRunResponse
+	(*StartAgentRunHostRequest)(nil),        // 16: bossanova.v1.StartAgentRunHostRequest
+	(*StartAgentRunHostResponse)(nil),       // 17: bossanova.v1.StartAgentRunHostResponse
+	(*WaitAgentRunHostRequest)(nil),         // 18: bossanova.v1.WaitAgentRunHostRequest
+	(*WaitAgentRunHostResponse)(nil),        // 19: bossanova.v1.WaitAgentRunHostResponse
 	(*PRSummary)(nil),                       // 20: bossanova.v1.PRSummary
 	(*CheckResult)(nil),                     // 21: bossanova.v1.CheckResult
 	(*PRStatus)(nil),                        // 22: bossanova.v1.PRStatus
@@ -1071,8 +1074,8 @@ var file_bossanova_v1_host_service_proto_depIdxs = []int32{
 	10, // 12: bossanova.v1.HostService.GetReviewComments:input_type -> bossanova.v1.GetReviewCommentsRequest
 	12, // 13: bossanova.v1.HostService.FireSessionEvent:input_type -> bossanova.v1.FireSessionEventRequest
 	14, // 14: bossanova.v1.HostService.SetRepairStatus:input_type -> bossanova.v1.SetRepairStatusRequest
-	16, // 15: bossanova.v1.HostService.StartClaudeRun:input_type -> bossanova.v1.StartClaudeRunRequest
-	18, // 16: bossanova.v1.HostService.WaitClaudeRun:input_type -> bossanova.v1.WaitClaudeRunRequest
+	16, // 15: bossanova.v1.HostService.StartAgentRun:input_type -> bossanova.v1.StartAgentRunHostRequest
+	18, // 16: bossanova.v1.HostService.WaitAgentRun:input_type -> bossanova.v1.WaitAgentRunHostRequest
 	1,  // 17: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
 	3,  // 18: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
 	5,  // 19: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
@@ -1081,8 +1084,8 @@ var file_bossanova_v1_host_service_proto_depIdxs = []int32{
 	11, // 22: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
 	13, // 23: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
 	15, // 24: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
-	17, // 25: bossanova.v1.HostService.StartClaudeRun:output_type -> bossanova.v1.StartClaudeRunResponse
-	19, // 26: bossanova.v1.HostService.WaitClaudeRun:output_type -> bossanova.v1.WaitClaudeRunResponse
+	17, // 25: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
+	19, // 26: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
 	17, // [17:27] is the sub-list for method output_type
 	7,  // [7:17] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name

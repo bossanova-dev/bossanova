@@ -284,12 +284,12 @@ func (c *LocalClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest)
 
 // --- Claude Chat Tracking ---
 
-func (c *LocalClient) RecordChat(ctx context.Context, sessionID, claudeID, title string, resume bool) (*pb.ClaudeChat, error) {
+func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool) (*pb.ClaudeChat, error) {
 	resp, err := c.rpc.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  claudeID,
-		Title:     title,
-		Resume:    resume,
+		SessionId:      sessionID,
+		AgentSessionId: agentSessionID,
+		Title:          title,
+		Resume:         resume,
 	}))
 	if err != nil {
 		return nil, err
@@ -307,19 +307,34 @@ func (c *LocalClient) ListChats(ctx context.Context, sessionID string) ([]*pb.Cl
 	return resp.Msg.Chats, nil
 }
 
-func (c *LocalClient) UpdateChatTitle(ctx context.Context, claudeID, title string) error {
+func (c *LocalClient) UpdateChatTitle(ctx context.Context, agentSessionID, title string) error {
 	_, err := c.rpc.UpdateChatTitle(ctx, connect.NewRequest(&pb.UpdateChatTitleRequest{
-		ClaudeId: claudeID,
-		Title:    title,
+		AgentSessionId: agentSessionID,
+		Title:          title,
 	}))
 	return err
 }
 
-func (c *LocalClient) DeleteChat(ctx context.Context, claudeID string) error {
+func (c *LocalClient) DeleteChat(ctx context.Context, agentSessionID string) error {
 	_, err := c.rpc.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
-		ClaudeId: claudeID,
+		AgentSessionId: agentSessionID,
 	}))
 	return err
+}
+
+// WakeChat asks the daemon to bring a stopped chat back online. The sessionID
+// argument is part of the BossClient signature (used by RemoteClient for the
+// orchestrator authz check) but ignored here since the local daemon scopes
+// directly off agent_session_id.
+func (c *LocalClient) WakeChat(ctx context.Context, _, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error) {
+	resp, err := c.rpc.WakeChat(ctx, connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: agentSessionID,
+		ForceFresh:     forceFresh,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
 }
 
 // --- Chat Status ---

@@ -90,6 +90,13 @@ func (a *App) SetAttachSession(sessionID, resumeID string) {
 	a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, sessionID, resumeID)
 }
 
+// SetInitialAgent overrides the agent for new sessions created via the
+// NewSession view. Empty means "use Settings.DefaultAgent" (the daemon
+// falls back automatically).
+func (a *App) SetInitialAgent(name string) {
+	a.newSession.SetInitialAgent(name)
+}
+
 func (a App) Init() tea.Cmd {
 	var viewCmd tea.Cmd
 	switch a.activeView {
@@ -309,7 +316,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Return to chat picker, highlighting the chat we came from.
 			var highlightID string
 			if cursor := a.chatPicker.table.Cursor(); cursor >= 0 && cursor < len(a.chatPicker.chats) {
-				highlightID = a.chatPicker.chats[cursor].ClaudeId
+				highlightID = a.chatPicker.chats[cursor].AgentSessionId
 			}
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.sessionSettings.sessionID, highlightID)
 			a.chatPicker.width = a.width
@@ -337,8 +344,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.attach = updated.(AttachModel)
 		if a.attach.Detached() {
 			sessionID := a.attach.SessionID()
-			claudeID := a.attach.ClaudeID()
-			a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, claudeID)
+			agentSessionID := a.attach.AgentSessionID()
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, agentSessionID)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			a.activeView = ViewChatPicker

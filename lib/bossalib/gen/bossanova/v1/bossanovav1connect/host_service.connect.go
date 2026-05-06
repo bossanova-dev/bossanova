@@ -55,12 +55,12 @@ const (
 	// HostServiceSetRepairStatusProcedure is the fully-qualified name of the HostService's
 	// SetRepairStatus RPC.
 	HostServiceSetRepairStatusProcedure = "/bossanova.v1.HostService/SetRepairStatus"
-	// HostServiceStartClaudeRunProcedure is the fully-qualified name of the HostService's
-	// StartClaudeRun RPC.
-	HostServiceStartClaudeRunProcedure = "/bossanova.v1.HostService/StartClaudeRun"
-	// HostServiceWaitClaudeRunProcedure is the fully-qualified name of the HostService's WaitClaudeRun
+	// HostServiceStartAgentRunProcedure is the fully-qualified name of the HostService's StartAgentRun
 	// RPC.
-	HostServiceWaitClaudeRunProcedure = "/bossanova.v1.HostService/WaitClaudeRun"
+	HostServiceStartAgentRunProcedure = "/bossanova.v1.HostService/StartAgentRun"
+	// HostServiceWaitAgentRunProcedure is the fully-qualified name of the HostService's WaitAgentRun
+	// RPC.
+	HostServiceWaitAgentRunProcedure = "/bossanova.v1.HostService/WaitAgentRun"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -81,15 +81,15 @@ type HostServiceClient interface {
 	FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error)
 	// SetRepairStatus sets or clears the is_repairing flag for a session.
 	SetRepairStatus(context.Context, *connect.Request[v1.SetRepairStatusRequest]) (*connect.Response[v1.SetRepairStatusResponse], error)
-	// StartClaudeRun starts a Claude process in the worktree of the given
-	// session, with the given prompt as the initial message. Returns a
-	// claude_id that can be used with WaitClaudeRun and the existing
-	// attach RPCs. Enforces one active Claude run per session (returns
-	// AlreadyExists if a run is already underway).
-	StartClaudeRun(context.Context, *connect.Request[v1.StartClaudeRunRequest]) (*connect.Response[v1.StartClaudeRunResponse], error)
-	// WaitClaudeRun blocks until the Claude process identified by claude_id
-	// exits. Returns the process's exit error message (empty on clean exit).
-	WaitClaudeRun(context.Context, *connect.Request[v1.WaitClaudeRunRequest]) (*connect.Response[v1.WaitClaudeRunResponse], error)
+	// StartAgentRun spawns an agent run for the given session. The daemon
+	// resolves the worktree path and bossd-owned log path internally and
+	// forwards to the loaded AgentRunner plugin. Returns the resolved
+	// session ID. Names use the "Host" suffix to avoid clashing with
+	// AgentRunnerService.StartRun's StartAgentRunRequest in plugin.proto.
+	StartAgentRun(context.Context, *connect.Request[v1.StartAgentRunHostRequest]) (*connect.Response[v1.StartAgentRunHostResponse], error)
+	// WaitAgentRun blocks until the named agent run exits. Returns the exit
+	// error message (empty on clean exit).
+	WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -151,16 +151,16 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("SetRepairStatus")),
 			connect.WithClientOptions(opts...),
 		),
-		startClaudeRun: connect.NewClient[v1.StartClaudeRunRequest, v1.StartClaudeRunResponse](
+		startAgentRun: connect.NewClient[v1.StartAgentRunHostRequest, v1.StartAgentRunHostResponse](
 			httpClient,
-			baseURL+HostServiceStartClaudeRunProcedure,
-			connect.WithSchema(hostServiceMethods.ByName("StartClaudeRun")),
+			baseURL+HostServiceStartAgentRunProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("StartAgentRun")),
 			connect.WithClientOptions(opts...),
 		),
-		waitClaudeRun: connect.NewClient[v1.WaitClaudeRunRequest, v1.WaitClaudeRunResponse](
+		waitAgentRun: connect.NewClient[v1.WaitAgentRunHostRequest, v1.WaitAgentRunHostResponse](
 			httpClient,
-			baseURL+HostServiceWaitClaudeRunProcedure,
-			connect.WithSchema(hostServiceMethods.ByName("WaitClaudeRun")),
+			baseURL+HostServiceWaitAgentRunProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("WaitAgentRun")),
 			connect.WithClientOptions(opts...),
 		),
 	}
@@ -176,8 +176,8 @@ type hostServiceClient struct {
 	getReviewComments *connect.Client[v1.GetReviewCommentsRequest, v1.GetReviewCommentsResponse]
 	fireSessionEvent  *connect.Client[v1.FireSessionEventRequest, v1.FireSessionEventResponse]
 	setRepairStatus   *connect.Client[v1.SetRepairStatusRequest, v1.SetRepairStatusResponse]
-	startClaudeRun    *connect.Client[v1.StartClaudeRunRequest, v1.StartClaudeRunResponse]
-	waitClaudeRun     *connect.Client[v1.WaitClaudeRunRequest, v1.WaitClaudeRunResponse]
+	startAgentRun     *connect.Client[v1.StartAgentRunHostRequest, v1.StartAgentRunHostResponse]
+	waitAgentRun      *connect.Client[v1.WaitAgentRunHostRequest, v1.WaitAgentRunHostResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -220,14 +220,14 @@ func (c *hostServiceClient) SetRepairStatus(ctx context.Context, req *connect.Re
 	return c.setRepairStatus.CallUnary(ctx, req)
 }
 
-// StartClaudeRun calls bossanova.v1.HostService.StartClaudeRun.
-func (c *hostServiceClient) StartClaudeRun(ctx context.Context, req *connect.Request[v1.StartClaudeRunRequest]) (*connect.Response[v1.StartClaudeRunResponse], error) {
-	return c.startClaudeRun.CallUnary(ctx, req)
+// StartAgentRun calls bossanova.v1.HostService.StartAgentRun.
+func (c *hostServiceClient) StartAgentRun(ctx context.Context, req *connect.Request[v1.StartAgentRunHostRequest]) (*connect.Response[v1.StartAgentRunHostResponse], error) {
+	return c.startAgentRun.CallUnary(ctx, req)
 }
 
-// WaitClaudeRun calls bossanova.v1.HostService.WaitClaudeRun.
-func (c *hostServiceClient) WaitClaudeRun(ctx context.Context, req *connect.Request[v1.WaitClaudeRunRequest]) (*connect.Response[v1.WaitClaudeRunResponse], error) {
-	return c.waitClaudeRun.CallUnary(ctx, req)
+// WaitAgentRun calls bossanova.v1.HostService.WaitAgentRun.
+func (c *hostServiceClient) WaitAgentRun(ctx context.Context, req *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error) {
+	return c.waitAgentRun.CallUnary(ctx, req)
 }
 
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
@@ -248,15 +248,15 @@ type HostServiceHandler interface {
 	FireSessionEvent(context.Context, *connect.Request[v1.FireSessionEventRequest]) (*connect.Response[v1.FireSessionEventResponse], error)
 	// SetRepairStatus sets or clears the is_repairing flag for a session.
 	SetRepairStatus(context.Context, *connect.Request[v1.SetRepairStatusRequest]) (*connect.Response[v1.SetRepairStatusResponse], error)
-	// StartClaudeRun starts a Claude process in the worktree of the given
-	// session, with the given prompt as the initial message. Returns a
-	// claude_id that can be used with WaitClaudeRun and the existing
-	// attach RPCs. Enforces one active Claude run per session (returns
-	// AlreadyExists if a run is already underway).
-	StartClaudeRun(context.Context, *connect.Request[v1.StartClaudeRunRequest]) (*connect.Response[v1.StartClaudeRunResponse], error)
-	// WaitClaudeRun blocks until the Claude process identified by claude_id
-	// exits. Returns the process's exit error message (empty on clean exit).
-	WaitClaudeRun(context.Context, *connect.Request[v1.WaitClaudeRunRequest]) (*connect.Response[v1.WaitClaudeRunResponse], error)
+	// StartAgentRun spawns an agent run for the given session. The daemon
+	// resolves the worktree path and bossd-owned log path internally and
+	// forwards to the loaded AgentRunner plugin. Returns the resolved
+	// session ID. Names use the "Host" suffix to avoid clashing with
+	// AgentRunnerService.StartRun's StartAgentRunRequest in plugin.proto.
+	StartAgentRun(context.Context, *connect.Request[v1.StartAgentRunHostRequest]) (*connect.Response[v1.StartAgentRunHostResponse], error)
+	// WaitAgentRun blocks until the named agent run exits. Returns the exit
+	// error message (empty on clean exit).
+	WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -314,16 +314,16 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("SetRepairStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
-	hostServiceStartClaudeRunHandler := connect.NewUnaryHandler(
-		HostServiceStartClaudeRunProcedure,
-		svc.StartClaudeRun,
-		connect.WithSchema(hostServiceMethods.ByName("StartClaudeRun")),
+	hostServiceStartAgentRunHandler := connect.NewUnaryHandler(
+		HostServiceStartAgentRunProcedure,
+		svc.StartAgentRun,
+		connect.WithSchema(hostServiceMethods.ByName("StartAgentRun")),
 		connect.WithHandlerOptions(opts...),
 	)
-	hostServiceWaitClaudeRunHandler := connect.NewUnaryHandler(
-		HostServiceWaitClaudeRunProcedure,
-		svc.WaitClaudeRun,
-		connect.WithSchema(hostServiceMethods.ByName("WaitClaudeRun")),
+	hostServiceWaitAgentRunHandler := connect.NewUnaryHandler(
+		HostServiceWaitAgentRunProcedure,
+		svc.WaitAgentRun,
+		connect.WithSchema(hostServiceMethods.ByName("WaitAgentRun")),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -344,10 +344,10 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceFireSessionEventHandler.ServeHTTP(w, r)
 		case HostServiceSetRepairStatusProcedure:
 			hostServiceSetRepairStatusHandler.ServeHTTP(w, r)
-		case HostServiceStartClaudeRunProcedure:
-			hostServiceStartClaudeRunHandler.ServeHTTP(w, r)
-		case HostServiceWaitClaudeRunProcedure:
-			hostServiceWaitClaudeRunHandler.ServeHTTP(w, r)
+		case HostServiceStartAgentRunProcedure:
+			hostServiceStartAgentRunHandler.ServeHTTP(w, r)
+		case HostServiceWaitAgentRunProcedure:
+			hostServiceWaitAgentRunHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -389,10 +389,10 @@ func (UnimplementedHostServiceHandler) SetRepairStatus(context.Context, *connect
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.SetRepairStatus is not implemented"))
 }
 
-func (UnimplementedHostServiceHandler) StartClaudeRun(context.Context, *connect.Request[v1.StartClaudeRunRequest]) (*connect.Response[v1.StartClaudeRunResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.StartClaudeRun is not implemented"))
+func (UnimplementedHostServiceHandler) StartAgentRun(context.Context, *connect.Request[v1.StartAgentRunHostRequest]) (*connect.Response[v1.StartAgentRunHostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.StartAgentRun is not implemented"))
 }
 
-func (UnimplementedHostServiceHandler) WaitClaudeRun(context.Context, *connect.Request[v1.WaitClaudeRunRequest]) (*connect.Response[v1.WaitClaudeRunResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.WaitClaudeRun is not implemented"))
+func (UnimplementedHostServiceHandler) WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.WaitAgentRun is not implemented"))
 }

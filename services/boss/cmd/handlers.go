@@ -160,11 +160,22 @@ func runLS(cmd *cobra.Command) error {
 		return nil
 	}
 
+	// Determine the user's default agent so we can decide whether the AGENT
+	// column needs to be rendered. If the settings file can't be loaded, fall
+	// back to "claude" rather than failing the listing — config errors should
+	// not block read-only commands.
+	defaultAgent := "claude"
+	if cfg, err := config.Load(); err == nil && cfg.DefaultAgent != "" {
+		defaultAgent = cfg.DefaultAgent
+	}
+
 	ids := make([]string, len(sessions))
 	titles := make([]string, len(sessions))
 	stateStrs2 := make([]string, len(sessions))
 	branchStrs := make([]string, len(sessions))
 	prStrs := make([]string, len(sessions))
+	agentStrs := make([]string, len(sessions))
+	showAgentCol := false
 	for i, sess := range sessions {
 		id := sess.Id
 		if len(id) > 8 {
@@ -186,6 +197,14 @@ func runLS(cmd *cobra.Command) error {
 		} else {
 			prStrs[i] = "-"
 		}
+		if sess.AgentName == "" {
+			agentStrs[i] = "-"
+		} else {
+			agentStrs[i] = sess.AgentName
+			if sess.AgentName != defaultAgent {
+				showAgentCol = true
+			}
+		}
 	}
 
 	cols := []table.Column{
@@ -195,10 +214,17 @@ func runLS(cmd *cobra.Command) error {
 		{Title: "BRANCH", Width: views.MaxColWidth("BRANCH", branchStrs, 40)},
 		{Title: "PR", Width: views.MaxColWidth("PR", prStrs, 8)},
 	}
+	if showAgentCol {
+		cols = append(cols, table.Column{Title: "AGENT", Width: views.MaxColWidth("AGENT", agentStrs, 12)})
+	}
 
 	rows := make([]table.Row, len(sessions))
 	for i := range sessions {
-		rows[i] = table.Row{ids[i], titles[i], stateStrs2[i], branchStrs[i], prStrs[i]}
+		row := table.Row{ids[i], titles[i], stateStrs2[i], branchStrs[i], prStrs[i]}
+		if showAgentCol {
+			row = append(row, agentStrs[i])
+		}
+		rows[i] = row
 	}
 
 	t := table.New(
@@ -214,8 +240,12 @@ func runLS(cmd *cobra.Command) error {
 }
 
 func runNew(cmd *cobra.Command) error {
+	agentName, _ := cmd.Flags().GetString("agent")
 	return launchTUI(cmd, func(app *views.App) {
 		app.SetInitialView(views.ViewNewSession)
+		if agentName != "" {
+			app.SetInitialAgent(agentName)
+		}
 	})
 }
 
@@ -567,7 +597,7 @@ func printChatsTable(cmd *cobra.Command, chats []*pb.ClaudeChat) {
 	titles := make([]string, len(chats))
 	createds := make([]string, len(chats))
 	for i, chat := range chats {
-		id := chat.ClaudeId
+		id := chat.AgentSessionId
 		if len(id) > 8 {
 			id = id[:8]
 		}
@@ -843,11 +873,13 @@ func runSettings(cmd *cobra.Command) error {
 	anyChanged := cmd.Flags().Changed("skip-permissions") ||
 		cmd.Flags().Changed("no-skip-permissions") ||
 		cmd.Flags().Changed("worktree-dir") ||
+		cmd.Flags().Changed("default-agent") ||
 		cmd.Flags().Changed("poll-interval")
 
 	if !anyChanged {
-		fmt.Printf("  Skip permissions: %v\n", s.DangerouslySkipPermissions)
+		fmt.Printf("  Skip permissions: %v\n", config.PluginConfigBool(&s, "claude", "dangerously_skip_permissions"))
 		fmt.Printf("  Worktree dir:     %s\n", s.WorktreeBaseDir)
+		fmt.Printf("  Default agent:    %s\n", s.DefaultAgent)
 		interval := "30 (default)"
 		if s.PollIntervalSeconds > 0 {
 			interval = strconv.Itoa(s.PollIntervalSeconds)
@@ -861,10 +893,10 @@ func runSettings(cmd *cobra.Command) error {
 		return fmt.Errorf("cannot use both --skip-permissions and --no-skip-permissions")
 	}
 	if cmd.Flags().Changed("skip-permissions") {
-		s.DangerouslySkipPermissions = true
+		config.SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", true)
 	}
 	if cmd.Flags().Changed("no-skip-permissions") {
-		s.DangerouslySkipPermissions = false
+		config.SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", false)
 	}
 	if cmd.Flags().Changed("worktree-dir") {
 		v, _ := cmd.Flags().GetString("worktree-dir")
@@ -872,6 +904,13 @@ func runSettings(cmd *cobra.Command) error {
 			return fmt.Errorf("worktree-dir cannot be empty")
 		}
 		s.WorktreeBaseDir = v
+	}
+	if cmd.Flags().Changed("default-agent") {
+		v, _ := cmd.Flags().GetString("default-agent")
+		if v == "" {
+			return fmt.Errorf("default-agent cannot be empty")
+		}
+		s.DefaultAgent = v
 	}
 	if cmd.Flags().Changed("poll-interval") {
 		v, _ := cmd.Flags().GetInt("poll-interval")

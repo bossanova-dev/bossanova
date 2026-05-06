@@ -24,7 +24,7 @@ test:
 
 ## dev: Run the bossd daemon in dev mode (generates protos first if needed)
 dev:
-	$(MAKE) -C ../.. generate copy-skills
+	$(MAKE) -C ../.. generate
 	go run -ldflags '$(LDFLAGS)' ./cmd
 
 ## build: Build the bossd binary

@@ -181,7 +181,8 @@ func (m SettingsModel) cancelEdit() (tea.Model, tea.Cmd) {
 func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	switch m.cursor {
 	case settingsRowSkipPerms:
-		m.settings.DangerouslySkipPermissions = !m.settings.DangerouslySkipPermissions
+		current := config.PluginConfigBool(&m.settings, "claude", "dangerously_skip_permissions")
+		config.SetPluginConfigBool(&m.settings, "claude", "dangerously_skip_permissions", !current)
 		if err := config.Save(m.settings); err != nil {
 			m.err = err
 		}
@@ -210,7 +211,7 @@ func (m SettingsModel) View() tea.View {
 
 	// Row 0: dangerously skip permissions toggle
 	check := " "
-	if m.settings.DangerouslySkipPermissions {
+	if config.PluginConfigBool(&m.settings, "claude", "dangerously_skip_permissions") {
 		check = "x"
 	}
 	cursor := "  "

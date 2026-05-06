@@ -10,7 +10,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -192,119 +192,153 @@ func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, e
 	return nil, errors.New("session not found")
 }
 
-// fakeClaudeRunner records Start calls and lets tests script IsRunning /
-// ExitError responses per claudeID. Mirrors claude.ClaudeRunner just enough
-// for the host RPC tests; embedding the interface gives nil-method behavior
-// for everything we don't override.
-type fakeClaudeRunner struct {
+// fakeAgentClient records StartRun calls and lets tests script IsRunning /
+// ExitStatus responses per session ID. Mirrors agent.AgentRunnerClient just
+// enough for the host RPC tests; the methods we don't exercise return zero
+// values.
+type fakeAgentClient struct {
 	mu        sync.Mutex
 	startResp string
 	startErr  error
 	startCall struct {
 		workDir string
 		plan    string
+		logPath string
 	}
 	running    map[string]bool
-	exitErrors map[string]error
+	exitErrors map[string]string
+	completed  map[string]bool
 }
 
-var _ claude.ClaudeRunner = (*fakeClaudeRunner)(nil)
+var _ agent.AgentRunnerClient = (*fakeAgentClient)(nil)
 
-func newFakeClaudeRunner() *fakeClaudeRunner {
-	return &fakeClaudeRunner{
+func newFakeAgentClient() *fakeAgentClient {
+	return &fakeAgentClient{
 		running:    make(map[string]bool),
-		exitErrors: make(map[string]error),
+		exitErrors: make(map[string]string),
+		completed:  make(map[string]bool),
 	}
 }
 
-func (f *fakeClaudeRunner) Start(_ context.Context, workDir, plan string, _ *string, _ string) (string, error) {
+func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.startCall.workDir = workDir
-	f.startCall.plan = plan
+	f.startCall.workDir = req.GetWorkDir()
+	f.startCall.plan = req.GetPlan()
+	f.startCall.logPath = req.GetLogPath()
 	if f.startErr != nil {
-		return "", f.startErr
+		return nil, f.startErr
 	}
 	f.running[f.startResp] = true
-	return f.startResp, nil
+	return &bossanovav1.StartAgentRunResponse{SessionId: f.startResp}, nil
 }
 
-func (f *fakeClaudeRunner) Stop(_ string) error { return nil }
-func (f *fakeClaudeRunner) Subscribe(_ context.Context, _ string) (<-chan claude.OutputLine, error) {
-	return nil, nil
+func (f *fakeAgentClient) StopRun(_ context.Context, _ *bossanovav1.StopAgentRunRequest) (*bossanovav1.StopAgentRunResponse, error) {
+	return &bossanovav1.StopAgentRunResponse{}, nil
 }
-func (f *fakeClaudeRunner) History(_ string) []claude.OutputLine { return nil }
 
-func (f *fakeClaudeRunner) IsRunning(claudeID string) bool {
+func (f *fakeAgentClient) IsRunning(_ context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.running[claudeID]
+	return &bossanovav1.IsAgentRunningResponse{Running: f.running[req.GetSessionId()]}, nil
 }
 
-func (f *fakeClaudeRunner) ExitError(claudeID string) error {
+func (f *fakeAgentClient) ExitStatus(_ context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.exitErrors[claudeID]
+	return &bossanovav1.AgentExitStatusResponse{
+		IsComplete: f.completed[req.GetSessionId()],
+		ExitError:  f.exitErrors[req.GetSessionId()],
+	}, nil
 }
 
-func (f *fakeClaudeRunner) finish(claudeID string, exitErr error) {
+func (f *fakeAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
+	return &bossanovav1.ConfigureFinalizeHookResponse{}, nil
+}
+func (f *fakeAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
+}
+func (f *fakeAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
+	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
+}
+func (f *fakeAgentClient) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
+	return &bossanovav1.GetChatTitleResponse{}, nil
+}
+
+// finish marks a session as no-longer-running with the given exit error.
+func (f *fakeAgentClient) finish(sessionID, exitErr string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.running[claudeID] = false
-	f.exitErrors[claudeID] = exitErr
+	f.running[sessionID] = false
+	f.completed[sessionID] = true
+	f.exitErrors[sessionID] = exitErr
 }
 
-func newRepairTestServer(runner claude.ClaudeRunner, sessions ...*models.Session) *HostServiceServer {
+func newRepairTestServer(client agent.AgentRunnerClient, sessions ...*models.Session) *HostServiceServer {
 	srv := NewHostServiceServer(&mockVCSProvider{})
 	store := &fakeSessionStore{sessions: make(map[string]*models.Session)}
 	for _, s := range sessions {
+		// Default to the "claude" agent for sessions that don't set one
+		// explicitly — preserves the historical single-agent assumption
+		// so existing tests stay focused on whatever they were already
+		// asserting (queueing, exit handling, etc.).
+		if s.AgentName == "" {
+			s.AgentName = "claude"
+		}
 		store.sessions[s.ID] = s
 	}
 	srv.sessionStore = store
-	srv.claudeRunner = runner
+	srv.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+	srv.agentLogsDir = "/tmp/agent-logs"
 	return srv
 }
 
-func TestStartClaudeRun_HappyPath(t *testing.T) {
-	runner := newFakeClaudeRunner()
-	runner.startResp = "claude-abc"
-	srv := newRepairTestServer(runner, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+func TestStartAgentRun_HappyPath(t *testing.T) {
+	client := newFakeAgentClient()
+	client.startResp = "claude-abc"
+	srv := newRepairTestServer(client, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
 
-	resp, err := srv.StartClaudeRun(t.Context(), &bossanovav1.StartClaudeRunRequest{
+	resp, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "sess-1",
 		Prompt:    "/boss-repair",
 	})
 	if err != nil {
-		t.Fatalf("StartClaudeRun: %v", err)
+		t.Fatalf("StartAgentRun: %v", err)
 	}
-	if resp.GetClaudeId() != "claude-abc" {
-		t.Fatalf("ClaudeId = %q, want %q", resp.GetClaudeId(), "claude-abc")
+	if resp.GetAgentSessionId() != "claude-abc" {
+		t.Fatalf("AgentSessionId = %q, want %q", resp.GetAgentSessionId(), "claude-abc")
 	}
-	if runner.startCall.workDir != "/tmp/wt" {
-		t.Errorf("workDir = %q, want /tmp/wt", runner.startCall.workDir)
+	if client.startCall.workDir != "/tmp/wt" {
+		t.Errorf("workDir = %q, want /tmp/wt", client.startCall.workDir)
 	}
-	if runner.startCall.plan != "/boss-repair" {
-		t.Errorf("plan = %q, want /boss-repair", runner.startCall.plan)
+	if client.startCall.plan != "/boss-repair" {
+		t.Errorf("plan = %q, want /boss-repair", client.startCall.plan)
 	}
-	if got := srv.activeRuns["sess-1"]; got != "claude-abc" {
-		t.Errorf("activeRuns[sess-1] = %q, want claude-abc", got)
+	if client.startCall.logPath == "" {
+		t.Error("logPath should be set from agentLogsDir")
+	}
+	if got := srv.activeRuns["sess-1"]; got.agentSessionID != "claude-abc" {
+		t.Errorf("activeRuns[sess-1].agentSessionID = %q, want claude-abc", got.agentSessionID)
+	}
+	if got := srv.activeRuns["sess-1"]; got.agentName != "claude" {
+		t.Errorf("activeRuns[sess-1].agentName = %q, want claude", got.agentName)
 	}
 }
 
-func TestStartClaudeRun_NoRunner(t *testing.T) {
+func TestStartAgentRun_NoClient(t *testing.T) {
 	srv := NewHostServiceServer(&mockVCSProvider{})
-	_, err := srv.StartClaudeRun(t.Context(), &bossanovav1.StartClaudeRunRequest{SessionId: "x", Prompt: "p"})
+	_, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{SessionId: "x", Prompt: "p"})
 	if grpcstatus.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", grpcstatus.Code(err))
 	}
 }
 
-func TestStartClaudeRun_SessionNotFound(t *testing.T) {
-	runner := newFakeClaudeRunner()
-	runner.startResp = "claude-xyz"
-	srv := newRepairTestServer(runner) // no sessions registered
+func TestStartAgentRun_SessionNotFound(t *testing.T) {
+	client := newFakeAgentClient()
+	client.startResp = "claude-xyz"
+	srv := newRepairTestServer(client) // no sessions registered
 
-	_, err := srv.StartClaudeRun(t.Context(), &bossanovav1.StartClaudeRunRequest{
+	_, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "missing",
 		Prompt:    "/boss-repair",
 	})
@@ -313,19 +347,19 @@ func TestStartClaudeRun_SessionNotFound(t *testing.T) {
 	}
 }
 
-func TestStartClaudeRun_AlreadyActive(t *testing.T) {
-	runner := newFakeClaudeRunner()
-	runner.startResp = "claude-1"
-	srv := newRepairTestServer(runner, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+func TestStartAgentRun_AlreadyActive(t *testing.T) {
+	client := newFakeAgentClient()
+	client.startResp = "claude-1"
+	srv := newRepairTestServer(client, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
 
-	if _, err := srv.StartClaudeRun(t.Context(), &bossanovav1.StartClaudeRunRequest{
+	if _, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "sess-1", Prompt: "p",
 	}); err != nil {
-		t.Fatalf("first StartClaudeRun: %v", err)
+		t.Fatalf("first StartAgentRun: %v", err)
 	}
 
 	// Second call while the first is still IsRunning must return AlreadyExists.
-	_, err := srv.StartClaudeRun(t.Context(), &bossanovav1.StartClaudeRunRequest{
+	_, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "sess-1", Prompt: "p",
 	})
 	if grpcstatus.Code(err) != codes.AlreadyExists {
@@ -333,72 +367,142 @@ func TestStartClaudeRun_AlreadyActive(t *testing.T) {
 	}
 }
 
-func TestStartClaudeRun_StaleEntryReplaced(t *testing.T) {
-	runner := newFakeClaudeRunner()
-	runner.startResp = "claude-1"
-	srv := newRepairTestServer(runner, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+func TestStartAgentRun_StaleEntryReplaced(t *testing.T) {
+	client := newFakeAgentClient()
+	client.startResp = "claude-1"
+	srv := newRepairTestServer(client, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
 
-	if _, err := srv.StartClaudeRun(t.Context(), &bossanovav1.StartClaudeRunRequest{
+	if _, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "sess-1", Prompt: "p",
 	}); err != nil {
-		t.Fatalf("first StartClaudeRun: %v", err)
+		t.Fatalf("first StartAgentRun: %v", err)
 	}
-	runner.finish("claude-1", nil)
-	runner.startResp = "claude-2"
+	client.finish("claude-1", "")
+	client.startResp = "claude-2"
 
-	resp, err := srv.StartClaudeRun(t.Context(), &bossanovav1.StartClaudeRunRequest{
+	resp, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "sess-1", Prompt: "p",
 	})
 	if err != nil {
-		t.Fatalf("second StartClaudeRun after first finished: %v", err)
+		t.Fatalf("second StartAgentRun after first finished: %v", err)
 	}
-	if resp.GetClaudeId() != "claude-2" {
-		t.Errorf("ClaudeId = %q, want claude-2", resp.GetClaudeId())
+	if resp.GetAgentSessionId() != "claude-2" {
+		t.Errorf("AgentSessionId = %q, want claude-2", resp.GetAgentSessionId())
 	}
 }
 
-func TestWaitClaudeRun_CleanExit(t *testing.T) {
-	runner := newFakeClaudeRunner()
-	runner.running["claude-x"] = false
-	srv := newRepairTestServer(runner)
+func TestWaitAgentRun_CleanExit(t *testing.T) {
+	client := newFakeAgentClient()
+	client.finish("claude-x", "")
+	srv := newRepairTestServer(client)
+	// Seed the reverse-index so WaitAgentRun can route by agent_session_id
+	// alone — production seeds this from StartAgentRun, but these unit
+	// tests exercise WaitAgentRun in isolation.
+	srv.agentSessionByID["claude-x"] = "claude"
 
-	resp, err := srv.WaitClaudeRun(t.Context(), &bossanovav1.WaitClaudeRunRequest{ClaudeId: "claude-x"})
+	resp, err := srv.WaitAgentRun(t.Context(), &bossanovav1.WaitAgentRunHostRequest{AgentSessionId: "claude-x"})
 	if err != nil {
-		t.Fatalf("WaitClaudeRun: %v", err)
+		t.Fatalf("WaitAgentRun: %v", err)
 	}
 	if resp.GetExitError() != "" {
 		t.Errorf("ExitError = %q, want empty", resp.GetExitError())
 	}
 }
 
-func TestWaitClaudeRun_NonZeroExit(t *testing.T) {
-	runner := newFakeClaudeRunner()
-	runner.running["claude-x"] = false
-	runner.exitErrors["claude-x"] = errors.New("exit status 1")
-	srv := newRepairTestServer(runner)
+func TestWaitAgentRun_NonZeroExit(t *testing.T) {
+	client := newFakeAgentClient()
+	client.finish("claude-x", "exit status 1")
+	srv := newRepairTestServer(client)
+	srv.agentSessionByID["claude-x"] = "claude"
 
-	resp, err := srv.WaitClaudeRun(t.Context(), &bossanovav1.WaitClaudeRunRequest{ClaudeId: "claude-x"})
+	resp, err := srv.WaitAgentRun(t.Context(), &bossanovav1.WaitAgentRunHostRequest{AgentSessionId: "claude-x"})
 	if err != nil {
-		t.Fatalf("WaitClaudeRun: %v", err)
+		t.Fatalf("WaitAgentRun: %v", err)
 	}
 	if resp.GetExitError() != "exit status 1" {
 		t.Errorf("ExitError = %q, want %q", resp.GetExitError(), "exit status 1")
 	}
 }
 
-func TestWaitClaudeRun_ContextCancel(t *testing.T) {
-	runner := newFakeClaudeRunner()
-	runner.running["claude-x"] = true // never exits
-	srv := newRepairTestServer(runner)
+func TestWaitAgentRun_ContextCancel(t *testing.T) {
+	client := newFakeAgentClient()
+	client.running["claude-x"] = true // never completes
+	srv := newRepairTestServer(client)
+	srv.agentSessionByID["claude-x"] = "claude"
 
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
-	_, err := srv.WaitClaudeRun(ctx, &bossanovav1.WaitClaudeRunRequest{ClaudeId: "claude-x"})
+	_, err := srv.WaitAgentRun(ctx, &bossanovav1.WaitAgentRunHostRequest{AgentSessionId: "claude-x"})
 	if grpcstatus.Code(err) != codes.Canceled {
 		t.Fatalf("code = %v, want Canceled", grpcstatus.Code(err))
+	}
+}
+
+// TestStartAgentRun_RoutesByAgentName verifies that when multiple agent
+// clients are registered, StartAgentRun forwards to the one whose name
+// matches the session's AgentName. The other clients must remain
+// untouched — that's the per-session routing the multi-agent migration
+// is selling.
+func TestStartAgentRun_RoutesByAgentName(t *testing.T) {
+	claudeClient := newFakeAgentClient()
+	claudeClient.startResp = "claude-1"
+	openCodeClient := newFakeAgentClient()
+	openCodeClient.startResp = "opencode-1"
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	store := &fakeSessionStore{sessions: map[string]*models.Session{
+		"sess-opencode": {ID: "sess-opencode", WorktreePath: "/tmp/wt", AgentName: "opencode"},
+	}}
+	srv.sessionStore = store
+	srv.agentClients = map[string]agent.AgentRunnerClient{
+		"claude":   claudeClient,
+		"opencode": openCodeClient,
+	}
+	srv.agentLogsDir = "/tmp/agent-logs"
+
+	resp, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
+		SessionId: "sess-opencode",
+		Prompt:    "/repair",
+	})
+	if err != nil {
+		t.Fatalf("StartAgentRun: %v", err)
+	}
+	if resp.GetAgentSessionId() != "opencode-1" {
+		t.Errorf("AgentSessionId = %q, want opencode-1", resp.GetAgentSessionId())
+	}
+	if openCodeClient.startCall.workDir == "" {
+		t.Error("expected opencode StartRun to be called")
+	}
+	if claudeClient.startCall.workDir != "" {
+		t.Error("did not expect claude StartRun to be called")
+	}
+	if got := srv.agentSessionByID["opencode-1"]; got != "opencode" {
+		t.Errorf("reverse index = %q, want opencode", got)
+	}
+}
+
+// TestStartAgentRun_UnknownAgent verifies that StartAgentRun returns a
+// FailedPrecondition error when the session's AgentName has no entry in
+// the registry. Defense in depth against drift between persisted
+// agent_name and the loaded plugin set.
+func TestStartAgentRun_UnknownAgent(t *testing.T) {
+	client := newFakeAgentClient()
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	store := &fakeSessionStore{sessions: map[string]*models.Session{
+		"sess-1": {ID: "sess-1", WorktreePath: "/tmp/wt", AgentName: "ghost"},
+	}}
+	srv.sessionStore = store
+	srv.agentClients = map[string]agent.AgentRunnerClient{"claude": client}
+	srv.agentLogsDir = "/tmp/agent-logs"
+
+	_, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
+		SessionId: "sess-1", Prompt: "p",
+	})
+	if grpcstatus.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", grpcstatus.Code(err))
 	}
 }
 

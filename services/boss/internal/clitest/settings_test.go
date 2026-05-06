@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/recurser/boss/internal/clitest"
+	"github.com/recurser/bossalib/config"
 )
 
 // settingsPath returns the settings.json path for the given HOME dir, matching
@@ -21,9 +22,8 @@ func settingsPath(home string) string {
 }
 
 type testSettings struct {
-	DangerouslySkipPermissions bool   `json:"dangerously_skip_permissions"`
-	WorktreeBaseDir            string `json:"worktree_base_dir"`
-	PollIntervalSeconds        int    `json:"poll_interval_seconds"`
+	WorktreeBaseDir     string `json:"worktree_base_dir"`
+	PollIntervalSeconds int    `json:"poll_interval_seconds"`
 }
 
 func readSettings(t *testing.T, home string) testSettings {
@@ -38,6 +38,17 @@ func readSettings(t *testing.T, home string) testSettings {
 		t.Fatalf("parse settings: %v", err)
 	}
 	return s
+}
+
+// readSkipPermissions reads the dangerously_skip_permissions value from
+// the claude plugin's Config map in the settings.json file.
+func readSkipPermissions(t *testing.T, home string) bool {
+	t.Helper()
+	loaded, err := config.LoadFrom(settingsPath(home))
+	if err != nil {
+		t.Fatalf("config.LoadFrom: %v", err)
+	}
+	return config.PluginConfigBool(&loaded, "claude", "dangerously_skip_permissions")
 }
 
 func TestCLI_Settings_Show(t *testing.T) {
@@ -63,16 +74,16 @@ func TestCLI_Settings_Toggle_SkipPermissions(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("enable: exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if s := readSettings(t, home); !s.DangerouslySkipPermissions {
-		t.Errorf("expected DangerouslySkipPermissions=true, got false")
+	if !readSkipPermissions(t, home) {
+		t.Errorf("expected dangerously_skip_permissions=true after enable")
 	}
 
 	res = h.Run("settings", "--no-skip-permissions")
 	if res.ExitCode != 0 {
 		t.Fatalf("disable: exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if s := readSettings(t, home); s.DangerouslySkipPermissions {
-		t.Errorf("expected DangerouslySkipPermissions=false, got true")
+	if readSkipPermissions(t, home) {
+		t.Errorf("expected dangerously_skip_permissions=false after disable")
 	}
 }
 
@@ -88,6 +99,24 @@ func TestCLI_Settings_SetWorktreeDir(t *testing.T) {
 
 	if s := readSettings(t, home); s.WorktreeBaseDir != custom {
 		t.Errorf("expected WorktreeBaseDir=%q, got %q", custom, s.WorktreeBaseDir)
+	}
+}
+
+func TestCLI_Settings_SetDefaultAgent(t *testing.T) {
+	home := t.TempDir()
+	h := clitest.New(t, clitest.WithEnv("HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config")))
+
+	res := h.Run("settings", "--default-agent", "opencode")
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+	}
+
+	loaded, err := config.LoadFrom(settingsPath(home))
+	if err != nil {
+		t.Fatalf("config.LoadFrom: %v", err)
+	}
+	if loaded.DefaultAgent != "opencode" {
+		t.Errorf("expected DefaultAgent=%q, got %q", "opencode", loaded.DefaultAgent)
 	}
 }
 

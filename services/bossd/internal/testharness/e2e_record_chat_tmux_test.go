@@ -2,7 +2,9 @@ package testharness_test
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +13,23 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/testharness"
 )
+
+// writeFakeTranscript materialises ~/.claude/projects/<key>/<sid>.jsonl so
+// spawnChatTmux's pre-flight transcript stat can decide --resume vs
+// --session-id deterministically. Mirrors status.pathToProjectKey.
+func writeFakeTranscript(t *testing.T, worktreePath, agentSessionID string) {
+	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	key := strings.NewReplacer("/", "-", ".", "-").Replace(worktreePath)
+	dir := filepath.Join(tmpHome, ".claude", "projects", key)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir transcript dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, agentSessionID+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+}
 
 // fakeTmux is a programmable test double for the tmux CLI. It records every
 // invocation and returns a configurable success/failure for each `tmux`
@@ -93,9 +112,9 @@ func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
 	h, ctx, sessionID := recordChatSetup(t, fake)
 
 	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  "claude-fresh-001",
-		Title:     "fresh chat",
+		SessionId:      sessionID,
+		AgentSessionId: "claude-fresh-001",
+		Title:          "fresh chat",
 	}))
 	if err != nil {
 		t.Fatalf("RecordChat: %v", err)
@@ -121,9 +140,9 @@ func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
 
 	// The persisted name on the chat row must match the name returned in
 	// the response — otherwise lifecycle GC paths can't find the session.
-	chat, err := h.ClaudeChats.GetByClaudeID(ctx, "claude-fresh-001")
+	chat, err := h.AgentChats.GetByAgentSessionID(ctx, "claude-fresh-001")
 	if err != nil {
-		t.Fatalf("GetByClaudeID: %v", err)
+		t.Fatalf("GetByAgentSessionID: %v", err)
 	}
 	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != resp.Msg.Chat.TmuxSessionName {
 		t.Errorf("DB tmux name = %v, response = %q — must match",
@@ -133,16 +152,19 @@ func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
 
 // TestE2E_RecordChat_ResumePassesResumeFlag verifies that resume=true
 // causes the daemon to invoke `claude --resume <id>` instead of
-// `--session-id` when minting the tmux host.
+// `--session-id` when minting the tmux host. The pre-flight transcript
+// stat in spawnChatTmux requires the JSONL fixture to actually exist on
+// disk for --resume to fire; without it, --session-id is the safe fallback.
 func TestE2E_RecordChat_ResumePassesResumeFlag(t *testing.T) {
 	fake := &fakeTmux{}
 	h, ctx, sessionID := recordChatSetup(t, fake)
+	writeFakeTranscript(t, "/tmp/worktrees/tmux-app/tmux-recordchat", "claude-resume-007")
 
 	_, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  "claude-resume-007",
-		Title:     "resumed",
-		Resume:    true,
+		SessionId:      sessionID,
+		AgentSessionId: "claude-resume-007",
+		Title:          "resumed",
+		Resume:         true,
 	}))
 	if err != nil {
 		t.Fatalf("RecordChat: %v", err)
@@ -171,9 +193,9 @@ func TestE2E_RecordChat_IdempotentReuseExistingSession(t *testing.T) {
 	h, ctx, sessionID := recordChatSetup(t, fake)
 
 	first, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  "claude-idem-042",
-		Title:     "first",
+		SessionId:      sessionID,
+		AgentSessionId: "claude-idem-042",
+		Title:          "first",
 	}))
 	if err != nil {
 		t.Fatalf("RecordChat #1: %v", err)
@@ -187,9 +209,9 @@ func TestE2E_RecordChat_IdempotentReuseExistingSession(t *testing.T) {
 	fake.mu.Unlock()
 
 	second, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  "claude-idem-042",
-		Title:     "ignored second title",
+		SessionId:      sessionID,
+		AgentSessionId: "claude-idem-042",
+		Title:          "ignored second title",
 	}))
 	if err != nil {
 		t.Fatalf("RecordChat #2: %v", err)
@@ -245,9 +267,9 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 		Plan:   "p",
 	})
 	preResp, err := h1.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sess.Id,
-		ClaudeId:  "claude-restart-1",
-		Title:     "first attach",
+		SessionId:      sess.Id,
+		AgentSessionId: "claude-restart-1",
+		Title:          "first attach",
 	}))
 	if err != nil {
 		t.Fatalf("RecordChat #1: %v", err)
@@ -270,10 +292,10 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 	})
 
 	postResp, err := h2.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sess.Id,
-		ClaudeId:  "claude-restart-1",
-		Title:     "ignored on second call",
-		Resume:    true,
+		SessionId:      sess.Id,
+		AgentSessionId: "claude-restart-1",
+		Title:          "ignored on second call",
+		Resume:         true,
 	}))
 	if err != nil {
 		t.Fatalf("RecordChat post-restart: %v", err)
@@ -306,9 +328,9 @@ func TestE2E_RecordChat_TmuxUnavailableSkipsCreate(t *testing.T) {
 	h, ctx, sessionID := recordChatSetup(t, fake)
 
 	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
-		SessionId: sessionID,
-		ClaudeId:  "claude-no-tmux",
-		Title:     "headless",
+		SessionId:      sessionID,
+		AgentSessionId: "claude-no-tmux",
+		Title:          "headless",
 	}))
 	if err != nil {
 		t.Fatalf("RecordChat must not error when tmux is unavailable: %v", err)

@@ -22,7 +22,10 @@ brew install bossanova-dev/tap/bossanova
 - **bossd** - Background daemon handling session lifecycle and git operations
 
 Bossd supports plugins (`bossd-plugin-*` binaries) for autonomous PR handling,
-dependency updates, CI repair, and other automation.
+dependency updates, CI repair, and other automation. Claude itself runs as a
+plugin (`bossd-plugin-claude`) — bossd does not manage the Claude subprocess
+directly. Run `make plugins` to build all plugin binaries; the daemon will
+refuse to start sessions if no agent-runner plugin is installed.
 
 ## Prerequisites
 
@@ -82,9 +85,16 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 ```json
 {
   "worktree_base_dir": "/Users/you/work/worktrees",
-  "dangerously_skip_permissions": false,
   "poll_interval_seconds": 120,
   "plugins": [
+    {
+      "name": "claude",
+      "path": "/opt/homebrew/libexec/plugins/bossd-plugin-claude",
+      "enabled": true,
+      "config": {
+        "dangerously_skip_permissions": "true"
+      }
+    },
     {
       "name": "repair",
       "path": "/opt/homebrew/libexec/plugins/bossd-plugin-repair",
@@ -110,7 +120,6 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `worktree_base_dir` | string | `~/.bossanova/worktrees` | Directory where per-session git worktrees are created. Auto-created on load. |
-| `dangerously_skip_permissions` | bool | `false` | Pass `--dangerously-skip-permissions` to Claude Code sessions. Off by default. |
 | `skills_declined` | bool | `false` | Set after the user declines the one-time skills install prompt so it's not shown again. |
 | `poll_interval_seconds` | int | `120` | How often the TUI polls for PR display status, in seconds. |
 | `plugins` | array | auto-discovered | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own binary. |
@@ -126,6 +135,12 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 | `enabled` | bool | When `false`, the plugin is loaded-but-inert. |
 | `version` | string | Optional version string, informational. |
 | `config` | object | Plugin-specific string key/value pairs. |
+
+### `claude` plugin `config` keys
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `dangerously_skip_permissions` | string `"true"` / `"false"` | `"false"` (omit for default) | Pass `--dangerously-skip-permissions` to Claude Code. Off by default. Toggle via `boss settings --skip-permissions` / `--no-skip-permissions`, or in the boss TUI settings view. **Known gap:** the value is honored by the daemon-side tmux paths (interactive sessions, cron-spawned sessions) but is not yet forwarded into the plugin process — see the comment on `WithDangerouslySkipPermissions` in `plugins/bossd-plugin-claude/runner.go` for the design choices to wire it through. |
 
 ### `repair` fields
 

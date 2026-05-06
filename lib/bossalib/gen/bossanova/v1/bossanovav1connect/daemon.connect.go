@@ -115,6 +115,8 @@ const (
 	// DaemonServiceDeleteChatProcedure is the fully-qualified name of the DaemonService's DeleteChat
 	// RPC.
 	DaemonServiceDeleteChatProcedure = "/bossanova.v1.DaemonService/DeleteChat"
+	// DaemonServiceWakeChatProcedure is the fully-qualified name of the DaemonService's WakeChat RPC.
+	DaemonServiceWakeChatProcedure = "/bossanova.v1.DaemonService/WakeChat"
 	// DaemonServiceReportChatStatusProcedure is the fully-qualified name of the DaemonService's
 	// ReportChatStatus RPC.
 	DaemonServiceReportChatStatusProcedure = "/bossanova.v1.DaemonService/ReportChatStatus"
@@ -185,6 +187,11 @@ type DaemonServiceClient interface {
 	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
 	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
 	DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error)
+	// WakeChat brings a previously-started chat back to life when its tmux
+	// session has died (host reboot, manual kill, OOM). Idempotent under
+	// concurrent calls via per-chat singleflight. Decides --resume vs
+	// --session-id by pre-flight stat of the Claude transcript file.
+	WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error)
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
 	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
@@ -388,6 +395,12 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("DeleteChat")),
 			connect.WithClientOptions(opts...),
 		),
+		wakeChat: connect.NewClient[v1.WakeChatRequest, v1.WakeChatResponse](
+			httpClient,
+			baseURL+DaemonServiceWakeChatProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("WakeChat")),
+			connect.WithClientOptions(opts...),
+		),
 		reportChatStatus: connect.NewClient[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse](
 			httpClient,
 			baseURL+DaemonServiceReportChatStatusProcedure,
@@ -487,6 +500,7 @@ type daemonServiceClient struct {
 	listChats            *connect.Client[v1.ListChatsRequest, v1.ListChatsResponse]
 	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
 	deleteChat           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
+	wakeChat             *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
 	reportChatStatus     *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
 	getChatStatuses      *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
 	getSessionStatuses   *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
@@ -640,6 +654,11 @@ func (c *daemonServiceClient) DeleteChat(ctx context.Context, req *connect.Reque
 	return c.deleteChat.CallUnary(ctx, req)
 }
 
+// WakeChat calls bossanova.v1.DaemonService.WakeChat.
+func (c *daemonServiceClient) WakeChat(ctx context.Context, req *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error) {
+	return c.wakeChat.CallUnary(ctx, req)
+}
+
 // ReportChatStatus calls bossanova.v1.DaemonService.ReportChatStatus.
 func (c *daemonServiceClient) ReportChatStatus(ctx context.Context, req *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error) {
 	return c.reportChatStatus.CallUnary(ctx, req)
@@ -730,6 +749,11 @@ type DaemonServiceHandler interface {
 	ListChats(context.Context, *connect.Request[v1.ListChatsRequest]) (*connect.Response[v1.ListChatsResponse], error)
 	UpdateChatTitle(context.Context, *connect.Request[v1.UpdateChatTitleRequest]) (*connect.Response[v1.UpdateChatTitleResponse], error)
 	DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error)
+	// WakeChat brings a previously-started chat back to life when its tmux
+	// session has died (host reboot, manual kill, OOM). Idempotent under
+	// concurrent calls via per-chat singleflight. Decides --resume vs
+	// --session-id by pre-flight stat of the Claude transcript file.
+	WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error)
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
 	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
@@ -929,6 +953,12 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("DeleteChat")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceWakeChatHandler := connect.NewUnaryHandler(
+		DaemonServiceWakeChatProcedure,
+		svc.WakeChat,
+		connect.WithSchema(daemonServiceMethods.ByName("WakeChat")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceReportChatStatusHandler := connect.NewUnaryHandler(
 		DaemonServiceReportChatStatusProcedure,
 		svc.ReportChatStatus,
@@ -1053,6 +1083,8 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceUpdateChatTitleHandler.ServeHTTP(w, r)
 		case DaemonServiceDeleteChatProcedure:
 			daemonServiceDeleteChatHandler.ServeHTTP(w, r)
+		case DaemonServiceWakeChatProcedure:
+			daemonServiceWakeChatHandler.ServeHTTP(w, r)
 		case DaemonServiceReportChatStatusProcedure:
 			daemonServiceReportChatStatusHandler.ServeHTTP(w, r)
 		case DaemonServiceGetChatStatusesProcedure:
@@ -1194,6 +1226,10 @@ func (UnimplementedDaemonServiceHandler) UpdateChatTitle(context.Context, *conne
 
 func (UnimplementedDaemonServiceHandler) DeleteChat(context.Context, *connect.Request[v1.DeleteChatRequest]) (*connect.Response[v1.DeleteChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.DeleteChat is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.WakeChat is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error) {

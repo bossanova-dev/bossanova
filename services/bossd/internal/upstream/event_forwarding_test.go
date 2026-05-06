@@ -170,9 +170,9 @@ func TestSubscribeDeltas_StatusChanged_EmitsChatStatus(t *testing.T) {
 	src := &staticEventSource{events: []StreamEvent{{
 		Status: &StatusEvent{
 			Status: &pb.ChatStatusDelta{
-				SessionId: "s1",
-				ClaudeId:  "c1",
-				Status:    pb.ChatStatus_CHAT_STATUS_WORKING,
+				SessionId:      "s1",
+				AgentSessionId: "c1",
+				Status:         pb.ChatStatus_CHAT_STATUS_WORKING,
 			},
 		},
 	}}}
@@ -181,7 +181,7 @@ func TestSubscribeDeltas_StatusChanged_EmitsChatStatus(t *testing.T) {
 	for _, ev := range got {
 		if s := ev.GetStatus(); s != nil &&
 			s.GetSessionId() == "s1" &&
-			s.GetClaudeId() == "c1" &&
+			s.GetAgentSessionId() == "c1" &&
 			s.GetStatus() == pb.ChatStatus_CHAT_STATUS_WORKING {
 			found = true
 		}

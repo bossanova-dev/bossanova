@@ -41,9 +41,9 @@ var detachSequences = [][]byte{
 // It proxies I/O between the real terminal and a PTY-hosted process,
 // allowing the user to detach (Ctrl+X or Ctrl+]) while the process keeps running.
 type PTYCommand struct {
-	manager  *Manager
-	claudeID string
-	cmd      *exec.Cmd // nil when reattaching to an existing process
+	manager        *Manager
+	agentSessionID string
+	cmd            *exec.Cmd // nil when reattaching to an existing process
 
 	stdin  io.Reader
 	stdout io.Writer
@@ -55,11 +55,11 @@ type PTYCommand struct {
 }
 
 // NewPTYCommand creates a PTYCommand for launching or reattaching to a Claude process.
-func NewPTYCommand(manager *Manager, claudeID string, cmd *exec.Cmd) *PTYCommand {
+func NewPTYCommand(manager *Manager, agentSessionID string, cmd *exec.Cmd) *PTYCommand {
 	return &PTYCommand{
-		manager:  manager,
-		claudeID: claudeID,
-		cmd:      cmd,
+		manager:        manager,
+		agentSessionID: agentSessionID,
+		cmd:            cmd,
 	}
 }
 
@@ -95,7 +95,7 @@ func (c *PTYCommand) Run() error {
 	}
 	defer term.Restore(fd, oldState) //nolint:errcheck // best-effort restore on exit
 
-	proc, err := c.manager.GetOrStart(c.claudeID, c.cmd)
+	proc, err := c.manager.GetOrStart(c.agentSessionID, c.cmd)
 	if err != nil {
 		return err
 	}

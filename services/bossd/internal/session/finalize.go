@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	libvcs "github.com/recurser/bossalib/vcs"
@@ -151,9 +152,9 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 // running — the existing idle poller reaps it once it stops producing output —
 // so the user can switch back to it if the finalize chat fails.
 //
-// On success, the new claude process ID is recorded in claude_chats so the UI
+// On success, the new claude process ID is recorded in agent_chats so the UI
 // lists both conversations under the same session row. The session's primary
-// ClaudeSessionID is intentionally NOT overwritten: the implementing chat
+// AgentSessionID is intentionally NOT overwritten: the implementing chat
 // remains the canonical "main" chat for the session, and the finalize chat is
 // a sibling.
 func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) error {
@@ -166,16 +167,17 @@ func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) err
 		return fmt.Errorf("session %s has no worktree path", sessionID)
 	}
 
-	claudeID, err := l.claude.Start(ctx, session.WorktreePath, finalizeChatSkill, nil, "")
+	agentSessionID, err := l.agentRunner.Start(ctx, session.WorktreePath, finalizeChatSkill, nil, "")
 	if err != nil {
 		return fmt.Errorf("start finalize claude: %w", err)
 	}
 
-	if l.claudeChats != nil {
-		if _, err := l.claudeChats.Create(ctx, db.CreateClaudeChatParams{
-			SessionID: sessionID,
-			ClaudeID:  claudeID,
-			Title:     "Finalize",
+	if l.agentChats != nil {
+		if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
+			SessionID:      sessionID,
+			AgentSessionID: agentSessionID,
+			AgentName:      session.AgentName,
+			Title:          "Finalize",
 		}); err != nil {
 			// The claude process is already running; failing to record the
 			// chat row would orphan it from the UI but the run itself can
@@ -188,7 +190,7 @@ func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) err
 
 	l.logger.Info().
 		Str("session", sessionID).
-		Str("claudeID", claudeID).
+		Str("agentSessionID", agentSessionID).
 		Msg("finalize chat started")
 
 	return nil
@@ -209,17 +211,21 @@ var bossdManagedWorktreeFiles = []string{
 	".claude/settings.local.json",
 }
 
-// stripBossdManagedFiles removes porcelain entries for bossd-owned paths
-// before the empty-status check. Lines are "XY path" (two status chars,
-// a space, then the pathspec); we slice past the 3-char prefix and trim
-// trailing whitespace before comparing. Rename entries ("R  old -> new")
-// are rare and never originate from bossd, so are left untouched.
-func stripBossdManagedFiles(porcelain string) string {
+// stripBossdManagedFilesWith removes porcelain entries for any of the given
+// managedPaths before the empty-status check. Lines are "XY path" (two
+// status chars, a space, then the pathspec); we slice past the 3-char
+// prefix and trim trailing whitespace before comparing. Rename entries
+// ("R  old -> new") are rare and never originate from bossd, so are left
+// untouched.
+//
+// Callers should pass the union of bossd-owned paths and any agent-plugin-
+// contributed paths returned by AgentRunnerService.ListIgnoredDirtyFiles.
+func stripBossdManagedFilesWith(porcelain string, managedPaths []string) string {
 	if porcelain == "" {
 		return ""
 	}
-	managed := make(map[string]struct{}, len(bossdManagedWorktreeFiles))
-	for _, p := range bossdManagedWorktreeFiles {
+	managed := make(map[string]struct{}, len(managedPaths))
+	for _, p := range managedPaths {
 		managed[p] = struct{}{}
 	}
 	var kept []string
@@ -250,9 +256,26 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		}
 	}
 
-	// Drop bossd-owned files (the Stop-hook config) from the porcelain
-	// output before the empty-check — see stripBossdManagedFiles.
-	status = stripBossdManagedFiles(status)
+	// Drop bossd-owned and agent-plugin-owned files from the porcelain
+	// output before the empty-check. The agent plugin declares which paths
+	// it manages (e.g. .claude/settings.local.json) via ListIgnoredDirtyFiles;
+	// we fall back to the hardcoded list when no client is loaded for this
+	// session's agent (e.g. legacy rows whose agent_name doesn't match a
+	// loaded plugin).
+	var managedPaths []string
+	if client, err := l.agentClientFor(session); err == nil {
+		resp, rpcErr := client.ListIgnoredDirtyFiles(ctx, &bossanovav1.ListIgnoredDirtyFilesRequest{
+			WorkDir: session.WorktreePath,
+		})
+		if rpcErr != nil {
+			l.logger.Warn().Err(rpcErr).Msg("ListIgnoredDirtyFiles failed; using empty list")
+		} else if resp != nil {
+			managedPaths = resp.Paths
+		}
+	} else {
+		managedPaths = bossdManagedWorktreeFiles
+	}
+	status = stripBossdManagedFilesWith(status, managedPaths)
 
 	if strings.TrimSpace(status) == "" {
 		return l.finalizeNoChanges(ctx, session)
@@ -323,7 +346,7 @@ func (l *Lifecycle) finalizeNoChanges(ctx context.Context, session *models.Sessi
 	}
 
 	// Tear down any per-chat tmux sessions BEFORE deleting the session row.
-	// claude_chats.session_id has ON DELETE CASCADE, so once the row is gone
+	// agent_chats.session_id has ON DELETE CASCADE, so once the row is gone
 	// we lose the tmux_session_name needed to find and kill the tmux session
 	// — leaving a stranded `claude` process with no DB pointer back to it.
 	// Cron-spawned sessions always have a tmux-hosted chat in this branch

@@ -11,11 +11,15 @@ import (
 
 func TestDefaultSettings(t *testing.T) {
 	s := DefaultSettings()
-	if s.DangerouslySkipPermissions {
-		t.Error("expected DangerouslySkipPermissions=false by default")
-	}
 	if s.WorktreeBaseDir == "" {
 		t.Error("expected non-empty WorktreeBaseDir")
+	}
+}
+
+func TestDefaultAgent_Default(t *testing.T) {
+	s := DefaultSettings()
+	if s.DefaultAgent != "claude" {
+		t.Errorf("DefaultAgent: got %q, want %q", s.DefaultAgent, "claude")
 	}
 }
 
@@ -25,7 +29,7 @@ func TestLoadMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for missing file, got %v", err)
 	}
-	if s.DangerouslySkipPermissions {
+	if s.WorktreeBaseDir == "" {
 		t.Error("expected defaults for missing file")
 	}
 }
@@ -33,9 +37,9 @@ func TestLoadMissingFile(t *testing.T) {
 func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "settings.json")
 	original := Settings{
-		DangerouslySkipPermissions: true,
-		WorktreeBaseDir:            "/custom/worktrees",
-		PollIntervalSeconds:        60,
+		WorktreeBaseDir:     "/custom/worktrees",
+		DefaultAgent:        "opencode",
+		PollIntervalSeconds: 60,
 	}
 
 	if err := SaveTo(path, original); err != nil {
@@ -47,17 +51,52 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Fatalf("LoadFrom: %v", err)
 	}
 
-	if loaded.DangerouslySkipPermissions != original.DangerouslySkipPermissions {
-		t.Errorf("DangerouslySkipPermissions: got %v, want %v",
-			loaded.DangerouslySkipPermissions, original.DangerouslySkipPermissions)
-	}
 	if loaded.WorktreeBaseDir != original.WorktreeBaseDir {
 		t.Errorf("WorktreeBaseDir: got %q, want %q",
 			loaded.WorktreeBaseDir, original.WorktreeBaseDir)
 	}
+	if loaded.DefaultAgent != original.DefaultAgent {
+		t.Errorf("DefaultAgent: got %q, want %q",
+			loaded.DefaultAgent, original.DefaultAgent)
+	}
 	if loaded.PollIntervalSeconds != original.PollIntervalSeconds {
 		t.Errorf("PollIntervalSeconds: got %d, want %d",
 			loaded.PollIntervalSeconds, original.PollIntervalSeconds)
+	}
+}
+
+func TestLoadFrom_BackfillsDefaultAgent(t *testing.T) {
+	// LoadFrom must guarantee a non-empty DefaultAgent on two file shapes:
+	//   1. Legacy file: omits default_agent entirely (older binary).
+	//   2. Hand-edited file: sets default_agent to "" explicitly.
+	// Both must resolve to "claude" so downstream callers never see empty.
+	cases := []struct {
+		name string
+		json string
+	}{
+		{
+			name: "key omitted",
+			json: `{"dangerously_skip_permissions": false, "worktree_base_dir": "/legacy/worktrees"}`,
+		},
+		{
+			name: "key present but empty",
+			json: `{"dangerously_skip_permissions": false, "worktree_base_dir": "/legacy/worktrees", "default_agent": ""}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "settings.json")
+			if err := os.WriteFile(path, []byte(tc.json), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := LoadFrom(path)
+			if err != nil {
+				t.Fatalf("LoadFrom: %v", err)
+			}
+			if loaded.DefaultAgent != "claude" {
+				t.Errorf("DefaultAgent: got %q, want %q", loaded.DefaultAgent, "claude")
+			}
+		})
 	}
 }
 
@@ -72,7 +111,7 @@ func TestLoadMalformedFile(t *testing.T) {
 		t.Fatal("expected error for malformed JSON")
 	}
 	// Should return defaults on error.
-	if s.DangerouslySkipPermissions {
+	if s.WorktreeBaseDir == "" {
 		t.Error("expected defaults on parse error")
 	}
 }
@@ -415,6 +454,140 @@ func TestDiscoverPluginsPrefersLibexec(t *testing.T) {
 	if !strings.Contains(plugins[0].Path, "libexec") {
 		t.Errorf("expected libexec path, got %q", plugins[0].Path)
 	}
+}
+
+func TestPluginConfigBool(t *testing.T) {
+	cases := []struct {
+		name    string
+		plugins []PluginConfig
+		plugin  string
+		key     string
+		want    bool
+	}{
+		{
+			name:    "missing plugin returns false",
+			plugins: []PluginConfig{{Name: "linear"}},
+			plugin:  "claude",
+			key:     "dangerously_skip_permissions",
+			want:    false,
+		},
+		{
+			name:    "nil settings safe",
+			plugins: nil,
+			plugin:  "claude",
+			key:     "dangerously_skip_permissions",
+			want:    false,
+		},
+		{
+			name: "missing key returns false",
+			plugins: []PluginConfig{
+				{Name: "claude", Config: map[string]string{"other": "true"}},
+			},
+			plugin: "claude",
+			key:    "dangerously_skip_permissions",
+			want:   false,
+		},
+		{
+			name: "value true returns true",
+			plugins: []PluginConfig{
+				{Name: "claude", Config: map[string]string{"dangerously_skip_permissions": "true"}},
+			},
+			plugin: "claude",
+			key:    "dangerously_skip_permissions",
+			want:   true,
+		},
+		{
+			name: "value false returns false",
+			plugins: []PluginConfig{
+				{Name: "claude", Config: map[string]string{"dangerously_skip_permissions": "false"}},
+			},
+			plugin: "claude",
+			key:    "dangerously_skip_permissions",
+			want:   false,
+		},
+		{
+			name: "non-canonical value returns false",
+			plugins: []PluginConfig{
+				{Name: "claude", Config: map[string]string{"dangerously_skip_permissions": "yes"}},
+			},
+			plugin: "claude",
+			key:    "dangerously_skip_permissions",
+			want:   false,
+		},
+		{
+			name: "nil Config map returns false",
+			plugins: []PluginConfig{
+				{Name: "claude"},
+			},
+			plugin: "claude",
+			key:    "dangerously_skip_permissions",
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := Settings{Plugins: tc.plugins}
+			got := PluginConfigBool(&s, tc.plugin, tc.key)
+			if got != tc.want {
+				t.Errorf("PluginConfigBool(%q,%q) = %v, want %v", tc.plugin, tc.key, got, tc.want)
+			}
+		})
+	}
+
+	// Nil pointer must not panic.
+	if got := PluginConfigBool(nil, "claude", "x"); got {
+		t.Errorf("nil settings: got %v, want false", got)
+	}
+}
+
+func TestSetPluginConfigBool(t *testing.T) {
+	t.Run("true sets the key", func(t *testing.T) {
+		s := Settings{Plugins: []PluginConfig{{Name: "claude"}}}
+		SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", true)
+		if s.Plugins[0].Config["dangerously_skip_permissions"] != "true" {
+			t.Errorf("got %q, want %q", s.Plugins[0].Config["dangerously_skip_permissions"], "true")
+		}
+	})
+
+	t.Run("false deletes the key", func(t *testing.T) {
+		s := Settings{Plugins: []PluginConfig{{
+			Name:   "claude",
+			Config: map[string]string{"dangerously_skip_permissions": "true", "other": "v"},
+		}}}
+		SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", false)
+		if _, ok := s.Plugins[0].Config["dangerously_skip_permissions"]; ok {
+			t.Errorf("expected key deleted, got %v", s.Plugins[0].Config)
+		}
+		if s.Plugins[0].Config["other"] != "v" {
+			t.Errorf("unrelated key clobbered: %v", s.Plugins[0].Config)
+		}
+	})
+
+	t.Run("true on missing plugin appends entry", func(t *testing.T) {
+		s := Settings{Plugins: []PluginConfig{{Name: "linear"}}}
+		SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", true)
+		if len(s.Plugins) != 2 {
+			t.Fatalf("expected 2 plugins, got %d: %+v", len(s.Plugins), s.Plugins)
+		}
+		if s.Plugins[1].Name != "claude" {
+			t.Errorf("appended plugin name = %q, want %q", s.Plugins[1].Name, "claude")
+		}
+		if s.Plugins[1].Config["dangerously_skip_permissions"] != "true" {
+			t.Errorf("config not seeded: %+v", s.Plugins[1].Config)
+		}
+	})
+
+	t.Run("false on missing plugin is no-op", func(t *testing.T) {
+		s := Settings{Plugins: []PluginConfig{{Name: "linear"}}}
+		SetPluginConfigBool(&s, "claude", "dangerously_skip_permissions", false)
+		if len(s.Plugins) != 1 || s.Plugins[0].Name != "linear" {
+			t.Errorf("plugins list mutated: %+v", s.Plugins)
+		}
+	})
+
+	t.Run("nil settings safe", func(t *testing.T) {
+		SetPluginConfigBool(nil, "claude", "dangerously_skip_permissions", true)
+	})
 }
 
 func TestDedupPluginConfigs(t *testing.T) {

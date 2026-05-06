@@ -6,10 +6,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
 	bossalog "github.com/recurser/bossalib/log"
-	"github.com/recurser/bossalib/skilldata"
+	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -126,13 +127,15 @@ func chatsCmd() *cobra.Command {
 }
 
 func newCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "new",
 		Short: "Create a new coding session",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runNew(cmd)
 		},
 	}
+	cmd.Flags().String("agent", "", "Override default agent plugin for this session (e.g. claude, opencode)")
+	return cmd
 }
 
 func attachCmd() *cobra.Command {
@@ -271,6 +274,7 @@ func settingsCmd() *cobra.Command {
 	cmd.Flags().Bool("skip-permissions", false, "Enable Claude --dangerously-skip-permissions")
 	cmd.Flags().Bool("no-skip-permissions", false, "Disable Claude --dangerously-skip-permissions")
 	cmd.Flags().String("worktree-dir", "", "Set worktree base directory")
+	cmd.Flags().String("default-agent", "", "Set the default agent plugin (e.g. claude, opencode)")
 	cmd.Flags().Int("poll-interval", 0, "Set poll interval in seconds (0 = default)")
 	return cmd
 }
@@ -300,12 +304,12 @@ func maybeInstallSkills() error {
 	if os.Getenv("BOSS_SKIP_SKILLS") != "" {
 		return nil
 	}
-	dir, err := skilldata.DefaultSkillsDir()
+	dir, err := libskillinstall.DefaultDir()
 	if err != nil {
 		return nil // non-fatal
 	}
 	settings, _ := config.Load()
-	if skilldata.BossSkillsInstalled(dir) || settings.SkillsDeclined {
+	if libskillinstall.IsInstalled(dir) || settings.SkillsDeclined {
 		return nil // already installed or user opted out
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -323,7 +327,7 @@ func maybeInstallSkills() error {
 		_ = config.Save(settings)
 		return nil
 	}
-	if err := skilldata.ExtractSkills(dir, skilldata.SkillsFS); err != nil {
+	if err := libskillinstall.Extract(dir, skillinstall.SkillsFS); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to install skills: %v\n", err)
 	} else {
 		fmt.Fprintln(os.Stderr, "Boss skills installed.")

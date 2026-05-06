@@ -9,10 +9,10 @@ import (
 
 type chatChange struct {
 	kind ChatChangeKind
-	chat *models.ClaudeChat
+	chat *models.AgentChat
 }
 
-func newSeededNotifyingStore(t *testing.T) (*NotifyingClaudeChatStore, string, *[]chatChange) {
+func newSeededNotifyingStore(t *testing.T) (*NotifyingAgentChatStore, string, *[]chatChange) {
 	t.Helper()
 	d := setupTestDB(t)
 	repoStore := NewRepoStore(d)
@@ -29,21 +29,21 @@ func newSeededNotifyingStore(t *testing.T) (*NotifyingClaudeChatStore, string, *
 		t.Fatalf("create session: %v", err)
 	}
 
-	store := NewNotifyingClaudeChatStore(NewClaudeChatStore(d))
+	store := NewNotifyingAgentChatStore(NewAgentChatStore(d))
 	var got []chatChange
-	store.OnChange = func(kind ChatChangeKind, chat *models.ClaudeChat) {
+	store.OnChange = func(kind ChatChangeKind, chat *models.AgentChat) {
 		got = append(got, chatChange{kind: kind, chat: chat})
 	}
 	return store, sess.ID, &got
 }
 
-func TestNotifyingClaudeChatStore_Create_FiresCreated(t *testing.T) {
+func TestNotifyingAgentChatStore_Create_FiresCreated(t *testing.T) {
 	store, sessionID, got := newSeededNotifyingStore(t)
 
-	chat, err := store.Create(context.Background(), CreateClaudeChatParams{
-		SessionID: sessionID,
-		ClaudeID:  "claude-create",
-		Title:     "Created",
+	chat, err := store.Create(context.Background(), CreateAgentChatParams{
+		SessionID:      sessionID,
+		AgentSessionID: "claude-create",
+		Title:          "Created",
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -62,20 +62,20 @@ func TestNotifyingClaudeChatStore_Create_FiresCreated(t *testing.T) {
 	}
 }
 
-func TestNotifyingClaudeChatStore_UpdateTitleByClaudeID_FiresUpdated(t *testing.T) {
+func TestNotifyingAgentChatStore_UpdateTitleByAgentSessionID_FiresUpdated(t *testing.T) {
 	store, sessionID, got := newSeededNotifyingStore(t)
 	ctx := context.Background()
 
-	if _, err := store.Create(ctx, CreateClaudeChatParams{
-		SessionID: sessionID,
-		ClaudeID:  "claude-update-title",
-		Title:     "Original",
+	if _, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:      sessionID,
+		AgentSessionID: "claude-update-title",
+		Title:          "Original",
 	}); err != nil {
 		t.Fatalf("seed create: %v", err)
 	}
 	*got = nil // discard the create hook
 
-	if err := store.UpdateTitleByClaudeID(ctx, "claude-update-title", "Renamed"); err != nil {
+	if err := store.UpdateTitleByAgentSessionID(ctx, "claude-update-title", "Renamed"); err != nil {
 		t.Fatalf("update title: %v", err)
 	}
 	if len(*got) != 1 {
@@ -89,14 +89,14 @@ func TestNotifyingClaudeChatStore_UpdateTitleByClaudeID_FiresUpdated(t *testing.
 	}
 }
 
-func TestNotifyingClaudeChatStore_UpdateTmuxSessionName_FiresUpdated(t *testing.T) {
+func TestNotifyingAgentChatStore_UpdateTmuxSessionName_FiresUpdated(t *testing.T) {
 	store, sessionID, got := newSeededNotifyingStore(t)
 	ctx := context.Background()
 
-	if _, err := store.Create(ctx, CreateClaudeChatParams{
-		SessionID: sessionID,
-		ClaudeID:  "claude-update-tmux",
-		Title:     "Tmux test",
+	if _, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:      sessionID,
+		AgentSessionID: "claude-update-tmux",
+		Title:          "Tmux test",
 	}); err != nil {
 		t.Fatalf("seed create: %v", err)
 	}
@@ -114,21 +114,21 @@ func TestNotifyingClaudeChatStore_UpdateTmuxSessionName_FiresUpdated(t *testing.
 	}
 }
 
-func TestNotifyingClaudeChatStore_DeleteByClaudeID_FiresDeletedWithPreDeleteSnapshot(t *testing.T) {
+func TestNotifyingAgentChatStore_DeleteByAgentSessionID_FiresDeletedWithPreDeleteSnapshot(t *testing.T) {
 	store, sessionID, got := newSeededNotifyingStore(t)
 	ctx := context.Background()
 
-	chat, err := store.Create(ctx, CreateClaudeChatParams{
-		SessionID: sessionID,
-		ClaudeID:  "claude-delete",
-		Title:     "Doomed",
+	chat, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:      sessionID,
+		AgentSessionID: "claude-delete",
+		Title:          "Doomed",
 	})
 	if err != nil {
 		t.Fatalf("seed create: %v", err)
 	}
 	*got = nil
 
-	if err := store.DeleteByClaudeID(ctx, "claude-delete"); err != nil {
+	if err := store.DeleteByAgentSessionID(ctx, "claude-delete"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if len(*got) != 1 || (*got)[0].kind != ChatChangeDeleted {
@@ -141,12 +141,12 @@ func TestNotifyingClaudeChatStore_DeleteByClaudeID_FiresDeletedWithPreDeleteSnap
 	}
 }
 
-func TestNotifyingClaudeChatStore_DeleteUnknownClaudeID_NoHook(t *testing.T) {
+func TestNotifyingAgentChatStore_DeleteUnknownClaudeID_NoHook(t *testing.T) {
 	store, _, got := newSeededNotifyingStore(t)
 
 	// Underlying SQL DELETE is idempotent on a missing row; the wrapper
 	// must skip the hook in that case (no chat to report).
-	if err := store.DeleteByClaudeID(context.Background(), "nonexistent"); err != nil {
+	if err := store.DeleteByAgentSessionID(context.Background(), "nonexistent"); err != nil {
 		t.Fatalf("delete unknown: %v", err)
 	}
 	if len(*got) != 0 {
@@ -154,7 +154,7 @@ func TestNotifyingClaudeChatStore_DeleteUnknownClaudeID_NoHook(t *testing.T) {
 	}
 }
 
-func TestNotifyingClaudeChatStore_NilOnChange_DoesNotPanic(t *testing.T) {
+func TestNotifyingAgentChatStore_NilOnChange_DoesNotPanic(t *testing.T) {
 	d := setupTestDB(t)
 	repoStore := NewRepoStore(d)
 	sessionStore := NewSessionStore(d)
@@ -170,35 +170,35 @@ func TestNotifyingClaudeChatStore_NilOnChange_DoesNotPanic(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	store := NewNotifyingClaudeChatStore(NewClaudeChatStore(d))
+	store := NewNotifyingAgentChatStore(NewAgentChatStore(d))
 	// OnChange deliberately not set.
 	ctx := context.Background()
 
-	if _, err := store.Create(ctx, CreateClaudeChatParams{
-		SessionID: sess.ID,
-		ClaudeID:  "claude-nilhook",
-		Title:     "Nil hook test",
+	if _, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "claude-nilhook",
+		Title:          "Nil hook test",
 	}); err != nil {
 		t.Fatalf("create with nil hook: %v", err)
 	}
-	if err := store.UpdateTitleByClaudeID(ctx, "claude-nilhook", "Updated"); err != nil {
+	if err := store.UpdateTitleByAgentSessionID(ctx, "claude-nilhook", "Updated"); err != nil {
 		t.Fatalf("update with nil hook: %v", err)
 	}
-	if err := store.DeleteByClaudeID(ctx, "claude-nilhook"); err != nil {
+	if err := store.DeleteByAgentSessionID(ctx, "claude-nilhook"); err != nil {
 		t.Fatalf("delete with nil hook: %v", err)
 	}
 }
 
-func TestNotifyingClaudeChatStore_CreateError_NoHook(t *testing.T) {
+func TestNotifyingAgentChatStore_CreateError_NoHook(t *testing.T) {
 	store, _, got := newSeededNotifyingStore(t)
 
 	// session_id is a NOT NULL FK; an empty value violates the foreign
 	// key constraint and Create returns an error. The wrapper must NOT
 	// fire a hook for a failed mutation.
-	_, err := store.Create(context.Background(), CreateClaudeChatParams{
-		SessionID: "missing-session",
-		ClaudeID:  "claude-orphan",
-		Title:     "Orphan",
+	_, err := store.Create(context.Background(), CreateAgentChatParams{
+		SessionID:      "missing-session",
+		AgentSessionID: "claude-orphan",
+		Title:          "Orphan",
 	})
 	if err == nil {
 		t.Fatal("expected FK violation, got nil")

@@ -15,8 +15,14 @@ type fakeCommandHandler struct {
 	stopCalls   atomic.Int32
 	pauseCalls  atomic.Int32
 	resumeCalls atomic.Int32
+	wakeCalls   atomic.Int32
 	returnErr   error
 	session     *pb.Session
+	// WakeChat-specific knobs.
+	wakeOutcome   pb.WakeChatResult_Outcome
+	wakeTmuxName  string
+	wakeErrorCode pb.CommandResult_ErrorCode
+	wakeErr       error
 }
 
 func (f *fakeCommandHandler) Stop(_ context.Context, _ string) (*pb.Session, error) {
@@ -30,6 +36,10 @@ func (f *fakeCommandHandler) Pause(_ context.Context, _ string) (*pb.Session, er
 func (f *fakeCommandHandler) Resume(_ context.Context, _ string) (*pb.Session, error) {
 	f.resumeCalls.Add(1)
 	return f.session, f.returnErr
+}
+func (f *fakeCommandHandler) WakeChat(_ context.Context, _ string, _ bool) (pb.WakeChatResult_Outcome, string, pb.CommandResult_ErrorCode, error) {
+	f.wakeCalls.Add(1)
+	return f.wakeOutcome, f.wakeTmuxName, f.wakeErrorCode, f.wakeErr
 }
 
 type fakeWebhookDispatcher struct {
@@ -128,6 +138,85 @@ func TestDispatchCommand_Resume_CallsHandler(t *testing.T) {
 	}
 	if r := ev.GetResult(); r == nil || !r.GetOk() {
 		t.Fatalf("expected ok result: %+v", ev)
+	}
+}
+
+func TestDispatchCommand_WakeChat_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{
+		wakeOutcome:  pb.WakeChatResult_OUTCOME_RESUMED,
+		wakeTmuxName: "boss-aaa-bbb",
+	}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-w1",
+			Cmd: &pb.OrchestratorCommand_WakeChat{
+				WakeChat: &pb.WakeChatCommand{AgentSessionId: "agent-1"},
+			},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.wakeCalls.Load() != 1 {
+		t.Fatalf("wake calls = %d, want 1", handler.wakeCalls.Load())
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() {
+		t.Fatalf("expected ok result: %+v", ev)
+	}
+	wake := r.GetWakeChat()
+	if wake == nil {
+		t.Fatalf("expected WakeChatResult payload, got %+v", r)
+	}
+	if wake.GetOutcome() != pb.WakeChatResult_OUTCOME_RESUMED {
+		t.Fatalf("outcome = %v, want RESUMED", wake.GetOutcome())
+	}
+	if wake.GetTmuxSessionName() != "boss-aaa-bbb" {
+		t.Fatalf("tmux name = %q", wake.GetTmuxSessionName())
+	}
+}
+
+func TestDispatchCommand_WakeChat_NotFoundSetsErrorCode(t *testing.T) {
+	handler := &fakeCommandHandler{
+		wakeErrorCode: pb.CommandResult_ERROR_CODE_NOT_FOUND,
+		wakeErr:       errors.New("agent-missing"),
+	}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-w2",
+			Cmd: &pb.OrchestratorCommand_WakeChat{
+				WakeChat: &pb.WakeChatCommand{AgentSessionId: "missing"},
+			},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("error_code = %v, want NOT_FOUND", r.GetErrorCode())
+	}
+	if r.GetError() != "agent-missing" {
+		t.Fatalf("error message = %q, want plain (no prefix)", r.GetError())
+	}
+}
+
+func TestDispatchCommand_WakeChat_FailedPreconditionSetsErrorCode(t *testing.T) {
+	handler := &fakeCommandHandler{
+		wakeErrorCode: pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION,
+		wakeErr:       errors.New("worktree gone"),
+	}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-w3",
+			Cmd: &pb.OrchestratorCommand_WakeChat{
+				WakeChat: &pb.WakeChatCommand{AgentSessionId: "agent-1"},
+			},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	if r.GetErrorCode() != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
+		t.Fatalf("error_code = %v, want FAILED_PRECONDITION", r.GetErrorCode())
 	}
 }
 

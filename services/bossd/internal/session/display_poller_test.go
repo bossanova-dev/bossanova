@@ -209,7 +209,7 @@ func TestDisplayPoller_ChangesRequested(t *testing.T) {
 	}
 }
 
-func TestDisplayPoller_GracefulDegradation_CheckResultsError(t *testing.T) {
+func TestDisplayPoller_CheckResultsError_NoUpdate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -238,18 +238,56 @@ func TestDisplayPoller_GracefulDegradation_CheckResultsError(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	// Should still have an entry — graceful degradation means it continues
-	// with nil checks and computes status from PR alone.
-	e := tracker.Get("sess-1")
-	if e == nil {
-		t.Fatal("expected tracker entry despite check results error, got nil")
-	}
-	if e.Status != vcs.DisplayStatusIdle {
-		t.Errorf("Status = %d, want %d (Idle — no checks available)", e.Status, vcs.DisplayStatusIdle)
+	// Falling back to "Idle" on a transient API error silently disables the
+	// repair plugin (which only triggers on FAILING/CONFLICT/REJECTED). The
+	// poller must skip the update and let the next cycle retry.
+	if e := tracker.Get("sess-1"); e != nil {
+		t.Errorf("expected no tracker entry when GetCheckResults errored, got status=%d", e.Status)
 	}
 }
 
-func TestDisplayPoller_GracefulDegradation_ReviewCommentsError(t *testing.T) {
+func TestDisplayPoller_CheckResultsError_PreservesPrevious(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	prNum := 10
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	// Seed a "Failing" entry to simulate a previous successful poll.
+	tracker.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusFailing})
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true)}
+	vp.checkResultsErr = fmt.Errorf("API rate limited")
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
+	poller.Run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	e := tracker.Get("sess-1")
+	if e == nil {
+		t.Fatal("previous entry must be preserved on API error, got nil")
+	}
+	if e.Status != vcs.DisplayStatusFailing {
+		t.Errorf("Status = %d, want %d (Failing — previous status sticks on error)", e.Status, vcs.DisplayStatusFailing)
+	}
+}
+
+func TestDisplayPoller_ReviewCommentsError_NoUpdate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -282,13 +320,11 @@ func TestDisplayPoller_GracefulDegradation_ReviewCommentsError(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 
-	// Should still compute status — reviews error means nil reviews, so Passing.
-	e := tracker.Get("sess-1")
-	if e == nil {
-		t.Fatal("expected tracker entry despite review comments error, got nil")
-	}
-	if e.Status != vcs.DisplayStatusPassing {
-		t.Errorf("Status = %d, want %d (Passing — reviews unavailable)", e.Status, vcs.DisplayStatusPassing)
+	// Without reviews we cannot tell apart "Passing" from "Rejected" — so
+	// the poller must skip the update rather than misclassify a rejected
+	// PR as passing.
+	if e := tracker.Get("sess-1"); e != nil {
+		t.Errorf("expected no tracker entry when GetReviewComments errored, got status=%d", e.Status)
 	}
 }
 

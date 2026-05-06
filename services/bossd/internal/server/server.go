@@ -21,7 +21,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
@@ -31,6 +31,7 @@ import (
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -53,7 +54,7 @@ type Server struct {
 	repos              db.RepoStore
 	sessions           db.SessionStore
 	attempts           db.AttemptStore
-	claudeChats        db.ClaudeChatStore
+	agentChats         db.AgentChatStore
 	workflows          db.WorkflowStore
 	cronJobs           db.CronJobStore
 	cronScheduler      *cron.Scheduler
@@ -61,11 +62,13 @@ type Server struct {
 	displayTracker     *status.DisplayTracker
 	tmuxPoller         *status.TmuxStatusPoller
 	lifecycle          *session.Lifecycle
-	claude             claude.ClaudeRunner
+	agent              agent.AgentRunner
 	worktrees          gitpkg.WorktreeManager
 	provider           vcs.Provider
 	pluginHost         *plugin.Host
 	tmux               *tmux.Client
+	chatWakeGroup      singleflight.Group // per-chat idempotency for WakeChat
+	wakeHook           wakeHook           // test-only: zero in production; see wake_chat.go
 	completionNotifier session.SessionCompletionNotifier
 	authNotifier       AuthNotifier
 	onSessionDeleted   func(context.Context, string)
@@ -81,7 +84,7 @@ type Config struct {
 	Repos              db.RepoStore
 	Sessions           db.SessionStore
 	Attempts           db.AttemptStore
-	ClaudeChats        db.ClaudeChatStore
+	AgentChats         db.AgentChatStore
 	Workflows          db.WorkflowStore
 	CronJobs           db.CronJobStore
 	CronScheduler      *cron.Scheduler
@@ -89,7 +92,7 @@ type Config struct {
 	DisplayTracker     *status.DisplayTracker
 	TmuxPoller         *status.TmuxStatusPoller
 	Lifecycle          *session.Lifecycle
-	Claude             claude.ClaudeRunner
+	Agent              agent.AgentRunner
 	Worktrees          gitpkg.WorktreeManager
 	Provider           vcs.Provider
 	PluginHost         *plugin.Host
@@ -124,7 +127,7 @@ func New(cfg Config) *Server {
 		repos:              cfg.Repos,
 		sessions:           cfg.Sessions,
 		attempts:           cfg.Attempts,
-		claudeChats:        cfg.ClaudeChats,
+		agentChats:         cfg.AgentChats,
 		workflows:          cfg.Workflows,
 		cronJobs:           cfg.CronJobs,
 		cronScheduler:      cfg.CronScheduler,
@@ -132,7 +135,7 @@ func New(cfg Config) *Server {
 		displayTracker:     cfg.DisplayTracker,
 		tmuxPoller:         cfg.TmuxPoller,
 		lifecycle:          cfg.Lifecycle,
-		claude:             cfg.Claude,
+		agent:              cfg.Agent,
 		worktrees:          cfg.Worktrees,
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
@@ -558,11 +561,23 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		headBranch = *msg.BranchName
 	}
 
+	// Resolve the agent name. The proto field is a oneof (*string), so an
+	// unset request falls back to Settings.DefaultAgent — which Task 3
+	// backfills to "claude" when the settings file omits it. Defense in
+	// depth against config.Load failure: an empty string here is still
+	// safe because the SQLite store has its own ""→"claude" fallback.
+	agentName := msg.GetAgentName()
+	if agentName == "" {
+		cfg, _ := config.Load()
+		agentName = cfg.DefaultAgent
+	}
+
 	createParams := db.CreateSessionParams{
 		RepoID:     msg.RepoId,
 		Title:      msg.Title,
 		Plan:       msg.Plan,
 		BaseBranch: baseBranch,
+		AgentName:  agentName,
 		PRNumber:   prNumber,
 		TrackerID:  msg.TrackerId,
 		TrackerURL: msg.TrackerUrl,
@@ -808,7 +823,7 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 	}
 
 	// If no Claude process is running, send ended and return.
-	if sess.ClaudeSessionID == nil || !s.claude.IsRunning(*sess.ClaudeSessionID) {
+	if sess.AgentSessionID == nil || !s.agent.IsRunning(*sess.AgentSessionID) {
 		return stream.Send(&pb.AttachSessionResponse{
 			Event: &pb.AttachSessionResponse_SessionEnded{
 				SessionEnded: &pb.SessionEnded{
@@ -818,10 +833,10 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 		})
 	}
 
-	claudeSessionID := *sess.ClaudeSessionID
+	claudeSessionID := *sess.AgentSessionID
 
 	// Send existing ring buffer contents as initial burst.
-	history := s.claude.History(claudeSessionID)
+	history := s.agent.History(claudeSessionID)
 	for _, line := range history {
 		if err := stream.Send(&pb.AttachSessionResponse{
 			Event: &pb.AttachSessionResponse_OutputLine{
@@ -844,7 +859,7 @@ func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.Atta
 	subCtx, cancelSub := context.WithCancel(ctx)
 	defer cancelSub()
 
-	ch, err := s.claude.Subscribe(subCtx, claudeSessionID)
+	ch, err := s.agent.Subscribe(subCtx, claudeSessionID)
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe: %w", err))
 	}
@@ -1257,18 +1272,26 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 	if msg.SessionId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
 	}
-	if msg.ClaudeId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required"))
+	if msg.AgentSessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("agent_session_id is required"))
 	}
 
 	// Idempotent: reuse the existing row if one already exists for this
-	// claude_id (resume case), otherwise insert a new one.
-	chat, err := s.claudeChats.GetByClaudeID(ctx, msg.ClaudeId)
+	// agent_session_id (resume case), otherwise insert a new one.
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, msg.AgentSessionId)
 	if err != nil {
-		chat, err = s.claudeChats.Create(ctx, db.CreateClaudeChatParams{
-			SessionID: msg.SessionId,
-			ClaudeID:  msg.ClaudeId,
-			Title:     msg.Title,
+		// Look up the parent session so the chat row inherits the right
+		// agent_name. Without this, the SQLite store would default to
+		// "claude" regardless of which agent actually owns the session.
+		var agentName string
+		if sess, sErr := s.sessions.Get(ctx, msg.SessionId); sErr == nil {
+			agentName = sess.AgentName
+		}
+		chat, err = s.agentChats.Create(ctx, db.CreateAgentChatParams{
+			SessionID:      msg.SessionId,
+			AgentSessionID: msg.AgentSessionId,
+			AgentName:      agentName,
+			Title:          msg.Title,
 		})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("record chat: %w", err))
@@ -1280,55 +1303,46 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 	// reattaching just reconnects to the existing tmux session.
 	if err := s.ensureChatTmuxSession(ctx, chat, msg.GetResume()); err != nil {
 		s.logger.Warn().Err(err).
-			Str("claudeID", chat.ClaudeID).
+			Str("agentSessionID", chat.AgentSessionID).
 			Msg("failed to ensure tmux session for chat")
 	} else {
 		// Refetch so the response carries the persisted tmux_session_name.
-		if refreshed, refreshErr := s.claudeChats.GetByClaudeID(ctx, chat.ClaudeID); refreshErr == nil {
+		if refreshed, refreshErr := s.agentChats.GetByAgentSessionID(ctx, chat.AgentSessionID); refreshErr == nil {
 			chat = refreshed
 		}
 	}
 
-	return connect.NewResponse(&pb.RecordChatResponse{Chat: claudeChatToProto(chat)}), nil
+	return connect.NewResponse(&pb.RecordChatResponse{Chat: agentChatToProto(chat)}), nil
 }
 
 // ensureChatTmuxSession guarantees that a `tmux` session named per
 // tmux.ChatSessionName exists and is hosting `claude` for the given chat.
 // Idempotent: a no-op if the session is already alive. Persists the resolved
 // name onto the chat row so kill/list paths can find it later.
-func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.ClaudeChat, resume bool) error {
+func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentChat, resume bool) error {
 	if s.tmux == nil || !s.tmux.Available(ctx) {
 		return nil
 	}
-
 	sess, err := s.sessions.Get(ctx, chat.SessionID)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
 	}
-	tmuxName := tmux.ChatSessionName(sess.RepoID, chat.ClaudeID)
+	tmuxName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
 
-	if !s.tmux.HasSession(ctx, tmuxName) {
-		args := []string{"claude"}
-		if resume {
-			args = append(args, "--resume", chat.ClaudeID)
-		} else {
-			args = append(args, "--session-id", chat.ClaudeID)
-		}
-		cfg, _ := config.Load()
-		if cfg.DangerouslySkipPermissions {
-			args = append(args, "--dangerously-skip-permissions")
-		}
-		if err := s.tmux.NewSession(ctx, tmux.NewSessionOpts{
-			Name:    tmuxName,
-			WorkDir: sess.WorktreePath,
-			Command: args,
-		}); err != nil {
-			return fmt.Errorf("new tmux session: %w", err)
-		}
+	if _, err := spawnChatTmux(ctx, spawnDeps{
+		Tmux:        liveTmuxSpawner{c: s.tmux},
+		Transcripts: liveTranscriptOracle{},
+	}, spawnInput{
+		Chat:         chat,
+		WorktreePath: sess.WorktreePath,
+		TmuxName:     tmuxName,
+		ForceFresh:   !resume,
+	}); err != nil {
+		return err
 	}
 
 	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
-		if err := s.claudeChats.UpdateTmuxSessionName(ctx, chat.ClaudeID, &tmuxName); err != nil {
+		if err := s.agentChats.UpdateTmuxSessionName(ctx, chat.AgentSessionID, &tmuxName); err != nil {
 			return fmt.Errorf("persist tmux session name: %w", err)
 		}
 	}
@@ -1340,14 +1354,14 @@ func (s *Server) ListChats(ctx context.Context, req *connect.Request[pb.ListChat
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("session_id is required"))
 	}
 
-	chats, err := s.claudeChats.ListBySession(ctx, req.Msg.SessionId)
+	chats, err := s.agentChats.ListBySession(ctx, req.Msg.SessionId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list chats: %w", err))
 	}
 
 	pbChats := make([]*pb.ClaudeChat, len(chats))
 	for i, c := range chats {
-		pbChats[i] = claudeChatToProto(c)
+		pbChats[i] = agentChatToProto(c)
 	}
 
 	return connect.NewResponse(&pb.ListChatsResponse{Chats: pbChats}), nil
@@ -1355,14 +1369,14 @@ func (s *Server) ListChats(ctx context.Context, req *connect.Request[pb.ListChat
 
 func (s *Server) UpdateChatTitle(ctx context.Context, req *connect.Request[pb.UpdateChatTitleRequest]) (*connect.Response[pb.UpdateChatTitleResponse], error) {
 	msg := req.Msg
-	if msg.ClaudeId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required"))
+	if msg.AgentSessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("agent_session_id is required"))
 	}
 	if msg.Title == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title is required"))
 	}
 
-	if err := s.claudeChats.UpdateTitleByClaudeID(ctx, msg.ClaudeId, msg.Title); err != nil {
+	if err := s.agentChats.UpdateTitleByAgentSessionID(ctx, msg.AgentSessionId, msg.Title); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update chat title: %w", err))
 	}
 
@@ -1370,17 +1384,17 @@ func (s *Server) UpdateChatTitle(ctx context.Context, req *connect.Request[pb.Up
 }
 
 func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
-	if req.Msg.ClaudeId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("claude_id is required"))
+	if req.Msg.AgentSessionId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("agent_session_id is required"))
 	}
 
-	if err := s.claudeChats.DeleteByClaudeID(ctx, req.Msg.ClaudeId); err != nil {
+	if err := s.agentChats.DeleteByAgentSessionID(ctx, req.Msg.AgentSessionId); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete chat: %w", err))
 	}
 
 	// Also clean up any cached status for this chat.
 	if s.chatStatus != nil {
-		s.chatStatus.Remove(req.Msg.ClaudeId)
+		s.chatStatus.Remove(req.Msg.AgentSessionId)
 	}
 
 	return connect.NewResponse(&pb.DeleteChatResponse{}), nil
@@ -1393,14 +1407,14 @@ func (s *Server) ReportChatStatus(_ context.Context, req *connect.Request[pb.Rep
 		return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
 	}
 	for _, r := range req.Msg.Reports {
-		if r.ClaudeId == "" {
+		if r.AgentSessionId == "" {
 			continue
 		}
 		var lastOutputAt time.Time
 		if r.LastOutputAt != nil {
 			lastOutputAt = r.LastOutputAt.AsTime()
 		}
-		s.chatStatus.Update(r.ClaudeId, r.Status, lastOutputAt)
+		s.chatStatus.Update(r.AgentSessionId, r.Status, lastOutputAt)
 	}
 	return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
 }
@@ -1411,7 +1425,7 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 	}
 
 	// Look up chats for this session.
-	chats, err := s.claudeChats.ListBySession(ctx, req.Msg.SessionId)
+	chats, err := s.agentChats.ListBySession(ctx, req.Msg.SessionId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list chats: %w", err))
 	}
@@ -1420,27 +1434,27 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 		return connect.NewResponse(&pb.GetChatStatusesResponse{}), nil
 	}
 
-	claudeIDs := make([]string, len(chats))
+	agentSessionIDs := make([]string, len(chats))
 	for i, c := range chats {
-		claudeIDs[i] = c.ClaudeID
+		agentSessionIDs[i] = c.AgentSessionID
 	}
 
-	entries := s.chatStatus.GetBatch(claudeIDs)
+	entries := s.chatStatus.GetBatch(agentSessionIDs)
 
 	// Build a map of which chats have live tmux sessions (per-chat liveness).
 	tmuxAlive := make(map[string]bool, len(chats))
 	for _, c := range chats {
 		if c.TmuxSessionName != nil && *c.TmuxSessionName != "" &&
 			s.lifecycle.IsTmuxSessionAlive(ctx, *c.TmuxSessionName) {
-			tmuxAlive[c.ClaudeID] = true
+			tmuxAlive[c.AgentSessionID] = true
 		}
 	}
 
 	statuses := make([]*pb.ChatStatusEntry, 0, len(entries))
 	for id, e := range entries {
 		entry := &pb.ChatStatusEntry{
-			ClaudeId: id,
-			Status:   e.Status,
+			AgentSessionId: id,
+			Status:         e.Status,
 		}
 		if !e.LastOutputAt.IsZero() {
 			entry.LastOutputAt = timestamppb.New(e.LastOutputAt)
@@ -1456,20 +1470,20 @@ func (s *Server) GetChatStatuses(ctx context.Context, req *connect.Request[pb.Ge
 
 	// If any tmux-active chat had no heartbeat entry at all, add a synthetic one.
 	for _, c := range chats {
-		if !tmuxAlive[c.ClaudeID] {
+		if !tmuxAlive[c.AgentSessionID] {
 			continue
 		}
 		found := false
 		for _, st := range statuses {
-			if st.ClaudeId == c.ClaudeID {
+			if st.AgentSessionId == c.AgentSessionID {
 				found = true
 				break
 			}
 		}
 		if !found {
 			statuses = append(statuses, &pb.ChatStatusEntry{
-				ClaudeId: c.ClaudeID,
-				Status:   pb.ChatStatus_CHAT_STATUS_IDLE,
+				AgentSessionId: c.AgentSessionID,
+				Status:         pb.ChatStatus_CHAT_STATUS_IDLE,
 			})
 		}
 	}
@@ -1485,7 +1499,7 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 	statuses := make([]*pb.SessionStatusEntry, 0, len(req.Msg.SessionIds))
 
 	for _, sessionID := range req.Msg.SessionIds {
-		chats, err := s.claudeChats.ListBySession(ctx, sessionID)
+		chats, err := s.agentChats.ListBySession(ctx, sessionID)
 		if err != nil {
 			s.logger.Warn().Err(err).Str("session_id", sessionID).Msg("list chats for session status")
 			continue
@@ -1498,11 +1512,11 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 			continue
 		}
 
-		claudeIDs := make([]string, len(chats))
+		agentSessionIDs := make([]string, len(chats))
 		for i, c := range chats {
-			claudeIDs[i] = c.ClaudeID
+			agentSessionIDs[i] = c.AgentSessionID
 		}
-		entries := s.chatStatus.GetBatch(claudeIDs)
+		entries := s.chatStatus.GetBatch(agentSessionIDs)
 
 		// Compute best status: question > working > idle > stopped.
 		best := pb.ChatStatus_CHAT_STATUS_STOPPED

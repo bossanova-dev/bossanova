@@ -133,11 +133,11 @@ type fakeChatLookup struct {
 	err  error
 }
 
-func (f *fakeChatLookup) GetByClaudeID(_ context.Context, claudeID string) (chatRow, error) {
+func (f *fakeChatLookup) GetByAgentSessionID(_ context.Context, agentSessionID string) (chatRow, error) {
 	if f.err != nil {
 		return chatRow{}, f.err
 	}
-	row, ok := f.rows[claudeID]
+	row, ok := f.rows[agentSessionID]
 	if !ok {
 		return chatRow{}, errors.New("chat not found")
 	}

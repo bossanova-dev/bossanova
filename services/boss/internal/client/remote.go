@@ -223,6 +223,43 @@ func (c *RemoteClient) DeleteChat(_ context.Context, _ string) error {
 	return errLocalOnly("DeleteChat")
 }
 
+// WakeChat proxies a wake request through the orchestrator. The orchestrator
+// uses sessionID for the authz check (the user must own the session that owns
+// the chat) and then forwards agentSessionID + forceFresh to the daemon.
+//
+// The orchestrator response uses WakeChatResult_Outcome (defined in stream.proto)
+// while the daemon RPC uses WakeChatResponse_Outcome (daemon.proto). The two
+// enums share the same numeric values today, but we translate explicitly so a
+// future divergence on either side is caught at the boundary instead of
+// silently corrupting the UI.
+func (c *RemoteClient) WakeChat(ctx context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error) {
+	resp, err := c.rpc.ProxyWakeChat(ctx, connect.NewRequest(&pb.ProxyWakeChatRequest{
+		SessionId:      sessionID,
+		AgentSessionId: agentSessionID,
+		ForceFresh:     forceFresh,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.WakeChatResponse{
+		Outcome:         translateStreamOutcome(resp.Msg.Outcome),
+		TmuxSessionName: resp.Msg.TmuxSessionName,
+	}, nil
+}
+
+func translateStreamOutcome(o pb.WakeChatResult_Outcome) pb.WakeChatResponse_Outcome {
+	switch o {
+	case pb.WakeChatResult_OUTCOME_ALREADY_LIVE:
+		return pb.WakeChatResponse_OUTCOME_ALREADY_LIVE
+	case pb.WakeChatResult_OUTCOME_RESUMED:
+		return pb.WakeChatResponse_OUTCOME_RESUMED
+	case pb.WakeChatResult_OUTCOME_FRESH_FALLBACK:
+		return pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK
+	default:
+		return pb.WakeChatResponse_OUTCOME_UNSPECIFIED
+	}
+}
+
 // --- Chat Status (local only) ---
 
 func (c *RemoteClient) ReportChatStatus(_ context.Context, _ []*pb.ChatStatusReport) error {

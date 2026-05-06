@@ -16,40 +16,40 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// --- mock ClaudeChatStore ---
+// --- mock AgentChatStore ---
 
 type mockChatStore struct {
 	mu    sync.Mutex
-	chats map[string]*models.ClaudeChat
+	chats map[string]*models.AgentChat
 }
 
-func (m *mockChatStore) Create(_ context.Context, _ db.CreateClaudeChatParams) (*models.ClaudeChat, error) {
+func (m *mockChatStore) Create(_ context.Context, _ db.CreateAgentChatParams) (*models.AgentChat, error) {
 	return nil, nil
 }
-func (m *mockChatStore) GetByClaudeID(_ context.Context, claudeID string) (*models.ClaudeChat, error) {
+func (m *mockChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*models.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	c, ok := m.chats[claudeID]
+	c, ok := m.chats[agentSessionID]
 	if !ok {
 		return nil, fmt.Errorf("not found")
 	}
 	return c, nil
 }
-func (m *mockChatStore) ListBySession(_ context.Context, _ string) ([]*models.ClaudeChat, error) {
+func (m *mockChatStore) ListBySession(_ context.Context, _ string) ([]*models.AgentChat, error) {
 	return nil, nil
 }
 func (m *mockChatStore) UpdateTitle(_ context.Context, _, _ string) error { return nil }
-func (m *mockChatStore) UpdateTitleByClaudeID(_ context.Context, _, _ string) error {
+func (m *mockChatStore) UpdateTitleByAgentSessionID(_ context.Context, _, _ string) error {
 	return nil
 }
 func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
 	return nil
 }
-func (m *mockChatStore) DeleteByClaudeID(_ context.Context, _ string) error { return nil }
-func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.ClaudeChat, error) {
+func (m *mockChatStore) DeleteByAgentSessionID(_ context.Context, _ string) error { return nil }
+func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var result []*models.ClaudeChat
+	var result []*models.AgentChat
 	for _, c := range m.chats {
 		if c.TmuxSessionName != nil && *c.TmuxSessionName != "" {
 			result = append(result, c)
@@ -162,11 +162,11 @@ func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...stri
 func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-test-chat1"
-	claudeID := "claude-1"
+	agentSessionID := "claude-1"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -179,10 +179,10 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
-	poller.RegisterChat(claudeID)
+	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
-	entry := tracker.Get(claudeID)
+	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected entry after poll")
 		return
@@ -195,11 +195,11 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-test-chat2"
-	claudeID := "claude-2"
+	agentSessionID := "claude-2"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -212,10 +212,10 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
-	poller.RegisterChat(claudeID)
+	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
-	entry := tracker.Get(claudeID)
+	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected entry after poll")
 		return
@@ -228,12 +228,12 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-test-chat3"
-	claudeID := "claude-3"
+	agentSessionID := "claude-3"
 	content := "Some static content"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -249,7 +249,7 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	// The content must match exactly what CapturePane returns (cat outputs
 	// the file bytes verbatim, no trailing newline added).
 	poller.mu.Lock()
-	poller.prevCaptures[claudeID] = captureEntry{
+	poller.prevCaptures[agentSessionID] = captureEntry{
 		content: content,
 		at:      time.Now().Add(-10 * time.Second),
 	}
@@ -257,7 +257,7 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 
 	poller.pollOnce(context.Background())
 
-	entry := tracker.Get(claudeID)
+	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected entry after poll")
 		return
@@ -269,12 +269,12 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 
 func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 	tracker := NewTracker()
-	claudeID := "claude-dead"
+	agentSessionID := "claude-dead"
 	tmuxName := "boss-test-dead"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -286,12 +286,12 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
-	poller.RegisterChat(claudeID)
+	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
 	// Chat should have been cleaned up from prevCaptures.
 	poller.mu.Lock()
-	_, exists := poller.prevCaptures[claudeID]
+	_, exists := poller.prevCaptures[agentSessionID]
 	poller.mu.Unlock()
 	if exists {
 		t.Error("expected dead chat to be cleaned up from prevCaptures")
@@ -301,7 +301,7 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
 	tracker := NewTracker()
 	tmuxClient := tmux.NewClient()
-	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.ClaudeChat{}}, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.AgentChat{}}, nil, tmuxClient, zerolog.Nop())
 
 	poller.RegisterChat("c1")
 	poller.mu.Lock()
@@ -321,11 +321,11 @@ func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
 func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-boot-idle"
-	claudeID := "claude-boot-idle"
+	agentSessionID := "claude-boot-idle"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -340,7 +340,7 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
-	entry := tracker.Get(claudeID)
+	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected entry after bootstrap")
 		return
@@ -351,7 +351,7 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 
 	// Should also be registered in prevCaptures.
 	poller.mu.Lock()
-	_, exists := poller.prevCaptures[claudeID]
+	_, exists := poller.prevCaptures[agentSessionID]
 	poller.mu.Unlock()
 	if !exists {
 		t.Error("expected chat to be in prevCaptures after bootstrap")
@@ -361,11 +361,11 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-boot-question"
-	claudeID := "claude-boot-question"
+	agentSessionID := "claude-boot-question"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -380,7 +380,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
-	entry := tracker.Get(claudeID)
+	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected entry after bootstrap")
 		return
@@ -397,7 +397,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 // doesn't flash IDLE before the first poll corrects it.
 func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.T) {
 	tmuxName := "boss-boot-suppress"
-	claudeID := "claude-boot-suppress"
+	agentSessionID := "claude-boot-suppress"
 	sessionID := "sess-boot-suppress"
 	worktreePath := "/tmp/boss-boot-suppress-wt"
 
@@ -408,7 +408,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 	if err := os.MkdirAll(projectDir, 0o700); err != nil {
 		t.Fatalf("mkdir project: %v", err)
 	}
-	transcript := projectDir + "/" + claudeID + ".jsonl"
+	transcript := projectDir + "/" + agentSessionID + ".jsonl"
 	userAnsweredFixture := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
 {"type":"user","message":{"role":"user","content":"yes"}}
 `
@@ -417,8 +417,8 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 	}
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, SessionID: sessionID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 	sessionStore := &mockSessionStore{
@@ -439,7 +439,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
-	entry := tracker.Get(claudeID)
+	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected entry after bootstrap")
 		return
@@ -452,11 +452,11 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-boot-dead"
-	claudeID := "claude-boot-dead"
+	agentSessionID := "claude-boot-dead"
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -470,13 +470,13 @@ func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
-	entry := tracker.Get(claudeID)
+	entry := tracker.Get(agentSessionID)
 	if entry != nil {
 		t.Errorf("expected no entry for dead session, got %v", entry.Status)
 	}
 
 	poller.mu.Lock()
-	_, exists := poller.prevCaptures[claudeID]
+	_, exists := poller.prevCaptures[agentSessionID]
 	poller.mu.Unlock()
 	if exists {
 		t.Error("expected dead session to not be in prevCaptures")
@@ -487,7 +487,7 @@ func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
 	tracker := NewTracker()
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{},
+		chats: map[string]*models.AgentChat{},
 	}
 
 	factory := &mockTmuxFactory{
@@ -514,7 +514,7 @@ func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
 // downgraded out of QUESTION and falls through to normal working detection.
 func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 	tmuxName := "boss-test-suppress"
-	claudeID := "claude-suppress"
+	agentSessionID := "claude-suppress"
 	sessionID := "sess-suppress"
 	worktreePath := "/tmp/boss-test-suppress-wt"
 
@@ -528,7 +528,7 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 	if err := os.MkdirAll(projectDir, 0o700); err != nil {
 		t.Fatalf("mkdir project: %v", err)
 	}
-	transcript := projectDir + "/" + claudeID + ".jsonl"
+	transcript := projectDir + "/" + agentSessionID + ".jsonl"
 	userAnsweredFixture := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"proceed?"}]}}
 {"type":"user","message":{"role":"user","content":"yes"}}
 `
@@ -537,8 +537,8 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 `
 
 	chatStore := &mockChatStore{
-		chats: map[string]*models.ClaudeChat{
-			claudeID: {ClaudeID: claudeID, SessionID: sessionID, TmuxSessionName: &tmuxName},
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 	sessionStore := &mockSessionStore{
@@ -560,10 +560,10 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 	}
 	tracker := NewTracker()
 	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, zerolog.Nop())
-	poller.RegisterChat(claudeID)
+	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
-	if entry := tracker.Get(claudeID); entry == nil {
+	if entry := tracker.Get(agentSessionID); entry == nil {
 		t.Fatal("expected entry after poll")
 	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Errorf("expected WORKING (question suppressed, user just answered), got %v", entry.Status)
@@ -575,10 +575,10 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 	}
 	tracker2 := NewTracker()
 	poller2 := NewTmuxStatusPoller(tracker2, chatStore, sessionStore, tmuxClient, zerolog.Nop())
-	poller2.RegisterChat(claudeID)
+	poller2.RegisterChat(agentSessionID)
 	poller2.pollOnce(context.Background())
 
-	if entry := tracker2.Get(claudeID); entry == nil {
+	if entry := tracker2.Get(agentSessionID); entry == nil {
 		t.Fatal("expected entry after poll")
 	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
 		t.Errorf("expected QUESTION (assistant last), got %v", entry.Status)
@@ -596,14 +596,14 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 	// Seed prevCaptures with the *same* question pane content but an old
 	// timestamp — mirrors the "question was showing for a while" scenario.
 	poller3.mu.Lock()
-	poller3.prevCaptures[claudeID] = captureEntry{
+	poller3.prevCaptures[agentSessionID] = captureEntry{
 		content: questionPane,
 		at:      time.Now().Add(-2 * IdleThreshold),
 	}
 	poller3.mu.Unlock()
 	poller3.pollOnce(context.Background())
 
-	if entry := tracker3.Get(claudeID); entry == nil {
+	if entry := tracker3.Get(agentSessionID); entry == nil {
 		t.Fatal("expected entry after poll")
 	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Errorf("expected WORKING after suppression with stale prev (not IDLE), got %v", entry.Status)

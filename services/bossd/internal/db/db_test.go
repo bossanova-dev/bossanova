@@ -81,9 +81,9 @@ func TestMissingIndexesUsed(t *testing.T) {
 			index: "idx_workflows_repo_id",
 		},
 		{
-			name:  "claude_chats.claude_id",
-			query: "SELECT id FROM claude_chats WHERE claude_id = ?",
-			index: "idx_claude_chats_claude_id",
+			name:  "agent_chats.agent_session_id",
+			query: "SELECT id FROM agent_chats WHERE agent_session_id = ?",
+			index: "idx_agent_chats_agent_session_id",
 		},
 	}
 
@@ -207,6 +207,83 @@ func TestRepoStore_UniqueLocalPath(t *testing.T) {
 	_, err := store.Create(ctx, params)
 	if err == nil {
 		t.Error("expected error for duplicate local_path")
+	}
+}
+
+// TestSessionStore_AgentNameDefault verifies that a session created without
+// AgentName persists and reads back the "claude" default. The DB-level
+// NOT NULL DEFAULT 'claude' is the safety net — but the store's empty-string
+// fallback is what keeps in-process callers from relying on the DEFAULT.
+func TestSessionStore_AgentNameDefault(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "default agent",
+		WorktreePath: "/tmp/wt/agent-default-sess",
+		BranchName:   "feat/agent-default-sess",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sess.AgentName != "claude" {
+		t.Errorf("create agent_name = %q, want %q", sess.AgentName, "claude")
+	}
+
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AgentName != "claude" {
+		t.Errorf("get agent_name = %q, want %q", got.AgentName, "claude")
+	}
+
+	// The join-based path has its own scan order — confirm it stays in sync.
+	rows, err := store.ListWithRepo(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("list with repo: %v", err)
+	}
+	if len(rows) != 1 || rows[0].AgentName != "claude" {
+		t.Errorf("list with repo agent_name = %v, want one row with %q", rows, "claude")
+	}
+}
+
+// TestSessionStore_AgentNameExplicit verifies an explicit AgentName round-trips.
+func TestSessionStore_AgentNameExplicit(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	sess, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "explicit agent",
+		WorktreePath: "/tmp/wt/agent-explicit-sess",
+		BranchName:   "feat/agent-explicit-sess",
+		BaseBranch:   "main",
+		AgentName:    "opencode",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sess.AgentName != "opencode" {
+		t.Errorf("create agent_name = %q, want %q", sess.AgentName, "opencode")
+	}
+
+	got, err := store.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AgentName != "opencode" {
+		t.Errorf("get agent_name = %q, want %q", got.AgentName, "opencode")
 	}
 }
 

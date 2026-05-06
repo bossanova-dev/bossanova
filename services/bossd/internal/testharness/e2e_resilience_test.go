@@ -69,7 +69,7 @@ func TestE2E_Resilience_WorktreeCreateFails(t *testing.T) {
 
 	// No Claude process should have been spawned — worktree creation
 	// happens before claude.Start in lifecycle.StartSession.
-	if got := h.Claude.Started; len(got) != 0 {
+	if got := h.Agent.Started; len(got) != 0 {
 		t.Fatalf("expected no Claude spawns when worktree fails, got %v", got)
 	}
 
@@ -168,11 +168,11 @@ func TestE2E_Resilience_ClaudeCrashesMidSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get session: %v", err)
 	}
-	claudeID := *getResp.Msg.Session.ClaudeSessionId
+	agentSessionID := *getResp.Msg.Session.AgentSessionId
 
 	// Arm subscribe hook so we can sequence the crash *after* the server
 	// has subscribed (otherwise close-before-subscribe just no-ops).
-	h.Claude.SubscribedCh = make(chan string, 1)
+	h.Agent.SubscribedCh = make(chan string, 1)
 
 	type drainResult struct {
 		msgs []*pb.AttachSessionResponse
@@ -187,13 +187,13 @@ func TestE2E_Resilience_ClaudeCrashesMidSession(t *testing.T) {
 	}()
 
 	select {
-	case <-h.Claude.SubscribedCh:
+	case <-h.Agent.SubscribedCh:
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for server Subscribe: %v", ctx.Err())
 	}
 
 	crashErr := errors.New("simulated crash: signal: segmentation fault")
-	if err := h.Claude.CrashSession(claudeID, crashErr); err != nil {
+	if err := h.Agent.CrashSession(agentSessionID, crashErr); err != nil {
 		t.Fatalf("crash session: %v", err)
 	}
 
@@ -218,11 +218,11 @@ func TestE2E_Resilience_ClaudeCrashesMidSession(t *testing.T) {
 	}
 
 	// IsRunning must reflect the crash.
-	if h.Claude.IsRunning(claudeID) {
+	if h.Agent.IsRunning(agentSessionID) {
 		t.Fatal("expected Claude IsRunning=false after crash")
 	}
 	// ExitError must surface the crash error to callers that ask.
-	if got := h.Claude.ExitError(claudeID); !errors.Is(got, crashErr) {
+	if got := h.Agent.ExitError(agentSessionID); !errors.Is(got, crashErr) {
 		t.Fatalf("expected ExitError to return %v, got %v", crashErr, got)
 	}
 }
@@ -368,8 +368,8 @@ func TestE2E_Resilience_RetryAfterBlocked(t *testing.T) {
 	}
 	// Retry is a database-only patch today — it must not touch Claude or
 	// VCS side effects.
-	if len(h.Claude.Stopped) != 0 {
-		t.Errorf("retry must not stop Claude, got %v", h.Claude.Stopped)
+	if len(h.Agent.Stopped) != 0 {
+		t.Errorf("retry must not stop Claude, got %v", h.Agent.Stopped)
 	}
 	if len(h.VCS.MergePRCalls) != 0 {
 		t.Errorf("retry must not merge, got %v", h.VCS.MergePRCalls)

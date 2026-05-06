@@ -53,7 +53,7 @@ Bossanova manages multiple Claude Code sessions across git worktrees. The reposi
 - **bossd** (`services/bossd`) — Background daemon handling session lifecycle, git ops, and plugin dispatch over gRPC.
 - **bosso** (`services/bosso`) — Web UI / HTTP server (Go + Vite/React under `services/bosso/web`).
 - **bossalib** (`lib/bossalib`) — Shared Go library (safego, sqlutil, keyringutil, tuidriver, etc.).
-- **plugins** (`plugins/bossd-plugin-*`) — Out-of-process plugins (dependabot, linear, repair) that subscribe to bossd events via gRPC.
+- **plugins** (`plugins/bossd-plugin-*`) — Out-of-process plugins (claude, dependabot, linear, repair) that subscribe to bossd events via gRPC. The `claude` plugin owns Claude Code subprocess lifecycle and is required for sessions to start.
 - **proto** — Protobuf definitions compiled to Go via `buf`.
 
 Sessions are isolated in git worktrees; plugins react to events (PR creation, CI failures, merge conflicts) and take autonomous actions.
@@ -65,3 +65,4 @@ Sessions are isolated in git worktrees; plugins react to events (PR creation, CI
 - **IDs**: use `sqlutil.NewID()` and handle the returned error (it no longer panics).
 - **Secrets**: use `keyringutil` for credentials; file-backend fallback requires the explicit `--allow-insecure-keyring` flag.
 - **CI**: `-race` and coverage are required for all Go tests; `golangci-lint` is pinned — update via `make lint-check-version`.
+- **Agent runners**: coding-agent CLIs (Claude, and future OpenCode/Codex) live as `bossd-plugin-<agent>` binaries that satisfy the `AgentRunnerService` gRPC contract. Bossd routes session runs through them; one such plugin must be loaded for sessions to start. Without one the daemon stays healthy but `boss session new` fails fast.

@@ -38,7 +38,7 @@ type Repo struct {
 	UpdatedAt               time.Time
 }
 
-// Session represents a Claude coding session.
+// Session represents an agent coding session.
 type Session struct {
 	ID                string
 	RepoID            string
@@ -48,7 +48,8 @@ type Session struct {
 	BranchName        string
 	BaseBranch        string
 	State             machine.State
-	ClaudeSessionID   *string
+	AgentSessionID    *string
+	AgentName         string
 	PRNumber          *int
 	PRURL             *string
 	TrackerID         *string
@@ -83,11 +84,12 @@ type Attempt struct {
 	UpdatedAt time.Time
 }
 
-// ClaudeChat represents a Claude Code conversation associated with a session.
-type ClaudeChat struct {
+// AgentChat represents an agent conversation associated with a session.
+type AgentChat struct {
 	ID              string
 	SessionID       string
-	ClaudeID        string // Claude Code session UUID
+	AgentSessionID  string // Agent session UUID
+	AgentName       string // Agent plugin name (e.g. "claude", "opencode")
 	Title           string
 	DaemonID        string  // Originating daemon (empty = local)
 	TmuxSessionName *string // tmux session name for this chat (nil = no tmux)

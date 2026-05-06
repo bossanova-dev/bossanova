@@ -531,10 +531,10 @@ func TestCapturePane_ScrollbackFlag(t *testing.T) {
 // applied to the chat-id path.
 func TestChatSessionName(t *testing.T) {
 	tests := []struct {
-		name     string
-		repoID   string
-		claudeID string
-		expected string
+		name           string
+		repoID         string
+		agentSessionID string
+		expected       string
 	}{
 		{"both short", "abc", "xyz", "boss-abc-xyz"},
 		{"both exact 8", "12345678", "abcdefgh", "boss-12345678-abcdefgh"},
@@ -543,10 +543,10 @@ func TestChatSessionName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ChatSessionName(tt.repoID, tt.claudeID)
+			got := ChatSessionName(tt.repoID, tt.agentSessionID)
 			if got != tt.expected {
 				t.Errorf("ChatSessionName(%q, %q) = %q, want %q",
-					tt.repoID, tt.claudeID, got, tt.expected)
+					tt.repoID, tt.agentSessionID, got, tt.expected)
 			}
 		})
 	}

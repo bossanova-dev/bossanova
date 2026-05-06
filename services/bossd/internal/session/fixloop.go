@@ -11,7 +11,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 )
@@ -21,13 +21,13 @@ import (
 // back to AwaitingChecks. It uses a per-session mutex to prevent concurrent
 // fix attempts on the same session.
 type FixLoop struct {
-	sessions  db.SessionStore
-	attempts  db.AttemptStore
-	repos     db.RepoStore
-	provider  vcs.Provider
-	claude    claude.ClaudeRunner
-	worktrees gitpkg.WorktreeManager
-	logger    zerolog.Logger
+	sessions    db.SessionStore
+	attempts    db.AttemptStore
+	repos       db.RepoStore
+	provider    vcs.Provider
+	agentRunner agent.AgentRunner
+	worktrees   gitpkg.WorktreeManager
+	logger      zerolog.Logger
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex // per-session mutex
@@ -39,19 +39,19 @@ func NewFixLoop(
 	attempts db.AttemptStore,
 	repos db.RepoStore,
 	provider vcs.Provider,
-	claude claude.ClaudeRunner,
+	agentRunner agent.AgentRunner,
 	worktrees gitpkg.WorktreeManager,
 	logger zerolog.Logger,
 ) *FixLoop {
 	return &FixLoop{
-		sessions:  sessions,
-		attempts:  attempts,
-		repos:     repos,
-		provider:  provider,
-		claude:    claude,
-		worktrees: worktrees,
-		logger:    logger,
-		locks:     make(map[string]*sync.Mutex),
+		sessions:    sessions,
+		attempts:    attempts,
+		repos:       repos,
+		provider:    provider,
+		agentRunner: agentRunner,
+		worktrees:   worktrees,
+		logger:      logger,
+		locks:       make(map[string]*sync.Mutex),
 	}
 }
 
@@ -222,11 +222,11 @@ func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *mo
 
 	// Resume Claude with the fix instructions.
 	var resume *string
-	if sess.ClaudeSessionID != nil {
-		resume = sess.ClaudeSessionID
+	if sess.AgentSessionID != nil {
+		resume = sess.AgentSessionID
 	}
 
-	claudeSessionID, err := f.claude.Start(ctx, sess.WorktreePath, plan, resume, "")
+	claudeSessionID, err := f.agentRunner.Start(ctx, sess.WorktreePath, plan, resume, "")
 	if err != nil {
 		f.recordAttemptFailed(ctx, attempt.ID, fmt.Sprintf("start claude: %v", err))
 		return f.fireFixFailed(ctx, sess, fmt.Errorf("start claude: %w", err))
@@ -234,7 +234,7 @@ func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *mo
 
 	// Update session with new Claude session ID.
 	if _, err := f.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
-		ClaudeSessionID: strPtr(claudeSessionID),
+		AgentSessionID: strPtr(claudeSessionID),
 	}); err != nil {
 		f.recordAttemptFailed(ctx, attempt.ID, fmt.Sprintf("update claude session: %v", err))
 		return fmt.Errorf("update claude session: %w", err)
@@ -265,7 +265,7 @@ func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *mo
 func (f *FixLoop) waitForClaude(ctx context.Context, claudeSessionID string) {
 	// Poll IsRunning until the process exits.
 	// Subscribe and drain the channel — it closes when the process exits.
-	ch, err := f.claude.Subscribe(ctx, claudeSessionID)
+	ch, err := f.agentRunner.Subscribe(ctx, claudeSessionID)
 	if err != nil {
 		f.logger.Warn().Err(err).Str("claude", claudeSessionID).Msg("could not subscribe to claude output")
 		return

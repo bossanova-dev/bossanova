@@ -178,7 +178,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	useTempWorktrees(t, h)
 
 	// Claude writes a file so git Status returns non-empty (changes present).
-	h.Claude.WithChanges("cron-output.txt", "hello from cron")
+	h.Agent.WithChanges("cron-output.txt", "hello from cron")
 	// Override Status to simulate dirty worktree after the implementing chat.
 	h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
 		return "M cron-output.txt\n", nil
@@ -216,7 +216,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	// during startCronTmuxChat, with TmuxSessionName populated and a
 	// `Run "<cron name>"` title. This is the chat the user attaches to in
 	// boss to watch the cron-fired Claude work autonomously.
-	cronChats, err := h.ClaudeChats.ListBySession(ctx, sess.ID)
+	cronChats, err := h.AgentChats.ListBySession(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("list claude chats after Tick: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	// Assert: at least two chat rows exist now — the cron-spawned one
 	// (created during startCronTmuxChat) and the finalize chat sibling
 	// (created by StartFinalizeChat on the pr_created path).
-	chats, err := h.ClaudeChats.ListBySession(ctx, sess.ID)
+	chats, err := h.AgentChats.ListBySession(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("list claude chats: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestE2ECron_NoChanges_DeletesSession(t *testing.T) {
 	// NoChanges: mock claude exits without writing files.
 	// The default Status mock returns "" (empty) which triggers the
 	// deleted_no_changes branch in the finalize pipeline.
-	h.Claude.NoChanges()
+	h.Agent.NoChanges()
 
 	// Create the cron job.
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
@@ -327,7 +327,7 @@ func TestE2ECron_NoChanges_DeletesSession(t *testing.T) {
 	// Capture the cron chat's tmux session name BEFORE the stop hook so we
 	// can assert that finalizeNoChanges tears it down. After session-row
 	// deletion the claude_chats row is cascaded away and the name is lost.
-	cronChatsBefore, err := h.ClaudeChats.ListBySession(ctx, sess.ID)
+	cronChatsBefore, err := h.AgentChats.ListBySession(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("list claude chats before finalize: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestE2ECron_NoGitHub_SkipsPR(t *testing.T) {
 	useTempWorktrees(t, h)
 
 	// Claude writes a file so Status returns non-empty (changes exist).
-	h.Claude.WithChanges("anything.txt", "x")
+	h.Agent.WithChanges("anything.txt", "x")
 	h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
 		return "M anything.txt\n", nil
 	}
@@ -475,7 +475,7 @@ func TestE2ECron_Overlap_SkipsSecondTick(t *testing.T) {
 
 	// Tick 1 uses the default Start (running=true): session stays in
 	// ImplementingPlan so previousRunActive blocks Tick 2.
-	// No StartFunc override → h.Claude has StartFunc=nil by default.
+	// No StartFunc override → h.Agent has StartFunc=nil by default.
 
 	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
 		RepoID:   repoID,
@@ -496,7 +496,7 @@ func TestE2ECron_Overlap_SkipsSecondTick(t *testing.T) {
 	// WithRunningSession keeps StartFunc=nil so the mock's default behaviour
 	// applies: the session is registered as running=true and never exits.
 	// This is what keeps the session alive so Tick 2 sees previousRunActive.
-	h.Claude.WithRunningSession()
+	h.Agent.WithRunningSession()
 
 	// --- Tick 1: session spawned with running=true. ---
 	sched.Tick(tickTime)
@@ -543,7 +543,7 @@ func TestE2ECron_Overlap_SkipsSecondTick(t *testing.T) {
 	// --- Tick 3: previous session is Closed (terminal) → should fire. ---
 	// Switch Claude to NoChanges so the third session exits quickly
 	// (not required for the overlap assertion, but keeps the test clean).
-	h.Claude.NoChanges()
+	h.Agent.NoChanges()
 	tick3Time := tickTime.Add(4 * time.Minute)
 	sched.Tick(tick3Time)
 

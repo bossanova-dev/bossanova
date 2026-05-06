@@ -37,13 +37,13 @@ type StatusCoalescer struct {
 	out     chan *pb.ChatStatusDelta
 }
 
-// coalescerKey is the per-chat coalescing key. claudeID may be empty for
+// coalescerKey is the per-chat coalescing key. agentSessionID may be empty for
 // legacy publishers that haven't been updated to populate it; in that
 // case the key collapses to (sessionID, "") and behaves like the old
 // session-only coalescer.
 type coalescerKey struct {
-	sessionID string
-	claudeID  string
+	sessionID      string
+	agentSessionID string
 }
 
 // NewStatusCoalescer creates a coalescer that uses the given clock to
@@ -81,7 +81,7 @@ func (c *StatusCoalescer) Publish(status *pb.ChatStatusDelta) {
 	if status == nil {
 		return
 	}
-	key := coalescerKey{sessionID: status.GetSessionId(), claudeID: status.GetClaudeId()}
+	key := coalescerKey{sessionID: status.GetSessionId(), agentSessionID: status.GetAgentSessionId()}
 	c.mu.Lock()
 	c.pending[key] = status
 	c.mu.Unlock()
@@ -125,7 +125,7 @@ func (c *StatusCoalescer) flush() {
 		default:
 			c.logger.Warn().
 				Str("session_id", s.GetSessionId()).
-				Str("claude_id", s.GetClaudeId()).
+				Str("agent_session_id", s.GetAgentSessionId()).
 				Msg("coalescer out channel full, dropping status delta")
 		}
 	}

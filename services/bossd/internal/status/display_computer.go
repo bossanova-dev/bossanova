@@ -44,7 +44,7 @@ func (noopRecomputer) Recompute(context.Context, string) error { return nil }
 // ChatStatusReader reads the latest cached chat status for a claude_id. The
 // concrete *Tracker satisfies it; the indirection lets tests inject a stub.
 type ChatStatusReader interface {
-	Get(claudeID string) *Entry
+	Get(agentSessionID string) *Entry
 }
 
 // DisplayStatusComputer composes a session's unified display status by
@@ -54,7 +54,7 @@ type DisplayStatusComputer struct {
 	sessions  db.SessionStore
 	display   *DisplayTracker
 	chat      ChatStatusReader
-	chats     db.ClaudeChatStore
+	chats     db.AgentChatStore
 	workflows db.WorkflowStore
 	logger    zerolog.Logger
 	// onUpdate, when non-nil, is invoked after a successful display-trio
@@ -82,7 +82,7 @@ func NewDisplayStatusComputer(
 	sessions db.SessionStore,
 	display *DisplayTracker,
 	chat ChatStatusReader,
-	chats db.ClaudeChatStore,
+	chats db.AgentChatStore,
 	workflows db.WorkflowStore,
 	logger zerolog.Logger,
 ) *DisplayStatusComputer {
@@ -160,7 +160,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 	// A session can have multiple chats — when any one of them is asking a
 	// question or actively working, the session-level label must reflect
 	// that rather than falling through to the PR display status. Reading
-	// only sess.ClaudeSessionID would miss this: that field is written at
+	// only sess.AgentSessionID would miss this: that field is written at
 	// session create / resurrect time and is not updated when the user adds
 	// a new chat, so it can keep pointing at a now-stopped chat while a
 	// freshly-created sibling is the one actually working. Precedence
@@ -171,7 +171,7 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 		chatList, listErr := c.chats.ListBySession(ctx, sessionID)
 		if listErr == nil {
 			for _, chat := range chatList {
-				e := c.chat.Get(chat.ClaudeID)
+				e := c.chat.Get(chat.AgentSessionID)
 				if e == nil {
 					continue
 				}

@@ -82,7 +82,7 @@ func isComputerSelfWrite(p UpdateSessionParams) bool {
 		p.State == nil &&
 		p.WorktreePath == nil &&
 		p.BranchName == nil &&
-		p.ClaudeSessionID == nil &&
+		p.AgentSessionID == nil &&
 		p.PRNumber == nil &&
 		p.PRURL == nil &&
 		p.TrackerID == nil &&

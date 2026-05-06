@@ -10,10 +10,11 @@ import (
 
 	"github.com/rs/zerolog"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/tmux"
@@ -24,10 +25,10 @@ import (
 type Lifecycle struct {
 	sessions    db.SessionStore
 	repos       db.RepoStore
-	claudeChats db.ClaudeChatStore
+	agentChats  db.AgentChatStore
 	cronJobs    db.CronJobStore
 	worktrees   gitpkg.WorktreeManager
-	claude      claude.ClaudeRunner
+	agentRunner agent.AgentRunner
 	tmux        *tmux.Client
 	provider    vcs.Provider
 	logger      zerolog.Logger
@@ -38,6 +39,14 @@ type Lifecycle struct {
 	// and StartSession will error out rather than write a config that
 	// points at no listener.
 	hookPort int
+
+	// agents maps an agent plugin name (matching session.AgentName) to its
+	// AgentRunnerClient — used for ConfigureFinalizeHook,
+	// BuildInteractiveCommand, and other RPCs that aren't on AgentRunner.
+	// Populated via SetAgents during daemon startup. An empty map is valid
+	// (sessions without HookToken still work); the map is read-only after
+	// SetAgents and lookups must not mutate it.
+	agents map[string]agent.AgentRunnerClient
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -48,16 +57,46 @@ func (l *Lifecycle) SetHookPort(port int) {
 	l.hookPort = port
 }
 
+// SetAgents installs the per-name AgentRunnerClient registry used to call
+// ConfigureFinalizeHook (and other plugin RPCs) during StartSession. The
+// map is keyed by agent plugin name (matching session.AgentName). Must be
+// called before any session with a HookToken is started — sessions
+// without a HookToken don't need this dep.
+//
+// An empty (or nil) map is valid: it just means no agent plugins are
+// loaded, and StartSession will error with a clear message when a session
+// that requires a hook tries to start. The map is treated as read-only
+// after this call; callers must not mutate it.
+//
+// Concurrency: called exactly once during daemon startup, before serving
+// begins. Not safe for concurrent re-injection alongside in-flight RPCs.
+func (l *Lifecycle) SetAgents(m map[string]agent.AgentRunnerClient) { l.agents = m }
+
+// agentClientFor returns the registered AgentRunnerClient for sess.AgentName.
+// Returns an error wrapping agent.ErrAgentNotLoaded when no client matches —
+// defense in depth against an AgentName the daemon was never configured for.
+// CreateSession is expected to resolve AgentName before persistence, so an
+// empty AgentName here indicates a stale row from before the multi-agent
+// migration; the error names that case explicitly so operators can fix the
+// data, and callers can use errors.Is to distinguish this from real RPC
+// failures.
+func (l *Lifecycle) agentClientFor(sess *models.Session) (agent.AgentRunnerClient, error) {
+	if c, ok := l.agents[sess.AgentName]; ok && c != nil {
+		return c, nil
+	}
+	return nil, fmt.Errorf("agent %q not loaded for session %s: %w", sess.AgentName, sess.ID, agent.ErrAgentNotLoaded)
+}
+
 // NewLifecycle creates a new session lifecycle orchestrator. cronJobs may be
 // nil for callers that never spawn cron-linked sessions (tests, legacy flows);
 // FinalizeSession requires it and will error if it's absent.
 func NewLifecycle(
 	sessions db.SessionStore,
 	repos db.RepoStore,
-	claudeChats db.ClaudeChatStore,
+	agentChats db.AgentChatStore,
 	cronJobs db.CronJobStore,
 	worktrees gitpkg.WorktreeManager,
-	claude claude.ClaudeRunner,
+	agentRunner agent.AgentRunner,
 	tmux *tmux.Client,
 	provider vcs.Provider,
 	logger zerolog.Logger,
@@ -65,10 +104,10 @@ func NewLifecycle(
 	return &Lifecycle{
 		sessions:    sessions,
 		repos:       repos,
-		claudeChats: claudeChats,
+		agentChats:  agentChats,
 		cronJobs:    cronJobs,
 		worktrees:   worktrees,
-		claude:      claude,
+		agentRunner: agentRunner,
 		tmux:        tmux,
 		provider:    provider,
 		logger:      logger,
@@ -237,21 +276,37 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if l.hookPort == 0 {
 			return fmt.Errorf("hook port not configured: SetHookPort must be called before starting sessions with a HookToken")
 		}
-		if err := claude.WriteHookConfig(result.WorktreePath, sessionID, opts.HookToken, l.hookPort); err != nil {
-			return fmt.Errorf("write hook config: %w", err)
+		client, err := l.agentClientFor(session)
+		if err != nil {
+			return fmt.Errorf("agent client not configured: %w; SetAgents must be called before starting sessions with a HookToken", err)
 		}
-		l.logger.Info().
-			Str("session", sessionID).
-			Int("hookPort", l.hookPort).
-			Msg("installed Stop-hook config in worktree")
+		hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
+			WorkDir:   result.WorktreePath,
+			SessionId: sessionID,
+			HookToken: opts.HookToken,
+			HookPort:  int32(l.hookPort),
+		})
+		if err != nil {
+			return fmt.Errorf("configure finalize hook: %w", err)
+		}
+		if !hookResp.IsSupported {
+			// For PR1, claude is the only agent and IsSupported is always true.
+			// Future agents that lack a hook will fall back to polling here.
+			l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook; falling back to polling")
+		} else {
+			l.logger.Info().
+				Str("session", sessionID).
+				Int("hookPort", l.hookPort).
+				Msg("installed Stop-hook config in worktree")
+		}
 	}
 
-	// Fire WorktreeCreated → StartingClaude.
+	// Fire WorktreeCreated → StartingAgent.
 	if err := sm.FireCtx(ctx, machine.WorktreeCreated); err != nil {
 		return fmt.Errorf("fire worktree_created: %w", err)
 	}
 
-	startingState := int(machine.StartingClaude)
+	startingState := int(machine.StartingAgent)
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		State: &startingState,
 	}); err != nil {
@@ -273,7 +328,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			return fmt.Errorf("start cron tmux chat: %w", err)
 		}
 	} else {
-		claudeSessionID, err = l.claude.Start(ctx, result.WorktreePath, session.Plan, nil, "")
+		claudeSessionID, err = l.agentRunner.Start(ctx, result.WorktreePath, session.Plan, nil, "")
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}
@@ -281,14 +336,14 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 
 	// Update session with Claude session ID.
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		ClaudeSessionID: strPtr(claudeSessionID),
+		AgentSessionID: strPtr(claudeSessionID),
 	}); err != nil {
 		return fmt.Errorf("update claude session id: %w", err)
 	}
 
-	// Fire ClaudeStarted → ImplementingPlan.
-	if err := sm.FireCtx(ctx, machine.ClaudeStarted); err != nil {
-		return fmt.Errorf("fire claude_started: %w", err)
+	// Fire AgentStarted → ImplementingPlan.
+	if err := sm.FireCtx(ctx, machine.AgentStarted); err != nil {
+		return fmt.Errorf("fire agent_started: %w", err)
 	}
 
 	implementingState := int(machine.ImplementingPlan)
@@ -346,8 +401,8 @@ func (l *Lifecycle) StartQuickChatSession(ctx context.Context, sessionID string)
 		return fmt.Errorf("update worktree path: %w", err)
 	}
 
-	// Skip CreatingWorktree, go straight to StartingClaude.
-	startingState := int(machine.StartingClaude)
+	// Skip CreatingWorktree, go straight to StartingAgent.
+	startingState := int(machine.StartingAgent)
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		State: &startingState,
 	}); err != nil {
@@ -635,8 +690,8 @@ func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 	}
 
 	// Stop Claude process if running.
-	if session.ClaudeSessionID != nil && l.claude.IsRunning(*session.ClaudeSessionID) {
-		if err := l.claude.Stop(*session.ClaudeSessionID); err != nil {
+	if session.AgentSessionID != nil && l.agentRunner.IsRunning(*session.AgentSessionID) {
+		if err := l.agentRunner.Stop(*session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
@@ -672,8 +727,8 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	}
 
 	// Stop Claude process if running.
-	if session.ClaudeSessionID != nil && l.claude.IsRunning(*session.ClaudeSessionID) {
-		if err := l.claude.Stop(*session.ClaudeSessionID); err != nil {
+	if session.AgentSessionID != nil && l.agentRunner.IsRunning(*session.AgentSessionID) {
+		if err := l.agentRunner.Stop(*session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
@@ -751,11 +806,11 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 
 	// Start Claude process, resuming previous session if available.
 	var resume *string
-	if session.ClaudeSessionID != nil {
-		resume = session.ClaudeSessionID
+	if session.AgentSessionID != nil {
+		resume = session.AgentSessionID
 	}
 
-	claudeSessionID, err := l.claude.Start(ctx, session.WorktreePath, session.Plan, resume, "")
+	claudeSessionID, err := l.agentRunner.Start(ctx, session.WorktreePath, session.Plan, resume, "")
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}
@@ -763,8 +818,8 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 	// Update Claude session ID.
 	implementingState := int(machine.ImplementingPlan)
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		ClaudeSessionID: strPtr(claudeSessionID),
-		State:           &implementingState,
+		AgentSessionID: strPtr(claudeSessionID),
+		State:          &implementingState,
 	}); err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
@@ -814,7 +869,7 @@ func (l *Lifecycle) killAllChatTmuxSessions(ctx context.Context, sessionID strin
 	if l.tmux == nil {
 		return
 	}
-	chats, err := l.claudeChats.ListBySession(ctx, sessionID)
+	chats, err := l.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", sessionID).Msg("failed to list chats for tmux cleanup")
 		return
@@ -826,18 +881,18 @@ func (l *Lifecycle) killAllChatTmuxSessions(ctx context.Context, sessionID strin
 		if err := l.tmux.KillSession(ctx, *chat.TmuxSessionName); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
-				Str("claudeID", chat.ClaudeID).
+				Str("agentSessionID", chat.AgentSessionID).
 				Str("tmuxSession", *chat.TmuxSessionName).
 				Msg("failed to kill chat tmux session during cleanup")
 		} else {
 			l.logger.Info().
 				Str("session", sessionID).
-				Str("claudeID", chat.ClaudeID).
+				Str("agentSessionID", chat.AgentSessionID).
 				Str("tmuxSession", *chat.TmuxSessionName).
 				Msg("killed chat tmux session")
 		}
-		if err := l.claudeChats.UpdateTmuxSessionName(ctx, chat.ClaudeID, nil); err != nil {
-			l.logger.Warn().Err(err).Str("claudeID", chat.ClaudeID).Msg("failed to clear tmux name during cleanup")
+		if err := l.agentChats.UpdateTmuxSessionName(ctx, chat.AgentSessionID, nil); err != nil {
+			l.logger.Warn().Err(err).Str("agentSessionID", chat.AgentSessionID).Msg("failed to clear tmux name during cleanup")
 		}
 	}
 }

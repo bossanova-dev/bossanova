@@ -11,7 +11,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/recurser/boss/internal/claude"
+	"github.com/recurser/boss/internal/agent"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -30,14 +30,14 @@ type chatPickerErrMsg struct {
 // along with daemon-side heartbeat statuses for cross-instance display.
 type chatsListedMsg struct {
 	chats            []*pb.ClaudeChat
-	daemonStatuses   map[string]string    // claude_id → status string
-	daemonLastOutput map[string]time.Time // claude_id → last PTY output time
+	daemonStatuses   map[string]string    // agent_session_id → status string
+	daemonLastOutput map[string]time.Time // agent_session_id → last PTY output time
 	err              error
 }
 
 // chatTitlesBackfilledMsg carries updated titles for chats that were "New chat".
 type chatTitlesBackfilledMsg struct {
-	updates map[string]string // claude_id -> title
+	updates map[string]string // agent_session_id -> title
 }
 
 // chatPickerRefreshMsg carries refreshed session + daemon statuses for polling.
@@ -49,8 +49,8 @@ type chatPickerRefreshMsg struct {
 
 // chatDeletedMsg signals that a chat was deleted (or failed to delete).
 type chatDeletedMsg struct {
-	claudeID string
-	err      error
+	agentSessionID string
+	err            error
 }
 
 // newTabResultMsg carries the result of an async openInNewTab call.
@@ -63,15 +63,22 @@ type mergeResultMsg struct {
 	err error
 }
 
+// wakeResultMsg carries the result of an async WakeChat RPC call.
+type wakeResultMsg struct {
+	agentSessionID string
+	resp           *pb.WakeChatResponse
+	err            error
+}
+
 // ChatPickerModel lets the user choose between starting a new chat or
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
 	client           client.BossClient
 	ctx              context.Context
 	sessionID        string
-	highlightID      string               // Claude ID to auto-highlight after detach
-	daemonStatuses   map[string]string    // claude_id → status string from daemon heartbeats
-	daemonLastOutput map[string]time.Time // claude_id → last PTY output time from daemon
+	highlightID      string               // agent session ID to auto-highlight after detach
+	daemonStatuses   map[string]string    // agent_session_id → status string from daemon heartbeats
+	daemonLastOutput map[string]time.Time // agent_session_id → last PTY output time from daemon
 
 	session *pb.Session
 	chats   []*pb.ClaudeChat
@@ -102,13 +109,13 @@ type ChatPickerModel struct {
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
-// If highlightClaudeID is non-empty, that chat will be auto-highlighted after loading.
-func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionID, highlightClaudeID string) ChatPickerModel {
+// If highlightAgentSessionID is non-empty, that chat will be auto-highlighted after loading.
+func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionID, highlightAgentSessionID string) ChatPickerModel {
 	return ChatPickerModel{
 		client:          c,
 		ctx:             parentCtx,
 		sessionID:       sessionID,
-		highlightID:     highlightClaudeID,
+		highlightID:     highlightAgentSessionID,
 		spinner:         newStatusSpinner(),
 		loading:         true,
 		table:           newBossTable(nil, nil, 0),
@@ -140,9 +147,9 @@ func parseChatStatuses(c client.BossClient, ctx context.Context, sessionID strin
 	statuses := make(map[string]string, len(entries))
 	lastOutput := make(map[string]time.Time, len(entries))
 	for _, e := range entries {
-		statuses[e.ClaudeId] = chatStatusString(e.Status)
+		statuses[e.AgentSessionId] = chatStatusString(e.Status)
 		if e.LastOutputAt != nil {
-			lastOutput[e.ClaudeId] = e.LastOutputAt.AsTime()
+			lastOutput[e.AgentSessionId] = e.LastOutputAt.AsTime()
 		}
 	}
 	return statuses, lastOutput
@@ -195,10 +202,10 @@ func (m ChatPickerModel) backfillTitles() tea.Cmd {
 	return func() tea.Msg {
 		updates := make(map[string]string)
 		for _, c := range needsUpdate {
-			title := claude.ChatTitle(worktreePath, c.ClaudeId)
+			title := agent.ChatTitle(worktreePath, c.AgentSessionId)
 			if title != "" {
-				updates[c.ClaudeId] = title
-				_ = m.client.UpdateChatTitle(m.ctx, c.ClaudeId, title)
+				updates[c.AgentSessionId] = title
+				_ = m.client.UpdateChatTitle(m.ctx, c.AgentSessionId, title)
 			}
 		}
 		return chatTitlesBackfilledMsg{updates: updates}
@@ -241,7 +248,7 @@ func (m *ChatPickerModel) buildTableRows() {
 	cursor := m.table.Cursor()
 	rows := make([]table.Row, len(m.chats))
 	for i, chat := range m.chats {
-		daemon := m.daemonStatuses[chat.ClaudeId]
+		daemon := m.daemonStatuses[chat.AgentSessionId]
 		statusStr := renderClaudeStatus(daemon, m.spinner)
 		createdStr := styleSubtle.Render(createds[i])
 		activeStr := styleSubtle.Render(actives[i])
@@ -308,7 +315,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-highlight the chat the user just left, or the first running chat.
 		if m.highlightID != "" {
 			for i, chat := range m.chats {
-				if chat.ClaudeId == m.highlightID {
+				if chat.AgentSessionId == m.highlightID {
 					m.table.SetCursor(i)
 					updateCursorColumn(&m.table)
 					break
@@ -316,7 +323,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else if m.daemonStatuses != nil {
 			for i, chat := range m.chats {
-				if s := m.daemonStatuses[chat.ClaudeId]; s == statusWorking || s == statusIdle || s == statusQuestion {
+				if s := m.daemonStatuses[chat.AgentSessionId]; s == statusWorking || s == statusIdle || s == statusQuestion {
 					m.table.SetCursor(i)
 					updateCursorColumn(&m.table)
 					break
@@ -327,7 +334,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatTitlesBackfilledMsg:
 		for i, chat := range m.chats {
-			if title, ok := msg.updates[chat.ClaudeId]; ok {
+			if title, ok := msg.updates[chat.AgentSessionId]; ok {
 				m.chats[i].Title = title
 			}
 		}
@@ -337,7 +344,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatDeletedMsg:
 		if msg.err == nil {
 			for i, chat := range m.chats {
-				if chat.ClaudeId == msg.claudeID {
+				if chat.AgentSessionId == msg.agentSessionID {
 					m.chats = append(m.chats[:i], m.chats[i+1:]...)
 					break
 				}
@@ -367,6 +374,25 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// daemon reconciles.
 		m.merged = true
 		return m, nil
+
+	case wakeResultMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Wake failed: %v", msg.err)
+			return m, nil
+		}
+		switch msg.resp.GetOutcome() {
+		case pb.WakeChatResponse_OUTCOME_ALREADY_LIVE:
+			m.statusMsg = "Already live"
+		case pb.WakeChatResponse_OUTCOME_RESUMED:
+			m.statusMsg = "Resumed"
+		case pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK:
+			m.statusMsg = "Started fresh"
+		default:
+			m.statusMsg = "Woken"
+		}
+		// Refresh statuses so the chat's STATUS column flips off "stopped"
+		// without waiting for the next tick.
+		return m, m.refreshStatuses()
 
 	case tickMsg:
 		return m, tea.Batch(m.refreshStatuses(), tickCmd())
@@ -450,6 +476,32 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.mergeConfirming = true
 			return m, nil
+		case "w":
+			chat := m.selectedChat()
+			if chat == nil {
+				return m, nil
+			}
+			// Only fire WakeChat for chats whose daemon-reported status is
+			// "stopped". For any other status (working, idle, question, or
+			// unknown) the wake call would be a no-op (OUTCOME_ALREADY_LIVE)
+			// but firing it is misleading UX — a transient "Waking..." flash
+			// for a chat that's already healthy.
+			if m.daemonStatuses[chat.AgentSessionId] != statusStopped {
+				return m, nil
+			}
+			m.statusMsg = "Waking..."
+			sessionID := m.sessionID
+			agentSessionID := chat.AgentSessionId
+			c := m.client
+			ctx := m.ctx
+			return m, func() tea.Msg {
+				resp, err := c.WakeChat(ctx, sessionID, agentSessionID, false)
+				return wakeResultMsg{
+					agentSessionID: agentSessionID,
+					resp:           resp,
+					err:            err,
+				}
+			}
 		case "d":
 			if chat := m.selectedChat(); chat != nil {
 				m.confirming = true
@@ -457,7 +509,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if chat := m.selectedChat(); chat != nil {
-				resumeID := chat.ClaudeId
+				resumeID := chat.AgentSessionId
 				return m, func() tea.Msg {
 					return switchViewMsg{
 						view:      ViewAttach,
@@ -505,10 +557,10 @@ func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		if chat == nil {
 			return m, nil
 		}
-		claudeID := chat.ClaudeId
+		agentSessionID := chat.AgentSessionId
 		return m, func() tea.Msg {
-			err := m.client.DeleteChat(m.ctx, claudeID)
-			return chatDeletedMsg{claudeID: claudeID, err: err}
+			err := m.client.DeleteChat(m.ctx, agentSessionID)
+			return chatDeletedMsg{agentSessionID: agentSessionID, err: err}
 		}
 	case "n", "esc":
 		m.confirming = false
@@ -602,9 +654,16 @@ func (m ChatPickerModel) View() tea.View {
 		if m.canMerge() {
 			middle = append(middle, "[m]erge")
 		}
-		if m.selectedChat() != nil {
+		if chat := m.selectedChat(); chat != nil {
+			left := []string{"[enter] select", "[d]elete"}
+			// Only advertise [w]ake when the highlighted chat is actually
+			// stopped — for any other status the keypress is a no-op, so
+			// dangling the action in the bar would mislead users.
+			if m.daemonStatuses[chat.AgentSessionId] == statusStopped {
+				left = append(left, "[w]ake")
+			}
 			b.WriteString(actionBar(
-				[]string{"[enter] select", "[d]elete"},
+				left,
 				middle,
 				[]string{"[esc] back"},
 			))
@@ -622,7 +681,7 @@ func (m ChatPickerModel) View() tea.View {
 // chatLastActive returns the most recent activity time for a chat.
 // Prefers daemon-reported output time, then created_at.
 func (m ChatPickerModel) chatLastActive(chat *pb.ClaudeChat) time.Time {
-	if t, ok := m.daemonLastOutput[chat.ClaudeId]; ok && !t.IsZero() {
+	if t, ok := m.daemonLastOutput[chat.AgentSessionId]; ok && !t.IsZero() {
 		return t
 	}
 	return chat.CreatedAt.AsTime()

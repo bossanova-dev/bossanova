@@ -206,10 +206,20 @@ func uniqueSessionName(prefix string) string {
 	return prefix + "-" + now.Format("20060102150405") + "-" + strconv.FormatInt(now.UnixNano()%1_000_000, 10)
 }
 
+// integrationTestTimeout is the per-test ctx budget for the tmux attach
+// integration tests. Each test calls NewSession which fans out to ~7 tmux
+// exec invocations (new-session + bindDetachKeys), and the first integration
+// test in the package also pays the cold-start cost of spawning the tmux
+// server. Under -race + parallel-package load (`go test ./...`), CPU
+// contention pushes that setup well past 10s; tests run in <2s when the
+// machine is idle, so a generous 30s safety net covers the worst-case CI
+// runner without slowing local runs.
+const integrationTestTimeout = 30 * time.Second
+
 func TestTerminalAttach_RoundTrip(t *testing.T) {
 	skipIfNoTmux(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
 	c := NewClient()
@@ -269,7 +279,7 @@ func TestTerminalAttach_RoundTrip(t *testing.T) {
 func TestTerminalAttach_Resize(t *testing.T) {
 	skipIfNoTmux(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
 	c := NewClient()
@@ -298,7 +308,7 @@ func TestTerminalAttach_Resize(t *testing.T) {
 func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	skipIfNoTmux(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
 	c := NewClient()
@@ -373,7 +383,7 @@ loop:
 func TestTerminalAttach_ExitFiresWhenSessionKilled(t *testing.T) {
 	skipIfNoTmux(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
 	c := NewClient()
@@ -450,7 +460,7 @@ func TestTerminalAttach_ExitFiresWhenSessionKilled(t *testing.T) {
 func TestTerminalAttach_InputAfterCloseReturnsErr(t *testing.T) {
 	skipIfNoTmux(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
 	c := NewClient()

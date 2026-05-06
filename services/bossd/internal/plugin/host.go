@@ -22,7 +22,7 @@ import (
 	sharedplugin "github.com/recurser/bossalib/plugin"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
-	"github.com/recurser/bossd/internal/claude"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/plugin/eventbus"
 	"github.com/recurser/bossd/internal/status"
@@ -49,6 +49,7 @@ type managedPlugin struct {
 	client          *goplugin.Client
 	taskSource      TaskSource      // cached dispensed interface, nil if not a task source
 	workflowService WorkflowService // cached dispensed interface, nil if not a workflow service
+	agentRunner     AgentRunner     // cached dispensed interface, nil if not an agent runner
 	startedAt       time.Time
 }
 
@@ -74,6 +75,29 @@ func hasEnabledPlugin(cfgs []config.PluginConfig) bool {
 		}
 	}
 	return false
+}
+
+// pluginEnvVarPrefix is prepended to every key in cfg.Config when projecting
+// the plugin's settings into its subprocess environment. Plugins read their
+// own config via os.Getenv(pluginEnvVarPrefix+key).
+const pluginEnvVarPrefix = "BOSS_PLUGIN_"
+
+// pluginEnvFromConfig returns "BOSS_PLUGIN_<key>=<value>" entries for each
+// pair in cfg.Config. The daemon merges these into the plugin subprocess
+// environment so plugins (which run as separate binaries and therefore can't
+// import the daemon's config package) can still see their own settings —
+// notably the claude plugin's dangerously_skip_permissions toggle, which
+// otherwise stays at its zero value and silently breaks /print mode in the
+// repair workflow.
+func pluginEnvFromConfig(cfg config.PluginConfig) []string {
+	if len(cfg.Config) == 0 {
+		return nil
+	}
+	env := make([]string, 0, len(cfg.Config))
+	for k, v := range cfg.Config {
+		env = append(env, pluginEnvVarPrefix+k+"="+v)
+	}
+	return env
 }
 
 // generatePluginCookie returns a fresh 32-byte hex string for the per-startup
@@ -141,10 +165,18 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 			continue
 		}
 
+		cmd := exec.Command(cfg.Path)
+		// Project per-plugin Config entries into the subprocess environment
+		// (BOSS_PLUGIN_<key>=<value>). Plugins are separate binaries that
+		// can't import bossalib/config, so this is how settings reach them.
+		if extra := pluginEnvFromConfig(cfg); len(extra) > 0 {
+			cmd.Env = append(os.Environ(), extra...)
+		}
+
 		client := goplugin.NewClient(&goplugin.ClientConfig{
 			HandshakeConfig:  NewHandshake(h.cookieValue),
 			VersionedPlugins: NewVersionedPluginMap(h.hostService),
-			Cmd:              exec.Command(cfg.Path),
+			Cmd:              cmd,
 			AllowedProtocols: []goplugin.Protocol{
 				goplugin.ProtocolGRPC,
 			},
@@ -203,6 +235,17 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 					if _, probeErr := ws.GetInfo(context.Background()); probeErr == nil {
 						mp.workflowService = ws
 						h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed WorkflowService interface")
+					}
+				}
+			}
+
+			// Try to dispense the AgentRunner interface.
+			raw, err = rpcClient.Dispense(sharedplugin.PluginTypeAgentRunner)
+			if err == nil {
+				if ar, ok := raw.(AgentRunner); ok {
+					if _, probeErr := ar.GetInfo(context.Background()); probeErr == nil {
+						mp.agentRunner = ar
+						h.logger.Info().Str("plugin", cfg.Name).Msg("dispensed AgentRunner interface")
 					}
 				}
 			}
@@ -321,17 +364,28 @@ func (h *Host) GetTaskSources() []TaskSource {
 }
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs.
-func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chats db.ClaudeChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
+func (h *Host) SetSessionDeps(repos db.RepoStore, sessions db.SessionStore, chats db.AgentChatStore, tracker *status.DisplayTracker, chatTracker *status.Tracker) {
 	if h.hostService != nil {
 		h.hostService.SetSessionDeps(repos, sessions, chats, tracker, chatTracker)
 	}
 }
 
-// SetClaudeRunner injects the Claude runner used by the StartClaudeRun /
-// WaitClaudeRun host RPCs the repair plugin calls back into.
-func (h *Host) SetClaudeRunner(runner claude.ClaudeRunner) {
+// SetAgentClients injects the per-name registry of AgentRunnerClient gRPC
+// clients (keyed by plugin Name, matching session.AgentName) so the
+// host's StartAgentRun / WaitAgentRun RPCs can route to the right plugin
+// based on the session record. Called from main.go after pluginHost.Start
+// has dispensed every AgentRunner plugin.
+func (h *Host) SetAgentClients(m map[string]agent.AgentRunnerClient) {
 	if h.hostService != nil {
-		h.hostService.SetClaudeRunner(runner)
+		h.hostService.SetAgentClients(m)
+	}
+}
+
+// SetAgentLogsDir sets the bossd-owned directory where the agent plugin
+// writes per-session NDJSON log files. Required alongside SetAgentClients.
+func (h *Host) SetAgentLogsDir(dir string) {
+	if h.hostService != nil {
+		h.hostService.SetAgentLogsDir(dir)
 	}
 }
 
@@ -367,6 +421,51 @@ func (h *Host) GetWorkflowServices() []WorkflowService {
 		}
 	}
 	return services
+}
+
+// AgentRunner returns the first plugin's AgentRunner interface, or nil
+// if no plugin implements it. This is the legacy single-agent helper used
+// as a default fallback. For multi-agent dispatch, prefer AgentRunnerByName
+// (resolve a specific plugin by name) or AgentRunners (full registry).
+func (h *Host) AgentRunner() AgentRunner {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.plugins {
+		if h.plugins[i].agentRunner != nil {
+			return h.plugins[i].agentRunner
+		}
+	}
+	return nil
+}
+
+// AgentRunnerByName returns the cached AgentRunner for the plugin whose
+// configured Name matches name. Returns nil if no such plugin is loaded
+// or if the matching plugin did not dispense an AgentRunner interface.
+func (h *Host) AgentRunnerByName(name string) AgentRunner {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.plugins {
+		if h.plugins[i].cfg.Name == name && h.plugins[i].agentRunner != nil {
+			return h.plugins[i].agentRunner
+		}
+	}
+	return nil
+}
+
+// AgentRunners returns a fresh map of plugin name -> AgentRunner for every
+// loaded plugin that dispensed an AgentRunner. The returned map is a copy:
+// mutating it does not affect the host. Returns an empty (non-nil) map when
+// no AgentRunner plugins are loaded.
+func (h *Host) AgentRunners() map[string]AgentRunner {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]AgentRunner, len(h.plugins))
+	for i := range h.plugins {
+		if h.plugins[i].agentRunner != nil {
+			out[h.plugins[i].cfg.Name] = h.plugins[i].agentRunner
+		}
+	}
+	return out
 }
 
 // healthCheckLoop periodically pings each plugin and logs failures.

@@ -16,7 +16,7 @@ const (
 	ChatChangeDeleted
 )
 
-// NotifyingClaudeChatStore wraps a ClaudeChatStore so every successful
+// NotifyingAgentChatStore wraps a AgentChatStore so every successful
 // mutation invokes OnChange with the affected chat. bossd uses it to fan
 // ChatDelta events out on the upstream stream — without this, the
 // orchestrator only ever sees chats from the initial DaemonSnapshot and
@@ -32,26 +32,26 @@ const (
 // store has no GetByID accessor, and every production caller uses the
 // claude-id variants. Adding a real caller later means extending the
 // inner store with a GetByID and notifying here.
-type NotifyingClaudeChatStore struct {
-	inner ClaudeChatStore
+type NotifyingAgentChatStore struct {
+	inner AgentChatStore
 
 	// OnChange is invoked synchronously on the calling goroutine after a
 	// successful mutation. May be nil; the wrapper no-ops in that case,
 	// matching the construct-then-wire pattern used elsewhere in main.go
 	// (display computer, status tracker).
-	OnChange func(kind ChatChangeKind, chat *models.ClaudeChat)
+	OnChange func(kind ChatChangeKind, chat *models.AgentChat)
 }
 
-var _ ClaudeChatStore = (*NotifyingClaudeChatStore)(nil)
+var _ AgentChatStore = (*NotifyingAgentChatStore)(nil)
 
-// NewNotifyingClaudeChatStore wraps inner. OnChange is unset by default;
+// NewNotifyingAgentChatStore wraps inner. OnChange is unset by default;
 // callers wire it after constructing dependent subsystems (e.g. the
 // upstream stream bus) so the hook closure can capture them.
-func NewNotifyingClaudeChatStore(inner ClaudeChatStore) *NotifyingClaudeChatStore {
-	return &NotifyingClaudeChatStore{inner: inner}
+func NewNotifyingAgentChatStore(inner AgentChatStore) *NotifyingAgentChatStore {
+	return &NotifyingAgentChatStore{inner: inner}
 }
 
-func (s *NotifyingClaudeChatStore) Create(ctx context.Context, params CreateClaudeChatParams) (*models.ClaudeChat, error) {
+func (s *NotifyingAgentChatStore) Create(ctx context.Context, params CreateAgentChatParams) (*models.AgentChat, error) {
 	chat, err := s.inner.Create(ctx, params)
 	if err != nil {
 		return chat, err
@@ -60,40 +60,40 @@ func (s *NotifyingClaudeChatStore) Create(ctx context.Context, params CreateClau
 	return chat, nil
 }
 
-func (s *NotifyingClaudeChatStore) GetByClaudeID(ctx context.Context, claudeID string) (*models.ClaudeChat, error) {
-	return s.inner.GetByClaudeID(ctx, claudeID)
+func (s *NotifyingAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error) {
+	return s.inner.GetByAgentSessionID(ctx, agentSessionID)
 }
 
-func (s *NotifyingClaudeChatStore) ListBySession(ctx context.Context, sessionID string) ([]*models.ClaudeChat, error) {
+func (s *NotifyingAgentChatStore) ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error) {
 	return s.inner.ListBySession(ctx, sessionID)
 }
 
-func (s *NotifyingClaudeChatStore) UpdateTitle(ctx context.Context, id string, title string) error {
+func (s *NotifyingAgentChatStore) UpdateTitle(ctx context.Context, id string, title string) error {
 	return s.inner.UpdateTitle(ctx, id, title)
 }
 
-func (s *NotifyingClaudeChatStore) UpdateTitleByClaudeID(ctx context.Context, claudeID string, title string) error {
-	if err := s.inner.UpdateTitleByClaudeID(ctx, claudeID, title); err != nil {
+func (s *NotifyingAgentChatStore) UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error {
+	if err := s.inner.UpdateTitleByAgentSessionID(ctx, agentSessionID, title); err != nil {
 		return err
 	}
-	s.notifyAfterUpdate(ctx, claudeID)
+	s.notifyAfterUpdate(ctx, agentSessionID)
 	return nil
 }
 
-func (s *NotifyingClaudeChatStore) UpdateTmuxSessionName(ctx context.Context, claudeID string, name *string) error {
-	if err := s.inner.UpdateTmuxSessionName(ctx, claudeID, name); err != nil {
+func (s *NotifyingAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error {
+	if err := s.inner.UpdateTmuxSessionName(ctx, agentSessionID, name); err != nil {
 		return err
 	}
-	s.notifyAfterUpdate(ctx, claudeID)
+	s.notifyAfterUpdate(ctx, agentSessionID)
 	return nil
 }
 
-func (s *NotifyingClaudeChatStore) DeleteByClaudeID(ctx context.Context, claudeID string) error {
+func (s *NotifyingAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
 	// Fetch first so the notification carries the chat that is about to
 	// disappear — subscribers need session_id to scope the delete to a
 	// per-session chat list.
-	chat, getErr := s.inner.GetByClaudeID(ctx, claudeID)
-	if err := s.inner.DeleteByClaudeID(ctx, claudeID); err != nil {
+	chat, getErr := s.inner.GetByAgentSessionID(ctx, agentSessionID)
+	if err := s.inner.DeleteByAgentSessionID(ctx, agentSessionID); err != nil {
 		return err
 	}
 	if getErr == nil {
@@ -102,11 +102,11 @@ func (s *NotifyingClaudeChatStore) DeleteByClaudeID(ctx context.Context, claudeI
 	return nil
 }
 
-func (s *NotifyingClaudeChatStore) ListWithTmuxSession(ctx context.Context) ([]*models.ClaudeChat, error) {
+func (s *NotifyingAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error) {
 	return s.inner.ListWithTmuxSession(ctx)
 }
 
-func (s *NotifyingClaudeChatStore) notify(kind ChatChangeKind, chat *models.ClaudeChat) {
+func (s *NotifyingAgentChatStore) notify(kind ChatChangeKind, chat *models.AgentChat) {
 	if s.OnChange == nil || chat == nil {
 		return
 	}
@@ -117,11 +117,11 @@ func (s *NotifyingClaudeChatStore) notify(kind ChatChangeKind, chat *models.Clau
 // current state. A read failure silently skips the notification — the
 // underlying write already succeeded, and surfacing a read error here
 // would mask that.
-func (s *NotifyingClaudeChatStore) notifyAfterUpdate(ctx context.Context, claudeID string) {
+func (s *NotifyingAgentChatStore) notifyAfterUpdate(ctx context.Context, agentSessionID string) {
 	if s.OnChange == nil {
 		return
 	}
-	chat, err := s.inner.GetByClaudeID(ctx, claudeID)
+	chat, err := s.inner.GetByAgentSessionID(ctx, agentSessionID)
 	if err != nil || chat == nil {
 		return
 	}

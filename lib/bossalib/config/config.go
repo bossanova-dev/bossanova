@@ -26,10 +26,11 @@ type RepairSkills struct {
 
 // RepairConfig holds configuration for the repair plugin.
 type RepairConfig struct {
-	Skills               RepairSkills `json:"skills,omitzero"`
-	CooldownMinutes      int          `json:"cooldown_minutes,omitempty"`
-	PollIntervalSeconds  int          `json:"poll_interval_seconds,omitempty"`
-	SweepIntervalMinutes int          `json:"sweep_interval_minutes,omitempty"`
+	Skills                     RepairSkills `json:"skills,omitzero"`
+	CooldownMinutes            int          `json:"cooldown_minutes,omitempty"`
+	PollIntervalSeconds        int          `json:"poll_interval_seconds,omitempty"`
+	SweepIntervalMinutes       int          `json:"sweep_interval_minutes,omitempty"`
+	IdleRepairThresholdMinutes int          `json:"idle_repair_threshold_minutes,omitempty"`
 }
 
 // CooldownDuration returns the configured cooldown or the default of 1 minute.
@@ -46,6 +47,16 @@ func (c RepairConfig) PollInterval() time.Duration {
 		return time.Duration(c.PollIntervalSeconds) * time.Second
 	}
 	return 5 * time.Second
+}
+
+// IdleRepairThreshold returns the configured idle threshold or the default of 5 minutes.
+// When a session has a live chat but its most recent output is older than this
+// threshold, the repair plugin treats the chat as idle and proceeds with repair.
+func (c RepairConfig) IdleRepairThreshold() time.Duration {
+	if c.IdleRepairThresholdMinutes > 0 {
+		return time.Duration(c.IdleRepairThresholdMinutes) * time.Minute
+	}
+	return 5 * time.Minute
 }
 
 // SkillName returns the configured repair skill name or the default.

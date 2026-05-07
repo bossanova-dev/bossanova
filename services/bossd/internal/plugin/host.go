@@ -423,6 +423,25 @@ func (h *Host) GetWorkflowServices() []WorkflowService {
 	return services
 }
 
+// AgentClientNames returns the names of agent plugins currently wired into
+// the host service. Used by RepairDoctor; nil-safe (returns nil if the host
+// service hasn't been configured yet).
+func (h *Host) AgentClientNames() []string {
+	if h.hostService == nil {
+		return nil
+	}
+	return h.hostService.AgentClientNames()
+}
+
+// AgentLogsDir returns the directory where per-session NDJSON log files
+// land. Empty string if the host service hasn't been configured.
+func (h *Host) AgentLogsDir() string {
+	if h.hostService == nil {
+		return ""
+	}
+	return h.hostService.AgentLogsDir()
+}
+
 // AgentRunner returns the first plugin's AgentRunner interface, or nil
 // if no plugin implements it. This is the legacy single-agent helper used
 // as a default fallback. For multi-agent dispatch, prefer AgentRunnerByName

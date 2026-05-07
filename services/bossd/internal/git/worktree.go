@@ -900,8 +900,8 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 // setupscript.Spec and executes it in the worktree with a 5-minute timeout.
 //
 // The following environment variables are set for the process:
-//   - BOSS_REPO_DIR:     path to the main git repository (the original clone)
-//   - BOSS_WORKTREE_DIR: path to the worktree being set up
+//   - REPO_DIR:     path to the main git repository (the original clone)
+//   - WORKTREE_DIR: path to the worktree being set up
 //
 // If output is non-nil, stdout and stderr are written there; otherwise they
 // go to os.Stderr (daemon logs). Legacy bare-string values are rewritten to

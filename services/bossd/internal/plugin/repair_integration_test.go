@@ -274,7 +274,7 @@ func TestRepairPlugin_DrivesClaudeRunOnFailingStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	// Move the session into a state isSessionRepairable accepts.
+	// Move the session into a state lookupSession accepts.
 	stateInt := int(machine.AwaitingChecks)
 	if _, err := sessions.Update(ctx, session.ID, db.UpdateSessionParams{State: &stateInt}); err != nil {
 		t.Fatalf("update session state: %v", err)

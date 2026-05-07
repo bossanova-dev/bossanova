@@ -426,6 +426,30 @@ func TestDiscoverPluginsFallsBackToSameDir(t *testing.T) {
 	}
 }
 
+func TestRepairConfig_IdleRepairThreshold(t *testing.T) {
+	t.Run("returns default when unset", func(t *testing.T) {
+		c := RepairConfig{}
+		got := c.IdleRepairThreshold()
+		if got != 5*time.Minute {
+			t.Errorf("IdleRepairThreshold() = %v, want %v", got, 5*time.Minute)
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := RepairConfig{IdleRepairThresholdMinutes: 12}
+		got := c.IdleRepairThreshold()
+		if got != 12*time.Minute {
+			t.Errorf("IdleRepairThreshold() = %v, want %v", got, 12*time.Minute)
+		}
+	})
+	t.Run("zero falls back to default", func(t *testing.T) {
+		c := RepairConfig{IdleRepairThresholdMinutes: 0}
+		got := c.IdleRepairThreshold()
+		if got != 5*time.Minute {
+			t.Errorf("IdleRepairThreshold() = %v, want %v", got, 5*time.Minute)
+		}
+	})
+}
+
 func TestDiscoverPluginsPrefersLibexec(t *testing.T) {
 	// When plugins exist in both ../libexec/plugins/ and the binary dir,
 	// the libexec path should win.

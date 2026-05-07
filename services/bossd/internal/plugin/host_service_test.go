@@ -12,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -503,6 +504,140 @@ func TestStartAgentRun_UnknownAgent(t *testing.T) {
 	})
 	if grpcstatus.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", grpcstatus.Code(err))
+	}
+}
+
+// fakeRepoStore is a minimal db.RepoStore stub that serves a fixed list of
+// repos from List(). All other methods panic to surface unexpected usage.
+type fakeRepoStore struct {
+	db.RepoStore
+	repos []*models.Repo
+}
+
+func (f *fakeRepoStore) List(_ context.Context) ([]*models.Repo, error) {
+	return f.repos, nil
+}
+
+// fakeSessionStoreWithListActive extends fakeSessionStore with ListActive so
+// that ListSessions tests can control which sessions are returned per repo.
+type fakeSessionStoreWithListActive struct {
+	fakeSessionStore
+	// sessionsByRepo maps repoID → sessions returned by ListActive.
+	sessionsByRepo map[string][]*models.Session
+}
+
+func (f *fakeSessionStoreWithListActive) ListActive(_ context.Context, repoID string) ([]*models.Session, error) {
+	return f.sessionsByRepo[repoID], nil
+}
+
+// fakeAgentChatStore is a minimal db.AgentChatStore stub that returns a
+// pre-configured list of chats for a given session ID.
+type fakeAgentChatStore struct {
+	db.AgentChatStore
+	chatsBySession map[string][]*models.AgentChat
+}
+
+func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
+	return f.chatsBySession[sessionID], nil
+}
+
+// TestListSessions_PopulatesLastChatActivityAt verifies that ListSessions sets
+// LastChatActivityAt to the maximum LastOutputAt across all live chat tracker
+// entries for a session, and that HasActiveChat remains true.
+func TestListSessions_PopulatesLastChatActivityAt(t *testing.T) {
+	olderTime := time.Now().Add(-30 * time.Second)
+	newerTime := time.Now().Add(-5 * time.Second)
+
+	repoID := "repo-1"
+	sessID := "sess-1"
+
+	// Build the real Tracker and seed two live entries (both within
+	// StaleThreshold via Update, which stamps ReceivedAt = time.Now()).
+	tracker := status.NewTracker()
+	tracker.Update("chat-old", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, olderTime)
+	tracker.Update("chat-new", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, newerTime)
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo"}},
+	}
+	srv.sessionStore = &fakeSessionStoreWithListActive{
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {{ID: sessID, RepoID: repoID, Title: "my session"}},
+		},
+	}
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.agentChats = &fakeAgentChatStore{
+		chatsBySession: map[string][]*models.AgentChat{
+			sessID: {
+				// Order matters: newer-first ensures a buggy "last-wins"
+				// implementation would fail (it would keep the older value).
+				{AgentSessionID: "chat-new"},
+				{AgentSessionID: "chat-old"},
+			},
+		},
+	}
+	srv.chatTracker = tracker
+
+	resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	sessions := resp.GetSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if !s.GetHasActiveChat() {
+		t.Error("HasActiveChat should be true")
+	}
+	if s.GetLastChatActivityAt() == nil {
+		t.Fatal("LastChatActivityAt should be populated")
+	}
+	gotTime := s.GetLastChatActivityAt().AsTime()
+	// 1ms tolerance for any rounding through timestamppb.
+	if gotTime.Sub(newerTime).Abs() > time.Millisecond {
+		t.Errorf("LastChatActivityAt = %v, want %v (the newer time)", gotTime, newerTime)
+	}
+}
+
+// TestListSessions_LeavesLastChatActivityNilWhenNoLiveChat verifies that when a
+// session has no chats registered against it, ListSessions leaves
+// LastChatActivityAt nil and HasActiveChat false.
+func TestListSessions_LeavesLastChatActivityNilWhenNoLiveChat(t *testing.T) {
+	repoID := "repo-1"
+	sessID := "sess-1"
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo"}},
+	}
+	srv.sessionStore = &fakeSessionStoreWithListActive{
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {{ID: sessID, RepoID: repoID, Title: "my session"}},
+		},
+	}
+	srv.displayTracker = status.NewDisplayTracker()
+	// No chats registered for this session.
+	srv.agentChats = &fakeAgentChatStore{
+		chatsBySession: map[string][]*models.AgentChat{},
+	}
+	srv.chatTracker = status.NewTracker()
+
+	resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	sessions := resp.GetSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.GetHasActiveChat() {
+		t.Error("HasActiveChat should be false when no chats exist")
+	}
+	if s.GetLastChatActivityAt() != nil {
+		t.Errorf("LastChatActivityAt should be nil, got %v", s.GetLastChatActivityAt())
 	}
 }
 

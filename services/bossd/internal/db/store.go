@@ -143,6 +143,22 @@ type SessionStore interface {
 	Resurrect(ctx context.Context, id string) error
 	Delete(ctx context.Context, id string) error
 	AdvanceOrphanedSessions(ctx context.Context) (int64, error)
+
+	// UpdateRepairDiagnostics writes the last_repair_* columns atomically.
+	// last_repair_attempt_count tracks consecutive failures: a clean run
+	// (both error fields empty) resets it to 0; a failed run bumps it by
+	// one. The TUI uses that count to render the "(N×)" suffix, which
+	// would otherwise overcount a fail → succeed → fail sequence.
+	UpdateRepairDiagnostics(ctx context.Context, params UpdateRepairDiagnosticsParams) error
+}
+
+// UpdateRepairDiagnosticsParams carries the per-attempt outcome that the
+// repair plugin reports via host.RecordRepairOutcome.
+type UpdateRepairDiagnosticsParams struct {
+	SessionID   string
+	StartedAt   time.Time
+	RunnerError string
+	ExitError   string
 }
 
 // CreateAgentChatParams holds the parameters for creating a new agent chat record.

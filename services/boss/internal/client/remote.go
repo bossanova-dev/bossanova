@@ -302,6 +302,14 @@ func (c *RemoteClient) RunCronJobNow(_ context.Context, _ string) (*pb.RunCronJo
 	return nil, errLocalOnly("RunCronJobNow")
 }
 
+func (c *RemoteClient) RepairDoctor(_ context.Context) (*pb.RepairDoctorResponse, error) {
+	return nil, errLocalOnly("RepairDoctor")
+}
+
+func (c *RemoteClient) ListCheckSnapshots(_ context.Context, _ string, _ int32) (*pb.ListCheckSnapshotsResponse, error) {
+	return nil, errLocalOnly("ListCheckSnapshots")
+}
+
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.
 type remoteAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.ProxyAttachSessionResponse]

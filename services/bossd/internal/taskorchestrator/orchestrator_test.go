@@ -1237,6 +1237,92 @@ func TestProcessTask_NewTaskPassesThrough(t *testing.T) {
 	}
 }
 
+// TestProcessTask_OrphanedMappingIsReprocessed proves that mappings left
+// in the Orphaned state by FailOrphanedMappings (e.g. after a daemon
+// restart) are picked up again on the next poll instead of being silently
+// dropped by the dedup. The stale row is deleted so routeTask's Create()
+// doesn't trip the external_id UNIQUE constraint.
+func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
+	var deletedID string
+	var createdMapping bool
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{
+				"dependabot:pr:repo:777": {
+					ID:         "tm-orphan",
+					ExternalID: "dependabot:pr:repo:777",
+					Status:     models.TaskMappingStatusOrphaned,
+				},
+			},
+			deleteFn: func(_ context.Context, id string) error {
+				deletedID = id
+				return nil
+			},
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				createdMapping = true
+				return &models.TaskMapping{
+					ID:         "tm-new",
+					ExternalID: params.ExternalID,
+					PluginName: params.PluginName,
+					RepoID:     params.RepoID,
+					Status:     models.TaskMappingStatusPending,
+				}, nil
+			},
+		}
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error { return nil },
+		}
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:777",
+		Title:      "Bump foo",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if deletedID != "tm-orphan" {
+		t.Errorf("expected stale Orphaned mapping to be deleted, got deletedID=%q", deletedID)
+	}
+	if !createdMapping {
+		t.Error("expected new mapping to be created after Orphaned re-process")
+	}
+}
+
+// TestProcessTask_FailedMappingStillSkipped guards the original dedup
+// invariant: a genuinely Failed mapping (not orphaned by restart) must
+// not be retried automatically, otherwise we re-fire rejected merges
+// and previously-rejected libraries every poll.
+func TestProcessTask_FailedMappingStillSkipped(t *testing.T) {
+	var createdMapping bool
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{
+				"dependabot:pr:repo:888": {
+					ID:         "tm-failed",
+					ExternalID: "dependabot:pr:repo:888",
+					Status:     models.TaskMappingStatusFailed,
+				},
+			},
+			createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				createdMapping = true
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:888",
+		Title:      "Bump bar",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if createdMapping {
+		t.Error("expected Failed mapping to be skipped, not re-processed")
+	}
+}
+
 func TestRouteTask_CreateMappingError(t *testing.T) {
 	var mergedCalled bool
 

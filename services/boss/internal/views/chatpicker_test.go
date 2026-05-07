@@ -144,6 +144,12 @@ func (s *chatPickerStub) DeleteCronJob(context.Context, string) error { panic("u
 func (s *chatPickerStub) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
+func (s *chatPickerStub) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
+	panic("unused")
+}
+func (s *chatPickerStub) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
+	panic("unused")
+}
 
 // seedChatPicker returns a ChatPickerModel populated with a single chat at the
 // given daemon status. Tests can press 'w' against the resulting model.

@@ -57,6 +57,7 @@ type Server struct {
 	agentChats         db.AgentChatStore
 	workflows          db.WorkflowStore
 	cronJobs           db.CronJobStore
+	checkSnapshots     db.CheckSnapshotStore
 	cronScheduler      *cron.Scheduler
 	chatStatus         *status.Tracker
 	displayTracker     *status.DisplayTracker
@@ -87,6 +88,7 @@ type Config struct {
 	AgentChats         db.AgentChatStore
 	Workflows          db.WorkflowStore
 	CronJobs           db.CronJobStore
+	CheckSnapshots     db.CheckSnapshotStore
 	CronScheduler      *cron.Scheduler
 	ChatStatus         *status.Tracker
 	DisplayTracker     *status.DisplayTracker
@@ -130,6 +132,7 @@ func New(cfg Config) *Server {
 		agentChats:         cfg.AgentChats,
 		workflows:          cfg.Workflows,
 		cronJobs:           cfg.CronJobs,
+		checkSnapshots:     cfg.CheckSnapshots,
 		cronScheduler:      cfg.CronScheduler,
 		chatStatus:         cfg.ChatStatus,
 		displayTracker:     cfg.DisplayTracker,

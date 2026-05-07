@@ -414,6 +414,25 @@ func (c *LocalClient) RunCronJobNow(ctx context.Context, id string) (*pb.RunCron
 	return resp.Msg, nil
 }
 
+func (c *LocalClient) RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error) {
+	resp, err := c.rpc.RepairDoctor(ctx, connect.NewRequest(&pb.RepairDoctorRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *LocalClient) ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error) {
+	resp, err := c.rpc.ListCheckSnapshots(ctx, connect.NewRequest(&pb.ListCheckSnapshotsRequest{
+		SessionId: sessionID,
+		Limit:     limit,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // localAttachStream wraps the DaemonService AttachSession stream.
 type localAttachStream struct {
 	stream *connect.ServerStreamForClient[pb.AttachSessionResponse]

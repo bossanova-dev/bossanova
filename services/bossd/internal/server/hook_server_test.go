@@ -80,6 +80,9 @@ func (m *hookMockSessionStore) Delete(context.Context, string) error    { panic(
 func (m *hookMockSessionStore) AdvanceOrphanedSessions(context.Context) (int64, error) {
 	panic("not used")
 }
+func (m *hookMockSessionStore) UpdateRepairDiagnostics(context.Context, db.UpdateRepairDiagnosticsParams) error {
+	panic("not used")
+}
 
 // fakeFinalizer records FinalizeSession invocations so tests can assert
 // the dispatch happened (and only for the expected session).

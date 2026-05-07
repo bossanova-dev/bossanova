@@ -66,6 +66,11 @@ type Client interface {
 	// plugin to spawn a one-shot agent run on a session's worktree.
 	StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error)
 	WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error)
+
+	// Repair diagnostics — persists the per-attempt outcome onto the session
+	// row so the TUI can surface "failing ⚠ repair: claude not in PATH (3×)"
+	// hints. Repair plugin calls this once per attempt in deferred cleanup.
+	RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error)
 }
 
 // DirectClient wraps a gRPC connection to the daemon's HostService,
@@ -222,6 +227,14 @@ func (c *EagerClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAge
 	return client.WaitAgentRun(ctx, req)
 }
 
+func (c *EagerClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.RecordRepairOutcome(ctx, req)
+}
+
 // --- DirectClient methods (gRPC calls) ---
 
 // invokeUnary applies the client's default RPC timeout and forwards to
@@ -281,6 +294,14 @@ func (c *DirectClient) StartAgentRun(ctx context.Context, req *bossanovav1.Start
 func (c *DirectClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error) {
 	resp := &bossanovav1.WaitAgentRunHostResponse{}
 	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitAgentRun", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *DirectClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
+	resp := &bossanovav1.RecordRepairOutcomeResponse{}
+	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/RecordRepairOutcome", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

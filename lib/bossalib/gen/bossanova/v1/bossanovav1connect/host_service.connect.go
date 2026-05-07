@@ -61,6 +61,9 @@ const (
 	// HostServiceWaitAgentRunProcedure is the fully-qualified name of the HostService's WaitAgentRun
 	// RPC.
 	HostServiceWaitAgentRunProcedure = "/bossanova.v1.HostService/WaitAgentRun"
+	// HostServiceRecordRepairOutcomeProcedure is the fully-qualified name of the HostService's
+	// RecordRepairOutcome RPC.
+	HostServiceRecordRepairOutcomeProcedure = "/bossanova.v1.HostService/RecordRepairOutcome"
 )
 
 // HostServiceClient is a client for the bossanova.v1.HostService service.
@@ -90,6 +93,13 @@ type HostServiceClient interface {
 	// WaitAgentRun blocks until the named agent run exits. Returns the exit
 	// error message (empty on clean exit).
 	WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error)
+	// RecordRepairOutcome persists the result of a repair attempt onto the
+	// session row so the TUI can surface "last repair: claude not in PATH (3×)"
+	// hints alongside the existing display status. Called by the repair
+	// plugin's deferred cleanup so every attempt — clean exit, agent error,
+	// or runner-level failure — leaves a structured trace in SQLite that
+	// outlives the in-memory cooldowns map.
+	RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error)
 }
 
 // NewHostServiceClient constructs a client for the bossanova.v1.HostService service. By default, it
@@ -163,21 +173,28 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("WaitAgentRun")),
 			connect.WithClientOptions(opts...),
 		),
+		recordRepairOutcome: connect.NewClient[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse](
+			httpClient,
+			baseURL+HostServiceRecordRepairOutcomeProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("RecordRepairOutcome")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // hostServiceClient implements HostServiceClient.
 type hostServiceClient struct {
-	listOpenPRs       *connect.Client[v1.ListOpenPRsRequest, v1.ListOpenPRsResponse]
-	getCheckResults   *connect.Client[v1.GetCheckResultsRequest, v1.GetCheckResultsResponse]
-	getPRStatus       *connect.Client[v1.GetPRStatusRequest, v1.GetPRStatusResponse]
-	listClosedPRs     *connect.Client[v1.ListClosedPRsRequest, v1.ListClosedPRsResponse]
-	listSessions      *connect.Client[v1.HostServiceListSessionsRequest, v1.HostServiceListSessionsResponse]
-	getReviewComments *connect.Client[v1.GetReviewCommentsRequest, v1.GetReviewCommentsResponse]
-	fireSessionEvent  *connect.Client[v1.FireSessionEventRequest, v1.FireSessionEventResponse]
-	setRepairStatus   *connect.Client[v1.SetRepairStatusRequest, v1.SetRepairStatusResponse]
-	startAgentRun     *connect.Client[v1.StartAgentRunHostRequest, v1.StartAgentRunHostResponse]
-	waitAgentRun      *connect.Client[v1.WaitAgentRunHostRequest, v1.WaitAgentRunHostResponse]
+	listOpenPRs         *connect.Client[v1.ListOpenPRsRequest, v1.ListOpenPRsResponse]
+	getCheckResults     *connect.Client[v1.GetCheckResultsRequest, v1.GetCheckResultsResponse]
+	getPRStatus         *connect.Client[v1.GetPRStatusRequest, v1.GetPRStatusResponse]
+	listClosedPRs       *connect.Client[v1.ListClosedPRsRequest, v1.ListClosedPRsResponse]
+	listSessions        *connect.Client[v1.HostServiceListSessionsRequest, v1.HostServiceListSessionsResponse]
+	getReviewComments   *connect.Client[v1.GetReviewCommentsRequest, v1.GetReviewCommentsResponse]
+	fireSessionEvent    *connect.Client[v1.FireSessionEventRequest, v1.FireSessionEventResponse]
+	setRepairStatus     *connect.Client[v1.SetRepairStatusRequest, v1.SetRepairStatusResponse]
+	startAgentRun       *connect.Client[v1.StartAgentRunHostRequest, v1.StartAgentRunHostResponse]
+	waitAgentRun        *connect.Client[v1.WaitAgentRunHostRequest, v1.WaitAgentRunHostResponse]
+	recordRepairOutcome *connect.Client[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse]
 }
 
 // ListOpenPRs calls bossanova.v1.HostService.ListOpenPRs.
@@ -230,6 +247,11 @@ func (c *hostServiceClient) WaitAgentRun(ctx context.Context, req *connect.Reque
 	return c.waitAgentRun.CallUnary(ctx, req)
 }
 
+// RecordRepairOutcome calls bossanova.v1.HostService.RecordRepairOutcome.
+func (c *hostServiceClient) RecordRepairOutcome(ctx context.Context, req *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error) {
+	return c.recordRepairOutcome.CallUnary(ctx, req)
+}
+
 // HostServiceHandler is an implementation of the bossanova.v1.HostService service.
 type HostServiceHandler interface {
 	// ListOpenPRs returns all open pull requests for a repository.
@@ -257,6 +279,13 @@ type HostServiceHandler interface {
 	// WaitAgentRun blocks until the named agent run exits. Returns the exit
 	// error message (empty on clean exit).
 	WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error)
+	// RecordRepairOutcome persists the result of a repair attempt onto the
+	// session row so the TUI can surface "last repair: claude not in PATH (3×)"
+	// hints alongside the existing display status. Called by the repair
+	// plugin's deferred cleanup so every attempt — clean exit, agent error,
+	// or runner-level failure — leaves a structured trace in SQLite that
+	// outlives the in-memory cooldowns map.
+	RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error)
 }
 
 // NewHostServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -326,6 +355,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("WaitAgentRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceRecordRepairOutcomeHandler := connect.NewUnaryHandler(
+		HostServiceRecordRepairOutcomeProcedure,
+		svc.RecordRepairOutcome,
+		connect.WithSchema(hostServiceMethods.ByName("RecordRepairOutcome")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.HostService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HostServiceListOpenPRsProcedure:
@@ -348,6 +383,8 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceStartAgentRunHandler.ServeHTTP(w, r)
 		case HostServiceWaitAgentRunProcedure:
 			hostServiceWaitAgentRunHandler.ServeHTTP(w, r)
+		case HostServiceRecordRepairOutcomeProcedure:
+			hostServiceRecordRepairOutcomeHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -395,4 +432,8 @@ func (UnimplementedHostServiceHandler) StartAgentRun(context.Context, *connect.R
 
 func (UnimplementedHostServiceHandler) WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.WaitAgentRun is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.RecordRepairOutcome is not implemented"))
 }

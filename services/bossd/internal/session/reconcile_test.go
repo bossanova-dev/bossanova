@@ -180,6 +180,9 @@ func (m *reconcileMockSessionStore) UpdateStateConditional(_ context.Context, _ 
 func (m *reconcileMockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }
+func (m *reconcileMockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
+	return nil
+}
 
 // --- Tests ---
 

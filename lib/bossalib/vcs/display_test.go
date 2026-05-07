@@ -67,6 +67,40 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus: DisplayStatusFailing,
 		},
 		{
+			// Real-world case from PR #234: 3 successful jobs and one
+			// CANCELLED job (a sibling job in the same workflow failed
+			// first). Previously we treated CANCELLED as benign and the
+			// PR showed as passing — invisible to repair. Treat it as a
+			// failure so repair fires.
+			name: "cancelled check is treated as failure",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionCancelled)},
+			},
+			wantStatus: DisplayStatusFailing,
+		},
+		{
+			name: "timed-out check is treated as failure",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionTimedOut)},
+			},
+			wantStatus: DisplayStatusFailing,
+		},
+		{
+			name: "neutral and skipped do NOT count as failures",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionNeutral)},
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSkipped)},
+			},
+			wantStatus: DisplayStatusPassing,
+		},
+		{
 			name: "checks running, none failed yet",
 			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
 			checks: []CheckResult{

@@ -299,35 +299,215 @@ func TestPollerPollTimeoutBoundsHungProvider(t *testing.T) {
 	}
 }
 
-func TestPollerSkipsNonAwaitingChecks(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	logger := zerolog.Nop()
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:        "repo-1",
-		OriginURL: "owner/repo",
+func TestPollerSkipsNonPollableStates(t *testing.T) {
+	// Pre-PR and terminal-ish states must never be polled — there is no PR
+	// to ask about, or the lifecycle has moved past CI/review (Finalizing,
+	// Blocked, Merged, Closed). ImplementingPlan is the canonical pre-PR
+	// case; the rest follow from the same filter.
+	skipStates := []machine.State{
+		machine.CreatingWorktree,
+		machine.StartingAgent,
+		machine.ImplementingPlan,
+		machine.PushingBranch,
+		machine.OpeningDraftPR,
+		machine.Finalizing,
+		machine.Blocked,
 	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:     "sess-1",
-		RepoID: "repo-1",
-		State:  machine.ImplementingPlan, // Not AwaitingChecks.
+	for _, st := range skipStates {
+		t.Run(st.String(), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			logger := zerolog.Nop()
+
+			prNum := 42
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:       "sess-1",
+				RepoID:   "repo-1",
+				State:    st,
+				PRNumber: &prNum,
+			}
+			mergeable := false
+			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable}
+
+			poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
+			ch := poller.Run(ctx)
+
+			select {
+			case ev := <-ch:
+				if ev.Event != nil {
+					t.Errorf("unexpected event from %s: %T", st, ev.Event)
+				}
+			case <-ctx.Done():
+				// Expected — no events.
+			}
+		})
+	}
+}
+
+// TestPollerEmitsConflictDetectedFromPollableStates verifies the poller
+// catches conflicts that appear after checks have passed (GreenDraft /
+// ReadyForReview). Without this, conflicts that surface post-AwaitingChecks
+// leave the session stuck — the display poller updates display_status but
+// the state machine never advances to FixingChecks because no event is
+// emitted.
+//
+// FixingChecks is intentionally not in this set: see
+// TestFixingChecksRejectsConflictDetected (state machine) and
+// TestPollerSkipsConflictDetectedFromFixingChecks (poller). Re-emitting
+// from FixingChecks would self-transition and inflate AttemptCount on
+// every poll cycle.
+func TestPollerEmitsConflictDetectedFromPollableStates(t *testing.T) {
+	pollableNonAwaiting := []machine.State{
+		machine.GreenDraft,
+		machine.ReadyForReview,
+	}
+	for _, st := range pollableNonAwaiting {
+		t.Run(st.String(), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			logger := zerolog.Nop()
+
+			prNum := 42
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:       "sess-1",
+				RepoID:   "repo-1",
+				State:    st,
+				PRNumber: &prNum,
+			}
+			mergeable := false
+			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable}
+
+			poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
+			ch := poller.Run(ctx)
+
+			select {
+			case ev := <-ch:
+				if _, ok := ev.Event.(vcs.ConflictDetected); !ok {
+					t.Errorf("event type from %s = %T, want ConflictDetected", st, ev.Event)
+				}
+			case <-ctx.Done():
+				t.Fatalf("timed out waiting for ConflictDetected from %s", st)
+			}
+		})
+	}
+}
+
+// TestPollerSkipsEventsNotPermittedByState pins the dispatcher-vs-poller
+// invariant: the poller must never emit an event the state machine cannot
+// fire. Otherwise the dispatcher logs "fire X failed" on every poll cycle
+// (~2min default) and, for self-transitions like ConflictDetected from
+// FixingChecks, also inflates AttemptCount until the session is Blocked.
+//
+// Each subtest sets up a session in a state where the candidate event is
+// NOT permitted, configures the mock provider to surface the corresponding
+// PR signal, and asserts the poller channel receives nothing.
+func TestPollerSkipsEventsNotPermittedByState(t *testing.T) {
+	tests := []struct {
+		name      string
+		state     machine.State
+		setupVCS  func(*mockVCSProvider)
+		eventDesc string
+	}{
+		{
+			name:  "GreenDraft+passing checks does not emit ChecksPassed",
+			state: machine.GreenDraft,
+			setupVCS: func(vp *mockVCSProvider) {
+				success := vcs.CheckConclusionSuccess
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen}
+				vp.nextCheckResults = []vcs.CheckResult{
+					{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+				}
+			},
+			eventDesc: "ChecksPassed (not permitted from GreenDraft)",
+		},
+		{
+			name:  "ReadyForReview+passing checks does not emit ChecksPassed",
+			state: machine.ReadyForReview,
+			setupVCS: func(vp *mockVCSProvider) {
+				success := vcs.CheckConclusionSuccess
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen}
+				vp.nextCheckResults = []vcs.CheckResult{
+					{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+				}
+			},
+			eventDesc: "ChecksPassed (not permitted from ReadyForReview)",
+		},
+		{
+			name:  "FixingChecks+conflict does not re-emit ConflictDetected",
+			state: machine.FixingChecks,
+			setupVCS: func(vp *mockVCSProvider) {
+				mergeable := false
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable}
+			},
+			eventDesc: "ConflictDetected (would inflate AttemptCount on every poll)",
+		},
+		{
+			name:  "FixingChecks+passing checks does not emit ChecksPassed",
+			state: machine.FixingChecks,
+			setupVCS: func(vp *mockVCSProvider) {
+				success := vcs.CheckConclusionSuccess
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen}
+				vp.nextCheckResults = []vcs.CheckResult{
+					{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+				}
+			},
+			eventDesc: "ChecksPassed (FIX_COMPLETE is the legitimate exit, not poll observation)",
+		},
+		{
+			name:  "FixingChecks+failing checks does not re-emit ChecksFailed",
+			state: machine.FixingChecks,
+			setupVCS: func(vp *mockVCSProvider) {
+				failure := vcs.CheckConclusionFailure
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen}
+				vp.nextCheckResults = []vcs.CheckResult{
+					{Status: vcs.CheckStatusCompleted, Conclusion: &failure},
+				}
+			},
+			eventDesc: "ChecksFailed (not permitted from FixingChecks)",
+		},
 	}
 
-	poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
-	ch := poller.Run(ctx)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
 
-	// Should not receive any events.
-	select {
-	case ev := <-ch:
-		if ev.Event != nil {
-			t.Errorf("unexpected event: %T", ev.Event)
-		}
-	case <-ctx.Done():
-		// Expected — no events.
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			logger := zerolog.Nop()
+
+			prNum := 42
+			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:       "sess-1",
+				RepoID:   "repo-1",
+				State:    tt.state,
+				PRNumber: &prNum,
+			}
+			tt.setupVCS(vp)
+
+			poller := NewPoller(sessions, repos, vp, 25*time.Millisecond, DefaultPollTimeout, logger)
+			ch := poller.Run(ctx)
+
+			select {
+			case ev := <-ch:
+				if ev.Event != nil {
+					t.Errorf("emitted unexpected %T from %s; want no emission for %s", ev.Event, tt.state, tt.eventDesc)
+				}
+			case <-ctx.Done():
+				// Expected — no events.
+			}
+		})
 	}
 }

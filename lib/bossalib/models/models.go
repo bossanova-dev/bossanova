@@ -71,6 +71,21 @@ type Session struct {
 	DisplayLabel   string
 	DisplayIntent  int32
 	DisplaySpinner bool
+
+	// Last repair-attempt diagnostics, persisted by the repair plugin via
+	// HostService.RecordRepairOutcome. Both error fields are empty for clean
+	// runs; RunnerError means StartAgentRun never produced a process (eg.
+	// claude not on PATH); ExitError means the agent ran but exited non-zero
+	// or was signalled. LastRepairAttemptCount is a *consecutive-failure*
+	// tally — clean runs reset it to zero, failed runs increment it — which
+	// is what the TUI renders as "(3×)" so the suffix doesn't overstate
+	// fail → succeed → fail sequences. LastRepairStartedAt is the
+	// "an attempt has been recorded" sentinel; it stays nil until the
+	// repair plugin runs for the first time on this session.
+	LastRepairStartedAt    *time.Time
+	LastRepairRunnerError  string
+	LastRepairExitError    string
+	LastRepairAttemptCount int
 }
 
 // Attempt represents a fix attempt within a session.
@@ -105,6 +120,7 @@ const (
 	TaskMappingStatusCompleted                           // Successfully completed
 	TaskMappingStatusFailed                              // Failed (session failed, merge rejected, etc.)
 	TaskMappingStatusSkipped                             // Skipped (e.g. previously-rejected)
+	TaskMappingStatusOrphaned                            // Driving goroutine died (e.g. daemon restart); eligible for re-pickup
 )
 
 // TaskMapping tracks the relationship between an external task (e.g. a

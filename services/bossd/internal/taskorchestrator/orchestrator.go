@@ -243,18 +243,36 @@ func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, re
 func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
 	externalID := task.GetExternalId()
 
-	// Dedup: skip if we've already seen this external ID. All statuses
-	// (including Failed) are terminal — a failed task is not retried
-	// automatically. This prevents FailOrphanedMappings (which marks
-	// all in-progress mappings as Failed on daemon restart) from
-	// triggering infinite session re-creation.
+	// Dedup: skip if we've already seen this external ID. Most statuses
+	// (Pending/InProgress/Completed/Failed/Skipped) are terminal — a
+	// failed or completed task is not retried automatically, so we don't
+	// re-fire rejected merges or previously-rejected libraries every poll.
+	//
+	// Orphaned is the one exception: FailOrphanedMappings flips
+	// Pending/InProgress to Orphaned on daemon restart because the
+	// driving goroutines died. Those tasks deserve another shot, so we
+	// delete the stale row and let routeTask insert a fresh one. The row
+	// must be deleted (not updated) because external_id is UNIQUE.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
 	if err == nil && existing != nil {
+		if existing.Status != models.TaskMappingStatusOrphaned {
+			o.logger.Info().
+				Str("external_id", externalID).
+				Int("status", int(existing.Status)).
+				Msg("task already tracked, skipping")
+			return
+		}
+		if delErr := o.taskMappings.Delete(ctx, existing.ID); delErr != nil {
+			o.logger.Error().Err(delErr).
+				Str("external_id", externalID).
+				Str("mapping_id", existing.ID).
+				Msg("failed to delete orphaned task mapping; skipping this poll")
+			return
+		}
 		o.logger.Info().
 			Str("external_id", externalID).
-			Int("status", int(existing.Status)).
-			Msg("task already tracked, skipping")
-		return
+			Str("mapping_id", existing.ID).
+			Msg("re-processing previously orphaned task")
 	}
 
 	o.enqueue(ctx, task, repo, pluginName)
@@ -483,8 +501,13 @@ func (o *Orchestrator) recoverStaleTasks(ctx context.Context) {
 		}
 
 		switch mapping.Status {
-		case models.TaskMappingStatusCompleted, models.TaskMappingStatusFailed, models.TaskMappingStatusSkipped:
-			// Already terminal — clear active state and advance.
+		case models.TaskMappingStatusCompleted, models.TaskMappingStatusFailed, models.TaskMappingStatusSkipped, models.TaskMappingStatusOrphaned:
+			// Terminal-from-this-loop's-perspective: clear active state and
+			// advance. Orphaned shouldn't normally be in activeMapping (the
+			// status is set by FailOrphanedMappings at boot, before this map
+			// is populated), but if it ever is, treat the slot as freed —
+			// the next poll will re-pick the task via processTask's
+			// orphan-aware path.
 			o.logger.Info().
 				Str("repo", repoID).
 				Str("mapping", mappingID).

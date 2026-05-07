@@ -62,13 +62,13 @@ The following environment variables are available to the setup script:
 
 | Variable | Description |
 |---|---|
-| `BOSS_REPO_DIR` | Path to the main git repository (the original clone) |
-| `BOSS_WORKTREE_DIR` | Path to the worktree being set up |
+| `REPO_DIR` | Path to the main git repository (the original clone) |
+| `WORKTREE_DIR` | Path to the worktree being set up |
 
 These let you reference files in the main repo without hardcoding paths. For example, to copy an `.env` file into each new worktree:
 
 ```bash
-boss repo update my-repo --setup-script 'cp "$BOSS_REPO_DIR/.env" "$BOSS_WORKTREE_DIR/.env" && npm install'
+boss repo update my-repo --setup-script 'cp "$REPO_DIR/.env" "$WORKTREE_DIR/.env" && npm install'
 ```
 
 ## Configuration

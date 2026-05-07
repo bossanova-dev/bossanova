@@ -49,6 +49,13 @@ service HostService {
   // error message (empty on clean exit).
   rpc WaitAgentRun(WaitAgentRunHostRequest) returns (WaitAgentRunHostResponse);
 
+  // RecordRepairOutcome persists the result of a repair attempt onto the
+  // session row so the TUI can surface "last repair: claude not in PATH (3×)"
+  // hints alongside the existing display status. Called by the repair
+  // plugin's deferred cleanup so every attempt — clean exit, agent error,
+  // or runner-level failure — leaves a structured trace in SQLite that
+  // outlives the in-memory cooldowns map.
+  rpc RecordRepairOutcome(RecordRepairOutcomeRequest) returns (RecordRepairOutcomeResponse);
 }
 
 // --- ListOpenPRs ---
@@ -171,4 +178,22 @@ message WaitAgentRunHostResponse {
   // Empty on clean exit, otherwise the agent's exit error string.
   string exit_error = 1;
 }
+
+// --- RecordRepairOutcome ---
+
+message RecordRepairOutcomeRequest {
+  string session_id = 1;
+  // Wall-clock time of the StartAgentRun that drove this attempt.
+  int64 started_at_unix = 2;
+  // Non-empty when the daemon's StartAgentRun / claude plugin runner
+  // refused to spawn (eg. "claude not on PATH"). Mutually exclusive with
+  // exit_error in practice.
+  string runner_error = 3;
+  // Non-empty when the agent ran but exited non-zero / signalled.
+  string exit_error = 4;
+  // Agent-side session ID, useful for cross-referencing the agent log.
+  string agent_session_id = 5;
+}
+
+message RecordRepairOutcomeResponse {}
 

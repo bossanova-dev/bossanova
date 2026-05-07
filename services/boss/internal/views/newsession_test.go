@@ -195,6 +195,12 @@ func (s *stubClient) DeleteCronJob(context.Context, string) error { panic("unuse
 func (s *stubClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
+func (s *stubClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
+	panic("unused")
+}
+func (s *stubClient) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
+	panic("unused")
+}
 
 // --- Helpers ---
 

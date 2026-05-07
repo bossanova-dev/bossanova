@@ -109,21 +109,21 @@ deps:
 
 ## setup-worktree: Copy .env from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
-	@if [ -z "$$BOSS_REPO_DIR" ] || [ -z "$$BOSS_WORKTREE_DIR" ]; then \
-		echo "setup-worktree must be invoked by bossanova (BOSS_REPO_DIR and BOSS_WORKTREE_DIR required)"; \
+	@if [ -z "$$REPO_DIR" ] || [ -z "$$WORKTREE_DIR" ]; then \
+		echo "setup-worktree must be invoked by bossanova (REPO_DIR and WORKTREE_DIR required)"; \
 		exit 1; \
 	fi
-	@if [ -f "$$BOSS_REPO_DIR/.env" ]; then \
-		cp "$$BOSS_REPO_DIR/.env" "$$BOSS_WORKTREE_DIR/.env"; \
-		echo "Copied .env into $$BOSS_WORKTREE_DIR"; \
+	@if [ -f "$$REPO_DIR/.env" ]; then \
+		cp "$$REPO_DIR/.env" "$$WORKTREE_DIR/.env"; \
+		echo "Copied .env into $$WORKTREE_DIR"; \
 	else \
-		echo "No .env in $$BOSS_REPO_DIR — skipping"; \
+		echo "No .env in $$REPO_DIR — skipping"; \
 	fi
-	@if [ -f "$$BOSS_REPO_DIR/.node-version" ]; then \
-		cp "$$BOSS_REPO_DIR/.node-version" "$$BOSS_WORKTREE_DIR/.node-version"; \
-		echo "Copied .node-version into $$BOSS_WORKTREE_DIR"; \
+	@if [ -f "$$REPO_DIR/.node-version" ]; then \
+		cp "$$REPO_DIR/.node-version" "$$WORKTREE_DIR/.node-version"; \
+		echo "Copied .node-version into $$WORKTREE_DIR"; \
 	else \
-		echo "No .node-version in $$BOSS_REPO_DIR — skipping"; \
+		echo "No .node-version in $$REPO_DIR — skipping"; \
 	fi
 	direnv allow
 

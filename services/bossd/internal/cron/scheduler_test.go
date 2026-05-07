@@ -230,6 +230,9 @@ func (f *fakeSessionStore) UpdateStateConditional(_ context.Context, _ string, _
 func (f *fakeSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	panic("not used")
 }
+func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
+	panic("not used")
+}
 
 // fakeCreator is a SessionCreator mock. Each call optionally blocks on a
 // gate (for concurrency-cap tests) and can be configured to error.

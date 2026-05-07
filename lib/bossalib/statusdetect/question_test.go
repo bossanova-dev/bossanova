@@ -290,6 +290,121 @@ func TestHasQuestionPrompt(t *testing.T) {
 				"  Opus 4.7 | Context: 89% remaining\n",
 			want: true,
 		},
+		{
+			// Pattern 0 (long-body AskUserQuestion): ☐ header and the literal
+			// "?" sit ABOVE the 30-line tail because the body (ELI10, Stakes,
+			// Recommendation, Pros/cons A/B/C) is verbose. Detection has to
+			// fall back on the structural footer signal -- the "Type something."
+			// and "Chat about this" numbered options that terminate every
+			// AskUserQuestion UI.
+			name: "long-body AskUserQuestion: image bar visibility",
+			data: "\n" +
+				"  ---\n" +
+				"  1. Architecture Review\n" +
+				"\n" +
+				strings.Repeat("─", 200) + "\n" +
+				" ☐ Visibility\n" +
+				"\n" +
+				"Project: WonderCanvas. WON-392 leaves one design decision open: when does the percentage appear on the purple image bar?\n" +
+				"\n" +
+				"ELI10: Imagine a sticker on the corner of a photo telling you how big it is compared to the original.\n" +
+				"\n" +
+				"Stakes if we pick wrong: too noisy clutters every selected image; too hidden means production users won't see it during a resize.\n" +
+				"\n" +
+				"Recommendation: A (always-on while chrome is visible). Matches the existing chrome contract.\n" +
+				"\n" +
+				"Completeness: A=9/10, B=6/10, C=7/10.\n" +
+				"\n" +
+				"Pros / cons:\n" +
+				"\n" +
+				"A) Always visible whenever chrome is visible (recommended)\n" +
+				"  ✅ Zero new visibility logic — reuses existing showChrome gate\n" +
+				"  ✅ Always informative during a resize drag\n" +
+				"  ❌ Shows '100%' on every freshly-spawned image\n" +
+				"\n" +
+				"B) Show only on hover over the bar (not on selection)\n" +
+				"  ✅ Quietest — no extra text on a normally-selected image\n" +
+				"  ❌ Defeats the actual use case during resize\n" +
+				"  ❌ Adds a new visibility rule that doesn't exist for the name strip\n" +
+				"\n" +
+				"C) Show only when scale ≠ 100%\n" +
+				"  ✅ Zero noise when image is at native size\n" +
+				"  ❌ '100%' is a useful checkpoint — hiding it makes verification harder\n" +
+				"  ❌ Threshold logic is a small new correctness surface\n" +
+				"\n" +
+				"Net: A is the boring-by-default choice and serves the resize-drag use case Imagica actually flagged.\n" +
+				"\n" +
+				"❯ 1. Always visible when chrome is\n" +
+				"     Show percentage whenever the purple image bar is showing. Reuses existing showChrome gate. Recommended.\n" +
+				"  2. Only on hover over the bar\n" +
+				"     Hide by default, show only when the user hovers the bar itself.\n" +
+				"  3. Only when scale ≠ 100%\n" +
+				"     Hide at native size, show only when the image has actually been resized.\n" +
+				"  4. Type something.\n" +
+				strings.Repeat("─", 200) + "\n" +
+				"  5. Chat about this\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: true,
+		},
+		{
+			// Pattern 0: long-body AskUserQuestion with NO literal "?" anywhere
+			// in the visible content -- the question is implied by the ☐ header
+			// title alone. Pattern 1's "?" gate, Pattern 2's "?" requirement,
+			// and Pattern 4's trailing-? all miss; Pattern 3 short-circuits to
+			// false because of the leading ⏺ marker. Only the structural
+			// footer signal (Type something. + Chat about this) catches it.
+			name: "long-body AskUserQuestion with no ? in tail",
+			data: "⏺ Important pushback. The user is questioning whether we need a format menu at all — the existing code already prefers originalS3Key (PNG/JPEG) before falling back to WebP. That changes the whole scope.\n" +
+				strings.Repeat("─", 200) + "\n" +
+				" ☐ Format strategy\n" +
+				"\n" +
+				"D2 (revised) — Format strategy: explicit menu vs auto-original.\n" +
+				"\n" +
+				"ELI10: You're right to push on this. The current handleDownload already prefers originalS3Key.\n" +
+				"\n" +
+				"Stakes if we pick wrong: pick A and 'Save As' means only picking the location.\n" +
+				"\n" +
+				"Recommendation: A. Honors your instinct and matches the actual user pain.\n" +
+				"\n" +
+				"Completeness: A=8/10, B=10/10, C=6/10\n" +
+				"\n" +
+				"Pros / cons:\n" +
+				"\n" +
+				"A) Auto-original + save-location picker only — no format menu (recommended)\n" +
+				"  ✅ Honors the existing originalS3Key-first behavior\n" +
+				"  ✅ 'Save As' becomes a single, focused feature\n" +
+				"  ✅ Smallest possible diff\n" +
+				"  ❌ Edge case: if originalS3Key is missing, user gets WebP\n" +
+				"  ❌ Doesn't fully hit Linear AC text 'select format and/or save location'\n" +
+				"\n" +
+				"B) Auto-original by default + small menu offering format override\n" +
+				"  ✅ Default click = save in original format with location picker\n" +
+				"  ✅ Menu with 'Save as PNG / JPEG / WebP / Original' available\n" +
+				"  ✅ Hits Linear AC fully\n" +
+				"  ❌ More UI to build\n" +
+				"  ❌ Format menu is dead weight 90% of the time\n" +
+				"\n" +
+				"C) Format menu, no save-location\n" +
+				"  ✅ Simpler than B\n" +
+				"  ❌ Doesn't address what you actually asked\n" +
+				"  ❌ Misses the 'save location' half of the Linear AC entirely\n" +
+				"\n" +
+				"Net: If 'save-location' is the real user pain, A is the cleanest.\n" +
+				"\n" +
+				"❯ 1. A) Auto-original + location picker only (recommended)\n" +
+				"     Keep originalS3Key behavior. 'Save As' = pick where to save. No format menu.\n" +
+				"  2. B) Auto-original default + format override menu\n" +
+				"     Default = original format. Menu lets power-users override.\n" +
+				"  3. C) Format menu only, no location picker\n" +
+				"     Original D2 answer — PNG/JPEG/WebP menu, no save-location.\n" +
+				"  4. Type something.\n" +
+				strings.Repeat("─", 200) + "\n" +
+				"  5. Chat about this\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -385,6 +500,36 @@ func TestHasQuestionPrompt_InterruptedToolCall(t *testing.T) {
 				tail := LastNLines(clean, 30)
 				t.Errorf("should NOT detect question for interrupted tool call\n  clean: %q\n  tail: %q",
 					string(clean), string(tail))
+			}
+		})
+	}
+}
+
+func TestHasQuestionPrompt_FooterPhrasesInProse(t *testing.T) {
+	// The Pattern 0 fast-path keys on "Type something." and "Chat about this"
+	// as numbered option lines. Prose containing the same phrases mid-sentence
+	// must NOT trigger detection -- only the indented numbered-option shape
+	// counts.
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "phrases mid-sentence, not numbered options",
+			data: "⏺ Here's how the picker works. You can Type something. or Chat about this in the prompt.\n",
+		},
+		{
+			name: "phrases at column 0 (no leading indent)",
+			data: "⏺ Steps below:\n" +
+				"\n" +
+				"1. Type something.\n" +
+				"2. Chat about this\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if HasQuestionPrompt([]byte(tt.data)) {
+				t.Errorf("should NOT detect question when footer phrases appear as prose, not as indented numbered options")
 			}
 		})
 	}

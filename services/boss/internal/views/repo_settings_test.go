@@ -240,3 +240,9 @@ func (s *stubRepoClient) DeleteCronJob(context.Context, string) error { panic("u
 func (s *stubRepoClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {
 	panic("unused")
 }
+func (s *stubRepoClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
+	panic("unused")
+}

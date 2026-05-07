@@ -126,18 +126,22 @@ func (s *SQLiteTaskMappingStore) Get(ctx context.Context, id string) (*models.Ta
 	return scanTaskMapping(row)
 }
 
-// FailOrphanedMappings marks all Pending/InProgress task mappings as Failed.
-// This is a startup cleanup to recover from a previous daemon crash where
-// tasks were left in non-terminal states with no driving goroutine.
+// FailOrphanedMappings marks all Pending/InProgress task mappings as
+// Orphaned. This is a startup cleanup to recover from a previous daemon
+// crash where tasks were left in non-terminal states with no driving
+// goroutine. Orphaned (vs Failed) signals to the orchestrator that the
+// task was never actually rejected — just stranded by the restart — so
+// the next poll cycle should re-pick it up. See processTask for the
+// re-processing path.
 func (s *SQLiteTaskMappingStore) FailOrphanedMappings(ctx context.Context) (int64, error) {
 	now := sqlutil.TimeNow()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE task_mappings SET status = ?, updated_at = ? WHERE status IN (?, ?)`,
-		int(models.TaskMappingStatusFailed), now,
+		int(models.TaskMappingStatusOrphaned), now,
 		int(models.TaskMappingStatusPending), int(models.TaskMappingStatusInProgress),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("fail orphaned task mappings: %w", err)
+		return 0, fmt.Errorf("orphan in-progress task mappings: %w", err)
 	}
 	return res.RowsAffected()
 }

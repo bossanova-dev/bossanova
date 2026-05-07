@@ -130,8 +130,8 @@ func validateScriptPath(p string) error {
 
 // ExecuteOpts plumbs execution context into Execute.
 type ExecuteOpts struct {
-	RepoPath     string        // main repo path; exposed as BOSS_REPO_DIR
-	WorktreePath string        // worktree path; exposed as BOSS_WORKTREE_DIR
+	RepoPath     string        // main repo path; exposed as REPO_DIR
+	WorktreePath string        // worktree path; exposed as WORKTREE_DIR
 	Output       io.Writer     // stdout + stderr sink; nil → os.Stderr
 	Timeout      time.Duration // overall timeout; zero → no additional deadline
 	// Warn is called exactly once on legacy-script execution with a
@@ -167,8 +167,8 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
 	}
 	cmd.Dir = opts.WorktreePath
 	cmd.Env = append(os.Environ(),
-		"BOSS_REPO_DIR="+opts.RepoPath,
-		"BOSS_WORKTREE_DIR="+opts.WorktreePath,
+		"REPO_DIR="+opts.RepoPath,
+		"WORKTREE_DIR="+opts.WorktreePath,
 	)
 	cmd.Stdout = output
 	cmd.Stderr = output

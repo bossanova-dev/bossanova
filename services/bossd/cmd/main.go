@@ -351,6 +351,13 @@ func run(opts runOpts) error {
 		sessions, repos, ghProvider, displayTracker,
 		settings.DisplayPollInterval(), log.Logger,
 	)
+	// Persist every poll's check list so `boss session checks <id>` can show
+	// the daemon's view of CI history. Disk volume is bounded by poll
+	// interval × active sessions and is fine for ops debugging. The same
+	// store is shared with the gRPC server below so reads and writes hit
+	// one instance.
+	checkSnapshots := db.NewCheckSnapshotStore(database)
+	displayPoller.SetSnapshotStore(checkSnapshots)
 
 	// --- Plugin Host ---
 
@@ -485,35 +492,59 @@ func run(opts runOpts) error {
 		}()
 	}
 
-	// Auto-start repair plugin workflows if available
-	trackedGo(func() {
+	// Auto-start the repair plugin synchronously. If the plugin is loaded
+	// but its StartWorkflow fails, the daemon refuses to start: silently
+	// continuing leaves auto-repair stopped (m.stopped=true) so every
+	// subsequent NotifyStatusChange is dropped, which is exactly the
+	// silent-fail mode that produced the empty repair-*.log files we found
+	// on disk during the diagnose-first pass.
+	//
+	// GetInfo errors on individual plugins are tolerated (logged) so a
+	// misbehaving non-repair workflow plugin can't gate the daemon.
+	// Operators running without a repair plugin still get a healthy
+	// daemon — auto-repair is opt-in by binary presence — but they get a
+	// loud warning so the disabled state is visible.
+	{
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
+		var repairFound bool
 		for _, svc := range pluginHost.GetWorkflowServices() {
 			infoResp, err := svc.GetInfo(ctx)
 			if err != nil {
-				log.Warn().Err(err).Msg("failed to get plugin info for auto-start")
+				log.Warn().Err(err).Msg("failed to get workflow plugin info; skipping for auto-start")
 				continue
 			}
 			if infoResp == nil {
-				log.Warn().Msg("plugin returned nil info for auto-start")
+				log.Warn().Msg("workflow plugin returned nil info; skipping for auto-start")
 				continue
 			}
-
-			// Auto-start repair plugin
-			if infoResp.Name == "repair" {
-				log.Info().Str("plugin_name", infoResp.Name).Msg("auto-starting repair plugin")
-				repairCfgJSON, _ := json.Marshal(settings.Repair)
-				_, err := svc.StartWorkflow(ctx, &bossanovav1.StartWorkflowRequest{
-					ConfigJson: string(repairCfgJSON),
-				})
-				if err != nil {
-					log.Warn().Err(err).Str("plugin_name", infoResp.Name).Msg("failed to auto-start repair plugin")
-				}
+			if infoResp.Name != "repair" {
+				continue
 			}
+			repairFound = true
+			repairCfgJSON, err := json.Marshal(settings.Repair)
+			if err != nil {
+				cancel()
+				return fmt.Errorf("marshal repair settings: %w", err)
+			}
+			log.Info().Str("plugin_name", infoResp.Name).Msg("auto-starting repair plugin")
+			if _, err := svc.StartWorkflow(ctx, &bossanovav1.StartWorkflowRequest{
+				ConfigJson: string(repairCfgJSON),
+			}); err != nil {
+				cancel()
+				return fmt.Errorf("auto-start repair plugin: %w", err)
+			}
+			log.Info().
+				Str("plugin_name", infoResp.Name).
+				Int("cooldown_minutes", settings.Repair.CooldownMinutes).
+				Int("sweep_interval_minutes", settings.Repair.SweepIntervalMinutes).
+				Int("idle_repair_threshold_minutes", settings.Repair.IdleRepairThresholdMinutes).
+				Msg("repair plugin running")
 		}
-	})
+		cancel()
+		if !repairFound {
+			log.Warn().Msg("no repair plugin loaded; auto-repair is disabled until a bossd-plugin-repair binary is installed")
+		}
+	}
 
 	// --- Task Orchestrator ---
 
@@ -908,6 +939,7 @@ func run(opts runOpts) error {
 		AgentChats:         agentChats,
 		Workflows:          workflows,
 		CronJobs:           cronJobs,
+		CheckSnapshots:     checkSnapshots,
 		CronScheduler:      cronScheduler,
 		ChatStatus:         chatStatusTracker,
 		DisplayTracker:     displayTracker,

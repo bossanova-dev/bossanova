@@ -104,6 +104,9 @@ func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Sess
 func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _, _ int) (bool, error) {
 	return false, nil
 }
+func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
+	return nil
+}
 
 // --- mock tmux command factory ---
 // Uses scripts that write to temp files to simulate tmux has-session and capture-pane.

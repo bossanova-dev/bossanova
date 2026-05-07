@@ -84,6 +84,21 @@ service DaemonService {
   // RunCronJobNow fires a cron job immediately, ignoring its schedule.
   // Subject to the same overlap and concurrency-cap rules as scheduled fires.
   rpc RunCronJobNow(RunCronJobNowRequest) returns (RunCronJobNowResponse);
+
+  // --- Repair Diagnostics ---
+
+  // RepairDoctor returns a structured health report for the auto-repair
+  // pipeline: which plugins are loaded, whether the workflow is running,
+  // whether `claude` is on the daemon's PATH, and a summary of recent
+  // repair attempts. Surfaced via `boss repair doctor`.
+  rpc RepairDoctor(RepairDoctorRequest) returns (RepairDoctorResponse);
+
+  // ListCheckSnapshots returns the daemon's per-poll record of what it
+  // saw for a session's CI checks plus the DisplayStatus it computed.
+  // Surfaced via `boss session checks <id>` so the operator can answer
+  // "why does the TUI think this PR is passing when GitHub says
+  // failing?" without re-running `gh pr checks` by hand.
+  rpc ListCheckSnapshots(ListCheckSnapshotsRequest) returns (ListCheckSnapshotsResponse);
 }
 
 // --- Context Resolution ---
@@ -549,4 +564,59 @@ message RunCronJobNowResponse {
   optional Session session = 1;
   // Reason the fire was skipped, when session is unset.
   string skipped_reason = 2;
+}
+
+// --- Repair Diagnostics ---
+
+message RepairDoctorRequest {}
+
+// RepairDoctorCheck is one entry in the structured health report. Each check
+// has a stable name (so the CLI can render it in a fixed order with
+// per-check formatting), a pass/fail bit, and a free-form detail string
+// the operator reads to diagnose the failure.
+message RepairDoctorCheck {
+  string name = 1;
+  bool ok = 2;
+  string detail = 3;
+}
+
+message RepairDoctorResponse {
+  // The checks, in the order they should be displayed.
+  repeated RepairDoctorCheck checks = 1;
+  // Recent agent-log files the daemon found in the agent-logs dir, sorted
+  // newest-first. The CLI shows size, mtime and the head line so the
+  // operator can spot empty logs (which Phase 1a forbids) at a glance.
+  repeated RepairLogSnapshot recent_logs = 2;
+}
+
+message RepairLogSnapshot {
+  string path = 1;
+  int64 size_bytes = 2;
+  google.protobuf.Timestamp modified_at = 3;
+  // First text line of the file, or empty if the file is 0 bytes. With
+  // Phase 1a this should always start with "[runner] spawning claude".
+  string head_line = 4;
+}
+
+// --- Check Snapshots ---
+
+message ListCheckSnapshotsRequest {
+  string session_id = 1;
+  // Number of snapshots to return, newest-first. Defaults to 10 when
+  // unset or zero.
+  int32 limit = 2;
+}
+
+message CheckSnapshot {
+  google.protobuf.Timestamp polled_at = 1;
+  string head_sha = 2;
+  // Raw JSON of the parsed []vcs.CheckResult slice the DisplayPoller
+  // fed into ComputeDisplayStatus. The CLI renders this verbatim.
+  string raw_json = 3;
+  // The DisplayStatus enum int the poller resolved for this snapshot.
+  DisplayStatus computed_status = 4;
+}
+
+message ListCheckSnapshotsResponse {
+  repeated CheckSnapshot snapshots = 1;
 }

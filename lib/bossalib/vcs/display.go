@@ -61,8 +61,21 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 			hasRunning = true
 			continue
 		}
-		if c.Conclusion != nil && *c.Conclusion == CheckConclusionFailure {
+		if c.Conclusion == nil {
+			continue
+		}
+		// Treat anything that completed but didn't pass cleanly as a
+		// failure for repair-trigger purposes. CANCELLED most commonly
+		// means "the workflow was cancelled because a sibling job failed
+		// first" — GitHub itself flags such PRs as mergeStateStatus
+		// UNSTABLE — and TIMED_OUT is unambiguously a failure to deliver
+		// a green check. NEUTRAL and SKIPPED stay non-failures: they
+		// signal "intentionally not run" and don't block.
+		switch *c.Conclusion {
+		case CheckConclusionFailure, CheckConclusionCancelled, CheckConclusionTimedOut:
 			hasFailed = true
+		case CheckConclusionSuccess, CheckConclusionNeutral, CheckConclusionSkipped:
+			// non-failures — explicit no-op to satisfy exhaustive linter
 		}
 	}
 

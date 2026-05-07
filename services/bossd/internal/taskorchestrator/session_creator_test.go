@@ -73,6 +73,10 @@ func (m *mockSessionStore) UpdateStateConditional(_ context.Context, _ string, _
 	return false, nil
 }
 
+func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
+	return nil
+}
+
 func (m *mockSessionStore) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }

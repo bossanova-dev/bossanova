@@ -82,6 +82,16 @@ func SessionToProto(s *models.Session) *pb.Session {
 	if s.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
 	}
+	// Last repair-attempt diagnostics, persisted by the repair plugin via
+	// HostService.RecordRepairOutcome. Forwarded here so `boss show <id>`
+	// and the TUI list view can surface "failing ⚠ repair: claude not in
+	// PATH (3×)" hints without an extra round trip.
+	p.LastRepairRunnerError = s.LastRepairRunnerError
+	p.LastRepairExitError = s.LastRepairExitError
+	p.LastRepairAttemptCount = int32(s.LastRepairAttemptCount)
+	if s.LastRepairStartedAt != nil {
+		p.LastRepairStartedAt = timestamppb.New(*s.LastRepairStartedAt)
+	}
 	return p
 }
 

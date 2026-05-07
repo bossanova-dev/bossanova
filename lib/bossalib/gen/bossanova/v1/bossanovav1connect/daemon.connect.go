@@ -150,6 +150,12 @@ const (
 	// DaemonServiceRunCronJobNowProcedure is the fully-qualified name of the DaemonService's
 	// RunCronJobNow RPC.
 	DaemonServiceRunCronJobNowProcedure = "/bossanova.v1.DaemonService/RunCronJobNow"
+	// DaemonServiceRepairDoctorProcedure is the fully-qualified name of the DaemonService's
+	// RepairDoctor RPC.
+	DaemonServiceRepairDoctorProcedure = "/bossanova.v1.DaemonService/RepairDoctor"
+	// DaemonServiceListCheckSnapshotsProcedure is the fully-qualified name of the DaemonService's
+	// ListCheckSnapshots RPC.
+	DaemonServiceListCheckSnapshotsProcedure = "/bossanova.v1.DaemonService/ListCheckSnapshots"
 )
 
 // DaemonServiceClient is a client for the bossanova.v1.DaemonService service.
@@ -214,6 +220,17 @@ type DaemonServiceClient interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
+	// RepairDoctor returns a structured health report for the auto-repair
+	// pipeline: which plugins are loaded, whether the workflow is running,
+	// whether `claude` is on the daemon's PATH, and a summary of recent
+	// repair attempts. Surfaced via `boss repair doctor`.
+	RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error)
+	// ListCheckSnapshots returns the daemon's per-poll record of what it
+	// saw for a session's CI checks plus the DisplayStatus it computed.
+	// Surfaced via `boss session checks <id>` so the operator can answer
+	// "why does the TUI think this PR is passing when GitHub says
+	// failing?" without re-running `gh pr checks` by hand.
+	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
 }
 
 // NewDaemonServiceClient constructs a client for the bossanova.v1.DaemonService service. By
@@ -467,6 +484,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 			connect.WithClientOptions(opts...),
 		),
+		repairDoctor: connect.NewClient[v1.RepairDoctorRequest, v1.RepairDoctorResponse](
+			httpClient,
+			baseURL+DaemonServiceRepairDoctorProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("RepairDoctor")),
+			connect.WithClientOptions(opts...),
+		),
+		listCheckSnapshots: connect.NewClient[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse](
+			httpClient,
+			baseURL+DaemonServiceListCheckSnapshotsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -512,6 +541,8 @@ type daemonServiceClient struct {
 	updateCronJob        *connect.Client[v1.UpdateCronJobRequest, v1.UpdateCronJobResponse]
 	deleteCronJob        *connect.Client[v1.DeleteCronJobRequest, v1.DeleteCronJobResponse]
 	runCronJobNow        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
+	repairDoctor         *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
+	listCheckSnapshots   *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -714,6 +745,16 @@ func (c *daemonServiceClient) RunCronJobNow(ctx context.Context, req *connect.Re
 	return c.runCronJobNow.CallUnary(ctx, req)
 }
 
+// RepairDoctor calls bossanova.v1.DaemonService.RepairDoctor.
+func (c *daemonServiceClient) RepairDoctor(ctx context.Context, req *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error) {
+	return c.repairDoctor.CallUnary(ctx, req)
+}
+
+// ListCheckSnapshots calls bossanova.v1.DaemonService.ListCheckSnapshots.
+func (c *daemonServiceClient) ListCheckSnapshots(ctx context.Context, req *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error) {
+	return c.listCheckSnapshots.CallUnary(ctx, req)
+}
+
 // DaemonServiceHandler is an implementation of the bossanova.v1.DaemonService service.
 type DaemonServiceHandler interface {
 	// Context resolution
@@ -776,6 +817,17 @@ type DaemonServiceHandler interface {
 	// RunCronJobNow fires a cron job immediately, ignoring its schedule.
 	// Subject to the same overlap and concurrency-cap rules as scheduled fires.
 	RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error)
+	// RepairDoctor returns a structured health report for the auto-repair
+	// pipeline: which plugins are loaded, whether the workflow is running,
+	// whether `claude` is on the daemon's PATH, and a summary of recent
+	// repair attempts. Surfaced via `boss repair doctor`.
+	RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error)
+	// ListCheckSnapshots returns the daemon's per-poll record of what it
+	// saw for a session's CI checks plus the DisplayStatus it computed.
+	// Surfaced via `boss session checks <id>` so the operator can answer
+	// "why does the TUI think this PR is passing when GitHub says
+	// failing?" without re-running `gh pr checks` by hand.
+	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
 }
 
 // NewDaemonServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -1025,6 +1077,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("RunCronJobNow")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceRepairDoctorHandler := connect.NewUnaryHandler(
+		DaemonServiceRepairDoctorProcedure,
+		svc.RepairDoctor,
+		connect.WithSchema(daemonServiceMethods.ByName("RepairDoctor")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListCheckSnapshotsHandler := connect.NewUnaryHandler(
+		DaemonServiceListCheckSnapshotsProcedure,
+		svc.ListCheckSnapshots,
+		connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.DaemonService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DaemonServiceResolveContextProcedure:
@@ -1107,6 +1171,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeleteCronJobHandler.ServeHTTP(w, r)
 		case DaemonServiceRunCronJobNowProcedure:
 			daemonServiceRunCronJobNowHandler.ServeHTTP(w, r)
+		case DaemonServiceRepairDoctorProcedure:
+			daemonServiceRepairDoctorHandler.ServeHTTP(w, r)
+		case DaemonServiceListCheckSnapshotsProcedure:
+			daemonServiceListCheckSnapshotsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1274,4 +1342,12 @@ func (UnimplementedDaemonServiceHandler) DeleteCronJob(context.Context, *connect
 
 func (UnimplementedDaemonServiceHandler) RunCronJobNow(context.Context, *connect.Request[v1.RunCronJobNowRequest]) (*connect.Response[v1.RunCronJobNowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RunCronJobNow is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) RepairDoctor(context.Context, *connect.Request[v1.RepairDoctorRequest]) (*connect.Response[v1.RepairDoctorResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.RepairDoctor is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListCheckSnapshots is not implemented"))
 }

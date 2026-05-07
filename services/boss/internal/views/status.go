@@ -70,7 +70,11 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 
 // renderDisplayStatus renders the unified STATUS column directly from the
 // composite display fields (DisplayLabel/DisplayIntent/DisplaySpinner) computed
-// by bossd. Clients no longer recompose — they just style.
+// by bossd. Clients no longer recompose — they just style. When the session
+// has a recorded repair-attempt failure (runner_error or exit_error), an
+// inline "⚠ repair (N×)" suffix is appended in muted style so the operator
+// sees at a glance that auto-repair tried and failed without having to
+// drill into `boss show`.
 func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 	if sess == nil {
 		return ""
@@ -79,7 +83,30 @@ func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 	if sess.GetDisplaySpinner() {
 		label = sp.View() + label
 	}
-	return styleForIntent(sess.GetDisplayIntent()).Render(label)
+	rendered := styleForIntent(sess.GetDisplayIntent()).Render(label)
+	if hint := repairFailureHint(sess); hint != "" {
+		rendered += " " + styleStatusMuted.Render(hint)
+	}
+	return rendered
+}
+
+// repairFailureHint returns a short suffix like "⚠ repair (3×)" when the
+// session's last repair attempt failed. Empty when there has been no
+// attempt or the last attempt was clean. Kept distinct from the main
+// STATUS label so the existing `failing` / `repairing` rendering stays
+// intact and the hint reads as auxiliary context.
+func repairFailureHint(sess *pb.Session) string {
+	count := sess.GetLastRepairAttemptCount()
+	if count == 0 {
+		return ""
+	}
+	if sess.GetLastRepairRunnerError() == "" && sess.GetLastRepairExitError() == "" {
+		return ""
+	}
+	if count == 1 {
+		return "⚠ repair failed"
+	}
+	return fmt.Sprintf("⚠ repair failed (%d×)", count)
 }
 
 // styleForIntent maps a DisplayIntent to its lipgloss style for the TUI.

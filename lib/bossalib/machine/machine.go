@@ -204,6 +204,13 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		Permit(PRClosed, Closed).
 		Permit(Block, Blocked)
 
+	// FixingChecks deliberately does NOT permit ConflictDetected. The
+	// session is already being repaired in-place by the repair plugin
+	// (lookupSession treats FixingChecks as repairable for any displayStatus).
+	// A self-transition would re-fire actionOnEnterFixing → AttemptCount++,
+	// so an unresolved conflict that the poller keeps re-detecting would
+	// hit MaxAttempts in ~MaxAttempts × pollInterval and Block the session
+	// even while the repair agent is still making progress.
 	sm.Configure(FixingChecks).
 		OnEntry(m.actionOnEnterFixing).
 		Permit(FixComplete, AwaitingChecks).
@@ -218,6 +225,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		Permit(PlanComplete, ReadyForReview).
 		PermitDynamic(ReviewSubmitted, m.fixOrBlock).
 		PermitDynamic(ChecksFailed, m.fixOrBlock).
+		PermitDynamic(ConflictDetected, m.fixOrBlock).
 		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed).
 		Permit(Block, Blocked)
@@ -225,6 +233,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 	sm.Configure(ReadyForReview).
 		PermitDynamic(ReviewSubmitted, m.fixOrBlock).
 		PermitDynamic(ChecksFailed, m.fixOrBlock).
+		PermitDynamic(ConflictDetected, m.fixOrBlock).
 		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed).
 		Permit(Block, Blocked)

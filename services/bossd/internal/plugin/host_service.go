@@ -123,6 +123,23 @@ func (s *HostServiceServer) SetAgentLogsDir(dir string) {
 	s.agentLogsDir = dir
 }
 
+// AgentClientNames returns the registered agent plugin names (the keys of
+// agentClients). Read-only; used by RepairDoctor to verify a "claude" entry
+// is wired without exposing the underlying clients.
+func (s *HostServiceServer) AgentClientNames() []string {
+	out := make([]string, 0, len(s.agentClients))
+	for name := range s.agentClients {
+		out = append(out, name)
+	}
+	return out
+}
+
+// AgentLogsDir returns the directory where per-session NDJSON log files
+// land. Empty string if SetAgentLogsDir hasn't been called.
+func (s *HostServiceServer) AgentLogsDir() string {
+	return s.agentLogsDir
+}
+
 // Validate reports any dependencies that SetSessionDeps was expected to
 // install but that are still nil. Host.Start calls this before launching
 // plugins so a missing dep fails the daemon loudly at startup instead of
@@ -207,6 +224,10 @@ var hostServiceDesc = grpc.ServiceDesc{
 			MethodName: "WaitAgentRun",
 			Handler:    hostServiceWaitAgentRunHandler,
 		},
+		{
+			MethodName: "RecordRepairOutcome",
+			Handler:    hostServiceRecordRepairOutcomeHandler,
+		},
 	},
 	Metadata: "bossanova/v1/host_service.proto",
 }
@@ -224,6 +245,7 @@ type hostServiceHandler interface {
 	SetRepairStatus(context.Context, *bossanovav1.SetRepairStatusRequest) (*bossanovav1.SetRepairStatusResponse, error)
 	StartAgentRun(context.Context, *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error)
 	WaitAgentRun(context.Context, *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error)
+	RecordRepairOutcome(context.Context, *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error)
 }
 
 // Register registers the HostService on a gRPC server (used by the
@@ -385,6 +407,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			// On DB error, assume active (fail closed) to prevent advancing
 			// sessions that may have a live Claude Code process.
 			hasActiveChat := false
+			var latestChatActivity time.Time
 			if s.agentChats != nil && s.chatTracker != nil {
 				chats, err := s.agentChats.ListBySession(ctx, sess.ID)
 				if err != nil {
@@ -392,29 +415,42 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 					hasActiveChat = true
 				} else {
 					for _, chat := range chats {
-						if chatEntry := s.chatTracker.Get(chat.AgentSessionID); chatEntry != nil {
-							hasActiveChat = true
-							break
+						chatEntry := s.chatTracker.Get(chat.AgentSessionID)
+						if chatEntry == nil {
+							continue
+						}
+						hasActiveChat = true
+						if chatEntry.LastOutputAt.After(latestChatActivity) {
+							latestChatActivity = chatEntry.LastOutputAt
 						}
 					}
 				}
 			}
 
 			pbSess := &bossanovav1.Session{
-				Id:                 sess.ID,
-				RepoId:             sess.RepoID,
-				RepoDisplayName:    repo.DisplayName,
-				Title:              sess.Title,
-				BranchName:         sess.BranchName,
-				State:              sessionStateToProto(sess.State),
-				DisplayStatus:      vcsDisplayStatusToProto(displayStatus),
-				DisplayHasFailures: hasFailures,
-				DisplayIsRepairing: isRepairing,
-				HasActiveChat:      hasActiveChat,
-				PrDisplayHeadSha:   headSHA,
+				Id:                     sess.ID,
+				RepoId:                 sess.RepoID,
+				RepoDisplayName:        repo.DisplayName,
+				Title:                  sess.Title,
+				BranchName:             sess.BranchName,
+				State:                  sessionStateToProto(sess.State),
+				DisplayStatus:          vcsDisplayStatusToProto(displayStatus),
+				DisplayHasFailures:     hasFailures,
+				DisplayIsRepairing:     isRepairing,
+				HasActiveChat:          hasActiveChat,
+				PrDisplayHeadSha:       headSHA,
+				LastRepairRunnerError:  sess.LastRepairRunnerError,
+				LastRepairExitError:    sess.LastRepairExitError,
+				LastRepairAttemptCount: int32(sess.LastRepairAttemptCount),
 			}
 			if !sess.UpdatedAt.IsZero() {
 				pbSess.UpdatedAt = timestamppb.New(sess.UpdatedAt)
+			}
+			if sess.LastRepairStartedAt != nil {
+				pbSess.LastRepairStartedAt = timestamppb.New(*sess.LastRepairStartedAt)
+			}
+			if !latestChatActivity.IsZero() {
+				pbSess.LastChatActivityAt = timestamppb.New(latestChatActivity)
 			}
 			pbSessions = append(pbSessions, pbSess)
 		}
@@ -795,4 +831,40 @@ func hostServiceWaitAgentRunHandler(srv any, ctx context.Context, dec func(any) 
 		return nil, err
 	}
 	return srv.(hostServiceHandler).WaitAgentRun(ctx, req)
+}
+
+// RecordRepairOutcome persists the repair-attempt outcome onto the
+// session row. Called by the repair plugin's deferred cleanup so every
+// attempt — clean exit, agent error, or runner-level failure — leaves
+// a structured trace in SQLite that the TUI can surface and that
+// outlives the daemon's in-memory cooldowns.
+func (s *HostServiceServer) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
+	if s.sessionStore == nil {
+		return nil, grpcstatus.Error(codes.Internal, "session store not set")
+	}
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
+	}
+	startedAt := time.Unix(req.GetStartedAtUnix(), 0)
+	if req.GetStartedAtUnix() == 0 {
+		startedAt = time.Now()
+	}
+	if err := s.sessionStore.UpdateRepairDiagnostics(ctx, db.UpdateRepairDiagnosticsParams{
+		SessionID:   sessionID,
+		StartedAt:   startedAt,
+		RunnerError: req.GetRunnerError(),
+		ExitError:   req.GetExitError(),
+	}); err != nil {
+		return nil, grpcstatus.Errorf(codes.Internal, "update repair diagnostics: %v", err)
+	}
+	return &bossanovav1.RecordRepairOutcomeResponse{}, nil
+}
+
+func hostServiceRecordRepairOutcomeHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.RecordRepairOutcomeRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).RecordRepairOutcome(ctx, req)
 }

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -15,13 +16,14 @@ import (
 // DisplayPoller periodically polls PR status, checks, and reviews for all
 // active sessions with PRs and updates the DisplayTracker with computed display statuses.
 type DisplayPoller struct {
-	sessions db.SessionStore
-	repos    db.RepoStore
-	provider vcs.Provider
-	tracker  *status.DisplayTracker
-	interval time.Duration
-	logger   zerolog.Logger
-	done     chan struct{}
+	sessions  db.SessionStore
+	repos     db.RepoStore
+	provider  vcs.Provider
+	tracker   *status.DisplayTracker
+	snapshots db.CheckSnapshotStore // optional; nil disables persistence
+	interval  time.Duration
+	logger    zerolog.Logger
+	done      chan struct{}
 }
 
 // NewDisplayPoller creates a new display status poller.
@@ -42,6 +44,15 @@ func NewDisplayPoller(
 		logger:   logger,
 		done:     make(chan struct{}),
 	}
+}
+
+// SetSnapshotStore wires an optional CheckSnapshotStore. When set, every
+// successful pollSession persists what the daemon saw + the DisplayStatus
+// it computed, so `boss session checks <id>` can show the timeline.
+// nil-safe — leaving the store unset disables persistence (handy for
+// tests that don't want SQLite writes on every tick).
+func (p *DisplayPoller) SetSnapshotStore(s db.CheckSnapshotStore) {
+	p.snapshots = s
 }
 
 // Run starts the polling loop in a background goroutine. It stops when the
@@ -138,4 +149,20 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
 	info.HeadSHA = prStatus.HeadSHA
 	p.tracker.Set(sessionID, info)
+
+	if p.snapshots != nil {
+		raw, err := json.Marshal(checks)
+		if err != nil {
+			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: marshal checks for snapshot")
+			return
+		}
+		if err := p.snapshots.Insert(ctx, db.CheckSnapshot{
+			SessionID:      sessionID,
+			HeadSHA:        prStatus.HeadSHA,
+			RawJSON:        string(raw),
+			ComputedStatus: int(info.Status),
+		}); err != nil {
+			p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: persist check snapshot")
+		}
+	}
 }

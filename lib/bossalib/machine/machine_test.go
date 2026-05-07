@@ -189,6 +189,86 @@ func TestConflictDetected(t *testing.T) {
 	assertState(t, m, FixingChecks)
 }
 
+// ConflictDetected must be valid from every "live PR" state where main
+// could move under us — not just AwaitingChecks. The repair plugin and the
+// poller both rely on this; without it, conflicts that appear after checks
+// pass leave the session stuck in GreenDraft / ReadyForReview / FixingChecks
+// even though display_status correctly shows "conflict".
+
+// TestFixingChecksRejectsConflictDetected pins the deliberate non-permit:
+// once a session is in FixingChecks, the repair plugin handles in-place
+// conflict resolution (lookupSession treats FixingChecks as repairable).
+// Re-entering FixingChecks via a self-transition would fire
+// actionOnEnterFixing → bump AttemptCount, so an unresolved conflict that
+// the poller keeps re-emitting would Block the session in ~MaxAttempts
+// poll cycles (default ~10min). The state machine therefore refuses the
+// transition; combined with sm.CanFire-gated poller emission this means
+// repeated polls on the same conflict are inert, not destructive.
+func TestFixingChecksRejectsConflictDetected(t *testing.T) {
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksFailed} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, FixingChecks)
+	if m.CanFire(ConflictDetected) {
+		t.Fatal("FixingChecks must not permit ConflictDetected (would inflate AttemptCount on every poll)")
+	}
+	if err := m.Fire(ConflictDetected); err == nil {
+		t.Fatal("Fire(ConflictDetected) from FixingChecks: want error, got nil")
+	}
+}
+
+func TestConflictDetectedFromGreenDraft(t *testing.T) {
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, GreenDraft)
+
+	if err := m.Fire(ConflictDetected); err != nil {
+		t.Fatalf("Fire(ConflictDetected): %v", err)
+	}
+	assertState(t, m, FixingChecks)
+}
+
+func TestConflictDetectedFromReadyForReview(t *testing.T) {
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed, PlanComplete} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, ReadyForReview)
+
+	if err := m.Fire(ConflictDetected); err != nil {
+		t.Fatalf("Fire(ConflictDetected): %v", err)
+	}
+	assertState(t, m, FixingChecks)
+}
+
+// TestConflictDetectedBlocksAtMax verifies fixOrBlock is wired correctly
+// through the new permit: at max attempts, ConflictDetected from GreenDraft
+// must terminate in Blocked, just like ChecksFailed does today.
+func TestConflictDetectedBlocksAtMax(t *testing.T) {
+	m := New(CreatingWorktree)
+	m.ctx.MaxAttempts = 1
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, GreenDraft)
+
+	if err := m.Fire(ConflictDetected); err != nil {
+		t.Fatalf("Fire(ConflictDetected): %v", err)
+	}
+	assertState(t, m, Blocked)
+}
+
 func TestReviewSubmittedFromGreenDraft(t *testing.T) {
 	m := New(CreatingWorktree)
 

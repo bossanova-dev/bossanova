@@ -952,6 +952,124 @@ func (x *WaitAgentRunHostResponse) GetExitError() string {
 	return ""
 }
 
+type RecordRepairOutcomeRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Wall-clock time of the StartAgentRun that drove this attempt.
+	StartedAtUnix int64 `protobuf:"varint,2,opt,name=started_at_unix,json=startedAtUnix,proto3" json:"started_at_unix,omitempty"`
+	// Non-empty when the daemon's StartAgentRun / claude plugin runner
+	// refused to spawn (eg. "claude not on PATH"). Mutually exclusive with
+	// exit_error in practice.
+	RunnerError string `protobuf:"bytes,3,opt,name=runner_error,json=runnerError,proto3" json:"runner_error,omitempty"`
+	// Non-empty when the agent ran but exited non-zero / signalled.
+	ExitError string `protobuf:"bytes,4,opt,name=exit_error,json=exitError,proto3" json:"exit_error,omitempty"`
+	// Agent-side session ID, useful for cross-referencing the agent log.
+	AgentSessionId string `protobuf:"bytes,5,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RecordRepairOutcomeRequest) Reset() {
+	*x = RecordRepairOutcomeRequest{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordRepairOutcomeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordRepairOutcomeRequest) ProtoMessage() {}
+
+func (x *RecordRepairOutcomeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordRepairOutcomeRequest.ProtoReflect.Descriptor instead.
+func (*RecordRepairOutcomeRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *RecordRepairOutcomeRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *RecordRepairOutcomeRequest) GetStartedAtUnix() int64 {
+	if x != nil {
+		return x.StartedAtUnix
+	}
+	return 0
+}
+
+func (x *RecordRepairOutcomeRequest) GetRunnerError() string {
+	if x != nil {
+		return x.RunnerError
+	}
+	return ""
+}
+
+func (x *RecordRepairOutcomeRequest) GetExitError() string {
+	if x != nil {
+		return x.ExitError
+	}
+	return ""
+}
+
+func (x *RecordRepairOutcomeRequest) GetAgentSessionId() string {
+	if x != nil {
+		return x.AgentSessionId
+	}
+	return ""
+}
+
+type RecordRepairOutcomeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RecordRepairOutcomeResponse) Reset() {
+	*x = RecordRepairOutcomeResponse{}
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RecordRepairOutcomeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RecordRepairOutcomeResponse) ProtoMessage() {}
+
+func (x *RecordRepairOutcomeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_host_service_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RecordRepairOutcomeResponse.ProtoReflect.Descriptor instead.
+func (*RecordRepairOutcomeResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_host_service_proto_rawDescGZIP(), []int{21}
+}
+
 var File_bossanova_v1_host_service_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_host_service_proto_rawDesc = "" +
@@ -1004,7 +1122,16 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"9\n" +
 	"\x18WaitAgentRunHostResponse\x12\x1d\n" +
 	"\n" +
-	"exit_error\x18\x01 \x01(\tR\texitError2\xc6\a\n" +
+	"exit_error\x18\x01 \x01(\tR\texitError\"\xcf\x01\n" +
+	"\x1aRecordRepairOutcomeRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12&\n" +
+	"\x0fstarted_at_unix\x18\x02 \x01(\x03R\rstartedAtUnix\x12!\n" +
+	"\frunner_error\x18\x03 \x01(\tR\vrunnerError\x12\x1d\n" +
+	"\n" +
+	"exit_error\x18\x04 \x01(\tR\texitError\x12(\n" +
+	"\x10agent_session_id\x18\x05 \x01(\tR\x0eagentSessionId\"\x1d\n" +
+	"\x1bRecordRepairOutcomeResponse2\xb2\b\n" +
 	"\vHostService\x12R\n" +
 	"\vListOpenPRs\x12 .bossanova.v1.ListOpenPRsRequest\x1a!.bossanova.v1.ListOpenPRsResponse\x12^\n" +
 	"\x0fGetCheckResults\x12$.bossanova.v1.GetCheckResultsRequest\x1a%.bossanova.v1.GetCheckResultsResponse\x12R\n" +
@@ -1015,7 +1142,8 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x10FireSessionEvent\x12%.bossanova.v1.FireSessionEventRequest\x1a&.bossanova.v1.FireSessionEventResponse\x12^\n" +
 	"\x0fSetRepairStatus\x12$.bossanova.v1.SetRepairStatusRequest\x1a%.bossanova.v1.SetRepairStatusResponse\x12`\n" +
 	"\rStartAgentRun\x12&.bossanova.v1.StartAgentRunHostRequest\x1a'.bossanova.v1.StartAgentRunHostResponse\x12]\n" +
-	"\fWaitAgentRun\x12%.bossanova.v1.WaitAgentRunHostRequest\x1a&.bossanova.v1.WaitAgentRunHostResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\fWaitAgentRun\x12%.bossanova.v1.WaitAgentRunHostRequest\x1a&.bossanova.v1.WaitAgentRunHostResponse\x12j\n" +
+	"\x13RecordRepairOutcome\x12(.bossanova.v1.RecordRepairOutcomeRequest\x1a).bossanova.v1.RecordRepairOutcomeResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_host_service_proto_rawDescOnce sync.Once
@@ -1029,7 +1157,7 @@ func file_bossanova_v1_host_service_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_host_service_proto_rawDescData
 }
 
-var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_bossanova_v1_host_service_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*ListOpenPRsRequest)(nil),              // 0: bossanova.v1.ListOpenPRsRequest
 	(*ListOpenPRsResponse)(nil),             // 1: bossanova.v1.ListOpenPRsResponse
@@ -1051,21 +1179,23 @@ var file_bossanova_v1_host_service_proto_goTypes = []any{
 	(*StartAgentRunHostResponse)(nil),       // 17: bossanova.v1.StartAgentRunHostResponse
 	(*WaitAgentRunHostRequest)(nil),         // 18: bossanova.v1.WaitAgentRunHostRequest
 	(*WaitAgentRunHostResponse)(nil),        // 19: bossanova.v1.WaitAgentRunHostResponse
-	(*PRSummary)(nil),                       // 20: bossanova.v1.PRSummary
-	(*CheckResult)(nil),                     // 21: bossanova.v1.CheckResult
-	(*PRStatus)(nil),                        // 22: bossanova.v1.PRStatus
-	(*Session)(nil),                         // 23: bossanova.v1.Session
-	(*ReviewComment)(nil),                   // 24: bossanova.v1.ReviewComment
-	(SessionEvent)(0),                       // 25: bossanova.v1.SessionEvent
+	(*RecordRepairOutcomeRequest)(nil),      // 20: bossanova.v1.RecordRepairOutcomeRequest
+	(*RecordRepairOutcomeResponse)(nil),     // 21: bossanova.v1.RecordRepairOutcomeResponse
+	(*PRSummary)(nil),                       // 22: bossanova.v1.PRSummary
+	(*CheckResult)(nil),                     // 23: bossanova.v1.CheckResult
+	(*PRStatus)(nil),                        // 24: bossanova.v1.PRStatus
+	(*Session)(nil),                         // 25: bossanova.v1.Session
+	(*ReviewComment)(nil),                   // 26: bossanova.v1.ReviewComment
+	(SessionEvent)(0),                       // 27: bossanova.v1.SessionEvent
 }
 var file_bossanova_v1_host_service_proto_depIdxs = []int32{
-	20, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	21, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
-	22, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
-	20, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
-	23, // 4: bossanova.v1.HostServiceListSessionsResponse.sessions:type_name -> bossanova.v1.Session
-	24, // 5: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
-	25, // 6: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
+	22, // 0: bossanova.v1.ListOpenPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	23, // 1: bossanova.v1.GetCheckResultsResponse.checks:type_name -> bossanova.v1.CheckResult
+	24, // 2: bossanova.v1.GetPRStatusResponse.status:type_name -> bossanova.v1.PRStatus
+	22, // 3: bossanova.v1.ListClosedPRsResponse.prs:type_name -> bossanova.v1.PRSummary
+	25, // 4: bossanova.v1.HostServiceListSessionsResponse.sessions:type_name -> bossanova.v1.Session
+	26, // 5: bossanova.v1.GetReviewCommentsResponse.comments:type_name -> bossanova.v1.ReviewComment
+	27, // 6: bossanova.v1.FireSessionEventRequest.event:type_name -> bossanova.v1.SessionEvent
 	0,  // 7: bossanova.v1.HostService.ListOpenPRs:input_type -> bossanova.v1.ListOpenPRsRequest
 	2,  // 8: bossanova.v1.HostService.GetCheckResults:input_type -> bossanova.v1.GetCheckResultsRequest
 	4,  // 9: bossanova.v1.HostService.GetPRStatus:input_type -> bossanova.v1.GetPRStatusRequest
@@ -1076,18 +1206,20 @@ var file_bossanova_v1_host_service_proto_depIdxs = []int32{
 	14, // 14: bossanova.v1.HostService.SetRepairStatus:input_type -> bossanova.v1.SetRepairStatusRequest
 	16, // 15: bossanova.v1.HostService.StartAgentRun:input_type -> bossanova.v1.StartAgentRunHostRequest
 	18, // 16: bossanova.v1.HostService.WaitAgentRun:input_type -> bossanova.v1.WaitAgentRunHostRequest
-	1,  // 17: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
-	3,  // 18: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
-	5,  // 19: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
-	7,  // 20: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
-	9,  // 21: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
-	11, // 22: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
-	13, // 23: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
-	15, // 24: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
-	17, // 25: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
-	19, // 26: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
-	17, // [17:27] is the sub-list for method output_type
-	7,  // [7:17] is the sub-list for method input_type
+	20, // 17: bossanova.v1.HostService.RecordRepairOutcome:input_type -> bossanova.v1.RecordRepairOutcomeRequest
+	1,  // 18: bossanova.v1.HostService.ListOpenPRs:output_type -> bossanova.v1.ListOpenPRsResponse
+	3,  // 19: bossanova.v1.HostService.GetCheckResults:output_type -> bossanova.v1.GetCheckResultsResponse
+	5,  // 20: bossanova.v1.HostService.GetPRStatus:output_type -> bossanova.v1.GetPRStatusResponse
+	7,  // 21: bossanova.v1.HostService.ListClosedPRs:output_type -> bossanova.v1.ListClosedPRsResponse
+	9,  // 22: bossanova.v1.HostService.ListSessions:output_type -> bossanova.v1.HostServiceListSessionsResponse
+	11, // 23: bossanova.v1.HostService.GetReviewComments:output_type -> bossanova.v1.GetReviewCommentsResponse
+	13, // 24: bossanova.v1.HostService.FireSessionEvent:output_type -> bossanova.v1.FireSessionEventResponse
+	15, // 25: bossanova.v1.HostService.SetRepairStatus:output_type -> bossanova.v1.SetRepairStatusResponse
+	17, // 26: bossanova.v1.HostService.StartAgentRun:output_type -> bossanova.v1.StartAgentRunHostResponse
+	19, // 27: bossanova.v1.HostService.WaitAgentRun:output_type -> bossanova.v1.WaitAgentRunHostResponse
+	21, // 28: bossanova.v1.HostService.RecordRepairOutcome:output_type -> bossanova.v1.RecordRepairOutcomeResponse
+	18, // [18:29] is the sub-list for method output_type
+	7,  // [7:18] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
@@ -1105,7 +1237,7 @@ func file_bossanova_v1_host_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_host_service_proto_rawDesc), len(file_bossanova_v1_host_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

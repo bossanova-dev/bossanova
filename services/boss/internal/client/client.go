@@ -91,6 +91,12 @@ type BossClient interface {
 	UpdateCronJob(ctx context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error)
 	DeleteCronJob(ctx context.Context, id string) error
 	RunCronJobNow(ctx context.Context, id string) (*pb.RunCronJobNowResponse, error)
+
+	// Repair diagnostics — surfaced via `boss repair doctor`.
+	RepairDoctor(ctx context.Context) (*pb.RepairDoctorResponse, error)
+
+	// ListCheckSnapshots — surfaced via `boss session checks <id>`.
+	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
 }
 
 // CreateSessionStream abstracts a server-streaming create session response.

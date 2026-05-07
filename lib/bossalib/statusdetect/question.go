@@ -145,6 +145,27 @@ var cardHeaderRe = regexp.MustCompile(`(?m)^[ \t]*☐ \S`)
 // strictly-increasing run (1., 2., 3., ...).
 var numberedOptionRe = regexp.MustCompile(`(?m)^[ ]+([0-9]+)\.[ ]+\S`)
 
+// askUserQuestionTypeSomethingRe matches the "  N. Type something." numbered
+// option that always appears as the second-to-last option (above the divider)
+// in the AskUserQuestion UI. The leading-indent + numbered-option shape
+// prevents prose containing the phrase from matching.
+var askUserQuestionTypeSomethingRe = regexp.MustCompile(`(?m)^[ ]+[0-9]+\.[ ]+Type something\.[ ]*$`)
+
+// askUserQuestionChatAboutThisRe matches the "  N. Chat about this" final
+// option that always appears below the divider in the AskUserQuestion UI.
+var askUserQuestionChatAboutThisRe = regexp.MustCompile(`(?m)^[ ]+[0-9]+\.[ ]+Chat about this[ ]*$`)
+
+// hasAskUserQuestionFooter reports whether data contains the AskUserQuestion
+// terminator: a "Type something." numbered option above the divider and a
+// "Chat about this" numbered option below it. Together these two phrases as
+// numbered option lines are unique to the AskUserQuestion UI -- they do not
+// appear together in normal Claude output -- and so are a definitive signal
+// of an active question prompt regardless of where the question text or "?"
+// lives.
+func hasAskUserQuestionFooter(data []byte) bool {
+	return askUserQuestionTypeSomethingRe.Match(data) && askUserQuestionChatAboutThisRe.Match(data)
+}
+
 // countConsecutiveNumberedOptions walks data line-by-line and counts how many
 // numbered-option lines (1., 2., 3., ...) appear at the same indent with
 // strictly-increasing integers. Blank lines and indented continuation lines
@@ -232,15 +253,17 @@ func countConsecutiveOptionLines(data []byte) (count int, brokenByMarker bool) {
 }
 
 // HasQuestionPrompt checks whether the last portion of PTY output looks like
-// a Claude Code question prompt. It detects four patterns:
+// a Claude Code question prompt. It detects five patterns:
+//  0. AskUserQuestion footer: "Type something." + "Chat about this" terminator
 //  1. AskUserQuestion/permission prompt: selector cursor + consecutive options
 //  2. Question card by structure: ☐ header + numbered options + "?", no chevron required
 //  3. Conversational question: Claude response ending with ?
 //  4. Fallback: trailing "?" in recent output when response marker is outside the tail
 //
-// All four patterns require a "?" somewhere in the cleaned tail -- a real
-// question always has one (in the question text above the selector, or in
-// the response itself).
+// Patterns 1-4 require a "?" somewhere in the cleaned tail. Pattern 0 is the
+// fast-path for new long-body AskUserQuestion layouts where the question is
+// embedded in the ☐ header title and the body (ELI10/Stakes/Pros&cons) has
+// pushed both the header and any literal "?" outside the 30-line tail.
 func HasQuestionPrompt(data []byte) bool {
 	if len(data) == 0 {
 		return false
@@ -252,6 +275,17 @@ func HasQuestionPrompt(data []byte) bool {
 
 	// Only check the last ~30 lines (enough for the question UI at screen bottom).
 	tail := LastNLines(clean, 30)
+
+	// Pattern 0: AskUserQuestion footer fast-path. The "Type something." and
+	// "Chat about this" numbered options are the unique terminators of the
+	// AskUserQuestion UI. When both appear in the tail this is definitively
+	// an active question prompt, regardless of whether a "?" or ☐ header is
+	// still in the tail. Runs first so it short-circuits Pattern 3's
+	// early-return-false branch when a ⏺ marker (working spinner, earlier
+	// response) sits outside the question card.
+	if hasAskUserQuestionFooter(tail) {
+		return true
+	}
 
 	// Pattern 1: AskUserQuestion / permission prompt -- selector + consecutive
 	// indented option lines. Requires a "?" somewhere in the cleaned tail (the

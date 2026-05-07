@@ -123,3 +123,48 @@ func TestRenderDisplayStatus_NilSession(t *testing.T) {
 		t.Errorf("expected empty render for nil session, got %q", got)
 	}
 }
+
+// TestRepairFailureHint covers the inline "⚠ repair failed (N×)" suffix
+// that flags sessions where Phase 1c's RecordRepairOutcome captured a
+// non-empty runner_error or exit_error.
+func TestRepairFailureHint(t *testing.T) {
+	cases := []struct {
+		name string
+		sess *pb.Session
+		want string
+	}{
+		{
+			name: "no attempts -> no hint",
+			sess: &pb.Session{LastRepairAttemptCount: 0},
+			want: "",
+		},
+		{
+			name: "clean attempts -> no hint",
+			sess: &pb.Session{LastRepairAttemptCount: 5},
+			want: "",
+		},
+		{
+			name: "first failed attempt",
+			sess: &pb.Session{
+				LastRepairAttemptCount: 1,
+				LastRepairRunnerError:  "claude not on PATH",
+			},
+			want: "⚠ repair failed",
+		},
+		{
+			name: "third failed attempt with exit error",
+			sess: &pb.Session{
+				LastRepairAttemptCount: 3,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "⚠ repair failed (3×)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := repairFailureHint(tc.sess); got != tc.want {
+				t.Errorf("repairFailureHint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

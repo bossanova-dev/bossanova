@@ -552,6 +552,24 @@ func runShow(cmd *cobra.Command, sessionID string) error {
 		fmt.Printf("  Archived: %s\n", views.RelativeTime(sess.ArchivedAt.AsTime()))
 	}
 
+	// Last repair-attempt diagnostics, when present. last_repair_started_at
+	// is the "an attempt was recorded" sentinel — it stays nil for sessions
+	// that the repair plugin has never run, so we suppress the line entirely
+	// in that case instead of showing "Last repair: -" noise. The count is
+	// a *consecutive-failure* tally (clean runs reset it to zero), which is
+	// why the "(N×)" annotation only appears on the failure branches.
+	switch {
+	case sess.GetLastRepairRunnerError() != "":
+		fmt.Printf("  Last repair: ✗ runner failed (%d×): %s\n",
+			sess.GetLastRepairAttemptCount(), sess.GetLastRepairRunnerError())
+	case sess.GetLastRepairExitError() != "":
+		fmt.Printf("  Last repair: ✗ agent exited error (%d×): %s\n",
+			sess.GetLastRepairAttemptCount(), sess.GetLastRepairExitError())
+	case sess.GetLastRepairStartedAt() != nil:
+		fmt.Printf("  Last repair: ✓ ok %s\n",
+			views.RelativeTime(sess.GetLastRepairStartedAt().AsTime()))
+	}
+
 	// List chats as a table.
 	chats, err := c.ListChats(ctx, sessionID)
 	if err != nil {

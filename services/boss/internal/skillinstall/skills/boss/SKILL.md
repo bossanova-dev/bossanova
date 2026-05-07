@@ -37,6 +37,10 @@ boss ls --repo my-repo --state running,paused
 boss ls --archived
 ```
 
+An extra `AGENT` column appears only when at least one listed session uses
+an agent that differs from the user's `Settings.DefaultAgent`. In the
+common single-agent case the column is hidden so the table stays compact.
+
 ### `boss show <session-id>`
 
 Show detailed information about a session.
@@ -49,8 +53,13 @@ boss show abc123
 
 Create a new coding session. Launches the interactive session creation flow.
 
+**Flags:**
+
+- `--agent <name>` — Override the default agent plugin for this session (e.g. `claude`, `opencode`). When omitted, the daemon falls back to `Settings.DefaultAgent`.
+
 ```bash
 boss new
+boss new --agent opencode
 ```
 
 ### `boss attach <session-id>`
@@ -226,6 +235,7 @@ View or update global settings.
 - `--skip-permissions` — Enable Claude `--dangerously-skip-permissions`
 - `--no-skip-permissions` — Disable Claude `--dangerously-skip-permissions`
 - `--worktree-dir <path>` — Set worktree base directory
+- `--default-agent <name>` — Set the default agent plugin (e.g. `claude`, `opencode`)
 - `--poll-interval <seconds>` — Set poll interval in seconds (0 = use default)
 
 ```bash
@@ -269,6 +279,36 @@ Show authentication status.
 
 ```bash
 boss auth-status
+```
+
+---
+
+## Diagnostics
+
+### `boss repair doctor`
+
+Health-check the auto-repair pipeline. Calls the daemon's `RepairDoctor` RPC
+and renders a checklist (plugin loaded, `claude` on PATH, recent log files,
+etc.) plus a recent-logs table — answers "is auto-repair healthy?" without
+having to grep daemon stderr.
+
+```bash
+boss repair doctor
+```
+
+### `boss session checks <session-id>`
+
+Show bossd's persisted view of a session's CI check snapshots, alongside the
+`DisplayStatus` the daemon computed for each one. Useful when reconciling
+"why did the TUI think this PR was passing when GitHub says failing?".
+
+**Flags:**
+
+- `--limit <n>` — Number of snapshots to show, newest first (default: 5)
+
+```bash
+boss session checks abc123
+boss session checks abc123 --limit 10
 ```
 
 ---

@@ -564,6 +564,83 @@ func TestE2E_ConflictDetectedTransition(t *testing.T) {
 	}
 }
 
+// TestE2E_ConflictAfterPassingChecks verifies that a conflict surfacing
+// after CI passed (main moved under a green PR) advances the state machine
+// from GreenDraft to FixingChecks. The bug this guards: prior to the
+// expanded ConflictDetected permits, GreenDraft sessions stayed at
+// GreenDraft when a conflict appeared — display_status correctly flipped
+// to "conflict" but the underlying state never moved, blocking auto-repair
+// from the state-machine side.
+func TestE2E_ConflictAfterPassingChecks(t *testing.T) {
+	h := testharness.New(t)
+	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
+
+	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "my-app",
+		LocalPath:         repoDir,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		RepoId: repoResp.Msg.Repo.Id,
+		Title:  "Conflict after green",
+		Plan:   "Pass checks, then watch main move under us",
+	})
+	sessionID := sess.Id
+
+	if err := h.Lifecycle.SubmitPR(ctx, sessionID); err != nil {
+		t.Fatalf("submit PR: %v", err)
+	}
+
+	getResp, err := h.Client.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sessionID}))
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	prNum := int(*getResp.Msg.Session.PrNumber)
+
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+
+	// Drive ChecksPassed so the session lands in GreenDraft.
+	checksEvents := make(chan session.SessionEvent, 1)
+	checksEvents <- session.SessionEvent{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNum}}
+	close(checksEvents)
+	dispCtx1, dispCancel1 := context.WithTimeout(ctx, 5*time.Second)
+	dispatcher.Run(dispCtx1, checksEvents)
+	dispCancel1()
+
+	getResp, err = h.Client.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sessionID}))
+	if err != nil {
+		t.Fatalf("get session after checks passed: %v", err)
+	}
+	if getResp.Msg.Session.State != pb.SessionState_SESSION_STATE_GREEN_DRAFT {
+		t.Fatalf("expected GREEN_DRAFT before conflict event, got %v", getResp.Msg.Session.State)
+	}
+
+	// Now fire ConflictDetected — main has moved under the green PR.
+	conflictEvents := make(chan session.SessionEvent, 1)
+	conflictEvents <- session.SessionEvent{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: prNum}}
+	close(conflictEvents)
+	dispCtx2, dispCancel2 := context.WithTimeout(ctx, 5*time.Second)
+	dispatcher.Run(dispCtx2, conflictEvents)
+	dispCancel2()
+
+	getResp, err = h.Client.GetSession(ctx, connect.NewRequest(&pb.GetSessionRequest{Id: sessionID}))
+	if err != nil {
+		t.Fatalf("get session after conflict: %v", err)
+	}
+	if getResp.Msg.Session.State != pb.SessionState_SESSION_STATE_FIXING_CHECKS {
+		t.Fatalf("expected FIXING_CHECKS after conflict from GreenDraft, got %v", getResp.Msg.Session.State)
+	}
+	if getResp.Msg.Session.AttemptCount != 1 {
+		t.Fatalf("expected attempt count 1, got %d", getResp.Msg.Session.AttemptCount)
+	}
+}
+
 // TestE2E_ReviewSubmittedTransition verifies that a ReviewSubmitted event
 // fired against a session in ReadyForReview transitions it into FixingChecks
 // (under max attempts) and increments the attempt counter.

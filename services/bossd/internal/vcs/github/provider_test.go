@@ -85,30 +85,41 @@ func TestParseCheckState(t *testing.T) {
 		input          string
 		wantStatus     vcs.CheckStatus
 		wantConclusion *vcs.CheckConclusion
+		wantRecognized bool
 	}{
 		// Terminal states — completed with conclusion.
-		{"SUCCESS", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionSuccess)},
-		{"FAILURE", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure)},
-		{"STARTUP_FAILURE", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure)},
-		{"STALE", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure)},
-		{"NEUTRAL", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionNeutral)},
-		{"CANCELLED", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionCancelled)},
-		{"SKIPPED", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionSkipped)},
-		{"TIMED_OUT", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionTimedOut)},
+		{"SUCCESS", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionSuccess), true},
+		{"FAILURE", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), true},
+		{"STARTUP_FAILURE", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), true},
+		{"STALE", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), true},
+		// ACTION_REQUIRED and ERROR were previously falling through to
+		// the default branch, which silently treated them as "queued" and
+		// hid real failures from the repair plugin. They now map to Failure.
+		{"ACTION_REQUIRED", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), true},
+		{"ERROR", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), true},
+		{"NEUTRAL", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionNeutral), true},
+		{"CANCELLED", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionCancelled), true},
+		{"SKIPPED", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionSkipped), true},
+		{"TIMED_OUT", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionTimedOut), true},
 		// In-progress states — no conclusion.
-		{"IN_PROGRESS", vcs.CheckStatusInProgress, nil},
-		{"QUEUED", vcs.CheckStatusQueued, nil},
-		{"PENDING", vcs.CheckStatusQueued, nil},
-		{"WAITING", vcs.CheckStatusQueued, nil},
-		// Unknown defaults to queued.
-		{"unknown", vcs.CheckStatusQueued, nil},
+		{"IN_PROGRESS", vcs.CheckStatusInProgress, nil, true},
+		{"QUEUED", vcs.CheckStatusQueued, nil, true},
+		{"PENDING", vcs.CheckStatusQueued, nil, true},
+		{"WAITING", vcs.CheckStatusQueued, nil, true},
+		// Unknown values fail safe to Failure (recognized=false) so a new
+		// gh state we forgot to enumerate doesn't silently mask repairs.
+		{"unknown", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), false},
+		{"", vcs.CheckStatusCompleted, ptr(vcs.CheckConclusionFailure), false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			gotStatus, gotConclusion := parseCheckState(tt.input)
+			gotStatus, gotConclusion, gotRecognized := parseCheckState(tt.input)
 			if gotStatus != tt.wantStatus {
 				t.Errorf("parseCheckState(%q) status = %v, want %v", tt.input, gotStatus, tt.wantStatus)
+			}
+			if gotRecognized != tt.wantRecognized {
+				t.Errorf("parseCheckState(%q) recognized = %v, want %v", tt.input, gotRecognized, tt.wantRecognized)
 			}
 			if (gotConclusion == nil) != (tt.wantConclusion == nil) {
 				t.Errorf("parseCheckState(%q) conclusion = %v, want %v", tt.input, gotConclusion, tt.wantConclusion)

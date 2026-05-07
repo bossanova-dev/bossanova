@@ -58,6 +58,9 @@ func (m *mockSessionStoreLiveness) UpdateStateConditional(_ context.Context, _ s
 func (m *mockSessionStoreLiveness) ListByState(_ context.Context, _ int) ([]*models.Session, error) {
 	return nil, nil
 }
+func (m *mockSessionStoreLiveness) UpdateRepairDiagnostics(_ context.Context, _ db.UpdateRepairDiagnosticsParams) error {
+	return nil
+}
 
 // --- mock claude runner for liveness tests ---
 

@@ -197,6 +197,28 @@ message Session {
 
   // Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
   string agent_name = 38;
+
+  // Last repair-attempt diagnostics, persisted by the repair plugin via
+  // RecordRepairOutcome so the TUI can surface "failing ⚠ repair: claude
+  // not in PATH (3×)" hints. Both error fields are empty for clean runs;
+  // runner_error means StartAgentRun never produced a process (eg. claude
+  // not on PATH), exit_error means the agent ran but exited non-zero.
+  // last_repair_attempt_count is a *consecutive-failure* counter: clean
+  // runs reset it to zero, failed runs increment it. Total attempts are
+  // not tracked.
+  optional google.protobuf.Timestamp last_repair_started_at = 39;
+  string last_repair_runner_error = 40;
+  string last_repair_exit_error = 41;
+  int32 last_repair_attempt_count = 42;
+
+  // Last time any of the session's live chat processes produced output.
+  // Populated server-side from the chat tracker — the max LastOutputAt across
+  // all of the session's chat tracker entries whose heartbeat is fresh
+  // (within StaleThreshold). Empty when no chat is live. The repair plugin
+  // uses this to gate auto-repair: an interactive chat that hasn't produced
+  // output for `idle_repair_threshold_minutes` is treated as idle, so repair
+  // can proceed even though the claude process is still attached.
+  optional google.protobuf.Timestamp last_chat_activity_at = 43;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

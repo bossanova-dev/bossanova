@@ -314,7 +314,18 @@ func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID in
 
 	results := make([]vcs.CheckResult, len(raw))
 	for i, r := range raw {
-		status, conclusion := parseCheckState(r.State)
+		status, conclusion, recognized := parseCheckState(r.State)
+		if !recognized {
+			// An unrecognized state means GitHub introduced (or we missed)
+			// a value we don't enumerate. parseCheckState fails safe by
+			// treating it as a Failure so the repair plugin can still see
+			// the PR; surface the gap so we can add it to the switch.
+			p.logger.Warn().
+				Str("state", r.State).
+				Str("name", r.Name).
+				Str("workflow", r.Workflow).
+				Msg("unknown gh pr checks state; treating as failure")
+		}
 		results[i] = vcs.CheckResult{
 			ID:         r.Workflow + "/" + r.Name,
 			Name:       r.Name,
@@ -670,34 +681,42 @@ func parsePRState(s string) vcs.PRState {
 	}
 }
 
-// parseCheckState converts a gh pr checks "state" field into a status and
-// optional conclusion. The gh CLI combines status and conclusion into a single
-// field: SUCCESS, FAILURE, PENDING, STARTUP_FAILURE, CANCELLED, SKIPPED, etc.
-func parseCheckState(s string) (vcs.CheckStatus, *vcs.CheckConclusion) {
+// parseCheckState converts a gh pr checks "state" field into a status,
+// optional conclusion, and a "recognized" flag. The gh CLI combines status
+// and conclusion into a single field: SUCCESS, FAILURE, PENDING,
+// STARTUP_FAILURE, CANCELLED, SKIPPED, ACTION_REQUIRED, ERROR, TIMED_OUT, etc.
+//
+// Unrecognized values are deliberately treated as Failure rather than Queued
+// so the repair plugin (which only fires on FAILING/CONFLICT/REJECTED) can
+// react. The recognized return lets the caller surface the unknown value
+// for follow-up. Treating an unknown as "queued" silently masks real
+// failures from auto-repair, which is the bug this case was added to fix.
+func parseCheckState(s string) (vcs.CheckStatus, *vcs.CheckConclusion, bool) {
 	switch strings.ToUpper(s) {
 	case "SUCCESS":
 		c := vcs.CheckConclusionSuccess
-		return vcs.CheckStatusCompleted, &c
-	case "FAILURE", "STARTUP_FAILURE", "STALE":
+		return vcs.CheckStatusCompleted, &c, true
+	case "FAILURE", "STARTUP_FAILURE", "STALE", "ACTION_REQUIRED", "ERROR":
 		c := vcs.CheckConclusionFailure
-		return vcs.CheckStatusCompleted, &c
+		return vcs.CheckStatusCompleted, &c, true
 	case "NEUTRAL":
 		c := vcs.CheckConclusionNeutral
-		return vcs.CheckStatusCompleted, &c
+		return vcs.CheckStatusCompleted, &c, true
 	case "CANCELLED":
 		c := vcs.CheckConclusionCancelled
-		return vcs.CheckStatusCompleted, &c
+		return vcs.CheckStatusCompleted, &c, true
 	case "SKIPPED":
 		c := vcs.CheckConclusionSkipped
-		return vcs.CheckStatusCompleted, &c
+		return vcs.CheckStatusCompleted, &c, true
 	case "TIMED_OUT":
 		c := vcs.CheckConclusionTimedOut
-		return vcs.CheckStatusCompleted, &c
+		return vcs.CheckStatusCompleted, &c, true
 	case "IN_PROGRESS":
-		return vcs.CheckStatusInProgress, nil
+		return vcs.CheckStatusInProgress, nil, true
 	case "QUEUED", "PENDING", "WAITING":
-		return vcs.CheckStatusQueued, nil
+		return vcs.CheckStatusQueued, nil, true
 	default:
-		return vcs.CheckStatusQueued, nil
+		c := vcs.CheckConclusionFailure
+		return vcs.CheckStatusCompleted, &c, false
 	}
 }

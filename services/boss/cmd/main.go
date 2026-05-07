@@ -73,9 +73,45 @@ func rootCmd() *cobra.Command {
 		logoutCmd(),
 		authStatusCmd(),
 		daemonCmd(),
+		repairCmd(),
+		sessionCmd(),
 	)
 
 	return root
+}
+
+func sessionCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "session",
+		Short: "Session diagnostics",
+	}
+	checks := &cobra.Command{
+		Use:   "checks <session-id>",
+		Short: "Show what bossd's display poller saw for this session's CI checks",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			limit, _ := cmd.Flags().GetInt32("limit")
+			return runSessionChecks(cmd, args[0], limit)
+		},
+	}
+	checks.Flags().Int32("limit", 5, "Number of snapshots to show (newest first)")
+	cmd.AddCommand(checks)
+	return cmd
+}
+
+func repairCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "repair",
+		Short: "Auto-repair plugin operations",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "doctor",
+		Short: "Health-check the auto-repair pipeline (plugin loaded, claude on PATH, recent logs, etc.)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRepairDoctor(cmd)
+		},
+	})
+	return cmd
 }
 
 // --- Subcommands ---

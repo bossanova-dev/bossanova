@@ -813,6 +813,16 @@ func (m *MockDaemon) DeleteCronJob(_ context.Context, req *connect.Request[pb.De
 	return connect.NewResponse(&pb.DeleteCronJobResponse{}), nil
 }
 
+func (m *MockDaemon) RepairDoctor(_ context.Context, _ *connect.Request[pb.RepairDoctorRequest]) (*connect.Response[pb.RepairDoctorResponse], error) {
+	// Tests that exercise the doctor flow can replace this stub via a
+	// dedicated MockDaemon mode; for now return an empty report.
+	return connect.NewResponse(&pb.RepairDoctorResponse{}), nil
+}
+
+func (m *MockDaemon) ListCheckSnapshots(_ context.Context, _ *connect.Request[pb.ListCheckSnapshotsRequest]) (*connect.Response[pb.ListCheckSnapshotsResponse], error) {
+	return connect.NewResponse(&pb.ListCheckSnapshotsResponse{}), nil
+}
+
 func (m *MockDaemon) RunCronJobNow(_ context.Context, req *connect.Request[pb.RunCronJobNowRequest]) (*connect.Response[pb.RunCronJobNowResponse], error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

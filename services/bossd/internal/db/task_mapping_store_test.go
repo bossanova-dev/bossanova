@@ -236,3 +236,86 @@ func TestTaskMappingStore_UpdatePendingFieldsAndClear(t *testing.T) {
 		t.Errorf("pending count = %d, want 0", len(pending))
 	}
 }
+
+// TestTaskMappingStore_FailOrphanedMappings asserts that startup cleanup
+// flips Pending/InProgress to Orphaned (not Failed) and leaves already-
+// terminal rows alone. Orphaned signals to the orchestrator that the
+// task should be re-picked on the next poll.
+func TestTaskMappingStore_FailOrphanedMappings(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewTaskMappingStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	// Pending mapping (default after Create).
+	pendingMap, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:repo:1",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create pending: %v", err)
+	}
+
+	// InProgress mapping.
+	inProgressMap, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:repo:2",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create in-progress: %v", err)
+	}
+	inProgressStatus := models.TaskMappingStatusInProgress
+	if _, err := store.Update(ctx, inProgressMap.ID, UpdateTaskMappingParams{Status: &inProgressStatus}); err != nil {
+		t.Fatalf("set in-progress: %v", err)
+	}
+
+	// Failed mapping (genuinely failed — must NOT be flipped to Orphaned).
+	failedMap, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:repo:3",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	failedStatus := models.TaskMappingStatusFailed
+	if _, err := store.Update(ctx, failedMap.ID, UpdateTaskMappingParams{Status: &failedStatus}); err != nil {
+		t.Fatalf("set failed: %v", err)
+	}
+
+	n, err := store.FailOrphanedMappings(ctx)
+	if err != nil {
+		t.Fatalf("FailOrphanedMappings: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("rows affected = %d, want 2 (pending + in-progress)", n)
+	}
+
+	got1, err := store.GetByExternalID(ctx, pendingMap.ExternalID)
+	if err != nil {
+		t.Fatalf("get pending: %v", err)
+	}
+	if got1.Status != models.TaskMappingStatusOrphaned {
+		t.Errorf("pending row status = %v, want Orphaned", got1.Status)
+	}
+
+	got2, err := store.GetByExternalID(ctx, inProgressMap.ExternalID)
+	if err != nil {
+		t.Fatalf("get in-progress: %v", err)
+	}
+	if got2.Status != models.TaskMappingStatusOrphaned {
+		t.Errorf("in-progress row status = %v, want Orphaned", got2.Status)
+	}
+
+	got3, err := store.GetByExternalID(ctx, failedMap.ExternalID)
+	if err != nil {
+		t.Fatalf("get failed: %v", err)
+	}
+	if got3.Status != models.TaskMappingStatusFailed {
+		t.Errorf("failed row status = %v, want Failed (untouched)", got3.Status)
+	}
+}

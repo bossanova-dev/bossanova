@@ -118,7 +118,18 @@ func (p *Poller) runOnce(ctx context.Context, ch chan<- SessionEvent) {
 // Useful for coordinating shutdown.
 func (p *Poller) Done() <-chan struct{} { return p.done }
 
-// poll checks all sessions in AwaitingChecks state and emits events.
+// poll checks all sessions in pollable states and emits events.
+//
+// "Pollable" is the CI/review-cycle states where the state machine can
+// react to ConflictDetected / ChecksFailed / ChecksPassed: AwaitingChecks,
+// FixingChecks, GreenDraft, ReadyForReview. AwaitingChecks alone misses
+// conflicts that surface after checks pass (main moves under a green PR)
+// or mid-fix; without polling those states the session display flips to
+// "conflict" via the display poller but the state machine never advances.
+//
+// Pre-PR states (Creating/Starting/Pushing/OpeningDraftPR), terminal-ish
+// states (Finalizing/Blocked/Merged/Closed), and ImplementingPlan are
+// excluded — either no PR exists or the lifecycle handles it elsewhere.
 func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 	// List all repos to find sessions across all repos.
 	repos, err := p.repos.List(ctx)
@@ -141,7 +152,7 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 			if ctx.Err() != nil {
 				return
 			}
-			if sess.State != machine.AwaitingChecks {
+			if !pollableState(sess.State) {
 				continue
 			}
 			if sess.PRNumber == nil {
@@ -153,8 +164,34 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 	}
 }
 
+// pollableState reports whether the poller should inspect a session in
+// this state. The set must stay in lockstep with the state machine's
+// permits for ChecksPassed / ChecksFailed / ConflictDetected.
+func pollableState(s machine.State) bool {
+	switch s {
+	case machine.AwaitingChecks, machine.FixingChecks,
+		machine.GreenDraft, machine.ReadyForReview:
+		return true
+	default:
+		return false
+	}
+}
+
 // checkSession polls a single session's PR status and check results,
 // emitting events as needed.
+//
+// Every emit is gated by sm.CanFire so we never push a state-machine
+// event the dispatcher would have to reject. This matters because:
+//   - The dispatcher's handle{X} methods return an error on rejection,
+//     which the run loop logs every poll cycle (~2min) — log noise per
+//     green PR with each new poll.
+//   - For self-transitions (e.g. ConflictDetected from a state that
+//     permits it via fixOrBlock), each re-fire bumps AttemptCount via
+//     OnEntry, eventually Blocking the session even while the repair
+//     plugin is still working on the fix.
+//
+// Constructing a per-session machine on each poll is cheap and keeps
+// the poller's emission set automatically in sync with machine.go.
 func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo *models.Repo, sess *models.Session) {
 	prID := *sess.PRNumber
 	repoPath := repo.OriginURL
@@ -163,6 +200,28 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 		Str("session", sess.ID).
 		Int("pr", prID).
 		Msg("polling checks")
+
+	// Build the same SessionContext the dispatcher uses (HasPR + AttemptCount)
+	// so CanFire's dynamic guards (fixOrBlock / retryOrBlock) evaluate
+	// correctly. Without HasPR, planCompleteDestination would route wrong;
+	// without AttemptCount the dynamic transitions would always pick the
+	// "under-max" branch.
+	sm := machine.NewWithContext(sess.State, &machine.SessionContext{
+		AttemptCount: sess.AttemptCount,
+		MaxAttempts:  machine.MaxAttempts,
+		HasPR:        sess.PRNumber != nil,
+	})
+	emitIf := func(ev machine.Event, vcsEvent vcs.Event) {
+		if !sm.CanFire(ev) {
+			p.logger.Debug().
+				Str("session", sess.ID).
+				Str("state", sess.State.String()).
+				Str("event", ev.String()).
+				Msg("poller: skipping emit; event not permitted in current state")
+			return
+		}
+		p.emit(ctx, ch, sess.ID, vcsEvent)
+	}
 
 	// Check PR status for merge/close/conflict.
 	prStatus, err := p.provider.GetPRStatus(ctx, repoPath, prID)
@@ -173,17 +232,17 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 
 	switch prStatus.State {
 	case vcs.PRStateMerged:
-		p.emit(ctx, ch, sess.ID, vcs.PRMerged{PRID: prID})
+		emitIf(machine.PRMerged, vcs.PRMerged{PRID: prID})
 		return
 	case vcs.PRStateClosed:
-		p.emit(ctx, ch, sess.ID, vcs.PRClosed{PRID: prID})
+		emitIf(machine.PRClosed, vcs.PRClosed{PRID: prID})
 		return
 	default:
 	}
 
 	// Check for merge conflicts.
 	if prStatus.Mergeable != nil && !*prStatus.Mergeable {
-		p.emit(ctx, ch, sess.ID, vcs.ConflictDetected{PRID: prID})
+		emitIf(machine.ConflictDetected, vcs.ConflictDetected{PRID: prID})
 		return
 	}
 
@@ -202,7 +261,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 	overall := aggregateChecks(checks)
 	switch overall {
 	case vcs.ChecksOverallPassed:
-		p.emit(ctx, ch, sess.ID, vcs.ChecksPassed{PRID: prID})
+		emitIf(machine.ChecksPassed, vcs.ChecksPassed{PRID: prID})
 	case vcs.ChecksOverallFailed:
 		var failed []vcs.CheckResult
 		for _, c := range checks {
@@ -210,7 +269,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 				failed = append(failed, c)
 			}
 		}
-		p.emit(ctx, ch, sess.ID, vcs.ChecksFailed{PRID: prID, FailedChecks: failed})
+		emitIf(machine.ChecksFailed, vcs.ChecksFailed{PRID: prID, FailedChecks: failed})
 	default:
 		// ChecksOverallPending — do nothing, wait for next poll.
 	}

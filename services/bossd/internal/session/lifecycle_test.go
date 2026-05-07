@@ -175,6 +175,20 @@ func (m *mockSessionStore) AdvanceOrphanedSessions(_ context.Context) (int64, er
 	return 0, nil
 }
 
+func (m *mockSessionStore) UpdateRepairDiagnostics(_ context.Context, params db.UpdateRepairDiagnosticsParams) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[params.SessionID]
+	if !ok {
+		return nil
+	}
+	s.LastRepairStartedAt = &params.StartedAt
+	s.LastRepairRunnerError = params.RunnerError
+	s.LastRepairExitError = params.ExitError
+	s.LastRepairAttemptCount++
+	return nil
+}
+
 func (m *mockSessionStore) ListByState(_ context.Context, state int) ([]*models.Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

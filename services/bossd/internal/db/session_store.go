@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
@@ -313,6 +314,44 @@ func (s *SQLiteSessionStore) AdvanceOrphanedSessions(ctx context.Context) (int64
 	return n, nil
 }
 
+// UpdateRepairDiagnostics writes the per-attempt outcome onto the session
+// row in a single statement. The repair plugin calls this from its
+// deferred cleanup so every attempt — clean or failed — leaves a
+// structured trace in SQLite that survives daemon restarts and is
+// queryable from the TUI.
+//
+// last_repair_attempt_count tracks *consecutive failures* rather than
+// total attempts: a clean run resets it to 0, a failed run bumps it by
+// one. That keeps the TUI's "⚠ repair failed (N×)" hint honest after a
+// fail → succeed → fail sequence, where the previous all-attempts
+// counter would have rendered "(3×)" when only one failure had actually
+// happened since the last clean repair.
+func (s *SQLiteSessionStore) UpdateRepairDiagnostics(ctx context.Context, params UpdateRepairDiagnosticsParams) error {
+	if params.SessionID == "" {
+		return fmt.Errorf("update repair diagnostics: session ID required")
+	}
+	startedAt := params.StartedAt.Unix()
+	countExpr := "0"
+	if params.RunnerError != "" || params.ExitError != "" {
+		countExpr = "last_repair_attempt_count + 1"
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions
+		 SET last_repair_started_at    = ?,
+		     last_repair_runner_error  = ?,
+		     last_repair_exit_error    = ?,
+		     last_repair_attempt_count = `+countExpr+`
+		 WHERE id = ?`,
+		startedAt, params.RunnerError, params.ExitError, params.SessionID)
+	if err != nil {
+		return fmt.Errorf("update repair diagnostics: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	// Use a transaction to ensure atomic cleanup of all dependent records.
 	// We don't rely on ON DELETE CASCADE because the PRAGMA foreign_keys=ON
@@ -372,7 +411,8 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.display_spinner, s.agent_name
+	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
+	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -383,6 +423,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
+	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	COALESCE(r.display_name, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -392,6 +433,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
+	var lastRepairStartedAt *int64
 	var repoDisplayName string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
@@ -400,6 +442,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
+		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&repoDisplayName)
 	if err != nil {
 		return nil, "", err
@@ -419,6 +462,10 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 	if updatedAt != nil {
 		sess.UpdatedAt = sqlutil.ParseTime(*updatedAt)
 	}
+	if lastRepairStartedAt != nil {
+		t := time.Unix(*lastRepairStartedAt, 0)
+		sess.LastRepairStartedAt = &t
+	}
 	return &sess, repoDisplayName, nil
 }
 
@@ -428,13 +475,15 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
+	var lastRepairStartedAt *int64
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
-		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName)
+		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
+		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount)
 	if err != nil {
 		return nil, err
 	}
@@ -452,6 +501,10 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	}
 	if updatedAt != nil {
 		sess.UpdatedAt = sqlutil.ParseTime(*updatedAt)
+	}
+	if lastRepairStartedAt != nil {
+		t := time.Unix(*lastRepairStartedAt, 0)
+		sess.LastRepairStartedAt = &t
 	}
 	return &sess, nil
 }

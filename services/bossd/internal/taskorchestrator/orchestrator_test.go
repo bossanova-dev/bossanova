@@ -82,6 +82,7 @@ func (m *mockRepoStore) Delete(_ context.Context, _ string) error {
 }
 
 type mockTaskMappingStore struct {
+	mu             sync.Mutex
 	mappings       map[string]*models.TaskMapping // keyed by external_id
 	bySession      map[string]*models.TaskMapping // keyed by session_id
 	byID           map[string]*models.TaskMapping // keyed by mapping ID
@@ -98,6 +99,8 @@ func (m *mockTaskMappingStore) Create(ctx context.Context, params db.CreateTaskM
 	if m.createFn != nil {
 		return m.createFn(ctx, params)
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.nextID++
 	tm := &models.TaskMapping{
 		ID:         "tm-" + params.ExternalID,
@@ -132,6 +135,8 @@ func (m *mockTaskMappingStore) FailOrphanedMappings(ctx context.Context) (int64,
 }
 
 func (m *mockTaskMappingStore) GetByExternalID(_ context.Context, externalID string) (*models.TaskMapping, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if tm, ok := m.mappings[externalID]; ok {
 		return tm, nil
 	}
@@ -833,12 +838,17 @@ func TestRouteTask_UnspecifiedDefaultsToCreateSession(t *testing.T) {
 // --- queue tests ---
 
 func TestQueue_TasksProcessedInOrder(t *testing.T) {
-	var processed []string
+	var (
+		mu        sync.Mutex
+		processed []string
+	)
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.provider = &mockProvider{
 			mergeFn: func(_ context.Context, _ string, prID int) error {
+				mu.Lock()
 				processed = append(processed, fmt.Sprintf("pr-%d", prID))
+				mu.Unlock()
 				return nil
 			},
 		}
@@ -847,32 +857,42 @@ func TestQueue_TasksProcessedInOrder(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Manually mark repo as active so second task gets queued.
+	// Pre-seed the per-repo slot and queue, then call dequeueNext directly
+	// to exercise FIFO ordering without going through enqueue. AUTO_MERGE
+	// is used in the queued task because dequeueNext routes through
+	// handleAutoMerge, which only needs the provider mock above (no
+	// session creator needed).
 	orch.mu.Lock()
 	orch.active["r1"] = true
-	orch.mu.Unlock()
-
-	// This should be queued (repo busy).
-	orch.enqueue(ctx, &bossanovav1.TaskItem{
-		ExternalId: "dep:pr:repo:2",
-		Title:      "Second",
-		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
-	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
-
-	// Verify it's queued, not processed.
-	orch.mu.Lock()
+	orch.queues["r1"] = []queuedTask{
+		{
+			task: &bossanovav1.TaskItem{
+				ExternalId: "dep:pr:repo:2",
+				Title:      "Second",
+				Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+			},
+			repo:       repoInfo{id: "r1", originURL: "repo"},
+			pluginName: "dependabot",
+		},
+	}
 	qLen := len(orch.queues["r1"])
 	orch.mu.Unlock()
+
 	if qLen != 1 {
 		t.Fatalf("expected 1 queued task, got %d", qLen)
 	}
+	mu.Lock()
 	if len(processed) != 0 {
+		mu.Unlock()
 		t.Fatalf("expected 0 processed, got %d", len(processed))
 	}
+	mu.Unlock()
 
 	// Now dequeue — simulates first task completing.
 	orch.dequeueNext(ctx, "r1")
 
+	mu.Lock()
+	defer mu.Unlock()
 	if len(processed) != 1 {
 		t.Fatalf("expected 1 processed after dequeue, got %d", len(processed))
 	}
@@ -1205,13 +1225,16 @@ func (m *updatingMockTaskSource) UpdateTaskStatus(ctx context.Context, externalI
 // --- dedup tests (additional) ---
 
 func TestProcessTask_NewTaskPassesThrough(t *testing.T) {
-	var createdMapping bool
+	var createdMapping atomic.Bool
+	created := make(chan struct{}, 1)
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
 			mappings: map[string]*models.TaskMapping{}, // empty — no existing mapping
 			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
-				createdMapping = true
+				if createdMapping.CompareAndSwap(false, true) {
+					created <- struct{}{}
+				}
 				return &models.TaskMapping{
 					ID:         "tm-new",
 					ExternalID: params.ExternalID,
@@ -1226,13 +1249,21 @@ func TestProcessTask_NewTaskPassesThrough(t *testing.T) {
 		}
 	})
 
+	// AUTO_MERGE runs routeTask in a goroutine (see enqueue), so wait on
+	// a sync channel before asserting state set inside that goroutine.
 	orch.processTask(context.Background(), &bossanovav1.TaskItem{
 		ExternalId: "dependabot:pr:repo:999",
 		Title:      "Bump new-pkg",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
-	if !createdMapping {
+	select {
+	case <-created:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task mapping create")
+	}
+
+	if !createdMapping.Load() {
 		t.Error("expected new task to create a mapping (not be deduped)")
 	}
 }
@@ -1243,8 +1274,12 @@ func TestProcessTask_NewTaskPassesThrough(t *testing.T) {
 // dropped by the dedup. The stale row is deleted so routeTask's Create()
 // doesn't trip the external_id UNIQUE constraint.
 func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
-	var deletedID string
-	var createdMapping bool
+	var (
+		mu             sync.Mutex
+		deletedID      string
+		createdMapping bool
+	)
+	created := make(chan struct{}, 1)
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.taskMappings = &mockTaskMappingStore{
@@ -1256,11 +1291,19 @@ func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
 				},
 			},
 			deleteFn: func(_ context.Context, id string) error {
+				mu.Lock()
 				deletedID = id
+				mu.Unlock()
 				return nil
 			},
 			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				mu.Lock()
 				createdMapping = true
+				mu.Unlock()
+				select {
+				case created <- struct{}{}:
+				default:
+				}
 				return &models.TaskMapping{
 					ID:         "tm-new",
 					ExternalID: params.ExternalID,
@@ -1275,12 +1318,22 @@ func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
 		}
 	})
 
+	// AUTO_MERGE runs routeTask in a goroutine (see enqueue) — wait on a
+	// sync channel before asserting state set inside that goroutine.
 	orch.processTask(context.Background(), &bossanovav1.TaskItem{
 		ExternalId: "dependabot:pr:repo:777",
 		Title:      "Bump foo",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
+	select {
+	case <-created:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task mapping create")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
 	if deletedID != "tm-orphan" {
 		t.Errorf("expected stale Orphaned mapping to be deleted, got deletedID=%q", deletedID)
 	}
@@ -1355,21 +1408,44 @@ func TestRouteTask_CreateMappingError(t *testing.T) {
 // --- queue tests (additional) ---
 
 func TestQueue_DifferentReposProcessIndependently(t *testing.T) {
-	var processed []string
+	var (
+		mu        sync.Mutex
+		processed []string
+	)
+	done := make(chan struct{}, 2)
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
 		o.provider = &mockProvider{
 			mergeFn: func(_ context.Context, repoPath string, prID int) error {
+				mu.Lock()
 				processed = append(processed, fmt.Sprintf("%s:pr-%d", repoPath, prID))
+				mu.Unlock()
+				done <- struct{}{}
 				return nil
 			},
 		}
-		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+		// Custom createFn — avoids concurrent map writes from the two
+		// goroutines launched by AUTO_MERGE.
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				return &models.TaskMapping{
+					ID:         "tm-" + params.ExternalID,
+					ExternalID: params.ExternalID,
+					PluginName: params.PluginName,
+					RepoID:     params.RepoID,
+					Status:     models.TaskMappingStatusPending,
+				}, nil
+			},
+		}
 	})
 
 	ctx := context.Background()
 
-	// Enqueue tasks for two different repos — both should process immediately.
+	// Enqueue tasks for two different repos. AUTO_MERGE bypasses the
+	// per-repo lock and runs in goroutines (see enqueue), so wait on a
+	// channel before asserting. Order between repos is non-deterministic
+	// now — sort before comparing.
 	orch.enqueue(ctx, &bossanovav1.TaskItem{
 		ExternalId: "dep:pr:repo-a:1",
 		Title:      "Repo A task",
@@ -1382,14 +1458,34 @@ func TestQueue_DifferentReposProcessIndependently(t *testing.T) {
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
 	}, repoInfo{id: "r2", originURL: "repo-b"}, "dependabot")
 
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for auto-merge goroutines (%d/2 done)", i)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
 	if len(processed) != 2 {
 		t.Fatalf("expected 2 tasks processed (one per repo), got %d: %v", len(processed), processed)
 	}
-	if processed[0] != "repo-a:pr-1" {
-		t.Errorf("expected repo-a:pr-1, got %s", processed[0])
+	// Goroutine ordering is non-deterministic; just assert both ran.
+	gotA, gotB := false, false
+	for _, p := range processed {
+		if p == "repo-a:pr-1" {
+			gotA = true
+		}
+		if p == "repo-b:pr-2" {
+			gotB = true
+		}
 	}
-	if processed[1] != "repo-b:pr-2" {
-		t.Errorf("expected repo-b:pr-2, got %s", processed[1])
+	if !gotA {
+		t.Errorf("expected repo-a:pr-1 in processed, got %v", processed)
+	}
+	if !gotB {
+		t.Errorf("expected repo-b:pr-2 in processed, got %v", processed)
 	}
 }
 
@@ -1766,10 +1862,13 @@ func TestQueue_DuplicateExternalIDNotQueued(t *testing.T) {
 	orch.active["r1"] = true
 	orch.mu.Unlock()
 
+	// Use CREATE_SESSION so the per-repo queue path (and its
+	// deduplication) actually runs — AUTO_MERGE / NOTIFY_USER bypass
+	// the queue entirely (see enqueue).
 	task := &bossanovav1.TaskItem{
 		ExternalId: "dep:pr:repo:42",
 		Title:      "Bump some-pkg",
-		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
 	}
 	repo := repoInfo{id: "r1", displayName: "org/repo", originURL: "repo"}
 
@@ -2087,5 +2186,180 @@ func TestParsePRNumberFromExternalID(t *testing.T) {
 				t.Errorf("got %d, want %d", got, tt.wantPR)
 			}
 		})
+	}
+}
+
+// TestEnqueue_AutoMergeBypassesActiveLock verifies that an AUTO_MERGE task
+// for a repo with an active CREATE_SESSION-held slot is routed immediately
+// rather than queued. Regression test for the madverts-core stuck-queue
+// incident (2026-05-08).
+func TestEnqueue_AutoMergeBypassesActiveLock(t *testing.T) {
+	t.Parallel()
+
+	var mergeCalls atomic.Int32
+
+	o := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				mergeCalls.Add(1)
+				return nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	repo := repoInfo{id: "repo-1", displayName: "test-repo", originURL: "git@github.com:o/r.git"}
+
+	// Simulate a CREATE_SESSION already holding the lock.
+	o.mu.Lock()
+	o.active[repo.id] = true
+	o.activeMapping[repo.id] = "stuck-mapping-id"
+	o.mu.Unlock()
+
+	autoMerge := &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:git@github.com:o/r.git:42",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}
+
+	o.enqueue(context.Background(), autoMerge, repo, "dependabot")
+
+	// Auto-merge should be running in a goroutine — give it up to 2s.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && mergeCalls.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if mergeCalls.Load() != 1 {
+		t.Fatalf("expected MergePR called once (auto-merge bypassed lock); got %d", mergeCalls.Load())
+	}
+
+	o.mu.Lock()
+	stillActive := o.active[repo.id]
+	stillMapping := o.activeMapping[repo.id]
+	o.mu.Unlock()
+	if !stillActive {
+		t.Fatal("CREATE_SESSION slot was released by AUTO_MERGE — this would let two sessions race")
+	}
+	if stillMapping != "stuck-mapping-id" {
+		t.Fatalf("activeMapping changed from stuck-mapping-id to %q", stillMapping)
+	}
+}
+
+// TestEnqueue_MultipleAutoMergesRunConcurrently verifies that multiple
+// AUTO_MERGE tasks for the same repo run in parallel, not serialised.
+// This is the throughput half of the fix — without it, even with the
+// lock bypassed, slow merges would still process one at a time.
+func TestEnqueue_MultipleAutoMergesRunConcurrently(t *testing.T) {
+	t.Parallel()
+
+	const n = 5
+	gate := make(chan struct{})
+	var inflight atomic.Int32
+	var maxInflight atomic.Int32
+
+	o := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				cur := inflight.Add(1)
+				for {
+					m := maxInflight.Load()
+					if cur <= m || maxInflight.CompareAndSwap(m, cur) {
+						break
+					}
+				}
+				<-gate
+				inflight.Add(-1)
+				return nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	repo := repoInfo{id: "repo-1", displayName: "test-repo", originURL: "git@github.com:o/r.git"}
+
+	for i := 0; i < n; i++ {
+		task := &bossanovav1.TaskItem{
+			ExternalId: fmt.Sprintf("dependabot:pr:git@github.com:o/r.git:%d", i+1),
+			Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		}
+		o.enqueue(context.Background(), task, repo, "dependabot")
+	}
+
+	// Wait until all n goroutines are blocked inside MergePR.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && inflight.Load() < n {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got := maxInflight.Load()
+	close(gate)
+
+	if got < n {
+		t.Fatalf("expected %d concurrent merges, max observed was %d (auto-merges still serialised)", n, got)
+	}
+}
+
+// TestEnqueue_AutoMergeDoesNotDequeueQueuedSession is the integrity test:
+// when a CREATE_SESSION holds the slot and another CREATE_SESSION is queued
+// behind it, an AUTO_MERGE arriving in between must NOT cause the queued
+// session to start prematurely. The auto-merge must leave both
+// o.active[repo.id] and o.queues[repo.id] untouched.
+func TestEnqueue_AutoMergeDoesNotDequeueQueuedSession(t *testing.T) {
+	t.Parallel()
+
+	mergeDone := make(chan struct{})
+	o := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				defer close(mergeDone)
+				return nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	repo := repoInfo{id: "repo-1", displayName: "test-repo", originURL: "git@github.com:o/r.git"}
+
+	queuedSession := &bossanovav1.TaskItem{
+		ExternalId: "linear:issue:LIN-1",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+	}
+	o.mu.Lock()
+	o.active[repo.id] = true
+	o.activeMapping[repo.id] = "session-in-flight"
+	o.queues[repo.id] = []queuedTask{
+		{task: queuedSession, repo: repo, pluginName: "linear"},
+	}
+	o.mu.Unlock()
+
+	autoMerge := &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:git@github.com:o/r.git:42",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}
+
+	o.enqueue(context.Background(), autoMerge, repo, "dependabot")
+
+	select {
+	case <-mergeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto-merge did not run within 2s")
+	}
+
+	// Give any (incorrect) follow-on dequeue a moment to misbehave.
+	time.Sleep(50 * time.Millisecond)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.active[repo.id] {
+		t.Fatal("CREATE_SESSION slot was released after auto-merge — orchestrator may now run two sessions concurrently")
+	}
+	if o.activeMapping[repo.id] != "session-in-flight" {
+		t.Fatalf("activeMapping unexpectedly changed to %q", o.activeMapping[repo.id])
+	}
+	if len(o.queues[repo.id]) != 1 {
+		t.Fatalf("expected queued CREATE_SESSION to remain in queue; got %d queued items", len(o.queues[repo.id]))
+	}
+	if o.queues[repo.id][0].task.GetExternalId() != "linear:issue:LIN-1" {
+		t.Fatalf("queued task changed; got %q", o.queues[repo.id][0].task.GetExternalId())
 	}
 }

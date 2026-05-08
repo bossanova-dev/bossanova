@@ -28,6 +28,43 @@ func TestConstructPRURL(t *testing.T) {
 	}
 }
 
+func TestRepoSlug(t *testing.T) {
+	tests := []struct {
+		name      string
+		originURL string
+		want      string
+	}{
+		{"SSH format", "git@github.com:owner/repo.git", "owner/repo"},
+		{"HTTPS format", "https://github.com/owner/repo.git", "owner/repo"},
+		{"HTTPS no .git suffix", "https://github.com/owner/repo", "owner/repo"},
+		{"git protocol", "git://github.com/owner/repo.git", "owner/repo"},
+		{"git protocol no .git", "git://github.com/owner/repo", "owner/repo"},
+		{"ssh:// protocol", "ssh://git@github.com/owner/repo.git", "owner/repo"},
+		{"empty URL", "", ""},
+		{"bare path no slash", "foobar", ""},
+		{"trailing colon no path", "git@host:", ""},
+		{"leading colon is not SSH", ":foo", ""},
+		{"leading @ at index 0", "@host:owner/repo.git", "owner/repo"},
+		{"ssh no user prefix", "host:owner/repo.git", "owner/repo"},
+		{"trailing slash", "https://github.com/owner/repo/", "owner/repo"},
+		{"extra path segments ignored", "https://github.com/owner/repo/extra", "owner/repo"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("RepoSlug(%q) panicked: %v", tt.originURL, r)
+				}
+			}()
+			got := RepoSlug(tt.originURL)
+			if got != tt.want {
+				t.Errorf("RepoSlug(%q) = %q, want %q", tt.originURL, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestConstructPRURL_Boundaries covers boundary mutations on the SSH detection
 // (`idx > 0`, `idx+1 >= len(s)`) and the user@ stripping (`at >= 0`).
 func TestConstructPRURL_Boundaries(t *testing.T) {

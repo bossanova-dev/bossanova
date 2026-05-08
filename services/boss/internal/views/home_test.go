@@ -289,6 +289,39 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 		})
 	}
 
+	// [enter] on an existing session always opens the chat picker. This is a
+	// regression guard against re-introducing auto-attach: previously, if a
+	// session had exactly one running chat, Enter would skip the picker and
+	// jump directly into ViewAttach. The picker self-highlights the running
+	// chat (chatpicker.go:316-332), so resume is still cheap from the picker.
+	t.Run("key=enter dispatches ViewChatPicker (no auto-attach)", func(t *testing.T) {
+		h := HomeModel{
+			ctx:       context.Background(),
+			repoCount: 1,
+			loading:   false,
+			sessions:  []*pb.Session{{Id: "sess-1"}},
+		}
+		h.buildTableRows()
+		_, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if cmd == nil {
+			t.Fatal("key enter: got nil cmd, want a switchViewMsg command")
+		}
+		msg := cmd()
+		svm, ok := msg.(switchViewMsg)
+		if !ok {
+			t.Fatalf("key enter: cmd() returned %T, want switchViewMsg (do NOT route via auto-attach)", msg)
+		}
+		if svm.view != ViewChatPicker {
+			t.Errorf("key enter: view = %v, want ViewChatPicker", svm.view)
+		}
+		if svm.sessionID != "sess-1" {
+			t.Errorf("key enter: sessionID = %q, want %q", svm.sessionID, "sess-1")
+		}
+		if svm.resumeID != "" {
+			t.Errorf("key enter: resumeID = %q, want empty (no auto-attach)", svm.resumeID)
+		}
+	})
+
 	// [l] with auth configured and not logged-in dispatches ViewLogin.
 	t.Run("key=l dispatches ViewLogin when not logged in", func(t *testing.T) {
 		// We need a non-nil authMgr to enable [l]; use a real zero-value Manager.

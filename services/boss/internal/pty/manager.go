@@ -185,27 +185,34 @@ type ProcessInfo struct {
 	LastWrite time.Time
 }
 
-// AllStatuses returns a snapshot of all tracked processes for heartbeat batch reporting.
+// AllStatuses returns a snapshot of all tracked processes for heartbeat
+// batch reporting. Exited processes are evicted from the map and omitted
+// from the result: a `tmux attach` PTY child that exits when the user
+// detaches must not keep heartbeating StatusStopped on every tick — the
+// daemon's TmuxStatusPoller has the canonical view of the (still-alive)
+// tmux session and a stale STOPPED report races against it, producing a
+// visible 3 s flash on the session display label.
 func (m *Manager) AllStatuses() map[string]ProcessInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	result := make(map[string]ProcessInfo, len(m.processes))
 	for id, p := range m.processes {
-		var status string
 		select {
 		case <-p.done:
-			status = StatusStopped
+			delete(m.processes, id)
+			continue
 		default:
-			if p.HasQuestionPrompt() {
-				status = StatusQuestion
+		}
+		var status string
+		if p.HasQuestionPrompt() {
+			status = StatusQuestion
+		} else {
+			lw := p.LastWrite()
+			if !lw.IsZero() && time.Since(lw) < activeThreshold {
+				status = StatusWorking
 			} else {
-				lw := p.LastWrite()
-				if !lw.IsZero() && time.Since(lw) < activeThreshold {
-					status = StatusWorking
-				} else {
-					status = StatusIdle
-				}
+				status = StatusIdle
 			}
 		}
 		result[id] = ProcessInfo{

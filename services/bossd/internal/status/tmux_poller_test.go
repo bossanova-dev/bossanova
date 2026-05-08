@@ -301,6 +301,48 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 	}
 }
 
+// TestTmuxStatusPoller_RediscoversDroppedChat proves the poller is self-healing:
+// a chat present in the DB with a live tmux session must be polled even when it
+// is absent from prevCaptures. This guards the regression where a transient
+// GetByAgentSessionID or HasSession failure would permanently exclude a chat
+// from polling until daemon restart, leaving the UI showing IDLE while the pane
+// actually displayed a question prompt.
+func TestTmuxStatusPoller_RediscoversDroppedChat(t *testing.T) {
+	tracker := NewTracker()
+	tmuxName := "boss-test-rediscover"
+	agentSessionID := "claude-rediscover"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{
+			tmuxName: "  Allow Claude to run this command?\n\n  ❯ Allow\n    Allow once\n    Deny\n",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+
+	// Deliberately do NOT call RegisterChat or Bootstrap. prevCaptures is empty
+	// — the same state the poller ends up in if a transient error caused the
+	// chat to be dropped from prevCaptures and never re-added.
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after rediscovery poll, got nil — chat was not rediscovered from DB")
+		return
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
+		t.Errorf("expected QUESTION after rediscovery, got %v", entry.Status)
+	}
+}
+
 func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
 	tracker := NewTracker()
 	tmuxClient := tmux.NewClient()

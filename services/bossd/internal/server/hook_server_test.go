@@ -16,6 +16,7 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/session"
 )
 
@@ -432,6 +433,307 @@ func TestHookServer_InternalErrorOnStoreFailure(t *testing.T) {
 	status := postFinalize(t, base, "sess-1", "Bearer anything")
 	if status != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", status)
+	}
+}
+
+// --- /hooks/agent-run-complete/{agent_session_id} (Task 3) ---
+
+// fakeAgentRunCompleter is a minimal AgentRunCompleter stub that records
+// inbound calls and returns a scripted response. Used to drive the hook
+// endpoint tests without pulling in a full *plugin.HostServiceServer.
+type fakeAgentRunCompleter struct {
+	mu    sync.Mutex
+	calls []completerCall
+	// scripted return values keyed by agent_session_id; default zero-value
+	// returns ("", plugin.ErrAgentRunNotFound) — i.e. 404.
+	scripts map[string]completerResp
+}
+
+type completerCall struct {
+	agentSessionID string
+	bearerToken    string
+	exitError      string
+}
+
+type completerResp struct {
+	sessionID string
+	err       error
+}
+
+func newFakeAgentRunCompleter() *fakeAgentRunCompleter {
+	return &fakeAgentRunCompleter{scripts: make(map[string]completerResp)}
+}
+
+//nolint:unparam // agentSessionID varies in future tests; current cases pin "agent-1".
+func (f *fakeAgentRunCompleter) script(agentSessionID string, resp completerResp) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scripts[agentSessionID] = resp
+}
+
+func (f *fakeAgentRunCompleter) CompleteAgentRun(_ context.Context, agentSessionID, bearerToken, exitError string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, completerCall{agentSessionID: agentSessionID, bearerToken: bearerToken, exitError: exitError})
+	resp, ok := f.scripts[agentSessionID]
+	if !ok {
+		return "", plugin.ErrAgentRunNotFound
+	}
+	return resp.sessionID, resp.err
+}
+
+func (f *fakeAgentRunCompleter) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeAgentRunCompleter) lastCall() completerCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.calls) == 0 {
+		return completerCall{}
+	}
+	return f.calls[len(f.calls)-1]
+}
+
+// startHookServerWithCompleter is the run-complete-aware sibling of
+// startHookServer; tests that exercise the agent-run path use this to
+// inject the fake completer alongside the existing finalizer wiring.
+func startHookServerWithCompleter(t *testing.T, store db.SessionStore, fin HookFinalizer, completer AgentRunCompleter) string {
+	t.Helper()
+	hs := NewHookServer(HookServerConfig{
+		Sessions:  store,
+		Finalizer: fin,
+		Completer: completer,
+		Logger:    zerolog.Nop(),
+	})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	return fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+}
+
+// postAgentRunComplete issues POST /hooks/agent-run-complete/{id} with the
+// given Authorization header (empty string omits) and JSON body (nil omits).
+// Returns the HTTP status code; body is drained.
+func postAgentRunComplete(t *testing.T, base, agentSessionID, auth string, body []byte) int {
+	t.Helper()
+	url := fmt.Sprintf("%s/hooks/agent-run-complete/%s", base, agentSessionID)
+	var reader *bytes.Reader
+	if body == nil {
+		reader = bytes.NewReader(nil)
+	} else {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, reader)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// TestAgentRunComplete_HappyPath valid token + clean exit → 200,
+// completer invoked with empty exit_error.
+func TestAgentRunComplete_HappyPath(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`))
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if got := completer.callCount(); got != 1 {
+		t.Fatalf("callCount = %d, want 1", got)
+	}
+	c := completer.lastCall()
+	if c.agentSessionID != "agent-1" || c.bearerToken != "secret" || c.exitError != "" {
+		t.Errorf("call = %+v, want {agent-1 secret \"\"}", c)
+	}
+}
+
+// TestAgentRunComplete_ExitErrorPropagated populated exit_error reaches
+// the completer verbatim.
+func TestAgentRunComplete_ExitErrorPropagated(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	const exitErr = "claude crashed: signal: killed"
+	body := fmt.Sprintf(`{"exit_error": %q}`, exitErr)
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(body))
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if got := completer.lastCall().exitError; got != exitErr {
+		t.Errorf("exit_error forwarded = %q, want %q", got, exitErr)
+	}
+}
+
+// TestAgentRunComplete_EmptyBodyOK no JSON body → treated as
+// {"exit_error": ""}, still 200.
+func TestAgentRunComplete_EmptyBodyOK(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", nil)
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200", status)
+	}
+	if got := completer.lastCall().exitError; got != "" {
+		t.Errorf("exit_error = %q, want empty", got)
+	}
+}
+
+// TestAgentRunComplete_DuplicatePOST both POSTs return 200. The completer
+// keeps the token + session-id entries alive past the first signal so a
+// duplicate POST authenticates and short-circuits to success — the channel
+// receives exactly one value (no double-signal). Per spec §"New hook
+// endpoint" step 3 / Failure modes table.
+func TestAgentRunComplete_DuplicatePOST(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	if got := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`)); got != http.StatusOK {
+		t.Errorf("first POST status = %d, want 200", got)
+	}
+	if got := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`)); got != http.StatusOK {
+		t.Errorf("second POST status = %d, want 200 (duplicate POSTs are idempotent per spec)", got)
+	}
+	if completer.callCount() != 2 {
+		t.Errorf("completer callCount = %d, want 2", completer.callCount())
+	}
+}
+
+// TestAgentRunComplete_WrongBearerToken token mismatch → 401, run state
+// untouched (the completer returns ErrAuthMismatch).
+func TestAgentRunComplete_WrongBearerToken(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1", err: plugin.ErrAuthMismatch})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer wrong", []byte(`{"exit_error": ""}`))
+	if status != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", status)
+	}
+	// Completer was still invoked (constant-time compare lives there).
+	if completer.callCount() != 1 {
+		t.Errorf("callCount = %d, want 1", completer.callCount())
+	}
+}
+
+// TestAgentRunComplete_MissingAuthHeader no Authorization header → 401,
+// completer not invoked (handler short-circuits before lookup).
+func TestAgentRunComplete_MissingAuthHeader(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "", []byte(`{"exit_error": ""}`))
+	if status != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", status)
+	}
+	if completer.callCount() != 0 {
+		t.Errorf("callCount = %d, want 0 (handler should short-circuit on missing auth)", completer.callCount())
+	}
+}
+
+// TestAgentRunComplete_UnknownAgentSession unknown id → 404.
+func TestAgentRunComplete_UnknownAgentSession(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	// No script registered: fake returns ErrAgentRunNotFound → 404.
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "unknown", "Bearer anything", []byte(`{"exit_error": ""}`))
+	if status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", status)
+	}
+}
+
+// TestAgentRunComplete_MalformedJSON body is not JSON → 400.
+func TestAgentRunComplete_MalformedJSON(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	completer.script("agent-1", completerResp{sessionID: "sess-1"})
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte("not json{"))
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
+	}
+	if completer.callCount() != 0 {
+		t.Errorf("completer was invoked despite malformed body; callCount = %d, want 0", completer.callCount())
+	}
+}
+
+// TestAgentRunComplete_NilCompleter HookServer constructed without a
+// Completer → 500 with a clear message. Defense-in-depth — production
+// always wires one, but a test/legacy caller might not.
+func TestAgentRunComplete_NilCompleter(t *testing.T) {
+	hs := NewHookServer(HookServerConfig{
+		Sessions:  newHookMockSessionStore(),
+		Finalizer: newFakeFinalizer(),
+		Logger:    zerolog.Nop(),
+	})
+	if err := hs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- hs.Serve() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(ctx)
+		select {
+		case <-errCh:
+		case <-time.After(2 * time.Second):
+		}
+	})
+	base := fmt.Sprintf("http://127.0.0.1:%d", hs.Port())
+
+	status := postAgentRunComplete(t, base, "agent-1", "Bearer secret", []byte(`{"exit_error": ""}`))
+	if status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", status)
+	}
+}
+
+// TestAgentRunComplete_MissingAgentSessionID the mux pattern requires a
+// non-empty {agent_session_id} segment; trailing slash → 404 from the mux.
+func TestAgentRunComplete_MissingAgentSessionID(t *testing.T) {
+	completer := newFakeAgentRunCompleter()
+	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
+
+	resp, err := http.Post(base+"/hooks/agent-run-complete/", "application/json", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for empty agent_session_id", resp.StatusCode)
 	}
 }
 

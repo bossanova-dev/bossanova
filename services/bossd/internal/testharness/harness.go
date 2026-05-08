@@ -30,6 +30,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	pluginpkg "github.com/recurser/bossd/internal/plugin"
 	"github.com/recurser/bossd/internal/server"
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
@@ -79,6 +80,11 @@ type Harness struct {
 	// HookServer is the loopback hook server wired to the harness's Lifecycle.
 	// It is always started by newHarness; tests use PostStopHook to POST to it.
 	HookServer *server.HookServer
+
+	// HostService is the same *HostServiceServer the HookServer routes
+	// agent-run-complete dispatches into. Exposed so integration tests
+	// can register runs (Task 4) without going through the plugin broker.
+	HostService *pluginpkg.HostServiceServer
 
 	socketPath string
 	httpServer *http.Server
@@ -227,6 +233,19 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		connect.WithGRPC(),
 	)
 
+	// Host service — same instance the plugin broker would dispense in
+	// production, wired here so harness-driven tests can register
+	// agent-run completion state and exercise the
+	// /hooks/agent-run-complete/{id} endpoint without spinning up real
+	// plugins. The DisplayTracker is shared with Server so a
+	// CompleteAgentRun call here clears the same IsRepairing flag the
+	// rest of the harness sees.
+	hostService := pluginpkg.NewHostServiceServer(vcsMock)
+	hostService.SetSessionDeps(repos, sessions, agentChats, display, status.NewTracker())
+	// Wire the lifecycle so tests that exercise StartChatRun directly
+	// (Task 4) hit the same plumbing the daemon installs in cmd/main.go.
+	hostService.SetLifecycle(lifecycle)
+
 	// Hook server — loopback HTTP server that receives Claude Stop-hook POSTs
 	// and dispatches Lifecycle.FinalizeSession. The bound port is plumbed
 	// directly into the lifecycle (same as the daemon entrypoint) so tests
@@ -234,6 +253,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	hookSrv := server.NewHookServer(server.HookServerConfig{
 		Sessions:  sessions,
 		Finalizer: lifecycle,
+		Completer: hostService,
 		Logger:    logger,
 	})
 	if err := hookSrv.Listen(); err != nil {
@@ -243,6 +263,11 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	lifecycle.SetAgents(map[string]agent.AgentRunnerClient{
 		"claude": &MockAgentClient{},
 	})
+	// StartTmuxChat (extracted from startCronTmuxChat) requires a non-empty
+	// agentLogsDir so it can resolve a per-agent-session log path to feed
+	// into BuildInteractiveCommand. Use t.TempDir so each harness run has
+	// an isolated directory and the file system is cleaned up automatically.
+	lifecycle.SetAgentLogsDir(t.TempDir())
 	go func() { _ = hookSrv.Serve() }()
 
 	h.DB = database
@@ -260,6 +285,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.DisplayTracker = display
 	h.Client = client
 	h.HookServer = hookSrv
+	h.HostService = hostService
 	h.socketPath = socketPath
 	h.httpServer = httpServer
 	h.listener = ln

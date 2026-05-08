@@ -278,9 +278,30 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	o.enqueue(ctx, task, repo, pluginName)
 }
 
-// enqueue adds a task to the per-repo FIFO queue and processes it
-// immediately if no other task is active for that repo.
+// enqueue routes a task. CREATE_SESSION tasks are serialised per-repo
+// because they drive a Claude session against a worktree; only one such
+// session may run for a given repo at a time. AUTO_MERGE and NOTIFY_USER
+// are pure RPC/log operations with no shared resource, so they bypass the
+// queue and run concurrently with each other and with any in-flight
+// CREATE_SESSION. This prevents a stuck repair session from blocking
+// dependabot auto-merges for the same repo.
 func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, pluginName string) {
+	action := task.GetAction()
+	if action == bossanovav1.TaskAction_TASK_ACTION_UNSPECIFIED {
+		action = bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION
+	}
+
+	if action != bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION {
+		// AUTO_MERGE / NOTIFY_USER: run in a goroutine so the poll loop
+		// isn't blocked and so multiple auto-merges run in parallel.
+		// The lock is intentionally untouched — these handlers must not
+		// call dequeueNext (see handleAutoMerge / handleNotifyUser).
+		safego.Go(o.logger, func() {
+			o.routeTask(ctx, task, repo, pluginName)
+		})
+		return
+	}
+
 	o.mu.Lock()
 	if o.active[repo.id] {
 		// Deduplicate: skip if a task with the same external ID is already queued.
@@ -294,7 +315,6 @@ func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, 
 				return
 			}
 		}
-		// Another task is being processed for this repo — queue it.
 		o.queues[repo.id] = append(o.queues[repo.id], queuedTask{task: task, repo: repo, pluginName: pluginName})
 		o.logger.Debug().
 			Str("repo", repo.displayName).
@@ -627,10 +647,9 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 }
 
 // handleAutoMerge merges a PR directly without creating a Claude session.
-// Auto-merge completes synchronously, so dequeue the next task immediately.
+// Auto-merge bypasses the per-repo lock (see enqueue) and must NOT call
+// dequeueNext — releasing the slot here would free a CREATE_SESSION's lock.
 func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
-	defer o.dequeueNext(ctx, repo.id)
-
 	prNumber, err := parsePRNumberFromExternalID(task.GetExternalId())
 	if err != nil {
 		o.logger.Error().Err(err).
@@ -792,10 +811,9 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 
 // handleNotifyUser logs the task for user notification. In the future
 // this could send a notification via the TUI or an external channel.
-// Notify completes synchronously, so dequeue the next task immediately.
+// Like handleAutoMerge, this bypasses the per-repo lock (see enqueue)
+// and must NOT call dequeueNext.
 func (o *Orchestrator) handleNotifyUser(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
-	defer o.dequeueNext(ctx, repo.id)
-
 	o.logger.Info().
 		Str("external_id", task.GetExternalId()).
 		Str("title", task.GetTitle()).

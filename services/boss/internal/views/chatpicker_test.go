@@ -3,8 +3,11 @@ package views
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -239,6 +242,54 @@ func TestChatPicker_WakeResultMsg_RendersOutcome(t *testing.T) {
 				t.Errorf("statusMsg = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestChatPicker_RendersRepairChatTitle is the TUI smoke test for Task 6
+// of the repair-chat-visibility spec. The daemon-side regression test
+// (services/bossd/internal/plugin/repair_chat_visibility_test.go) pins
+// that StartChatRun inserts a row titled "Repair: <session>" into
+// agent_chats — the chat picker is what surfaces that row to the
+// operator. This test guards against future regressions where
+// repair-specific rendering accidentally diverges (eg. a code path that
+// special-cases titles starting with "Repair:" and panics, or a column
+// width calculation that mishandles the colon). One assertion: the
+// rendered View() output contains the title, and View() doesn't panic.
+//
+// We deliberately don't assert on layout/spacing here — the chat
+// picker's View() is exercised at the integration layer; this is a
+// targeted "the title round-trips through render" guard.
+func TestChatPicker_RendersRepairChatTitle(t *testing.T) {
+	stub := &chatPickerStub{}
+	const repairTitle = "Repair: broken session"
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	chat := &pb.ClaudeChat{
+		SessionId:       "session-1",
+		AgentSessionId:  "agent-repair-1",
+		Title:           repairTitle,
+		TmuxSessionName: "boss-repair-tmux-1",
+		CreatedAt:       timestamppb.Now(),
+	}
+	updated, _ := m.Update(chatsListedMsg{
+		chats: []*pb.ClaudeChat{chat},
+		daemonStatuses: map[string]string{
+			"agent-repair-1": statusWorking,
+		},
+	})
+	m = updated.(ChatPickerModel)
+
+	// Set a viewport size so the table actually renders rows. Without
+	// this, the model is in "loading"/zero-size mode and View output
+	// degenerates to a placeholder.
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	// View() must not panic on a Repair-prefixed title. If it ever does
+	// (rune slicing, lipgloss styling, table column-width math), this
+	// assertion fires. tea.View carries the rendered content as Content.
+	rendered := m.View().Content
+	if !strings.Contains(rendered, "Repair:") {
+		t.Errorf("rendered chat picker missing %q in:\n%s", "Repair:", rendered)
 	}
 }
 

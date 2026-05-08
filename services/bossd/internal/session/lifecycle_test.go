@@ -1653,9 +1653,12 @@ func TestStartSession_CronJobID_Persisted(t *testing.T) {
 		Title:      "Nightly audit",
 		BaseBranch: "main",
 		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
 	}
 
 	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		DeferPR:   true,
@@ -1712,6 +1715,7 @@ func TestStartSession_HookToken_CallsConfigureFinalizeHook(t *testing.T) {
 	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		DeferPR:   true,
@@ -1949,9 +1953,12 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 		Plan:       "Run the audit",
 		BaseBranch: "main",
 		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
 	}
 
 	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		DeferPR:   true,
@@ -2055,9 +2062,12 @@ func TestStartSession_CronJobID_TmuxUnavailable_Errors(t *testing.T) {
 		Plan:       "Run the audit",
 		BaseBranch: "main",
 		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
 	}
 
 	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgentLogsDir(t.TempDir())
 
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		DeferPR:   true,
@@ -2111,9 +2121,12 @@ func TestStartSession_CronJobID_ChatCreateFails_KillsTmux(t *testing.T) {
 		Plan:       "Run the audit",
 		BaseBranch: "main",
 		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
 	}
 
 	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgentLogsDir(t.TempDir())
 
 	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
 		DeferPR:   true,
@@ -2280,6 +2293,7 @@ func TestSetAgents_RoutesByAgentName(t *testing.T) {
 		"claude":   claudeAgent,
 		"opencode": openCodeAgent,
 	})
+	lc.SetAgentLogsDir(t.TempDir())
 
 	if err := lc.StartSession(ctx, "sess-opencode", StartSessionOpts{
 		DeferPR:   true,

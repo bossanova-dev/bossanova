@@ -67,6 +67,14 @@ type Client interface {
 	StartAgentRun(ctx context.Context, req *bossanovav1.StartAgentRunHostRequest) (*bossanovav1.StartAgentRunHostResponse, error)
 	WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error)
 
+	// Tmux-hosted chat runs. Like StartAgentRun / WaitAgentRun but the
+	// daemon spawns the agent inside a tmux session and creates an
+	// agent_chats row so the run is operator-attachable. Used by the
+	// repair plugin (Task 5) so a /boss-repair invocation surfaces in
+	// the chat list while it's running.
+	StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error)
+	WaitChatRun(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error)
+
 	// Repair diagnostics — persists the per-attempt outcome onto the session
 	// row so the TUI can surface "failing ⚠ repair: claude not in PATH (3×)"
 	// hints. Repair plugin calls this once per attempt in deferred cleanup.
@@ -227,6 +235,22 @@ func (c *EagerClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAge
 	return client.WaitAgentRun(ctx, req)
 }
 
+func (c *EagerClient) StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.StartChatRun(ctx, req)
+}
+
+func (c *EagerClient) WaitChatRun(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.WaitChatRun(ctx, req)
+}
+
 func (c *EagerClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
 	client, err := c.connect()
 	if err != nil {
@@ -294,6 +318,26 @@ func (c *DirectClient) StartAgentRun(ctx context.Context, req *bossanovav1.Start
 func (c *DirectClient) WaitAgentRun(ctx context.Context, req *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error) {
 	resp := &bossanovav1.WaitAgentRunHostResponse{}
 	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitAgentRun", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *DirectClient) StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
+	resp := &bossanovav1.StartChatRunHostResponse{}
+	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/StartChatRun", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// WaitChatRun bypasses the default RPC timeout because the daemon-side
+// WaitChatRun blocks for up to 30 minutes waiting for the Stop hook.
+// Lifetime is controlled by the caller's ctx — the repair plugin cancels
+// it on shutdown to drain.
+func (c *DirectClient) WaitChatRun(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error) {
+	resp := &bossanovav1.WaitChatRunHostResponse{}
+	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitChatRun", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

@@ -8,26 +8,52 @@ import (
 // ConstructPRURL constructs a GitHub PR URL from an origin URL and PR number.
 // Returns empty string if the origin URL cannot be parsed.
 func ConstructPRURL(originURL string, prNumber int) string {
+	host, slug := parseOriginURL(originURL)
+	if host == "" || slug == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://%s/%s/pull/%d", host, slug, prNumber)
+}
+
+// RepoSlug extracts the "owner/repo" slug from a git origin URL.
+// Returns "" if the URL cannot be parsed.
+//
+// Supports https://, http://, ssh://, git:// protocols and SSH shorthand
+// (git@host:owner/repo.git). Strips a trailing ".git" suffix.
+func RepoSlug(originURL string) string {
+	_, slug := parseOriginURL(originURL)
+	return slug
+}
+
+// parseOriginURL splits an origin URL into (host, "owner/repo").
+// Returns ("", "") if the URL cannot be parsed.
+func parseOriginURL(originURL string) (host, slug string) {
 	s := originURL
-	// Handle SSH format: git@github.com:owner/repo.git → github.com/owner/repo.git
-	// Detect SSH by finding ":" not followed by "/" (excludes "https://").
+	// Handle SSH shorthand: git@github.com:owner/repo.git → github.com/owner/repo.git.
+	// Detect by ":" not followed by "/" (excludes "https://").
 	if idx := strings.Index(s, ":"); idx > 0 && !strings.Contains(s[:idx], "/") && (idx+1 >= len(s) || s[idx+1] != '/') {
-		host := s[:idx]
+		h := s[:idx]
 		// Strip user@ prefix (e.g. "git@github.com" → "github.com").
-		if at := strings.Index(host, "@"); at >= 0 {
-			host = host[at+1:]
+		if at := strings.Index(h, "@"); at >= 0 {
+			h = h[at+1:]
 		}
-		s = host + "/" + s[idx+1:]
+		s = h + "/" + s[idx+1:]
 	}
 	// Strip protocol prefix.
 	for _, prefix := range []string{"https://", "http://", "ssh://", "git://"} {
 		s = strings.TrimPrefix(s, prefix)
 	}
+	// Strip user@ prefix from full URLs (e.g. "ssh://git@github.com/..." → "github.com/...").
+	if at := strings.Index(s, "@"); at >= 0 && at < strings.Index(s+"/", "/") {
+		s = s[at+1:]
+	}
 	// Strip .git suffix.
 	s = strings.TrimSuffix(s, ".git")
-	parts := strings.SplitN(s, "/", 2)
-	if len(parts) != 2 || parts[1] == "" {
-		return ""
+	// Strip trailing slash.
+	s = strings.TrimSuffix(s, "/")
+	parts := strings.SplitN(s, "/", 4)
+	if len(parts) < 3 || parts[1] == "" || parts[2] == "" {
+		return "", ""
 	}
-	return fmt.Sprintf("https://%s/%s/pull/%d", parts[0], parts[1], prNumber)
+	return parts[0], parts[1] + "/" + parts[2]
 }

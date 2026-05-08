@@ -249,6 +249,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.newSession.Done() {
 			sess := a.newSession.CreatedSession()
 			if sess != nil {
+				// New sessions launch directly into chat by design. The
+				// home-list Enter key routes via ViewChatPicker, but new-
+				// session creation must NOT — the user has just configured
+				// the session and expects to start chatting immediately.
 				a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, sess.Id, "")
 				a.activeView = ViewAttach
 				return a, a.attach.Init()

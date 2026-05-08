@@ -1405,13 +1405,27 @@ func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteC
 
 // --- Chat Status ---
 
-func (s *Server) ReportChatStatus(_ context.Context, req *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
+func (s *Server) ReportChatStatus(ctx context.Context, req *connect.Request[pb.ReportChatStatusRequest]) (*connect.Response[pb.ReportChatStatusResponse], error) {
 	if s.chatStatus == nil {
 		return connect.NewResponse(&pb.ReportChatStatusResponse{}), nil
 	}
 	for _, r := range req.Msg.Reports {
 		if r.AgentSessionId == "" {
 			continue
+		}
+		// Tmux-tracked chats are owned by the daemon's TmuxStatusPoller,
+		// which captures the live pane every 3 s. The boss CLI heartbeat
+		// reports the same chat from its own PTY ring buffer (or worse, a
+		// stale `tmux attach` child whose Process.done has closed and
+		// reports STOPPED forever) — accepting both writers makes the
+		// tracker oscillate and the session label flash between
+		// "? question" and "draft". Drop client reports for such chats
+		// and let the poller be the single source of truth.
+		if s.agentChats != nil {
+			if chat, err := s.agentChats.GetByAgentSessionID(ctx, r.AgentSessionId); err == nil &&
+				chat != nil && chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
+				continue
+			}
 		}
 		var lastOutputAt time.Time
 		if r.LastOutputAt != nil {

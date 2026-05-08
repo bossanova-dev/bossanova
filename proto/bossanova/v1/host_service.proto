@@ -49,6 +49,20 @@ service HostService {
   // error message (empty on clean exit).
   rpc WaitAgentRun(WaitAgentRunHostRequest) returns (WaitAgentRunHostResponse);
 
+  // StartChatRun spawns an agent run for the given session inside a tmux
+  // session, creates an agent_chats row so the run is visible in the chat
+  // list, and configures a run-scoped Stop-hook so the daemon receives a
+  // completion callback. Use this instead of StartAgentRun when the run
+  // should be operator-attachable (eg. /boss-repair).
+  rpc StartChatRun(StartChatRunHostRequest) returns (StartChatRunHostResponse);
+
+  // WaitChatRun blocks until the agent run identified by agent_session_id
+  // completes (claude Stop hook fires) or until a 30-minute deadline elapses.
+  // Returns the exit error message reported by the hook payload (empty on
+  // clean exit). On deadline, returns a synthetic exit error and cleans up
+  // the run state so a future call doesn't deadlock.
+  rpc WaitChatRun(WaitChatRunHostRequest) returns (WaitChatRunHostResponse);
+
   // RecordRepairOutcome persists the result of a repair attempt onto the
   // session row so the TUI can surface "last repair: claude not in PATH (3×)"
   // hints alongside the existing display status. Called by the repair
@@ -176,6 +190,36 @@ message WaitAgentRunHostRequest {
 
 message WaitAgentRunHostResponse {
   // Empty on clean exit, otherwise the agent's exit error string.
+  string exit_error = 1;
+}
+
+// --- StartChatRun ---
+
+message StartChatRunHostRequest {
+  // Session ID whose worktree should host the run.
+  string session_id = 1;
+  // Prompt to feed the agent (typed as a bracketed paste into the tmux pane).
+  string prompt = 2;
+  // Chat title surfaced in the chat list (eg. `Repair: <session>` or
+  // `Run "<cron>"`).
+  string title = 3;
+}
+
+message StartChatRunHostResponse {
+  // Resolved agent session ID returned by the loaded AgentRunner plugin.
+  string agent_session_id = 1;
+}
+
+// --- WaitChatRun ---
+
+message WaitChatRunHostRequest {
+  // Agent session ID returned from StartChatRun.
+  string agent_session_id = 1;
+}
+
+message WaitChatRunHostResponse {
+  // Empty on clean exit, otherwise the exit error from the hook payload
+  // or a synthetic message when the wait deadline elapsed.
   string exit_error = 1;
 }
 

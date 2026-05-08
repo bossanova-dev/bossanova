@@ -454,6 +454,11 @@ message ConfigureFinalizeHookRequest {
   string session_id = 2;
   string hook_token = 3;
   int32 hook_port = 4;
+  // When non-empty, the plugin installs a run-scoped Stop-hook entry that POSTs
+  // to /hooks/agent-run-complete/{agent_session_id} alongside (not replacing)
+  // any existing session-keyed entry. Empty means legacy session-keyed
+  // behaviour: POST to /hooks/finalize/{session_id}.
+  string agent_session_id = 5;
 }
 message ConfigureFinalizeHookResponse {
   bool is_supported = 1;

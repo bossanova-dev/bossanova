@@ -35,8 +35,13 @@ func (*MockAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: true}, nil
 }
 
-func (*MockAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
-	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
+func (*MockAgentClient) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	// Return a non-empty argv that mirrors the real claude plugin's shape
+	// so Lifecycle.StartTmuxChat (which now flows through this RPC) can
+	// spawn the fake tmux session under test.
+	return &bossanovav1.BuildInteractiveCommandResponse{
+		Argv: []string{"sh", "-c", "claude --session-id " + req.SessionId + " 2>&1 | tee " + req.LogPath},
+	}, nil
 }
 
 func (*MockAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {

@@ -15,7 +15,8 @@ var _ agent.AgentRunnerClient = (*fakeAgentForLifecycle)(nil)
 // The LastConfigureHookReq field lets callers verify what was passed.
 type fakeAgentForLifecycle struct {
 	LastConfigureHookReq *bossanovav1.ConfigureFinalizeHookRequest
-	IsSupported          bool // controls ConfigureFinalizeHook response
+	IsSupported          bool  // controls ConfigureFinalizeHook response
+	ConfigureHookErr     error // when non-nil, ConfigureFinalizeHook returns it
 }
 
 func newFakeAgent() *fakeAgentForLifecycle {
@@ -40,11 +41,19 @@ func (f *fakeAgentForLifecycle) ExitStatus(_ context.Context, _ *bossanovav1.Age
 
 func (f *fakeAgentForLifecycle) ConfigureFinalizeHook(_ context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	f.LastConfigureHookReq = req
+	if f.ConfigureHookErr != nil {
+		return nil, f.ConfigureHookErr
+	}
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: f.IsSupported}, nil
 }
 
-func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
-	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
+func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	// Mirror the shape of plugins/bossd-plugin-claude's real argv so cron
+	// tests that assert on the substring "claude --session-id " still pass
+	// against the extracted StartTmuxChat path.
+	return &bossanovav1.BuildInteractiveCommandResponse{
+		Argv: []string{"sh", "-c", "claude --session-id " + req.SessionId + " 2>&1 | tee " + req.LogPath},
+	}, nil
 }
 
 func (f *fakeAgentForLifecycle) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {

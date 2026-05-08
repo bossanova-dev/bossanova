@@ -38,13 +38,6 @@ type sessionArchivedMsg struct {
 	err error
 }
 
-// autoEnterResolvedMsg carries the result of checking if a session has exactly
-// one active Claude process (for direct attach) or needs the chat picker.
-type autoEnterResolvedMsg struct {
-	sessionID      string
-	agentSessionID string // non-empty if exactly one active chat found
-}
-
 // authStatusMsg carries the result of checking auth status.
 type authStatusMsg struct {
 	loggedIn bool
@@ -317,20 +310,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case autoEnterResolvedMsg:
-		if msg.agentSessionID != "" {
-			return h, func() tea.Msg {
-				return switchViewMsg{
-					view:      ViewAttach,
-					sessionID: msg.sessionID,
-					resumeID:  msg.agentSessionID,
-				}
-			}
-		}
-		return h, func() tea.Msg {
-			return switchViewMsg{view: ViewChatPicker, sessionID: msg.sessionID}
-		}
-
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		h.spinner, cmd = h.spinner.Update(msg)
@@ -383,7 +362,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			return h, func() tea.Msg { return switchViewMsg{view: ViewLogin} }
-		case "h":
+		case "h", "enter":
 			if len(h.sessions) > 0 {
 				sess := h.sessions[h.table.Cursor()]
 				return h, func() tea.Msg {
@@ -394,12 +373,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			if len(h.sessions) > 0 {
 				h.confirming = true
-			}
-			return h, nil
-		case "enter":
-			if len(h.sessions) > 0 {
-				sess := h.sessions[h.table.Cursor()]
-				return h, h.resolveAutoEnter(sess.Id)
 			}
 			return h, nil
 		case "q":
@@ -614,33 +587,6 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(pollInterval, func(time.Time) tea.Msg {
 		return tickMsg{}
 	})
-}
-
-// resolveAutoEnter checks if a session has exactly one active Claude chat.
-// If so, the user can skip the chat picker and attach directly.
-func (h HomeModel) resolveAutoEnter(sessionID string) tea.Cmd {
-	return func() tea.Msg {
-		chats, err := h.client.ListChats(h.ctx, sessionID)
-		if err != nil || len(chats) == 0 {
-			return autoEnterResolvedMsg{sessionID: sessionID}
-		}
-		statuses, _ := parseChatStatuses(h.client, h.ctx, sessionID)
-
-		// Count chats that are working or idle (via daemon heartbeats).
-		var activeID string
-		activeCount := 0
-		for _, chat := range chats {
-			daemon := statuses[chat.AgentSessionId]
-			if daemon == statusWorking || daemon == statusIdle || daemon == statusQuestion {
-				activeID = chat.AgentSessionId
-				activeCount++
-			}
-		}
-		if activeCount == 1 {
-			return autoEnterResolvedMsg{sessionID: sessionID, agentSessionID: activeID}
-		}
-		return autoEnterResolvedMsg{sessionID: sessionID}
-	}
 }
 
 func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {

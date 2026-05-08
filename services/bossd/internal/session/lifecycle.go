@@ -47,6 +47,16 @@ type Lifecycle struct {
 	// (sessions without HookToken still work); the map is read-only after
 	// SetAgents and lookups must not mutate it.
 	agents map[string]agent.AgentRunnerClient
+
+	// agentLogsDir is the bossd-owned directory where agent plugins tee
+	// their interactive (tmux-hosted) output. Stamped via SetAgentLogsDir
+	// during daemon startup. StartTmuxChat passes a per-agent-session log
+	// path under this directory into BuildInteractiveCommand so the chat
+	// list view's "tail my chat log" affordance has a stable location to
+	// read from. An empty string disables interactive launch — StartTmuxChat
+	// will reject the call with FailedPrecondition rather than write to an
+	// unconfigured path.
+	agentLogsDir string
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -71,6 +81,18 @@ func (l *Lifecycle) SetHookPort(port int) {
 // Concurrency: called exactly once during daemon startup, before serving
 // begins. Not safe for concurrent re-injection alongside in-flight RPCs.
 func (l *Lifecycle) SetAgents(m map[string]agent.AgentRunnerClient) { l.agents = m }
+
+// SetAgentLogsDir records the bossd-owned directory where agent plugins
+// write their tmux-hosted interactive run logs. Mirrors the same field
+// on HostServiceServer so StartTmuxChat can pass a deterministic
+// log_path into BuildInteractiveCommand. Called from the daemon
+// entrypoint after MkdirAll succeeds, before any session that spawns a
+// tmux chat is started. An empty string leaves StartTmuxChat in a
+// fail-closed state.
+//
+// Concurrency: called exactly once during daemon startup, before serving
+// begins. Not safe for concurrent re-injection alongside in-flight RPCs.
+func (l *Lifecycle) SetAgentLogsDir(dir string) { l.agentLogsDir = dir }
 
 // agentClientFor returns the registered AgentRunnerClient for sess.AgentName.
 // Returns an error wrapping agent.ErrAgentNotLoaded when no client matches —

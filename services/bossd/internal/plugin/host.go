@@ -442,6 +442,14 @@ func (h *Host) AgentLogsDir() string {
 	return h.hostService.AgentLogsDir()
 }
 
+// HostService returns the underlying *HostServiceServer (or nil if no
+// plugins are configured). The daemon entrypoint passes this to the
+// HookServer so /hooks/agent-run-complete/{id} can route into the
+// per-run completion state.
+func (h *Host) HostService() *HostServiceServer {
+	return h.hostService
+}
+
 // AgentRunner returns the first plugin's AgentRunner interface, or nil
 // if no plugin implements it. This is the legacy single-agent helper used
 // as a default fallback. For multi-agent dispatch, prefer AgentRunnerByName

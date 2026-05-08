@@ -61,6 +61,11 @@ const (
 	// HostServiceWaitAgentRunProcedure is the fully-qualified name of the HostService's WaitAgentRun
 	// RPC.
 	HostServiceWaitAgentRunProcedure = "/bossanova.v1.HostService/WaitAgentRun"
+	// HostServiceStartChatRunProcedure is the fully-qualified name of the HostService's StartChatRun
+	// RPC.
+	HostServiceStartChatRunProcedure = "/bossanova.v1.HostService/StartChatRun"
+	// HostServiceWaitChatRunProcedure is the fully-qualified name of the HostService's WaitChatRun RPC.
+	HostServiceWaitChatRunProcedure = "/bossanova.v1.HostService/WaitChatRun"
 	// HostServiceRecordRepairOutcomeProcedure is the fully-qualified name of the HostService's
 	// RecordRepairOutcome RPC.
 	HostServiceRecordRepairOutcomeProcedure = "/bossanova.v1.HostService/RecordRepairOutcome"
@@ -93,6 +98,18 @@ type HostServiceClient interface {
 	// WaitAgentRun blocks until the named agent run exits. Returns the exit
 	// error message (empty on clean exit).
 	WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error)
+	// StartChatRun spawns an agent run for the given session inside a tmux
+	// session, creates an agent_chats row so the run is visible in the chat
+	// list, and configures a run-scoped Stop-hook so the daemon receives a
+	// completion callback. Use this instead of StartAgentRun when the run
+	// should be operator-attachable (eg. /boss-repair).
+	StartChatRun(context.Context, *connect.Request[v1.StartChatRunHostRequest]) (*connect.Response[v1.StartChatRunHostResponse], error)
+	// WaitChatRun blocks until the agent run identified by agent_session_id
+	// completes (claude Stop hook fires) or until a 30-minute deadline elapses.
+	// Returns the exit error message reported by the hook payload (empty on
+	// clean exit). On deadline, returns a synthetic exit error and cleans up
+	// the run state so a future call doesn't deadlock.
+	WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error)
 	// RecordRepairOutcome persists the result of a repair attempt onto the
 	// session row so the TUI can surface "last repair: claude not in PATH (3×)"
 	// hints alongside the existing display status. Called by the repair
@@ -173,6 +190,18 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("WaitAgentRun")),
 			connect.WithClientOptions(opts...),
 		),
+		startChatRun: connect.NewClient[v1.StartChatRunHostRequest, v1.StartChatRunHostResponse](
+			httpClient,
+			baseURL+HostServiceStartChatRunProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("StartChatRun")),
+			connect.WithClientOptions(opts...),
+		),
+		waitChatRun: connect.NewClient[v1.WaitChatRunHostRequest, v1.WaitChatRunHostResponse](
+			httpClient,
+			baseURL+HostServiceWaitChatRunProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("WaitChatRun")),
+			connect.WithClientOptions(opts...),
+		),
 		recordRepairOutcome: connect.NewClient[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse](
 			httpClient,
 			baseURL+HostServiceRecordRepairOutcomeProcedure,
@@ -194,6 +223,8 @@ type hostServiceClient struct {
 	setRepairStatus     *connect.Client[v1.SetRepairStatusRequest, v1.SetRepairStatusResponse]
 	startAgentRun       *connect.Client[v1.StartAgentRunHostRequest, v1.StartAgentRunHostResponse]
 	waitAgentRun        *connect.Client[v1.WaitAgentRunHostRequest, v1.WaitAgentRunHostResponse]
+	startChatRun        *connect.Client[v1.StartChatRunHostRequest, v1.StartChatRunHostResponse]
+	waitChatRun         *connect.Client[v1.WaitChatRunHostRequest, v1.WaitChatRunHostResponse]
 	recordRepairOutcome *connect.Client[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse]
 }
 
@@ -247,6 +278,16 @@ func (c *hostServiceClient) WaitAgentRun(ctx context.Context, req *connect.Reque
 	return c.waitAgentRun.CallUnary(ctx, req)
 }
 
+// StartChatRun calls bossanova.v1.HostService.StartChatRun.
+func (c *hostServiceClient) StartChatRun(ctx context.Context, req *connect.Request[v1.StartChatRunHostRequest]) (*connect.Response[v1.StartChatRunHostResponse], error) {
+	return c.startChatRun.CallUnary(ctx, req)
+}
+
+// WaitChatRun calls bossanova.v1.HostService.WaitChatRun.
+func (c *hostServiceClient) WaitChatRun(ctx context.Context, req *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error) {
+	return c.waitChatRun.CallUnary(ctx, req)
+}
+
 // RecordRepairOutcome calls bossanova.v1.HostService.RecordRepairOutcome.
 func (c *hostServiceClient) RecordRepairOutcome(ctx context.Context, req *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error) {
 	return c.recordRepairOutcome.CallUnary(ctx, req)
@@ -279,6 +320,18 @@ type HostServiceHandler interface {
 	// WaitAgentRun blocks until the named agent run exits. Returns the exit
 	// error message (empty on clean exit).
 	WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error)
+	// StartChatRun spawns an agent run for the given session inside a tmux
+	// session, creates an agent_chats row so the run is visible in the chat
+	// list, and configures a run-scoped Stop-hook so the daemon receives a
+	// completion callback. Use this instead of StartAgentRun when the run
+	// should be operator-attachable (eg. /boss-repair).
+	StartChatRun(context.Context, *connect.Request[v1.StartChatRunHostRequest]) (*connect.Response[v1.StartChatRunHostResponse], error)
+	// WaitChatRun blocks until the agent run identified by agent_session_id
+	// completes (claude Stop hook fires) or until a 30-minute deadline elapses.
+	// Returns the exit error message reported by the hook payload (empty on
+	// clean exit). On deadline, returns a synthetic exit error and cleans up
+	// the run state so a future call doesn't deadlock.
+	WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error)
 	// RecordRepairOutcome persists the result of a repair attempt onto the
 	// session row so the TUI can surface "last repair: claude not in PATH (3×)"
 	// hints alongside the existing display status. Called by the repair
@@ -355,6 +408,18 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("WaitAgentRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceStartChatRunHandler := connect.NewUnaryHandler(
+		HostServiceStartChatRunProcedure,
+		svc.StartChatRun,
+		connect.WithSchema(hostServiceMethods.ByName("StartChatRun")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hostServiceWaitChatRunHandler := connect.NewUnaryHandler(
+		HostServiceWaitChatRunProcedure,
+		svc.WaitChatRun,
+		connect.WithSchema(hostServiceMethods.ByName("WaitChatRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	hostServiceRecordRepairOutcomeHandler := connect.NewUnaryHandler(
 		HostServiceRecordRepairOutcomeProcedure,
 		svc.RecordRepairOutcome,
@@ -383,6 +448,10 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceStartAgentRunHandler.ServeHTTP(w, r)
 		case HostServiceWaitAgentRunProcedure:
 			hostServiceWaitAgentRunHandler.ServeHTTP(w, r)
+		case HostServiceStartChatRunProcedure:
+			hostServiceStartChatRunHandler.ServeHTTP(w, r)
+		case HostServiceWaitChatRunProcedure:
+			hostServiceWaitChatRunHandler.ServeHTTP(w, r)
 		case HostServiceRecordRepairOutcomeProcedure:
 			hostServiceRecordRepairOutcomeHandler.ServeHTTP(w, r)
 		default:
@@ -432,6 +501,14 @@ func (UnimplementedHostServiceHandler) StartAgentRun(context.Context, *connect.R
 
 func (UnimplementedHostServiceHandler) WaitAgentRun(context.Context, *connect.Request[v1.WaitAgentRunHostRequest]) (*connect.Response[v1.WaitAgentRunHostResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.WaitAgentRun is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) StartChatRun(context.Context, *connect.Request[v1.StartChatRunHostRequest]) (*connect.Response[v1.StartChatRunHostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.StartChatRun is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.WaitChatRun is not implemented"))
 }
 
 func (UnimplementedHostServiceHandler) RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error) {

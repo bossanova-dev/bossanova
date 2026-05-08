@@ -75,43 +75,46 @@ func (p *TmuxStatusPoller) Run(ctx context.Context) {
 func (p *TmuxStatusPoller) Done() <-chan struct{} { return p.done }
 
 // pollOnce scans all chats with non-null tmux_session_name and updates statuses.
+//
+// The DB is re-queried every tick. prevCaptures is content-comparison cache
+// only — it is never the source of truth for which chats to poll. This makes
+// the poller self-healing: a transient DB or tmux error that drops a chat
+// from prevCaptures, or a chat that was never registered in the first place,
+// is rediscovered on the next tick.
 func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
-	// We don't have a "list all chats with tmux names" query, so we need
-	// to work from the previous captures map to know which chats to check.
-	// On top of that, scan for newly active chats from the tracker's entries.
-	p.mu.Lock()
-	activeClaudes := make(map[string]*models.AgentChat) // agentSessionID -> chat
-	for agentSessionID := range p.prevCaptures {
-		activeClaudes[agentSessionID] = nil
+	chats, err := p.chats.ListWithTmuxSession(ctx)
+	if err != nil {
+		p.logger.Warn().Err(err).Msg("pollOnce: failed to list chats with tmux sessions")
+		return
 	}
-	p.mu.Unlock()
 
-	// Look up tmux session names for known active chats.
-	for agentSessionID := range activeClaudes {
-		chat, err := p.chats.GetByAgentSessionID(ctx, agentSessionID)
-		if err != nil || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
-			// Chat removed or no longer has a tmux session.
-			p.mu.Lock()
-			delete(p.prevCaptures, agentSessionID)
-			p.mu.Unlock()
+	// Filter to chats whose tmux session is alive right now.
+	activeChats := make([]*models.AgentChat, 0, len(chats))
+	seen := make(map[string]bool, len(chats))
+	for _, chat := range chats {
+		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
-			// Tmux session died.
-			p.mu.Lock()
-			delete(p.prevCaptures, agentSessionID)
-			p.mu.Unlock()
 			continue
 		}
-		activeClaudes[agentSessionID] = chat
+		activeChats = append(activeChats, chat)
+		seen[chat.AgentSessionID] = true
 	}
 
-	// Capture pane and detect status for each active chat.
-	now := time.Now()
-	for agentSessionID, chat := range activeClaudes {
-		if chat == nil {
-			continue
+	// GC prevCaptures entries for chats that are no longer in the active set
+	// (DB row removed, tmux name cleared, or tmux session died).
+	p.mu.Lock()
+	for id := range p.prevCaptures {
+		if !seen[id] {
+			delete(p.prevCaptures, id)
 		}
+	}
+	p.mu.Unlock()
+
+	now := time.Now()
+	for _, chat := range activeChats {
+		agentSessionID := chat.AgentSessionID
 		tmuxName := *chat.TmuxSessionName
 		content, err := p.tmux.CapturePane(ctx, tmuxName)
 		if err != nil {

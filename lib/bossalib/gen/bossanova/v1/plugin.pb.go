@@ -2998,13 +2998,18 @@ func (x *AgentExitStatusResponse) GetExitError() string {
 }
 
 type ConfigureFinalizeHookRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkDir       string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
-	SessionId     string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	HookToken     string                 `protobuf:"bytes,3,opt,name=hook_token,json=hookToken,proto3" json:"hook_token,omitempty"`
-	HookPort      int32                  `protobuf:"varint,4,opt,name=hook_port,json=hookPort,proto3" json:"hook_port,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	WorkDir   string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	SessionId string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	HookToken string                 `protobuf:"bytes,3,opt,name=hook_token,json=hookToken,proto3" json:"hook_token,omitempty"`
+	HookPort  int32                  `protobuf:"varint,4,opt,name=hook_port,json=hookPort,proto3" json:"hook_port,omitempty"`
+	// When non-empty, the plugin installs a run-scoped Stop-hook entry that POSTs
+	// to /hooks/agent-run-complete/{agent_session_id} alongside (not replacing)
+	// any existing session-keyed entry. Empty means legacy session-keyed
+	// behaviour: POST to /hooks/finalize/{session_id}.
+	AgentSessionId string `protobuf:"bytes,5,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ConfigureFinalizeHookRequest) Reset() {
@@ -3063,6 +3068,13 @@ func (x *ConfigureFinalizeHookRequest) GetHookPort() int32 {
 		return x.HookPort
 	}
 	return 0
+}
+
+func (x *ConfigureFinalizeHookRequest) GetAgentSessionId() string {
+	if x != nil {
+		return x.AgentSessionId
+	}
+	return ""
 }
 
 type ConfigureFinalizeHookResponse struct {
@@ -3604,14 +3616,15 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\vis_complete\x18\x01 \x01(\bR\n" +
 	"isComplete\x12\x1d\n" +
 	"\n" +
-	"exit_error\x18\x02 \x01(\tR\texitError\"\x94\x01\n" +
+	"exit_error\x18\x02 \x01(\tR\texitError\"\xbe\x01\n" +
 	"\x1cConfigureFinalizeHookRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1d\n" +
 	"\n" +
 	"hook_token\x18\x03 \x01(\tR\thookToken\x12\x1b\n" +
-	"\thook_port\x18\x04 \x01(\x05R\bhookPort\"B\n" +
+	"\thook_port\x18\x04 \x01(\x05R\bhookPort\x12(\n" +
+	"\x10agent_session_id\x18\x05 \x01(\tR\x0eagentSessionId\"B\n" +
 	"\x1dConfigureFinalizeHookResponse\x12!\n" +
 	"\fis_supported\x18\x01 \x01(\bR\visSupported\"r\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +

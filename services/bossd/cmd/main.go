@@ -456,6 +456,18 @@ func run(opts runOpts) error {
 	if len(agentClients) > 0 {
 		lifecycle.SetAgents(agentClients)
 	}
+	// Mirror HostServiceServer.SetAgentLogsDir so Lifecycle.StartTmuxChat
+	// can pass a deterministic log path to BuildInteractiveCommand. Without
+	// this, the extracted method would fail-closed with FailedPrecondition.
+	lifecycle.SetAgentLogsDir(agentLogsDir)
+	// Wire the lifecycle into HostServiceServer so plugin-side StartChatRun
+	// (Task 4) can spawn tmux-hosted runs through the same path the cron
+	// scheduler uses. SetLifecycle accepts the narrow ChatLifecycle
+	// interface — *session.Lifecycle satisfies it — and is a no-op when
+	// no plugins are loaded (HostService is nil in that branch).
+	if hs := pluginHost.HostService(); hs != nil {
+		hs.SetLifecycle(lifecycle)
+	}
 
 	// Recover sessions left in Finalizing from a previous daemon crash.
 	// They can't be safely re-driven (we don't know whether EnsurePR ran
@@ -1059,11 +1071,21 @@ func run(opts runOpts) error {
 
 	// --- Hook Server (loopback HTTP for Claude Stop-hook notifications) ---
 
-	hookSrv := server.NewHookServer(server.HookServerConfig{
+	hookCfg := server.HookServerConfig{
 		Sessions:  sessions,
 		Finalizer: lifecycle,
 		Logger:    log.Logger,
-	})
+	}
+	// HostService is non-nil whenever any plugin is configured (it's
+	// constructed alongside the plugin host). When no plugins are loaded
+	// the completer stays nil-interface and the agent-run-complete
+	// endpoint surfaces 500s — that's fine because no plugin is around
+	// to register a run in the first place. Wrap the nil-pointer check
+	// here so the HookServer can rely on `completer == nil` working.
+	if hs := pluginHost.HostService(); hs != nil {
+		hookCfg.Completer = hs
+	}
+	hookSrv := server.NewHookServer(hookCfg)
 	if err := hookSrv.Listen(); err != nil {
 		return fmt.Errorf("hook server listen: %w", err)
 	}

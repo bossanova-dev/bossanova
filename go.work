@@ -2,6 +2,11 @@ go 1.25.8
 
 use (
 	./lib/bossalib
+	./plugins/bossd-plugin-claude
+	./plugins/bossd-plugin-codex
+	./plugins/bossd-plugin-dependabot
+	./plugins/bossd-plugin-linear
+	./plugins/bossd-plugin-repair
 	./services/boss
 	./services/bossd
 )

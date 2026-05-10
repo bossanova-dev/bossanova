@@ -37,10 +37,28 @@ const healthCheckInterval = 30 * time.Second
 
 // PluginStatus reports the runtime state of a single plugin.
 type PluginStatus struct {
-	Name      string
-	Running   bool
-	ID        string
-	StartedAt time.Time
+	Name    string
+	Path    string
+	Enabled bool
+	Loaded  bool
+	// Running is the legacy alias for Loaded. Kept so existing tests and
+	// callers don't have to migrate at the same time as ListPlugins.
+	Running      bool
+	Capabilities []string
+	Error        string
+	ID           string
+	StartedAt    time.Time
+}
+
+// missedPlugin tracks a configured plugin that did not produce a running
+// managedPlugin entry. We hold onto these so `boss plugin list` can show
+// disabled and failed plugins next to the loaded ones — otherwise an
+// operator with a typo'd path has no way to tell whether the daemon
+// even saw their config.
+type missedPlugin struct {
+	cfg     config.PluginConfig
+	failed  bool   // true when start was attempted and errored
+	loadErr string // populated when failed
 }
 
 // managedPlugin tracks a single running plugin process.
@@ -57,6 +75,7 @@ type managedPlugin struct {
 type Host struct {
 	mu          sync.Mutex
 	plugins     []managedPlugin
+	misses      []missedPlugin
 	eventBus    *eventbus.Bus
 	hostService *HostServiceServer
 	logger      zerolog.Logger
@@ -162,6 +181,7 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 	for _, cfg := range cfgs {
 		if !cfg.Enabled {
 			h.logger.Info().Str("plugin", cfg.Name).Msg("plugin disabled, skipping")
+			h.misses = append(h.misses, missedPlugin{cfg: cfg})
 			continue
 		}
 
@@ -197,6 +217,11 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 				Str("plugin", cfg.Name).
 				Str("path", cfg.Path).
 				Msg("failed to start plugin; skipping and continuing with remaining plugins")
+			h.misses = append(h.misses, missedPlugin{
+				cfg:     cfg,
+				failed:  true,
+				loadErr: err.Error(),
+			})
 			continue
 		}
 
@@ -292,6 +317,7 @@ func (h *Host) Stop() error {
 		h.logger.Info().Str("plugin", h.plugins[i].cfg.Name).Msg("plugin stopped")
 	}
 	h.plugins = nil
+	h.misses = nil
 
 	h.logger.Info().Msg("plugin host stopped")
 	return nil
@@ -330,21 +356,80 @@ func killWithTimeout(logger zerolog.Logger, name string, kill func(), pid int, t
 	}
 }
 
-// Plugins returns the current status of all managed plugins.
+// Plugins returns the current status of all running managed plugins.
+// Disabled and failed entries are excluded — use AllPlugins for the full
+// configured set.
 func (h *Host) Plugins() []PluginStatus {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	statuses := make([]PluginStatus, len(h.plugins))
 	for i, p := range h.plugins {
+		running := !p.client.Exited()
 		statuses[i] = PluginStatus{
-			Name:      p.cfg.Name,
-			Running:   !p.client.Exited(),
-			ID:        p.client.ID(),
-			StartedAt: p.startedAt,
+			Name:         p.cfg.Name,
+			Path:         p.cfg.Path,
+			Enabled:      p.cfg.Enabled,
+			Loaded:       running,
+			Running:      running,
+			Capabilities: managedPluginCapabilities(p),
+			ID:           p.client.ID(),
+			StartedAt:    p.startedAt,
 		}
 	}
 	return statuses
+}
+
+// AllPlugins returns the status of every plugin the host attempted to
+// manage this run, including disabled config entries and start failures.
+// Loaded plugins come first in registration order, followed by misses in
+// the order they were encountered. Powers `boss plugin list` so an
+// operator with a typo'd path can see their plugin in the output instead
+// of grepping daemon logs.
+func (h *Host) AllPlugins() []PluginStatus {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	statuses := make([]PluginStatus, 0, len(h.plugins)+len(h.misses))
+	for _, p := range h.plugins {
+		running := !p.client.Exited()
+		statuses = append(statuses, PluginStatus{
+			Name:         p.cfg.Name,
+			Path:         p.cfg.Path,
+			Enabled:      p.cfg.Enabled,
+			Loaded:       running,
+			Running:      running,
+			Capabilities: managedPluginCapabilities(p),
+			ID:           p.client.ID(),
+			StartedAt:    p.startedAt,
+		})
+	}
+	for _, m := range h.misses {
+		statuses = append(statuses, PluginStatus{
+			Name:    m.cfg.Name,
+			Path:    m.cfg.Path,
+			Enabled: m.cfg.Enabled,
+			Error:   m.loadErr,
+		})
+	}
+	return statuses
+}
+
+// managedPluginCapabilities returns the dispensed-interface labels for a
+// loaded plugin. Order is stable so consumers can render it without
+// re-sorting.
+func managedPluginCapabilities(p managedPlugin) []string {
+	caps := make([]string, 0, 3)
+	if p.agentRunner != nil {
+		caps = append(caps, "agent")
+	}
+	if p.workflowService != nil {
+		caps = append(caps, "workflow")
+	}
+	if p.taskSource != nil {
+		caps = append(caps, "task_source")
+	}
+	return caps
 }
 
 // GetTaskSources returns the cached TaskSource interfaces for all plugins

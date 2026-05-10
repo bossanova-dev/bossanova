@@ -21,6 +21,9 @@ type fakeAgentClient struct {
 	running   bool
 }
 
+func (f *fakeAgentClient) GetInfo(context.Context) (*bossanovav1.PluginInfo, error) {
+	return &bossanovav1.PluginInfo{Name: "fake"}, nil
+}
 func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	f.startReq.Store(req)
 	return f.startResp, f.startErr
@@ -45,6 +48,15 @@ func (f *fakeAgentClient) ListIgnoredDirtyFiles(context.Context, *bossanovav1.Li
 }
 func (f *fakeAgentClient) GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{Supported: true, Title: ""}, nil
+}
+func (f *fakeAgentClient) HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+	return &bossanovav1.HasQuestionPromptResponse{}, nil
+}
+func (f *fakeAgentClient) LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
+	return &bossanovav1.LastTurnIsUserResponse{}, nil
+}
+func (f *fakeAgentClient) TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
+	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
 
 func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {

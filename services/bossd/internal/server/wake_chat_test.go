@@ -71,6 +71,7 @@ func newWakeTestServer(t *testing.T, chat *models.AgentChat, sess *models.Sessio
 		wakeHook: wakeHook{
 			spawner:     tmuxer,
 			transcripts: fakeTranscriptOracle{exists: false},
+			argv:        claudeArgvBuilder(),
 		},
 	}
 }
@@ -167,6 +168,47 @@ func TestWakeChat_ConcurrentCallsCollapseToOneSpawn(t *testing.T) {
 	defer tmuxer.mu.Unlock()
 	if tmuxer.createdN != 1 {
 		t.Fatalf("singleflight should collapse to 1 spawn, got %d", tmuxer.createdN)
+	}
+}
+
+// TestWakeChat_RoutesArgvByAgentName is the wake-side mirror of
+// TestSpawnChatTmux_RoutesArgvByAgentName: a chat row persisted as
+// AgentName="codex" must wake into a `codex …` tmux command, not the
+// historical hardcoded `claude …`. This pins the second of the two
+// broken spawn paths the codex routing fix addresses.
+func TestWakeChat_RoutesArgvByAgentName(t *testing.T) {
+	// Wake routing reads AgentName off the chat row (the per-chat override),
+	// not the parent session — that's what RecordChat persists when the
+	// user picks "codex" in the chat picker. Keep the session minimal.
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", AgentName: "codex"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	s := &Server{
+		agentChats: &chatStoreFake{chat: chat},
+		sessions:   &sessionStoreFake{sess: sess},
+		wakeHook: wakeHook{
+			spawner:     tmuxer,
+			transcripts: fakeTranscriptOracle{exists: false},
+			argv: &fakeArgvBuilder{
+				fresh: map[string][]string{
+					"claude": {"claude", "--session-id"},
+					"codex":  {"codex"},
+				},
+				resume: map[string][]string{
+					"claude": {"claude", "--resume"},
+					"codex":  {"codex", "resume"},
+				},
+			},
+		},
+	}
+
+	if _, err := s.WakeChat(context.Background(), connect.NewRequest(&pb.WakeChatRequest{
+		AgentSessionId: "agent-1",
+	})); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(tmuxer.captured) == 0 || tmuxer.captured[0] != "codex" {
+		t.Fatalf("WakeChat for codex-typed chat must spawn codex, got cmd=%v", tmuxer.captured)
 	}
 }
 

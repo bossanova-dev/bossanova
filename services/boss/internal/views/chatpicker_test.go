@@ -115,7 +115,7 @@ func (s *chatPickerStub) ResurrectSession(context.Context, string) (*pb.Session,
 func (s *chatPickerStub) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) RecordChat(context.Context, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *chatPickerStub) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
@@ -152,6 +152,10 @@ func (s *chatPickerStub) RepairDoctor(context.Context) (*pb.RepairDoctorResponse
 }
 func (s *chatPickerStub) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
+}
+func (s *chatPickerStub) ListAgents(context.Context) ([]client.AgentInfo, error) { return nil, nil }
+func (s *chatPickerStub) ListPlugins(context.Context) ([]*pb.InstalledPlugin, error) {
+	return nil, nil
 }
 
 // seedChatPicker returns a ChatPickerModel populated with a single chat at the
@@ -290,6 +294,127 @@ func TestChatPicker_RendersRepairChatTitle(t *testing.T) {
 	rendered := m.View().Content
 	if !strings.Contains(rendered, "Repair:") {
 		t.Errorf("rendered chat picker missing %q in:\n%s", "Repair:", rendered)
+	}
+}
+
+// TestChatPicker_NewChatShowsAgentPickerWithMultipleAgents verifies that
+// pressing "n" with 2+ agents loaded enters the agent-select sub-phase
+// instead of immediately switching to ViewAttach.
+func TestChatPicker_NewChatShowsAgentPickerWithMultipleAgents(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	updated, _ := m.Update(agentsMsg{agents: []client.AgentInfo{
+		{Name: "claude"},
+		{Name: "codex"},
+	}})
+	m = updated.(ChatPickerModel)
+
+	updated, cmd := m.Update(keyPress('n'))
+	got := updated.(ChatPickerModel)
+	if !got.pickingAgent {
+		t.Errorf("expected pickingAgent=true after pressing 'n' with 2 agents loaded")
+	}
+	if cmd != nil {
+		t.Errorf("expected no cmd while entering picker, got %T", cmd)
+	}
+	if len(got.agentTable.Rows()) != 2 {
+		t.Errorf("agentTable rows = %d, want 2", len(got.agentTable.Rows()))
+	}
+}
+
+// TestChatPicker_NewChatSkipsAgentPickerWithSingleAgent verifies that
+// the agent picker is skipped when only one agent runner is loaded —
+// pressing "n" goes straight to ViewAttach with no agent override.
+func TestChatPicker_NewChatSkipsAgentPickerWithSingleAgent(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	updated, _ := m.Update(agentsMsg{agents: []client.AgentInfo{
+		{Name: "claude"},
+	}})
+	m = updated.(ChatPickerModel)
+
+	updated, cmd := m.Update(keyPress('n'))
+	got := updated.(ChatPickerModel)
+	if got.pickingAgent {
+		t.Errorf("expected pickingAgent=false with a single agent loaded")
+	}
+	if cmd == nil {
+		t.Fatal("expected a switchViewMsg cmd to be returned")
+	}
+	out := cmd()
+	sw, ok := out.(switchViewMsg)
+	if !ok {
+		t.Fatalf("expected switchViewMsg, got %T", out)
+	}
+	if sw.view != ViewAttach {
+		t.Errorf("switchViewMsg.view = %v, want ViewAttach", sw.view)
+	}
+	if sw.agentName != "" {
+		t.Errorf("switchViewMsg.agentName = %q, want empty (single-agent skips override)", sw.agentName)
+	}
+}
+
+// TestChatPicker_AgentPickerEnterEmitsOverride verifies that confirming
+// the agent picker with Enter returns a switchViewMsg whose agentName
+// matches the cursor's agent — the per-chat override pipeline.
+func TestChatPicker_AgentPickerEnterEmitsOverride(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	updated, _ := m.Update(agentsMsg{agents: []client.AgentInfo{
+		{Name: "claude"},
+		{Name: "codex"},
+	}})
+	m = updated.(ChatPickerModel)
+
+	updated, _ = m.Update(keyPress('n'))
+	m = updated.(ChatPickerModel)
+	if !m.pickingAgent {
+		t.Fatalf("setup: expected pickingAgent=true")
+	}
+
+	// Cursor defaults to row 0 ("claude"). Press enter.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	got := updated.(ChatPickerModel)
+	if got.pickingAgent {
+		t.Errorf("expected pickingAgent=false after enter")
+	}
+	if cmd == nil {
+		t.Fatal("expected a switchViewMsg cmd from enter")
+	}
+	out := cmd()
+	sw, ok := out.(switchViewMsg)
+	if !ok {
+		t.Fatalf("expected switchViewMsg, got %T", out)
+	}
+	if sw.agentName != "claude" {
+		t.Errorf("switchViewMsg.agentName = %q, want %q", sw.agentName, "claude")
+	}
+}
+
+// TestChatPicker_AgentPickerEscCancels verifies that Esc while in the
+// agent picker returns to the main chat list with no view switch.
+func TestChatPicker_AgentPickerEscCancels(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	updated, _ := m.Update(agentsMsg{agents: []client.AgentInfo{
+		{Name: "claude"},
+		{Name: "codex"},
+	}})
+	m = updated.(ChatPickerModel)
+
+	updated, _ = m.Update(keyPress('n'))
+	m = updated.(ChatPickerModel)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	got := updated.(ChatPickerModel)
+	if got.pickingAgent {
+		t.Errorf("expected pickingAgent=false after esc")
+	}
+	if got.cancel {
+		t.Errorf("esc inside agent picker must not cancel the chat picker itself")
+	}
+	if cmd != nil {
+		t.Errorf("esc should not emit a cmd, got %T", cmd)
 	}
 }
 

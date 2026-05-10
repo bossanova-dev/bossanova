@@ -284,13 +284,17 @@ func (c *LocalClient) EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest)
 
 // --- Claude Chat Tracking ---
 
-func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool) (*pb.ClaudeChat, error) {
-	resp, err := c.rpc.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+func (c *LocalClient) RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error) {
+	req := &pb.RecordChatRequest{
 		SessionId:      sessionID,
 		AgentSessionId: agentSessionID,
 		Title:          title,
 		Resume:         resume,
-	}))
+	}
+	if agentName != "" {
+		req.AgentName = &agentName
+	}
+	resp, err := c.rpc.RecordChat(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}
@@ -431,6 +435,26 @@ func (c *LocalClient) ListCheckSnapshots(ctx context.Context, sessionID string, 
 		return nil, err
 	}
 	return resp.Msg, nil
+}
+
+func (c *LocalClient) ListAgents(ctx context.Context) ([]AgentInfo, error) {
+	resp, err := c.rpc.ListAgents(ctx, connect.NewRequest(&pb.ListAgentsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentInfo, 0, len(resp.Msg.GetAgents()))
+	for _, a := range resp.Msg.GetAgents() {
+		out = append(out, agentInfoFromProto(a))
+	}
+	return out, nil
+}
+
+func (c *LocalClient) ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error) {
+	resp, err := c.rpc.ListPlugins(ctx, connect.NewRequest(&pb.ListPluginsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetPlugins(), nil
 }
 
 // localAttachStream wraps the DaemonService AttachSession stream.

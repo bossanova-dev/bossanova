@@ -75,6 +75,18 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 	if issue := preflight.CheckTmux(); issue != nil {
 		return views.RunPreflight(*issue)
 	}
+	if issue := preflight.CheckShellTools(); issue != nil {
+		return views.RunPreflight(*issue)
+	}
+	remote, _ := cmd.Root().Flags().GetString("remote")
+	if remote == "" && os.Getenv("BOSS_SOCKET") == "" {
+		if err := views.RunProviderStartupIfNeeded(); err != nil {
+			if views.IsPreflightCancelled(err) {
+				return nil
+			}
+			return err
+		}
+	}
 	c, err := newClient(cmd)
 	if err != nil {
 		c, err = waitForDaemon(cmd, err)
@@ -161,10 +173,11 @@ func runLS(cmd *cobra.Command) error {
 	}
 
 	// Determine the user's default agent so we can decide whether the AGENT
-	// column needs to be rendered. If the settings file can't be loaded, fall
-	// back to "claude" rather than failing the listing — config errors should
-	// not block read-only commands.
-	defaultAgent := "claude"
+	// column needs to be rendered. config.LoadFrom already normalises an
+	// empty DefaultAgent to "claude" via DefaultSettings(); we re-apply the
+	// same normalisation here for the rare error path (corrupt settings
+	// file etc.) so a read-only listing never fails on bad config.
+	defaultAgent := config.DefaultSettings().DefaultAgent
 	if cfg, err := config.Load(); err == nil && cfg.DefaultAgent != "" {
 		defaultAgent = cfg.DefaultAgent
 	}
@@ -323,6 +336,103 @@ func runRepoLS(cmd *cobra.Command) error {
 	)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
 	return nil
+}
+
+// runPluginList renders the daemon's view of every plugin it tried to
+// load this run. Disabled and load-failed entries are included so an
+// operator with a typo'd path or a stale binary on disk can spot the
+// problem without grepping daemon logs.
+func runPluginList(cmd *cobra.Command) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	plugins, err := c.ListPlugins(context.Background())
+	if err != nil {
+		return fmt.Errorf("list plugins: %w", err)
+	}
+
+	if len(plugins) == 0 {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No plugins configured.")
+		return nil
+	}
+
+	names := make([]string, len(plugins))
+	statuses := make([]string, len(plugins))
+	enabled := make([]string, len(plugins))
+	caps := make([]string, len(plugins))
+	paths := make([]string, len(plugins))
+	errs := make([]string, len(plugins))
+	hasError := false
+	for i, p := range plugins {
+		names[i] = p.GetName()
+		statuses[i] = pluginStatusLabel(p.GetStatus())
+		enabled[i] = boolLabel(p.GetEnabled())
+		if c := p.GetCapabilities(); len(c) > 0 {
+			caps[i] = strings.Join(c, ",")
+		} else {
+			caps[i] = "-"
+		}
+		paths[i] = p.GetPath()
+		errs[i] = p.GetError()
+		if errs[i] != "" {
+			hasError = true
+		}
+	}
+
+	cols := []table.Column{
+		{Title: "NAME", Width: views.MaxColWidth("NAME", names, 24)},
+		{Title: "STATUS", Width: views.MaxColWidth("STATUS", statuses, 14)},
+		{Title: "ENABLED", Width: views.MaxColWidth("ENABLED", enabled, 8)},
+		{Title: "CAPABILITIES", Width: views.MaxColWidth("CAPABILITIES", caps, 28)},
+		{Title: "PATH", Width: views.MaxColWidth("PATH", paths, 60)},
+	}
+	if hasError {
+		cols = append(cols, table.Column{Title: "ERROR", Width: views.MaxColWidth("ERROR", errs, 60)})
+	}
+
+	rows := make([]table.Row, len(plugins))
+	for i := range plugins {
+		row := table.Row{names[i], statuses[i], enabled[i], caps[i], paths[i]}
+		if hasError {
+			row = append(row, errs[i])
+		}
+		rows[i] = row
+	}
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithHeight(len(rows)+1),
+		table.WithWidth(views.CLIColumnsWidth(cols)),
+		table.WithStyles(views.CLITableStyles()),
+		table.WithFocused(false),
+	)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), t.View())
+	return nil
+}
+
+// pluginStatusLabel maps the proto enum to a short, human-readable label
+// suitable for the STATUS column.
+func pluginStatusLabel(s pb.InstalledPlugin_Status) string {
+	switch s {
+	case pb.InstalledPlugin_STATUS_LOADED:
+		return "loaded"
+	case pb.InstalledPlugin_STATUS_DISABLED:
+		return "disabled"
+	case pb.InstalledPlugin_STATUS_LOAD_FAILED:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func boolLabel(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 func runRepoRemove(cmd *cobra.Command, id string) error {

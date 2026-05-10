@@ -207,7 +207,7 @@ func (c *RemoteClient) EmptyTrash(_ context.Context, _ *pb.EmptyTrashRequest) (i
 
 // --- Claude Chat Tracking (local only) ---
 
-func (c *RemoteClient) RecordChat(_ context.Context, _, _, _ string, _ bool) (*pb.ClaudeChat, error) {
+func (c *RemoteClient) RecordChat(_ context.Context, _, _, _, _ string, _ bool) (*pb.ClaudeChat, error) {
 	return nil, errLocalOnly("RecordChat")
 }
 
@@ -308,6 +308,20 @@ func (c *RemoteClient) RepairDoctor(_ context.Context) (*pb.RepairDoctorResponse
 
 func (c *RemoteClient) ListCheckSnapshots(_ context.Context, _ string, _ int32) (*pb.ListCheckSnapshotsResponse, error) {
 	return nil, errLocalOnly("ListCheckSnapshots")
+}
+
+func (c *RemoteClient) ListAgents(_ context.Context) ([]AgentInfo, error) {
+	// Agent listing is a local-daemon concept; the orchestrator doesn't expose
+	// it (each daemon has its own loaded plugin set). Return an empty list so
+	// callers can render "no agents loaded" instead of erroring out the way
+	// other local-only RPCs do.
+	return nil, nil
+}
+
+func (c *RemoteClient) ListPlugins(_ context.Context) ([]*pb.InstalledPlugin, error) {
+	// Plugin status, like agent listing, is per-daemon and intentionally
+	// not proxied through the orchestrator.
+	return nil, errLocalOnly("ListPlugins")
 }
 
 // remoteAttachStream wraps the OrchestratorService ProxyAttachSession stream.

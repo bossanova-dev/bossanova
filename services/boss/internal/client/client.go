@@ -67,7 +67,7 @@ type BossClient interface {
 	EmptyTrash(ctx context.Context, req *pb.EmptyTrashRequest) (int32, error)
 
 	// Claude chat tracking
-	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool) (*pb.ClaudeChat, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title, agentName string, resume bool) (*pb.ClaudeChat, error)
 	ListChats(ctx context.Context, sessionID string) ([]*pb.ClaudeChat, error)
 	UpdateChatTitle(ctx context.Context, agentSessionID, title string) error
 	DeleteChat(ctx context.Context, agentSessionID string) error
@@ -97,6 +97,16 @@ type BossClient interface {
 
 	// ListCheckSnapshots — surfaced via `boss session checks <id>`.
 	ListCheckSnapshots(ctx context.Context, sessionID string, limit int32) (*pb.ListCheckSnapshotsResponse, error)
+
+	// ListAgents returns the agent runner plugins currently loaded by the
+	// daemon. Used by the TUI to drive provider-aware UI (onboarding, the
+	// per-session agent picker, settings).
+	ListAgents(ctx context.Context) ([]AgentInfo, error)
+
+	// ListPlugins returns every plugin the daemon attempted to load this
+	// run, including disabled and failed entries. Surfaced via
+	// `boss plugin list`.
+	ListPlugins(ctx context.Context) ([]*pb.InstalledPlugin, error)
 }
 
 // CreateSessionStream abstracts a server-streaming create session response.

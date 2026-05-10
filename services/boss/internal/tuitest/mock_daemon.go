@@ -88,6 +88,10 @@ type MockDaemon struct {
 	runCronJobNowMode       string
 	runCronJobNowSkipReason string
 
+	// agents controls what ListAgents returns. Tests can override via
+	// SetAgents to drive multi-agent UI (provider picker, settings render).
+	agents []*pb.AgentInfo
+
 	socketPath string
 	httpServer *http.Server
 	listener   net.Listener
@@ -838,6 +842,26 @@ func (m *MockDaemon) RunCronJobNow(_ context.Context, req *connect.Request[pb.Ru
 		State: pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
 	}
 	return connect.NewResponse(&pb.RunCronJobNowResponse{Session: sess}), nil
+}
+
+func (m *MockDaemon) ListAgents(_ context.Context, _ *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	agents := make([]*pb.AgentInfo, len(m.agents))
+	copy(agents, m.agents)
+	return connect.NewResponse(&pb.ListAgentsResponse{Agents: agents}), nil
+}
+
+func (m *MockDaemon) ListPlugins(_ context.Context, _ *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error) {
+	return connect.NewResponse(&pb.ListPluginsResponse{}), nil
+}
+
+// SetAgents overrides the agents returned by ListAgents. Tests use this to
+// drive multi-agent flows (onboarding, agent picker, settings render).
+func (m *MockDaemon) SetAgents(agents []*pb.AgentInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agents = append([]*pb.AgentInfo(nil), agents...)
 }
 
 // removeSocket removes a socket file, ignoring "not exist" errors.

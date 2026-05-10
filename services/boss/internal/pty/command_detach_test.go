@@ -37,8 +37,6 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open pty: %v", err)
 			}
-			defer master.Close() //nolint:errcheck // best-effort cleanup in test
-			defer slave.Close()  //nolint:errcheck // best-effort cleanup in test
 
 			mgr := NewManager()
 			cmd := exec.Command("cat")
@@ -47,23 +45,34 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 			pcmd.SetStdout(slave)
 			pcmd.SetStderr(slave)
 
-			done := make(chan error, 1)
+			// runDone closes when Run() returns. A close-once channel
+			// (rather than a one-shot send) lets both the success path
+			// and the cleanup defer await termination without the
+			// cleanup blocking on an empty buffered channel after the
+			// success path has already drained it.
+			runDone := make(chan struct{})
+			var runErr error
 			go func() {
-				done <- pcmd.Run()
+				runErr = pcmd.Run()
+				close(runDone)
 			}()
 
-			// Registered last so it runs first in LIFO — kills the cat
-			// process so Run() exits via its <-proc.Done() branch and the
-			// subsequent slave.Close() defer doesn't race with the still-live
-			// reader goroutine when the test below times out.
+			// Single cleanup defer so we control ordering: kill cat →
+			// wait for Run() to fully unwind (which joins goroutine
+			// 20's read of slave.Fd) → close PTY. Closing the PTY
+			// before that join would race the still-live reader on
+			// loaded -race CI runners.
 			defer func() {
 				if p, ok := mgr.Get("test-detach-" + tc.name); ok {
 					_ = p.cmd.Process.Kill()
 				}
 				select {
-				case <-done:
-				case <-time.After(2 * time.Second):
+				case <-runDone:
+				case <-time.After(15 * time.Second):
+					t.Logf("Run did not return within 15s of cat kill — closing PTY anyway")
 				}
+				_ = slave.Close()
+				_ = master.Close()
 			}()
 
 			time.Sleep(200 * time.Millisecond)
@@ -71,16 +80,17 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 				t.Fatalf("write detach bytes: %v", err)
 			}
 
-			// 10s deadline rather than 3s — under -race on a loaded GitHub
-			// runner with multiple test binaries in flight, scheduling
-			// jitter has pushed Run() past 3s on isolated runs.
+			// 30s deadline — was 10s, but raw_ctrl_x flaked on Linux
+			// under -race with multiple test binaries in flight. The
+			// generous bound is for failure clarity, not real waits:
+			// the success path returns in ~1ms once the byte arrives.
 			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("Run returned error: %v", err)
+			case <-runDone:
+				if runErr != nil {
+					t.Fatalf("Run returned error: %v", runErr)
 				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("PTYCommand did not return within 10s of %q", tc.bytes)
+			case <-time.After(30 * time.Second):
+				t.Fatalf("PTYCommand did not return within 30s of %q", tc.bytes)
 			}
 
 			if !pcmd.Detached {

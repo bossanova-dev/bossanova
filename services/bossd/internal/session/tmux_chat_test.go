@@ -608,6 +608,51 @@ func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 	}
 }
 
+// TestStartTmuxChatArmsPollWhenHookUnsupported verifies the run-keyed
+// path arms the poll fallback when the agent reports IsSupported=false
+// (e.g. codex). Plugins that own a finalize hook (claude) skip it.
+func TestStartTmuxChatArmsPollWhenHookUnsupported(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetHookPort(54321)
+	h.agentFake.IsSupported = false // hookless agent
+
+	armer := &fakePollArmer{}
+	h.lc.SetPollArmer(armer)
+	h.lc.SetDaemonCtx(ctx)
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1", "the prompt", "the title", HookOpts{Token: "tok-2"})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if !armer.armCalled {
+		t.Error("poll fallback should be armed when ConfigureFinalizeHook reports IsSupported=false")
+	}
+	if armer.armedID != id {
+		t.Errorf("armed agent_session_id = %q, want %q", armer.armedID, id)
+	}
+}
+
+// TestStartTmuxChatDoesNotArmPollWhenHookSupported verifies the existing
+// claude path does NOT trigger the poll fallback.
+func TestStartTmuxChatDoesNotArmPollWhenHookSupported(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetHookPort(54321)
+	// fakeAgent.IsSupported defaults to true.
+
+	armer := &fakePollArmer{}
+	h.lc.SetPollArmer(armer)
+	h.lc.SetDaemonCtx(ctx)
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{Token: "tok-2"}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if armer.armCalled {
+		t.Error("poll fallback should NOT be armed when hook is supported")
+	}
+}
+
 // emptyArgvAgent is an AgentRunnerClient whose BuildInteractiveCommand
 // returns no argv at all — used to drive the empty-argv fail-closed path.
 type emptyArgvAgent struct {

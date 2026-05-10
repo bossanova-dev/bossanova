@@ -44,6 +44,18 @@ type AgentRunner interface {
 	History(sessionID string) []OutputLine
 }
 
+// AgentDispatcher extends AgentRunner with explicit by-agent routing for
+// callers that already know which agent should service the call (e.g. the
+// session lifecycle reading sess.AgentName). The agentSessionID parameter
+// remains the agent-side tracking key forwarded to the plugin — empty for
+// fresh runs, non-empty for resume.
+type AgentDispatcher interface {
+	AgentRunner
+	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID string) (string, error)
+	StopByAgent(agentName, agentSessionID string) error
+	IsRunningByAgent(agentName, agentSessionID string) bool
+}
+
 // --- Ring Buffer ---
 
 // ringBuffer is a fixed-size circular buffer of OutputLine entries.

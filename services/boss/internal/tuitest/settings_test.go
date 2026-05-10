@@ -6,11 +6,31 @@ import (
 	"time"
 
 	"github.com/recurser/boss/internal/tuitest"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+// settingsAgent returns an AgentInfo equivalent to the legacy hardcoded
+// "claude" plugin row — bool toggle for dangerously-skip-permissions —
+// so the existing settings view tests still have a plugin row to assert
+// against under the schema-driven render path.
+func settingsAgent() *pb.AgentInfo {
+	return &pb.AgentInfo{
+		Name:    "claude",
+		Version: "v1",
+		UserSettings: []*pb.UserSetting{
+			{
+				Key:   "dangerously_skip_permissions",
+				Label: "Enable Claude --dangerously-skip-permissions",
+				Type:  pb.UserSettingType_USER_SETTING_TYPE_BOOL,
+			},
+		},
+	}
+}
 
 func TestTUI_SettingsView_Content(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
+		tuitest.WithAgents(settingsAgent()),
 	)
 
 	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
@@ -39,6 +59,7 @@ func TestTUI_SettingsView_Content(t *testing.T) {
 func TestTUI_SettingsView_TogglePermissions(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
+		tuitest.WithAgents(settingsAgent()),
 	)
 
 	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
@@ -52,7 +73,15 @@ func TestTUI_SettingsView_TogglePermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The first row is the permissions checkbox. Press space to toggle.
+	// The schema-driven settings view places built-in rows (worktree,
+	// poll interval) before per-agent rows. Walk the cursor down past
+	// them to the bool checkbox we seeded, then toggle.
+	for i := 0; i < 2; i++ {
+		if err := h.Driver.SendKey('j'); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	if err := h.Driver.SendKey(' '); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +112,7 @@ func TestTUI_SettingsView_TogglePermissions(t *testing.T) {
 func TestTUI_SettingsView_JKNavigation(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
+		tuitest.WithAgents(settingsAgent()),
 	)
 
 	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
@@ -130,6 +160,7 @@ func TestTUI_SettingsView_JKNavigation(t *testing.T) {
 func TestTUI_SettingsView_EditCancel(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
+		tuitest.WithAgents(settingsAgent()),
 	)
 
 	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {

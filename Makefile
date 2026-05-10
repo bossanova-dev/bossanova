@@ -1,7 +1,8 @@
 .PHONY: all build build-all clean deps format generate lint \
 	lint-check-version \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
-	plugins plugins-all release setup-worktree split stage-release test test-race \
+	plugins plugins-all release release-codex-check \
+	setup-worktree split stage-release test test-race \
 	test-integration-bossd
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
@@ -53,6 +54,9 @@ WEB_DEPS_STAMP := node_modules/.modules.yaml
 
 claude:
 	claude --dangerously-skip-permissions
+
+codex:
+	codex --dangerously-bypass-approvals-and-sandbox
 
 ## deps: Install required build/dev tools via Homebrew (macOS)
 deps:
@@ -330,6 +334,30 @@ plugins-all: $(GEN_STAMP)
 				-o $(BIN_DIR)/$$plugin-$$os-$$arch ./plugins/$$plugin; \
 		done; \
 	done
+
+## release-codex-check: Verify the codex plugin builds for every distribution
+## platform. Invoked from CI (and by humans before merging codex changes) so
+## the release workflow never fails on a missing GOOS/GOARCH cross-build. The
+## per-platform set mirrors PLATFORMS plus linux/arm64 (added explicitly here
+## because the broader PLATFORMS list will catch up in a future commit).
+##
+## Deliberately does NOT depend on $(GEN_STAMP). The cross-build only needs
+## the committed proto-generated code under lib/bossalib/gen/, which is
+## already on disk in any clean checkout. Pulling GEN_STAMP would chain in
+## $(WEB_DEPS_STAMP) (pnpm install for protoc-gen-es) — and CI for the
+## codex plugin doesn't install pnpm, which would fail this gate at the
+## point of the dependency resolution rather than the actual build.
+RELEASE_CODEX_PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
+release-codex-check:
+	@for platform in $(RELEASE_CODEX_PLATFORMS); do \
+		os=$${platform%%/*}; \
+		arch=$${platform##*/}; \
+		echo "==> Building bossd-plugin-codex ($$os/$$arch)"; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' \
+			-o $(BIN_DIR)/bossd-plugin-codex-$$os-$$arch ./plugins/bossd-plugin-codex \
+			|| { echo "FAIL: bossd-plugin-codex did not build for $$os/$$arch"; exit 1; }; \
+	done
+	@echo "==> bossd-plugin-codex builds clean across $(RELEASE_CODEX_PLATFORMS)"
 
 ## clean: Remove build artifacts and generated code
 clean:

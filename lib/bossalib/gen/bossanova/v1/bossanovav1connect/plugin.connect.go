@@ -115,6 +115,15 @@ const (
 	// AgentRunnerServiceGetChatTitleProcedure is the fully-qualified name of the AgentRunnerService's
 	// GetChatTitle RPC.
 	AgentRunnerServiceGetChatTitleProcedure = "/bossanova.v1.AgentRunnerService/GetChatTitle"
+	// AgentRunnerServiceHasQuestionPromptProcedure is the fully-qualified name of the
+	// AgentRunnerService's HasQuestionPrompt RPC.
+	AgentRunnerServiceHasQuestionPromptProcedure = "/bossanova.v1.AgentRunnerService/HasQuestionPrompt"
+	// AgentRunnerServiceLastTurnIsUserProcedure is the fully-qualified name of the AgentRunnerService's
+	// LastTurnIsUser RPC.
+	AgentRunnerServiceLastTurnIsUserProcedure = "/bossanova.v1.AgentRunnerService/LastTurnIsUser"
+	// AgentRunnerServiceTranscriptExistsProcedure is the fully-qualified name of the
+	// AgentRunnerService's TranscriptExists RPC.
+	AgentRunnerServiceTranscriptExistsProcedure = "/bossanova.v1.AgentRunnerService/TranscriptExists"
 )
 
 // TaskSourceServiceClient is a client for the bossanova.v1.TaskSourceService service.
@@ -773,6 +782,19 @@ type AgentRunnerServiceClient interface {
 	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
 	// Title from the agent's transcript for a given run.
 	GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error)
+	// HasQuestionPrompt scans pane content for the agent's TUI grammar that
+	// signals "waiting for the user to answer a question." Plugin owns its
+	// grammar; daemon owns the timing logic that combines this with content-
+	// change detection.
+	HasQuestionPrompt(context.Context, *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error)
+	// LastTurnIsUser reports whether the most recent meaningful turn in the
+	// agent's transcript is a user message (not a tool-result-only entry).
+	// Used to suppress the QUESTION status when the user has already replied.
+	LastTurnIsUser(context.Context, *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error)
+	// TranscriptExists reports whether a non-empty transcript file is present
+	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
+	// choose between resume and fresh-start argv.
+	TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error)
 }
 
 // NewAgentRunnerServiceClient constructs a client for the bossanova.v1.AgentRunnerService service.
@@ -840,6 +862,24 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("GetChatTitle")),
 			connect.WithClientOptions(opts...),
 		),
+		hasQuestionPrompt: connect.NewClient[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceHasQuestionPromptProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("HasQuestionPrompt")),
+			connect.WithClientOptions(opts...),
+		),
+		lastTurnIsUser: connect.NewClient[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceLastTurnIsUserProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("LastTurnIsUser")),
+			connect.WithClientOptions(opts...),
+		),
+		transcriptExists: connect.NewClient[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceTranscriptExistsProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("TranscriptExists")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -854,6 +894,9 @@ type agentRunnerServiceClient struct {
 	buildInteractiveCommand *connect.Client[v1.BuildInteractiveCommandRequest, v1.BuildInteractiveCommandResponse]
 	listIgnoredDirtyFiles   *connect.Client[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse]
 	getChatTitle            *connect.Client[v1.GetChatTitleRequest, v1.GetChatTitleResponse]
+	hasQuestionPrompt       *connect.Client[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse]
+	lastTurnIsUser          *connect.Client[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse]
+	transcriptExists        *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
 }
 
 // GetInfo calls bossanova.v1.AgentRunnerService.GetInfo.
@@ -901,6 +944,21 @@ func (c *agentRunnerServiceClient) GetChatTitle(ctx context.Context, req *connec
 	return c.getChatTitle.CallUnary(ctx, req)
 }
 
+// HasQuestionPrompt calls bossanova.v1.AgentRunnerService.HasQuestionPrompt.
+func (c *agentRunnerServiceClient) HasQuestionPrompt(ctx context.Context, req *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error) {
+	return c.hasQuestionPrompt.CallUnary(ctx, req)
+}
+
+// LastTurnIsUser calls bossanova.v1.AgentRunnerService.LastTurnIsUser.
+func (c *agentRunnerServiceClient) LastTurnIsUser(ctx context.Context, req *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error) {
+	return c.lastTurnIsUser.CallUnary(ctx, req)
+}
+
+// TranscriptExists calls bossanova.v1.AgentRunnerService.TranscriptExists.
+func (c *agentRunnerServiceClient) TranscriptExists(ctx context.Context, req *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error) {
+	return c.transcriptExists.CallUnary(ctx, req)
+}
+
 // AgentRunnerServiceHandler is an implementation of the bossanova.v1.AgentRunnerService service.
 type AgentRunnerServiceHandler interface {
 	GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error)
@@ -931,6 +989,19 @@ type AgentRunnerServiceHandler interface {
 	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
 	// Title from the agent's transcript for a given run.
 	GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error)
+	// HasQuestionPrompt scans pane content for the agent's TUI grammar that
+	// signals "waiting for the user to answer a question." Plugin owns its
+	// grammar; daemon owns the timing logic that combines this with content-
+	// change detection.
+	HasQuestionPrompt(context.Context, *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error)
+	// LastTurnIsUser reports whether the most recent meaningful turn in the
+	// agent's transcript is a user message (not a tool-result-only entry).
+	// Used to suppress the QUESTION status when the user has already replied.
+	LastTurnIsUser(context.Context, *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error)
+	// TranscriptExists reports whether a non-empty transcript file is present
+	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
+	// choose between resume and fresh-start argv.
+	TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error)
 }
 
 // NewAgentRunnerServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -994,6 +1065,24 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("GetChatTitle")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceHasQuestionPromptHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceHasQuestionPromptProcedure,
+		svc.HasQuestionPrompt,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("HasQuestionPrompt")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceLastTurnIsUserHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceLastTurnIsUserProcedure,
+		svc.LastTurnIsUser,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("LastTurnIsUser")),
+		connect.WithHandlerOptions(opts...),
+	)
+	agentRunnerServiceTranscriptExistsHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceTranscriptExistsProcedure,
+		svc.TranscriptExists,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("TranscriptExists")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.AgentRunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AgentRunnerServiceGetInfoProcedure:
@@ -1014,6 +1103,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceListIgnoredDirtyFilesHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceGetChatTitleProcedure:
 			agentRunnerServiceGetChatTitleHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceHasQuestionPromptProcedure:
+			agentRunnerServiceHasQuestionPromptHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceLastTurnIsUserProcedure:
+			agentRunnerServiceLastTurnIsUserHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceTranscriptExistsProcedure:
+			agentRunnerServiceTranscriptExistsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1057,4 +1152,16 @@ func (UnimplementedAgentRunnerServiceHandler) ListIgnoredDirtyFiles(context.Cont
 
 func (UnimplementedAgentRunnerServiceHandler) GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.GetChatTitle is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) HasQuestionPrompt(context.Context, *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.HasQuestionPrompt is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) LastTurnIsUser(context.Context, *connect.Request[v1.LastTurnIsUserRequest]) (*connect.Response[v1.LastTurnIsUserResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.LastTurnIsUser is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.TranscriptExists is not implemented"))
 }

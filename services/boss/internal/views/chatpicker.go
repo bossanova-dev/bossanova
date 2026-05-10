@@ -106,6 +106,14 @@ type ChatPickerModel struct {
 	// Merge confirmation / in-progress
 	mergeConfirming bool
 	merging         bool
+
+	// Agents loaded once at picker construction. Drives the per-chat
+	// agent-select sub-phase shown when the user presses [n] (new chat)
+	// AND more than one agent runner is loaded. Errors fall through
+	// silently — empty agents collapses to single-agent UX.
+	agents       []client.AgentInfo
+	agentTable   table.Model
+	pickingAgent bool // true while showing the one-shot agent picker
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
@@ -124,7 +132,7 @@ func NewChatPickerModel(c client.BossClient, parentCtx context.Context, sessionI
 }
 
 func (m ChatPickerModel) Init() tea.Cmd {
-	return tea.Batch(m.fetchSession(), m.spinner.Tick, tickCmd())
+	return tea.Batch(m.fetchSession(), fetchAgents(m.client, m.ctx), m.spinner.Tick, tickCmd())
 }
 
 func (m ChatPickerModel) fetchSession() tea.Cmd {
@@ -298,6 +306,14 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session = msg.session
 		return m, m.listChats()
 
+	case agentsMsg:
+		// Errors are non-fatal: an empty agent list collapses the picker
+		// to its single-agent UX (skip the agent-select phase entirely).
+		if msg.err == nil {
+			m.agents = msg.agents
+		}
+		return m, nil
+
 	case chatsListedMsg:
 		m.loading = false
 		if msg.err != nil {
@@ -432,6 +448,9 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.merging {
 			return m, nil
 		}
+		if m.pickingAgent {
+			return m.updateAgentSelect(msg)
+		}
 		if m.confirming {
 			return m.updateDeleteConfirm(msg)
 		}
@@ -446,6 +465,11 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel = true
 			return m, nil
 		case "n":
+			if len(m.agents) > 1 {
+				m.pickingAgent = true
+				m.buildAgentTable()
+				return m, nil
+			}
 			return m, func() tea.Msg {
 				return switchViewMsg{
 					view:      ViewAttach,
@@ -549,6 +573,60 @@ func (m ChatPickerModel) updateMergeConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
+// buildAgentTable populates m.agentTable from m.agents. Single AGENT
+// column, mirrors the new-session wizard's agent select shape.
+func (m *ChatPickerModel) buildAgentTable() {
+	names := make([]string, len(m.agents))
+	for i, a := range m.agents {
+		names[i] = a.Name
+	}
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep},
+	}
+	rows := make([]table.Row, len(m.agents))
+	for i := range m.agents {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, names[i]}
+	}
+	m.agentTable = newBossTable(cols, rows, len(m.agents)+1)
+	m.agentTable.SetWidth(columnsWidth(cols))
+}
+
+// updateAgentSelect handles key input while the agent-select sub-phase is
+// showing. Esc cancels back to the chat picker; Enter confirms the
+// selection and transitions to ViewAttach with the chosen agent override.
+func (m ChatPickerModel) updateAgentSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.pickingAgent = false
+		return m, nil
+	case "enter", " ", "space":
+		idx := m.agentTable.Cursor()
+		if idx < 0 || idx >= len(m.agents) {
+			return m, nil
+		}
+		agentName := m.agents[idx].Name
+		m.pickingAgent = false
+		sessionID := m.sessionID
+		return m, func() tea.Msg {
+			return switchViewMsg{
+				view:      ViewAttach,
+				sessionID: sessionID,
+				agentName: agentName,
+			}
+		}
+	default:
+		var cmd tea.Cmd
+		m.agentTable, cmd = m.agentTable.Update(msg)
+		updateCursorColumn(&m.agentTable)
+		return m, cmd
+	}
+}
+
 func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
@@ -606,6 +684,17 @@ func (m ChatPickerModel) View() tea.View {
 			lipgloss.NewStyle().Padding(0, 2).Render(
 				fmt.Sprintf("Loading chats for %s...", title)),
 		)
+	}
+
+	if m.pickingAgent {
+		var b strings.Builder
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(
+			"Pick an agent for this new chat."))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.agentTable.View()))
+		b.WriteString("\n")
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] cancel"}))
+		return tea.NewView(b.String())
 	}
 
 	var b strings.Builder

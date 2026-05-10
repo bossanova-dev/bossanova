@@ -5,6 +5,7 @@ package bossanova.v1;
 option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 
 import "bossanova/v1/models.proto";
+import "bossanova/v1/plugin.proto";
 import "google/protobuf/timestamp.proto";
 
 // DaemonService exposes the daemon's RPCs over a Unix socket for the boss CLI.
@@ -99,6 +100,18 @@ service DaemonService {
   // "why does the TUI think this PR is passing when GitHub says
   // failing?" without re-running `gh pr checks` by hand.
   rpc ListCheckSnapshots(ListCheckSnapshotsRequest) returns (ListCheckSnapshotsResponse);
+
+  // ListAgents returns the names + GetInfo metadata of every agent runner
+  // plugin currently loaded. Used by the boss TUI to (a) decide whether to
+  // show the onboarding wizard, (b) populate the new-session agent-select
+  // step, (c) render the settings page's per-plugin sections.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+
+  // ListPlugins returns every plugin the daemon attempted to load this
+  // run, including disabled and failed entries. Surfaced via
+  // `boss plugin list` so operators can debug "did my plugin actually
+  // load?" without grepping daemon logs.
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
 }
 
 // --- Context Resolution ---
@@ -394,6 +407,11 @@ message RecordChatRequest {
   // created fresh. Used by the daemon when minting the tmux session host for
   // the chat — ignored if the tmux session already exists.
   bool resume = 4;
+  // agent_name overrides the per-chat agent. When unset, the chat inherits
+  // the parent session's agent_name. Honored only when the named agent
+  // plugin is loaded — otherwise dispatch falls back per AgentDispatcher
+  // resolution rules.
+  optional string agent_name = 5;
 }
 
 message RecordChatResponse {
@@ -619,4 +637,52 @@ message CheckSnapshot {
 
 message ListCheckSnapshotsResponse {
   repeated CheckSnapshot snapshots = 1;
+}
+
+// --- Agent Listing ---
+
+message ListAgentsRequest {}
+
+message ListAgentsResponse {
+  repeated AgentInfo agents = 1;
+}
+
+message AgentInfo {
+  string name = 1;
+  string version = 2;
+  // user_settings imported from plugin.proto.
+  repeated UserSetting user_settings = 3;
+}
+
+// --- Installed Plugins ---
+
+message ListPluginsRequest {}
+
+message ListPluginsResponse {
+  repeated InstalledPlugin plugins = 1;
+}
+
+// InstalledPlugin describes a single entry from the daemon's plugin
+// configuration along with its current load state. Both successfully
+// loaded and failed plugins are returned so operators can see typos in
+// `path` (load_failed) or accidental disables (status=disabled).
+message InstalledPlugin {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_LOADED = 1;       // plugin process is running
+    STATUS_DISABLED = 2;     // configured with enabled=false
+    STATUS_LOAD_FAILED = 3;  // start attempted but errored
+  }
+
+  string name = 1;
+  string path = 2;
+  bool enabled = 3;
+  Status status = 4;
+  // capabilities is the set of plugin interfaces the daemon dispensed
+  // for this plugin: "agent", "workflow", "task_source". Empty for
+  // disabled or failed plugins.
+  repeated string capabilities = 5;
+  // error is populated when status == STATUS_LOAD_FAILED and carries
+  // the underlying go-plugin handshake / spawn error.
+  string error = 6;
 }

@@ -44,6 +44,15 @@ func (s *stubAgentRunner) ListIgnoredDirtyFiles(context.Context, *bossanovav1.Li
 func (s *stubAgentRunner) GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{}, nil
 }
+func (s *stubAgentRunner) HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+	return &bossanovav1.HasQuestionPromptResponse{}, nil
+}
+func (s *stubAgentRunner) LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
+	return &bossanovav1.LastTurnIsUserResponse{}, nil
+}
+func (s *stubAgentRunner) TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
+	return &bossanovav1.TranscriptExistsResponse{}, nil
+}
 
 // newHostForTest builds a Host pre-populated with the given managedPlugins,
 // bypassing the gRPC subprocess launch path. The callers only need the

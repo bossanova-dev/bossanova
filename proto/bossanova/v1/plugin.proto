@@ -52,6 +52,10 @@ message PluginInfo {
   string name = 1;
   string version = 2;
   repeated string capabilities = 3;
+  // user_settings describes plugin-tunable settings that the boss TUI
+  // renders as a section in the settings page. Empty list = no user-
+  // facing settings for this plugin.
+  repeated UserSetting user_settings = 4;
 }
 
 // Per-service GetInfo request/response types to satisfy buf lint uniqueness.
@@ -411,6 +415,22 @@ service AgentRunnerService {
 
   // Title from the agent's transcript for a given run.
   rpc GetChatTitle(GetChatTitleRequest) returns (GetChatTitleResponse);
+
+  // HasQuestionPrompt scans pane content for the agent's TUI grammar that
+  // signals "waiting for the user to answer a question." Plugin owns its
+  // grammar; daemon owns the timing logic that combines this with content-
+  // change detection.
+  rpc HasQuestionPrompt(HasQuestionPromptRequest) returns (HasQuestionPromptResponse);
+
+  // LastTurnIsUser reports whether the most recent meaningful turn in the
+  // agent's transcript is a user message (not a tool-result-only entry).
+  // Used to suppress the QUESTION status when the user has already replied.
+  rpc LastTurnIsUser(LastTurnIsUserRequest) returns (LastTurnIsUserResponse);
+
+  // TranscriptExists reports whether a non-empty transcript file is present
+  // on disk for (work_dir, agent_session_id). Used by wake-up logic to
+  // choose between resume and fresh-start argv.
+  rpc TranscriptExists(TranscriptExistsRequest) returns (TranscriptExistsResponse);
 }
 
 message AgentRunnerServiceGetInfoRequest {}
@@ -487,4 +507,43 @@ message GetChatTitleRequest {
 message GetChatTitleResponse {
   bool supported = 1;
   string title = 2;
+}
+
+message HasQuestionPromptRequest {
+  bytes pane_content = 1;
+}
+message HasQuestionPromptResponse {
+  bool has_prompt = 1;
+}
+
+message LastTurnIsUserRequest {
+  string work_dir = 1;
+  string agent_session_id = 2;
+}
+message LastTurnIsUserResponse {
+  bool is_user = 1;
+}
+
+message TranscriptExistsRequest {
+  string work_dir = 1;
+  string agent_session_id = 2;
+}
+message TranscriptExistsResponse {
+  bool exists = 1;
+}
+
+message UserSetting {
+  string key = 1;
+  string label = 2;
+  string description = 3;
+  UserSettingType type = 4;
+  string default_value = 5;
+  repeated string allowed_values = 6;
+}
+
+enum UserSettingType {
+  USER_SETTING_TYPE_UNSPECIFIED = 0;
+  USER_SETTING_TYPE_BOOL = 1;
+  USER_SETTING_TYPE_STRING = 2;
+  USER_SETTING_TYPE_ENUM = 3;
 }

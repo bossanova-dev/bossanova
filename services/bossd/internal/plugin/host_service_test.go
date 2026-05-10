@@ -227,6 +227,10 @@ func newFakeAgentClient() *fakeAgentClient {
 	}
 }
 
+func (f *fakeAgentClient) GetInfo(_ context.Context) (*bossanovav1.PluginInfo, error) {
+	return &bossanovav1.PluginInfo{Name: "claude"}, nil
+}
+
 func (f *fakeAgentClient) StartRun(_ context.Context, req *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -270,6 +274,15 @@ func (f *fakeAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav
 }
 func (f *fakeAgentClient) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{}, nil
+}
+func (f *fakeAgentClient) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+	return &bossanovav1.HasQuestionPromptResponse{}, nil
+}
+func (f *fakeAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
+	return &bossanovav1.LastTurnIsUserResponse{}, nil
+}
+func (f *fakeAgentClient) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
+	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
 
 // finish marks a session as no-longer-running with the given exit error.
@@ -892,6 +905,70 @@ func TestCompleteAgentRun_LeavesActiveRunsWhenSessionRecordsDifferentAgent(t *te
 	if !hasNewReverse {
 		t.Error("agentSessionByID[agent-2] (new run) should remain")
 	}
+}
+
+// TestSignalRunCompleteSignalsChannelWithoutAuth verifies that
+// SignalRunComplete (the in-process completion path used by the poll
+// fallback for hookless agents) fires the run-completion channel and
+// performs the same activeRuns/displayTracker cleanup as CompleteAgentRun
+// — without any bearer-token check.
+func TestSignalRunCompleteSignalsChannelWithoutAuth(t *testing.T) {
+	srv := newRunCompleteServer()
+	srv.displayTracker.SetRepairing("session-1", true)
+
+	const agentSessionID = "abc"
+	ch := srv.registerRun("session-1", agentSessionID, "ignored-because-internal")
+	srv.runMu.Lock()
+	srv.activeRuns["session-1"] = activeRun{agentName: "codex", agentSessionID: agentSessionID}
+	srv.agentSessionByID[agentSessionID] = "codex"
+	srv.runMu.Unlock()
+
+	srv.SignalRunComplete(agentSessionID, "exit-1")
+
+	select {
+	case res := <-ch:
+		if res.exitError != "exit-1" {
+			t.Errorf("exitError = %q", res.exitError)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("channel never signaled")
+	}
+
+	// runCompletion entry cleared (token + reverse-session intentionally
+	// survive — WaitChatRun owns their cleanup).
+	srv.runMu.Lock()
+	_, hasComp := srv.runCompletion[agentSessionID]
+	_, hasActive := srv.activeRuns["session-1"]
+	_, hasReverse := srv.agentSessionByID[agentSessionID]
+	_, hasTok := srv.runHookTokens[agentSessionID]
+	_, hasSess := srv.runSessionByID[agentSessionID]
+	srv.runMu.Unlock()
+	if hasComp {
+		t.Error("runCompletion[abc] should be cleared after SignalRunComplete")
+	}
+	if hasActive {
+		t.Error("activeRuns[session-1] should be cleared when its agent_session_id matches")
+	}
+	if hasReverse {
+		t.Error("agentSessionByID[abc] should be cleared on completion")
+	}
+	if !hasTok {
+		t.Error("runHookTokens[abc] should survive — WaitChatRun owns cleanup")
+	}
+	if !hasSess {
+		t.Error("runSessionByID[abc] should survive — WaitChatRun owns cleanup")
+	}
+	if entry := srv.displayTracker.Get("session-1"); entry != nil && entry.IsRepairing {
+		t.Error("IsRepairing should be cleared after SignalRunComplete")
+	}
+}
+
+// TestSignalRunCompleteIdempotentForUnknownID verifies that signalling an
+// already-cleaned-up id is a silent no-op (no panic, no double-signal).
+func TestSignalRunCompleteIdempotentForUnknownID(t *testing.T) {
+	srv := newRunCompleteServer()
+	srv.SignalRunComplete("never-registered", "")
+	srv.SignalRunComplete("never-registered", "again")
 }
 
 // setWaitChatRunDeadline is a test-only helper that overrides the default

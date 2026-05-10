@@ -1,20 +1,201 @@
 package status
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
+
+// claudeTranscriptPathForTest mirrors the path resolution that the real
+// claude plugin performs. Duplicated here (rather than imported) because
+// the daemon-side transcript helper has been deleted in D.7 and importing
+// the plugin from a daemon test would create a layering violation.
+func claudeTranscriptPathForTest(worktreePath, agentSessionID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	key := strings.NewReplacer("/", "-", ".", "-").Replace(worktreePath)
+	return filepath.Join(home, ".claude", "projects", key, agentSessionID+".jsonl"), nil
+}
+
+// pathToProjectKey mirrors Claude Code's project-directory encoding: both "/"
+// and "." become "-". Inlined here (rather than imported from the deleted
+// daemon transcript helper) so the bootstrap+suppression test fixtures can
+// continue to write JSONL files at the canonical path.
+func pathToProjectKey(path string) string {
+	return strings.NewReplacer("/", "-", ".", "-").Replace(path)
+}
+
+// claudeLastTurnIsUserForTest re-implements the JSONL tail-reading the real
+// claude plugin uses, scoped to test fixtures. Same semantics as the
+// migrated lastTurnIsUser: returns true iff the most recent meaningful
+// transcript entry is a user text turn.
+func claudeLastTurnIsUserForTest(path string) bool {
+	const tail = 32 * 1024
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return false
+	}
+	var offset int64
+	if info.Size() > tail {
+		offset = info.Size() - tail
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return false
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return false
+	}
+	if offset > 0 {
+		nl := bytes.IndexByte(data, '\n')
+		if nl < 0 {
+			return false
+		}
+		data = data[nl+1:]
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		switch entry.Type {
+		case "assistant":
+			return false
+		case "user":
+			if entry.Message.Role != "user" {
+				continue
+			}
+			c := bytes.TrimSpace(entry.Message.Content)
+			if len(c) == 0 {
+				continue
+			}
+			switch c[0] {
+			case '"':
+				var s string
+				if err := json.Unmarshal(c, &s); err == nil && strings.TrimSpace(s) != "" {
+					return true
+				}
+			case '[':
+				var blocks []struct {
+					Type string `json:"type"`
+				}
+				if err := json.Unmarshal(c, &blocks); err == nil {
+					for _, b := range blocks {
+						if b.Type == "text" {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// claudeFakeClient is a per-test stand-in for the real claude AgentRunnerClient.
+// It mirrors what bossd-plugin-claude does in production: HasQuestionPrompt
+// runs the shared statusdetect regex; LastTurnIsUser walks the JSONL transcript
+// at ~/.claude/projects/<project_key>/<agentSessionID>.jsonl. By keeping this
+// behaviour in a tiny test fake we avoid coupling tmux_poller_test to the
+// claude plugin module while still preserving the existing pane/transcript
+// fixtures these tests use.
+type claudeFakeClient struct {
+	hasPromptCalls atomic.Int64
+	lastTurnCalls  atomic.Int64
+}
+
+func (c *claudeFakeClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
+	return &pb.PluginInfo{Name: "claude"}, nil
+}
+func (c *claudeFakeClient) StartRun(context.Context, *pb.StartAgentRunRequest) (*pb.StartAgentRunResponse, error) {
+	return &pb.StartAgentRunResponse{}, nil
+}
+func (c *claudeFakeClient) StopRun(context.Context, *pb.StopAgentRunRequest) (*pb.StopAgentRunResponse, error) {
+	return &pb.StopAgentRunResponse{}, nil
+}
+func (c *claudeFakeClient) IsRunning(context.Context, *pb.IsAgentRunningRequest) (*pb.IsAgentRunningResponse, error) {
+	return &pb.IsAgentRunningResponse{}, nil
+}
+func (c *claudeFakeClient) ExitStatus(context.Context, *pb.AgentExitStatusRequest) (*pb.AgentExitStatusResponse, error) {
+	return &pb.AgentExitStatusResponse{}, nil
+}
+func (c *claudeFakeClient) ConfigureFinalizeHook(context.Context, *pb.ConfigureFinalizeHookRequest) (*pb.ConfigureFinalizeHookResponse, error) {
+	return &pb.ConfigureFinalizeHookResponse{}, nil
+}
+func (c *claudeFakeClient) BuildInteractiveCommand(context.Context, *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
+	return &pb.BuildInteractiveCommandResponse{}, nil
+}
+func (c *claudeFakeClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
+	return &pb.ListIgnoredDirtyFilesResponse{}, nil
+}
+func (c *claudeFakeClient) GetChatTitle(context.Context, *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
+	return &pb.GetChatTitleResponse{}, nil
+}
+func (c *claudeFakeClient) HasQuestionPrompt(_ context.Context, req *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
+	c.hasPromptCalls.Add(1)
+	return &pb.HasQuestionPromptResponse{HasPrompt: statusdetect.HasQuestionPrompt(req.GetPaneContent())}, nil
+}
+func (c *claudeFakeClient) LastTurnIsUser(_ context.Context, req *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
+	c.lastTurnCalls.Add(1)
+	path, err := claudeTranscriptPathForTest(req.GetWorkDir(), req.GetAgentSessionId())
+	if err != nil {
+		return &pb.LastTurnIsUserResponse{}, nil
+	}
+	return &pb.LastTurnIsUserResponse{IsUser: claudeLastTurnIsUserForTest(path)}, nil
+}
+func (c *claudeFakeClient) TranscriptExists(_ context.Context, req *pb.TranscriptExistsRequest) (*pb.TranscriptExistsResponse, error) {
+	path, err := claudeTranscriptPathForTest(req.GetWorkDir(), req.GetAgentSessionId())
+	if err != nil {
+		return &pb.TranscriptExistsResponse{}, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return &pb.TranscriptExistsResponse{}, nil
+	}
+	return &pb.TranscriptExistsResponse{Exists: !info.IsDir() && info.Size() > 0}, nil
+}
+
+// claudeAgentClients is shorthand for the per-name registry expected by
+// NewTmuxStatusPoller. Tests pass this for the common single-agent case.
+func claudeAgentClients() map[string]agent.AgentRunnerClient {
+	return map[string]agent.AgentRunnerClient{"claude": &claudeFakeClient{}}
+}
 
 // --- mock AgentChatStore ---
 
@@ -169,7 +350,7 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -181,7 +362,7 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
@@ -202,7 +383,7 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -214,7 +395,7 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
@@ -236,7 +417,7 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -246,7 +427,7 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 
 	// Simulate a previous capture that happened >5s ago with same content.
 	// The content must match exactly what CapturePane returns (cat outputs
@@ -277,7 +458,7 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -288,7 +469,7 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
@@ -314,7 +495,11 @@ func TestTmuxStatusPoller_RediscoversDroppedChat(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			// AgentName is required: the poller routes HasQuestionPrompt
+			// per-agent via the agentClients map keyed by name. Without
+			// it the chat is rediscovered but classified WORKING (the
+			// fallback when no agent client can answer).
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -326,7 +511,7 @@ func TestTmuxStatusPoller_RediscoversDroppedChat(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 
 	// Deliberately do NOT call RegisterChat or Bootstrap. prevCaptures is empty
 	// — the same state the poller ends up in if a transient error caused the
@@ -346,7 +531,7 @@ func TestTmuxStatusPoller_RediscoversDroppedChat(t *testing.T) {
 func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
 	tracker := NewTracker()
 	tmuxClient := tmux.NewClient()
-	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.AgentChat{}}, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.AgentChat{}}, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 
 	poller.RegisterChat("c1")
 	poller.mu.Lock()
@@ -370,7 +555,7 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -382,7 +567,7 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	entry := tracker.Get(agentSessionID)
@@ -410,7 +595,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -422,7 +607,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	entry := tracker.Get(agentSessionID)
@@ -463,7 +648,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, SessionID: sessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 	sessionStore := &mockSessionStore{
@@ -481,7 +666,7 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
 	tracker := NewTracker()
-	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	entry := tracker.Get(agentSessionID)
@@ -501,7 +686,7 @@ func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
 		},
 	}
 
@@ -512,7 +697,7 @@ func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	entry := tracker.Get(agentSessionID)
@@ -541,7 +726,7 @@ func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
 	}
 	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
 
-	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.Bootstrap(context.Background())
 
 	// Should be a no-op — no entries in tracker or prevCaptures.
@@ -583,7 +768,7 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 
 	chatStore := &mockChatStore{
 		chats: map[string]*models.AgentChat{
-			agentSessionID: {AgentSessionID: agentSessionID, SessionID: sessionID, TmuxSessionName: &tmuxName},
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", SessionID: sessionID, TmuxSessionName: &tmuxName},
 		},
 	}
 	sessionStore := &mockSessionStore{
@@ -604,7 +789,7 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 	tracker := NewTracker()
-	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	poller := NewTmuxStatusPoller(tracker, chatStore, sessionStore, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller.RegisterChat(agentSessionID)
 	poller.pollOnce(context.Background())
 
@@ -619,7 +804,7 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 	tracker2 := NewTracker()
-	poller2 := NewTmuxStatusPoller(tracker2, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	poller2 := NewTmuxStatusPoller(tracker2, chatStore, sessionStore, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	poller2.RegisterChat(agentSessionID)
 	poller2.pollOnce(context.Background())
 
@@ -637,7 +822,7 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 		t.Fatalf("write transcript: %v", err)
 	}
 	tracker3 := NewTracker()
-	poller3 := NewTmuxStatusPoller(tracker3, chatStore, sessionStore, tmuxClient, zerolog.Nop())
+	poller3 := NewTmuxStatusPoller(tracker3, chatStore, sessionStore, tmuxClient, claudeAgentClients(), zerolog.Nop())
 	// Seed prevCaptures with the *same* question pane content but an old
 	// timestamp — mirrors the "question was showing for a while" scenario.
 	poller3.mu.Lock()
@@ -652,5 +837,145 @@ func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
 		t.Fatal("expected entry after poll")
 	} else if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Errorf("expected WORKING after suppression with stale prev (not IDLE), got %v", entry.Status)
+	}
+}
+
+// recordingAgentClient is a per-test fake that records every HasQuestionPrompt
+// call so the dispatch test can prove pollOnce routes by chat.AgentName.
+// Returns the configured response without actually inspecting pane content.
+type recordingAgentClient struct {
+	name              string
+	hasPromptResponse bool
+	hasPromptCalls    atomic.Int64
+}
+
+func (c *recordingAgentClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
+	return &pb.PluginInfo{Name: c.name}, nil
+}
+func (c *recordingAgentClient) StartRun(context.Context, *pb.StartAgentRunRequest) (*pb.StartAgentRunResponse, error) {
+	return &pb.StartAgentRunResponse{}, nil
+}
+func (c *recordingAgentClient) StopRun(context.Context, *pb.StopAgentRunRequest) (*pb.StopAgentRunResponse, error) {
+	return &pb.StopAgentRunResponse{}, nil
+}
+func (c *recordingAgentClient) IsRunning(context.Context, *pb.IsAgentRunningRequest) (*pb.IsAgentRunningResponse, error) {
+	return &pb.IsAgentRunningResponse{}, nil
+}
+func (c *recordingAgentClient) ExitStatus(context.Context, *pb.AgentExitStatusRequest) (*pb.AgentExitStatusResponse, error) {
+	return &pb.AgentExitStatusResponse{}, nil
+}
+func (c *recordingAgentClient) ConfigureFinalizeHook(context.Context, *pb.ConfigureFinalizeHookRequest) (*pb.ConfigureFinalizeHookResponse, error) {
+	return &pb.ConfigureFinalizeHookResponse{}, nil
+}
+func (c *recordingAgentClient) BuildInteractiveCommand(context.Context, *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
+	return &pb.BuildInteractiveCommandResponse{}, nil
+}
+func (c *recordingAgentClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
+	return &pb.ListIgnoredDirtyFilesResponse{}, nil
+}
+func (c *recordingAgentClient) GetChatTitle(context.Context, *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
+	return &pb.GetChatTitleResponse{}, nil
+}
+func (c *recordingAgentClient) HasQuestionPrompt(_ context.Context, _ *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
+	c.hasPromptCalls.Add(1)
+	return &pb.HasQuestionPromptResponse{HasPrompt: c.hasPromptResponse}, nil
+}
+func (c *recordingAgentClient) LastTurnIsUser(context.Context, *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
+	return &pb.LastTurnIsUserResponse{}, nil
+}
+func (c *recordingAgentClient) TranscriptExists(context.Context, *pb.TranscriptExistsRequest) (*pb.TranscriptExistsResponse, error) {
+	return &pb.TranscriptExistsResponse{}, nil
+}
+
+// TestPollOnceDispatchesQuestionPromptByAgent proves pollOnce routes
+// HasQuestionPrompt to the AgentRunnerClient registered under each chat's
+// AgentName — the per-agent dispatch that lets the daemon stay agnostic to
+// claude/codex pane formats. With two clients in the registry and two chats
+// (one per agent), each client's HasQuestionPrompt should fire exactly once.
+func TestPollOnceDispatchesQuestionPromptByAgent(t *testing.T) {
+	t.Parallel()
+
+	claudeName := "boss-dispatch-claude"
+	codexName := "boss-dispatch-codex"
+	claudeAgentSessionID := "claude-dispatch"
+	codexAgentSessionID := "codex-dispatch"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			claudeAgentSessionID: {AgentSessionID: claudeAgentSessionID, AgentName: "claude", TmuxSessionName: &claudeName},
+			codexAgentSessionID:  {AgentSessionID: codexAgentSessionID, AgentName: "codex", TmuxSessionName: &codexName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{claudeName: true, codexName: true},
+		captures: map[string]string{
+			claudeName: "any pane content — recording client decides",
+			codexName:  "any pane content — recording client decides",
+		},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	claudeClient := &recordingAgentClient{name: "claude"}
+	codexClient := &recordingAgentClient{name: "codex"}
+
+	clients := map[string]agent.AgentRunnerClient{
+		"claude": claudeClient,
+		"codex":  codexClient,
+	}
+
+	tracker := NewTracker()
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, clients, zerolog.Nop())
+	poller.RegisterChat(claudeAgentSessionID)
+	poller.RegisterChat(codexAgentSessionID)
+	poller.pollOnce(context.Background())
+
+	if got := claudeClient.hasPromptCalls.Load(); got != 1 {
+		t.Errorf("claude HasQuestionPrompt calls = %d, want 1", got)
+	}
+	if got := codexClient.hasPromptCalls.Load(); got != 1 {
+		t.Errorf("codex HasQuestionPrompt calls = %d, want 1", got)
+	}
+}
+
+// TestPollOnceMissingAgentClientFallsThroughToIdle proves a chat referencing
+// an unloaded agent name still gets a status update (not a panic, not a
+// stuck IDLE-forever loop). The pane is treated as not-a-question, so the
+// chat falls through to working/idle detection based on capture diffs.
+func TestPollOnceMissingAgentClientFallsThroughToIdle(t *testing.T) {
+	t.Parallel()
+	tracker := NewTracker()
+	tmuxName := "boss-missing-agent"
+	agentSessionID := "ghost-1"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "ghost", TmuxSessionName: &tmuxName},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "stable content"},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	// Seed prev capture so the unchanged-content path triggers IDLE.
+	poller.mu.Lock()
+	poller.prevCaptures[agentSessionID] = captureEntry{
+		content: "stable content",
+		at:      time.Now().Add(-2 * IdleThreshold),
+	}
+	poller.mu.Unlock()
+
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after poll")
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
+		t.Errorf("expected IDLE for chat with missing agent client, got %v", entry.Status)
 	}
 }

@@ -23,6 +23,10 @@ func newFakeAgent() *fakeAgentForLifecycle {
 	return &fakeAgentForLifecycle{IsSupported: true}
 }
 
+func (f *fakeAgentForLifecycle) GetInfo(_ context.Context) (*bossanovav1.PluginInfo, error) {
+	return &bossanovav1.PluginInfo{Name: "fake"}, nil
+}
+
 func (f *fakeAgentForLifecycle) StartRun(_ context.Context, _ *bossanovav1.StartAgentRunRequest) (*bossanovav1.StartAgentRunResponse, error) {
 	return &bossanovav1.StartAgentRunResponse{SessionId: "fake"}, nil
 }
@@ -62,4 +66,28 @@ func (f *fakeAgentForLifecycle) ListIgnoredDirtyFiles(_ context.Context, _ *boss
 
 func (f *fakeAgentForLifecycle) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+	return &bossanovav1.HasQuestionPromptResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
+	return &bossanovav1.LastTurnIsUserResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
+	return &bossanovav1.TranscriptExistsResponse{}, nil
+}
+
+// fakePollArmer records calls to Arm so tests can assert that the poll
+// fallback was (or was not) wired for a given agent_session_id.
+type fakePollArmer struct {
+	armCalled bool
+	armedID   string
+}
+
+func (f *fakePollArmer) Arm(_ context.Context, agentSessionID string, _ agent.AgentRunnerClient) {
+	f.armCalled = true
+	f.armedID = agentSessionID
 }

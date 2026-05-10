@@ -315,10 +315,8 @@ func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	name := uniqueSessionName("boss-attach-bp")
 	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
 
-	// Run yes — produces a continuous stream of "y\n" — so tmux pumps a
-	// lot of output through. Tiny buffer guarantees overflow.
 	if err := c.NewSession(ctx, NewSessionOpts{
-		Name: name, WorkDir: t.TempDir(), Command: []string{"yes"},
+		Name: name, WorkDir: t.TempDir(), Command: []string{"sh"},
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -338,15 +336,22 @@ func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = att.Close() })
 
+	// Start a finite burst after attach is wired up. An unbounded `yes`
+	// process can destabilize tmux itself on busy CI runners before the next
+	// integration test starts; 1 MiB is still plenty to overflow a 64-byte
+	// ring buffer.
+	if err := att.Input([]byte("yes y | head -c 1048576\n")); err != nil {
+		t.Fatalf("Input: %v", err)
+	}
+
 	// Don't read for a while so the buffer overflows. The Output channel is
-	// buffered (small depth), the ring buffer is 64 bytes, and `yes` is
-	// producing at full speed — so once the channel buffer fills, the
-	// ringbuffer must drop oldest bytes and the next emitted chunk MUST
-	// carry Lost=true.
+	// buffered (small depth), the ring buffer is 64 bytes, and the finite
+	// burst produces far more data than can be retained, so the ringbuffer
+	// must drop oldest bytes and the next emitted chunk MUST carry Lost=true.
 	time.Sleep(500 * time.Millisecond)
 
-	// Drain Output. Under sustained overflow (`yes` pumps far faster than the
-	// tiny ring drains), at least one emitted chunk MUST carry Lost=true. We
+	// Drain Output. Under overflow, at least one emitted chunk MUST carry
+	// Lost=true. We
 	// deliberately do NOT assert that subsequent chunks reset to Lost=false:
 	// the readLoop can write a fresh overflow into the ring between any two
 	// ReadChunks, so consecutive Lost=true chunks are correct behaviour per

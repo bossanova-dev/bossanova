@@ -1,6 +1,7 @@
 package tuitest
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,6 +63,29 @@ func serviceDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..")
 }
 
+// seedSettingsAcknowledged writes a minimal settings.json with
+// ProvidersAcknowledged=true into the per-test HOME so the boss subprocess
+// skips the first-run onboarding gate. config.Path() resolves through
+// os.UserConfigDir(), which is HOME-derived on every supported platform.
+func seedSettingsAcknowledged(t *testing.T, home string) {
+	t.Helper()
+	var configDir string
+	if runtime.GOOS == "darwin" {
+		configDir = filepath.Join(home, "Library", "Application Support", "bossanova")
+	} else {
+		configDir = filepath.Join(home, ".config", "bossanova")
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("seed settings dir: %v", err)
+	}
+	contents, _ := json.Marshal(map[string]any{
+		"providers_acknowledged": true,
+	})
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), contents, 0o644); err != nil {
+		t.Fatalf("seed settings file: %v", err)
+	}
+}
+
 // Harness manages a mock daemon + TUI driver for integration testing.
 type Harness struct {
 	Driver *tuidriver.Driver
@@ -78,6 +102,7 @@ type harnessConfig struct {
 	cronJobs       []*pb.CronJob
 	prs            map[string][]*pb.PRSummary
 	trackerIssues  map[string][]*pb.TrackerIssue
+	agents         []*pb.AgentInfo
 	args           []string
 	loggedInEmail  string
 	terminalWidth  int
@@ -129,6 +154,15 @@ func WithTrackerIssues(repoID string, issues ...*pb.TrackerIssue) Option {
 			c.trackerIssues = make(map[string][]*pb.TrackerIssue)
 		}
 		c.trackerIssues[repoID] = append(c.trackerIssues[repoID], issues...)
+	}
+}
+
+// WithAgents overrides the agent runners returned by ListAgents. Tests
+// that exercise multi-agent flows (settings render, agent picker) seed
+// agents through this option.
+func WithAgents(agents ...*pb.AgentInfo) Option {
+	return func(c *harnessConfig) {
+		c.agents = append(c.agents, agents...)
 	}
 }
 
@@ -196,13 +230,27 @@ func New(t *testing.T, opts ...Option) *Harness {
 	for repoID, issues := range cfg.trackerIssues {
 		daemon.AddTrackerIssues(repoID, issues)
 	}
+	if len(cfg.agents) > 0 {
+		daemon.SetAgents(cfg.agents)
+	}
+
+	// Each tuitest gets its own HOME so the boss subprocess's settings file
+	// doesn't leak into the developer's real config (and vice versa). We
+	// pre-seed ProvidersAcknowledged=true so the first-run onboarding gate
+	// doesn't fire — tests that exercise onboarding can override by writing
+	// their own settings file before launch (or omit the seed via a future
+	// option if we add one).
+	tempHome := t.TempDir()
+	seedSettingsAcknowledged(t, tempHome)
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.
 	var env []string
 	for _, e := range os.Environ() {
 		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
 			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
-			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") {
+			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
+			strings.HasPrefix(e, "HOME=") ||
+			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
 			continue
 		}
 		env = append(env, e)
@@ -211,7 +259,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 		"BOSS_SOCKET="+daemon.SocketPath(),
 		"BOSS_SKIP_SKILLS=1",
 		"TERM=xterm-256color",
+		"HOME="+tempHome,
 	)
+	if runtime.GOOS != "darwin" {
+		env = append(env, "XDG_CONFIG_HOME="+filepath.Join(tempHome, ".config"))
+	}
 	if cfg.loggedInEmail != "" {
 		env = append(env, "BOSS_AUTH_E2E_EMAIL="+cfg.loggedInEmail)
 	}

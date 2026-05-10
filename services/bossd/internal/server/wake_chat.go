@@ -18,6 +18,7 @@ import (
 type wakeHook struct {
 	spawner     tmuxSpawner
 	transcripts transcriptOracle
+	argv        argvBuilder
 }
 
 // ErrWakeChatNotFound is returned by WakeChatInternal when the named chat
@@ -59,13 +60,17 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 
 		deps := spawnDeps{
 			Tmux:        liveTmuxSpawner{c: s.tmux},
-			Transcripts: liveTranscriptOracle{},
+			Transcripts: liveTranscriptOracle{clients: s.agentClients},
+			Argv:        liveArgvBuilder{clients: s.agentClients},
 		}
 		if s.wakeHook.spawner != nil {
 			deps.Tmux = s.wakeHook.spawner
 		}
 		if s.wakeHook.transcripts != nil {
 			deps.Transcripts = s.wakeHook.transcripts
+		}
+		if s.wakeHook.argv != nil {
+			deps.Argv = s.wakeHook.argv
 		}
 
 		outcome, err := spawnChatTmux(ctx, deps, spawnInput{
@@ -101,8 +106,8 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 	return res.outcome, res.tmuxName, nil
 }
 
-// WakeChat brings a chat's tmux+claude back to life. Connect entrypoint;
-// see WakeChatInternal for the actual logic.
+// WakeChat brings a chat's tmux+agent (claude, codex, …) back to life.
+// Connect entrypoint; see WakeChatInternal for the actual logic.
 func (s *Server) WakeChat(ctx context.Context, req *connect.Request[pb.WakeChatRequest]) (*connect.Response[pb.WakeChatResponse], error) {
 	outcome, tmuxName, err := s.WakeChatInternal(ctx, req.Msg.GetAgentSessionId(), req.Msg.GetForceFresh())
 	if err != nil {

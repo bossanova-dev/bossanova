@@ -29,6 +29,7 @@ const (
 	ViewBugReport
 	ViewCron
 	ViewCronForm
+	ViewOnboarding
 )
 
 // App is the root Bubbletea model that manages view routing and shared state.
@@ -52,22 +53,25 @@ type App struct {
 	bugReport       BugReportModel
 	cronList        CronListModel
 	cronForm        CronFormModel
+	onboarding      OnboardingModel
 	width           int
 	height          int
 	quitting        bool
 }
 
 // NewApp creates a new App wired to the daemon client.
+//
+// Provider setup runs before the daemon is auto-started so plugin settings
+// are current by the time bossd reads them.
 func NewApp(c client.BossClient, authMgr *auth.Manager) App {
 	ctx := context.Background()
-	home := NewHomeModel(c, ctx, authMgr)
 	return App{
 		client:     c,
 		auth:       authMgr,
 		ctx:        ctx,
 		ptyManager: bosspty.NewManager(),
 		activeView: ViewHome,
-		home:       home,
+		home:       NewHomeModel(c, ctx, authMgr),
 	}
 }
 
@@ -110,6 +114,8 @@ func (a App) Init() tea.Cmd {
 		viewCmd = a.repoList.Init()
 	case ViewAttach:
 		viewCmd = a.attach.Init()
+	case ViewOnboarding:
+		viewCmd = a.onboarding.Init()
 	default:
 		viewCmd = a.home.Init()
 	}
@@ -121,6 +127,7 @@ type switchViewMsg struct {
 	view      View
 	sessionID string // used for ViewAttach and ViewChatPicker
 	resumeID  string // Claude Code session UUID to resume (ViewAttach only)
+	agentName string // optional per-chat agent override (ViewAttach only); empty = inherit session
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -146,6 +153,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cronList.width = msg.Width
 		a.cronList.height = msg.Height
 		a.cronForm.width = msg.Width
+		a.onboarding.width = msg.Width
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -207,11 +215,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.trash.height = a.height
 			return a, a.trash.Init()
 		case ViewSettings:
-			a.settings = NewSettingsModel()
+			a.settings = NewSettingsModel(a.client, a.ctx)
 			a.settings.width = a.width
 			return a, a.settings.Init()
 		case ViewAttach:
 			a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, msg.sessionID, msg.resumeID)
+			a.attach.SetOverrideAgent(msg.agentName)
 			return a, a.attach.Init()
 		case ViewLogin:
 			a.login = NewLoginModel(a.auth, a.client, a.ctx)
@@ -236,6 +245,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch a.activeView {
+	case ViewOnboarding:
+		updated, cmd := a.onboarding.Update(msg)
+		a.onboarding = updated.(OnboardingModel)
+		if a.onboarding.Done() || a.onboarding.Cancelled() {
+			return a, a.switchToHome()
+		}
+		return a, cmd
 	case ViewHome:
 		updated, cmd := a.home.Update(msg)
 		a.home = updated.(HomeModel)
@@ -470,6 +486,8 @@ func (a App) View() tea.View {
 
 	var v tea.View
 	switch a.activeView {
+	case ViewOnboarding:
+		v = a.onboarding.View()
 	case ViewHome:
 		v = a.home.View()
 	case ViewNewSession:
@@ -530,6 +548,8 @@ func (a App) View() tea.View {
 			opts.line1 = "Report a bug"
 		case ViewCron:
 			opts.line1 = "Scheduled Jobs"
+		case ViewOnboarding:
+			opts.line1 = "Welcome to Bossanova"
 		}
 		v.Content = renderBanner(a.activeView, opts) + "\n" + v.Content
 	}

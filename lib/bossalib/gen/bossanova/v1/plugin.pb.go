@@ -128,12 +128,68 @@ func (TaskItemStatus) EnumDescriptor() ([]byte, []int) {
 	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{1}
 }
 
+type UserSettingType int32
+
+const (
+	UserSettingType_USER_SETTING_TYPE_UNSPECIFIED UserSettingType = 0
+	UserSettingType_USER_SETTING_TYPE_BOOL        UserSettingType = 1
+	UserSettingType_USER_SETTING_TYPE_STRING      UserSettingType = 2
+	UserSettingType_USER_SETTING_TYPE_ENUM        UserSettingType = 3
+)
+
+// Enum value maps for UserSettingType.
+var (
+	UserSettingType_name = map[int32]string{
+		0: "USER_SETTING_TYPE_UNSPECIFIED",
+		1: "USER_SETTING_TYPE_BOOL",
+		2: "USER_SETTING_TYPE_STRING",
+		3: "USER_SETTING_TYPE_ENUM",
+	}
+	UserSettingType_value = map[string]int32{
+		"USER_SETTING_TYPE_UNSPECIFIED": 0,
+		"USER_SETTING_TYPE_BOOL":        1,
+		"USER_SETTING_TYPE_STRING":      2,
+		"USER_SETTING_TYPE_ENUM":        3,
+	}
+)
+
+func (x UserSettingType) Enum() *UserSettingType {
+	p := new(UserSettingType)
+	*p = x
+	return p
+}
+
+func (x UserSettingType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (UserSettingType) Descriptor() protoreflect.EnumDescriptor {
+	return file_bossanova_v1_plugin_proto_enumTypes[2].Descriptor()
+}
+
+func (UserSettingType) Type() protoreflect.EnumType {
+	return &file_bossanova_v1_plugin_proto_enumTypes[2]
+}
+
+func (x UserSettingType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use UserSettingType.Descriptor instead.
+func (UserSettingType) EnumDescriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{2}
+}
+
 // PluginInfo describes a plugin's identity and capabilities.
 type PluginInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
-	Capabilities  []string               `protobuf:"bytes,3,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Name         string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Version      string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	Capabilities []string               `protobuf:"bytes,3,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	// user_settings describes plugin-tunable settings that the boss TUI
+	// renders as a section in the settings page. Empty list = no user-
+	// facing settings for this plugin.
+	UserSettings  []*UserSetting `protobuf:"bytes,4,rep,name=user_settings,json=userSettings,proto3" json:"user_settings,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -185,6 +241,13 @@ func (x *PluginInfo) GetVersion() string {
 func (x *PluginInfo) GetCapabilities() []string {
 	if x != nil {
 		return x.Capabilities
+	}
+	return nil
+}
+
+func (x *PluginInfo) GetUserSettings() []*UserSetting {
+	if x != nil {
+		return x.UserSettings
 	}
 	return nil
 }
@@ -3417,16 +3480,381 @@ func (x *GetChatTitleResponse) GetTitle() string {
 	return ""
 }
 
+type HasQuestionPromptRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PaneContent   []byte                 `protobuf:"bytes,1,opt,name=pane_content,json=paneContent,proto3" json:"pane_content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HasQuestionPromptRequest) Reset() {
+	*x = HasQuestionPromptRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HasQuestionPromptRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HasQuestionPromptRequest) ProtoMessage() {}
+
+func (x *HasQuestionPromptRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HasQuestionPromptRequest.ProtoReflect.Descriptor instead.
+func (*HasQuestionPromptRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *HasQuestionPromptRequest) GetPaneContent() []byte {
+	if x != nil {
+		return x.PaneContent
+	}
+	return nil
+}
+
+type HasQuestionPromptResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HasPrompt     bool                   `protobuf:"varint,1,opt,name=has_prompt,json=hasPrompt,proto3" json:"has_prompt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HasQuestionPromptResponse) Reset() {
+	*x = HasQuestionPromptResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HasQuestionPromptResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HasQuestionPromptResponse) ProtoMessage() {}
+
+func (x *HasQuestionPromptResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HasQuestionPromptResponse.ProtoReflect.Descriptor instead.
+func (*HasQuestionPromptResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *HasQuestionPromptResponse) GetHasPrompt() bool {
+	if x != nil {
+		return x.HasPrompt
+	}
+	return false
+}
+
+type LastTurnIsUserRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	WorkDir        string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	AgentSessionId string                 `protobuf:"bytes,2,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *LastTurnIsUserRequest) Reset() {
+	*x = LastTurnIsUserRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LastTurnIsUserRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LastTurnIsUserRequest) ProtoMessage() {}
+
+func (x *LastTurnIsUserRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LastTurnIsUserRequest.ProtoReflect.Descriptor instead.
+func (*LastTurnIsUserRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{64}
+}
+
+func (x *LastTurnIsUserRequest) GetWorkDir() string {
+	if x != nil {
+		return x.WorkDir
+	}
+	return ""
+}
+
+func (x *LastTurnIsUserRequest) GetAgentSessionId() string {
+	if x != nil {
+		return x.AgentSessionId
+	}
+	return ""
+}
+
+type LastTurnIsUserResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IsUser        bool                   `protobuf:"varint,1,opt,name=is_user,json=isUser,proto3" json:"is_user,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LastTurnIsUserResponse) Reset() {
+	*x = LastTurnIsUserResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LastTurnIsUserResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LastTurnIsUserResponse) ProtoMessage() {}
+
+func (x *LastTurnIsUserResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LastTurnIsUserResponse.ProtoReflect.Descriptor instead.
+func (*LastTurnIsUserResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *LastTurnIsUserResponse) GetIsUser() bool {
+	if x != nil {
+		return x.IsUser
+	}
+	return false
+}
+
+type TranscriptExistsRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	WorkDir        string                 `protobuf:"bytes,1,opt,name=work_dir,json=workDir,proto3" json:"work_dir,omitempty"`
+	AgentSessionId string                 `protobuf:"bytes,2,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *TranscriptExistsRequest) Reset() {
+	*x = TranscriptExistsRequest{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscriptExistsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscriptExistsRequest) ProtoMessage() {}
+
+func (x *TranscriptExistsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscriptExistsRequest.ProtoReflect.Descriptor instead.
+func (*TranscriptExistsRequest) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *TranscriptExistsRequest) GetWorkDir() string {
+	if x != nil {
+		return x.WorkDir
+	}
+	return ""
+}
+
+func (x *TranscriptExistsRequest) GetAgentSessionId() string {
+	if x != nil {
+		return x.AgentSessionId
+	}
+	return ""
+}
+
+type TranscriptExistsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Exists        bool                   `protobuf:"varint,1,opt,name=exists,proto3" json:"exists,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TranscriptExistsResponse) Reset() {
+	*x = TranscriptExistsResponse{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[67]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscriptExistsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscriptExistsResponse) ProtoMessage() {}
+
+func (x *TranscriptExistsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[67]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscriptExistsResponse.ProtoReflect.Descriptor instead.
+func (*TranscriptExistsResponse) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{67}
+}
+
+func (x *TranscriptExistsResponse) GetExists() bool {
+	if x != nil {
+		return x.Exists
+	}
+	return false
+}
+
+type UserSetting struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Label         string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	Type          UserSettingType        `protobuf:"varint,4,opt,name=type,proto3,enum=bossanova.v1.UserSettingType" json:"type,omitempty"`
+	DefaultValue  string                 `protobuf:"bytes,5,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
+	AllowedValues []string               `protobuf:"bytes,6,rep,name=allowed_values,json=allowedValues,proto3" json:"allowed_values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UserSetting) Reset() {
+	*x = UserSetting{}
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[68]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UserSetting) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UserSetting) ProtoMessage() {}
+
+func (x *UserSetting) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_plugin_proto_msgTypes[68]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UserSetting.ProtoReflect.Descriptor instead.
+func (*UserSetting) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_plugin_proto_rawDescGZIP(), []int{68}
+}
+
+func (x *UserSetting) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *UserSetting) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *UserSetting) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *UserSetting) GetType() UserSettingType {
+	if x != nil {
+		return x.Type
+	}
+	return UserSettingType_USER_SETTING_TYPE_UNSPECIFIED
+}
+
+func (x *UserSetting) GetDefaultValue() string {
+	if x != nil {
+		return x.DefaultValue
+	}
+	return ""
+}
+
+func (x *UserSetting) GetAllowedValues() []string {
+	if x != nil {
+		return x.AllowedValues
+	}
+	return nil
+}
+
 var File_bossanova_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/plugin.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/models.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"^\n" +
+	"\x19bossanova/v1/plugin.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/models.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9e\x01\n" +
 	"\n" +
 	"PluginInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
-	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\"!\n" +
+	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\x12>\n" +
+	"\ruser_settings\x18\x04 \x03(\v2\x19.bossanova.v1.UserSettingR\fuserSettings\"!\n" +
 	"\x1fTaskSourceServiceGetInfoRequest\"P\n" +
 	" TaskSourceServiceGetInfoResponse\x12,\n" +
 	"\x04info\x18\x01 \x01(\v2\x18.bossanova.v1.PluginInfoR\x04info\"\"\n" +
@@ -3644,7 +4072,29 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\"J\n" +
 	"\x14GetChatTitleResponse\x12\x1c\n" +
 	"\tsupported\x18\x01 \x01(\bR\tsupported\x12\x14\n" +
-	"\x05title\x18\x02 \x01(\tR\x05title*\x82\x01\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\"=\n" +
+	"\x18HasQuestionPromptRequest\x12!\n" +
+	"\fpane_content\x18\x01 \x01(\fR\vpaneContent\":\n" +
+	"\x19HasQuestionPromptResponse\x12\x1d\n" +
+	"\n" +
+	"has_prompt\x18\x01 \x01(\bR\thasPrompt\"\\\n" +
+	"\x15LastTurnIsUserRequest\x12\x19\n" +
+	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
+	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"1\n" +
+	"\x16LastTurnIsUserResponse\x12\x17\n" +
+	"\ais_user\x18\x01 \x01(\bR\x06isUser\"^\n" +
+	"\x17TranscriptExistsRequest\x12\x19\n" +
+	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x12(\n" +
+	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\"2\n" +
+	"\x18TranscriptExistsResponse\x12\x16\n" +
+	"\x06exists\x18\x01 \x01(\bR\x06exists\"\xd6\x01\n" +
+	"\vUserSetting\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x121\n" +
+	"\x04type\x18\x04 \x01(\x0e2\x1d.bossanova.v1.UserSettingTypeR\x04type\x12#\n" +
+	"\rdefault_value\x18\x05 \x01(\tR\fdefaultValue\x12%\n" +
+	"\x0eallowed_values\x18\x06 \x03(\tR\rallowedValues*\x82\x01\n" +
 	"\n" +
 	"TaskAction\x12\x1b\n" +
 	"\x17TASK_ACTION_UNSPECIFIED\x10\x00\x12\x1a\n" +
@@ -3655,7 +4105,12 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x1cTASK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cTASK_ITEM_STATUS_IN_PROGRESS\x10\x01\x12\x1e\n" +
 	"\x1aTASK_ITEM_STATUS_COMPLETED\x10\x02\x12\x1b\n" +
-	"\x17TASK_ITEM_STATUS_FAILED\x10\x032\x9a\x03\n" +
+	"\x17TASK_ITEM_STATUS_FAILED\x10\x03*\x8a\x01\n" +
+	"\x0fUserSettingType\x12!\n" +
+	"\x1dUSER_SETTING_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16USER_SETTING_TYPE_BOOL\x10\x01\x12\x1c\n" +
+	"\x18USER_SETTING_TYPE_STRING\x10\x02\x12\x1a\n" +
+	"\x16USER_SETTING_TYPE_ENUM\x10\x032\x9a\x03\n" +
 	"\x11TaskSourceService\x12h\n" +
 	"\aGetInfo\x12-.bossanova.v1.TaskSourceServiceGetInfoRequest\x1a..bossanova.v1.TaskSourceServiceGetInfoResponse\x12L\n" +
 	"\tPollTasks\x12\x1e.bossanova.v1.PollTasksRequest\x1a\x1f.bossanova.v1.PollTasksResponse\x12a\n" +
@@ -3676,7 +4131,7 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x0eResumeWorkflow\x12#.bossanova.v1.ResumeWorkflowRequest\x1a$.bossanova.v1.ResumeWorkflowResponse\x12[\n" +
 	"\x0eCancelWorkflow\x12#.bossanova.v1.CancelWorkflowRequest\x1a$.bossanova.v1.CancelWorkflowResponse\x12d\n" +
 	"\x11GetWorkflowStatus\x12&.bossanova.v1.GetWorkflowStatusRequest\x1a'.bossanova.v1.GetWorkflowStatusResponse\x12g\n" +
-	"\x12NotifyStatusChange\x12'.bossanova.v1.NotifyStatusChangeRequest\x1a(.bossanova.v1.NotifyStatusChangeResponse2\x8d\a\n" +
+	"\x12NotifyStatusChange\x12'.bossanova.v1.NotifyStatusChangeRequest\x1a(.bossanova.v1.NotifyStatusChangeResponse2\xb3\t\n" +
 	"\x12AgentRunnerService\x12j\n" +
 	"\aGetInfo\x12..bossanova.v1.AgentRunnerServiceGetInfoRequest\x1a/.bossanova.v1.AgentRunnerServiceGetInfoResponse\x12S\n" +
 	"\bStartRun\x12\".bossanova.v1.StartAgentRunRequest\x1a#.bossanova.v1.StartAgentRunResponse\x12P\n" +
@@ -3687,7 +4142,10 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\x15ConfigureFinalizeHook\x12*.bossanova.v1.ConfigureFinalizeHookRequest\x1a+.bossanova.v1.ConfigureFinalizeHookResponse\x12v\n" +
 	"\x17BuildInteractiveCommand\x12,.bossanova.v1.BuildInteractiveCommandRequest\x1a-.bossanova.v1.BuildInteractiveCommandResponse\x12p\n" +
 	"\x15ListIgnoredDirtyFiles\x12*.bossanova.v1.ListIgnoredDirtyFilesRequest\x1a+.bossanova.v1.ListIgnoredDirtyFilesResponse\x12U\n" +
-	"\fGetChatTitle\x12!.bossanova.v1.GetChatTitleRequest\x1a\".bossanova.v1.GetChatTitleResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\fGetChatTitle\x12!.bossanova.v1.GetChatTitleRequest\x1a\".bossanova.v1.GetChatTitleResponse\x12d\n" +
+	"\x11HasQuestionPrompt\x12&.bossanova.v1.HasQuestionPromptRequest\x1a'.bossanova.v1.HasQuestionPromptResponse\x12[\n" +
+	"\x0eLastTurnIsUser\x12#.bossanova.v1.LastTurnIsUserRequest\x1a$.bossanova.v1.LastTurnIsUserResponse\x12a\n" +
+	"\x10TranscriptExists\x12%.bossanova.v1.TranscriptExistsRequest\x1a&.bossanova.v1.TranscriptExistsResponseB;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_plugin_proto_rawDescOnce sync.Once
@@ -3701,168 +4159,184 @@ func file_bossanova_v1_plugin_proto_rawDescGZIP() []byte {
 	return file_bossanova_v1_plugin_proto_rawDescData
 }
 
-var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 63)
+var file_bossanova_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_bossanova_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 70)
 var file_bossanova_v1_plugin_proto_goTypes = []any{
 	(TaskAction)(0),                           // 0: bossanova.v1.TaskAction
 	(TaskItemStatus)(0),                       // 1: bossanova.v1.TaskItemStatus
-	(*PluginInfo)(nil),                        // 2: bossanova.v1.PluginInfo
-	(*TaskSourceServiceGetInfoRequest)(nil),   // 3: bossanova.v1.TaskSourceServiceGetInfoRequest
-	(*TaskSourceServiceGetInfoResponse)(nil),  // 4: bossanova.v1.TaskSourceServiceGetInfoResponse
-	(*EventSourceServiceGetInfoRequest)(nil),  // 5: bossanova.v1.EventSourceServiceGetInfoRequest
-	(*EventSourceServiceGetInfoResponse)(nil), // 6: bossanova.v1.EventSourceServiceGetInfoResponse
-	(*SchedulerServiceGetInfoRequest)(nil),    // 7: bossanova.v1.SchedulerServiceGetInfoRequest
-	(*SchedulerServiceGetInfoResponse)(nil),   // 8: bossanova.v1.SchedulerServiceGetInfoResponse
-	(*PollTasksRequest)(nil),                  // 9: bossanova.v1.PollTasksRequest
-	(*PollTasksResponse)(nil),                 // 10: bossanova.v1.PollTasksResponse
-	(*TaskItem)(nil),                          // 11: bossanova.v1.TaskItem
-	(*UpdateTaskStatusRequest)(nil),           // 12: bossanova.v1.UpdateTaskStatusRequest
-	(*UpdateTaskStatusResponse)(nil),          // 13: bossanova.v1.UpdateTaskStatusResponse
-	(*ListAvailableIssuesRequest)(nil),        // 14: bossanova.v1.ListAvailableIssuesRequest
-	(*ListAvailableIssuesResponse)(nil),       // 15: bossanova.v1.ListAvailableIssuesResponse
-	(*StreamEventsRequest)(nil),               // 16: bossanova.v1.StreamEventsRequest
-	(*StreamEventsResponse)(nil),              // 17: bossanova.v1.StreamEventsResponse
-	(*EventNotification)(nil),                 // 18: bossanova.v1.EventNotification
-	(*TaskReadyEvent)(nil),                    // 19: bossanova.v1.TaskReadyEvent
-	(*TaskUpdatedEvent)(nil),                  // 20: bossanova.v1.TaskUpdatedEvent
-	(*ExternalCheckEvent)(nil),                // 21: bossanova.v1.ExternalCheckEvent
-	(*CustomEvent)(nil),                       // 22: bossanova.v1.CustomEvent
-	(*GetScheduleRequest)(nil),                // 23: bossanova.v1.GetScheduleRequest
-	(*GetScheduleResponse)(nil),               // 24: bossanova.v1.GetScheduleResponse
-	(*ScheduledJob)(nil),                      // 25: bossanova.v1.ScheduledJob
-	(*ExecuteJobRequest)(nil),                 // 26: bossanova.v1.ExecuteJobRequest
-	(*ExecuteJobResponse)(nil),                // 27: bossanova.v1.ExecuteJobResponse
-	(*JobAction)(nil),                         // 28: bossanova.v1.JobAction
-	(*CreateSessionAction)(nil),               // 29: bossanova.v1.CreateSessionAction
-	(*NoOpAction)(nil),                        // 30: bossanova.v1.NoOpAction
-	(*WorkflowServiceGetInfoRequest)(nil),     // 31: bossanova.v1.WorkflowServiceGetInfoRequest
-	(*WorkflowServiceGetInfoResponse)(nil),    // 32: bossanova.v1.WorkflowServiceGetInfoResponse
-	(*StartWorkflowRequest)(nil),              // 33: bossanova.v1.StartWorkflowRequest
-	(*StartWorkflowResponse)(nil),             // 34: bossanova.v1.StartWorkflowResponse
-	(*PauseWorkflowRequest)(nil),              // 35: bossanova.v1.PauseWorkflowRequest
-	(*PauseWorkflowResponse)(nil),             // 36: bossanova.v1.PauseWorkflowResponse
-	(*ResumeWorkflowRequest)(nil),             // 37: bossanova.v1.ResumeWorkflowRequest
-	(*ResumeWorkflowResponse)(nil),            // 38: bossanova.v1.ResumeWorkflowResponse
-	(*CancelWorkflowRequest)(nil),             // 39: bossanova.v1.CancelWorkflowRequest
-	(*CancelWorkflowResponse)(nil),            // 40: bossanova.v1.CancelWorkflowResponse
-	(*GetWorkflowStatusRequest)(nil),          // 41: bossanova.v1.GetWorkflowStatusRequest
-	(*GetWorkflowStatusResponse)(nil),         // 42: bossanova.v1.GetWorkflowStatusResponse
-	(*WorkflowStatusInfo)(nil),                // 43: bossanova.v1.WorkflowStatusInfo
-	(*NotifyStatusChangeRequest)(nil),         // 44: bossanova.v1.NotifyStatusChangeRequest
-	(*NotifyStatusChangeResponse)(nil),        // 45: bossanova.v1.NotifyStatusChangeResponse
-	(*AgentRunnerServiceGetInfoRequest)(nil),  // 46: bossanova.v1.AgentRunnerServiceGetInfoRequest
-	(*AgentRunnerServiceGetInfoResponse)(nil), // 47: bossanova.v1.AgentRunnerServiceGetInfoResponse
-	(*StartAgentRunRequest)(nil),              // 48: bossanova.v1.StartAgentRunRequest
-	(*StartAgentRunResponse)(nil),             // 49: bossanova.v1.StartAgentRunResponse
-	(*StopAgentRunRequest)(nil),               // 50: bossanova.v1.StopAgentRunRequest
-	(*StopAgentRunResponse)(nil),              // 51: bossanova.v1.StopAgentRunResponse
-	(*IsAgentRunningRequest)(nil),             // 52: bossanova.v1.IsAgentRunningRequest
-	(*IsAgentRunningResponse)(nil),            // 53: bossanova.v1.IsAgentRunningResponse
-	(*AgentExitStatusRequest)(nil),            // 54: bossanova.v1.AgentExitStatusRequest
-	(*AgentExitStatusResponse)(nil),           // 55: bossanova.v1.AgentExitStatusResponse
-	(*ConfigureFinalizeHookRequest)(nil),      // 56: bossanova.v1.ConfigureFinalizeHookRequest
-	(*ConfigureFinalizeHookResponse)(nil),     // 57: bossanova.v1.ConfigureFinalizeHookResponse
-	(*BuildInteractiveCommandRequest)(nil),    // 58: bossanova.v1.BuildInteractiveCommandRequest
-	(*BuildInteractiveCommandResponse)(nil),   // 59: bossanova.v1.BuildInteractiveCommandResponse
-	(*ListIgnoredDirtyFilesRequest)(nil),      // 60: bossanova.v1.ListIgnoredDirtyFilesRequest
-	(*ListIgnoredDirtyFilesResponse)(nil),     // 61: bossanova.v1.ListIgnoredDirtyFilesResponse
-	(*GetChatTitleRequest)(nil),               // 62: bossanova.v1.GetChatTitleRequest
-	(*GetChatTitleResponse)(nil),              // 63: bossanova.v1.GetChatTitleResponse
-	nil,                                       // 64: bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
-	(*TrackerIssue)(nil),                      // 65: bossanova.v1.TrackerIssue
-	(*timestamppb.Timestamp)(nil),             // 66: google.protobuf.Timestamp
-	(WorkflowStatus)(0),                       // 67: bossanova.v1.WorkflowStatus
-	(WorkflowStep)(0),                         // 68: bossanova.v1.WorkflowStep
-	(DisplayStatus)(0),                        // 69: bossanova.v1.DisplayStatus
+	(UserSettingType)(0),                      // 2: bossanova.v1.UserSettingType
+	(*PluginInfo)(nil),                        // 3: bossanova.v1.PluginInfo
+	(*TaskSourceServiceGetInfoRequest)(nil),   // 4: bossanova.v1.TaskSourceServiceGetInfoRequest
+	(*TaskSourceServiceGetInfoResponse)(nil),  // 5: bossanova.v1.TaskSourceServiceGetInfoResponse
+	(*EventSourceServiceGetInfoRequest)(nil),  // 6: bossanova.v1.EventSourceServiceGetInfoRequest
+	(*EventSourceServiceGetInfoResponse)(nil), // 7: bossanova.v1.EventSourceServiceGetInfoResponse
+	(*SchedulerServiceGetInfoRequest)(nil),    // 8: bossanova.v1.SchedulerServiceGetInfoRequest
+	(*SchedulerServiceGetInfoResponse)(nil),   // 9: bossanova.v1.SchedulerServiceGetInfoResponse
+	(*PollTasksRequest)(nil),                  // 10: bossanova.v1.PollTasksRequest
+	(*PollTasksResponse)(nil),                 // 11: bossanova.v1.PollTasksResponse
+	(*TaskItem)(nil),                          // 12: bossanova.v1.TaskItem
+	(*UpdateTaskStatusRequest)(nil),           // 13: bossanova.v1.UpdateTaskStatusRequest
+	(*UpdateTaskStatusResponse)(nil),          // 14: bossanova.v1.UpdateTaskStatusResponse
+	(*ListAvailableIssuesRequest)(nil),        // 15: bossanova.v1.ListAvailableIssuesRequest
+	(*ListAvailableIssuesResponse)(nil),       // 16: bossanova.v1.ListAvailableIssuesResponse
+	(*StreamEventsRequest)(nil),               // 17: bossanova.v1.StreamEventsRequest
+	(*StreamEventsResponse)(nil),              // 18: bossanova.v1.StreamEventsResponse
+	(*EventNotification)(nil),                 // 19: bossanova.v1.EventNotification
+	(*TaskReadyEvent)(nil),                    // 20: bossanova.v1.TaskReadyEvent
+	(*TaskUpdatedEvent)(nil),                  // 21: bossanova.v1.TaskUpdatedEvent
+	(*ExternalCheckEvent)(nil),                // 22: bossanova.v1.ExternalCheckEvent
+	(*CustomEvent)(nil),                       // 23: bossanova.v1.CustomEvent
+	(*GetScheduleRequest)(nil),                // 24: bossanova.v1.GetScheduleRequest
+	(*GetScheduleResponse)(nil),               // 25: bossanova.v1.GetScheduleResponse
+	(*ScheduledJob)(nil),                      // 26: bossanova.v1.ScheduledJob
+	(*ExecuteJobRequest)(nil),                 // 27: bossanova.v1.ExecuteJobRequest
+	(*ExecuteJobResponse)(nil),                // 28: bossanova.v1.ExecuteJobResponse
+	(*JobAction)(nil),                         // 29: bossanova.v1.JobAction
+	(*CreateSessionAction)(nil),               // 30: bossanova.v1.CreateSessionAction
+	(*NoOpAction)(nil),                        // 31: bossanova.v1.NoOpAction
+	(*WorkflowServiceGetInfoRequest)(nil),     // 32: bossanova.v1.WorkflowServiceGetInfoRequest
+	(*WorkflowServiceGetInfoResponse)(nil),    // 33: bossanova.v1.WorkflowServiceGetInfoResponse
+	(*StartWorkflowRequest)(nil),              // 34: bossanova.v1.StartWorkflowRequest
+	(*StartWorkflowResponse)(nil),             // 35: bossanova.v1.StartWorkflowResponse
+	(*PauseWorkflowRequest)(nil),              // 36: bossanova.v1.PauseWorkflowRequest
+	(*PauseWorkflowResponse)(nil),             // 37: bossanova.v1.PauseWorkflowResponse
+	(*ResumeWorkflowRequest)(nil),             // 38: bossanova.v1.ResumeWorkflowRequest
+	(*ResumeWorkflowResponse)(nil),            // 39: bossanova.v1.ResumeWorkflowResponse
+	(*CancelWorkflowRequest)(nil),             // 40: bossanova.v1.CancelWorkflowRequest
+	(*CancelWorkflowResponse)(nil),            // 41: bossanova.v1.CancelWorkflowResponse
+	(*GetWorkflowStatusRequest)(nil),          // 42: bossanova.v1.GetWorkflowStatusRequest
+	(*GetWorkflowStatusResponse)(nil),         // 43: bossanova.v1.GetWorkflowStatusResponse
+	(*WorkflowStatusInfo)(nil),                // 44: bossanova.v1.WorkflowStatusInfo
+	(*NotifyStatusChangeRequest)(nil),         // 45: bossanova.v1.NotifyStatusChangeRequest
+	(*NotifyStatusChangeResponse)(nil),        // 46: bossanova.v1.NotifyStatusChangeResponse
+	(*AgentRunnerServiceGetInfoRequest)(nil),  // 47: bossanova.v1.AgentRunnerServiceGetInfoRequest
+	(*AgentRunnerServiceGetInfoResponse)(nil), // 48: bossanova.v1.AgentRunnerServiceGetInfoResponse
+	(*StartAgentRunRequest)(nil),              // 49: bossanova.v1.StartAgentRunRequest
+	(*StartAgentRunResponse)(nil),             // 50: bossanova.v1.StartAgentRunResponse
+	(*StopAgentRunRequest)(nil),               // 51: bossanova.v1.StopAgentRunRequest
+	(*StopAgentRunResponse)(nil),              // 52: bossanova.v1.StopAgentRunResponse
+	(*IsAgentRunningRequest)(nil),             // 53: bossanova.v1.IsAgentRunningRequest
+	(*IsAgentRunningResponse)(nil),            // 54: bossanova.v1.IsAgentRunningResponse
+	(*AgentExitStatusRequest)(nil),            // 55: bossanova.v1.AgentExitStatusRequest
+	(*AgentExitStatusResponse)(nil),           // 56: bossanova.v1.AgentExitStatusResponse
+	(*ConfigureFinalizeHookRequest)(nil),      // 57: bossanova.v1.ConfigureFinalizeHookRequest
+	(*ConfigureFinalizeHookResponse)(nil),     // 58: bossanova.v1.ConfigureFinalizeHookResponse
+	(*BuildInteractiveCommandRequest)(nil),    // 59: bossanova.v1.BuildInteractiveCommandRequest
+	(*BuildInteractiveCommandResponse)(nil),   // 60: bossanova.v1.BuildInteractiveCommandResponse
+	(*ListIgnoredDirtyFilesRequest)(nil),      // 61: bossanova.v1.ListIgnoredDirtyFilesRequest
+	(*ListIgnoredDirtyFilesResponse)(nil),     // 62: bossanova.v1.ListIgnoredDirtyFilesResponse
+	(*GetChatTitleRequest)(nil),               // 63: bossanova.v1.GetChatTitleRequest
+	(*GetChatTitleResponse)(nil),              // 64: bossanova.v1.GetChatTitleResponse
+	(*HasQuestionPromptRequest)(nil),          // 65: bossanova.v1.HasQuestionPromptRequest
+	(*HasQuestionPromptResponse)(nil),         // 66: bossanova.v1.HasQuestionPromptResponse
+	(*LastTurnIsUserRequest)(nil),             // 67: bossanova.v1.LastTurnIsUserRequest
+	(*LastTurnIsUserResponse)(nil),            // 68: bossanova.v1.LastTurnIsUserResponse
+	(*TranscriptExistsRequest)(nil),           // 69: bossanova.v1.TranscriptExistsRequest
+	(*TranscriptExistsResponse)(nil),          // 70: bossanova.v1.TranscriptExistsResponse
+	(*UserSetting)(nil),                       // 71: bossanova.v1.UserSetting
+	nil,                                       // 72: bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
+	(*TrackerIssue)(nil),                      // 73: bossanova.v1.TrackerIssue
+	(*timestamppb.Timestamp)(nil),             // 74: google.protobuf.Timestamp
+	(WorkflowStatus)(0),                       // 75: bossanova.v1.WorkflowStatus
+	(WorkflowStep)(0),                         // 76: bossanova.v1.WorkflowStep
+	(DisplayStatus)(0),                        // 77: bossanova.v1.DisplayStatus
 }
 var file_bossanova_v1_plugin_proto_depIdxs = []int32{
-	2,  // 0: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	2,  // 1: bossanova.v1.EventSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	2,  // 2: bossanova.v1.SchedulerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	11, // 3: bossanova.v1.PollTasksResponse.tasks:type_name -> bossanova.v1.TaskItem
-	0,  // 4: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
-	1,  // 5: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
-	64, // 6: bossanova.v1.ListAvailableIssuesRequest.config:type_name -> bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
-	65, // 7: bossanova.v1.ListAvailableIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
-	18, // 8: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
-	66, // 9: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
-	19, // 10: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
-	20, // 11: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
-	21, // 12: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
-	22, // 13: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
-	11, // 14: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
-	25, // 15: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
-	66, // 16: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
-	66, // 17: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
-	28, // 18: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
-	29, // 19: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
-	30, // 20: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
-	2,  // 21: bossanova.v1.WorkflowServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	43, // 22: bossanova.v1.StartWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	43, // 23: bossanova.v1.PauseWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	43, // 24: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	43, // 25: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	43, // 26: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
-	67, // 27: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
-	68, // 28: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
-	66, // 29: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
-	69, // 30: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
-	2,  // 31: bossanova.v1.AgentRunnerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
-	3,  // 32: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
-	9,  // 33: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
-	12, // 34: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
-	14, // 35: bossanova.v1.TaskSourceService.ListAvailableIssues:input_type -> bossanova.v1.ListAvailableIssuesRequest
-	5,  // 36: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
-	16, // 37: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
-	7,  // 38: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
-	23, // 39: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
-	26, // 40: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
-	31, // 41: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
-	33, // 42: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
-	35, // 43: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
-	37, // 44: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
-	39, // 45: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
-	41, // 46: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
-	44, // 47: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
-	46, // 48: bossanova.v1.AgentRunnerService.GetInfo:input_type -> bossanova.v1.AgentRunnerServiceGetInfoRequest
-	48, // 49: bossanova.v1.AgentRunnerService.StartRun:input_type -> bossanova.v1.StartAgentRunRequest
-	50, // 50: bossanova.v1.AgentRunnerService.StopRun:input_type -> bossanova.v1.StopAgentRunRequest
-	52, // 51: bossanova.v1.AgentRunnerService.IsRunning:input_type -> bossanova.v1.IsAgentRunningRequest
-	54, // 52: bossanova.v1.AgentRunnerService.ExitStatus:input_type -> bossanova.v1.AgentExitStatusRequest
-	56, // 53: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:input_type -> bossanova.v1.ConfigureFinalizeHookRequest
-	58, // 54: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:input_type -> bossanova.v1.BuildInteractiveCommandRequest
-	60, // 55: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:input_type -> bossanova.v1.ListIgnoredDirtyFilesRequest
-	62, // 56: bossanova.v1.AgentRunnerService.GetChatTitle:input_type -> bossanova.v1.GetChatTitleRequest
-	4,  // 57: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
-	10, // 58: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
-	13, // 59: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
-	15, // 60: bossanova.v1.TaskSourceService.ListAvailableIssues:output_type -> bossanova.v1.ListAvailableIssuesResponse
-	6,  // 61: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
-	17, // 62: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
-	8,  // 63: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
-	24, // 64: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
-	27, // 65: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
-	32, // 66: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
-	34, // 67: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
-	36, // 68: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
-	38, // 69: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
-	40, // 70: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
-	42, // 71: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
-	45, // 72: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
-	47, // 73: bossanova.v1.AgentRunnerService.GetInfo:output_type -> bossanova.v1.AgentRunnerServiceGetInfoResponse
-	49, // 74: bossanova.v1.AgentRunnerService.StartRun:output_type -> bossanova.v1.StartAgentRunResponse
-	51, // 75: bossanova.v1.AgentRunnerService.StopRun:output_type -> bossanova.v1.StopAgentRunResponse
-	53, // 76: bossanova.v1.AgentRunnerService.IsRunning:output_type -> bossanova.v1.IsAgentRunningResponse
-	55, // 77: bossanova.v1.AgentRunnerService.ExitStatus:output_type -> bossanova.v1.AgentExitStatusResponse
-	57, // 78: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:output_type -> bossanova.v1.ConfigureFinalizeHookResponse
-	59, // 79: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:output_type -> bossanova.v1.BuildInteractiveCommandResponse
-	61, // 80: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:output_type -> bossanova.v1.ListIgnoredDirtyFilesResponse
-	63, // 81: bossanova.v1.AgentRunnerService.GetChatTitle:output_type -> bossanova.v1.GetChatTitleResponse
-	57, // [57:82] is the sub-list for method output_type
-	32, // [32:57] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	71, // 0: bossanova.v1.PluginInfo.user_settings:type_name -> bossanova.v1.UserSetting
+	3,  // 1: bossanova.v1.TaskSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	3,  // 2: bossanova.v1.EventSourceServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	3,  // 3: bossanova.v1.SchedulerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	12, // 4: bossanova.v1.PollTasksResponse.tasks:type_name -> bossanova.v1.TaskItem
+	0,  // 5: bossanova.v1.TaskItem.action:type_name -> bossanova.v1.TaskAction
+	1,  // 6: bossanova.v1.UpdateTaskStatusRequest.status:type_name -> bossanova.v1.TaskItemStatus
+	72, // 7: bossanova.v1.ListAvailableIssuesRequest.config:type_name -> bossanova.v1.ListAvailableIssuesRequest.ConfigEntry
+	73, // 8: bossanova.v1.ListAvailableIssuesResponse.issues:type_name -> bossanova.v1.TrackerIssue
+	19, // 9: bossanova.v1.StreamEventsResponse.notification:type_name -> bossanova.v1.EventNotification
+	74, // 10: bossanova.v1.EventNotification.timestamp:type_name -> google.protobuf.Timestamp
+	20, // 11: bossanova.v1.EventNotification.task_ready:type_name -> bossanova.v1.TaskReadyEvent
+	21, // 12: bossanova.v1.EventNotification.task_updated:type_name -> bossanova.v1.TaskUpdatedEvent
+	22, // 13: bossanova.v1.EventNotification.external_check:type_name -> bossanova.v1.ExternalCheckEvent
+	23, // 14: bossanova.v1.EventNotification.custom:type_name -> bossanova.v1.CustomEvent
+	12, // 15: bossanova.v1.TaskReadyEvent.task:type_name -> bossanova.v1.TaskItem
+	26, // 16: bossanova.v1.GetScheduleResponse.jobs:type_name -> bossanova.v1.ScheduledJob
+	74, // 17: bossanova.v1.ScheduledJob.last_run:type_name -> google.protobuf.Timestamp
+	74, // 18: bossanova.v1.ScheduledJob.next_run:type_name -> google.protobuf.Timestamp
+	29, // 19: bossanova.v1.ExecuteJobResponse.action:type_name -> bossanova.v1.JobAction
+	30, // 20: bossanova.v1.JobAction.create_session:type_name -> bossanova.v1.CreateSessionAction
+	31, // 21: bossanova.v1.JobAction.no_op:type_name -> bossanova.v1.NoOpAction
+	3,  // 22: bossanova.v1.WorkflowServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	44, // 23: bossanova.v1.StartWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	44, // 24: bossanova.v1.PauseWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	44, // 25: bossanova.v1.ResumeWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	44, // 26: bossanova.v1.CancelWorkflowResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	44, // 27: bossanova.v1.GetWorkflowStatusResponse.status:type_name -> bossanova.v1.WorkflowStatusInfo
+	75, // 28: bossanova.v1.WorkflowStatusInfo.status:type_name -> bossanova.v1.WorkflowStatus
+	76, // 29: bossanova.v1.WorkflowStatusInfo.current_step:type_name -> bossanova.v1.WorkflowStep
+	74, // 30: bossanova.v1.WorkflowStatusInfo.started_at:type_name -> google.protobuf.Timestamp
+	77, // 31: bossanova.v1.NotifyStatusChangeRequest.display_status:type_name -> bossanova.v1.DisplayStatus
+	3,  // 32: bossanova.v1.AgentRunnerServiceGetInfoResponse.info:type_name -> bossanova.v1.PluginInfo
+	2,  // 33: bossanova.v1.UserSetting.type:type_name -> bossanova.v1.UserSettingType
+	4,  // 34: bossanova.v1.TaskSourceService.GetInfo:input_type -> bossanova.v1.TaskSourceServiceGetInfoRequest
+	10, // 35: bossanova.v1.TaskSourceService.PollTasks:input_type -> bossanova.v1.PollTasksRequest
+	13, // 36: bossanova.v1.TaskSourceService.UpdateTaskStatus:input_type -> bossanova.v1.UpdateTaskStatusRequest
+	15, // 37: bossanova.v1.TaskSourceService.ListAvailableIssues:input_type -> bossanova.v1.ListAvailableIssuesRequest
+	6,  // 38: bossanova.v1.EventSourceService.GetInfo:input_type -> bossanova.v1.EventSourceServiceGetInfoRequest
+	17, // 39: bossanova.v1.EventSourceService.StreamEvents:input_type -> bossanova.v1.StreamEventsRequest
+	8,  // 40: bossanova.v1.SchedulerService.GetInfo:input_type -> bossanova.v1.SchedulerServiceGetInfoRequest
+	24, // 41: bossanova.v1.SchedulerService.GetSchedule:input_type -> bossanova.v1.GetScheduleRequest
+	27, // 42: bossanova.v1.SchedulerService.ExecuteJob:input_type -> bossanova.v1.ExecuteJobRequest
+	32, // 43: bossanova.v1.WorkflowService.GetInfo:input_type -> bossanova.v1.WorkflowServiceGetInfoRequest
+	34, // 44: bossanova.v1.WorkflowService.StartWorkflow:input_type -> bossanova.v1.StartWorkflowRequest
+	36, // 45: bossanova.v1.WorkflowService.PauseWorkflow:input_type -> bossanova.v1.PauseWorkflowRequest
+	38, // 46: bossanova.v1.WorkflowService.ResumeWorkflow:input_type -> bossanova.v1.ResumeWorkflowRequest
+	40, // 47: bossanova.v1.WorkflowService.CancelWorkflow:input_type -> bossanova.v1.CancelWorkflowRequest
+	42, // 48: bossanova.v1.WorkflowService.GetWorkflowStatus:input_type -> bossanova.v1.GetWorkflowStatusRequest
+	45, // 49: bossanova.v1.WorkflowService.NotifyStatusChange:input_type -> bossanova.v1.NotifyStatusChangeRequest
+	47, // 50: bossanova.v1.AgentRunnerService.GetInfo:input_type -> bossanova.v1.AgentRunnerServiceGetInfoRequest
+	49, // 51: bossanova.v1.AgentRunnerService.StartRun:input_type -> bossanova.v1.StartAgentRunRequest
+	51, // 52: bossanova.v1.AgentRunnerService.StopRun:input_type -> bossanova.v1.StopAgentRunRequest
+	53, // 53: bossanova.v1.AgentRunnerService.IsRunning:input_type -> bossanova.v1.IsAgentRunningRequest
+	55, // 54: bossanova.v1.AgentRunnerService.ExitStatus:input_type -> bossanova.v1.AgentExitStatusRequest
+	57, // 55: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:input_type -> bossanova.v1.ConfigureFinalizeHookRequest
+	59, // 56: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:input_type -> bossanova.v1.BuildInteractiveCommandRequest
+	61, // 57: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:input_type -> bossanova.v1.ListIgnoredDirtyFilesRequest
+	63, // 58: bossanova.v1.AgentRunnerService.GetChatTitle:input_type -> bossanova.v1.GetChatTitleRequest
+	65, // 59: bossanova.v1.AgentRunnerService.HasQuestionPrompt:input_type -> bossanova.v1.HasQuestionPromptRequest
+	67, // 60: bossanova.v1.AgentRunnerService.LastTurnIsUser:input_type -> bossanova.v1.LastTurnIsUserRequest
+	69, // 61: bossanova.v1.AgentRunnerService.TranscriptExists:input_type -> bossanova.v1.TranscriptExistsRequest
+	5,  // 62: bossanova.v1.TaskSourceService.GetInfo:output_type -> bossanova.v1.TaskSourceServiceGetInfoResponse
+	11, // 63: bossanova.v1.TaskSourceService.PollTasks:output_type -> bossanova.v1.PollTasksResponse
+	14, // 64: bossanova.v1.TaskSourceService.UpdateTaskStatus:output_type -> bossanova.v1.UpdateTaskStatusResponse
+	16, // 65: bossanova.v1.TaskSourceService.ListAvailableIssues:output_type -> bossanova.v1.ListAvailableIssuesResponse
+	7,  // 66: bossanova.v1.EventSourceService.GetInfo:output_type -> bossanova.v1.EventSourceServiceGetInfoResponse
+	18, // 67: bossanova.v1.EventSourceService.StreamEvents:output_type -> bossanova.v1.StreamEventsResponse
+	9,  // 68: bossanova.v1.SchedulerService.GetInfo:output_type -> bossanova.v1.SchedulerServiceGetInfoResponse
+	25, // 69: bossanova.v1.SchedulerService.GetSchedule:output_type -> bossanova.v1.GetScheduleResponse
+	28, // 70: bossanova.v1.SchedulerService.ExecuteJob:output_type -> bossanova.v1.ExecuteJobResponse
+	33, // 71: bossanova.v1.WorkflowService.GetInfo:output_type -> bossanova.v1.WorkflowServiceGetInfoResponse
+	35, // 72: bossanova.v1.WorkflowService.StartWorkflow:output_type -> bossanova.v1.StartWorkflowResponse
+	37, // 73: bossanova.v1.WorkflowService.PauseWorkflow:output_type -> bossanova.v1.PauseWorkflowResponse
+	39, // 74: bossanova.v1.WorkflowService.ResumeWorkflow:output_type -> bossanova.v1.ResumeWorkflowResponse
+	41, // 75: bossanova.v1.WorkflowService.CancelWorkflow:output_type -> bossanova.v1.CancelWorkflowResponse
+	43, // 76: bossanova.v1.WorkflowService.GetWorkflowStatus:output_type -> bossanova.v1.GetWorkflowStatusResponse
+	46, // 77: bossanova.v1.WorkflowService.NotifyStatusChange:output_type -> bossanova.v1.NotifyStatusChangeResponse
+	48, // 78: bossanova.v1.AgentRunnerService.GetInfo:output_type -> bossanova.v1.AgentRunnerServiceGetInfoResponse
+	50, // 79: bossanova.v1.AgentRunnerService.StartRun:output_type -> bossanova.v1.StartAgentRunResponse
+	52, // 80: bossanova.v1.AgentRunnerService.StopRun:output_type -> bossanova.v1.StopAgentRunResponse
+	54, // 81: bossanova.v1.AgentRunnerService.IsRunning:output_type -> bossanova.v1.IsAgentRunningResponse
+	56, // 82: bossanova.v1.AgentRunnerService.ExitStatus:output_type -> bossanova.v1.AgentExitStatusResponse
+	58, // 83: bossanova.v1.AgentRunnerService.ConfigureFinalizeHook:output_type -> bossanova.v1.ConfigureFinalizeHookResponse
+	60, // 84: bossanova.v1.AgentRunnerService.BuildInteractiveCommand:output_type -> bossanova.v1.BuildInteractiveCommandResponse
+	62, // 85: bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles:output_type -> bossanova.v1.ListIgnoredDirtyFilesResponse
+	64, // 86: bossanova.v1.AgentRunnerService.GetChatTitle:output_type -> bossanova.v1.GetChatTitleResponse
+	66, // 87: bossanova.v1.AgentRunnerService.HasQuestionPrompt:output_type -> bossanova.v1.HasQuestionPromptResponse
+	68, // 88: bossanova.v1.AgentRunnerService.LastTurnIsUser:output_type -> bossanova.v1.LastTurnIsUserResponse
+	70, // 89: bossanova.v1.AgentRunnerService.TranscriptExists:output_type -> bossanova.v1.TranscriptExistsResponse
+	62, // [62:90] is the sub-list for method output_type
+	34, // [34:62] is the sub-list for method input_type
+	34, // [34:34] is the sub-list for extension type_name
+	34, // [34:34] is the sub-list for extension extendee
+	0,  // [0:34] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_plugin_proto_init() }
@@ -3890,8 +4364,8 @@ func file_bossanova_v1_plugin_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_plugin_proto_rawDesc), len(file_bossanova_v1_plugin_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   63,
+			NumEnums:      3,
+			NumMessages:   70,
 			NumExtensions: 0,
 			NumServices:   5,
 		},

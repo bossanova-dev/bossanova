@@ -25,7 +25,7 @@ type FixLoop struct {
 	attempts    db.AttemptStore
 	repos       db.RepoStore
 	provider    vcs.Provider
-	agentRunner agent.AgentRunner
+	agentRunner agent.AgentDispatcher
 	worktrees   gitpkg.WorktreeManager
 	logger      zerolog.Logger
 
@@ -39,7 +39,7 @@ func NewFixLoop(
 	attempts db.AttemptStore,
 	repos db.RepoStore,
 	provider vcs.Provider,
-	agentRunner agent.AgentRunner,
+	agentRunner agent.AgentDispatcher,
 	worktrees gitpkg.WorktreeManager,
 	logger zerolog.Logger,
 ) *FixLoop {
@@ -226,7 +226,7 @@ func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *mo
 		resume = sess.AgentSessionID
 	}
 
-	claudeSessionID, err := f.agentRunner.Start(ctx, sess.WorktreePath, plan, resume, "")
+	claudeSessionID, err := f.agentRunner.StartByAgent(ctx, sess.AgentName, sess.WorktreePath, plan, resume, "")
 	if err != nil {
 		f.recordAttemptFailed(ctx, attempt.ID, fmt.Sprintf("start claude: %v", err))
 		return f.fireFixFailed(ctx, sess, fmt.Errorf("start claude: %w", err))

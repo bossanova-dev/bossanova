@@ -167,7 +167,7 @@ func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) err
 		return fmt.Errorf("session %s has no worktree path", sessionID)
 	}
 
-	agentSessionID, err := l.agentRunner.Start(ctx, session.WorktreePath, finalizeChatSkill, nil, "")
+	agentSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, finalizeChatSkill, nil, "")
 	if err != nil {
 		return fmt.Errorf("start finalize claude: %w", err)
 	}

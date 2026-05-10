@@ -75,9 +75,27 @@ func rootCmd() *cobra.Command {
 		daemonCmd(),
 		repairCmd(),
 		sessionCmd(),
+		pluginCmd(),
 	)
 
 	return root
+}
+
+func pluginCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plugin",
+		Short: "Inspect installed plugins",
+	}
+	list := &cobra.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List plugins the daemon attempted to load this run",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPluginList(cmd)
+		},
+	}
+	cmd.AddCommand(list)
+	return cmd
 }
 
 func sessionCmd() *cobra.Command {

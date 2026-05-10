@@ -201,7 +201,7 @@ func (s *stubRepoClient) ResurrectSession(context.Context, string) (*pb.Session,
 func (s *stubRepoClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) RecordChat(context.Context, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *stubRepoClient) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
@@ -245,4 +245,8 @@ func (s *stubRepoClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse
 }
 func (s *stubRepoClient) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
+}
+func (s *stubRepoClient) ListAgents(context.Context) ([]client.AgentInfo, error) { return nil, nil }
+func (s *stubRepoClient) ListPlugins(context.Context) ([]*pb.InstalledPlugin, error) {
+	return nil, nil
 }

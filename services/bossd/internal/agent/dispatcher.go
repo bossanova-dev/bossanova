@@ -8,7 +8,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-var _ AgentRunner = (*Dispatcher)(nil)
+var (
+	_ AgentRunner     = (*Dispatcher)(nil)
+	_ AgentDispatcher = (*Dispatcher)(nil)
+)
 
 // ErrAgentNotLoaded is returned by Dispatcher methods when the resolved
 // agent name has no entry in the runner registry.
@@ -55,9 +58,15 @@ func NewDispatcher(runners map[string]AgentRunner, lookup func(sessionID string)
 }
 
 // resolve picks the agent name for sessionID, falling back to defaultAgent
-// when lookup errors or returns empty. It returns the AgentRunner and the
-// resolved name. A nil runner means no plugin is loaded under that name —
-// callers must surface this as an error (or false, for IsRunning).
+// when lookup errors or returns empty. As an ergonomic exception: when the
+// session has no configured agent AND only one runner is registered, that
+// single runner wins regardless of defaultAgent. This lets the codex plugin
+// (or any future single-plugin install) work out of the box without forcing
+// operators to override Settings.DefaultAgent away from "claude".
+//
+// Returns the AgentRunner and the resolved name. A nil runner means no
+// plugin is loaded under that name — callers must surface this as an
+// error (or false, for IsRunning).
 func (d *Dispatcher) resolve(sessionID string) (AgentRunner, string) {
 	name, err := d.lookup(sessionID)
 	if err != nil {
@@ -69,7 +78,13 @@ func (d *Dispatcher) resolve(sessionID string) (AgentRunner, string) {
 		name = ""
 	}
 	if name == "" {
-		name = d.defaultAgent
+		if len(d.runners) == 1 {
+			for k := range d.runners {
+				name = k
+			}
+		} else {
+			name = d.defaultAgent
+		}
 	}
 	return d.runners[name], name
 }
@@ -138,4 +153,54 @@ func (d *Dispatcher) History(sessionID string) []OutputLine {
 		return nil
 	}
 	return runner.History(sessionID)
+}
+
+// resolveByName picks the runner for agentName. Mirrors resolve() but skips
+// the SQLite lookup: callers using StartByAgent already know the agent.
+// Empty agentName + single loaded runner → that runner; otherwise empty →
+// defaultAgent. Returns a nil runner when the resolved name is unknown.
+func (d *Dispatcher) resolveByName(agentName string) (AgentRunner, string) {
+	if agentName == "" {
+		if len(d.runners) == 1 {
+			for k := range d.runners {
+				return d.runners[k], k
+			}
+		}
+		agentName = d.defaultAgent
+	}
+	return d.runners[agentName], agentName
+}
+
+// StartByAgent routes Start to the named agent runner, decoupling routing
+// from the agent-side tracking key. agentSessionID is forwarded as the
+// runner.Start sessionID parameter (empty = plugin generates a fresh ID).
+func (d *Dispatcher) StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+	runner, name := d.resolveByName(agentName)
+	if runner == nil {
+		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
+	}
+	return runner.Start(ctx, workDir, plan, resume, agentSessionID)
+}
+
+// StopByAgent routes Stop to the named agent runner.
+func (d *Dispatcher) StopByAgent(agentName, agentSessionID string) error {
+	runner, name := d.resolveByName(agentName)
+	if runner == nil {
+		return fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
+	}
+	return runner.Stop(agentSessionID)
+}
+
+// IsRunningByAgent routes IsRunning to the named agent runner. Returns false
+// when the agent is unknown (mirrors Dispatcher.IsRunning's behavior).
+func (d *Dispatcher) IsRunningByAgent(agentName, agentSessionID string) bool {
+	runner, name := d.resolveByName(agentName)
+	if runner == nil {
+		d.logger.Warn().
+			Str("agent", name).
+			Str("agent_session_id", agentSessionID).
+			Msg("IsRunningByAgent: agent not loaded")
+		return false
+	}
+	return runner.IsRunning(agentSessionID)
 }

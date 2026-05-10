@@ -27,6 +27,7 @@ var (
 	_ db.AgentChatStore      = (*mockAgentChatStore)(nil)
 	_ gitpkg.WorktreeManager = (*mockWorktreeManager)(nil)
 	_ agent.AgentRunner      = (*mockAgentRunner)(nil)
+	_ agent.AgentDispatcher  = (*mockAgentRunner)(nil)
 	_ vcs.Provider           = (*mockVCSProvider)(nil)
 )
 
@@ -293,6 +294,7 @@ type mockAgentChatStore struct {
 	tmuxNameUpdates        []tmuxNameUpdate
 	deletedAgentSessionIDs []string
 	chatsBySession         map[string][]*models.AgentChat // returned by ListBySession when set
+	chatsWithTmux          []*models.AgentChat            // returned by ListWithTmuxSession when set
 	createErr              error
 	updateTmuxNameErr      error
 }
@@ -353,7 +355,9 @@ func (m *mockAgentChatStore) DeleteByAgentSessionID(_ context.Context, agentSess
 }
 
 func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chatsWithTmux, nil
 }
 
 // --- Mock WorktreeManager ---
@@ -516,6 +520,23 @@ func (m *mockAgentRunner) Subscribe(_ context.Context, _ string) (<-chan agent.O
 
 func (m *mockAgentRunner) History(_ string) []agent.OutputLine {
 	return nil
+}
+
+// StartByAgent forwards to Start so existing test assertions still fire.
+// The test fakes don't need to inspect the agent name — by-agent routing
+// is exercised by the dispatcher tests in services/bossd/internal/agent.
+func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+	return m.Start(ctx, workDir, plan, resume, agentSessionID)
+}
+
+// StopByAgent forwards to Stop, ignoring the agent name (see StartByAgent).
+func (m *mockAgentRunner) StopByAgent(_, agentSessionID string) error {
+	return m.Stop(agentSessionID)
+}
+
+// IsRunningByAgent forwards to IsRunning, ignoring the agent name (see StartByAgent).
+func (m *mockAgentRunner) IsRunningByAgent(_, agentSessionID string) bool {
+	return m.IsRunning(agentSessionID)
 }
 
 // --- Mock VCS Provider ---
@@ -2358,5 +2379,330 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ghost") {
 		t.Errorf("error %q should mention the missing agent name", err)
+	}
+}
+
+// TestStartSessionArmsPollFallbackWhenHookUnsupported verifies that when
+// the agent's ConfigureFinalizeHook returns IsSupported=false (e.g. codex),
+// StartSession arms the daemon-side poll fallback so the run completion
+// signal still arrives.
+func TestStartSessionArmsPollFallbackWhenHookUnsupported(t *testing.T) {
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockAgentRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Hookless audit",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "codex",
+	}
+
+	fa := newFakeAgent()
+	fa.IsSupported = false // hookless agent (e.g. codex)
+
+	armer := &fakePollArmer{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetPollArmer(armer)
+	lc.SetDaemonCtx(ctx)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		HookToken: "tok-1",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if !armer.armCalled {
+		t.Error("poll fallback should be armed when IsSupported=false")
+	}
+	if armer.armedID == "" {
+		t.Error("armed agent_session_id missing")
+	}
+}
+
+// TestBootstrapReArmsPollForActiveHooklessRuns verifies that on daemon
+// restart, Lifecycle.Bootstrap walks the agent_chats table and re-arms
+// the poll fallback for runs whose agent reports IsSupported=false.
+func TestBootstrapReArmsPollForActiveHooklessRuns(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	tok := "tok-3"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Some session",
+		WorktreePath: "/tmp/wt",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		AgentName:    "codex",
+		HookToken:    &tok,
+	}
+
+	tmuxName := "tmux-x"
+	chats := &mockAgentChatStore{
+		chatsWithTmux: []*models.AgentChat{
+			{
+				ID:              "chat-1",
+				SessionID:       "sess-1",
+				AgentSessionID:  "run-1",
+				AgentName:       "codex",
+				TmuxSessionName: &tmuxName,
+			},
+		},
+	}
+
+	fa := newFakeAgent()
+	fa.IsSupported = false
+
+	armer := &fakePollArmer{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetPollArmer(armer)
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if !armer.armCalled {
+		t.Error("Bootstrap did not re-arm poll for codex run")
+	}
+	if armer.armedID != "run-1" {
+		t.Errorf("armed agent_session_id = %q, want run-1", armer.armedID)
+	}
+}
+
+// TestBootstrapDoesNotArmForHookedAgents verifies the cache prevents
+// arming when the agent reports IsSupported=true (claude).
+func TestBootstrapDoesNotArmForHookedAgents(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	tok := "tok-3"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Some session",
+		WorktreePath: "/tmp/wt",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		AgentName:    "claude",
+		HookToken:    &tok,
+	}
+
+	tmuxName := "tmux-c"
+	chats := &mockAgentChatStore{
+		chatsWithTmux: []*models.AgentChat{
+			{
+				ID:              "chat-1",
+				SessionID:       "sess-1",
+				AgentSessionID:  "run-c",
+				AgentName:       "claude",
+				TmuxSessionName: &tmuxName,
+			},
+		},
+	}
+
+	fa := newFakeAgent() // IsSupported defaults to true
+	armer := &fakePollArmer{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetPollArmer(armer)
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if armer.armCalled {
+		t.Error("Bootstrap should NOT arm for hooked agents (claude)")
+	}
+}
+
+// TestStartSessionDoesNotArmPollFallbackWhenHookSupported verifies that
+// for agents that own a finalize hook (claude), StartSession does NOT arm
+// the poll fallback — the Stop hook drives completion directly.
+func TestStartSessionDoesNotArmPollFallbackWhenHookSupported(t *testing.T) {
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockAgentRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Hooked agent",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
+	}
+
+	fa := newFakeAgent() // IsSupported defaults to true
+	armer := &fakePollArmer{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetPollArmer(armer)
+	lc.SetDaemonCtx(ctx)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{
+		DeferPR:   true,
+		HookToken: "tok-1",
+	}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if armer.armCalled {
+		t.Error("poll fallback should NOT be armed when hook is supported")
+	}
+}
+
+// labeledRunner records the "<name>:<agentSessionID>" tag on each Start so
+// lifecycle tests can assert which underlying runner the dispatcher routed
+// to. This mirrors the helper in services/bossd/internal/agent/dispatcher_test.go
+// but is local to the session package because Go does not export test helpers
+// across packages. Other AgentRunner methods are no-op stubs.
+type labeledRunner struct {
+	name      string
+	startSeen atomic.Pointer[string] // "<name>:<agentSessionID>" set on each Start
+}
+
+func newLabeledRunner(name string) *labeledRunner {
+	return &labeledRunner{name: name}
+}
+
+func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSessionID string) (string, error) {
+	tag := r.name + ":" + agentSessionID
+	r.startSeen.Store(&tag)
+	if agentSessionID == "" {
+		return r.name + "-generated-id", nil
+	}
+	return agentSessionID, nil
+}
+func (r *labeledRunner) Stop(_ string) error      { return nil }
+func (r *labeledRunner) IsRunning(_ string) bool  { return false }
+func (r *labeledRunner) ExitError(_ string) error { return nil }
+func (r *labeledRunner) Subscribe(_ context.Context, _ string) (<-chan agent.OutputLine, error) {
+	ch := make(chan agent.OutputLine)
+	close(ch)
+	return ch, nil
+}
+func (r *labeledRunner) History(_ string) []agent.OutputLine { return nil }
+
+// TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex is the regression
+// test for the agent-selection bug: a session whose AgentName="codex" must
+// have its headless run dispatched to the codex plugin runner, not the
+// default claude runner. Before the fix in commits 171246a0 / a8656b9e /
+// f0bf5858 the lifecycle called Start(..., "") on the dispatcher's plain
+// Start path, which fell back to defaultAgent="claude" and silently routed
+// every codex session to claude.
+//
+// This test wires a *real* agent.Dispatcher (not the package-local
+// mockAgentRunner forwarder, which discards agentName) into the Lifecycle so
+// we exercise both the lifecycle-side StartByAgent call site AND the
+// dispatcher-side routing in one go.
+func TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	logger := zerolog.Nop()
+
+	// Build a real Dispatcher with two named runners. The lookup func is
+	// only consulted by the legacy Start path; the lifecycle uses
+	// StartByAgent which bypasses lookup entirely.
+	claudeRunner := newLabeledRunner("claude")
+	codexRunner := newLabeledRunner("codex")
+	registry := map[string]agent.AgentRunner{
+		"claude": claudeRunner,
+		"codex":  codexRunner,
+	}
+	dispatcher := agent.NewDispatcher(registry, func(string) (string, error) {
+		t.Fatalf("lookup must not be consulted on the StartByAgent path")
+		return "", nil
+	}, "claude", logger)
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Codex Session",
+		Plan:       "Build something with codex",
+		BaseBranch: "main",
+		AgentName:  "codex",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, dispatcher, nil, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Codex must have seen Start; claude must not. The empty agentSessionID
+	// is what the lifecycle passes for fresh runs (the runner generates one
+	// on its own).
+	if seen := codexRunner.startSeen.Load(); seen == nil {
+		t.Errorf("codex runner did not see Start")
+	} else if *seen != "codex:" {
+		t.Errorf("codex runner saw Start with unexpected tag %q, want %q", *seen, "codex:")
+	}
+	if seen := claudeRunner.startSeen.Load(); seen != nil {
+		t.Errorf("claude runner unexpectedly saw Start: %q (routing regression: codex session leaked to claude)", *seen)
+	}
+
+	// Sanity-check that the session was advanced and the codex runner's
+	// generated ID is what got persisted — guards against a future
+	// refactor that "fixes" routing but loses the returned session ID.
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ImplementingPlan {
+		t.Errorf("session state = %v, want ImplementingPlan", sess.State)
+	}
+	if sess.AgentSessionID == nil || *sess.AgentSessionID != "codex-generated-id" {
+		t.Errorf("session.AgentSessionID = %v, want codex-generated-id", sess.AgentSessionID)
 	}
 }

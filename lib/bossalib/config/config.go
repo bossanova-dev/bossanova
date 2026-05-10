@@ -4,8 +4,10 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -173,12 +175,14 @@ func hasPlatformSuffix(name string) bool {
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
-	WorktreeBaseDir     string         `json:"worktree_base_dir"`
-	DefaultAgent        string         `json:"default_agent,omitempty"`
-	SkillsDeclined      bool           `json:"skills_declined,omitempty"`
-	PollIntervalSeconds int            `json:"poll_interval_seconds,omitempty"`
-	Plugins             []PluginConfig `json:"plugins,omitempty"`
-	Repair              RepairConfig   `json:"repair,omitzero"`
+	WorktreeBaseDir       string         `json:"worktree_base_dir"`
+	DefaultAgent          string         `json:"default_agent,omitempty"`
+	SkillsDeclined        bool           `json:"skills_declined,omitempty"`
+	PollIntervalSeconds   int            `json:"poll_interval_seconds,omitempty"`
+	Plugins               []PluginConfig `json:"plugins,omitempty"`
+	Repair                RepairConfig   `json:"repair,omitzero"`
+	ProvidersAcknowledged bool           `json:"providers_acknowledged,omitempty"`
+	KnownAgentProviders   []string       `json:"known_agent_providers,omitempty"`
 }
 
 // PluginConfigBool reads a boolean-valued entry from a named plugin's
@@ -228,6 +232,64 @@ func SetPluginConfigBool(s *Settings, pluginName, key string, value bool) {
 		Name:   pluginName,
 		Config: map[string]string{key: "true"},
 	})
+}
+
+// PluginConfigString returns the string value at plugin.Config[key] or "".
+func PluginConfigString(s *Settings, pluginName, key string) string {
+	if s == nil {
+		return ""
+	}
+	for _, p := range s.Plugins {
+		if p.Name == pluginName {
+			return p.Config[key]
+		}
+	}
+	return ""
+}
+
+// SetPluginConfigString writes a string entry into the named plugin's Config
+// map. Empty value deletes the key (matches SetPluginConfigBool behaviour).
+// If the named plugin isn't yet in s.Plugins, an entry is appended so the
+// setting isn't silently lost before `boss config init` runs.
+func SetPluginConfigString(s *Settings, pluginName, key, value string) {
+	if s == nil {
+		return
+	}
+	for i := range s.Plugins {
+		if s.Plugins[i].Name != pluginName {
+			continue
+		}
+		if value == "" {
+			if s.Plugins[i].Config != nil {
+				delete(s.Plugins[i].Config, key)
+			}
+			return
+		}
+		if s.Plugins[i].Config == nil {
+			s.Plugins[i].Config = map[string]string{}
+		}
+		s.Plugins[i].Config[key] = value
+		return
+	}
+	if value == "" {
+		// Removing a key from a not-yet-configured plugin is a no-op.
+		return
+	}
+	s.Plugins = append(s.Plugins, PluginConfig{
+		Name:   pluginName,
+		Config: map[string]string{key: value},
+	})
+}
+
+// SetPluginConfigEnum writes a string-valued setting after validating that
+// value appears in allowed. Returns an error without mutating s when the
+// value is rejected.
+func SetPluginConfigEnum(s *Settings, pluginName, key, value string, allowed []string) error {
+	if !slices.Contains(allowed, value) {
+		return fmt.Errorf("value %q not in allowed list %v for %s.%s", value, allowed, pluginName, key)
+	}
+	SetPluginConfigString(s, pluginName, key, value)
+	return nil
 }
 
 // DisplayPollInterval returns the interval for polling PR display status.

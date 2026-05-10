@@ -59,7 +59,16 @@ type AttachModel struct {
 	err       error
 	width     int
 	height    int
+
+	// overrideAgent populates RecordChat's agent_name override at chat
+	// creation time. Empty inherits the parent session's AgentName. Set
+	// by the chat picker before pushing onto the attach view.
+	overrideAgent string
 }
+
+// SetOverrideAgent supplies a per-chat agent override that's forwarded as
+// RecordChat's agent_name. Empty inherits the parent session's AgentName.
+func (m *AttachModel) SetOverrideAgent(name string) { m.overrideAgent = name }
 
 // NewAttachModel creates an AttachModel for the given session.
 // If resumeID is non-empty, Claude Code will be launched with --resume.
@@ -125,7 +134,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.agentSessionID = uuid.New().String()
 		}
-		chat, err := m.client.RecordChat(m.ctx, m.sessionID, m.agentSessionID, "New chat", resume)
+		chat, err := m.client.RecordChat(m.ctx, m.sessionID, m.agentSessionID, "New chat", m.overrideAgent, resume)
 		if err != nil {
 			m.err = fmt.Errorf("record chat: %w", err)
 			return m, nil

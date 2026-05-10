@@ -40,6 +40,7 @@ type newSessionPhase int
 const (
 	newSessionPhaseLoading     newSessionPhase = iota // Fetching repos
 	newSessionPhaseRepoSelect                         // Table-based repo picker
+	newSessionPhaseAgentSelect                        // Table-based agent picker (multi-agent installs)
 	newSessionPhaseTypeSelect                         // Table-based session type picker
 	newSessionPhasePRSelect                           // Table-based PR picker
 	newSessionPhaseIssueSelect                        // Table-based issue picker (Linear)
@@ -52,6 +53,14 @@ const (
 type reposMsg struct {
 	repos []*pb.Repo
 	err   error
+}
+
+// agentsMsg carries the result of a ListAgents RPC call. Agents drive the
+// per-session agent-select phase shown when more than one agent runner is
+// loaded and the user did not pre-pick one via `--agent`.
+type agentsMsg struct {
+	agents []client.AgentInfo
+	err    error
 }
 
 // prsMsg carries the result of a ListRepoPRs RPC call.
@@ -189,6 +198,10 @@ type NewSessionModel struct {
 	createStream client.CreateSessionStream
 	setupLines   []string
 
+	// Agents (loaded once at wizard startup; drives agent-select phase).
+	agents     []client.AgentInfo
+	agentTable table.Model
+
 	// Tables
 	repoTable table.Model
 	typeTable table.Model
@@ -221,13 +234,23 @@ func (m *NewSessionModel) SetInitialAgent(name string) {
 }
 
 func (m NewSessionModel) Init() tea.Cmd {
-	return fetchRepos(m.client, m.ctx)
+	return tea.Batch(fetchRepos(m.client, m.ctx), fetchAgents(m.client, m.ctx))
 }
 
 func fetchRepos(c client.BossClient, ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		repos, err := c.ListRepos(ctx)
 		return reposMsg{repos: repos, err: err}
+	}
+}
+
+// fetchAgents loads the daemon's installed agent runners. Errors fall
+// through silently — a failed fetch leaves agents empty, which collapses
+// the wizard to its single-agent shape (skip the agent-select phase).
+func fetchAgents(c client.BossClient, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		agents, err := c.ListAgents(ctx)
+		return agentsMsg{agents: agents, err: err}
 	}
 }
 
@@ -318,6 +341,32 @@ func (m *NewSessionModel) buildRepoTable() {
 // repoTableHeight returns the height for the repo selection table.
 func (m NewSessionModel) repoTableHeight() int {
 	return clampedTableHeight(len(m.repos), m.height, bannerOverhead+6) // header + gaps + action bar
+}
+
+// buildAgentTable populates m.agentTable from m.agents with a single AGENT
+// column. The cursor column matches the other phase tables.
+func (m *NewSessionModel) buildAgentTable() {
+	names := make([]string, len(m.agents))
+	for i, a := range m.agents {
+		names[i] = a.Name
+	}
+
+	cols := []table.Column{
+		cursorColumn,
+		{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep},
+	}
+
+	rows := make([]table.Row, len(m.agents))
+	for i := range m.agents {
+		indicator := ""
+		if i == 0 {
+			indicator = cursorChevron
+		}
+		rows[i] = table.Row{indicator, names[i]}
+	}
+
+	m.agentTable = newBossTable(cols, rows, len(m.agents)+1)
+	m.agentTable.SetWidth(columnsWidth(cols))
 }
 
 func (m *NewSessionModel) buildTypeTable() {
@@ -512,12 +561,19 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		if len(m.repos) == 1 {
 			m.selectedRepoID = m.repos[0].Id
-			m.phase = newSessionPhaseTypeSelect
-			m.buildTypeTable()
-			return m, nil
+			return m.advanceFromRepo(), nil
 		}
 		m.phase = newSessionPhaseRepoSelect
 		m.buildRepoTable()
+		return m, nil
+
+	case agentsMsg:
+		// Agent fetch errors are non-fatal — m.agents stays empty which
+		// collapses the wizard to its single-agent shape. The daemon will
+		// still serve the implicit default at create time.
+		if msg.err == nil {
+			m.agents = msg.agents
+		}
 		return m, nil
 
 	case prsMsg:
@@ -624,8 +680,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				idx := m.repoTable.Cursor()
 				if idx >= 0 && idx < len(m.repos) {
 					m.selectedRepoID = m.repos[idx].Id
-					m.phase = newSessionPhaseTypeSelect
-					m.buildTypeTable()
+					return m.advanceFromRepo(), nil
 				}
 				return m, nil
 			}
@@ -636,10 +691,42 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.phase == newSessionPhaseAgentSelect {
+			switch msg.String() {
+			case "esc":
+				if len(m.repos) > 1 {
+					m.phase = newSessionPhaseRepoSelect
+					return m, nil
+				}
+				m.cancel = true
+				return m, nil
+			case "enter", " ", "space":
+				idx := m.agentTable.Cursor()
+				if idx >= 0 && idx < len(m.agents) {
+					m.initialAgent = m.agents[idx].Name
+					m.phase = newSessionPhaseTypeSelect
+					m.buildTypeTable()
+				}
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.agentTable, cmd = m.agentTable.Update(msg)
+			updateCursorColumn(&m.agentTable)
+			return m, cmd
+		}
+
 		if m.phase == newSessionPhaseTypeSelect {
 			switch msg.String() {
 			case "esc":
-				// Go back to repo select if multiple repos, otherwise cancel.
+				// Go back to the most-recent picker. Agent select takes
+				// priority — if it ran, the user expects esc to undo that
+				// pick before retreating further. Otherwise fall back to
+				// repo select if multiple repos exist; else cancel.
+				if len(m.agents) > 1 {
+					m.phase = newSessionPhaseAgentSelect
+					return m, nil
+				}
 				if len(m.repos) > 1 {
 					m.phase = newSessionPhaseRepoSelect
 					return m, nil
@@ -832,6 +919,21 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// advanceFromRepo moves on after a repo has been selected. With more than
+// one agent loaded AND no CLI override, route to the agent picker first;
+// otherwise jump straight to the session-type chooser. Returns the updated
+// model so callers can return it directly to bubbletea.
+func (m *NewSessionModel) advanceFromRepo() NewSessionModel {
+	if len(m.agents) > 1 && m.initialAgent == "" {
+		m.phase = newSessionPhaseAgentSelect
+		m.buildAgentTable()
+		return *m
+	}
+	m.phase = newSessionPhaseTypeSelect
+	m.buildTypeTable()
+	return *m
 }
 
 func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
@@ -1042,6 +1144,18 @@ func (m NewSessionModel) View() tea.View {
 		b.WriteString(styleTitle.Render("Select a repository"))
 		b.WriteString("\n\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.repoTable.View()))
+		b.WriteString("\n")
+		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
+		return tea.NewView(b.String())
+	}
+
+	if m.phase == newSessionPhaseAgentSelect {
+		var b strings.Builder
+		b.WriteString(m.headerView())
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(
+			"Multiple agents are installed — pick one for this session."))
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.agentTable.View()))
 		b.WriteString("\n")
 		b.WriteString(actionBar([]string{"[enter] select"}, []string{"[esc] back"}))
 		return tea.NewView(b.String())

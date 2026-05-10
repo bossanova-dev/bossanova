@@ -411,7 +411,7 @@ func run(opts runOpts) error {
 	loadedAgents := pluginHost.AgentRunners()
 	agentClients := map[string]agent.AgentRunnerClient{}
 	pluginRunners := map[string]agent.AgentRunner{}
-	var agentRunner agent.AgentRunner
+	var agentRunner agent.AgentDispatcher
 	if len(loadedAgents) == 0 {
 		// No agent plugin loaded: daemon stays healthy but session creation
 		// will fail. Operators install bossd-plugin-claude (or another
@@ -438,17 +438,9 @@ func run(opts runOpts) error {
 		pluginHost.SetAgentClients(agentClients)
 		pluginHost.SetAgentLogsDir(agentLogsDir)
 
-		// Dispatcher routes Start/Stop/IsRunning by reading the session's
-		// AgentName from SQLite. The lookup closure runs per-call against
-		// the live session store; an empty AgentName falls back to
-		// settings.DefaultAgent (Task 3, defaults to "claude").
-		lookup := func(sessionID string) (string, error) {
-			sess, err := sessions.Get(context.Background(), sessionID)
-			if err != nil {
-				return "", err
-			}
-			return sess.AgentName, nil
-		}
+		// Dispatcher routes Start/Stop/IsRunning by reading AgentName from
+		// SQLite via the lookup closure built below.
+		lookup := newDispatcherLookup(sessions, agentChats)
 		agentRunner = agent.NewDispatcher(pluginRunners, lookup, settings.DefaultAgent, log.Logger)
 	}
 
@@ -467,6 +459,14 @@ func run(opts runOpts) error {
 	// no plugins are loaded (HostService is nil in that branch).
 	if hs := pluginHost.HostService(); hs != nil {
 		hs.SetLifecycle(lifecycle)
+		// Wire the poll-fallback armer so StartSession / StartTmuxChat
+		// can drive completion for hookless agents (e.g. codex). Plugins
+		// that own a finalize hook (claude) report IsSupported=true and
+		// never reach the armer. Cadence + jitter chosen to balance
+		// responsiveness with idle CPU cost on a daemon hosting many
+		// concurrent runs.
+		pollFallback := agent.NewPollFallback(log.Logger, 2*time.Second, 200*time.Millisecond, hs)
+		lifecycle.SetPollArmer(pollFallback)
 	}
 
 	// Recover sessions left in Finalizing from a previous daemon crash.
@@ -601,7 +601,7 @@ func run(opts runOpts) error {
 
 	// --- Tmux Status Poller ---
 
-	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, log.Logger)
+	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, agentClients, log.Logger)
 
 	// --- Server ---
 
@@ -958,6 +958,7 @@ func run(opts runOpts) error {
 		TmuxPoller:         tmuxStatusPoller,
 		Lifecycle:          lifecycle,
 		Agent:              agentRunner,
+		AgentClients:       agentClients,
 		Worktrees:          worktrees,
 		Provider:           ghProvider,
 		PluginHost:         pluginHost,
@@ -979,6 +980,14 @@ func run(opts runOpts) error {
 				},
 			})
 		},
+		OnSessionUpdated: func(_ context.Context, sess *bossanovav1.Session) {
+			streamBus.Publish(upstream.StreamEvent{
+				Session: &upstream.SessionEvent{
+					Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
+					Session: sess,
+				},
+			})
+		},
 		Logger: log.Logger,
 	})
 
@@ -995,6 +1004,10 @@ func run(opts runOpts) error {
 	// Start poller and dispatcher.
 	pollerCtx, pollerCancel := context.WithCancel(context.Background())
 	defer pollerCancel()
+	// Hand the daemon-scoped context to the lifecycle so PollArmer.Arm
+	// runs goroutines that outlive any single RPC handler. pollerCancel is
+	// invoked during shutdown, draining all armed polls.
+	lifecycle.SetDaemonCtx(pollerCtx)
 	events := poller.Run(pollerCtx)
 	trackDone(poller.Done())
 	dispatcherDone := safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
@@ -1007,6 +1020,13 @@ func run(opts runOpts) error {
 	// Start display status poller.
 	displayPoller.Run(pollerCtx)
 	trackDone(displayPoller.Done())
+
+	// Re-arm the poll fallback for hookless agent runs that survived a
+	// daemon restart. For agents with a finalize hook (claude), this is a
+	// no-op — the cached IsSupported=true result short-circuits the loop.
+	// For codex (and future hookless agents), this re-attaches the daemon
+	// to in-flight runs so their eventual completion still signals through.
+	lifecycle.Bootstrap(pollerCtx)
 
 	// Bootstrap tmux status poller with pre-existing sessions before starting
 	// the polling loop, so sessions from before a daemon restart show correct
@@ -1233,6 +1253,28 @@ type automationToggleAdapter struct {
 func (a automationToggleAdapter) SetAutomationEnabled(ctx context.Context, sessionID string, enabled bool) error {
 	_, err := a.sessions.Update(ctx, sessionID, db.UpdateSessionParams{AutomationEnabled: &enabled})
 	return err
+}
+
+// newDispatcherLookup builds the lookup closure used by agent.Dispatcher
+// to resolve an ID to its AgentName. It accepts EITHER a bossd session ID
+// (lifecycle paths) OR an agent session ID — the liveness checker and the
+// interactive attach adapter both pass the latter, since they only ever
+// know the agent's tracking key. The chats table indexes agent session IDs,
+// so we fall through to it when sessions.Get misses. Returning an error on
+// double-miss lets the dispatcher's existing fallback (defaultAgent /
+// single-loaded-runner shortcut) kick in for genuinely unknown IDs.
+func newDispatcherLookup(sessions db.SessionStore, chats db.AgentChatStore) func(string) (string, error) {
+	return func(id string) (string, error) {
+		if sess, err := sessions.Get(context.Background(), id); err == nil {
+			return sess.AgentName, nil
+		}
+		if chats != nil {
+			if chat, err := chats.GetByAgentSessionID(context.Background(), id); err == nil {
+				return chat.AgentName, nil
+			}
+		}
+		return "", fmt.Errorf("no session or chat found for id %q", id)
+	}
 }
 
 // attachLookupAdapter resolves a session ID to its current claude

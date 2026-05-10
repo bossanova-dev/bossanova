@@ -213,13 +213,14 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 			return "", grpcstatus.Errorf(codes.FailedPrecondition,
 				"hook port not configured: SetHookPort must be called before StartTmuxChat with a hook token")
 		}
-		if _, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
+		hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
 			WorkDir:        sess.WorktreePath,
 			SessionId:      sessionID,
 			AgentSessionId: agentSessionID,
 			HookToken:      hookOpts.Token,
 			HookPort:       int32(l.hookPort),
-		}); err != nil {
+		})
+		if err != nil {
 			l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
 			if delErr := l.agentChats.DeleteByAgentSessionID(ctx, agentSessionID); delErr != nil {
 				l.logger.Warn().Err(delErr).
@@ -227,6 +228,15 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 					Msg("failed to delete chat row after ConfigureFinalizeHook failure")
 			}
 			return "", fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
+		}
+		// Hookless agents (e.g. codex) — arm the daemon-side poll fallback
+		// so WaitChatRun still observes completion. Plugins that own a
+		// finalize hook (claude) skip this path; their Stop hook drives
+		// CompleteAgentRun directly.
+		if hookResp != nil && !hookResp.IsSupported {
+			if l.pollArmer != nil && l.daemonCtx != nil {
+				l.pollArmer.Arm(l.daemonCtx, agentSessionID, client)
+			}
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,6 +65,7 @@ type Server struct {
 	tmuxPoller         *status.TmuxStatusPoller
 	lifecycle          *session.Lifecycle
 	agent              agent.AgentRunner
+	agentClients       map[string]agent.AgentRunnerClient
 	worktrees          gitpkg.WorktreeManager
 	provider           vcs.Provider
 	pluginHost         *plugin.Host
@@ -73,6 +75,7 @@ type Server struct {
 	completionNotifier session.SessionCompletionNotifier
 	authNotifier       AuthNotifier
 	onSessionDeleted   func(context.Context, string)
+	onSessionUpdated   func(context.Context, *pb.Session)
 	logger             zerolog.Logger
 	listener           net.Listener
 	srv                *http.Server
@@ -95,6 +98,7 @@ type Config struct {
 	TmuxPoller         *status.TmuxStatusPoller
 	Lifecycle          *session.Lifecycle
 	Agent              agent.AgentRunner
+	AgentClients       map[string]agent.AgentRunnerClient
 	Worktrees          gitpkg.WorktreeManager
 	Provider           vcs.Provider
 	PluginHost         *plugin.Host
@@ -108,6 +112,12 @@ type Config struct {
 	// this callback bosso only learns about deletions on daemon reconnect
 	// (when it replaces its state with a fresh DaemonSnapshot).
 	OnSessionDeleted func(context.Context, string)
+	// OnSessionUpdated, when non-nil, is invoked after local session
+	// mutations that should replace bosso's in-memory session projection.
+	// cmd/main.go wires this to publish SessionDelta_KIND_UPDATED on the
+	// reverse stream; archive/resurrect depend on it because they hide/show
+	// rows in the default web session list without deleting the DB row.
+	OnSessionUpdated func(context.Context, *pb.Session)
 	Logger           zerolog.Logger
 }
 
@@ -139,6 +149,7 @@ func New(cfg Config) *Server {
 		tmuxPoller:         cfg.TmuxPoller,
 		lifecycle:          cfg.Lifecycle,
 		agent:              cfg.Agent,
+		agentClients:       cfg.AgentClients,
 		worktrees:          cfg.Worktrees,
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
@@ -146,6 +157,7 @@ func New(cfg Config) *Server {
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
 		onSessionDeleted:   cfg.OnSessionDeleted,
+		onSessionUpdated:   cfg.OnSessionUpdated,
 		logger:             cfg.Logger,
 	}
 }
@@ -517,6 +529,79 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 	return connect.NewResponse(&pb.ListTrackerIssuesResponse{Issues: issues}), nil
 }
 
+// ListAgents returns the names + GetInfo metadata of every AgentRunner
+// plugin currently wired into the daemon. The boss TUI uses this to
+// drive the agent picker in `boss session new` and to surface plugin
+// versions in /diagnose. A plugin whose GetInfo errors is included with
+// only Name populated rather than dropped silently — operators see the
+// failure and can still pick the plugin.
+//
+// Sourced from s.agentClients (the same registry the orchestrator and
+// status poller use) rather than the plugin host, so a future test can
+// inject fakes without spinning up a real go-plugin subprocess. Returns
+// agents in lexicographic order so callers don't see jitter run-to-run.
+func (s *Server) ListAgents(ctx context.Context, _ *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {
+	out := &pb.ListAgentsResponse{}
+	if len(s.agentClients) == 0 {
+		return connect.NewResponse(out), nil
+	}
+	names := make([]string, 0, len(s.agentClients))
+	for name := range s.agentClients {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		client := s.agentClients[name]
+		info, err := client.GetInfo(ctx)
+		if err != nil || info == nil {
+			s.logger.Warn().Err(err).Str("agent", name).Msg("ListAgents: GetInfo failed; including bare name only")
+			out.Agents = append(out.Agents, &pb.AgentInfo{Name: name})
+			continue
+		}
+		out.Agents = append(out.Agents, &pb.AgentInfo{
+			Name:         info.GetName(),
+			Version:      info.GetVersion(),
+			UserSettings: info.GetUserSettings(),
+		})
+	}
+	return connect.NewResponse(out), nil
+}
+
+// ListPlugins returns the runtime status of every plugin the daemon
+// attempted to load this run. Loaded plugins are reported alongside
+// disabled and failed entries so an operator with a typo'd path or a
+// stale binary on disk can debug it without grepping the daemon log.
+func (s *Server) ListPlugins(_ context.Context, _ *connect.Request[pb.ListPluginsRequest]) (*connect.Response[pb.ListPluginsResponse], error) {
+	out := &pb.ListPluginsResponse{}
+	if s.pluginHost == nil {
+		return connect.NewResponse(out), nil
+	}
+	for _, p := range s.pluginHost.AllPlugins() {
+		out.Plugins = append(out.Plugins, &pb.InstalledPlugin{
+			Name:         p.Name,
+			Path:         p.Path,
+			Enabled:      p.Enabled,
+			Status:       installedPluginStatus(p),
+			Capabilities: append([]string(nil), p.Capabilities...),
+			Error:        p.Error,
+		})
+	}
+	return connect.NewResponse(out), nil
+}
+
+// installedPluginStatus collapses (Enabled, Loaded, Error) into the
+// proto enum surfaced to the CLI.
+func installedPluginStatus(p plugin.PluginStatus) pb.InstalledPlugin_Status {
+	switch {
+	case p.Loaded:
+		return pb.InstalledPlugin_STATUS_LOADED
+	case !p.Enabled:
+		return pb.InstalledPlugin_STATUS_DISABLED
+	default:
+		return pb.InstalledPlugin_STATUS_LOAD_FAILED
+	}
+}
+
 // --- Session Lifecycle ---
 
 func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
@@ -566,13 +651,25 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 
 	// Resolve the agent name. The proto field is a oneof (*string), so an
 	// unset request falls back to Settings.DefaultAgent — which Task 3
-	// backfills to "claude" when the settings file omits it. Defense in
-	// depth against config.Load failure: an empty string here is still
-	// safe because the SQLite store has its own ""→"claude" fallback.
+	// backfills to "claude" when the settings file omits it. As an ergonomic
+	// exception: when only one AgentRunner plugin is loaded we pick that
+	// one regardless of DefaultAgent, mirroring the dispatcher's
+	// single-loaded-agent rule so a fresh "install codex, no settings"
+	// install can create sessions without editing the settings file.
+	// Defense in depth against config.Load failure: an empty string here
+	// is still safe because the SQLite store has its own ""→"claude"
+	// fallback.
 	agentName := msg.GetAgentName()
 	if agentName == "" {
-		cfg, _ := config.Load()
-		agentName = cfg.DefaultAgent
+		if s.pluginHost != nil {
+			if names := s.pluginHost.AgentClientNames(); len(names) == 1 {
+				agentName = names[0]
+			}
+		}
+		if agentName == "" {
+			cfg, _ := config.Load()
+			agentName = cfg.DefaultAgent
+		}
 	}
 
 	createParams := db.CreateSessionParams{
@@ -1208,7 +1305,12 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: SessionToProto(sess)}), nil
+	p := s.sessionProtoWithRepo(ctx, sess)
+	if s.onSessionUpdated != nil {
+		s.onSessionUpdated(ctx, p)
+	}
+
+	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: p}), nil
 }
 
 func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
@@ -1225,7 +1327,22 @@ func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.R
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: SessionToProto(sess)}), nil
+	p := s.sessionProtoWithRepo(ctx, sess)
+	if s.onSessionUpdated != nil {
+		s.onSessionUpdated(ctx, p)
+	}
+
+	return connect.NewResponse(&pb.ResurrectSessionResponse{Session: p}), nil
+}
+
+func (s *Server) sessionProtoWithRepo(ctx context.Context, sess *models.Session) *pb.Session {
+	p := SessionToProto(sess)
+	if sess.RepoID != "" {
+		if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil && repo != nil {
+			p.RepoDisplayName = repo.DisplayName
+		}
+	}
+	return p
 }
 
 func (s *Server) EmptyTrash(ctx context.Context, req *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {
@@ -1283,12 +1400,17 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 	// agent_session_id (resume case), otherwise insert a new one.
 	chat, err := s.agentChats.GetByAgentSessionID(ctx, msg.AgentSessionId)
 	if err != nil {
-		// Look up the parent session so the chat row inherits the right
-		// agent_name. Without this, the SQLite store would default to
-		// "claude" regardless of which agent actually owns the session.
-		var agentName string
-		if sess, sErr := s.sessions.Get(ctx, msg.SessionId); sErr == nil {
-			agentName = sess.AgentName
+		// Prefer an explicit override on the request, falling back to the
+		// parent session's agent_name. Without the fallback, the SQLite
+		// store would default to "claude" regardless of which agent
+		// actually owns the session. Empty override + missing session →
+		// empty AgentName, which the store handles via its existing
+		// ""→"claude" default.
+		agentName := msg.GetAgentName()
+		if agentName == "" {
+			if sess, sErr := s.sessions.Get(ctx, msg.SessionId); sErr == nil {
+				agentName = sess.AgentName
+			}
 		}
 		chat, err = s.agentChats.Create(ctx, db.CreateAgentChatParams{
 			SessionID:      msg.SessionId,
@@ -1319,9 +1441,10 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 }
 
 // ensureChatTmuxSession guarantees that a `tmux` session named per
-// tmux.ChatSessionName exists and is hosting `claude` for the given chat.
-// Idempotent: a no-op if the session is already alive. Persists the resolved
-// name onto the chat row so kill/list paths can find it later.
+// tmux.ChatSessionName exists and is hosting the chat's agent (claude,
+// codex, …) for the given chat. Idempotent: a no-op if the session is
+// already alive. Persists the resolved name onto the chat row so kill/list
+// paths can find it later.
 func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentChat, resume bool) error {
 	if s.tmux == nil || !s.tmux.Available(ctx) {
 		return nil
@@ -1334,7 +1457,8 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 
 	if _, err := spawnChatTmux(ctx, spawnDeps{
 		Tmux:        liveTmuxSpawner{c: s.tmux},
-		Transcripts: liveTranscriptOracle{},
+		Transcripts: liveTranscriptOracle{clients: s.agentClients},
+		Argv:        liveArgvBuilder{clients: s.agentClients},
 	}, spawnInput{
 		Chat:         chat,
 		WorktreePath: sess.WorktreePath,

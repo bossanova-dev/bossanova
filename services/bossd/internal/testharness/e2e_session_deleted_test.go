@@ -167,3 +167,67 @@ func TestE2E_SessionDeleted_CreateSessionFailure(t *testing.T) {
 		t.Fatalf("expected no sessions after failure cleanup, got %d", len(listResp.Msg.Sessions))
 	}
 }
+
+func TestE2E_SessionUpdated_ArchiveAndResurrect(t *testing.T) {
+	h := testharness.New(t)
+	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
+
+	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "my-app",
+		LocalPath:         repoDir,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+	repoID := repoResp.Msg.Repo.Id
+
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		RepoId: repoID,
+		Title:  "Archive me",
+		Plan:   "Plan for archive",
+	})
+
+	if got := h.UpdatedSessions(); len(got) != 0 {
+		t.Fatalf("expected no update callbacks before archive, got %+v", got)
+	}
+
+	if _, err := h.Client.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: sess.Id})); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	updates := h.UpdatedSessions()
+	if len(updates) != 1 {
+		t.Fatalf("expected 1 update callback after archive, got %d: %+v", len(updates), updates)
+	}
+	if updates[0].Id != sess.Id {
+		t.Fatalf("archive update session id = %q, want %q", updates[0].Id, sess.Id)
+	}
+	if updates[0].ArchivedAt == nil {
+		t.Fatal("archive update should include ArchivedAt")
+	}
+	if updates[0].RepoDisplayName != "my-app" {
+		t.Fatalf("archive update repo display = %q, want my-app", updates[0].RepoDisplayName)
+	}
+
+	if _, err := h.Client.ResurrectSession(ctx, connect.NewRequest(&pb.ResurrectSessionRequest{Id: sess.Id})); err != nil {
+		t.Fatalf("resurrect session: %v", err)
+	}
+	updates = h.UpdatedSessions()
+	if len(updates) != 2 {
+		t.Fatalf("expected 2 update callbacks after resurrect, got %d: %+v", len(updates), updates)
+	}
+	if updates[1].Id != sess.Id {
+		t.Fatalf("resurrect update session id = %q, want %q", updates[1].Id, sess.Id)
+	}
+	if updates[1].ArchivedAt != nil {
+		t.Fatal("resurrect update should clear ArchivedAt")
+	}
+	if updates[1].State != pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN {
+		t.Fatalf("resurrect update state = %v, want IMPLEMENTING_PLAN", updates[1].State)
+	}
+	if updates[1].RepoDisplayName != "my-app" {
+		t.Fatalf("resurrect update repo display = %q, want my-app", updates[1].RepoDisplayName)
+	}
+}

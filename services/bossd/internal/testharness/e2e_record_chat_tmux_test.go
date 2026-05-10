@@ -318,6 +318,80 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 	}
 }
 
+// TestE2E_RecordChat_CodexAgentSpawnsCodexCmd is the end-to-end regression
+// test for the codex routing bug fixed in PR #254. A RecordChat call that
+// names "codex" as the agent must drive `tmux new-session` with a `codex …`
+// command, NOT the legacy hardcoded `claude …`. Pre-fix the daemon
+// hardcoded "claude" inside spawnChatTmux and ignored the agent name on
+// the chat row entirely.
+func TestE2E_RecordChat_CodexAgentSpawnsCodexCmd(t *testing.T) {
+	fake := &fakeTmux{}
+	h, ctx, sessionID := recordChatSetup(t, fake)
+
+	codex := "codex"
+	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+		SessionId:      sessionID,
+		AgentSessionId: "codex-fresh-001",
+		Title:          "fresh codex chat",
+		AgentName:      &codex,
+	}))
+	if err != nil {
+		t.Fatalf("RecordChat: %v", err)
+	}
+	if resp.Msg.Chat.TmuxSessionName == "" {
+		t.Fatal("expected response chat.tmux_session_name to be populated")
+	}
+
+	newSession := fake.findCall("new-session")
+	if newSession == nil {
+		t.Fatalf("expected `tmux new-session` to fire; calls=%v", fake.calls)
+	}
+	joined := strings.Join(newSession, " ")
+	if !strings.Contains(joined, "codex") {
+		t.Errorf("expected new-session to invoke codex, got %q", joined)
+	}
+	if strings.Contains(joined, "claude") {
+		t.Errorf("codex agent must NOT spawn claude; got %q", joined)
+	}
+}
+
+// TestE2E_RecordChat_EmptyLogPathDoesNotInvokeTee is the end-to-end
+// regression for the LogTeeArgv empty-path bug. spawnChatTmux runs the
+// user-attached interactive path, which legitimately has no bossd-side
+// log path to tee into. Pre-fix LogTeeArgv produced
+// `bash -c "set -o pipefail; <inner> 2>&1 | tee ”"` which made tee
+// fail with "tee: : No such file or directory" the instant tmux launched
+// the pane — the codex chat died immediately and the boss UI bounced
+// straight back to the chat list. The fix is to short-circuit
+// LogTeeArgv when logPath is empty; this test asserts the resulting
+// tmux argv is well-formed (no empty `tee ”` appendage).
+func TestE2E_RecordChat_EmptyLogPathDoesNotInvokeTee(t *testing.T) {
+	fake := &fakeTmux{}
+	h, ctx, sessionID := recordChatSetup(t, fake)
+
+	codex := "codex"
+	if _, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+		SessionId:      sessionID,
+		AgentSessionId: "codex-no-logpath-001",
+		Title:          "codex empty-logpath",
+		AgentName:      &codex,
+	})); err != nil {
+		t.Fatalf("RecordChat: %v", err)
+	}
+
+	newSession := fake.findCall("new-session")
+	if newSession == nil {
+		t.Fatalf("expected `tmux new-session` to fire; calls=%v", fake.calls)
+	}
+	joined := strings.Join(newSession, " ")
+	if strings.Contains(joined, "tee ''") {
+		t.Errorf("empty LogPath produced `tee ''` argv (would kill tmux pane on launch); got %q", joined)
+	}
+	if strings.Contains(joined, "tee \"\"") {
+		t.Errorf("empty LogPath produced `tee \"\"` argv (would kill tmux pane on launch); got %q", joined)
+	}
+}
+
 // TestE2E_RecordChat_TmuxUnavailableSkipsCreate verifies the no-tmux fallback
 // path: when tmux is not on PATH (or otherwise unavailable), RecordChat
 // still creates the chat row but leaves tmux_session_name empty and does

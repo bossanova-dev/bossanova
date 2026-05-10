@@ -22,6 +22,9 @@ type AgentRunner interface {
 	BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error)
 	ListIgnoredDirtyFiles(ctx context.Context, req *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error)
 	GetChatTitle(ctx context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error)
+	HasQuestionPrompt(ctx context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
+	LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
+	TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
 }
 
 // AgentRunnerGRPCPlugin implements go-plugin's GRPCPlugin interface for
@@ -131,6 +134,30 @@ func (c *agentRunnerGRPCClient) ListIgnoredDirtyFiles(ctx context.Context, req *
 func (c *agentRunnerGRPCClient) GetChatTitle(ctx context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	resp := &bossanovav1.GetChatTitleResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/GetChatTitle", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) HasQuestionPrompt(ctx context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {
+	resp := &bossanovav1.HasQuestionPromptResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/HasQuestionPrompt", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error) {
+	resp := &bossanovav1.LastTurnIsUserResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/LastTurnIsUser", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
+	resp := &bossanovav1.TranscriptExistsResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/TranscriptExists", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

@@ -1095,6 +1095,49 @@ func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, 
 	return sessionID, nil
 }
 
+// SignalRunComplete is the in-process completion path for hookless agents.
+// It performs the same channel signal + cleanup as CompleteAgentRun but
+// without bearer-token auth — callers are trusted in-process code (the
+// poll-fallback goroutine driven by *agent.PollFallback).
+//
+// External HTTP callers must continue to use CompleteAgentRun, which
+// validates the bearer token. This asymmetry is intentional: the external
+// path is reachable from any process on the loopback interface; the
+// internal path is reachable only from inside this Go binary.
+//
+// Idempotent: a call for an agent_session_id whose completion channel was
+// already cleared (e.g. the finalize hook arrived first, or a previous
+// SignalRunComplete fired) is a no-op.
+func (s *HostServiceServer) SignalRunComplete(agentSessionID, exitError string) {
+	s.runMu.Lock()
+	ch, ok := s.runCompletion[agentSessionID]
+	if !ok {
+		s.runMu.Unlock()
+		// Run already cleaned up (e.g. hook arrived first). Idempotent no-op.
+		return
+	}
+	select {
+	case ch <- completionResult{exitError: exitError}:
+	default:
+	}
+	delete(s.runCompletion, agentSessionID)
+	sessionID := s.runSessionByID[agentSessionID]
+	if sessionID != "" {
+		if cur, ok := s.activeRuns[sessionID]; ok && cur.agentSessionID == agentSessionID {
+			delete(s.activeRuns, sessionID)
+			delete(s.agentSessionByID, agentSessionID)
+		}
+	}
+	// runHookTokens / runSessionByID intentionally NOT cleared here —
+	// matches CompleteAgentRun's lifetime contract: WaitChatRun owns the
+	// final teardown of those tombstone entries.
+	s.runMu.Unlock()
+
+	if sessionID != "" && s.displayTracker != nil {
+		s.displayTracker.SetRepairing(sessionID, false)
+	}
+}
+
 func hostServiceRecordRepairOutcomeHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
 	req := new(bossanovav1.RecordRepairOutcomeRequest)
 	if err := dec(req); err != nil {

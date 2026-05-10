@@ -20,6 +20,19 @@ import (
 	"github.com/recurser/bossd/internal/tmux"
 )
 
+// PollArmer arms a poll-fallback goroutine that drives an agent run to
+// completion when the agent doesn't support a finalize hook. Implemented
+// by *agent.PollFallback (which accepts a wider AgentRunnerClient via
+// interface satisfaction). Defined here so tests can fake it.
+//
+// We pass the full agent.AgentRunnerClient — even though the real
+// PollFallback.Arm only needs ExitStatus — because Go's structural typing
+// would otherwise create a name-only mismatch between session's narrower
+// interface and agent's narrower interface.
+type PollArmer interface {
+	Arm(ctx context.Context, agentSessionID string, client agent.AgentRunnerClient)
+}
+
 // Lifecycle orchestrates worktree creation, Claude process management,
 // and state machine transitions for coding sessions.
 type Lifecycle struct {
@@ -28,10 +41,30 @@ type Lifecycle struct {
 	agentChats  db.AgentChatStore
 	cronJobs    db.CronJobStore
 	worktrees   gitpkg.WorktreeManager
-	agentRunner agent.AgentRunner
+	agentRunner agent.AgentDispatcher
 	tmux        *tmux.Client
 	provider    vcs.Provider
 	logger      zerolog.Logger
+
+	// pollArmer arms the per-run poll-fallback goroutine for agent plugins
+	// whose ConfigureFinalizeHook reports IsSupported=false (e.g. codex).
+	// Plugins that own a finalize hook (claude) skip this entirely. Wired
+	// post-construction via SetPollArmer; nil means no fallback (the
+	// existing claude-only behaviour).
+	pollArmer PollArmer
+
+	// daemonCtx is the long-running context controlling the daemon's
+	// goroutine fleet — passed to PollArmer.Arm so the poll outlives the
+	// per-call RPC ctx that drove StartSession. Wired via SetDaemonCtx
+	// during daemon startup. nil means polls won't be armed even when a
+	// PollArmer is set; that combination shouldn't occur in production.
+	daemonCtx context.Context //nolint:containedctx // intentional: passed to long-lived goroutines spawned by PollArmer
+
+	// agentClientHookSupport caches the per-agent-name IsSupported result
+	// from ConfigureFinalizeHook. Populated lazily during Bootstrap (and,
+	// later, SetAgents) so the daemon doesn't probe each plugin twice on
+	// restart. nil-safe: a missing entry triggers a fresh probe.
+	agentClientHookSupport map[string]bool
 
 	// hookPort is the loopback TCP port of the daemon's Stop-hook server.
 	// Stamped via SetHookPort once the hook server has bound, before any
@@ -82,6 +115,104 @@ func (l *Lifecycle) SetHookPort(port int) {
 // begins. Not safe for concurrent re-injection alongside in-flight RPCs.
 func (l *Lifecycle) SetAgents(m map[string]agent.AgentRunnerClient) { l.agents = m }
 
+// Bootstrap re-arms the poll-fallback for hookless agent runs that were
+// alive when the daemon last shut down. Call once during daemon startup,
+// after SetAgents / SetPollArmer / SetDaemonCtx and before serving begins.
+//
+// For each agent_chats row whose tmux session is still alive, Bootstrap
+// looks up the parent session's HookToken, probes the agent plugin's
+// ConfigureFinalizeHook (caching the result per agent name to avoid
+// duplicate writes), and — when IsSupported=false — arms the poll
+// fallback under l.daemonCtx so the run's eventual completion still
+// signals through to WaitChatRun.
+//
+// Failures (DB error, missing session, RPC error) are logged and skipped;
+// a single bad row mustn't block the rest from re-arming.
+func (l *Lifecycle) Bootstrap(ctx context.Context) {
+	if l.agentChats == nil {
+		return
+	}
+	chats, err := l.agentChats.ListWithTmuxSession(ctx)
+	if err != nil {
+		l.logger.Warn().Err(err).Msg("bootstrap re-arm: failed to list chats with tmux session")
+		return
+	}
+	for _, chat := range chats {
+		if chat == nil || chat.AgentSessionID == "" {
+			continue
+		}
+		// HookToken lives on the parent session record (the per-run hook
+		// token used by /boss-repair lives only in HostServiceServer's
+		// in-memory map — that flavour of run is gone after a daemon
+		// restart anyway). If the session has no HookToken there's
+		// nothing the Stop hook would have authenticated against, so
+		// nothing to fall back from.
+		sess, err := l.sessions.Get(ctx, chat.SessionID)
+		if err != nil {
+			l.logger.Warn().Err(err).
+				Str("agent_session", chat.AgentSessionID).
+				Str("session", chat.SessionID).
+				Msg("bootstrap re-arm: failed to load session; skipping")
+			continue
+		}
+		if sess.HookToken == nil || *sess.HookToken == "" {
+			continue
+		}
+		client, ok := l.agents[chat.AgentName]
+		if !ok || client == nil {
+			l.logger.Warn().
+				Str("agent", chat.AgentName).
+				Str("agent_session", chat.AgentSessionID).
+				Msg("bootstrap re-arm: agent client missing; skipping")
+			continue
+		}
+		supported, ok := l.agentClientHookSupport[chat.AgentName]
+		if !ok {
+			hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
+				WorkDir:        sess.WorktreePath,
+				SessionId:      chat.SessionID,
+				AgentSessionId: chat.AgentSessionID,
+				HookToken:      *sess.HookToken,
+				HookPort:       int32(l.hookPort),
+			})
+			if err != nil {
+				l.logger.Warn().Err(err).
+					Str("agent_session", chat.AgentSessionID).
+					Msg("bootstrap re-arm: ConfigureFinalizeHook probe failed; skipping")
+				continue
+			}
+			supported = hookResp.GetIsSupported()
+			if l.agentClientHookSupport == nil {
+				l.agentClientHookSupport = map[string]bool{}
+			}
+			l.agentClientHookSupport[chat.AgentName] = supported
+		}
+		if supported {
+			continue
+		}
+		if l.pollArmer == nil || l.daemonCtx == nil {
+			continue
+		}
+		l.pollArmer.Arm(l.daemonCtx, chat.AgentSessionID, client)
+		l.logger.Info().
+			Str("agent_session", chat.AgentSessionID).
+			Str("agent", chat.AgentName).
+			Msg("bootstrap: re-armed poll fallback for hookless run")
+	}
+}
+
+// SetPollArmer wires the poll-fallback armer used when an agent's
+// ConfigureFinalizeHook reports IsSupported=false. Wired during daemon
+// startup with *agent.PollFallback; tests inject a fake. A nil armer is
+// valid — sessions whose agents support hooks ignore it, and sessions
+// whose agents don't will simply not get re-driven on completion.
+func (l *Lifecycle) SetPollArmer(p PollArmer) { l.pollArmer = p }
+
+// SetDaemonCtx records the daemon-scoped context PollArmer.Arm should
+// use. Required alongside SetPollArmer for the poll-fallback path to
+// activate. Tests that exercise the poll path inject context.Background.
+func (l *Lifecycle) SetDaemonCtx(ctx context.Context) { l.daemonCtx = ctx }
+
 // SetAgentLogsDir records the bossd-owned directory where agent plugins
 // write their tmux-hosted interactive run logs. Mirrors the same field
 // on HostServiceServer so StartTmuxChat can pass a deterministic
@@ -118,7 +249,7 @@ func NewLifecycle(
 	agentChats db.AgentChatStore,
 	cronJobs db.CronJobStore,
 	worktrees gitpkg.WorktreeManager,
-	agentRunner agent.AgentRunner,
+	agentRunner agent.AgentDispatcher,
 	tmux *tmux.Client,
 	provider vcs.Provider,
 	logger zerolog.Logger,
@@ -312,9 +443,21 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			return fmt.Errorf("configure finalize hook: %w", err)
 		}
 		if !hookResp.IsSupported {
-			// For PR1, claude is the only agent and IsSupported is always true.
-			// Future agents that lack a hook will fall back to polling here.
-			l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook; falling back to polling")
+			// Hookless agent (e.g. codex) — arm the daemon-side poll
+			// fallback so we still learn when the run finishes. Plugins
+			// that own a finalize hook (claude) skip this path entirely;
+			// their Stop hook drives CompleteAgentRun directly.
+			l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook; arming poll fallback")
+			if l.pollArmer != nil && l.daemonCtx != nil {
+				// agent_session_id for cron-spawned tmux sessions is minted
+				// inside StartTmuxChat below; for the headless agentRunner
+				// path the poller would need that id too. The cron path
+				// re-arms via StartTmuxChat (see Task D.4), so for the
+				// non-cron branch we arm with the boss session_id as the
+				// agent_session_id key — matching the historical claude
+				// behaviour where the two were the same value.
+				l.pollArmer.Arm(l.daemonCtx, sessionID, client)
+			}
 		} else {
 			l.logger.Info().
 				Str("session", sessionID).
@@ -350,7 +493,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			return fmt.Errorf("start cron tmux chat: %w", err)
 		}
 	} else {
-		claudeSessionID, err = l.agentRunner.Start(ctx, result.WorktreePath, session.Plan, nil, "")
+		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "")
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}
@@ -712,8 +855,8 @@ func (l *Lifecycle) StopSession(ctx context.Context, sessionID string) error {
 	}
 
 	// Stop Claude process if running.
-	if session.AgentSessionID != nil && l.agentRunner.IsRunning(*session.AgentSessionID) {
-		if err := l.agentRunner.Stop(*session.AgentSessionID); err != nil {
+	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(session.AgentName, *session.AgentSessionID) {
+		if err := l.agentRunner.StopByAgent(session.AgentName, *session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
@@ -749,8 +892,8 @@ func (l *Lifecycle) ArchiveSession(ctx context.Context, sessionID string) error 
 	}
 
 	// Stop Claude process if running.
-	if session.AgentSessionID != nil && l.agentRunner.IsRunning(*session.AgentSessionID) {
-		if err := l.agentRunner.Stop(*session.AgentSessionID); err != nil {
+	if session.AgentSessionID != nil && l.agentRunner.IsRunningByAgent(session.AgentName, *session.AgentSessionID) {
+		if err := l.agentRunner.StopByAgent(session.AgentName, *session.AgentSessionID); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Msg("failed to stop claude process")
@@ -832,7 +975,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		resume = session.AgentSessionID
 	}
 
-	claudeSessionID, err := l.agentRunner.Start(ctx, session.WorktreePath, session.Plan, resume, "")
+	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "")
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}

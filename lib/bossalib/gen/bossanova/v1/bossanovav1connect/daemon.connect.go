@@ -156,6 +156,12 @@ const (
 	// DaemonServiceListCheckSnapshotsProcedure is the fully-qualified name of the DaemonService's
 	// ListCheckSnapshots RPC.
 	DaemonServiceListCheckSnapshotsProcedure = "/bossanova.v1.DaemonService/ListCheckSnapshots"
+	// DaemonServiceListAgentsProcedure is the fully-qualified name of the DaemonService's ListAgents
+	// RPC.
+	DaemonServiceListAgentsProcedure = "/bossanova.v1.DaemonService/ListAgents"
+	// DaemonServiceListPluginsProcedure is the fully-qualified name of the DaemonService's ListPlugins
+	// RPC.
+	DaemonServiceListPluginsProcedure = "/bossanova.v1.DaemonService/ListPlugins"
 )
 
 // DaemonServiceClient is a client for the bossanova.v1.DaemonService service.
@@ -231,6 +237,16 @@ type DaemonServiceClient interface {
 	// "why does the TUI think this PR is passing when GitHub says
 	// failing?" without re-running `gh pr checks` by hand.
 	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
+	// ListAgents returns the names + GetInfo metadata of every agent runner
+	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
+	// show the onboarding wizard, (b) populate the new-session agent-select
+	// step, (c) render the settings page's per-plugin sections.
+	ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error)
+	// ListPlugins returns every plugin the daemon attempted to load this
+	// run, including disabled and failed entries. Surfaced via
+	// `boss plugin list` so operators can debug "did my plugin actually
+	// load?" without grepping daemon logs.
+	ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error)
 }
 
 // NewDaemonServiceClient constructs a client for the bossanova.v1.DaemonService service. By
@@ -496,6 +512,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
 			connect.WithClientOptions(opts...),
 		),
+		listAgents: connect.NewClient[v1.ListAgentsRequest, v1.ListAgentsResponse](
+			httpClient,
+			baseURL+DaemonServiceListAgentsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListAgents")),
+			connect.WithClientOptions(opts...),
+		),
+		listPlugins: connect.NewClient[v1.ListPluginsRequest, v1.ListPluginsResponse](
+			httpClient,
+			baseURL+DaemonServiceListPluginsProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("ListPlugins")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -543,6 +571,8 @@ type daemonServiceClient struct {
 	runCronJobNow        *connect.Client[v1.RunCronJobNowRequest, v1.RunCronJobNowResponse]
 	repairDoctor         *connect.Client[v1.RepairDoctorRequest, v1.RepairDoctorResponse]
 	listCheckSnapshots   *connect.Client[v1.ListCheckSnapshotsRequest, v1.ListCheckSnapshotsResponse]
+	listAgents           *connect.Client[v1.ListAgentsRequest, v1.ListAgentsResponse]
+	listPlugins          *connect.Client[v1.ListPluginsRequest, v1.ListPluginsResponse]
 }
 
 // ResolveContext calls bossanova.v1.DaemonService.ResolveContext.
@@ -755,6 +785,16 @@ func (c *daemonServiceClient) ListCheckSnapshots(ctx context.Context, req *conne
 	return c.listCheckSnapshots.CallUnary(ctx, req)
 }
 
+// ListAgents calls bossanova.v1.DaemonService.ListAgents.
+func (c *daemonServiceClient) ListAgents(ctx context.Context, req *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {
+	return c.listAgents.CallUnary(ctx, req)
+}
+
+// ListPlugins calls bossanova.v1.DaemonService.ListPlugins.
+func (c *daemonServiceClient) ListPlugins(ctx context.Context, req *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error) {
+	return c.listPlugins.CallUnary(ctx, req)
+}
+
 // DaemonServiceHandler is an implementation of the bossanova.v1.DaemonService service.
 type DaemonServiceHandler interface {
 	// Context resolution
@@ -828,6 +868,16 @@ type DaemonServiceHandler interface {
 	// "why does the TUI think this PR is passing when GitHub says
 	// failing?" without re-running `gh pr checks` by hand.
 	ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error)
+	// ListAgents returns the names + GetInfo metadata of every agent runner
+	// plugin currently loaded. Used by the boss TUI to (a) decide whether to
+	// show the onboarding wizard, (b) populate the new-session agent-select
+	// step, (c) render the settings page's per-plugin sections.
+	ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error)
+	// ListPlugins returns every plugin the daemon attempted to load this
+	// run, including disabled and failed entries. Surfaced via
+	// `boss plugin list` so operators can debug "did my plugin actually
+	// load?" without grepping daemon logs.
+	ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error)
 }
 
 // NewDaemonServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -1089,6 +1139,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("ListCheckSnapshots")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceListAgentsHandler := connect.NewUnaryHandler(
+		DaemonServiceListAgentsProcedure,
+		svc.ListAgents,
+		connect.WithSchema(daemonServiceMethods.ByName("ListAgents")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceListPluginsHandler := connect.NewUnaryHandler(
+		DaemonServiceListPluginsProcedure,
+		svc.ListPlugins,
+		connect.WithSchema(daemonServiceMethods.ByName("ListPlugins")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.DaemonService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DaemonServiceResolveContextProcedure:
@@ -1175,6 +1237,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceRepairDoctorHandler.ServeHTTP(w, r)
 		case DaemonServiceListCheckSnapshotsProcedure:
 			daemonServiceListCheckSnapshotsHandler.ServeHTTP(w, r)
+		case DaemonServiceListAgentsProcedure:
+			daemonServiceListAgentsHandler.ServeHTTP(w, r)
+		case DaemonServiceListPluginsProcedure:
+			daemonServiceListPluginsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1350,4 +1416,12 @@ func (UnimplementedDaemonServiceHandler) RepairDoctor(context.Context, *connect.
 
 func (UnimplementedDaemonServiceHandler) ListCheckSnapshots(context.Context, *connect.Request[v1.ListCheckSnapshotsRequest]) (*connect.Response[v1.ListCheckSnapshotsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListCheckSnapshots is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListAgents(context.Context, *connect.Request[v1.ListAgentsRequest]) (*connect.Response[v1.ListAgentsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListAgents is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) ListPlugins(context.Context, *connect.Request[v1.ListPluginsRequest]) (*connect.Response[v1.ListPluginsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.ListPlugins is not implemented"))
 }

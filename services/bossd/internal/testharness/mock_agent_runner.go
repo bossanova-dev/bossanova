@@ -12,7 +12,10 @@ import (
 	"github.com/recurser/bossd/internal/agent"
 )
 
-var _ agent.AgentRunner = (*MockAgentRunner)(nil)
+var (
+	_ agent.AgentRunner     = (*MockAgentRunner)(nil)
+	_ agent.AgentDispatcher = (*MockAgentRunner)(nil)
+)
 
 // MockAgentRunner is a mock AgentRunner that simulates the coding-agent subprocess
 // without spawning real subprocesses.
@@ -271,6 +274,23 @@ func (m *MockAgentRunner) Subscribe(ctx context.Context, sessionID string) (<-ch
 	}
 
 	return ch, nil
+}
+
+// StartByAgent forwards to Start so existing assertions on Started/Stopped
+// still fire. By-agent routing is exercised by the dispatcher tests; this
+// fake doesn't need to inspect agentName.
+func (m *MockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+	return m.Start(ctx, workDir, plan, resume, agentSessionID)
+}
+
+// StopByAgent forwards to Stop, ignoring agentName (see StartByAgent).
+func (m *MockAgentRunner) StopByAgent(_, agentSessionID string) error {
+	return m.Stop(agentSessionID)
+}
+
+// IsRunningByAgent forwards to IsRunning, ignoring agentName (see StartByAgent).
+func (m *MockAgentRunner) IsRunningByAgent(_, agentSessionID string) bool {
+	return m.IsRunning(agentSessionID)
 }
 
 func (m *MockAgentRunner) History(sessionID string) []agent.OutputLine {

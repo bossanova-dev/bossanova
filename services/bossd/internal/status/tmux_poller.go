@@ -8,7 +8,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
-	"github.com/recurser/bossalib/statusdetect"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
@@ -17,14 +17,16 @@ import (
 // TmuxStatusPoller polls tmux pane content for active chats and feeds
 // working/idle/question statuses into the status tracker.
 type TmuxStatusPoller struct {
-	tracker  *Tracker
-	chats    db.AgentChatStore
-	sessions db.SessionStore
-	tmux     *tmux.Client
-	logger   zerolog.Logger
+	tracker      *Tracker
+	chats        db.AgentChatStore
+	sessions     db.SessionStore
+	tmux         *tmux.Client
+	agentClients map[string]agent.AgentRunnerClient
+	logger       zerolog.Logger
 
-	mu           sync.Mutex
-	prevCaptures map[string]captureEntry // agentSessionID -> previous capture
+	mu            sync.Mutex
+	prevCaptures  map[string]captureEntry // agentSessionID -> previous capture
+	missingLogged map[string]struct{}     // agent name -> already-logged "missing client" warning
 
 	done chan struct{} // closed when Run's goroutine exits
 }
@@ -35,16 +37,25 @@ type captureEntry struct {
 }
 
 // NewTmuxStatusPoller creates a new poller. sessions may be nil in tests that
-// don't exercise the transcript-aware question-suppression path.
-func NewTmuxStatusPoller(tracker *Tracker, chats db.AgentChatStore, sessions db.SessionStore, tmux *tmux.Client, logger zerolog.Logger) *TmuxStatusPoller {
+// don't exercise the transcript-aware question-suppression path. agentClients
+// is the per-name registry of AgentRunnerClient gRPC clients used to dispatch
+// HasQuestionPrompt / LastTurnIsUser to the right plugin based on each chat's
+// AgentName. A nil or empty map disables prompt detection — every poll lands
+// in the "no client" branch and the chat goes IDLE.
+func NewTmuxStatusPoller(tracker *Tracker, chats db.AgentChatStore, sessions db.SessionStore, tmux *tmux.Client, agentClients map[string]agent.AgentRunnerClient, logger zerolog.Logger) *TmuxStatusPoller {
+	if agentClients == nil {
+		agentClients = map[string]agent.AgentRunnerClient{}
+	}
 	return &TmuxStatusPoller{
-		tracker:      tracker,
-		chats:        chats,
-		sessions:     sessions,
-		tmux:         tmux,
-		logger:       logger,
-		prevCaptures: make(map[string]captureEntry),
-		done:         make(chan struct{}),
+		tracker:       tracker,
+		chats:         chats,
+		sessions:      sessions,
+		tmux:          tmux,
+		agentClients:  agentClients,
+		logger:        logger,
+		prevCaptures:  make(map[string]captureEntry),
+		missingLogged: make(map[string]struct{}),
+		done:          make(chan struct{}),
 	}
 }
 
@@ -125,10 +136,10 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			continue
 		}
 
-		// Resolve question state before taking p.mu — userAnsweredChat
-		// may issue DB queries and we hold the mutex only briefly below.
-		paneShowsQuestion := statusdetect.HasQuestionPrompt([]byte(content))
-		questionSuppressed := paneShowsQuestion && p.userAnsweredChat(ctx, chat)
+		// Resolve question state before taking p.mu — questionState
+		// may issue plugin RPCs / DB queries and we hold the mutex only
+		// briefly below.
+		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
 
 		p.mu.Lock()
 		prev, hasPrev := p.prevCaptures[agentSessionID]
@@ -211,8 +222,7 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 			continue
 		}
 
-		paneShowsQuestion := statusdetect.HasQuestionPrompt([]byte(content))
-		questionSuppressed := paneShowsQuestion && p.userAnsweredChat(ctx, chat)
+		paneShowsQuestion, questionSuppressed := p.questionState(ctx, chat, content)
 
 		var status pb.ChatStatus
 		switch {
@@ -244,22 +254,52 @@ func (p *TmuxStatusPoller) Bootstrap(ctx context.Context) {
 	}
 }
 
-// userAnsweredChat reports whether the JSONL transcript for chat shows the
-// user has already responded to the currently-visible question prompt. It
-// resolves the chat's session, derives the transcript path, and consults
-// lastTurnIsUser. Any lookup failure returns false (fail-open: the caller
-// keeps reporting QUESTION based on pane content alone).
-func (p *TmuxStatusPoller) userAnsweredChat(ctx context.Context, chat *models.AgentChat) bool {
-	if p.sessions == nil || chat == nil {
-		return false
+// questionState resolves whether the captured pane content shows a question
+// prompt and, if so, whether the user has already answered. Both signals are
+// dispatched per-agent: HasQuestionPrompt and LastTurnIsUser run on the
+// AgentRunner plugin matching chat.AgentName so each agent owns its own
+// pane regex and transcript schema. When no client is registered for the
+// chat's AgentName the chat falls through as "no question" — fail-open so a
+// missing plugin can never lock a chat in QUESTION forever.
+func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *models.AgentChat, content string) (paneShowsQuestion, questionSuppressed bool) {
+	if chat == nil {
+		return false, false
+	}
+	client, ok := p.agentClients[chat.AgentName]
+	if !ok {
+		p.logMissingAgentOnce(chat.AgentName)
+		return false, false
+	}
+	hpResp, err := client.HasQuestionPrompt(ctx, &pb.HasQuestionPromptRequest{PaneContent: []byte(content)})
+	if err != nil || hpResp == nil || !hpResp.GetHasPrompt() {
+		return false, false
+	}
+	paneShowsQuestion = true
+	if p.sessions == nil {
+		return paneShowsQuestion, false
 	}
 	sess, err := p.sessions.Get(ctx, chat.SessionID)
 	if err != nil || sess == nil || sess.WorktreePath == "" {
-		return false
+		return paneShowsQuestion, false
 	}
-	path, err := transcriptPath(sess.WorktreePath, chat.AgentSessionID)
-	if err != nil {
-		return false
+	luResp, err := client.LastTurnIsUser(ctx, &pb.LastTurnIsUserRequest{
+		WorkDir:        sess.WorktreePath,
+		AgentSessionId: chat.AgentSessionID,
+	})
+	questionSuppressed = err == nil && luResp != nil && luResp.GetIsUser()
+	return paneShowsQuestion, questionSuppressed
+}
+
+// logMissingAgentOnce emits a single warning per unknown agent name so the
+// daemon log stays quiet when an old chat references a plugin that's no
+// longer loaded — without dropping the signal entirely.
+func (p *TmuxStatusPoller) logMissingAgentOnce(name string) {
+	p.mu.Lock()
+	if _, already := p.missingLogged[name]; already {
+		p.mu.Unlock()
+		return
 	}
-	return lastTurnIsUser(path)
+	p.missingLogged[name] = struct{}{}
+	p.mu.Unlock()
+	p.logger.Warn().Str("agent", name).Msg("tmux poller: no AgentRunnerClient for agent name; question detection disabled for chats with this agent")
 }

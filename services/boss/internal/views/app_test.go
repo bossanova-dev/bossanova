@@ -1,6 +1,8 @@
 package views
 
-import "testing"
+import (
+	"testing"
+)
 
 // resumeTickCmd exists to restart the self-perpetuating tick chain in views
 // that drive periodic status refreshes via tickMsg. The bug-report modal

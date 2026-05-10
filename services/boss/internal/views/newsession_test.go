@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -22,6 +23,8 @@ type stubClient struct {
 	prsErr           error
 	trackerIssues    []*pb.TrackerIssue
 	trackerIssuesErr error
+	agents           []client.AgentInfo
+	agentsErr        error
 }
 
 func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
@@ -162,7 +165,7 @@ func (s *stubClient) ResurrectSession(context.Context, string) (*pb.Session, err
 func (s *stubClient) EmptyTrash(context.Context, *pb.EmptyTrashRequest) (int32, error) {
 	panic("unused")
 }
-func (s *stubClient) RecordChat(context.Context, string, string, string, bool) (*pb.ClaudeChat, error) {
+func (s *stubClient) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
 	panic("unused")
 }
 func (s *stubClient) ListChats(context.Context, string) ([]*pb.ClaudeChat, error) {
@@ -200,6 +203,12 @@ func (s *stubClient) RepairDoctor(context.Context) (*pb.RepairDoctorResponse, er
 }
 func (s *stubClient) ListCheckSnapshots(context.Context, string, int32) (*pb.ListCheckSnapshotsResponse, error) {
 	panic("unused")
+}
+func (s *stubClient) ListAgents(context.Context) ([]client.AgentInfo, error) {
+	return s.agents, s.agentsErr
+}
+func (s *stubClient) ListPlugins(context.Context) ([]*pb.InstalledPlugin, error) {
+	return nil, nil
 }
 
 // --- Helpers ---
@@ -1237,6 +1246,119 @@ func TestNewSession_IssueRefetchResetsStaleFilteredIndices(t *testing.T) {
 	for _, i := range m.issuesFiltered {
 		if i < 0 || i >= len(m.trackerIssues) {
 			t.Fatalf("stale index %d in issuesFiltered (len=%d)", i, len(m.trackerIssues))
+		}
+	}
+}
+
+// --- Agent-select phase ---
+
+func TestNewSession_MultiAgent_RoutesToAgentSelect(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+			{Name: "codex", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+
+	// Order matters: agentsMsg must be processed before reposMsg so the
+	// repo-auto-select branch sees the multi-agent count and routes to the
+	// agent picker. Init() batches both fetchers but bubbletea doesn't
+	// guarantee delivery order; the wizard must work either way. Test both.
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseAgentSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseAgentSelect (%d)", m.phase, newSessionPhaseAgentSelect)
+	}
+	if m.selectedRepoID != "repo-1" {
+		t.Fatalf("selectedRepoID = %q, want repo-1", m.selectedRepoID)
+	}
+}
+
+func TestNewSession_SingleAgent_SkipsAgentSelect(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect; one agent should skip the picker", m.phase)
+	}
+}
+
+func TestNewSession_InitialAgentOverride_SkipsAgentSelect(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+			{Name: "codex", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m.SetInitialAgent("codex")
+
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect; --agent override should bypass picker", m.phase)
+	}
+	if m.initialAgent != "codex" {
+		t.Errorf("initialAgent = %q, want codex (override should be preserved)", m.initialAgent)
+	}
+}
+
+func TestNewSession_AgentSelect_EnterSetsInitialAgent(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+			{Name: "codex", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseAgentSelect {
+		t.Fatalf("expected agent-select phase, got %d", m.phase)
+	}
+
+	// Cursor down to second agent (codex), then enter.
+	m = sendKey(t, m, 'j')
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+
+	if m.initialAgent != "codex" {
+		t.Errorf("initialAgent = %q, want codex", m.initialAgent)
+	}
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Errorf("phase = %d, want newSessionPhaseTypeSelect after agent pick", m.phase)
+	}
+}
+
+func TestNewSession_AgentSelect_ViewRendersAgentNames(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1.2"},
+			{Name: "codex", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	view := m.View().Content
+	for _, want := range []string{"claude", "codex", "Multiple agents"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("agent-select view missing %q in:\n%s", want, view)
 		}
 	}
 }

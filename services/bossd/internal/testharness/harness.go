@@ -93,6 +93,8 @@ type Harness struct {
 
 	deletedMu       sync.Mutex
 	deletedSessions []string
+	updatedMu       sync.Mutex
+	updatedSessions []*pb.Session
 }
 
 // New creates a new E2E test harness with an in-memory database,
@@ -183,6 +185,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 
 	// Server.
 	h := &Harness{}
+	mockAgentClient := &MockAgentClient{Name: "claude"}
+	mockCodexClient := &MockAgentClient{Name: "codex"}
 	srv := server.New(server.Config{
 		Repos:          repos,
 		Sessions:       sessions,
@@ -191,13 +195,26 @@ func newHarness(t *testing.T, opts Options) *Harness {
 		DisplayTracker: display,
 		Lifecycle:      lifecycle,
 		Agent:          agentMock,
-		Worktrees:      gitMock,
-		Provider:       vcsMock,
-		Tmux:           tmuxClient,
+		// Register both agents so per-agent routing tests (chat.AgentName
+		// = "codex") can be exercised end-to-end via RecordChat. The
+		// default for legacy chats with empty AgentName routes to claude
+		// (see liveArgvBuilder's "" → "claude" fallback).
+		AgentClients: map[string]agent.AgentRunnerClient{
+			"claude": mockAgentClient,
+			"codex":  mockCodexClient,
+		},
+		Worktrees: gitMock,
+		Provider:  vcsMock,
+		Tmux:      tmuxClient,
 		OnSessionDeleted: func(_ context.Context, sessionID string) {
 			h.deletedMu.Lock()
 			defer h.deletedMu.Unlock()
 			h.deletedSessions = append(h.deletedSessions, sessionID)
+		},
+		OnSessionUpdated: func(_ context.Context, sess *pb.Session) {
+			h.updatedMu.Lock()
+			defer h.updatedMu.Unlock()
+			h.updatedSessions = append(h.updatedSessions, sess)
 		},
 		Logger: logger,
 	})
@@ -261,7 +278,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	}
 	lifecycle.SetHookPort(hookSrv.Port())
 	lifecycle.SetAgents(map[string]agent.AgentRunnerClient{
-		"claude": &MockAgentClient{},
+		"claude": mockAgentClient,
+		"codex":  mockCodexClient,
 	})
 	// StartTmuxChat (extracted from startCronTmuxChat) requires a non-empty
 	// agentLogsDir so it can resolve a per-agent-session log path to feed
@@ -306,6 +324,18 @@ func (h *Harness) DeletedSessionIDs() []string {
 	defer h.deletedMu.Unlock()
 	out := make([]string, len(h.deletedSessions))
 	copy(out, h.deletedSessions)
+	return out
+}
+
+// UpdatedSessions returns a snapshot of sessions the daemon has reported
+// updated via the Server's OnSessionUpdated hook. Tests assert on it to verify
+// that SessionDelta_KIND_UPDATED would be published for archive/resurrect
+// transitions.
+func (h *Harness) UpdatedSessions() []*pb.Session {
+	h.updatedMu.Lock()
+	defer h.updatedMu.Unlock()
+	out := make([]*pb.Session, len(h.updatedSessions))
+	copy(out, h.updatedSessions)
 	return out
 }
 

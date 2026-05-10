@@ -134,6 +134,54 @@ func TestStartMultipleDisabledPlugins(t *testing.T) {
 	}
 }
 
+// TestAllPluginsSurfacesMissesAndLoaded verifies that AllPlugins (the
+// `boss plugin list` data source) reports every configured plugin —
+// disabled and failed alongside loaded — so an operator with a typo'd
+// path can spot the problem without grepping daemon logs.
+func TestAllPluginsSurfacesMissesAndLoaded(t *testing.T) {
+	h := testHost()
+
+	cfgs := []config.PluginConfig{
+		{Name: "off-plugin", Path: "/whatever", Enabled: false},
+		{Name: "broken-plugin", Path: "/nonexistent/binary", Enabled: true},
+	}
+
+	if err := h.Start(t.Context(), cfgs); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Stop() })
+
+	all := h.AllPlugins()
+	if len(all) != 2 {
+		t.Fatalf("AllPlugins() = %d entries, want 2: %+v", len(all), all)
+	}
+
+	byName := map[string]PluginStatus{}
+	for _, p := range all {
+		byName[p.Name] = p
+	}
+
+	off, ok := byName["off-plugin"]
+	if !ok {
+		t.Fatalf("off-plugin missing from AllPlugins")
+	}
+	if off.Enabled || off.Loaded || off.Error != "" {
+		t.Errorf("off-plugin: want disabled non-loaded no-error, got %+v", off)
+	}
+
+	bad, ok := byName["broken-plugin"]
+	if !ok {
+		t.Fatalf("broken-plugin missing from AllPlugins")
+	}
+	if !bad.Enabled || bad.Loaded || bad.Error == "" {
+		t.Errorf("broken-plugin: want enabled non-loaded with error, got %+v", bad)
+	}
+
+	if got := h.Plugins(); len(got) != 0 {
+		t.Errorf("Plugins() leaked misses: got %d entries, want 0", len(got))
+	}
+}
+
 func TestStopIdempotent(t *testing.T) {
 	h := testHost()
 

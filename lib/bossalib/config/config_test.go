@@ -614,6 +614,50 @@ func TestSetPluginConfigBool(t *testing.T) {
 	})
 }
 
+func TestProvidersAcknowledgedRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	s := DefaultSettings()
+	s.ProvidersAcknowledged = true
+	if err := SaveTo(path, s); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ProvidersAcknowledged {
+		t.Errorf("ProvidersAcknowledged not persisted")
+	}
+}
+
+func TestSetPluginConfigStringRoundTrip(t *testing.T) {
+	s := DefaultSettings()
+	SetPluginConfigString(&s, "codex", "model", "o1-pro")
+	got := PluginConfigString(&s, "codex", "model")
+	if got != "o1-pro" {
+		t.Errorf("got %q want o1-pro", got)
+	}
+	SetPluginConfigString(&s, "codex", "model", "")
+	got = PluginConfigString(&s, "codex", "model")
+	if got != "" {
+		t.Errorf("got %q want empty after delete", got)
+	}
+}
+
+func TestSetPluginConfigEnumRejectsInvalid(t *testing.T) {
+	s := DefaultSettings()
+	allowed := []string{"workspace-write", "read-only", "danger-full-access"}
+
+	if err := SetPluginConfigEnum(&s, "codex", "sandbox", "workspace-write", allowed); err != nil {
+		t.Fatalf("valid value rejected: %v", err)
+	}
+	if err := SetPluginConfigEnum(&s, "codex", "sandbox", "nonsense", allowed); err == nil {
+		t.Fatal("invalid value accepted")
+	}
+}
+
 func TestDedupPluginConfigs(t *testing.T) {
 	cases := []struct {
 		name        string

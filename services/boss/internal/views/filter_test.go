@@ -3,6 +3,8 @@ package views
 import (
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestListFilter_InitialStateIsIdle(t *testing.T) {
@@ -92,6 +94,37 @@ func TestListFilter_ActivateFromAppliedPreservesQuery(t *testing.T) {
 	}
 	if f.Query() != "login" {
 		t.Errorf("Activate from applied state should preserve query, got %q", f.Query())
+	}
+}
+
+func TestListFilter_UpdateReportsChangedForKeyInput(t *testing.T) {
+	f := newListFilter()
+	_ = f.Activate()
+
+	_, changed := f.Update(tea.KeyPressMsg{Code: 'l'})
+	if !changed {
+		t.Fatal("Update key input changed = false, want true")
+	}
+	if got := f.Query(); got != "l" {
+		t.Fatalf("Query() = %q, want %q", got, "l")
+	}
+
+	_, changed = f.Update(tea.PasteMsg{Content: ""})
+	if changed {
+		t.Fatal("Update empty paste changed = true, want false")
+	}
+}
+
+func TestListFilter_UpdateAcceptsPasteMsg(t *testing.T) {
+	f := newListFilter()
+	_ = f.Activate()
+
+	_, changed := f.Update(tea.PasteMsg{Content: "ENG-102 dark"})
+	if !changed {
+		t.Fatal("Update paste changed = false, want true")
+	}
+	if got := f.Query(); got != "ENG-102 dark" {
+		t.Fatalf("Query() = %q, want pasted text", got)
 	}
 }
 

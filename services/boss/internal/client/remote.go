@@ -244,6 +244,7 @@ func (c *RemoteClient) WakeChat(ctx context.Context, sessionID, agentSessionID s
 	return &pb.WakeChatResponse{
 		Outcome:         translateStreamOutcome(resp.Msg.Outcome),
 		TmuxSessionName: resp.Msg.TmuxSessionName,
+		Reason:          resp.Msg.Reason,
 	}, nil
 }
 

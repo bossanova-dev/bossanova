@@ -199,13 +199,15 @@ func TestSessionToProto_NilOptionals(t *testing.T) {
 
 func TestClaudeChatToProto(t *testing.T) {
 	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+	providerSessionID := "provider-resume-1"
 	chat := &models.AgentChat{
-		ID:             "chat-1",
-		SessionID:      "sess-1",
-		AgentSessionID: "claude-abc",
-		Title:          "Chat title",
-		DaemonID:       "daemon-1",
-		CreatedAt:      now,
+		ID:                "chat-1",
+		SessionID:         "sess-1",
+		AgentSessionID:    "claude-abc",
+		ProviderSessionID: &providerSessionID,
+		Title:             "Chat title",
+		DaemonID:          "daemon-1",
+		CreatedAt:         now,
 	}
 
 	p := agentChatToProto(chat)
@@ -223,6 +225,9 @@ func TestClaudeChatToProto(t *testing.T) {
 	}
 	if p.DaemonId != "daemon-1" {
 		t.Errorf("DaemonId = %q", p.DaemonId)
+	}
+	if p.ProviderSessionId != providerSessionID {
+		t.Errorf("ProviderSessionId = %q, want %q", p.ProviderSessionId, providerSessionID)
 	}
 	if p.CreatedAt == nil {
 		t.Error("CreatedAt should not be nil")

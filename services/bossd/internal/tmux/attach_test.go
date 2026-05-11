@@ -168,6 +168,27 @@ func TestRingBuffer_LostFlagWithoutData(t *testing.T) {
 	}
 }
 
+func TestEnsureTermNormalizesHostSpecificTerm(t *testing.T) {
+	env := []string{"PATH=/bin", "TERM=xterm-ghostty", "HOME=/tmp/home"}
+	got := ensureTerm(env)
+
+	want := []string{"PATH=/bin", "TERM=xterm-256color", "HOME=/tmp/home"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("ensureTerm = %#v, want %#v", got, want)
+	}
+	if env[1] != "TERM=xterm-ghostty" {
+		t.Fatalf("ensureTerm mutated input env: %#v", env)
+	}
+}
+
+func TestEnsureTermAddsMissingTerm(t *testing.T) {
+	got := ensureTerm([]string{"PATH=/bin"})
+	want := []string{"PATH=/bin", "TERM=xterm-256color"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("ensureTerm = %#v, want %#v", got, want)
+	}
+}
+
 // ─── TerminalAttach unit tests ───────────────────────────────────────────
 
 func TestNewTerminalAttach_RequiresClient(t *testing.T) {

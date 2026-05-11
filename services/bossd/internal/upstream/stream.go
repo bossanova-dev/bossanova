@@ -263,7 +263,7 @@ type SessionCommandHandler interface {
 	// the dispatcher can attach a typed CommandResult.error_code (the
 	// proxy maps it back to the right ConnectRPC code without parsing
 	// the human-readable error string).
-	WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (outcome pb.WakeChatResult_Outcome, tmuxName string, errorCode pb.CommandResult_ErrorCode, err error)
+	WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (outcome pb.WakeChatResult_Outcome, tmuxName string, reason string, errorCode pb.CommandResult_ErrorCode, err error)
 }
 
 // WebhookDispatcher forwards a webhook payload to whatever in-daemon

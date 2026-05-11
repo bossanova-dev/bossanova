@@ -109,6 +109,9 @@ func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 	if c.TmuxSessionName != nil {
 		out.TmuxSessionName = *c.TmuxSessionName
 	}
+	if c.ProviderSessionID != nil {
+		out.ProviderSessionId = *c.ProviderSessionID
+	}
 	return out
 }
 

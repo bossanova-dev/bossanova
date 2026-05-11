@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 )
 
 const maxScanLines = 200
@@ -106,6 +108,165 @@ type codexEnvelope struct {
 	Timestamp string          `json:"timestamp"`
 	Type      string          `json:"type"`
 	Payload   json.RawMessage `json:"payload"`
+}
+
+type codexSessionMetaPayload struct {
+	ID         string `json:"id"`
+	Timestamp  string `json:"timestamp"`
+	CWD        string `json:"cwd"`
+	Originator string `json:"originator"`
+	CLIVersion string `json:"cli_version"`
+}
+
+type interactiveSessionCandidate struct {
+	ID   string
+	Path string
+	Time time.Time
+}
+
+func sameWorkDir(a, b string) bool {
+	aa, errA := filepath.EvalSymlinks(a)
+	if errA != nil {
+		aa, _ = filepath.Abs(a)
+	}
+	bb, errB := filepath.EvalSymlinks(b)
+	if errB != nil {
+		bb, _ = filepath.Abs(b)
+	}
+	return filepath.Clean(aa) == filepath.Clean(bb)
+}
+
+func scanInteractiveSessionCandidates(root, workDir string, launchedAfter time.Time) []interactiveSessionCandidate {
+	return scanInteractiveSessionCandidatesInWindow(root, workDir, launchedAfter.Add(-2*time.Second), time.Time{})
+}
+
+func scanInteractiveSessionCandidatesInWindow(root, workDir string, notBefore, notAfter time.Time) []interactiveSessionCandidate {
+	var candidates []interactiveSessionCandidate
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if matched, _ := filepath.Match("rollout-*.jsonl", filepath.Base(path)); !matched {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		meta, ok := readSessionMeta(path)
+		if !ok {
+			return nil
+		}
+		if meta.ID == "" || meta.Originator != "codex-tui" || !sameWorkDir(meta.CWD, workDir) {
+			return nil
+		}
+		sessionTime := info.ModTime()
+		if meta.Timestamp != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, meta.Timestamp); err == nil {
+				sessionTime = parsed
+			}
+		}
+		if sessionTime.Before(notBefore) {
+			return nil
+		}
+		if !notAfter.IsZero() && sessionTime.After(notAfter) {
+			return nil
+		}
+		candidates = append(candidates, interactiveSessionCandidate{
+			ID:   meta.ID,
+			Path: path,
+			Time: sessionTime,
+		})
+		return nil
+	})
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Time.Equal(candidates[j].Time) {
+			return candidates[i].Path > candidates[j].Path
+		}
+		return candidates[i].Time.After(candidates[j].Time)
+	})
+	return candidates
+}
+
+func readSessionMeta(path string) (codexSessionMetaPayload, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return codexSessionMetaPayload{}, false
+	}
+	defer func() { _ = f.Close() }()
+
+	line, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return codexSessionMetaPayload{}, false
+	}
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 {
+		return codexSessionMetaPayload{}, false
+	}
+	var env codexEnvelope
+	if err := json.Unmarshal(line, &env); err != nil || env.Type != "session_meta" {
+		return codexSessionMetaPayload{}, false
+	}
+	var meta codexSessionMetaPayload
+	if err := json.Unmarshal(env.Payload, &meta); err != nil {
+		return codexSessionMetaPayload{}, false
+	}
+	if meta.Timestamp == "" {
+		meta.Timestamp = env.Timestamp
+	}
+	return meta, true
+}
+
+func resolveInteractiveSessionID(workDir string, launchedAfter time.Time) (id, transcriptPath string, ambiguous bool, reason string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", false, "no matching codex-tui rollout found"
+	}
+	return resolveInteractiveSessionIDAt(filepath.Join(home, codexSessionsDir), workDir, launchedAfter)
+}
+
+func resolveInteractiveSessionIDAt(root, workDir string, launchedAfter time.Time) (id, transcriptPath string, ambiguous bool, reason string) {
+	candidates := scanInteractiveSessionCandidates(root, workDir, launchedAfter)
+	if len(candidates) == 0 {
+		return "", "", false, "no matching codex-tui rollout found"
+	}
+	newest := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.ID != newest.ID {
+			return "", "", true, "multiple matching codex-tui rollouts found"
+		}
+	}
+	return newest.ID, newest.Path, false, ""
+}
+
+func resolveLegacyInteractiveSessionID(workDir string, chatCreatedAt time.Time) (id, transcriptPath string, ambiguous bool, reason string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", false, "no matching codex-tui rollout found"
+	}
+	return resolveLegacyInteractiveSessionIDAt(filepath.Join(home, codexSessionsDir), workDir, chatCreatedAt, time.Now())
+}
+
+func resolveLegacyInteractiveSessionIDAt(root, workDir string, chatCreatedAt, now time.Time) (id, transcriptPath string, ambiguous bool, reason string) {
+	if chatCreatedAt.IsZero() {
+		return "", "", false, "no matching codex-tui rollout found"
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	notAfter := now
+	createdWindowEnd := chatCreatedAt.Add(2 * time.Minute)
+	if now.After(createdWindowEnd) {
+		notAfter = createdWindowEnd
+	}
+	candidates := scanInteractiveSessionCandidatesInWindow(root, workDir, chatCreatedAt.Add(-5*time.Minute), notAfter)
+	if len(candidates) == 0 {
+		return "", "", false, "no matching codex-tui rollout found"
+	}
+	if len(candidates) > 1 {
+		return "", "", true, "multiple matching codex-tui rollouts found"
+	}
+	return candidates[0].ID, candidates[0].Path, false, ""
 }
 
 // codexEventMsgPayload is the payload shape for type:"event_msg" entries.

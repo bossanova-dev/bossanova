@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -24,6 +25,7 @@ type repoListLoadedMsg struct {
 
 // repoRemovedMsg carries the result of removing a repo.
 type repoRemovedMsg struct {
+	id  string
 	err error
 }
 
@@ -39,7 +41,9 @@ type RepoListModel struct {
 	loading bool
 
 	// Remove confirmation
-	confirming bool
+	confirming     bool
+	deletingRepoID string
+	spinner        spinner.Model
 
 	// Navigation
 	highlightRepoID string // repo to auto-highlight after returning from settings
@@ -55,15 +59,17 @@ func NewRepoListModel(c client.BossClient, ctx context.Context) RepoListModel {
 		client:  c,
 		ctx:     ctx,
 		loading: true,
+		spinner: newStatusSpinner(),
 		table:   newBossTable(nil, nil, 0),
 	}
 }
 
 func (m RepoListModel) Init() tea.Cmd {
-	return func() tea.Msg {
+	fetch := func() tea.Msg {
 		repos, err := m.client.ListRepos(m.ctx)
 		return repoListLoadedMsg{repos: repos, err: err}
 	}
+	return tea.Batch(fetch, m.spinner.Tick)
 }
 
 func (m *RepoListModel) buildTable() {
@@ -74,6 +80,7 @@ func (m *RepoListModel) buildTable() {
 	home, _ := os.UserHomeDir()
 	names := make([]string, len(m.repos))
 	paths := make([]string, len(m.repos))
+	statuses := make([]string, len(m.repos))
 	for i, repo := range m.repos {
 		names[i] = repo.DisplayName
 		p := repo.LocalPath
@@ -81,12 +88,16 @@ func (m *RepoListModel) buildTable() {
 			p = strings.Replace(p, home, "~", 1)
 		}
 		paths[i] = p
+		if repo.Id != "" && repo.Id == m.deletingRepoID {
+			statuses[i] = renderRowPendingStatus(m.spinner, "deleting")
+		}
 	}
 
 	cols := []table.Column{
 		cursorColumn,
 		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
 		{Title: "PATH", Width: maxColWidth("PATH", paths, 60) + tableColumnSep},
+		{Title: "STATUS", Width: maxColWidth("STATUS", statuses, 10) + tableColumnSep},
 	}
 
 	cursor := m.table.Cursor()
@@ -96,7 +107,7 @@ func (m *RepoListModel) buildTable() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, names[i], paths[i]}
+		rows[i] = table.Row{indicator, names[i], paths[i], statuses[i]}
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
@@ -113,6 +124,14 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.table.SetHeight(m.tableHeight())
 		m.table.SetWidth(msg.Width)
 		return m, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if m.deletingRepoID != "" {
+			m.buildTable()
+		}
+		return m, cmd
 
 	case repoListLoadedMsg:
 		m.loading = false
@@ -135,9 +154,13 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case repoRemovedMsg:
+		if msg.id == m.deletingRepoID {
+			m.deletingRepoID = ""
+		}
 		m.confirming = false
 		if msg.err != nil {
 			m.err = msg.err
+			m.buildTable()
 			return m, nil
 		}
 		// Refresh list.
@@ -156,7 +179,7 @@ func (m RepoListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			return m, func() tea.Msg { return switchViewMsg{view: ViewRepoAdd} }
 		case "d":
-			if len(m.repos) > 0 {
+			if len(m.repos) > 0 && m.deletingRepoID == "" {
 				m.confirming = true
 			}
 			return m, nil
@@ -182,9 +205,12 @@ func (m RepoListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
 		repo := m.repos[m.table.Cursor()]
+		m.confirming = false
+		m.deletingRepoID = repo.Id
+		m.buildTable()
 		return m, func() tea.Msg {
 			err := m.client.RemoveRepo(m.ctx, repo.Id)
-			return repoRemovedMsg{err: err}
+			return repoRemovedMsg{id: repo.Id, err: err}
 		}
 	case "n", "esc":
 		m.confirming = false

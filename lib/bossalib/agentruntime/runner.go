@@ -137,9 +137,10 @@ const earlyOutputCap = 8 * 1024
 
 // earlyOutputTimeout bounds how long Runner.Start waits for the early
 // output buffer to fill before invoking SessionIDFromOutput on whatever's
-// arrived. Half a second matches "first event from codex appears in
-// well under a second" without slowing down the StartRun RPC perceptibly.
-const earlyOutputTimeout = 500 * time.Millisecond
+// arrived. Two seconds still keeps StartRun responsive while avoiding false
+// misses on loaded machines where process startup and stdout copy scheduling
+// can exceed half a second.
+const earlyOutputTimeout = 2 * time.Second
 
 // Option configures a Runner via NewRunner's variadic options.
 type Option func(*Runner)

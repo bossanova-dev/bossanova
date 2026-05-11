@@ -698,7 +698,7 @@ type recordingAgentChatStore struct {
 
 func (r *recordingAgentChatStore) Create(_ context.Context, params db.CreateAgentChatParams) (*models.AgentChat, error) {
 	r.created = append(r.created, params)
-	return &models.AgentChat{ID: "chat-" + params.AgentSessionID, SessionID: params.SessionID, AgentSessionID: params.AgentSessionID, Title: params.Title}, nil
+	return &models.AgentChat{ID: "chat-" + params.AgentSessionID, SessionID: params.SessionID, AgentSessionID: params.AgentSessionID, ProviderSessionID: params.ProviderSessionID, Title: params.Title}, nil
 }
 
 // recordingCronJobStore captures UpdateLastRun calls so tests can assert

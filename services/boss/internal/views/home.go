@@ -70,8 +70,8 @@ type HomeModel struct {
 	mergedOptimisticID string
 
 	// Archive confirmation / in-progress
-	confirming bool
-	archiving  bool
+	confirming         bool
+	archivingSessionID string
 
 	// Auth
 	authMgr          *auth.Manager // nil means auth not configured
@@ -122,14 +122,118 @@ func (h *HomeModel) applyMergedOptimisticOverride() {
 // selectedSessionID returns the ID of the currently highlighted session,
 // or "" if no session is selected.
 func (h HomeModel) selectedSessionID() string {
-	if len(h.sessions) == 0 {
+	sess := h.selectedSession()
+	if sess == nil {
 		return ""
+	}
+	return sess.Id
+}
+
+func (h HomeModel) selectedSession() *pb.Session {
+	idx, ok := h.sessionIndexForTableCursor(h.table.Cursor())
+	if !ok {
+		return nil
+	}
+	return h.sessions[idx]
+}
+
+func (h HomeModel) sessionIndexForTableCursor(cursor int) (int, bool) {
+	if cursor < 0 {
+		return 0, false
+	}
+	row := 0
+	for i, sess := range h.sessions {
+		if cursor == row {
+			return i, true
+		}
+		row++
+		if repairFailureHint(sess) != "" {
+			if cursor == row {
+				return i, true
+			}
+			row++
+		}
+	}
+	return 0, false
+}
+
+func (h HomeModel) primarySessionRows() []int {
+	rows := make([]int, 0, len(h.sessions))
+	row := 0
+	for _, sess := range h.sessions {
+		rows = append(rows, row)
+		row++
+		if repairFailureHint(sess) != "" {
+			row++
+		}
+	}
+	return rows
+}
+
+func (h HomeModel) tableDataRowCount() int {
+	rows := len(h.sessions)
+	for _, sess := range h.sessions {
+		if repairFailureHint(sess) != "" {
+			rows++
+		}
+	}
+	return rows
+}
+
+func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
+	row := 0
+	for i, sess := range h.sessions {
+		if i == sessionIndex {
+			return row
+		}
+		row++
+		if repairFailureHint(sess) != "" {
+			row++
+		}
+	}
+	return -1
+}
+
+func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
+	if sess != nil && sess.Id != "" && sess.Id == h.archivingSessionID {
+		return renderRowPendingStatus(h.spinner, "archiving")
+	}
+	return renderDisplayStatus(sess, h.spinner)
+}
+
+func (h *HomeModel) normalizeTableCursor(previousCursor int) {
+	rows := h.primarySessionRows()
+	if len(rows) == 0 {
+		return
 	}
 	cursor := h.table.Cursor()
-	if cursor < 0 || cursor >= len(h.sessions) {
-		return ""
+	for _, row := range rows {
+		if cursor == row {
+			return
+		}
 	}
-	return h.sessions[cursor].Id
+	if cursor > previousCursor {
+		for _, row := range rows {
+			if row > cursor {
+				h.table.SetCursor(row)
+				return
+			}
+		}
+	} else if cursor < previousCursor {
+		for i := len(rows) - 1; i >= 0; i-- {
+			if rows[i] < cursor {
+				h.table.SetCursor(rows[i])
+				return
+			}
+		}
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i] <= cursor {
+			h.table.SetCursor(rows[i])
+			return
+		}
+	}
+	h.table.SetCursor(rows[0])
 }
 
 func (h HomeModel) Init() tea.Cmd {
@@ -188,14 +292,19 @@ func (h *HomeModel) buildTableRows() {
 	repos := make([]string, len(h.sessions))
 	names := make([]string, len(h.sessions))       // plain text for width calc
 	linkedNames := make([]string, len(h.sessions)) // may contain OSC 8 hyperlinks
-	prLabels := make([]string, len(h.sessions))    // visible text for width calc
-	prs := make([]string, len(h.sessions))         // may contain OSC 8 hyperlinks
+	nameWidthLabels := make([]string, 0, len(h.sessions)*2)
+	prLabels := make([]string, len(h.sessions)) // visible text for width calc
+	prs := make([]string, len(h.sessions))      // may contain OSC 8 hyperlinks
 	for i, sess := range h.sessions {
 		repos[i] = sess.RepoDisplayName
 		if sess.Title != "" {
 			names[i] = sess.Title
 		} else {
 			names[i] = sess.BranchName
+		}
+		nameWidthLabels = append(nameWidthLabels, names[i])
+		if hint := repairFailureHint(sess); hint != "" {
+			nameWidthLabels = append(nameWidthLabels, hint)
 		}
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
@@ -211,7 +320,7 @@ func (h *HomeModel) buildTableRows() {
 		cursorColumn,
 		{Title: " ", Width: 1},
 		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
-		{Title: "NAME", Width: maxColWidth("NAME", names, 60) + tableColumnSep},
+		{Title: "NAME", Width: maxColWidth("NAME", nameWidthLabels, 60) + tableColumnSep},
 		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
 		{Title: "STATUS", Width: 16 + tableColumnSep},
 	}
@@ -219,9 +328,10 @@ func (h *HomeModel) buildTableRows() {
 	mutedStrike := lipgloss.NewStyle().Foreground(colorMuted).Strikethrough(true)
 
 	cursor := h.table.Cursor()
-	rows := make([]table.Row, len(h.sessions))
+	rows := make([]table.Row, 0, len(h.sessions)*2)
 	for i, sess := range h.sessions {
-		statusStyled := renderDisplayStatus(sess, h.spinner)
+		rowIndex := len(rows)
+		statusStyled := h.renderSessionStatus(sess)
 
 		attn := renderAttentionIndicator(sess)
 		repo, name, pr := repos[i], linkedNames[i], prs[i]
@@ -236,10 +346,13 @@ func (h *HomeModel) buildTableRows() {
 		}
 
 		indicator := ""
-		if i == cursor {
+		if rowIndex == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, attn, repo, name, pr, statusStyled}
+		rows = append(rows, table.Row{indicator, attn, repo, name, pr, statusStyled})
+		if hint := repairFailureHint(sess); hint != "" {
+			rows = append(rows, table.Row{"", "", "", styleStatusMuted.Render(hint), "", ""})
+		}
 	}
 
 	h.table.SetColumns(cols)
@@ -247,6 +360,8 @@ func (h *HomeModel) buildTableRows() {
 	h.table.SetWidth(columnsWidth(cols))
 	h.table.SetHeight(h.tableHeight())
 	h.table.SetCursor(cursor)
+	h.normalizeTableCursor(cursor)
+	updateCursorColumn(&h.table)
 }
 
 func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -279,22 +394,24 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.highlightSessionID != "" {
 			for i, sess := range h.sessions {
 				if sess.Id == h.highlightSessionID {
-					h.table.SetCursor(i)
+					h.table.SetCursor(h.tableCursorForSessionIndex(i))
 					updateCursorColumn(&h.table)
 					break
 				}
 			}
 			h.highlightSessionID = ""
-		} else if h.table.Cursor() >= len(h.sessions) && len(h.sessions) > 0 {
-			h.table.SetCursor(len(h.sessions) - 1)
+		} else if len(h.sessions) > 0 {
+			h.normalizeTableCursor(h.table.Cursor())
+			updateCursorColumn(&h.table)
 		}
 		return h, nil
 
 	case sessionArchivedMsg:
 		h.confirming = false
-		h.archiving = false
+		h.archivingSessionID = ""
 		if msg.err != nil {
 			h.err = msg.err
+			h.buildTableRows()
 			return h, nil
 		}
 		// Remove from list and adjust cursor.
@@ -305,8 +422,9 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		h.buildTableRows()
-		if h.table.Cursor() >= len(h.sessions) && len(h.sessions) > 0 {
-			h.table.SetCursor(len(h.sessions) - 1)
+		if len(h.sessions) > 0 {
+			h.normalizeTableCursor(h.table.Cursor())
+			updateCursorColumn(&h.table)
 		}
 		return h, nil
 
@@ -363,15 +481,17 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return h, func() tea.Msg { return switchViewMsg{view: ViewLogin} }
 		case "h", "enter":
-			if len(h.sessions) > 0 {
-				sess := h.sessions[h.table.Cursor()]
+			if sess := h.selectedSession(); sess != nil {
+				if sess.Id != "" && sess.Id == h.archivingSessionID {
+					return h, nil
+				}
 				return h, func() tea.Msg {
 					return switchViewMsg{view: ViewChatPicker, sessionID: sess.Id}
 				}
 			}
 			return h, nil
 		case "a":
-			if len(h.sessions) > 0 {
+			if len(h.sessions) > 0 && h.archivingSessionID == "" {
 				h.confirming = true
 			}
 			return h, nil
@@ -381,7 +501,9 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Forward navigation keys to the table.
 		var cmd tea.Cmd
+		previousCursor := h.table.Cursor()
 		h.table, cmd = h.table.Update(msg)
+		h.normalizeTableCursor(previousCursor)
 		updateCursorColumn(&h.table)
 		return h, cmd
 	}
@@ -393,11 +515,16 @@ func (h HomeModel) updateArchiveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
 		h.confirming = false
-		h.archiving = true
-		sess := h.sessions[h.table.Cursor()]
+		sess := h.selectedSession()
+		if sess == nil || sess.Id == "" {
+			return h, nil
+		}
+		sessionID := sess.Id
+		h.archivingSessionID = sessionID
+		h.buildTableRows()
 		return h, func() tea.Msg {
-			_, err := h.client.ArchiveSession(h.ctx, sess.Id)
-			return sessionArchivedMsg{id: sess.Id, err: err}
+			_, err := h.client.ArchiveSession(h.ctx, sessionID)
+			return sessionArchivedMsg{id: sessionID, err: err}
 		}
 	case "n", "esc":
 		h.confirming = false
@@ -459,7 +586,7 @@ func StateLabel(state pb.SessionState) string {
 	case pb.SessionState_SESSION_STATE_BLOCKED:
 		return "blocked"
 	case pb.SessionState_SESSION_STATE_MERGED:
-		return "✔ merged"
+		return "✓ merged"
 	case pb.SessionState_SESSION_STATE_CLOSED:
 		return "closed"
 	default:
@@ -470,7 +597,7 @@ func StateLabel(state pb.SessionState) string {
 // tableHeight returns the height to pass to table.SetHeight.
 func (h HomeModel) tableHeight() int {
 	overhead := bannerOverhead + 1 + actionBarPadY + 1 // banner+newline + gap + actionbar padding + actionbar
-	return clampedTableHeight(len(h.sessions), h.height, overhead)
+	return clampedTableHeight(h.tableDataRowCount(), h.height, overhead)
 }
 
 // loginAction returns the login/logout action label for the action bar,
@@ -538,14 +665,12 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	if h.archiving {
-		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
-			h.spinner.View() + "Archiving..."))
-	} else if h.confirming {
+	if h.confirming {
 		b.WriteString("\n")
-		sess := h.sessions[h.table.Cursor()]
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-			fmt.Sprintf("Archive %q?", sess.Title)))
+		if sess := h.selectedSession(); sess != nil {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
+				fmt.Sprintf("Archive %q?", sess.Title)))
+		}
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else if h.logoutConfirming {
@@ -559,12 +684,10 @@ func (h HomeModel) View() tea.View {
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
 		// Show attention summary for selected session if it needs attention.
-		if cursor := h.table.Cursor(); cursor < len(h.sessions) {
-			if sess := h.sessions[cursor]; sessionNeedsAttention(sess) {
-				b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
-					"⚠ " + sess.AttentionStatus.Summary))
-				b.WriteString("\n")
-			}
+		if sess := h.selectedSession(); sess != nil && sessionNeedsAttention(sess) {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+				"⚠ " + sess.AttentionStatus.Summary))
+			b.WriteString("\n")
 		}
 		navActions := []string{"[n]ew", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
 		if la := h.loginAction(); la != "" {

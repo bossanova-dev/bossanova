@@ -95,6 +95,8 @@ type MockDaemon struct {
 	socketPath string
 	httpServer *http.Server
 	listener   net.Listener
+
+	archiveDelay time.Duration
 }
 
 // NewMockDaemon starts a mock daemon on a temporary Unix socket.
@@ -320,6 +322,10 @@ func (m *MockDaemon) GetSession(_ context.Context, req *connect.Request[pb.GetSe
 }
 
 func (m *MockDaemon) ArchiveSession(_ context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
+	if m.archiveDelay > 0 {
+		time.Sleep(m.archiveDelay)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, s := range m.sessions {

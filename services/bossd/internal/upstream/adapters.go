@@ -147,9 +147,10 @@ type CommandHandlerAdapter struct {
 // command handlers in this file).
 type ChatWaker interface {
 	// WakeChatStream returns the proto-level Outcome and the persisted
-	// tmux session name. The errorCode classifies any failure so the
+	// tmux session name plus a user-facing fallback reason when outcome is
+	// OUTCOME_FRESH_FALLBACK. The errorCode classifies any failure so the
 	// dispatcher can attach a typed CommandResult.error_code.
-	WakeChatStream(ctx context.Context, agentSessionID string, forceFresh bool) (pb.WakeChatResult_Outcome, string, pb.CommandResult_ErrorCode, error)
+	WakeChatStream(ctx context.Context, agentSessionID string, forceFresh bool) (pb.WakeChatResult_Outcome, string, string, pb.CommandResult_ErrorCode, error)
 }
 
 // Stop implements SessionCommandHandler.Stop.
@@ -191,12 +192,12 @@ func (a *CommandHandlerAdapter) Pause(ctx context.Context, sessionID string) (*p
 
 // WakeChat implements SessionCommandHandler.WakeChat by delegating to the
 // configured ChatWaker (typically *server.Server).
-func (a *CommandHandlerAdapter) WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (pb.WakeChatResult_Outcome, string, pb.CommandResult_ErrorCode, error) {
+func (a *CommandHandlerAdapter) WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (pb.WakeChatResult_Outcome, string, string, pb.CommandResult_ErrorCode, error) {
 	if agentSessionID == "" {
-		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("wake_chat: agent_session_id required")
+		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("wake_chat: agent_session_id required")
 	}
 	if a.Waker == nil {
-		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("wake_chat: waker not wired")
+		return pb.WakeChatResult_OUTCOME_UNSPECIFIED, "", "", pb.CommandResult_ERROR_CODE_UNSPECIFIED, errors.New("wake_chat: waker not wired")
 	}
 	return a.Waker.WakeChatStream(ctx, agentSessionID, forceFresh)
 }

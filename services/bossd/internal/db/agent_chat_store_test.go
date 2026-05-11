@@ -335,6 +335,87 @@ func TestAgentChatStore_AgentNameExplicit(t *testing.T) {
 	}
 }
 
+func TestAgentChatStore_ProviderSessionID_CreateAndUpdate(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "provider session id",
+		WorktreePath: "/tmp/wt/provider-session",
+		BranchName:   "feat/provider-session",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	providerID := "provider-resume-1"
+	chat, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:         sess.ID,
+		AgentSessionID:    "agent-provider-create",
+		ProviderSessionID: &providerID,
+		Title:             "provider chat",
+	})
+	if err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	if chat.ProviderSessionID == nil || *chat.ProviderSessionID != providerID {
+		t.Fatalf("returned provider_session_id = %v, want %q", chat.ProviderSessionID, providerID)
+	}
+
+	got, err := chatStore.GetByAgentSessionID(ctx, "agent-provider-create")
+	if err != nil {
+		t.Fatalf("get by agent_session_id: %v", err)
+	}
+	if got.ProviderSessionID == nil || *got.ProviderSessionID != providerID {
+		t.Fatalf("get provider_session_id = %v, want %q", got.ProviderSessionID, providerID)
+	}
+
+	listed, err := chatStore.ListBySession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("list by session: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ProviderSessionID == nil || *listed[0].ProviderSessionID != providerID {
+		t.Fatalf("list provider_session_id = %v, want one chat with %q", listed, providerID)
+	}
+
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-provider-update",
+		Title:          "provider update",
+	}); err != nil {
+		t.Fatalf("create chat without provider id: %v", err)
+	}
+
+	updatedID := "provider-resume-2"
+	if err := chatStore.UpdateProviderSessionID(ctx, "agent-provider-update", &updatedID); err != nil {
+		t.Fatalf("update provider session id: %v", err)
+	}
+	got, err = chatStore.GetByAgentSessionID(ctx, "agent-provider-update")
+	if err != nil {
+		t.Fatalf("get updated chat: %v", err)
+	}
+	if got.ProviderSessionID == nil || *got.ProviderSessionID != updatedID {
+		t.Fatalf("updated provider_session_id = %v, want %q", got.ProviderSessionID, updatedID)
+	}
+
+	if err := chatStore.UpdateProviderSessionID(ctx, "agent-provider-update", nil); err != nil {
+		t.Fatalf("clear provider session id: %v", err)
+	}
+	got, err = chatStore.GetByAgentSessionID(ctx, "agent-provider-update")
+	if err != nil {
+		t.Fatalf("get cleared chat: %v", err)
+	}
+	if got.ProviderSessionID != nil {
+		t.Fatalf("cleared provider_session_id = %v, want nil", got.ProviderSessionID)
+	}
+}
+
 func TestAgentChatStore_ListWithTmuxSession(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

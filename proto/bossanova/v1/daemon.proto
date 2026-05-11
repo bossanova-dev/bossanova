@@ -456,6 +456,8 @@ message WakeChatResponse {
   }
   Outcome outcome = 1;
   string tmux_session_name = 2;
+  // Stable machine-readable reason when outcome is OUTCOME_FRESH_FALLBACK.
+  string reason = 3;
 }
 
 // --- Chat Status (cross-client heartbeat sharing) ---

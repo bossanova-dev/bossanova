@@ -339,6 +339,19 @@ func (m AttachModel) SessionID() string { return m.sessionID }
 // AgentSessionID returns the agent session UUID for navigation after detach.
 func (m AttachModel) AgentSessionID() string { return m.agentSessionID }
 
+func agentDisplayName(name string) string {
+	switch strings.ToLower(name) {
+	case "claude":
+		return "Claude Code"
+	case "codex":
+		return "Codex"
+	case "":
+		return "agent"
+	default:
+		return name
+	}
+}
+
 func (m AttachModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
@@ -350,20 +363,29 @@ func (m AttachModel) View() tea.View {
 	if m.launching {
 		var b strings.Builder
 		title := m.sessionID
+		agentName := m.overrideAgent
 		if m.session != nil {
 			title = m.session.Title
+			if m.session.GetAgentName() != "" {
+				agentName = m.session.GetAgentName()
+			}
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			fmt.Sprintf("Launching Claude Code for %s...  Press Ctrl+X to detach", title)))
+			fmt.Sprintf("Launching %s for %s...  Press Ctrl+X to detach", agentDisplayName(agentName), title)))
 		return tea.NewView(b.String())
 	}
 
 	if m.returned {
 		var b strings.Builder
+		agentName := m.overrideAgent
+		if m.session != nil && m.session.GetAgentName() != "" {
+			agentName = m.session.GetAgentName()
+		}
+		agentLabel := agentDisplayName(agentName)
 		if m.agentErr != nil {
-			b.WriteString(renderError(fmt.Sprintf("Claude Code exited with error: %v", m.agentErr), m.width))
+			b.WriteString(renderError(fmt.Sprintf("%s exited with error: %v", agentLabel, m.agentErr), m.width))
 		} else {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Claude Code session ended."))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("%s session ended.", agentLabel)))
 		}
 		b.WriteString("\n")
 		b.WriteString(actionBar([]string{"[esc] back"}))

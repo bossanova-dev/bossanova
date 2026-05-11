@@ -494,6 +494,29 @@ func (m NewSessionModel) issueTableHeight() int {
 	return clampedTableHeight(len(m.issuesFiltered), m.height, bannerOverhead+6+m.issueFilter.Height())
 }
 
+func (m *NewSessionModel) updatePRFilterInput(msg tea.Msg) tea.Cmd {
+	cmd, changed := m.prFilter.Update(msg)
+	if changed {
+		m.buildPRTable()
+		m.prTable.SetCursor(0)
+		updateCursorColumn(&m.prTable)
+	}
+	return cmd
+}
+
+func (m *NewSessionModel) updateIssueFilterInput(msg tea.Msg) tea.Cmd {
+	cmd, changed := m.issueFilter.Update(msg)
+	if changed {
+		m.buildIssueTable()
+		m.issueTable.SetCursor(0)
+		updateCursorColumn(&m.issueTable)
+		m.issueSearchSeq++
+		m.issuesFetching = true
+		return tea.Batch(cmd, scheduleIssueSearch(m.issueSearchSeq, m.issueFilter.Query()))
+	}
+	return cmd
+}
+
 func (m *NewSessionModel) buildForm() {
 	if m.fd == nil {
 		m.fd = &formData{}
@@ -529,6 +552,30 @@ func (m *NewSessionModel) buildForm() {
 	case sessionTypeExistingPR, sessionTypeExecutePlan, sessionTypeLinearTicket:
 		// No form needed for these types.
 	}
+}
+
+func (m NewSessionModel) updateForm(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	if m.form == nil || m.phase != newSessionPhaseForm || m.confirmingOverwrite {
+		return m, nil, false
+	}
+
+	_, cmd := m.form.Update(msg)
+
+	if m.form.State == huh.StateAborted {
+		m.phase = newSessionPhaseTypeSelect
+		m.form = nil
+		m.err = nil
+		m.fd = nil
+		m.forceBranch = false
+		return m, nil, true
+	}
+
+	if m.form.State == huh.StateCompleted {
+		model, cmd := m.handleFormCompleted()
+		return model, cmd, true
+	}
+
+	return m, cmd, true
 }
 
 func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -666,6 +713,20 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.phase = newSessionPhaseForm
 		return m, nil
 
+	case tea.PasteMsg:
+		if m.phase == newSessionPhasePRSelect && m.prFilter.Active() {
+			cmd := m.updatePRFilterInput(msg)
+			return m, cmd
+		}
+		if m.phase == newSessionPhaseIssueSelect && m.issueFilter.Active() {
+			cmd := m.updateIssueFilterInput(msg)
+			return m, cmd
+		}
+		if model, cmd, ok := m.updateForm(msg); ok {
+			return model, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.confirmingOverwrite {
 			return m.updateConfirmOverwrite(msg)
@@ -769,13 +830,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					updateCursorColumn(&m.prTable)
 					return m, cmd
 				}
-				prev := m.prFilter.Query()
-				cmd := m.prFilter.Update(msg)
-				if m.prFilter.Query() != prev {
-					m.buildPRTable()
-					m.prTable.SetCursor(0)
-					updateCursorColumn(&m.prTable)
-				}
+				cmd := m.updatePRFilterInput(msg)
 				return m, cmd
 			}
 
@@ -840,18 +895,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					updateCursorColumn(&m.issueTable)
 					return m, cmd
 				}
-				prev := m.issueFilter.Query()
-				cmd := m.issueFilter.Update(msg)
-				if m.issueFilter.Query() != prev {
-					// Local rebuild gives instant feedback against the cached
-					// rows; the debounced tick will issue the real search.
-					m.buildIssueTable()
-					m.issueTable.SetCursor(0)
-					updateCursorColumn(&m.issueTable)
-					m.issueSearchSeq++
-					m.issuesFetching = true
-					return m, tea.Batch(cmd, scheduleIssueSearch(m.issueSearchSeq, m.issueFilter.Query()))
-				}
+				cmd := m.updateIssueFilterInput(msg)
 				return m, cmd
 			}
 
@@ -899,23 +943,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Delegate to form.
-	if m.form != nil && m.phase == newSessionPhaseForm && !m.confirmingOverwrite {
-		_, cmd := m.form.Update(msg)
-
-		if m.form.State == huh.StateAborted {
-			m.phase = newSessionPhaseTypeSelect
-			m.form = nil
-			m.err = nil
-			m.fd = nil
-			m.forceBranch = false
-			return m, nil
-		}
-
-		if m.form.State == huh.StateCompleted {
-			return m.handleFormCompleted()
-		}
-
-		return m, cmd
+	if model, cmd, ok := m.updateForm(msg); ok {
+		return model, cmd
 	}
 
 	return m, nil

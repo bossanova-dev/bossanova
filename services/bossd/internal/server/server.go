@@ -83,6 +83,11 @@ type Server struct {
 	bossanovav1connect.UnimplementedDaemonServiceHandler
 }
 
+var (
+	providerSessionIDBackgroundDiscoveryTimeout      = time.Minute
+	providerSessionIDBackgroundDiscoveryPollInterval = time.Second
+)
+
 // Config holds all dependencies for creating a new Server.
 type Config struct {
 	Repos              db.RepoStore
@@ -1430,6 +1435,7 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 		s.logger.Warn().Err(err).
 			Str("agentSessionID", chat.AgentSessionID).
 			Msg("failed to ensure tmux session for chat")
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("ensure chat tmux session: %w", err))
 	} else {
 		// Refetch so the response carries the persisted tmux_session_name.
 		if refreshed, refreshErr := s.agentChats.GetByAgentSessionID(ctx, chat.AgentSessionID); refreshErr == nil {
@@ -1455,17 +1461,56 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 	}
 	tmuxName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
 
-	if _, err := spawnChatTmux(ctx, spawnDeps{
+	deps := spawnDeps{
 		Tmux:        liveTmuxSpawner{c: s.tmux},
 		Transcripts: liveTranscriptOracle{clients: s.agentClients},
 		Argv:        liveArgvBuilder{clients: s.agentClients},
-	}, spawnInput{
+	}
+	if s.agentClients != nil {
+		deps.Resolver = liveInteractiveSessionResolver{clients: s.agentClients}
+	}
+	if resume {
+		if _, reason, backfillErr := s.backfillCodexProviderSessionID(ctx, chat, sess.WorktreePath, deps.Resolver); backfillErr != nil {
+			return backfillErr
+		} else if reason != "" {
+			s.logger.Warn().
+				Str("agent_session_id", chat.AgentSessionID).
+				Str("agent", chat.AgentName).
+				Str("reason", reason).
+				Msg("legacy provider session id discovery ambiguous before attach")
+		}
+	}
+	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:         chat,
 		WorktreePath: sess.WorktreePath,
 		TmuxName:     tmuxName,
 		ForceFresh:   !resume,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
+	}
+
+	if result.Outcome == OutcomeFreshFallback && !result.LaunchedAt.IsZero() && result.ProviderSessionID == "" {
+		ev := s.logger.Warn().
+			Str("agent_session_id", chat.AgentSessionID).
+			Str("agent", chat.AgentName)
+		if result.DiscoveryAmbiguous {
+			ev = ev.Bool("ambiguous", true)
+		}
+		if result.DiscoveryReason != "" {
+			ev = ev.Str("reason", result.DiscoveryReason)
+		}
+		ev.Msg("interactive provider session id not discovered after launch")
+		if deps.Resolver != nil && !result.DiscoveryAmbiguous {
+			s.discoverProviderSessionIDInBackground(chat, sess.WorktreePath, result.LaunchedAt, deps.Resolver)
+		}
+	}
+	if result.ProviderSessionID != "" && (chat.ProviderSessionID == nil || *chat.ProviderSessionID != result.ProviderSessionID) {
+		providerID := result.ProviderSessionID
+		if err := s.agentChats.UpdateProviderSessionID(ctx, chat.AgentSessionID, &providerID); err != nil {
+			return fmt.Errorf("persist provider session id: %w", err)
+		}
+		chat.ProviderSessionID = &providerID
 	}
 
 	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
@@ -1474,6 +1519,94 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		}
 	}
 	return nil
+}
+
+func (s *Server) backfillCodexProviderSessionID(ctx context.Context, chat *models.AgentChat, worktreePath string, resolver interactiveSessionResolver) (bool, string, error) {
+	if chat == nil || chat.AgentName != "codex" || chat.ProviderSessionID != nil || chat.CreatedAt.IsZero() || resolver == nil {
+		return false, "", nil
+	}
+	legacyLaunchedAfter := chat.CreatedAt.Add(-5 * time.Minute)
+	resolution, err := resolver.ResolveInteractiveSessionID(ctx, chat.AgentName, worktreePath, chat.AgentSessionID, legacyLaunchedAfter, chat.CreatedAt, true)
+	if err != nil {
+		return false, "", err
+	}
+	if resolution.SessionID == "" {
+		if resolution.Ambiguous {
+			return false, resolution.Reason, nil
+		}
+		return false, "", nil
+	}
+	providerID := resolution.SessionID
+	if err := s.agentChats.UpdateProviderSessionID(ctx, chat.AgentSessionID, &providerID); err != nil {
+		return false, "", fmt.Errorf("persist provider session id: %w", err)
+	}
+	chat.ProviderSessionID = &providerID
+	return true, "", nil
+}
+
+func (s *Server) discoverProviderSessionIDInBackground(chat *models.AgentChat, worktreePath string, launchedAt time.Time, resolver interactiveSessionResolver) {
+	if chat == nil || resolver == nil || launchedAt.IsZero() {
+		return
+	}
+	agentSessionID := chat.AgentSessionID
+	agentName := chat.AgentName
+	if agentName == "" {
+		agentName = defaultLegacyAgent
+	}
+	timeout := providerSessionIDBackgroundDiscoveryTimeout
+	interval := providerSessionIDBackgroundDiscoveryPollInterval
+	if timeout <= 0 || interval <= 0 {
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			resolution, err := resolver.ResolveInteractiveSessionID(ctx, agentName, worktreePath, agentSessionID, launchedAt, time.Time{}, false)
+			if err != nil {
+				if ctx.Err() == nil {
+					s.logger.Warn().Err(err).
+						Str("agent_session_id", agentSessionID).
+						Str("agent", agentName).
+						Msg("background provider session id discovery failed")
+				}
+				return
+			}
+			if resolution.SessionID != "" {
+				providerID := resolution.SessionID
+				if err := s.agentChats.UpdateProviderSessionID(ctx, agentSessionID, &providerID); err != nil {
+					s.logger.Warn().Err(err).
+						Str("agent_session_id", agentSessionID).
+						Str("provider_session_id", providerID).
+						Msg("failed to persist background provider session id")
+				}
+				return
+			}
+			if resolution.Ambiguous {
+				s.logger.Warn().
+					Str("agent_session_id", agentSessionID).
+					Str("agent", agentName).
+					Str("reason", resolution.Reason).
+					Msg("background provider session id discovery ambiguous")
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				s.logger.Warn().
+					Str("agent_session_id", agentSessionID).
+					Str("agent", agentName).
+					Msg("background provider session id discovery timed out")
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 func (s *Server) ListChats(ctx context.Context, req *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {

@@ -50,8 +50,8 @@ type Output struct {
 //  3. Active workflow     → "running L/M", "pending", "paused L/M",
 //     "failed L/M", "cancelled" with matching intents
 //  4. DisplayIsRepairing  → "repairing" / WARNING / spinner
-//  5. PR DisplayStatus    → "✔ merged", "closed", "✓ approved", "✓ passing",
-//     "⨯ failing", "conflict", "⨯ rejected", "draft", "checking"
+//  5. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ passing",
+//     "⨯ failing", "⨯ conflict", "⨯ rejected", "draft", "checking"
 //  6. ChatStatus IDLE     → "idle" / WARNING
 //  7. default             → "stopped" / MUTED
 func Compute(in Input) Output {
@@ -59,7 +59,11 @@ func Compute(in Input) Output {
 		return Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
-		return Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true}
+		intent := pb.DisplayIntent_DISPLAY_INTENT_SUCCESS
+		if prNeedsFix(in.Session) {
+			intent = pb.DisplayIntent_DISPLAY_INTENT_DANGER
+		}
+		return Output{Label: "working", Intent: intent, Spinner: true}
 	}
 	if out, ok := workflowOutput(in.Session); ok {
 		return out
@@ -74,6 +78,22 @@ func Compute(in Input) Output {
 		return Output{Label: "idle", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	return Output{Label: "stopped", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED}
+}
+
+func prNeedsFix(sess *pb.Session) bool {
+	if sess == nil {
+		return false
+	}
+	switch sess.DisplayStatus {
+	case pb.DisplayStatus_DISPLAY_STATUS_FAILING,
+		pb.DisplayStatus_DISPLAY_STATUS_CONFLICT,
+		pb.DisplayStatus_DISPLAY_STATUS_REJECTED:
+		return true
+	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING:
+		return sess.DisplayHasFailures || sess.DisplayHasChangesRequested
+	default:
+		return false
+	}
 }
 
 func workflowOutput(sess *pb.Session) (Output, bool) {
@@ -121,7 +141,7 @@ func prOutput(sess *pb.Session) (Output, bool) {
 	}
 	switch sess.DisplayStatus {
 	case pb.DisplayStatus_DISPLAY_STATUS_MERGED:
-		return Output{Label: "✔ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED}, true
+		return Output{Label: "✓ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
 		return Output{Label: "closed", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_APPROVED:
@@ -131,7 +151,7 @@ func prOutput(sess *pb.Session) (Output, bool) {
 	case pb.DisplayStatus_DISPLAY_STATUS_FAILING:
 		return Output{Label: "⨯ failing", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_CONFLICT:
-		return Output{Label: "conflict", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}, true
+		return Output{Label: "⨯ conflict", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_REJECTED:
 		return Output{Label: "⨯ rejected", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_DRAFT:

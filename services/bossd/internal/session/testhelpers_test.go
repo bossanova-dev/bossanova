@@ -60,6 +60,10 @@ func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *
 	}, nil
 }
 
+func (f *fakeAgentForLifecycle) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: req.GetRequestedSessionId() != "", SessionId: req.GetRequestedSessionId()}, nil
+}
+
 func (f *fakeAgentForLifecycle) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }

@@ -2,9 +2,11 @@ package testharness
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/recurser/bossalib/agentruntime"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -88,6 +90,23 @@ func (m *MockAgentClient) BuildInteractiveCommand(_ context.Context, req *bossan
 	}
 }
 
+func (m *MockAgentClient) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	if m.name() == "codex" && os.Getenv("BOSSD_TEST_CODEX_TUI_DISCOVERY_REQUIRED") == "1" {
+		launchedAfter := time.Time{}
+		if req.GetLaunchedAfter() != nil {
+			launchedAfter = req.GetLaunchedAfter().AsTime()
+		}
+		id, ambiguous, reason := discoverCodexTUIRollout(req.GetWorkDir(), launchedAfter)
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{
+			Found:     id != "",
+			SessionId: id,
+			Ambiguous: ambiguous,
+			Reason:    reason,
+		}, nil
+	}
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: req.GetRequestedSessionId() != "", SessionId: req.GetRequestedSessionId()}, nil
+}
+
 func (*MockAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }
@@ -108,10 +127,15 @@ func (*MockAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTur
 // e2e tests that materialise a JSONL fixture under $HOME/.claude/projects/...
 // continue to drive the spawnChatTmux resume branch the same way they did
 // when the daemon owned its own status.TranscriptExists helper.
-func (*MockAgentClient) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
+func (m *MockAgentClient) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return &bossanovav1.TranscriptExistsResponse{}, nil
+	}
+	if m.name() == "codex" {
+		path := codexRolloutPath(home, req.GetAgentSessionId())
+		info, err := os.Stat(path)
+		return &bossanovav1.TranscriptExistsResponse{Exists: err == nil && !info.IsDir() && info.Size() > 0}, nil
 	}
 	key := strings.NewReplacer("/", "-", ".", "-").Replace(req.GetWorkDir())
 	path := filepath.Join(home, ".claude", "projects", key, req.GetAgentSessionId()+".jsonl")
@@ -120,4 +144,83 @@ func (*MockAgentClient) TranscriptExists(_ context.Context, req *bossanovav1.Tra
 		return &bossanovav1.TranscriptExistsResponse{}, nil
 	}
 	return &bossanovav1.TranscriptExistsResponse{Exists: !info.IsDir() && info.Size() > 0}, nil
+}
+
+type codexRolloutMeta struct {
+	Type    string `json:"type"`
+	Payload struct {
+		ID         string `json:"id"`
+		CWD        string `json:"cwd"`
+		Originator string `json:"originator"`
+	} `json:"payload"`
+}
+
+func codexRolloutPath(home, id string) string {
+	return filepath.Join(home, ".codex", "sessions", "2026", "05", "11", "rollout-2026-05-11T00-00-00-"+id+".jsonl")
+}
+
+func discoverCodexTUIRollout(workDir string, launchedAfter time.Time) (string, bool, string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false, "no matching codex-tui rollout found"
+	}
+	root := filepath.Join(home, ".codex", "sessions")
+	notBefore := launchedAfter.Add(-2 * time.Second)
+	var found string
+	ambiguous := false
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || ambiguous {
+			return nil
+		}
+		if matched, _ := filepath.Match("rollout-*.jsonl", filepath.Base(path)); !matched {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || (!launchedAfter.IsZero() && info.ModTime().Before(notBefore)) {
+			return nil
+		}
+		meta, ok := readCodexRolloutMeta(path)
+		if !ok || meta.Payload.ID == "" || meta.Payload.Originator != "codex-tui" || !sameCodexWorkDir(meta.Payload.CWD, workDir) {
+			return nil
+		}
+		if found != "" && found != meta.Payload.ID {
+			ambiguous = true
+			found = ""
+			return nil
+		}
+		found = meta.Payload.ID
+		return nil
+	})
+	if ambiguous {
+		return "", true, "multiple matching codex-tui rollouts found"
+	}
+	if found == "" {
+		return "", false, "no matching codex-tui rollout found"
+	}
+	return found, false, ""
+}
+
+func readCodexRolloutMeta(path string) (codexRolloutMeta, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return codexRolloutMeta{}, false
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	var meta codexRolloutMeta
+	if err := json.Unmarshal([]byte(line), &meta); err != nil || meta.Type != "session_meta" {
+		return codexRolloutMeta{}, false
+	}
+	return meta, true
+}
+
+func sameCodexWorkDir(a, b string) bool {
+	aa, errA := filepath.EvalSymlinks(a)
+	if errA != nil {
+		aa, _ = filepath.Abs(a)
+	}
+	bb, errB := filepath.EvalSymlinks(b)
+	if errB != nil {
+		bb, _ = filepath.Abs(b)
+	}
+	return filepath.Clean(aa) == filepath.Clean(bb)
 }

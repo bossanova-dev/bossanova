@@ -114,6 +114,31 @@ func TestNotifyingAgentChatStore_UpdateTmuxSessionName_FiresUpdated(t *testing.T
 	}
 }
 
+func TestNotifyingAgentChatStore_UpdateProviderSessionID_FiresUpdated(t *testing.T) {
+	store, sessionID, got := newSeededNotifyingStore(t)
+	ctx := context.Background()
+
+	if _, err := store.Create(ctx, CreateAgentChatParams{
+		SessionID:      sessionID,
+		AgentSessionID: "agent-update-provider",
+		Title:          "Provider test",
+	}); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	*got = nil
+
+	providerID := "provider-resume-1"
+	if err := store.UpdateProviderSessionID(ctx, "agent-update-provider", &providerID); err != nil {
+		t.Fatalf("update provider session id: %v", err)
+	}
+	if len(*got) != 1 || (*got)[0].kind != ChatChangeUpdated {
+		t.Fatalf("hook = %+v, want one Updated", *got)
+	}
+	if (*got)[0].chat.ProviderSessionID == nil || *(*got)[0].chat.ProviderSessionID != providerID {
+		t.Errorf("chat.ProviderSessionID not propagated: %+v", (*got)[0].chat.ProviderSessionID)
+	}
+}
+
 func TestNotifyingAgentChatStore_DeleteByAgentSessionID_FiresDeletedWithPreDeleteSnapshot(t *testing.T) {
 	store, sessionID, got := newSeededNotifyingStore(t)
 	ctx := context.Background()

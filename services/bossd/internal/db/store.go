@@ -163,10 +163,11 @@ type UpdateRepairDiagnosticsParams struct {
 
 // CreateAgentChatParams holds the parameters for creating a new agent chat record.
 type CreateAgentChatParams struct {
-	SessionID      string
-	AgentSessionID string
-	AgentName      string // Agent plugin name; empty falls back to "claude".
-	Title          string
+	SessionID         string
+	AgentSessionID    string
+	ProviderSessionID *string
+	AgentName         string // Agent plugin name; empty falls back to "claude".
+	Title             string
 }
 
 // AgentChatStore defines the interface for agent chat persistence.
@@ -177,6 +178,7 @@ type AgentChatStore interface {
 	UpdateTitle(ctx context.Context, id string, title string) error
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
+	UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error
 	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
 	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
 }

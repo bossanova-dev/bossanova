@@ -408,6 +408,12 @@ service AgentRunnerService {
   rpc BuildInteractiveCommand(BuildInteractiveCommandRequest)
       returns (BuildInteractiveCommandResponse);
 
+  // ResolveInteractiveSessionID discovers the provider-owned session ID for an
+  // interactive tmux launch. Agents that accept caller-provided IDs may return
+  // requested_session_id. Agents like Codex scan their transcript store.
+  rpc ResolveInteractiveSessionID(ResolveInteractiveSessionIDRequest)
+      returns (ResolveInteractiveSessionIDResponse);
+
   // Files in workDir that the agent owns (e.g. .claude/settings.local.json).
   // bossd unions these into git-status filtering.
   rpc ListIgnoredDirtyFiles(ListIgnoredDirtyFilesRequest)
@@ -491,6 +497,21 @@ message BuildInteractiveCommandRequest {
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;
+}
+
+message ResolveInteractiveSessionIDRequest {
+  string work_dir = 1;
+  string requested_session_id = 2;
+  google.protobuf.Timestamp launched_after = 3;
+  google.protobuf.Timestamp chat_created_at = 4;
+  bool allow_legacy_backfill = 5;
+}
+message ResolveInteractiveSessionIDResponse {
+  bool found = 1;
+  string session_id = 2;
+  string transcript_path = 3;
+  bool ambiguous = 4;
+  string reason = 5;
 }
 
 message ListIgnoredDirtyFilesRequest {

@@ -312,10 +312,11 @@ func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChat
 		return nil, m.createErr
 	}
 	return &models.AgentChat{
-		ID:             "chat-" + params.AgentSessionID,
-		SessionID:      params.SessionID,
-		AgentSessionID: params.AgentSessionID,
-		Title:          params.Title,
+		ID:                "chat-" + params.AgentSessionID,
+		SessionID:         params.SessionID,
+		AgentSessionID:    params.AgentSessionID,
+		ProviderSessionID: params.ProviderSessionID,
+		Title:             params.Title,
 	}, nil
 }
 
@@ -345,6 +346,10 @@ func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessi
 	defer m.mu.Unlock()
 	m.tmuxNameUpdates = append(m.tmuxNameUpdates, tmuxNameUpdate{agentSessionID: agentSessionID, name: name})
 	return m.updateTmuxNameErr
+}
+
+func (m *mockAgentChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
+	return nil
 }
 
 func (m *mockAgentChatStore) DeleteByAgentSessionID(_ context.Context, agentSessionID string) error {

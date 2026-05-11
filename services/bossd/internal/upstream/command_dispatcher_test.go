@@ -21,6 +21,7 @@ type fakeCommandHandler struct {
 	// WakeChat-specific knobs.
 	wakeOutcome   pb.WakeChatResult_Outcome
 	wakeTmuxName  string
+	wakeReason    string
 	wakeErrorCode pb.CommandResult_ErrorCode
 	wakeErr       error
 }
@@ -37,9 +38,9 @@ func (f *fakeCommandHandler) Resume(_ context.Context, _ string) (*pb.Session, e
 	f.resumeCalls.Add(1)
 	return f.session, f.returnErr
 }
-func (f *fakeCommandHandler) WakeChat(_ context.Context, _ string, _ bool) (pb.WakeChatResult_Outcome, string, pb.CommandResult_ErrorCode, error) {
+func (f *fakeCommandHandler) WakeChat(_ context.Context, _ string, _ bool) (pb.WakeChatResult_Outcome, string, string, pb.CommandResult_ErrorCode, error) {
 	f.wakeCalls.Add(1)
-	return f.wakeOutcome, f.wakeTmuxName, f.wakeErrorCode, f.wakeErr
+	return f.wakeOutcome, f.wakeTmuxName, f.wakeReason, f.wakeErrorCode, f.wakeErr
 }
 
 type fakeWebhookDispatcher struct {
@@ -145,6 +146,7 @@ func TestDispatchCommand_WakeChat_CallsHandler(t *testing.T) {
 	handler := &fakeCommandHandler{
 		wakeOutcome:  pb.WakeChatResult_OUTCOME_RESUMED,
 		wakeTmuxName: "boss-aaa-bbb",
+		wakeReason:   "transcript_missing",
 	}
 	client := newDispatcherClient(handler, nil, nil)
 	ev := client.dispatchCommand(context.Background(),
@@ -170,6 +172,9 @@ func TestDispatchCommand_WakeChat_CallsHandler(t *testing.T) {
 	}
 	if wake.GetTmuxSessionName() != "boss-aaa-bbb" {
 		t.Fatalf("tmux name = %q", wake.GetTmuxSessionName())
+	}
+	if wake.GetReason() != "transcript_missing" {
+		t.Fatalf("reason = %q, want transcript_missing", wake.GetReason())
 	}
 }
 

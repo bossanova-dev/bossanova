@@ -1171,8 +1171,10 @@ type ProxyWakeChatResponse struct {
 	// need to import the stream-internal type.
 	Outcome         WakeChatResult_Outcome `protobuf:"varint,1,opt,name=outcome,proto3,enum=bossanova.v1.WakeChatResult_Outcome" json:"outcome,omitempty"`
 	TmuxSessionName string                 `protobuf:"bytes,2,opt,name=tmux_session_name,json=tmuxSessionName,proto3" json:"tmux_session_name,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Stable machine-readable reason when outcome is OUTCOME_FRESH_FALLBACK.
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProxyWakeChatResponse) Reset() {
@@ -1215,6 +1217,13 @@ func (x *ProxyWakeChatResponse) GetOutcome() WakeChatResult_Outcome {
 func (x *ProxyWakeChatResponse) GetTmuxSessionName() string {
 	if x != nil {
 		return x.TmuxSessionName
+	}
+	return ""
+}
+
+func (x *ProxyWakeChatResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
 	}
 	return ""
 }
@@ -2452,10 +2461,11 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
 	"\x10agent_session_id\x18\x02 \x01(\tR\x0eagentSessionId\x12\x1f\n" +
 	"\vforce_fresh\x18\x03 \x01(\bR\n" +
-	"forceFresh\"\x83\x01\n" +
+	"forceFresh\"\x9b\x01\n" +
 	"\x15ProxyWakeChatResponse\x12>\n" +
 	"\aoutcome\x18\x01 \x01(\x0e2$.bossanova.v1.WakeChatResult.OutcomeR\aoutcome\x12*\n" +
-	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\"8\n" +
+	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"8\n" +
 	"\x17ProxyStreamChatsRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"\xe7\x02\n" +

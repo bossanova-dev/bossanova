@@ -124,7 +124,26 @@ func TestRenderDisplayStatus_NilSession(t *testing.T) {
 	}
 }
 
-// TestRepairFailureHint covers the inline "⚠ repair failed (N×)" suffix
+func TestStyledPRStatus_MergedUsesLightCheck(t *testing.T) {
+	sp := newStatusSpinner()
+	got := styledPRStatus(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED}, sp)
+	if !strings.Contains(got, "✓ merged") {
+		t.Errorf("styledPRStatus output missing light check merged label; got %q", got)
+	}
+	if strings.Contains(got, "\u2714 merged") {
+		t.Errorf("styledPRStatus output contains heavy check merged label; got %q", got)
+	}
+}
+
+func TestStyledPRStatus_ConflictUsesFailureCross(t *testing.T) {
+	sp := newStatusSpinner()
+	got := styledPRStatus(&pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT}, sp)
+	if !strings.Contains(got, "⨯ conflict") {
+		t.Errorf("styledPRStatus output missing failure cross conflict label; got %q", got)
+	}
+}
+
+// TestRepairFailureHint covers the "⚠ repair failed (N×)" warning text
 // that flags sessions where Phase 1c's RecordRepairOutcome captured a
 // non-empty runner_error or exit_error.
 func TestRepairFailureHint(t *testing.T) {

@@ -229,17 +229,21 @@ func TestChatPicker_WakeResultMsg_RendersOutcome(t *testing.T) {
 	cases := []struct {
 		name    string
 		outcome pb.WakeChatResponse_Outcome
+		reason  string
 		want    string
 	}{
-		{"resumed", pb.WakeChatResponse_OUTCOME_RESUMED, "Resumed"},
-		{"already-live", pb.WakeChatResponse_OUTCOME_ALREADY_LIVE, "Already live"},
-		{"fresh-fallback", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "Started fresh"},
+		{"resumed", pb.WakeChatResponse_OUTCOME_RESUMED, "", "Resumed"},
+		{"already-live", pb.WakeChatResponse_OUTCOME_ALREADY_LIVE, "", "Already live"},
+		{"fresh-fallback", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "", "Started fresh"},
+		{"fresh-fallback-transcript", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "transcript_missing", "Started fresh: transcript missing"},
+		{"fresh-fallback-discovery", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "provider_id_discovery_timeout", "Started fresh: provider session is still being discovered"},
+		{"fresh-fallback-legacy-ambiguous", pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK, "legacy_provider_id_discovery_ambiguous", "Started fresh: legacy backfill matched multiple provider sessions"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			updated, _ := m.Update(wakeResultMsg{
 				agentSessionID: "agent-1",
-				resp:           &pb.WakeChatResponse{Outcome: tc.outcome},
+				resp:           &pb.WakeChatResponse{Outcome: tc.outcome, Reason: tc.reason},
 			})
 			got := updated.(ChatPickerModel).statusMsg
 			if got != tc.want {

@@ -42,7 +42,7 @@ func chatStatusString(s pb.ChatStatus) string {
 func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 	switch sess.DisplayStatus {
 	case pb.DisplayStatus_DISPLAY_STATUS_MERGED:
-		return styleStatusMuted.Render("✔ merged")
+		return styleStatusMuted.Render("✓ merged")
 	case pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
 		return styleStatusMuted.Render("closed")
 	case pb.DisplayStatus_DISPLAY_STATUS_APPROVED:
@@ -52,7 +52,7 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 	case pb.DisplayStatus_DISPLAY_STATUS_FAILING:
 		return styleStatusDanger.Render("⨯ failing")
 	case pb.DisplayStatus_DISPLAY_STATUS_CONFLICT:
-		return styleStatusDanger.Render("conflict")
+		return styleStatusDanger.Render("⨯ conflict")
 	case pb.DisplayStatus_DISPLAY_STATUS_REJECTED:
 		return styleStatusDanger.Render("⨯ rejected")
 	case pb.DisplayStatus_DISPLAY_STATUS_DRAFT:
@@ -70,11 +70,7 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 
 // renderDisplayStatus renders the unified STATUS column directly from the
 // composite display fields (DisplayLabel/DisplayIntent/DisplaySpinner) computed
-// by bossd. Clients no longer recompose — they just style. When the session
-// has a recorded repair-attempt failure (runner_error or exit_error), an
-// inline "⚠ repair (N×)" suffix is appended in muted style so the operator
-// sees at a glance that auto-repair tried and failed without having to
-// drill into `boss show`.
+// by bossd. Clients no longer recompose — they just style.
 func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 	if sess == nil {
 		return ""
@@ -83,11 +79,7 @@ func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 	if sess.GetDisplaySpinner() {
 		label = sp.View() + label
 	}
-	rendered := styleForIntent(sess.GetDisplayIntent()).Render(label)
-	if hint := repairFailureHint(sess); hint != "" {
-		rendered += " " + styleStatusMuted.Render(hint)
-	}
-	return rendered
+	return styleForIntent(sess.GetDisplayIntent()).Render(label)
 }
 
 // repairFailureHint returns a short suffix like "⚠ repair (3×)" when the

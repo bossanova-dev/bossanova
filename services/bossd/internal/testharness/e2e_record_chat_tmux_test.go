@@ -2,16 +2,19 @@ package testharness_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/testharness"
+	"github.com/recurser/bossd/internal/tmux"
 )
 
 // writeFakeTranscript materialises ~/.claude/projects/<key>/<sid>.jsonl so
@@ -77,6 +80,45 @@ func (f *fakeTmux) findCall(sub string) []string {
 		}
 	}
 	return nil
+}
+
+func realTmuxFactory(t *testing.T) tmux.CommandFactory {
+	t.Helper()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	label := fmt.Sprintf("bossd-test-%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", label, "kill-server").Run()
+	})
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "tmux" {
+			args = append([]string{"-L", label}, args...)
+		}
+		return exec.CommandContext(ctx, name, args...)
+	}
+}
+
+func installFakeCodexTUI(t *testing.T) string {
+	t.Helper()
+	fakePath, err := filepath.Abs("../../../../plugins/bossd-plugin-codex/testdata/fake_codex_tui.sh")
+	if err != nil {
+		t.Fatalf("abs fake codex tui: %v", err)
+	}
+	if _, err := os.Stat(fakePath); err != nil {
+		t.Fatalf("fake codex tui missing: %v", err)
+	}
+	binDir := t.TempDir()
+	codexPath := filepath.Join(binDir, "codex")
+	if err := os.Symlink(fakePath, codexPath); err != nil {
+		t.Fatalf("symlink fake codex tui: %v", err)
+	}
+	argvLog := filepath.Join(t.TempDir(), "fake-codex-argv.log")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("FAKE_CODEX_TUI_ARGV_LOG", argvLog)
+	t.Setenv("FAKE_CODEX_TUI_ID_PREFIX", "record-chat-codex")
+	t.Setenv("FAKE_CODEX_TUI_SLEEP_SECONDS", "30")
+	return argvLog
 }
 
 // recordChatSetup creates the harness, registers a repo, and opens a session,
@@ -352,6 +394,66 @@ func TestE2E_RecordChat_CodexAgentSpawnsCodexCmd(t *testing.T) {
 	}
 	if strings.Contains(joined, "claude") {
 		t.Errorf("codex agent must NOT spawn claude; got %q", joined)
+	}
+}
+
+func TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID(t *testing.T) {
+	tmuxFactory := realTmuxFactory(t)
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("BOSSD_TEST_CODEX_TUI_DISCOVERY_REQUIRED", "1")
+	_ = installFakeCodexTUI(t)
+
+	h := testharness.NewWithOptions(t, testharness.Options{TmuxCommandFactory: tmuxFactory})
+	ctx := context.Background()
+	repoDir := testharness.TempRepoDir(t)
+	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
+		DisplayName:       "real-codex-tmux",
+		LocalPath:         repoDir,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}))
+	if err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
+		RepoId: repoResp.Msg.Repo.Id,
+		Title:  "Real Codex Tmux",
+		Plan:   "test plan",
+	})
+
+	codex := "codex"
+	const agentSessionID = "logical-codex-chat"
+	resp, err := h.Client.RecordChat(ctx, connect.NewRequest(&pb.RecordChatRequest{
+		SessionId:      sess.Id,
+		AgentSessionId: agentSessionID,
+		Title:          "real codex chat",
+		AgentName:      &codex,
+	}))
+	if err != nil {
+		t.Fatalf("RecordChat: %v", err)
+	}
+	if resp.Msg.Chat.TmuxSessionName == "" {
+		t.Fatal("expected tmux session name")
+	}
+	t.Cleanup(func() {
+		_ = h.Tmux.KillSession(context.Background(), resp.Msg.Chat.TmuxSessionName)
+	})
+
+	chat, err := h.AgentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.ProviderSessionID == nil || *chat.ProviderSessionID == "" {
+		t.Fatal("expected provider_session_id to be discovered and persisted")
+	}
+	if *chat.ProviderSessionID == agentSessionID {
+		t.Fatalf("provider_session_id = logical id %q; want fake codex-generated id", agentSessionID)
+	}
+	rollout := filepath.Join(tmpHome, ".codex", "sessions", "2026", "05", "11",
+		"rollout-2026-05-11T00-00-00-"+*chat.ProviderSessionID+".jsonl")
+	if info, err := os.Stat(rollout); err != nil || info.Size() == 0 {
+		t.Fatalf("expected rollout for provider id at %s, stat=%v info=%v", rollout, err, info)
 	}
 }
 

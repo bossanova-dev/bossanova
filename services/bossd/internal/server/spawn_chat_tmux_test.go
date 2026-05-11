@@ -26,6 +26,7 @@ type fakeTmuxClient struct {
 	// slowCreate, when true, sleeps briefly inside NewSessionWithCmd so
 	// concurrent goroutines actually contend on singleflight.Do.
 	slowCreate bool
+	lastName   string
 }
 
 func (f *fakeTmuxClient) Available(_ context.Context) bool { return f.available }
@@ -34,13 +35,14 @@ func (f *fakeTmuxClient) HasSession(_ context.Context, _ string) bool {
 	defer f.mu.Unlock()
 	return f.hasSession
 }
-func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, _, _ string, cmd []string) error {
+func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cmd []string) error {
 	if f.slowCreate {
 		time.Sleep(10 * time.Millisecond)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.captured = append([]string{}, cmd...)
+	f.lastName = name
 	if f.createErr != nil {
 		return f.createErr
 	}
@@ -50,10 +52,73 @@ func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, _, _ string, cmd [
 }
 
 // fakeTranscriptOracle controls TranscriptExists for tests.
-type fakeTranscriptOracle struct{ exists bool }
+type fakeTranscriptOracle struct {
+	exists    bool
+	existsFor map[string]bool
+	calls     []transcriptCall
+}
 
-func (f fakeTranscriptOracle) TranscriptExists(_ context.Context, _, _, _ string) bool {
+type transcriptCall struct {
+	agentName      string
+	workDir        string
+	agentSessionID string
+}
+
+func (f *fakeTranscriptOracle) TranscriptExists(_ context.Context, agentName, workDir, agentSessionID string) bool {
+	f.calls = append(f.calls, transcriptCall{agentName: agentName, workDir: workDir, agentSessionID: agentSessionID})
+	if f.existsFor != nil {
+		return f.existsFor[agentSessionID]
+	}
 	return f.exists
+}
+
+type fakeInteractiveSessionResolver struct {
+	sessionID         string
+	legacySessionID   string
+	ambiguous         bool
+	reason            string
+	legacyAmbiguous   bool
+	legacyReason      string
+	cancelOnFreshCall func()
+	calls             []resolverCall
+}
+
+type resolverCall struct {
+	agentName           string
+	workDir             string
+	requestedSessionID  string
+	launchedAfter       time.Time
+	chatCreatedAt       time.Time
+	allowLegacyBackfill bool
+}
+
+func (f *fakeInteractiveSessionResolver) ResolveInteractiveSessionID(_ context.Context, agentName, workDir, requestedSessionID string, launchedAfter, chatCreatedAt time.Time, allowLegacyBackfill bool) (interactiveSessionResolution, error) {
+	f.calls = append(f.calls, resolverCall{
+		agentName:           agentName,
+		workDir:             workDir,
+		requestedSessionID:  requestedSessionID,
+		launchedAfter:       launchedAfter,
+		chatCreatedAt:       chatCreatedAt,
+		allowLegacyBackfill: allowLegacyBackfill,
+	})
+	sessionID := f.sessionID
+	if allowLegacyBackfill && f.legacySessionID != "" {
+		sessionID = f.legacySessionID
+	}
+	ambiguous := f.ambiguous
+	reason := f.reason
+	if allowLegacyBackfill && f.legacyAmbiguous {
+		ambiguous = true
+		reason = f.legacyReason
+	}
+	if !allowLegacyBackfill && f.cancelOnFreshCall != nil {
+		f.cancelOnFreshCall()
+	}
+	return interactiveSessionResolution{
+		SessionID: sessionID,
+		Ambiguous: ambiguous,
+		Reason:    reason,
+	}, nil
 }
 
 // fakeArgvBuilder is a programmable argvBuilder. fresh/resume hold per-agent
@@ -124,7 +189,7 @@ func TestSpawnChatTmux_AlreadyLive(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
 	got, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: true},
+		Transcripts: &fakeTranscriptOracle{exists: true},
 		Argv:        claudeArgvBuilder(),
 	}, spawnInput{
 		Chat:         newTestChat(t),
@@ -134,8 +199,8 @@ func TestSpawnChatTmux_AlreadyLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != OutcomeAlreadyLive {
-		t.Fatalf("got %v, want OutcomeAlreadyLive", got)
+	if got.Outcome != OutcomeAlreadyLive {
+		t.Fatalf("got %v, want OutcomeAlreadyLive", got.Outcome)
 	}
 	if tmuxer.createdN != 0 {
 		t.Fatalf("expected no NewSession call, got %d", tmuxer.createdN)
@@ -148,7 +213,7 @@ func TestSpawnChatTmux_FreshStart_NoResumeFlag(t *testing.T) {
 	chat := newTestChat(t)
 	got, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: false},
+		Transcripts: &fakeTranscriptOracle{exists: false},
 		Argv:        claudeArgvBuilder(),
 	}, spawnInput{
 		Chat:         chat,
@@ -159,8 +224,8 @@ func TestSpawnChatTmux_FreshStart_NoResumeFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != OutcomeFreshFallback {
-		t.Fatalf("got %v, want OutcomeFreshFallback", got)
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("got %v, want OutcomeFreshFallback", got.Outcome)
 	}
 	if !contains(tmuxer.captured, "--session-id") || contains(tmuxer.captured, "--resume") {
 		t.Fatalf("expected --session-id only, got cmd=%v", tmuxer.captured)
@@ -172,7 +237,7 @@ func TestSpawnChatTmux_ResumeWhenTranscriptExists(t *testing.T) {
 	wd := t.TempDir()
 	got, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: true},
+		Transcripts: &fakeTranscriptOracle{exists: true},
 		Argv:        claudeArgvBuilder(),
 	}, spawnInput{
 		Chat:         newTestChat(t),
@@ -182,8 +247,8 @@ func TestSpawnChatTmux_ResumeWhenTranscriptExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != OutcomeResumed {
-		t.Fatalf("got %v, want OutcomeResumed", got)
+	if got.Outcome != OutcomeResumed {
+		t.Fatalf("got %v, want OutcomeResumed", got.Outcome)
 	}
 	if !contains(tmuxer.captured, "--resume") || contains(tmuxer.captured, "--session-id") {
 		t.Fatalf("expected --resume only, got cmd=%v", tmuxer.captured)
@@ -194,7 +259,7 @@ func TestSpawnChatTmux_ForceFreshOverridesTranscript(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	got, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: true},
+		Transcripts: &fakeTranscriptOracle{exists: true},
 		Argv:        claudeArgvBuilder(),
 	}, spawnInput{
 		Chat:         newTestChat(t),
@@ -205,8 +270,8 @@ func TestSpawnChatTmux_ForceFreshOverridesTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != OutcomeFreshFallback {
-		t.Fatalf("got %v, want OutcomeFreshFallback", got)
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("got %v, want OutcomeFreshFallback", got.Outcome)
 	}
 	if contains(tmuxer.captured, "--resume") {
 		t.Fatalf("force_fresh should suppress --resume, got cmd=%v", tmuxer.captured)
@@ -219,7 +284,7 @@ func TestSpawnChatTmux_WorktreeMissing(t *testing.T) {
 	_ = os.RemoveAll(missing)
 	_, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: false},
+		Transcripts: &fakeTranscriptOracle{exists: false},
 		Argv:        claudeArgvBuilder(),
 	}, spawnInput{
 		Chat:         newTestChat(t),
@@ -241,7 +306,7 @@ func TestSpawnChatTmux_TmuxUnavailable(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: false}
 	got, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: false},
+		Transcripts: &fakeTranscriptOracle{exists: false},
 		Argv:        claudeArgvBuilder(),
 	}, spawnInput{
 		Chat:         newTestChat(t),
@@ -251,8 +316,215 @@ func TestSpawnChatTmux_TmuxUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unavailable tmux must not error, got %v", err)
 	}
-	if got != OutcomeAlreadyLive {
-		t.Fatalf("got %v, want OutcomeAlreadyLive (no-op)", got)
+	if got.Outcome != OutcomeAlreadyLive {
+		t.Fatalf("got %v, want OutcomeAlreadyLive (no-op)", got.Outcome)
+	}
+}
+
+func TestSpawnChatTmux_UsesProviderSessionIDForResumeAndTmuxNameUsesAgentSessionID(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	transcripts := &fakeTranscriptOracle{exists: true}
+	builder := claudeArgvBuilder()
+	providerID := "provider-real-1"
+	chat := newTestChat(t)
+	chat.ProviderSessionID = &providerID
+
+	got, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: transcripts,
+		Argv:        builder,
+	}, spawnInput{
+		Chat:         chat,
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.Outcome != OutcomeResumed {
+		t.Fatalf("got %v, want OutcomeResumed", got.Outcome)
+	}
+	if len(transcripts.calls) != 1 || transcripts.calls[0].agentSessionID != providerID {
+		t.Fatalf("TranscriptExists must use provider id %q, got calls=%+v", providerID, transcripts.calls)
+	}
+	if len(builder.calls) != 1 || builder.calls[0].agentSessionID != providerID {
+		t.Fatalf("BuildInteractive must use provider id %q, got calls=%+v", providerID, builder.calls)
+	}
+	if tmuxer.lastName != "boss-agent-session-1" {
+		t.Fatalf("tmux name must keep agent session id, got %q", tmuxer.lastName)
+	}
+}
+
+func TestSpawnChatTmux_FreshFallbackReasonTranscriptMissingForProviderID(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	providerID := "provider-real-1"
+	chat := newTestChat(t)
+	chat.ProviderSessionID = &providerID
+
+	got, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{existsFor: map[string]bool{providerID: false}},
+		Argv:        claudeArgvBuilder(),
+	}, spawnInput{
+		Chat:         chat,
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("got %v, want OutcomeFreshFallback", got.Outcome)
+	}
+	if got.FallbackReason != WakeFallbackReasonTranscriptMissing {
+		t.Fatalf("fallback reason = %q, want %q", got.FallbackReason, WakeFallbackReasonTranscriptMissing)
+	}
+}
+
+func TestSpawnChatTmux_FreshFallbackReasonProviderIDDiscoveryTimeout(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	got, err := spawnChatTmux(ctx, spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: false},
+		Argv:        claudeArgvBuilder(),
+		Resolver:    &fakeInteractiveSessionResolver{},
+	}, spawnInput{
+		Chat:         newTestChat(t),
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.FallbackReason != WakeFallbackReasonProviderIDDiscoveryTimeout {
+		t.Fatalf("fallback reason = %q, want %q", got.FallbackReason, WakeFallbackReasonProviderIDDiscoveryTimeout)
+	}
+}
+
+func TestSpawnChatTmux_ClaudeWithoutProviderSessionIDUsesAgentSessionID(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	transcripts := &fakeTranscriptOracle{exists: true}
+	builder := claudeArgvBuilder()
+	chat := newTestChat(t)
+
+	got, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: transcripts,
+		Argv:        builder,
+	}, spawnInput{
+		Chat:         chat,
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.Outcome != OutcomeResumed {
+		t.Fatalf("got %v, want OutcomeResumed", got.Outcome)
+	}
+	if len(transcripts.calls) != 1 || transcripts.calls[0].agentSessionID != chat.AgentSessionID {
+		t.Fatalf("TranscriptExists must use agent session id %q, got calls=%+v", chat.AgentSessionID, transcripts.calls)
+	}
+	if len(builder.calls) != 1 || builder.calls[0].agentSessionID != chat.AgentSessionID {
+		t.Fatalf("BuildInteractive must use agent session id %q, got calls=%+v", chat.AgentSessionID, builder.calls)
+	}
+}
+
+func TestSpawnChatTmux_FreshLaunchResolverReturnsProviderSessionID(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	resolver := &fakeInteractiveSessionResolver{sessionID: "codex-real-1"}
+	chat := newTestChat(t)
+	chat.AgentName = "codex"
+
+	got, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: false},
+		Argv: &fakeArgvBuilder{
+			fresh:  map[string][]string{"codex": {"codex"}},
+			resume: map[string][]string{"codex": {"codex", "resume"}},
+		},
+		Resolver: resolver,
+	}, spawnInput{
+		Chat:         chat,
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("got %v, want OutcomeFreshFallback", got.Outcome)
+	}
+	if got.ProviderSessionID != "codex-real-1" {
+		t.Fatalf("got provider id %q, want codex-real-1", got.ProviderSessionID)
+	}
+	if got.LaunchedAt.IsZero() {
+		t.Fatalf("LaunchedAt must be set")
+	}
+	if len(resolver.calls) != 1 || resolver.calls[0].requestedSessionID != chat.AgentSessionID {
+		t.Fatalf("resolver must be called with agent session id, got calls=%+v", resolver.calls)
+	}
+}
+
+func TestSpawnChatTmux_ResolverTimeoutDoesNotFailFreshLaunch(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	got, err := spawnChatTmux(ctx, spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: false},
+		Argv:        claudeArgvBuilder(),
+		Resolver:    &fakeInteractiveSessionResolver{},
+	}, spawnInput{
+		Chat:         newTestChat(t),
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("got %v, want OutcomeFreshFallback", got.Outcome)
+	}
+	if got.ProviderSessionID != "" {
+		t.Fatalf("expected unresolved provider id, got %q", got.ProviderSessionID)
+	}
+}
+
+func TestSpawnChatTmux_AmbiguousResolverStopsPollingWithoutProviderSessionID(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	resolver := &fakeInteractiveSessionResolver{
+		ambiguous: true,
+		reason:    "multiple codex-tui rollouts matched",
+	}
+
+	got, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: false},
+		Argv:        claudeArgvBuilder(),
+		Resolver:    resolver,
+	}, spawnInput{
+		Chat:         newTestChat(t),
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("got %v, want OutcomeFreshFallback", got.Outcome)
+	}
+	if got.ProviderSessionID != "" {
+		t.Fatalf("expected no provider id for ambiguous discovery, got %q", got.ProviderSessionID)
+	}
+	if !got.DiscoveryAmbiguous || got.DiscoveryReason != "multiple codex-tui rollouts matched" {
+		t.Fatalf("ambiguous discovery not preserved: %+v", got)
+	}
+	if len(resolver.calls) != 1 {
+		t.Fatalf("ambiguous resolver should stop polling after one call, got %d", len(resolver.calls))
 	}
 }
 
@@ -281,7 +553,7 @@ func TestSpawnChatTmux_RoutesArgvByAgentName(t *testing.T) {
 	}
 	got, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: false},
+		Transcripts: &fakeTranscriptOracle{exists: false},
 		Argv:        builder,
 	}, spawnInput{
 		Chat:         chat,
@@ -291,8 +563,8 @@ func TestSpawnChatTmux_RoutesArgvByAgentName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if got != OutcomeFreshFallback {
-		t.Fatalf("got %v, want OutcomeFreshFallback", got)
+	if got.Outcome != OutcomeFreshFallback {
+		t.Fatalf("got %v, want OutcomeFreshFallback", got.Outcome)
 	}
 	if len(builder.calls) != 1 || builder.calls[0].agentName != "codex" {
 		t.Fatalf("argv builder must be asked for agent %q exactly once, got calls=%+v", "codex", builder.calls)
@@ -318,7 +590,7 @@ func TestSpawnChatTmux_LegacyEmptyAgentNameDefaultsToClaude(t *testing.T) {
 	}
 	if _, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
-		Transcripts: fakeTranscriptOracle{exists: false},
+		Transcripts: &fakeTranscriptOracle{exists: false},
 		Argv:        builder,
 	}, spawnInput{
 		Chat:         chat,

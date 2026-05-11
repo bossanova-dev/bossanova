@@ -269,6 +269,9 @@ func (f *fakeAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav
 func (f *fakeAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }
+func (f *fakeAgentClient) ResolveInteractiveSessionID(_ context.Context, _ *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
+}
 func (f *fakeAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }

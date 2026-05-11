@@ -423,6 +423,9 @@ message ClaudeChat {
   string tmux_session_name = 7;  // Empty if no tmux session is hosting this chat
   // Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
   string agent_name = 8;
+  // Provider-owned resume/session UUID. Empty when provider uses agent_session_id
+  // directly or the value has not been discovered yet.
+  string provider_session_id = 9;
 }
 
 // CronJobStatus is the derived run-status for a cron job, computed from

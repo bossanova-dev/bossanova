@@ -32,27 +32,28 @@ func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentCha
 		agentName = "claude"
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO agent_chats (id, session_id, agent_session_id, agent_name, title, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		id, params.SessionID, params.AgentSessionID, agentName, params.Title, now,
+		`INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, params.SessionID, params.AgentSessionID, params.ProviderSessionID, agentName, params.Title, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert agent_chat: %w", err)
 	}
 
 	return &models.AgentChat{
-		ID:             id,
-		SessionID:      params.SessionID,
-		AgentSessionID: params.AgentSessionID,
-		AgentName:      agentName,
-		Title:          params.Title,
-		CreatedAt:      sqlutil.ParseTime(now),
+		ID:                id,
+		SessionID:         params.SessionID,
+		AgentSessionID:    params.AgentSessionID,
+		ProviderSessionID: params.ProviderSessionID,
+		AgentName:         agentName,
+		Title:             params.Title,
+		CreatedAt:         sqlutil.ParseTime(now),
 	}, nil
 }
 
 func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
 		 FROM agent_chats
 		 WHERE agent_session_id = ?`,
 		agentSessionID,
@@ -73,7 +74,7 @@ func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSes
 
 func (s *SQLiteAgentChatStore) ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
 		 FROM agent_chats
 		 WHERE session_id = ?
 		 ORDER BY created_at DESC`,
@@ -128,6 +129,17 @@ func (s *SQLiteAgentChatStore) UpdateTmuxSessionName(ctx context.Context, agentS
 	return nil
 }
 
+func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_chats SET provider_session_id = ? WHERE agent_session_id = ?`,
+		providerSessionID, agentSessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update agent_chat provider_session_id: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM agent_chats WHERE agent_session_id = ?`, agentSessionID)
@@ -139,7 +151,7 @@ func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agent
 
 func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
 		 FROM agent_chats
 		 WHERE tmux_session_name IS NOT NULL AND tmux_session_name != ''
 		 ORDER BY created_at DESC`,
@@ -163,7 +175,7 @@ func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*mode
 func scanAgentChat(rows *sql.Rows) (*models.AgentChat, error) {
 	var c models.AgentChat
 	var createdAt string
-	if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentSessionID, &c.AgentName, &c.Title, &c.DaemonID, &c.TmuxSessionName, &createdAt); err != nil {
+	if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentSessionID, &c.ProviderSessionID, &c.AgentName, &c.Title, &c.DaemonID, &c.TmuxSessionName, &createdAt); err != nil {
 		return nil, fmt.Errorf("scan agent_chat: %w", err)
 	}
 	c.CreatedAt = sqlutil.ParseTime(createdAt)

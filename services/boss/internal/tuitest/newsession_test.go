@@ -460,6 +460,31 @@ func TestTUI_NewSessionView_PRSelect_FilterNarrows(t *testing.T) {
 	}
 }
 
+func TestTUI_NewSessionView_PRSelect_FilterAcceptsPaste(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithPRs("repo-1", manyPRs()...),
+	)
+	navigateToPRSelect(t, h)
+
+	if err := h.Driver.SendKey('/'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.PasteString("refactor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "1 of 5"); err != nil {
+		t.Fatalf("expected pasted query to narrow PR list; screen:\n%s", h.Driver.Screen())
+	}
+	screen := h.Driver.Screen()
+	if !strings.Contains(screen, "Refactor auth middleware") {
+		t.Fatalf("expected matching PR visible; screen:\n%s", screen)
+	}
+	if strings.Contains(screen, "Fix login flow") {
+		t.Fatalf("expected non-matching PR hidden; screen:\n%s", screen)
+	}
+}
+
 func TestTUI_NewSessionView_PRSelect_FilterEscClears(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
@@ -629,5 +654,47 @@ func TestTUI_NewSessionView_IssueSelect_FilterNarrows(t *testing.T) {
 	}
 	if strings.Contains(screen, "Fix login redirect") {
 		t.Fatalf("expected non-matched issue hidden; screen:\n%s", screen)
+	}
+}
+
+func TestTUI_NewSessionView_IssueSelect_FilterAcceptsPaste(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepoWithLinear()...),
+		tuitest.WithTrackerIssues("repo-1", manyIssues()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Work on a Linear issue"); err != nil {
+		t.Fatalf("expected Linear option; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('j'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('j'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "ENG-101"); err != nil {
+		t.Fatalf("expected issue list; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('/'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.PasteString("ENG-102"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "1 of 3"); err != nil {
+		t.Fatalf("expected pasted query to narrow issue list; screen:\n%s", h.Driver.Screen())
+	}
+	screen := h.Driver.Screen()
+	if !strings.Contains(screen, "ENG-102") || strings.Contains(screen, "ENG-101") {
+		t.Fatalf("expected only ENG-102 after paste; screen:\n%s", screen)
 	}
 }

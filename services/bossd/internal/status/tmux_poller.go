@@ -99,14 +99,21 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		return
 	}
 
-	// Filter to chats whose tmux session is alive right now.
+	now := time.Now()
+
+	// Filter to chats whose tmux session is alive right now. Chats whose DB
+	// tmux reference no longer exists must actively report STOPPED; otherwise
+	// the persisted session display label can remain stuck at "working" until
+	// some unrelated status change triggers a recompute.
 	activeChats := make([]*models.AgentChat, 0, len(chats))
 	seen := make(map[string]bool, len(chats))
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			continue
 		}
 		if !p.tmux.HasSession(ctx, *chat.TmuxSessionName) {
+			p.tracker.Update(chat.AgentSessionID, pb.ChatStatus_CHAT_STATUS_STOPPED, now)
 			continue
 		}
 		activeChats = append(activeChats, chat)
@@ -123,7 +130,6 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 	}
 	p.mu.Unlock()
 
-	now := time.Now()
 	for _, chat := range activeChats {
 		agentSessionID := chat.AgentSessionID
 		tmuxName := *chat.TmuxSessionName
@@ -284,10 +290,20 @@ func (p *TmuxStatusPoller) questionState(ctx context.Context, chat *models.Agent
 	}
 	luResp, err := client.LastTurnIsUser(ctx, &pb.LastTurnIsUserRequest{
 		WorkDir:        sess.WorktreePath,
-		AgentSessionId: chat.AgentSessionID,
+		AgentSessionId: chatResumeSessionID(chat),
 	})
 	questionSuppressed = err == nil && luResp != nil && luResp.GetIsUser()
 	return paneShowsQuestion, questionSuppressed
+}
+
+func chatResumeSessionID(chat *models.AgentChat) string {
+	if chat == nil {
+		return ""
+	}
+	if chat.ProviderSessionID != nil && *chat.ProviderSessionID != "" {
+		return *chat.ProviderSessionID
+	}
+	return chat.AgentSessionID
 }
 
 // logMissingAgentOnce emits a single warning per unknown agent name so the

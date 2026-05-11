@@ -43,6 +43,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "ExitStatus", Handler: agentExitStatusHandler},
 		{MethodName: "ConfigureFinalizeHook", Handler: agentConfigureFinalizeHookHandler},
 		{MethodName: "BuildInteractiveCommand", Handler: agentBuildInteractiveCommandHandler},
+		{MethodName: "ResolveInteractiveSessionID", Handler: agentResolveInteractiveSessionIDHandler},
 		{MethodName: "ListIgnoredDirtyFiles", Handler: agentListIgnoredDirtyFilesHandler},
 		{MethodName: "GetChatTitle", Handler: agentGetChatTitleHandler},
 		{MethodName: "HasQuestionPrompt", Handler: agentHasQuestionPromptHandler},
@@ -61,6 +62,7 @@ type agentRunnerServiceHandler interface {
 	ExitStatus(context.Context, *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error)
 	ConfigureFinalizeHook(context.Context, *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error)
 	BuildInteractiveCommand(context.Context, *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error)
+	ResolveInteractiveSessionID(context.Context, *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
 	ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error)
 	GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error)
 	HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
@@ -122,6 +124,14 @@ func agentBuildInteractiveCommandHandler(srv any, ctx context.Context, dec func(
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).BuildInteractiveCommand(ctx, req)
+}
+
+func agentResolveInteractiveSessionIDHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.ResolveInteractiveSessionIDRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).ResolveInteractiveSessionID(ctx, req)
 }
 
 func agentListIgnoredDirtyFilesHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

@@ -92,6 +92,33 @@ func TestTUI_HomeView_ArchiveSession(t *testing.T) {
 	}
 }
 
+func TestTUI_HomeView_ArchiveProgressStaysInSelectedRow(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+		tuitest.WithArchiveDelay(750*time.Millisecond),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('a'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Archive"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('y'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "archiving"); err != nil {
+		t.Fatal(err)
+	}
+	if h.Driver.ScreenContains("Archiving...") {
+		t.Fatalf("global archive footer still visible; screen:\n%s", h.Driver.Screen())
+	}
+}
+
 func TestTUI_HomeView_ArchiveCancel(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),

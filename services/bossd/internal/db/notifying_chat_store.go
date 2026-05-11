@@ -88,6 +88,14 @@ func (s *NotifyingAgentChatStore) UpdateTmuxSessionName(ctx context.Context, age
 	return nil
 }
 
+func (s *NotifyingAgentChatStore) UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error {
+	if err := s.inner.UpdateProviderSessionID(ctx, agentSessionID, providerSessionID); err != nil {
+		return err
+	}
+	s.notifyAfterUpdate(ctx, agentSessionID)
+	return nil
+}
+
 func (s *NotifyingAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
 	// Fetch first so the notification carries the chat that is about to
 	// disappear — subscribers need session_id to scope the delete to a

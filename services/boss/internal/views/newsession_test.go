@@ -231,6 +231,10 @@ func keyPress(ch rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: ch, Text: string(ch)}
 }
 
+func pasteText(text string) tea.PasteMsg {
+	return tea.PasteMsg{Content: text}
+}
+
 // specialKeyPress creates a KeyPressMsg for a special key (e.g. tea.KeyEnter).
 func specialKeyPress(code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: code}
@@ -343,6 +347,28 @@ func TestNewSession_FormDataSurvivesCopies(t *testing.T) {
 	copy1.fd.title = "updated title"
 	if copy2.fd.title != "updated title" {
 		t.Fatalf("fd.title = %q in copy2, want %q — formData is not shared", copy2.fd.title, "updated title")
+	}
+}
+
+func TestNewSession_FormPasteDelegatesToForm(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeNewPR
+	m.phase = newSessionPhaseForm
+	m.buildForm()
+	if m.form == nil {
+		t.Fatal("form is nil after buildForm")
+	}
+	if cmd := m.form.Init(); cmd != nil {
+		cmd()
+	}
+
+	m = sendMsg(t, m, tea.PasteMsg{Content: "pasted session name"})
+
+	if m.fd.title != "pasted session name" {
+		t.Fatalf("fd.title = %q, want pasted session name", m.fd.title)
 	}
 }
 
@@ -984,6 +1010,30 @@ func TestNewSession_PRFilterActivationRebuildsTable(t *testing.T) {
 	}
 }
 
+func TestNewSession_PRFilterAcceptsPaste(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeExistingPR
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+		{Number: 101, Title: "Fix login flow", State: pb.PRState_PR_STATE_OPEN},
+		{Number: 102, Title: "Add dark mode", State: pb.PRState_PR_STATE_OPEN},
+	}})
+
+	m = sendKey(t, m, '/')
+	m = sendMsg(t, m, pasteText("dark mode"))
+
+	if got := m.prFilter.Query(); got != "dark mode" {
+		t.Fatalf("prFilter.Query() = %q, want pasted query", got)
+	}
+	if len(m.prsFiltered) != 1 || m.prs[m.prsFiltered[0]].Number != 102 {
+		t.Fatalf("prsFiltered = %+v, want only PR #102", m.prsFiltered)
+	}
+}
+
 // TestNewSession_IssueFilterActivationRebuildsTable mirrors the PR regression
 // for the Linear issue selector.
 func TestNewSession_IssueFilterActivationRebuildsTable(t *testing.T) {
@@ -1011,6 +1061,41 @@ func TestNewSession_IssueFilterActivationRebuildsTable(t *testing.T) {
 	}
 	if got := m.issueTable.Height(); got != expectedAfter {
 		t.Fatalf("issueTable.Height() = %d after '/', want %d (before=%d, minus filter overhead) — table not rebuilt on filter activation", got, expectedAfter, heightBefore)
+	}
+}
+
+func TestNewSession_IssueFilterAcceptsPasteAndSchedulesSearch(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m = sendMsg(t, m, tea.WindowSizeMsg{Width: 200, Height: 13})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: []*pb.TrackerIssue{
+		{ExternalId: "ENG-101", Title: "Fix login redirect", State: "open"},
+		{ExternalId: "ENG-102", Title: "Add dark mode toggle", State: "open"},
+	}})
+
+	m = sendKey(t, m, '/')
+	startSeq := m.issueSearchSeq
+	updated, cmd := m.Update(pasteText("ENG-102"))
+	m = assertValueType(t, updated)
+
+	if got := m.issueFilter.Query(); got != "ENG-102" {
+		t.Fatalf("issueFilter.Query() = %q, want pasted query", got)
+	}
+	if len(m.issuesFiltered) != 1 || m.trackerIssues[m.issuesFiltered[0]].ExternalId != "ENG-102" {
+		t.Fatalf("issuesFiltered = %+v, want only ENG-102", m.issuesFiltered)
+	}
+	if m.issueSearchSeq != startSeq+1 {
+		t.Fatalf("issueSearchSeq = %d, want %d", m.issueSearchSeq, startSeq+1)
+	}
+	if !m.issuesFetching {
+		t.Fatal("issuesFetching = false, want true")
+	}
+	if cmd == nil {
+		t.Fatal("expected debounced issue search command after paste")
 	}
 }
 

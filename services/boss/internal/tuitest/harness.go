@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/recurser/boss/internal/tuidriver"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -107,6 +108,7 @@ type harnessConfig struct {
 	loggedInEmail  string
 	terminalWidth  int
 	terminalHeight int
+	archiveDelay   time.Duration
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -120,6 +122,13 @@ func WithRepos(repos ...*pb.Repo) Option {
 func WithSessions(sessions ...*pb.Session) Option {
 	return func(c *harnessConfig) {
 		c.sessions = append(c.sessions, sessions...)
+	}
+}
+
+// WithArchiveDelay slows ArchiveSession so tests can assert in-flight UI state.
+func WithArchiveDelay(delay time.Duration) Option {
+	return func(c *harnessConfig) {
+		c.archiveDelay = delay
 	}
 }
 
@@ -233,6 +242,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	if len(cfg.agents) > 0 {
 		daemon.SetAgents(cfg.agents)
 	}
+	daemon.archiveDelay = cfg.archiveDelay
 
 	// Each tuitest gets its own HOME so the boss subprocess's settings file
 	// doesn't leak into the developer's real config (and vice versa). We

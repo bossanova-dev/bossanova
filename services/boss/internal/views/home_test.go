@@ -71,6 +71,88 @@ func TestRenderAttentionIndicator(t *testing.T) {
 	}
 }
 
+func TestStateLabel_MergedUsesLightCheck(t *testing.T) {
+	got := StateLabel(pb.SessionState_SESSION_STATE_MERGED)
+	if got != "✓ merged" {
+		t.Fatalf("StateLabel(MERGED) = %q, want %q", got, "✓ merged")
+	}
+}
+
+func TestHomeBuildTableRows_RendersRepairWarningUnderName(t *testing.T) {
+	h := HomeModel{
+		sessions: []*pb.Session{
+			{
+				Id:                     "sess-1",
+				RepoDisplayName:        "wondercanvas",
+				Title:                  "[WON-462] Restore SSE no-config guard",
+				DisplayLabel:           "? question",
+				DisplayIntent:          pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+				LastRepairRunnerError:  "claude not on PATH",
+				LastRepairAttemptCount: 2,
+			},
+		},
+	}
+
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("table rows = %d, want 2: session row plus repair warning row", len(rows))
+	}
+	if got := rows[0][5]; strings.Contains(got, "repair") {
+		t.Fatalf("STATUS column contains repair warning %q; warning belongs under NAME", got)
+	}
+	if got := rows[1][3]; !strings.Contains(got, "repair failed (2") {
+		t.Fatalf("warning row NAME column = %q, want repair warning", got)
+	}
+	if got := rows[1][5]; got != "" {
+		t.Fatalf("warning row STATUS column = %q, want empty", got)
+	}
+}
+
+func TestHomeModelBuildTableRows_ShowsArchivingStatusForMatchingSession(t *testing.T) {
+	h := HomeModel{
+		spinner:            newStatusSpinner(),
+		archivingSessionID: "sess-1",
+		sessions: []*pb.Session{
+			{Id: "sess-1", RepoDisplayName: "repo", Title: "first"},
+			{Id: "sess-2", RepoDisplayName: "repo", Title: "second"},
+		},
+	}
+
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("table rows = %d, want 2", len(rows))
+	}
+	if got := rows[0][5]; !strings.Contains(got, "archiving") {
+		t.Fatalf("archiving session STATUS = %q, want archiving", got)
+	}
+	if got := rows[0][5]; strings.Contains(got, "  archiving") {
+		t.Fatalf("archiving session STATUS = %q, want one space before archiving", got)
+	}
+	if got := rows[1][5]; strings.Contains(got, "archiving") {
+		t.Fatalf("non-archiving session STATUS = %q, want normal status", got)
+	}
+}
+
+func TestHomeTableHeightCountsRepairWarningRows(t *testing.T) {
+	h := HomeModel{
+		sessions: []*pb.Session{
+			{
+				Id:                     "sess-1",
+				LastRepairRunnerError:  "claude not on PATH",
+				LastRepairAttemptCount: 2,
+			},
+		},
+	}
+
+	if got := h.tableHeight(); got != 3 {
+		t.Fatalf("tableHeight() = %d, want 3: header plus session row plus repair warning row", got)
+	}
+}
+
 func TestSortSessionsByAttention(t *testing.T) {
 	sessions := []*pb.Session{
 		{Id: "normal-1"},
@@ -346,6 +428,52 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 			t.Errorf("key l: view = %v, want %v", svm.view, ViewLogin)
 		}
 	})
+}
+
+func TestHomeModelUpdate_BlocksOpeningArchivingSession(t *testing.T) {
+	h := HomeModel{
+		ctx:                context.Background(),
+		repoCount:          1,
+		loading:            false,
+		archivingSessionID: "sess-1",
+		sessions:           []*pb.Session{{Id: "sess-1"}},
+	}
+	h.buildTableRows()
+
+	_, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("key enter returned command for archiving session, want nil")
+	}
+}
+
+func TestHomeModelUpdate_AllowsOpeningNonArchivingSession(t *testing.T) {
+	h := HomeModel{
+		ctx:                context.Background(),
+		repoCount:          1,
+		loading:            false,
+		archivingSessionID: "sess-2",
+		sessions: []*pb.Session{
+			{Id: "sess-1"},
+			{Id: "sess-2"},
+		},
+	}
+	h.buildTableRows()
+
+	_, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("key enter: got nil cmd, want switchViewMsg")
+	}
+	msg := cmd()
+	svm, ok := msg.(switchViewMsg)
+	if !ok {
+		t.Fatalf("key enter: cmd() returned %T, want switchViewMsg", msg)
+	}
+	if svm.view != ViewChatPicker {
+		t.Errorf("key enter: view = %v, want ViewChatPicker", svm.view)
+	}
+	if svm.sessionID != "sess-1" {
+		t.Errorf("key enter: sessionID = %q, want %q", svm.sessionID, "sess-1")
+	}
 }
 
 func strPtr(s string) *string { return &s }

@@ -38,6 +38,9 @@ func (s *stubAgentRunner) ConfigureFinalizeHook(context.Context, *bossanovav1.Co
 func (s *stubAgentRunner) BuildInteractiveCommand(context.Context, *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }
+func (s *stubAgentRunner) ResolveInteractiveSessionID(context.Context, *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
+}
 func (s *stubAgentRunner) ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }

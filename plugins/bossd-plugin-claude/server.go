@@ -113,6 +113,16 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	}, nil
 }
 
+func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
+	if req.GetRequestedSessionId() == "" {
+		return &bossanovav1.ResolveInteractiveSessionIDResponse{Found: false, Reason: "requested_session_id empty"}, nil
+	}
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{
+		Found:     true,
+		SessionId: req.GetRequestedSessionId(),
+	}, nil
+}
+
 func (s *Server) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) { //nolint:unparam // interface implementation
 	out := make([]string, len(ignoredDirtyFiles))
 	copy(out, ignoredDirtyFiles)

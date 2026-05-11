@@ -101,7 +101,8 @@ type ChatPickerModel struct {
 	statusMsg string
 
 	// Remove confirmation
-	confirming bool
+	confirming             bool
+	deletingAgentSessionID string
 
 	// Merge confirmation / in-progress
 	mergeConfirming bool
@@ -258,6 +259,9 @@ func (m *ChatPickerModel) buildTableRows() {
 	for i, chat := range m.chats {
 		daemon := m.daemonStatuses[chat.AgentSessionId]
 		statusStr := renderClaudeStatus(daemon, m.spinner)
+		if chat.AgentSessionId != "" && chat.AgentSessionId == m.deletingAgentSessionID {
+			statusStr = renderRowPendingStatus(m.spinner, "deleting")
+		}
 		createdStr := styleSubtle.Render(createds[i])
 		activeStr := styleSubtle.Render(actives[i])
 		indicator := ""
@@ -358,17 +362,23 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case chatDeletedMsg:
-		if msg.err == nil {
-			for i, chat := range m.chats {
-				if chat.AgentSessionId == msg.agentSessionID {
-					m.chats = append(m.chats[:i], m.chats[i+1:]...)
-					break
-				}
-			}
+		if msg.agentSessionID == m.deletingAgentSessionID {
+			m.deletingAgentSessionID = ""
+		}
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Delete failed: %v", msg.err)
 			m.buildTableRows()
-			if m.table.Cursor() >= len(m.chats) && len(m.chats) > 0 {
-				m.table.SetCursor(len(m.chats) - 1)
+			return m, nil
+		}
+		for i, chat := range m.chats {
+			if chat.AgentSessionId == msg.agentSessionID {
+				m.chats = append(m.chats[:i], m.chats[i+1:]...)
+				break
 			}
+		}
+		m.buildTableRows()
+		if m.table.Cursor() >= len(m.chats) && len(m.chats) > 0 {
+			m.table.SetCursor(len(m.chats) - 1)
 		}
 		return m, nil
 
@@ -402,7 +412,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case pb.WakeChatResponse_OUTCOME_RESUMED:
 			m.statusMsg = "Resumed"
 		case pb.WakeChatResponse_OUTCOME_FRESH_FALLBACK:
-			m.statusMsg = "Started fresh"
+			m.statusMsg = wakeFreshFallbackStatus(msg.resp.GetReason())
 		default:
 			m.statusMsg = "Woken"
 		}
@@ -527,7 +537,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "d":
-			if chat := m.selectedChat(); chat != nil {
+			if chat := m.selectedChat(); chat != nil && m.deletingAgentSessionID == "" {
 				m.confirming = true
 			}
 			return m, nil
@@ -636,6 +646,8 @@ func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd
 			return m, nil
 		}
 		agentSessionID := chat.AgentSessionId
+		m.deletingAgentSessionID = agentSessionID
+		m.buildTableRows()
 		return m, func() tea.Msg {
 			err := m.client.DeleteChat(m.ctx, agentSessionID)
 			return chatDeletedMsg{agentSessionID: agentSessionID, err: err}
@@ -765,6 +777,23 @@ func (m ChatPickerModel) View() tea.View {
 	}
 
 	return tea.NewView(b.String())
+}
+
+func wakeFreshFallbackStatus(reason string) string {
+	switch reason {
+	case "transcript_missing":
+		return "Started fresh: transcript missing"
+	case "provider_id_missing":
+		return "Started fresh: provider session was not discovered yet"
+	case "provider_id_discovery_timeout":
+		return "Started fresh: provider session is still being discovered"
+	case "legacy_provider_id_discovery_ambiguous":
+		return "Started fresh: legacy backfill matched multiple provider sessions"
+	case "provider_id_discovery_ambiguous":
+		return "Started fresh: provider session discovery matched multiple candidates"
+	default:
+		return "Started fresh"
+	}
 }
 
 // chatLastActive returns the most recent activity time for a chat.

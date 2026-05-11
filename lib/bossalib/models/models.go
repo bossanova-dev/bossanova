@@ -101,14 +101,15 @@ type Attempt struct {
 
 // AgentChat represents an agent conversation associated with a session.
 type AgentChat struct {
-	ID              string
-	SessionID       string
-	AgentSessionID  string // Agent session UUID
-	AgentName       string // Agent plugin name (e.g. "claude", "opencode")
-	Title           string
-	DaemonID        string  // Originating daemon (empty = local)
-	TmuxSessionName *string // tmux session name for this chat (nil = no tmux)
-	CreatedAt       time.Time
+	ID                string
+	SessionID         string
+	AgentSessionID    string  // Agent session UUID
+	ProviderSessionID *string // Provider-owned resume/session UUID, nil when same as AgentSessionID or not discovered yet
+	AgentName         string  // Agent plugin name (e.g. "claude", "opencode")
+	Title             string
+	DaemonID          string  // Originating daemon (empty = local)
+	TmuxSessionName   *string // tmux session name for this chat (nil = no tmux)
+	CreatedAt         time.Time
 }
 
 // TaskMappingStatus represents the state of a task mapping.

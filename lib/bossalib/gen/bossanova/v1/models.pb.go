@@ -2716,9 +2716,12 @@ type ClaudeChat struct {
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	TmuxSessionName string                 `protobuf:"bytes,7,opt,name=tmux_session_name,json=tmuxSessionName,proto3" json:"tmux_session_name,omitempty"` // Empty if no tmux session is hosting this chat
 	// Agent plugin name (e.g. "claude", "opencode"). Empty in legacy data.
-	AgentName     string `protobuf:"bytes,8,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AgentName string `protobuf:"bytes,8,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`
+	// Provider-owned resume/session UUID. Empty when provider uses agent_session_id
+	// directly or the value has not been discovered yet.
+	ProviderSessionId string `protobuf:"bytes,9,opt,name=provider_session_id,json=providerSessionId,proto3" json:"provider_session_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ClaudeChat) Reset() {
@@ -2803,6 +2806,13 @@ func (x *ClaudeChat) GetTmuxSessionName() string {
 func (x *ClaudeChat) GetAgentName() string {
 	if x != nil {
 		return x.AgentName
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetProviderSessionId() string {
+	if x != nil {
+		return x.ProviderSessionId
 	}
 	return ""
 }
@@ -3151,7 +3161,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fneeds_attention\x18\x01 \x01(\bR\x0eneedsAttention\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.bossanova.v1.AttentionReasonR\x06reason\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x120\n" +
-	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\x9e\x02\n" +
+	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xce\x02\n" +
 	"\n" +
 	"ClaudeChat\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -3164,7 +3174,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12*\n" +
 	"\x11tmux_session_name\x18\a \x01(\tR\x0ftmuxSessionName\x12\x1d\n" +
 	"\n" +
-	"agent_name\x18\b \x01(\tR\tagentName\"\xbc\x04\n" +
+	"agent_name\x18\b \x01(\tR\tagentName\x12.\n" +
+	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\"\xbc\x04\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +

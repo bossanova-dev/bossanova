@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -43,6 +44,33 @@ func shardedRolloutPath(root, uuid string) string {
 	)
 	name := "rollout-" + ts.Format("2006-01-02T15-04-05") + "-" + uuid + ".jsonl"
 	return filepath.Join(dir, name)
+}
+
+func writeSessionMetaRollout(t *testing.T, root, id, workDir, originator string, modTime time.Time) string {
+	t.Helper()
+	dir := filepath.Join(root,
+		modTime.Format("2006"),
+		modTime.Format("01"),
+		modTime.Format("02"),
+	)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	path := filepath.Join(dir, "rollout-"+modTime.Format("2006-01-02T15-04-05")+"-"+id+".jsonl")
+	line := fmt.Sprintf(
+		`{"timestamp":"%s","type":"session_meta","payload":{"id":%q,"cwd":%q,"originator":%q,"cli_version":"test"}}`+"\n",
+		modTime.Format(time.RFC3339Nano),
+		id,
+		workDir,
+		originator,
+	)
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatalf("write rollout %s: %v", path, err)
+	}
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatalf("chtimes rollout %s: %v", path, err)
+	}
+	return path
 }
 
 // TestTranscriptPathFindsShardedFile verifies findRolloutPath globs the
@@ -177,5 +205,178 @@ func TestTranscriptExistsAcrossStates(t *testing.T) {
 	copyFixture(t, "testdata/transcripts/sample.jsonl", realDst)
 	if !transcriptExists("/anywhere", realUUID) {
 		t.Error("transcriptExists should be true for non-empty rollout file")
+	}
+}
+
+func TestResolveInteractiveSessionIDAtFindsMatchingCodexTUIRollout(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	launchedAfter := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+	modTime := launchedAfter.Add(500 * time.Millisecond)
+	path := writeSessionMetaRollout(t, root, "session-1", workDir, "codex-tui", modTime)
+
+	id, gotPath, ambiguous, reason := resolveInteractiveSessionIDAt(root, workDir, launchedAfter)
+
+	if id != "session-1" {
+		t.Errorf("id = %q, want session-1", id)
+	}
+	if gotPath != path {
+		t.Errorf("path = %q, want %q", gotPath, path)
+	}
+	if ambiguous {
+		t.Error("ambiguous = true, want false")
+	}
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+}
+
+func TestResolveInteractiveSessionIDAtIgnoresOldExecAndDifferentCWD(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	otherDir := t.TempDir()
+	launchedAfter := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+
+	writeSessionMetaRollout(t, root, "old-session", workDir, "codex-tui", launchedAfter.Add(-3*time.Second))
+	writeSessionMetaRollout(t, root, "exec-session", workDir, "codex_exec", launchedAfter.Add(time.Second))
+	writeSessionMetaRollout(t, root, "other-cwd", otherDir, "codex-tui", launchedAfter.Add(2*time.Second))
+
+	id, path, ambiguous, reason := resolveInteractiveSessionIDAt(root, workDir, launchedAfter)
+
+	if id != "" || path != "" {
+		t.Errorf("got id/path = %q/%q, want empty", id, path)
+	}
+	if ambiguous {
+		t.Error("ambiguous = true, want false")
+	}
+	if reason != "no matching codex-tui rollout found" {
+		t.Errorf("reason = %q, want no matching reason", reason)
+	}
+}
+
+func TestResolveInteractiveSessionIDAtReturnsAmbiguousForDifferentIDsInWindow(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	launchedAfter := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+
+	writeSessionMetaRollout(t, root, "session-1", workDir, "codex-tui", launchedAfter.Add(time.Second))
+	writeSessionMetaRollout(t, root, "session-2", workDir, "codex-tui", launchedAfter.Add(2*time.Second))
+
+	id, path, ambiguous, reason := resolveInteractiveSessionIDAt(root, workDir, launchedAfter)
+
+	if id != "" || path != "" {
+		t.Errorf("got id/path = %q/%q, want empty on ambiguity", id, path)
+	}
+	if !ambiguous {
+		t.Error("ambiguous = false, want true")
+	}
+	if reason == "" {
+		t.Error("reason empty, want ambiguity reason")
+	}
+}
+
+func TestResolveInteractiveSessionIDAtAcceptsSymlinkEquivalentCWD(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(t.TempDir(), "work")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real workdir: %v", err)
+	}
+	linkDir := filepath.Join(t.TempDir(), "linked-work")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatalf("symlink workdir: %v", err)
+	}
+	launchedAfter := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+	path := writeSessionMetaRollout(t, root, "session-1", realDir, "codex-tui", launchedAfter.Add(time.Second))
+
+	id, gotPath, ambiguous, reason := resolveInteractiveSessionIDAt(root, linkDir, launchedAfter)
+
+	if id != "session-1" {
+		t.Errorf("id = %q, want session-1", id)
+	}
+	if gotPath != path {
+		t.Errorf("path = %q, want %q", gotPath, path)
+	}
+	if ambiguous {
+		t.Error("ambiguous = true, want false")
+	}
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+}
+
+func TestResolveLegacyInteractiveSessionIDAtFindsSingleRolloutInCreatedWindow(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+	now := createdAt.Add(10 * time.Minute)
+
+	writeSessionMetaRollout(t, root, "too-old", workDir, "codex-tui", createdAt.Add(-6*time.Minute))
+	writeSessionMetaRollout(t, root, "future", workDir, "codex-tui", now.Add(time.Second))
+	writeSessionMetaRollout(t, root, "next-chat", workDir, "codex-tui", createdAt.Add(3*time.Minute))
+	writeSessionMetaRollout(t, root, "exec-session", workDir, "codex_exec", createdAt.Add(time.Minute))
+	path := writeSessionMetaRollout(t, root, "session-1", workDir, "codex-tui", createdAt.Add(time.Minute))
+
+	id, gotPath, ambiguous, reason := resolveLegacyInteractiveSessionIDAt(root, workDir, createdAt, now)
+
+	if id != "session-1" {
+		t.Errorf("id = %q, want session-1", id)
+	}
+	if gotPath != path {
+		t.Errorf("path = %q, want %q", gotPath, path)
+	}
+	if ambiguous {
+		t.Error("ambiguous = true, want false")
+	}
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+}
+
+func TestResolveLegacyInteractiveSessionIDAtUsesSessionMetaTimestamp(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+	now := createdAt.Add(10 * time.Minute)
+
+	path := writeSessionMetaRollout(t, root, "session-1", workDir, "codex-tui", createdAt.Add(time.Minute))
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatalf("chtimes rollout %s: %v", path, err)
+	}
+
+	id, gotPath, ambiguous, reason := resolveLegacyInteractiveSessionIDAt(root, workDir, createdAt, now)
+
+	if id != "session-1" {
+		t.Errorf("id = %q, want session-1", id)
+	}
+	if gotPath != path {
+		t.Errorf("path = %q, want %q", gotPath, path)
+	}
+	if ambiguous {
+		t.Error("ambiguous = true, want false")
+	}
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+}
+
+func TestResolveLegacyInteractiveSessionIDAtReturnsAmbiguousForMultipleRollouts(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	createdAt := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+	now := createdAt.Add(10 * time.Minute)
+
+	writeSessionMetaRollout(t, root, "session-1", workDir, "codex-tui", createdAt.Add(time.Minute))
+	writeSessionMetaRollout(t, root, "session-2", workDir, "codex-tui", createdAt.Add(2*time.Minute))
+
+	id, path, ambiguous, reason := resolveLegacyInteractiveSessionIDAt(root, workDir, createdAt, now)
+
+	if id != "" || path != "" {
+		t.Errorf("got id/path = %q/%q, want empty on ambiguity", id, path)
+	}
+	if !ambiguous {
+		t.Error("ambiguous = false, want true")
+	}
+	if reason == "" {
+		t.Error("reason empty, want ambiguity reason")
 	}
 }

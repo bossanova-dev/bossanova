@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -363,6 +365,44 @@ func TestTranscriptExistsRPCMatchesDiskState(t *testing.T) {
 	}
 	if !respHave.Exists {
 		t.Error("Exists = false for non-empty rollout, want true")
+	}
+}
+
+func TestResolveInteractiveSessionIDRPCUsesRolloutMetadata(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	workDir := t.TempDir()
+	launchedAfter := time.Date(2026, 5, 8, 7, 45, 40, 0, time.UTC)
+	path := writeSessionMetaRollout(t,
+		filepath.Join(tmpHome, codexSessionsDir),
+		"rpc-session",
+		workDir,
+		"codex-tui",
+		launchedAfter.Add(time.Second),
+	)
+
+	s := newTestServer(t)
+	resp, err := s.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:       workDir,
+		LaunchedAfter: timestamppb.New(launchedAfter),
+	})
+	if err != nil {
+		t.Fatalf("ResolveInteractiveSessionID: %v", err)
+	}
+	if !resp.Found {
+		t.Fatal("Found = false, want true")
+	}
+	if resp.SessionId != "rpc-session" {
+		t.Errorf("SessionId = %q, want rpc-session", resp.SessionId)
+	}
+	if resp.TranscriptPath != path {
+		t.Errorf("TranscriptPath = %q, want %q", resp.TranscriptPath, path)
+	}
+	if resp.Ambiguous {
+		t.Error("Ambiguous = true, want false")
+	}
+	if resp.Reason != "" {
+		t.Errorf("Reason = %q, want empty", resp.Reason)
 	}
 }
 

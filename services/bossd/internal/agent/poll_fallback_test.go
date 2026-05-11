@@ -45,6 +45,9 @@ func (f *fakePollAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossan
 func (f *fakePollAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }
+func (f *fakePollAgentClient) ResolveInteractiveSessionID(_ context.Context, _ *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
+}
 func (f *fakePollAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -162,6 +163,31 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
 		Argv: agentruntime.LogTeeArgv(args, req.LogPath),
+	}, nil
+}
+
+func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation
+	var id, path, reason string
+	var ambiguous bool
+	if req.GetAllowLegacyBackfill() {
+		chatCreatedAt := time.Time{}
+		if req.GetChatCreatedAt() != nil {
+			chatCreatedAt = req.GetChatCreatedAt().AsTime()
+		}
+		id, path, ambiguous, reason = resolveLegacyInteractiveSessionID(req.WorkDir, chatCreatedAt)
+	} else {
+		launchedAfter := time.Time{}
+		if req.GetLaunchedAfter() != nil {
+			launchedAfter = req.GetLaunchedAfter().AsTime()
+		}
+		id, path, ambiguous, reason = resolveInteractiveSessionID(req.WorkDir, launchedAfter)
+	}
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{
+		Found:          id != "",
+		SessionId:      id,
+		TranscriptPath: path,
+		Ambiguous:      ambiguous,
+		Reason:         reason,
 	}, nil
 }
 

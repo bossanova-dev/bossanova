@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"os/exec"
 	"sync"
 	"testing"
 
@@ -10,7 +11,9 @@ import (
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/tmux"
 )
 
 // recordChatStoreFake satisfies db.AgentChatStore for RecordChat's needs.
@@ -51,6 +54,14 @@ func newRecordChatTestServer(sess *models.Session) (*Server, *recordChatStoreFak
 		// tmux left nil → ensureChatTmuxSession is a no-op, keeping the
 		// test focused on the agent-name resolution rules.
 	}, chats
+}
+
+type recordChatAgentClient struct {
+	*listAgentsFakeClient
+}
+
+func (c *recordChatAgentClient) BuildInteractiveCommand(context.Context, *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
+	return &pb.BuildInteractiveCommandResponse{Argv: []string{"sh", "-c", "true"}}, nil
 }
 
 // TestRecordChat_AgentNameOverridePreferred verifies that an explicit
@@ -126,5 +137,31 @@ func TestRecordChat_OverrideWinsEvenWhenSessionDiffers(t *testing.T) {
 	}
 	if chats.created.AgentName != "claude" {
 		t.Fatalf("Create params AgentName = %q, want %q", chats.created.AgentName, "claude")
+	}
+}
+
+func TestRecordChat_TmuxSpawnFailureReturnsInternal(t *testing.T) {
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir(), AgentName: "claude"}
+	srv, _ := newRecordChatTestServer(sess)
+	srv.agentClients = map[string]agent.AgentRunnerClient{
+		"claude": &recordChatAgentClient{listAgentsFakeClient: &listAgentsFakeClient{}},
+	}
+	srv.tmux = tmux.NewClient(tmux.WithCommandFactory(func(ctx context.Context, _ string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "-V" {
+			return exec.CommandContext(ctx, "true")
+		}
+		return exec.CommandContext(ctx, "false")
+	}))
+
+	_, err := srv.RecordChat(context.Background(), connect.NewRequest(&pb.RecordChatRequest{
+		SessionId:      "s1",
+		AgentSessionId: "agent-4",
+		Title:          "hello",
+	}))
+	if err == nil {
+		t.Fatalf("expected tmux spawn error, got nil")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("expected CodeInternal, got %v", got)
 	}
 }

@@ -161,6 +161,9 @@ func (c *claudeFakeClient) ConfigureFinalizeHook(context.Context, *pb.ConfigureF
 func (c *claudeFakeClient) BuildInteractiveCommand(context.Context, *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
 	return &pb.BuildInteractiveCommandResponse{}, nil
 }
+func (c *claudeFakeClient) ResolveInteractiveSessionID(context.Context, *pb.ResolveInteractiveSessionIDRequest) (*pb.ResolveInteractiveSessionIDResponse, error) {
+	return &pb.ResolveInteractiveSessionIDResponse{}, nil
+}
 func (c *claudeFakeClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
 	return &pb.ListIgnoredDirtyFilesResponse{}, nil
 }
@@ -197,6 +200,27 @@ func claudeAgentClients() map[string]agent.AgentRunnerClient {
 	return map[string]agent.AgentRunnerClient{"claude": &claudeFakeClient{}}
 }
 
+type codexRecordingClient struct {
+	claudeFakeClient
+	lastTurnReq *pb.LastTurnIsUserRequest
+}
+
+func (c *codexRecordingClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
+	return &pb.PluginInfo{Name: "codex"}, nil
+}
+
+func (c *codexRecordingClient) HasQuestionPrompt(context.Context, *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
+	return &pb.HasQuestionPromptResponse{HasPrompt: true}, nil
+}
+
+func (c *codexRecordingClient) LastTurnIsUser(_ context.Context, req *pb.LastTurnIsUserRequest) (*pb.LastTurnIsUserResponse, error) {
+	c.lastTurnReq = &pb.LastTurnIsUserRequest{
+		WorkDir:        req.GetWorkDir(),
+		AgentSessionId: req.GetAgentSessionId(),
+	}
+	return &pb.LastTurnIsUserResponse{}, nil
+}
+
 // --- mock AgentChatStore ---
 
 type mockChatStore struct {
@@ -224,6 +248,9 @@ func (m *mockChatStore) UpdateTitleByAgentSessionID(_ context.Context, _, _ stri
 	return nil
 }
 func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
+	return nil
+}
+func (m *mockChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
 func (m *mockChatStore) DeleteByAgentSessionID(_ context.Context, _ string) error { return nil }
@@ -482,6 +509,45 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 	}
 }
 
+func TestTmuxStatusPoller_DeadSessionStopsTracker(t *testing.T) {
+	tracker := NewTracker()
+	agentSessionID := "claude-dead-working"
+	tmuxName := "boss-test-dead-working"
+
+	// Seed the exact stale-UI shape: a previous poll marked the chat working,
+	// then the tmux session disappeared before the next display recompute.
+	tracker.Update(agentSessionID, pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	var updates atomic.Int32
+	tracker.SetOnUpdate(func(string) { updates.Add(1) })
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{},
+		captures: map[string]string{},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected stopped tracker entry after dead tmux session")
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_STOPPED {
+		t.Errorf("tracker status = %v, want STOPPED", entry.Status)
+	}
+	if got := updates.Load(); got != 1 {
+		t.Errorf("status-update hook calls = %d, want 1", got)
+	}
+}
+
 // TestTmuxStatusPoller_RediscoversDroppedChat proves the poller is self-healing:
 // a chat present in the DB with a live tmux session must be polled even when it
 // is absent from prevCaptures. This guards the regression where a transient
@@ -679,6 +745,42 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 	}
 }
 
+func TestTmuxStatusPoller_LastTurnIsUserUsesProviderSessionID(t *testing.T) {
+	tmuxName := "boss-provider-status"
+	providerSessionID := "codex-real-id"
+	sessionID := "sess-provider-status"
+	worktreePath := "/tmp/boss-provider-status-wt"
+
+	chat := &models.AgentChat{
+		AgentSessionID:    "boss-chat-id",
+		ProviderSessionID: &providerSessionID,
+		AgentName:         "codex",
+		SessionID:         sessionID,
+		TmuxSessionName:   &tmuxName,
+	}
+	sessionStore := &mockSessionStore{sessions: map[string]*models.Session{
+		sessionID: {ID: sessionID, WorktreePath: worktreePath},
+	}}
+	client := &codexRecordingClient{}
+	poller := NewTmuxStatusPoller(NewTracker(), nil, sessionStore, nil, map[string]agent.AgentRunnerClient{
+		"codex": client,
+	}, zerolog.Nop())
+
+	paneShowsQuestion, _ := poller.questionState(context.Background(), chat, "codex question")
+	if !paneShowsQuestion {
+		t.Fatal("expected pane question prompt")
+	}
+	if client.lastTurnReq == nil {
+		t.Fatal("expected LastTurnIsUser request")
+	}
+	if got := client.lastTurnReq.GetAgentSessionId(); got != "codex-real-id" {
+		t.Fatalf("LastTurnIsUser AgentSessionId = %q, want codex-real-id", got)
+	}
+	if got := client.lastTurnReq.GetWorkDir(); got != worktreePath {
+		t.Fatalf("LastTurnIsUser WorkDir = %q, want %q", got, worktreePath)
+	}
+}
+
 func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-boot-dead"
@@ -869,6 +971,9 @@ func (c *recordingAgentClient) ConfigureFinalizeHook(context.Context, *pb.Config
 }
 func (c *recordingAgentClient) BuildInteractiveCommand(context.Context, *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
 	return &pb.BuildInteractiveCommandResponse{}, nil
+}
+func (c *recordingAgentClient) ResolveInteractiveSessionID(context.Context, *pb.ResolveInteractiveSessionIDRequest) (*pb.ResolveInteractiveSessionIDResponse, error) {
+	return &pb.ResolveInteractiveSessionIDResponse{}, nil
 }
 func (c *recordingAgentClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
 	return &pb.ListIgnoredDirtyFilesResponse{}, nil

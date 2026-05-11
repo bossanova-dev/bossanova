@@ -244,7 +244,7 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
-	outcome, tmuxName, errorCode, err := c.commandHandler.WakeChat(ctx, req.GetAgentSessionId(), req.GetForceFresh())
+	outcome, tmuxName, reason, errorCode, err := c.commandHandler.WakeChat(ctx, req.GetAgentSessionId(), req.GetForceFresh())
 	if err != nil {
 		return commandErrCode(cmdID, err.Error(), errorCode)
 	}
@@ -256,6 +256,7 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 				WakeChat: &pb.WakeChatResult{
 					Outcome:         outcome,
 					TmuxSessionName: tmuxName,
+					Reason:          reason,
 				},
 			},
 		},

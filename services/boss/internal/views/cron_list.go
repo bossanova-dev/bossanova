@@ -33,6 +33,7 @@ type cronReposLoadedMsg struct {
 
 // cronJobDeletedMsg carries the result of DeleteCronJob.
 type cronJobDeletedMsg struct {
+	id  string
 	err error
 }
 
@@ -80,8 +81,9 @@ type CronListModel struct {
 	// The bit is set on 'r' press and cleared when cronRunNowMsg arrives.
 	// Mirrors the duration of the RPC call (worktree creation), not the
 	// full session lifetime.
-	running map[string]bool
-	spinner spinner.Model
+	running  map[string]bool
+	deleting map[string]bool
+	spinner  spinner.Model
 
 	// transient status message (toast)
 	status       string
@@ -97,12 +99,13 @@ type CronListModel struct {
 // NewCronListModel creates a CronListModel wired to the daemon client.
 func NewCronListModel(c client.BossClient, ctx context.Context) CronListModel {
 	return CronListModel{
-		client:  c,
-		ctx:     ctx,
-		repos:   make(map[string]*pb.Repo),
-		running: make(map[string]bool),
-		spinner: newStatusSpinner(),
-		table:   newBossTable(nil, nil, 0),
+		client:   c,
+		ctx:      ctx,
+		repos:    make(map[string]*pb.Repo),
+		running:  make(map[string]bool),
+		deleting: make(map[string]bool),
+		spinner:  newStatusSpinner(),
+		table:    newBossTable(nil, nil, 0),
 	}
 }
 
@@ -160,11 +163,13 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case cronJobDeletedMsg:
+		delete(m.deleting, msg.id)
 		if msg.err != nil {
 			m.setStatus(fmt.Sprintf("Delete failed: %v", msg.err), true)
 		} else {
 			m.setStatus("Deleted.", false)
 		}
+		m.rebuildTable()
 		return m, m.fetchJobs()
 
 	case cronJobUpdatedMsg:
@@ -192,12 +197,9 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		// Re-render so the per-row Running… frames animate. Skipping the
-		// rebuild when nothing is running keeps idle screens cheap. We also
-		// keep animating when any visible row's server-derived status is
-		// RUNNING, so the spinner stays alive across polls even when the
-		// local m.running bridge has cleared.
-		if len(m.running) > 0 || hasRunningStatus(m.jobs) {
+		// Re-render so per-row pending frames animate while local RPCs or
+		// server-derived cron runs remain active.
+		if len(m.running) > 0 || len(m.deleting) > 0 || hasRunningStatus(m.jobs) {
 			m.rebuildTable()
 		}
 		return m, cmd
@@ -303,9 +305,11 @@ func (m CronListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		id := job.Id
+		m.deleting[id] = true
+		m.rebuildTable()
 		return m, func() tea.Msg {
 			err := m.client.DeleteCronJob(m.ctx, id)
-			return cronJobDeletedMsg{err: err}
+			return cronJobDeletedMsg{id: id, err: err}
 		}
 	case "n", "esc":
 		m.confirming = false
@@ -395,6 +399,8 @@ func (m *CronListModel) rebuildTable() {
 		// spinner.View() already emits a trailing space — see home.go:570
 		// where it's appended directly to "Archiving...".
 		switch {
+		case m.deleting[job.Id]:
+			statuses[i] = renderRowPendingStatus(m.spinner, "deleting")
 		case m.running[job.Id] || job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_RUNNING:
 			statuses[i] = m.spinner.View() + "Running"
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_FAILED:

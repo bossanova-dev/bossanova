@@ -45,6 +45,9 @@ func (c *listAgentsFakeClient) ConfigureFinalizeHook(context.Context, *bossanova
 func (c *listAgentsFakeClient) BuildInteractiveCommand(context.Context, *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }
+func (c *listAgentsFakeClient) ResolveInteractiveSessionID(context.Context, *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
+}
 func (c *listAgentsFakeClient) ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }

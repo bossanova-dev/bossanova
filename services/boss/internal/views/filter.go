@@ -3,6 +3,7 @@ package views
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -98,11 +99,20 @@ func (f *listFilter) Deactivate() {
 }
 
 // Update forwards a message to the textinput. Callers route messages here
-// only while Active() is true.
-func (f *listFilter) Update(msg tea.Msg) tea.Cmd {
+// only while Active() is true. The bool reports whether the effective query
+// changed after textinput processed the message.
+func (f *listFilter) Update(msg tea.Msg) (tea.Cmd, bool) {
+	prev := f.Query()
+	if k, ok := msg.(tea.KeyPressMsg); ok {
+		key := k.Key()
+		if key.Text == "" && key.Mod == 0 && unicode.IsPrint(key.Code) {
+			key.Text = string(key.Code)
+			msg = tea.KeyPressMsg(key)
+		}
+	}
 	var cmd tea.Cmd
 	f.input, cmd = f.input.Update(msg)
-	return cmd
+	return cmd, f.Query() != prev
 }
 
 // SetCounts records the matched and total row counts used by View().

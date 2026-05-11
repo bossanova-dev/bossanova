@@ -1,7 +1,10 @@
 package views
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 )
 
@@ -14,4 +17,8 @@ func bossKeyMap() table.KeyMap {
 		key.WithHelp("ctrl+d", "½ page down"),
 	)
 	return km
+}
+
+func renderRowPendingStatus(sp spinner.Model, label string) string {
+	return styleStatusWarning.Render(strings.TrimRight(sp.View(), " ") + " " + label)
 }

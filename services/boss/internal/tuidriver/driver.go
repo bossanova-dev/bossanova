@@ -155,6 +155,12 @@ func (d *Driver) SendString(s string) error {
 	return err
 }
 
+// PasteString writes bracketed paste bytes to the PTY.
+func (d *Driver) PasteString(s string) error {
+	_, err := d.pty.Write([]byte("\x1b[200~" + s + "\x1b[201~"))
+	return err
+}
+
 // SendEnter sends a carriage return.
 func (d *Driver) SendEnter() error {
 	return d.SendKey('\r')

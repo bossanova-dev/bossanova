@@ -582,24 +582,19 @@ func (r *ringBuffer) Len() int {
 	return r.count
 }
 
-// ensureTerm returns env with TERM set to xterm-256color when it is absent or
-// set to an unusable value ("" or "dumb"). tmux exits immediately if it cannot
-// initialise its terminal driver, which happens in CI environments where TERM
-// is unset or dumb. A copy of env is returned to avoid mutating the caller's
-// slice.
+// ensureTerm returns env with TERM set to xterm-256color. The attach process is
+// a synthetic PTY client, so a broadly available terminfo entry is more
+// reliable than inheriting host-specific terminals such as xterm-ghostty. A
+// copy of env is returned to avoid mutating the caller's slice.
 func ensureTerm(env []string) []string {
 	for i, e := range env {
 		if !strings.HasPrefix(e, "TERM=") {
 			continue
 		}
-		val := strings.TrimPrefix(e, "TERM=")
-		if val == "" || val == "dumb" {
-			out := make([]string, len(env))
-			copy(out, env)
-			out[i] = "TERM=xterm-256color"
-			return out
-		}
-		return env
+		out := make([]string, len(env))
+		copy(out, env)
+		out[i] = "TERM=xterm-256color"
+		return out
 	}
 	return append(append([]string(nil), env...), "TERM=xterm-256color")
 }

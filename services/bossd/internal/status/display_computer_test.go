@@ -110,6 +110,14 @@ func TestRecompute_Matrix(t *testing.T) {
 			wantSpinner: true,
 		},
 		{
+			name:        "chat working over PR conflict keeps working label with danger intent",
+			chat:        pb.ChatStatus_CHAT_STATUS_WORKING,
+			display:     &DisplayEntry{Status: vcs.DisplayStatusConflict},
+			wantLabel:   "working",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			wantSpinner: true,
+		},
+		{
 			name:        "active running workflow wins over repairing",
 			workflow:    &db.CreateWorkflowParams{PlanPath: "/p", MaxLegs: 4},
 			wfStatus:    models.WorkflowStatusRunning,

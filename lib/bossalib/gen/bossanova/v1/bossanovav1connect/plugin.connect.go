@@ -109,6 +109,9 @@ const (
 	// AgentRunnerServiceBuildInteractiveCommandProcedure is the fully-qualified name of the
 	// AgentRunnerService's BuildInteractiveCommand RPC.
 	AgentRunnerServiceBuildInteractiveCommandProcedure = "/bossanova.v1.AgentRunnerService/BuildInteractiveCommand"
+	// AgentRunnerServiceResolveInteractiveSessionIDProcedure is the fully-qualified name of the
+	// AgentRunnerService's ResolveInteractiveSessionID RPC.
+	AgentRunnerServiceResolveInteractiveSessionIDProcedure = "/bossanova.v1.AgentRunnerService/ResolveInteractiveSessionID"
 	// AgentRunnerServiceListIgnoredDirtyFilesProcedure is the fully-qualified name of the
 	// AgentRunnerService's ListIgnoredDirtyFiles RPC.
 	AgentRunnerServiceListIgnoredDirtyFilesProcedure = "/bossanova.v1.AgentRunnerService/ListIgnoredDirtyFiles"
@@ -777,6 +780,10 @@ type AgentRunnerServiceClient interface {
 	// Build the argv for an interactive (tmux-hosted) launch. argv MUST
 	// tee stdout/stderr to log_path so AttachSession can read it.
 	BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error)
+	// ResolveInteractiveSessionID discovers the provider-owned session ID for an
+	// interactive tmux launch. Agents that accept caller-provided IDs may return
+	// requested_session_id. Agents like Codex scan their transcript store.
+	ResolveInteractiveSessionID(context.Context, *connect.Request[v1.ResolveInteractiveSessionIDRequest]) (*connect.Response[v1.ResolveInteractiveSessionIDResponse], error)
 	// Files in workDir that the agent owns (e.g. .claude/settings.local.json).
 	// bossd unions these into git-status filtering.
 	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
@@ -850,6 +857,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("BuildInteractiveCommand")),
 			connect.WithClientOptions(opts...),
 		),
+		resolveInteractiveSessionID: connect.NewClient[v1.ResolveInteractiveSessionIDRequest, v1.ResolveInteractiveSessionIDResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceResolveInteractiveSessionIDProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("ResolveInteractiveSessionID")),
+			connect.WithClientOptions(opts...),
+		),
 		listIgnoredDirtyFiles: connect.NewClient[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse](
 			httpClient,
 			baseURL+AgentRunnerServiceListIgnoredDirtyFilesProcedure,
@@ -885,18 +898,19 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 
 // agentRunnerServiceClient implements AgentRunnerServiceClient.
 type agentRunnerServiceClient struct {
-	getInfo                 *connect.Client[v1.AgentRunnerServiceGetInfoRequest, v1.AgentRunnerServiceGetInfoResponse]
-	startRun                *connect.Client[v1.StartAgentRunRequest, v1.StartAgentRunResponse]
-	stopRun                 *connect.Client[v1.StopAgentRunRequest, v1.StopAgentRunResponse]
-	isRunning               *connect.Client[v1.IsAgentRunningRequest, v1.IsAgentRunningResponse]
-	exitStatus              *connect.Client[v1.AgentExitStatusRequest, v1.AgentExitStatusResponse]
-	configureFinalizeHook   *connect.Client[v1.ConfigureFinalizeHookRequest, v1.ConfigureFinalizeHookResponse]
-	buildInteractiveCommand *connect.Client[v1.BuildInteractiveCommandRequest, v1.BuildInteractiveCommandResponse]
-	listIgnoredDirtyFiles   *connect.Client[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse]
-	getChatTitle            *connect.Client[v1.GetChatTitleRequest, v1.GetChatTitleResponse]
-	hasQuestionPrompt       *connect.Client[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse]
-	lastTurnIsUser          *connect.Client[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse]
-	transcriptExists        *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
+	getInfo                     *connect.Client[v1.AgentRunnerServiceGetInfoRequest, v1.AgentRunnerServiceGetInfoResponse]
+	startRun                    *connect.Client[v1.StartAgentRunRequest, v1.StartAgentRunResponse]
+	stopRun                     *connect.Client[v1.StopAgentRunRequest, v1.StopAgentRunResponse]
+	isRunning                   *connect.Client[v1.IsAgentRunningRequest, v1.IsAgentRunningResponse]
+	exitStatus                  *connect.Client[v1.AgentExitStatusRequest, v1.AgentExitStatusResponse]
+	configureFinalizeHook       *connect.Client[v1.ConfigureFinalizeHookRequest, v1.ConfigureFinalizeHookResponse]
+	buildInteractiveCommand     *connect.Client[v1.BuildInteractiveCommandRequest, v1.BuildInteractiveCommandResponse]
+	resolveInteractiveSessionID *connect.Client[v1.ResolveInteractiveSessionIDRequest, v1.ResolveInteractiveSessionIDResponse]
+	listIgnoredDirtyFiles       *connect.Client[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse]
+	getChatTitle                *connect.Client[v1.GetChatTitleRequest, v1.GetChatTitleResponse]
+	hasQuestionPrompt           *connect.Client[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse]
+	lastTurnIsUser              *connect.Client[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse]
+	transcriptExists            *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
 }
 
 // GetInfo calls bossanova.v1.AgentRunnerService.GetInfo.
@@ -932,6 +946,11 @@ func (c *agentRunnerServiceClient) ConfigureFinalizeHook(ctx context.Context, re
 // BuildInteractiveCommand calls bossanova.v1.AgentRunnerService.BuildInteractiveCommand.
 func (c *agentRunnerServiceClient) BuildInteractiveCommand(ctx context.Context, req *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error) {
 	return c.buildInteractiveCommand.CallUnary(ctx, req)
+}
+
+// ResolveInteractiveSessionID calls bossanova.v1.AgentRunnerService.ResolveInteractiveSessionID.
+func (c *agentRunnerServiceClient) ResolveInteractiveSessionID(ctx context.Context, req *connect.Request[v1.ResolveInteractiveSessionIDRequest]) (*connect.Response[v1.ResolveInteractiveSessionIDResponse], error) {
+	return c.resolveInteractiveSessionID.CallUnary(ctx, req)
 }
 
 // ListIgnoredDirtyFiles calls bossanova.v1.AgentRunnerService.ListIgnoredDirtyFiles.
@@ -984,6 +1003,10 @@ type AgentRunnerServiceHandler interface {
 	// Build the argv for an interactive (tmux-hosted) launch. argv MUST
 	// tee stdout/stderr to log_path so AttachSession can read it.
 	BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error)
+	// ResolveInteractiveSessionID discovers the provider-owned session ID for an
+	// interactive tmux launch. Agents that accept caller-provided IDs may return
+	// requested_session_id. Agents like Codex scan their transcript store.
+	ResolveInteractiveSessionID(context.Context, *connect.Request[v1.ResolveInteractiveSessionIDRequest]) (*connect.Response[v1.ResolveInteractiveSessionIDResponse], error)
 	// Files in workDir that the agent owns (e.g. .claude/settings.local.json).
 	// bossd unions these into git-status filtering.
 	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
@@ -1053,6 +1076,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("BuildInteractiveCommand")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceResolveInteractiveSessionIDHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceResolveInteractiveSessionIDProcedure,
+		svc.ResolveInteractiveSessionID,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("ResolveInteractiveSessionID")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentRunnerServiceListIgnoredDirtyFilesHandler := connect.NewUnaryHandler(
 		AgentRunnerServiceListIgnoredDirtyFilesProcedure,
 		svc.ListIgnoredDirtyFiles,
@@ -1099,6 +1128,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceConfigureFinalizeHookHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceBuildInteractiveCommandProcedure:
 			agentRunnerServiceBuildInteractiveCommandHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceResolveInteractiveSessionIDProcedure:
+			agentRunnerServiceResolveInteractiveSessionIDHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceListIgnoredDirtyFilesProcedure:
 			agentRunnerServiceListIgnoredDirtyFilesHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceGetChatTitleProcedure:
@@ -1144,6 +1175,10 @@ func (UnimplementedAgentRunnerServiceHandler) ConfigureFinalizeHook(context.Cont
 
 func (UnimplementedAgentRunnerServiceHandler) BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.BuildInteractiveCommand is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) ResolveInteractiveSessionID(context.Context, *connect.Request[v1.ResolveInteractiveSessionIDRequest]) (*connect.Response[v1.ResolveInteractiveSessionIDResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ResolveInteractiveSessionID is not implemented"))
 }
 
 func (UnimplementedAgentRunnerServiceHandler) ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error) {

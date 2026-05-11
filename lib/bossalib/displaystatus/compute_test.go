@@ -33,6 +33,33 @@ func TestCompute(t *testing.T) {
 			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
 		},
 		{
+			name: "chat WORKING over PR conflict uses danger intent",
+			in: Input{
+				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+			},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
+			name: "chat WORKING over PR rejected uses danger intent",
+			in: Input{
+				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_REJECTED},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+			},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
+			name: "chat WORKING over checking with requested changes uses danger intent",
+			in: Input{
+				Session: &pb.Session{
+					DisplayStatus:              pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+					DisplayHasChangesRequested: true,
+				},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_WORKING,
+			},
+			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER, Spinner: true},
+		},
+		{
 			name: "workflow RUNNING with leg/max",
 			in: Input{
 				Session: &pb.Session{
@@ -170,7 +197,7 @@ func TestCompute(t *testing.T) {
 				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT},
 				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
 			},
-			want: Output{Label: "conflict", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
+			want: Output{Label: "⨯ conflict", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER},
 		},
 		{
 			name: "PR REJECTED danger",
@@ -194,7 +221,7 @@ func TestCompute(t *testing.T) {
 				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_MERGED},
 				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
 			},
-			want: Output{Label: "✔ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
+			want: Output{Label: "✓ merged", Intent: pb.DisplayIntent_DISPLAY_INTENT_MUTED},
 		},
 		{
 			name: "PR CLOSED muted",

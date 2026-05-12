@@ -1,0 +1,48 @@
+---
+slug: /
+title: Introduction
+description: Bossanova manages multiple AI coding-agent sessions from one terminal, across multiple repositories.
+---
+
+import AsciinemaDemo from '@site/src/components/AsciinemaDemo';
+
+# Bossanova
+
+Manage multiple AI coding-agent sessions from one terminal.
+
+<div className="introDemo" aria-label="Bossanova terminal demo">
+  <AsciinemaDemo
+    src="/img/screenshots/boss-home-demo.cast"
+    cols={110}
+    rows={18}
+    speed={1.2}
+    idleTimeLimit={1}
+  />
+</div>
+
+## What you get
+
+- **`boss`:** Terminal UI (TUI) for managing coding-agent sessions across repositories.
+- **`bossd`:** Background daemon handling session lifecycle and git operations.
+- **Boss Cloud:** Optional managed service for driving the same sessions from a browser. See [Web App](./guides/web.md).
+
+`bossd` supports plugins (`bossd-plugin-*` binaries) for autonomous PR
+handling, dependency updates, CI repair, and other automation. The
+agents themselves also run as plugins. Each agent plugin owns the
+subprocess lifecycle for one CLI. The bundled `claude` plugin runs
+Claude Code, and the bundled `codex` plugin runs OpenAI Codex CLI.
+`opencode` remains on the roadmap.
+The daemon needs at least one agent plugin loaded to start sessions.
+
+## Where to next
+
+- **[Installation](./install.md):** Install via Homebrew or build from source.
+- **[Quick Start](./quick-start.md):** Add a repo and launch your first session.
+- **[How It Works](./how-it-works.md):** Worktrees, the daemon, and the plugin model.
+
+## Talk to us
+
+- **GitHub Issues:** [bossanova-dev/bossanova/issues](https://github.com/bossanova-dev/bossanova/issues) for bug reports and feature requests.
+- **GitHub Discussions:** [bossanova-dev/bossanova/discussions](https://github.com/bossanova-dev/bossanova/discussions) for questions and ideas.
+- **Email:** `dave@recurser.com`.
+- **From inside the TUI:** press `ctrl+b` from anywhere to open the built-in bug report form. See [Reporting bugs](./help/troubleshooting.md#reporting-bugs) for what gets included.

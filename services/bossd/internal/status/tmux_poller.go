@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,6 +143,8 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			continue
 		}
 
+		p.refreshChatTitle(ctx, chat)
+
 		// Resolve question state before taking p.mu — questionState
 		// may issue plugin RPCs / DB queries and we hold the mutex only
 		// briefly below.
@@ -177,6 +180,64 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 		p.mu.Unlock()
 
 		p.tracker.Update(agentSessionID, status, now)
+	}
+}
+
+// refreshChatTitle asks the chat's AgentRunner plugin to extract a chat
+// title from the on-disk transcript and persists it whenever the stored
+// title is still a placeholder ("" or "New chat"). Run from every poll
+// tick on the active chat set: the plugin call is cheap (a JSONL scan over
+// the first ~50 lines) and idempotent (shouldRefreshChatTitle gates the
+// path so chats with real titles never hit the plugin again).
+//
+// This is the daemon-side counterpart to the TUI's best-effort title
+// backfill — it's what makes Codex chats render with their first user
+// message instead of "New chat" in the web UI (which only reads
+// chat.Title from the database, with no filesystem fallback).
+func (p *TmuxStatusPoller) refreshChatTitle(ctx context.Context, chat *models.AgentChat) {
+	if chat == nil || !shouldRefreshChatTitle(chat.Title) || p.sessions == nil {
+		return
+	}
+	client, ok := p.agentClients[chat.AgentName]
+	if !ok {
+		p.logMissingAgentOnce(chat.AgentName)
+		return
+	}
+	sess, err := p.sessions.Get(ctx, chat.SessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" {
+		return
+	}
+	resp, err := client.GetChatTitle(ctx, &pb.GetChatTitleRequest{
+		WorkDir:   sess.WorktreePath,
+		SessionId: chatResumeSessionID(chat),
+	})
+	if err != nil || resp == nil || !resp.GetSupported() {
+		return
+	}
+	title := strings.TrimSpace(resp.GetTitle())
+	if title == "" || title == strings.TrimSpace(chat.Title) {
+		return
+	}
+	if err := p.chats.UpdateTitleByAgentSessionID(ctx, chat.AgentSessionID, title); err != nil {
+		p.logger.Warn().Err(err).
+			Str("agentSessionID", chat.AgentSessionID).
+			Msg("tmux poller: failed to update chat title")
+		return
+	}
+	chat.Title = title
+}
+
+// shouldRefreshChatTitle reports whether a stored chat title is still a
+// placeholder that we should try to overwrite with the first real user
+// message. We only refresh empty strings and the literal "New chat"
+// placeholder (case- and whitespace-insensitive). Any other value is
+// treated as a user-customised title and left alone.
+func shouldRefreshChatTitle(title string) bool {
+	switch strings.ToLower(strings.TrimSpace(title)) {
+	case "", "new chat":
+		return true
+	default:
+		return false
 	}
 }
 

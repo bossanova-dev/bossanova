@@ -1428,6 +1428,31 @@ func TestNewSession_AgentSelect_EnterSetsInitialAgent(t *testing.T) {
 	}
 }
 
+func TestNewSession_AgentSelect_DefaultsToPreferredAgent(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+			{Name: "codex", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m.SetPreferredAgent("codex")
+
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseAgentSelect {
+		t.Fatalf("expected agent-select phase, got %d", m.phase)
+	}
+
+	m = sendSpecialKey(t, m, tea.KeyEnter)
+
+	if m.initialAgent != "codex" {
+		t.Errorf("initialAgent = %q, want codex", m.initialAgent)
+	}
+}
+
 func TestNewSession_AgentSelect_ViewRendersAgentNames(t *testing.T) {
 	sc := &stubClient{
 		repos: oneRepo(),

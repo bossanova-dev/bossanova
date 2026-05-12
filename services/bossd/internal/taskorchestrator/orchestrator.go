@@ -244,18 +244,22 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	externalID := task.GetExternalId()
 
 	// Dedup: skip if we've already seen this external ID. Most statuses
-	// (Pending/InProgress/Completed/Failed/Skipped) are terminal — a
-	// failed or completed task is not retried automatically, so we don't
-	// re-fire rejected merges or previously-rejected libraries every poll.
+	// (Pending/InProgress/Completed/Skipped) are terminal for automatic
+	// reprocessing, so we don't re-fire sessions or previously-rejected
+	// libraries every poll.
 	//
-	// Orphaned is the one exception: FailOrphanedMappings flips
-	// Pending/InProgress to Orphaned on daemon restart because the
-	// driving goroutines died. Those tasks deserve another shot, so we
-	// delete the stale row and let routeTask insert a fresh one. The row
-	// must be deleted (not updated) because external_id is UNIQUE.
+	// Orphaned is one exception: FailOrphanedMappings flips Pending/InProgress
+	// to Orphaned on daemon restart because the driving goroutines died.
+	// Failed AUTO_MERGE is another: the dependabot plugin only emits the task
+	// after re-checking that the PR is currently green and mergeable, so a
+	// previous transient merge failure should not permanently block it. For
+	// retryable statuses, delete the stale row and let routeTask insert a fresh
+	// one. The row must be deleted (not updated) because external_id is UNIQUE.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
 	if err == nil && existing != nil {
-		if existing.Status != models.TaskMappingStatusOrphaned {
+		retryFailedAutoMerge := existing.Status == models.TaskMappingStatusFailed &&
+			task.GetAction() == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE
+		if existing.Status != models.TaskMappingStatusOrphaned && !retryFailedAutoMerge {
 			o.logger.Info().
 				Str("external_id", externalID).
 				Int("status", int(existing.Status)).
@@ -272,7 +276,9 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 		o.logger.Info().
 			Str("external_id", externalID).
 			Str("mapping_id", existing.ID).
-			Msg("re-processing previously orphaned task")
+			Str("repo", repo.displayName).
+			Int("previous_status", int(existing.Status)).
+			Msg("re-processing stale task mapping")
 	}
 
 	o.enqueue(ctx, task, repo, pluginName)

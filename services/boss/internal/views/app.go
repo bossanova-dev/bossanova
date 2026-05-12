@@ -8,6 +8,7 @@ import (
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -80,7 +81,7 @@ func (a *App) SetInitialView(v View) {
 	a.activeView = v
 	switch v {
 	case ViewNewSession:
-		a.newSession = NewNewSessionModel(a.client, a.ctx)
+		a.newSession = a.newSessionModel()
 	case ViewRepoAdd:
 		a.repoAdd = NewRepoAddModel(a.client, a.ctx)
 	case ViewRepoList:
@@ -99,6 +100,25 @@ func (a *App) SetAttachSession(sessionID, resumeID string) {
 // falls back automatically).
 func (a *App) SetInitialAgent(name string) {
 	a.newSession.SetInitialAgent(name)
+}
+
+func (a App) newSessionModel() NewSessionModel {
+	m := NewNewSessionModel(a.client, a.ctx)
+	settings, err := config.Load()
+	if err == nil {
+		m.SetPreferredAgent(settings.DefaultAgent)
+	}
+	m.SetAgentSelectionHandler(saveDefaultAgent)
+	return m
+}
+
+func saveDefaultAgent(name string) error {
+	settings, err := config.Load()
+	if err != nil {
+		return err
+	}
+	settings.DefaultAgent = name
+	return config.Save(settings)
 }
 
 func (a App) Init() tea.Cmd {
@@ -184,7 +204,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.activeView = msg.view
 		switch msg.view { //nolint:exhaustive // ViewBugReport is pushed via ctrl+b, not switchViewMsg
 		case ViewNewSession:
-			a.newSession = NewNewSessionModel(a.client, a.ctx)
+			a.newSession = a.newSessionModel()
 			a.newSession.width = a.width
 			return a, a.newSession.Init()
 		case ViewChatPicker:

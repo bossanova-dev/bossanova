@@ -129,6 +129,7 @@ func TestSessionToProto(t *testing.T) {
 		BaseBranch:        "main",
 		State:             machine.ImplementingPlan,
 		AgentSessionID:    &agentSessionID,
+		AgentName:         "codex",
 		PRNumber:          &prNum,
 		PRURL:             &prURL,
 		LastCheckState:    machine.CheckStatePassed,
@@ -152,6 +153,9 @@ func TestSessionToProto(t *testing.T) {
 	}
 	if p.AgentSessionId == nil || *p.AgentSessionId != "claude-123" {
 		t.Errorf("AgentSessionId = %v", p.AgentSessionId)
+	}
+	if p.AgentName != "codex" {
+		t.Errorf("AgentName = %q", p.AgentName)
 	}
 	if p.PrNumber == nil || *p.PrNumber != 42 {
 		t.Errorf("PrNumber = %v", p.PrNumber)

@@ -1,0 +1,76 @@
+/* Bossanova docs: design tokens.
+ * Mirrors services/web/src/index.css. Dark by default; light via
+ * [data-theme='light']. Tokens map onto Docusaurus's --ifm-* vars.
+ */
+
+:root,
+[data-theme='dark'] {
+  /* Brand */
+  --ifm-color-primary: #4b9df8;
+  --ifm-color-primary-dark: #2c8af6;
+  --ifm-color-primary-darker: #1d80f5;
+  --ifm-color-primary-darkest: #086abf;
+  --ifm-color-primary-light: #74b5fa;
+  --ifm-color-primary-lighter: #84befb;
+  --ifm-color-primary-lightest: #b3d6fc;
+
+  /* Surfaces */
+  --ifm-background-color: #0c0e14;
+  --ifm-background-surface-color: #12151c;
+
+  /* Text */
+  --ifm-color-content: #b3bcd0;
+  --ifm-color-content-secondary: #6b7387;
+  --ifm-heading-color: #f3f5fa;
+
+  /* Code */
+  --ifm-code-background: #1a1f2b;
+  --ifm-code-font-size: 90%;
+  --docusaurus-highlighted-code-line-bg: rgba(75, 157, 248, 0.12);
+
+  /* Borders / TOC */
+  --ifm-toc-border-color: #232838;
+  --ifm-color-emphasis-200: #1c2030;
+  --ifm-color-emphasis-300: #232838;
+
+  /* Type */
+  --ifm-font-family-base:
+    -apple-system, BlinkMacSystemFont, 'Inter', system-ui, 'Segoe UI', Roboto, 'Helvetica Neue',
+    sans-serif;
+  --ifm-font-family-monospace:
+    'JetBrains Mono', 'SF Mono', ui-monospace, 'Fira Code', Menlo, Consolas, monospace;
+  --ifm-heading-font-family: var(--ifm-font-family-base);
+}
+
+[data-theme='light'] {
+  --ifm-background-color: #fafafa;
+  --ifm-background-surface-color: #ffffff;
+  --ifm-color-content: #2b3142;
+  --ifm-color-content-secondary: #5b6378;
+  --ifm-heading-color: #0c0e14;
+  --ifm-code-background: #f1f3f8;
+  --ifm-toc-border-color: #e3e6ee;
+  --ifm-color-emphasis-200: #eef0f5;
+  --ifm-color-emphasis-300: #e3e6ee;
+}
+
+.introDemo {
+  margin: 2rem 0;
+  overflow: hidden;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+  background: #0a0d13;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 24%);
+}
+
+.asciinemaDemo,
+.asciinemaDemo .ap-player,
+.asciinemaDemo .ap-wrapper {
+  width: 100%;
+  background: #0a0d13;
+  border: 0;
+}
+
+.asciinemaDemo .ap-control-bar {
+  display: none !important;
+}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	creackpty "github.com/creack/pty/v2"
+	"golang.org/x/term"
 )
 
 // TestPTYCommandDetectsDetach runs PTYCommand under a fake stdin/stdout PTY
@@ -36,6 +37,13 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 			master, slave, err := creackpty.Open()
 			if err != nil {
 				t.Fatalf("open pty: %v", err)
+			}
+			// Put the fake terminal in raw mode before Run starts. If a
+			// loaded race job writes Ctrl-X before Run reaches MakeRaw,
+			// canonical mode can hold the byte indefinitely.
+			oldState, err := term.MakeRaw(int(slave.Fd()))
+			if err != nil {
+				t.Fatalf("make test pty raw: %v", err)
 			}
 
 			mgr := NewManager()
@@ -71,6 +79,7 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 				case <-time.After(15 * time.Second):
 					t.Logf("Run did not return within 15s of cat kill — closing PTY anyway")
 				}
+				_ = term.Restore(int(slave.Fd()), oldState)
 				_ = slave.Close()
 				_ = master.Close()
 			}()

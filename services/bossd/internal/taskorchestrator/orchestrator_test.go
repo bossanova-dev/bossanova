@@ -1342,11 +1342,74 @@ func TestProcessTask_OrphanedMappingIsReprocessed(t *testing.T) {
 	}
 }
 
-// TestProcessTask_FailedMappingStillSkipped guards the original dedup
-// invariant: a genuinely Failed mapping (not orphaned by restart) must
-// not be retried automatically, otherwise we re-fire rejected merges
-// and previously-rejected libraries every poll.
-func TestProcessTask_FailedMappingStillSkipped(t *testing.T) {
+func TestProcessTask_FailedAutoMergeMappingRetried(t *testing.T) {
+	var (
+		mu             sync.Mutex
+		deletedID      string
+		createdMapping bool
+	)
+	created := make(chan struct{}, 1)
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{
+				"dependabot:pr:repo:888": {
+					ID:         "tm-failed",
+					ExternalID: "dependabot:pr:repo:888",
+					Status:     models.TaskMappingStatusFailed,
+				},
+			},
+			deleteFn: func(_ context.Context, id string) error {
+				mu.Lock()
+				deletedID = id
+				mu.Unlock()
+				return nil
+			},
+			createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				mu.Lock()
+				createdMapping = true
+				mu.Unlock()
+				select {
+				case created <- struct{}{}:
+				default:
+				}
+				return &models.TaskMapping{
+					ID:         "tm-new",
+					ExternalID: params.ExternalID,
+					PluginName: params.PluginName,
+					RepoID:     params.RepoID,
+					Status:     models.TaskMappingStatusPending,
+				}, nil
+			},
+		}
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error { return nil },
+		}
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:888",
+		Title:      "Bump bar",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	select {
+	case <-created:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task mapping create")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if deletedID != "tm-failed" {
+		t.Errorf("expected stale failed AUTO_MERGE mapping to be deleted, got deletedID=%q", deletedID)
+	}
+	if !createdMapping {
+		t.Error("expected new mapping to be created after failed AUTO_MERGE retry")
+	}
+}
+
+func TestProcessTask_FailedCreateSessionMappingStillSkipped(t *testing.T) {
 	var createdMapping bool
 
 	orch := newTestOrchestrator(func(o *Orchestrator) {
@@ -1368,11 +1431,41 @@ func TestProcessTask_FailedMappingStillSkipped(t *testing.T) {
 	orch.processTask(context.Background(), &bossanovav1.TaskItem{
 		ExternalId: "dependabot:pr:repo:888",
 		Title:      "Bump bar",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if createdMapping {
+		t.Error("expected failed CREATE_SESSION mapping to be skipped, not re-processed")
+	}
+}
+
+func TestProcessTask_CompletedAutoMergeMappingStillSkipped(t *testing.T) {
+	var createdMapping bool
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{
+				"dependabot:pr:repo:999": {
+					ID:         "tm-completed",
+					ExternalID: "dependabot:pr:repo:999",
+					Status:     models.TaskMappingStatusCompleted,
+				},
+			},
+			createFn: func(_ context.Context, _ db.CreateTaskMappingParams) (*models.TaskMapping, error) {
+				createdMapping = true
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.processTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:999",
+		Title:      "Bump baz",
 		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
 	if createdMapping {
-		t.Error("expected Failed mapping to be skipped, not re-processed")
+		t.Error("expected completed AUTO_MERGE mapping to be skipped, not re-processed")
 	}
 }
 
@@ -1774,8 +1867,8 @@ func TestRouteTask_CreateSession_NoDependabotLabel_NoSkipSetupScript(t *testing.
 
 // --- failed task mapping tests ---
 
-func TestProcessTask_FailedMappingIsSkipped(t *testing.T) {
-	createCalls := 0
+func TestProcessTask_FailedCreateSessionMappingIsSkipped(t *testing.T) {
+	var createCalls atomic.Int32
 
 	store := &mockTaskMappingStore{
 		mappings: map[string]*models.TaskMapping{
@@ -1788,7 +1881,7 @@ func TestProcessTask_FailedMappingIsSkipped(t *testing.T) {
 			},
 		},
 		createFn: func(_ context.Context, params db.CreateTaskMappingParams) (*models.TaskMapping, error) {
-			createCalls++
+			createCalls.Add(1)
 			return &models.TaskMapping{
 				ID:         "tm-retry",
 				ExternalID: params.ExternalID,
@@ -1807,12 +1900,12 @@ func TestProcessTask_FailedMappingIsSkipped(t *testing.T) {
 
 	orch.processTask(context.Background(), &bossanovav1.TaskItem{
 		ExternalId: "dep:pr:repo:99",
-		Title:      "Bump retry-pkg",
-		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		Title:      "Create session",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
 	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
 
-	if createCalls != 0 {
-		t.Error("expected failed task mapping to be skipped (not retried)")
+	if createCalls.Load() != 0 {
+		t.Error("expected failed CREATE_SESSION mapping to be skipped (not retried)")
 	}
 }
 

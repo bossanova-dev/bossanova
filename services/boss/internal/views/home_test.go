@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -107,6 +108,56 @@ func TestHomeBuildTableRows_RendersRepairWarningUnderName(t *testing.T) {
 	}
 	if got := rows[1][5]; got != "" {
 		t.Fatalf("warning row STATUS column = %q, want empty", got)
+	}
+}
+
+func TestHomeBuildTableRows_ShowsAgentAfterNameWhenMultipleAgentsPresent(t *testing.T) {
+	h := HomeModel{
+		sessions: []*pb.Session{
+			{
+				Id:              "sess-1",
+				RepoDisplayName: "bossanova",
+				Title:           "Claude session",
+				AgentName:       "claude",
+			},
+			{
+				Id:              "sess-2",
+				RepoDisplayName: "bossanova",
+				Title:           "Codex session",
+				AgentName:       "codex",
+			},
+		},
+	}
+
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if got := rows[0][4]; got != "claude" {
+		t.Fatalf("session row AGENT column = %q, want claude", got)
+	}
+	if got := rows[1][4]; got != "codex" {
+		t.Fatalf("session row AGENT column = %q, want codex", got)
+	}
+}
+
+func TestHomeBuildTableRows_ShowsAgentWhenMultipleAgentsAvailable(t *testing.T) {
+	h := HomeModel{
+		availableAgents: []client.AgentInfo{{Name: "claude"}, {Name: "codex"}},
+		sessions: []*pb.Session{
+			{
+				Id:              "sess-1",
+				RepoDisplayName: "bossanova",
+				Title:           "Codex session",
+				AgentName:       "codex",
+			},
+		},
+	}
+
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if got := rows[0][4]; got != "codex" {
+		t.Fatalf("session row AGENT column = %q, want codex", got)
 	}
 }
 

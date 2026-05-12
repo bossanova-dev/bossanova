@@ -337,16 +337,10 @@ func TestRunnerPostExitReplacesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	deadline := time.After(3 * time.Second)
-	for r.IsRunning(sid) {
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for fake-auth subprocess to exit")
-		default:
-			time.Sleep(20 * time.Millisecond)
-		}
-	}
-	got := r.ExitError(sid)
+	waitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	got := r.Wait(waitCtx, sid)
 	if !errors.Is(got, errAuthRequired) {
 		t.Errorf("ExitError = %v, want errAuthRequired", got)
 	}

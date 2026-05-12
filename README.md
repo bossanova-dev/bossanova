@@ -1,8 +1,8 @@
 # bossanova
 
-Manage multiple Claude Code sessions from one terminal.
+Manage multiple AI coding-agent sessions from one terminal.
 
-![Bossanova TUI showing 6 Claude Code sessions with status indicators across multiple repos](docs/screenshot.png)
+![Bossanova TUI showing 6 active coding-agent sessions with status indicators across multiple repos](services/docs/static/img/screenshots/tui-overview.png)
 
 ## Install
 
@@ -10,31 +10,32 @@ Manage multiple Claude Code sessions from one terminal.
 brew install bossanova-dev/tap/bossanova
 ```
 
-## Quick Start
+## Documentation
 
-1. Install bossanova
-2. Add a repository: `boss repo add /path/to/your/repo`
-3. Launch the TUI: `boss`
+Full docs live at **[docs.bossanova.dev](https://docs.bossanova.dev)** —
+quick start, configuration, plugin overview, and more.
 
 ## What You Get
 
-- **boss** - Terminal UI for managing Claude Code sessions across repositories
+- **boss** - Terminal UI for managing coding-agent sessions across repositories
 - **bossd** - Background daemon handling session lifecycle and git operations
 
 Bossd supports plugins (`bossd-plugin-*` binaries) for autonomous PR handling,
-dependency updates, CI repair, and other automation. Claude itself runs as a
-plugin (`bossd-plugin-claude`) — bossd does not manage the Claude subprocess
-directly. Run `make plugins` to build all plugin binaries; the daemon will
-refuse to start sessions if no agent-runner plugin is installed.
+dependency updates, CI repair, and other automation. Agents run as plugins too:
+`bossd-plugin-claude` owns Claude Code sessions, and `bossd-plugin-codex` owns
+OpenAI Codex CLI sessions. Run `make plugins` to build all plugin binaries; the
+daemon will refuse to start sessions if no agent-runner plugin is installed.
 
 ## Prerequisites
 
-- [Claude Code CLI](https://claude.ai/download) - Required for session management
+- A supported coding-agent CLI - [Claude Code](https://claude.ai/download) or
+  [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started)
+  matching the runner plugin you plan to use
 - [GitHub CLI](https://cli.github.com/) - Required for PR operations
 
 ## How It Works
 
-Bossanova uses git worktrees to isolate each Claude Code session in its own directory. The daemon (bossd) manages session lifecycle, monitors PR status, and coordinates plugins. The TUI (boss) provides a unified view across all active sessions.
+Bossanova uses git worktrees to isolate each coding-agent session in its own directory. The daemon (bossd) manages session lifecycle, monitors PR status, and coordinates plugins. The TUI (boss) provides a unified view across all active sessions.
 
 Sessions run in dedicated worktrees, allowing simultaneous work on multiple features without conflicts. Plugins listen for events (PR creation, CI failures, merge conflicts) and take autonomous actions.
 
@@ -85,6 +86,7 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 ```json
 {
   "worktree_base_dir": "/Users/you/work/worktrees",
+  "default_agent": "claude",
   "poll_interval_seconds": 120,
   "plugins": [
     {
@@ -94,6 +96,11 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
       "config": {
         "dangerously_skip_permissions": "true"
       }
+    },
+    {
+      "name": "codex",
+      "path": "/opt/homebrew/libexec/plugins/bossd-plugin-codex",
+      "enabled": true
     },
     {
       "name": "repair",
@@ -120,6 +127,7 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `worktree_base_dir` | string | `~/.bossanova/worktrees` | Directory where per-session git worktrees are created. Auto-created on load. |
+| `default_agent` | string | `claude` | Name of the default agent plugin used for new sessions. Set to `codex` to start Codex sessions by default. |
 | `skills_declined` | bool | `false` | Set after the user declines the one-time skills install prompt so it's not shown again. |
 | `poll_interval_seconds` | int | `120` | How often the TUI polls for PR display status, in seconds. |
 | `plugins` | array | auto-discovered | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own binary. |
@@ -174,11 +182,13 @@ These control how `bossd` and `boss login` connect to the cloud orchestrator. Al
 
 ## Alternative Install
 
-**Note**: Manual installation via curl is not yet supported. Use Homebrew for now:
-
 ```bash
-brew install bossanova-dev/tap/bossanova
+curl -fsSL https://bossanova.dev/install.sh | sh
 ```
+
+The curl installer downloads the latest GitHub Release binaries for
+macOS or Linux. It currently checks for the Claude Code CLI, GitHub CLI,
+and a SHA-256 tool before installing.
 
 ## Build from Source
 

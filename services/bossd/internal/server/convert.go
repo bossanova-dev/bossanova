@@ -49,6 +49,7 @@ func SessionToProto(s *models.Session) *pb.Session {
 		BaseBranch:        s.BaseBranch,
 		State:             pb.SessionState(s.State),
 		LastCheckState:    pb.ChecksOverall(s.LastCheckState),
+		AgentName:         s.AgentName,
 		AutomationEnabled: s.AutomationEnabled,
 		AttemptCount:      int32(s.AttemptCount),
 		CreatedAt:         timestamppb.New(s.CreatedAt),

@@ -1,9 +1,9 @@
-.PHONY: all build build-all clean deps format generate lint \
-	lint-check-version \
+.PHONY: all build build-all build-docs clean deps format generate lint \
+	lint-check-version lint-docs \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
 	plugins plugins-all release release-codex-check \
 	setup-worktree split stage-release test test-race \
-	test-integration-bossd
+	test-docs test-integration-bossd
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all: clean generate format build plugins build-all plugins-all
@@ -180,6 +180,10 @@ test: $(GEN_STAMP)
 		echo "==> Testing $$mod"; \
 		$(MAKE) -C $$mod test; \
 	done
+	@if [ -d services/docs ]; then \
+		echo "==> Testing services/docs"; \
+		$(MAKE) -C services/docs test; \
+	fi
 
 ## test-race: Run the full test suite under -race (sets RACE=1 for sub-makes).
 ## Race detector is opt-in: `make test` skips it; `make test-race` or `RACE=1 make test` enables it.
@@ -234,6 +238,10 @@ lint: lint-check-version $(GEN_STAMP)
 		echo "==> Linting $$mod"; \
 		(cd $$mod && golangci-lint run ./...); \
 	done
+	@if [ -d services/docs ]; then \
+		echo "==> Linting services/docs"; \
+		$(MAKE) -C services/docs lint; \
+	fi
 
 ## Per-module lint targets
 lint-proto:
@@ -247,6 +255,16 @@ lint-boss: lint-check-version
 
 lint-bossd: lint-check-version
 	cd services/bossd && golangci-lint run ./...
+
+## Per-module docs targets
+test-docs:
+	$(MAKE) -C services/docs test
+
+lint-docs:
+	$(MAKE) -C services/docs lint
+
+build-docs:
+	$(MAKE) -C services/docs build
 
 ifneq ($(wildcard services/bosso/go.mod),)
 lint-bosso: lint-check-version
@@ -295,6 +313,9 @@ format: lint-check-version
 	done
 	@if [ -d services/web ]; then \
 		$(MAKE) -C services/web format; \
+	fi
+	@if [ -d services/docs ]; then \
+		$(MAKE) -C services/docs format; \
 	fi
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		pnpm run format:docs; \
@@ -369,6 +390,9 @@ clean:
 	done
 	@if [ -d services/web ]; then \
 		$(MAKE) -C services/web clean; \
+	fi
+	@if [ -d services/docs ]; then \
+		$(MAKE) -C services/docs clean; \
 	fi
 
 ## release: Trigger the production release workflow (creates a PR from main → production)

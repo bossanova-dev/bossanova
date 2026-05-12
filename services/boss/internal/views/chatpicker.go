@@ -231,6 +231,8 @@ func (m *ChatPickerModel) buildTableRows() {
 	titles := make([]string, len(m.chats))
 	createds := make([]string, len(m.chats))
 	actives := make([]string, len(m.chats))
+	agents := make([]string, len(m.chats))
+	showAgentColumn := len(m.agents) > 1
 	for i, chat := range m.chats {
 		t := chat.Title
 		if t == "" {
@@ -239,9 +241,11 @@ func (m *ChatPickerModel) buildTableRows() {
 		titles[i] = t
 		createds[i] = RelativeTime(chat.CreatedAt.AsTime())
 		actives[i] = RelativeTime(m.chatLastActive(chat))
+		agents[i] = m.chatAgentName(chat)
 	}
 
 	titleWidth := maxColWidth("CHAT", titles, 60)
+	agentWidth := maxColWidth("AGENT", agents, 12)
 	createdWidth := maxColWidth("CREATED", createds, 12)
 	activeWidth := maxColWidth("ACTIVE", actives, 12)
 	statusWidth := 12 // enough for spinner + "working"
@@ -249,10 +253,15 @@ func (m *ChatPickerModel) buildTableRows() {
 	cols := []table.Column{
 		cursorColumn,
 		{Title: "CHAT", Width: titleWidth + tableColumnSep},
-		{Title: "CREATED", Width: createdWidth + tableColumnSep},
-		{Title: "ACTIVE", Width: activeWidth + tableColumnSep},
-		{Title: "STATUS", Width: statusWidth + tableColumnSep},
 	}
+	if showAgentColumn {
+		cols = append(cols, table.Column{Title: "AGENT", Width: agentWidth + tableColumnSep})
+	}
+	cols = append(cols,
+		table.Column{Title: "CREATED", Width: createdWidth + tableColumnSep},
+		table.Column{Title: "ACTIVE", Width: activeWidth + tableColumnSep},
+		table.Column{Title: "STATUS", Width: statusWidth + tableColumnSep},
+	)
 
 	cursor := m.table.Cursor()
 	rows := make([]table.Row, len(m.chats))
@@ -268,13 +277,28 @@ func (m *ChatPickerModel) buildTableRows() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		rows[i] = table.Row{indicator, titles[i], createdStr, activeStr, statusStr}
+		row := table.Row{indicator, titles[i]}
+		if showAgentColumn {
+			row = append(row, agents[i])
+		}
+		row = append(row, createdStr, activeStr, statusStr)
+		rows[i] = row
 	}
 	m.table.SetColumns(cols)
 	m.table.SetRows(rows)
 	m.table.SetWidth(columnsWidth(cols))
 	m.table.SetHeight(m.tableHeight())
 	m.table.SetCursor(cursor)
+}
+
+func (m *ChatPickerModel) chatAgentName(chat *pb.ClaudeChat) string {
+	if chat.GetAgentName() != "" {
+		return chat.GetAgentName()
+	}
+	if m.session != nil && m.session.GetAgentName() != "" {
+		return m.session.GetAgentName()
+	}
+	return "-"
 }
 
 // canMerge reports whether the [m]erge action should be available for the
@@ -590,6 +614,14 @@ func (m *ChatPickerModel) buildAgentTable() {
 	for i, a := range m.agents {
 		names[i] = a.Name
 	}
+	preferred := ""
+	if m.session != nil {
+		preferred = m.session.AgentName
+	}
+	cursor := agentIndex(m.agents, preferred)
+	if cursor < 0 {
+		cursor = 0
+	}
 	cols := []table.Column{
 		cursorColumn,
 		{Title: "AGENT", Width: maxColWidth("AGENT", names, 20) + tableColumnSep},
@@ -597,12 +629,13 @@ func (m *ChatPickerModel) buildAgentTable() {
 	rows := make([]table.Row, len(m.agents))
 	for i := range m.agents {
 		indicator := ""
-		if i == 0 {
+		if i == cursor {
 			indicator = cursorChevron
 		}
 		rows[i] = table.Row{indicator, names[i]}
 	}
 	m.agentTable = newBossTable(cols, rows, len(m.agents)+1)
+	m.agentTable.SetCursor(cursor)
 	m.agentTable.SetWidth(columnsWidth(cols))
 }
 

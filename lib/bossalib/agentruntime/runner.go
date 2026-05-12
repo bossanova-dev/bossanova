@@ -518,6 +518,24 @@ func (r *Runner) IsRunning(sessionID string) bool {
 	}
 }
 
+// Wait blocks until the tracked process exits or ctx is cancelled. It returns
+// the same completed-process error as ExitError.
+func (r *Runner) Wait(ctx context.Context, sessionID string) error {
+	r.mu.RLock()
+	p, ok := r.procs[sessionID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	select {
+	case <-p.done:
+		return p.exitErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // ExitError returns the exit error for a completed session.
 func (r *Runner) ExitError(sessionID string) error {
 	r.mu.RLock()

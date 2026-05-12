@@ -1,0 +1,9 @@
+{
+  "label": "Reference",
+  "position": 4,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "description": "Exhaustive reference for the TUI, plugins, settings, and the CLI."
+  }
+}

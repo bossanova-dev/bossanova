@@ -138,10 +138,12 @@ func recordChatSetup(t *testing.T, fake *fakeTmux) (*testharness.Harness, contex
 	if err != nil {
 		t.Fatalf("register repo: %v", err)
 	}
+	agentName := "claude"
 	sess := createSessionFromStream(t, h.Client, ctx, &pb.CreateSessionRequest{
-		RepoId: repoResp.Msg.Repo.Id,
-		Title:  "Tmux RecordChat",
-		Plan:   "test plan",
+		RepoId:    repoResp.Msg.Repo.Id,
+		Title:     "Tmux RecordChat",
+		Plan:      "test plan",
+		AgentName: &agentName,
 	})
 	return h, ctx, sess.Id
 }

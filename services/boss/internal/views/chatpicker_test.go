@@ -179,6 +179,38 @@ func seedChatPicker(c client.BossClient, status string) ChatPickerModel {
 	return updated.(ChatPickerModel)
 }
 
+func TestChatPickerBuildTableRows_ShowsAgentAfterChatWhenMultipleAgentsEnabled(t *testing.T) {
+	m := NewChatPickerModel(&chatPickerStub{}, context.Background(), "session-1", "")
+	m.agents = []client.AgentInfo{{Name: "claude"}, {Name: "codex"}}
+	now := timestamppb.Now()
+	m.chats = []*pb.ClaudeChat{
+		{
+			SessionId:      "session-1",
+			AgentSessionId: "agent-1",
+			Title:          "Claude chat",
+			AgentName:      "claude",
+			CreatedAt:      now,
+		},
+		{
+			SessionId:      "session-1",
+			AgentSessionId: "agent-2",
+			Title:          "Codex chat",
+			AgentName:      "codex",
+			CreatedAt:      now,
+		},
+	}
+
+	m.buildTableRows()
+
+	rows := m.table.Rows()
+	if got := rows[0][2]; got != "claude" {
+		t.Fatalf("chat row AGENT column = %q, want claude", got)
+	}
+	if got := rows[1][2]; got != "codex" {
+		t.Fatalf("chat row AGENT column = %q, want codex", got)
+	}
+}
+
 func TestChatPicker_W_OnStoppedChat_FiresWake(t *testing.T) {
 	stub := &chatPickerStub{}
 	m := seedChatPicker(stub, statusStopped)
@@ -392,6 +424,37 @@ func TestChatPicker_AgentPickerEnterEmitsOverride(t *testing.T) {
 	}
 	if sw.agentName != "claude" {
 		t.Errorf("switchViewMsg.agentName = %q, want %q", sw.agentName, "claude")
+	}
+}
+
+func TestChatPicker_AgentPickerDefaultsToSessionAgent(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.session = &pb.Session{Id: "session-1", AgentName: "codex"}
+	updated, _ := m.Update(agentsMsg{agents: []client.AgentInfo{
+		{Name: "claude"},
+		{Name: "codex"},
+	}})
+	m = updated.(ChatPickerModel)
+
+	updated, _ = m.Update(keyPress('n'))
+	m = updated.(ChatPickerModel)
+	if !m.pickingAgent {
+		t.Fatalf("setup: expected pickingAgent=true")
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a switchViewMsg cmd from enter")
+	}
+	_ = updated.(ChatPickerModel)
+	out := cmd()
+	sw, ok := out.(switchViewMsg)
+	if !ok {
+		t.Fatalf("expected switchViewMsg, got %T", out)
+	}
+	if sw.agentName != "codex" {
+		t.Errorf("switchViewMsg.agentName = %q, want %q", sw.agentName, "codex")
 	}
 }
 

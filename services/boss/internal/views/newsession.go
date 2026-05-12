@@ -194,6 +194,12 @@ type NewSessionModel struct {
 	// means "let the daemon fall back to Settings.DefaultAgent".
 	initialAgent string
 
+	// preferredAgent controls the default cursor in the agent picker.
+	preferredAgent string
+
+	// onAgentSelected persists picker choices for future wizards.
+	onAgentSelected func(string) error
+
 	// Streaming create session
 	createStream client.CreateSessionStream
 	setupLines   []string
@@ -231,6 +237,18 @@ func NewNewSessionModel(c client.BossClient, ctx context.Context) NewSessionMode
 // when the request omits agent_name.
 func (m *NewSessionModel) SetInitialAgent(name string) {
 	m.initialAgent = name
+	m.preferredAgent = name
+}
+
+// SetPreferredAgent sets the default cursor in the agent picker without
+// bypassing the picker.
+func (m *NewSessionModel) SetPreferredAgent(name string) {
+	m.preferredAgent = name
+}
+
+// SetAgentSelectionHandler registers a callback for confirmed picker choices.
+func (m *NewSessionModel) SetAgentSelectionHandler(fn func(string) error) {
+	m.onAgentSelected = fn
 }
 
 func (m NewSessionModel) Init() tea.Cmd {
@@ -252,6 +270,18 @@ func fetchAgents(c client.BossClient, ctx context.Context) tea.Cmd {
 		agents, err := c.ListAgents(ctx)
 		return agentsMsg{agents: agents, err: err}
 	}
+}
+
+func agentIndex(agents []client.AgentInfo, name string) int {
+	if name == "" {
+		return -1
+	}
+	for i, agent := range agents {
+		if agent.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func fetchPRs(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
@@ -350,6 +380,10 @@ func (m *NewSessionModel) buildAgentTable() {
 	for i, a := range m.agents {
 		names[i] = a.Name
 	}
+	cursor := agentIndex(m.agents, m.preferredAgent)
+	if cursor < 0 {
+		cursor = 0
+	}
 
 	cols := []table.Column{
 		cursorColumn,
@@ -359,13 +393,14 @@ func (m *NewSessionModel) buildAgentTable() {
 	rows := make([]table.Row, len(m.agents))
 	for i := range m.agents {
 		indicator := ""
-		if i == 0 {
+		if i == cursor {
 			indicator = cursorChevron
 		}
 		rows[i] = table.Row{indicator, names[i]}
 	}
 
 	m.agentTable = newBossTable(cols, rows, len(m.agents)+1)
+	m.agentTable.SetCursor(cursor)
 	m.agentTable.SetWidth(columnsWidth(cols))
 }
 
@@ -764,7 +799,14 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter", " ", "space":
 				idx := m.agentTable.Cursor()
 				if idx >= 0 && idx < len(m.agents) {
-					m.initialAgent = m.agents[idx].Name
+					agentName := m.agents[idx].Name
+					m.initialAgent = agentName
+					m.preferredAgent = agentName
+					if m.onAgentSelected != nil {
+						if err := m.onAgentSelected(agentName); err != nil {
+							m.err = err
+						}
+					}
 					m.phase = newSessionPhaseTypeSelect
 					m.buildTypeTable()
 				}

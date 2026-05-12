@@ -1,0 +1,9 @@
+{
+  "label": "Guides",
+  "position": 3,
+  "collapsed": false,
+  "link": {
+    "type": "generated-index",
+    "description": "Task-oriented walkthroughs for everyday Bossanova workflows."
+  }
+}

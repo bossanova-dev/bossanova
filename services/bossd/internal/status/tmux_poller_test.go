@@ -138,6 +138,9 @@ func claudeLastTurnIsUserForTest(path string) bool {
 type claudeFakeClient struct {
 	hasPromptCalls atomic.Int64
 	lastTurnCalls  atomic.Int64
+	title          string
+	titleCalls     atomic.Int64
+	lastTitleReq   *pb.GetChatTitleRequest
 }
 
 func (c *claudeFakeClient) GetInfo(context.Context) (*pb.PluginInfo, error) {
@@ -167,8 +170,13 @@ func (c *claudeFakeClient) ResolveInteractiveSessionID(context.Context, *pb.Reso
 func (c *claudeFakeClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
 	return &pb.ListIgnoredDirtyFilesResponse{}, nil
 }
-func (c *claudeFakeClient) GetChatTitle(context.Context, *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
-	return &pb.GetChatTitleResponse{}, nil
+func (c *claudeFakeClient) GetChatTitle(_ context.Context, req *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
+	c.titleCalls.Add(1)
+	c.lastTitleReq = &pb.GetChatTitleRequest{
+		WorkDir:   req.GetWorkDir(),
+		SessionId: req.GetSessionId(),
+	}
+	return &pb.GetChatTitleResponse{Supported: true, Title: c.title}, nil
 }
 func (c *claudeFakeClient) HasQuestionPrompt(_ context.Context, req *pb.HasQuestionPromptRequest) (*pb.HasQuestionPromptResponse, error) {
 	c.hasPromptCalls.Add(1)
@@ -244,7 +252,14 @@ func (m *mockChatStore) ListBySession(_ context.Context, _ string) ([]*models.Ag
 	return nil, nil
 }
 func (m *mockChatStore) UpdateTitle(_ context.Context, _, _ string) error { return nil }
-func (m *mockChatStore) UpdateTitleByAgentSessionID(_ context.Context, _, _ string) error {
+func (m *mockChatStore) UpdateTitleByAgentSessionID(_ context.Context, agentSessionID, title string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.chats[agentSessionID]
+	if !ok {
+		return fmt.Errorf("not found")
+	}
+	c.Title = title
 	return nil
 }
 func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *string) error {
@@ -475,6 +490,190 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
 		t.Errorf("expected IDLE, got %v", entry.Status)
+	}
+}
+
+// TestTmuxStatusPoller_RefreshesPlaceholderChatTitle is the regression test
+// for codex chats stuck at the "New chat" placeholder. The poller must
+// dispatch GetChatTitle to the chat's AgentRunner plugin (not the
+// Claude-only filesystem helper) and persist the extracted title back to
+// the chat store so the web UI — which reads chat.title directly from the
+// database — can render a real chat name. The session ID sent to the
+// plugin must be the provider session ID (codex's rollout key), not the
+// daemon-internal AgentSessionID.
+func TestTmuxStatusPoller_RefreshesPlaceholderChatTitle(t *testing.T) {
+	tracker := NewTracker()
+	tmuxName := "boss-test-title"
+	agentSessionID := "codex-local"
+	providerSessionID := "codex-provider"
+	worktreePath := "/tmp/title-worktree"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {
+				SessionID:         "sess-1",
+				AgentSessionID:    agentSessionID,
+				ProviderSessionID: &providerSessionID,
+				AgentName:         "codex",
+				Title:             "New chat",
+				TmuxSessionName:   &tmuxName,
+			},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{
+			"sess-1": {ID: "sess-1", WorktreePath: worktreePath},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "Working on descriptive title..."},
+	}
+	client := &claudeFakeClient{title: "Fix Codex chat names"}
+	poller := NewTmuxStatusPoller(
+		tracker,
+		chatStore,
+		sessionStore,
+		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
+		map[string]agent.AgentRunnerClient{"codex": client},
+		zerolog.Nop(),
+	)
+
+	poller.pollOnce(context.Background())
+
+	if got := chatStore.chats[agentSessionID].Title; got != "Fix Codex chat names" {
+		t.Fatalf("chat title = %q, want extracted title", got)
+	}
+	if client.titleCalls.Load() != 1 {
+		t.Fatalf("GetChatTitle calls = %d, want 1", client.titleCalls.Load())
+	}
+	if client.lastTitleReq.GetWorkDir() != worktreePath {
+		t.Fatalf("GetChatTitle work_dir = %q, want %q", client.lastTitleReq.GetWorkDir(), worktreePath)
+	}
+	if client.lastTitleReq.GetSessionId() != providerSessionID {
+		t.Fatalf("GetChatTitle session_id = %q, want provider id", client.lastTitleReq.GetSessionId())
+	}
+}
+
+// TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle ensures we only
+// refresh placeholder titles — once a real title is set (either by an
+// earlier refresh or a user rename), the plugin must not be asked again.
+func TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle(t *testing.T) {
+	tracker := NewTracker()
+	tmuxName := "boss-test-title-custom"
+	agentSessionID := "codex-custom"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {
+				SessionID:       "sess-1",
+				AgentSessionID:  agentSessionID,
+				AgentName:       "codex",
+				Title:           "Manual investigation",
+				TmuxSessionName: &tmuxName,
+			},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{
+			"sess-1": {ID: "sess-1", WorktreePath: "/tmp/title-worktree"},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "Working on descriptive title..."},
+	}
+	client := &claudeFakeClient{title: "Extracted title"}
+	poller := NewTmuxStatusPoller(
+		tracker,
+		chatStore,
+		sessionStore,
+		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
+		map[string]agent.AgentRunnerClient{"codex": client},
+		zerolog.Nop(),
+	)
+
+	poller.pollOnce(context.Background())
+
+	if got := chatStore.chats[agentSessionID].Title; got != "Manual investigation" {
+		t.Fatalf("chat title = %q, want custom title preserved", got)
+	}
+	if client.titleCalls.Load() != 0 {
+		t.Fatalf("GetChatTitle calls = %d, want 0", client.titleCalls.Load())
+	}
+}
+
+// TestTmuxStatusPoller_LeavesTitleWhenPluginReturnsEmpty guards against
+// wiping a placeholder before the user has typed their first message:
+// codex's chatTitle returns "" until the rollout file contains a real
+// user_message envelope, and overwriting "New chat" with "" would be a
+// regression.
+func TestTmuxStatusPoller_LeavesTitleWhenPluginReturnsEmpty(t *testing.T) {
+	tracker := NewTracker()
+	tmuxName := "boss-test-title-empty"
+	agentSessionID := "codex-empty"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {
+				SessionID:       "sess-1",
+				AgentSessionID:  agentSessionID,
+				AgentName:       "codex",
+				Title:           "New chat",
+				TmuxSessionName: &tmuxName,
+			},
+		},
+	}
+	sessionStore := &mockSessionStore{
+		sessions: map[string]*models.Session{
+			"sess-1": {ID: "sess-1", WorktreePath: "/tmp/title-worktree"},
+		},
+	}
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: "Pre-prompt..."},
+	}
+	client := &claudeFakeClient{title: ""}
+	poller := NewTmuxStatusPoller(
+		tracker,
+		chatStore,
+		sessionStore,
+		tmux.NewClient(tmux.WithCommandFactory(factory.factory)),
+		map[string]agent.AgentRunnerClient{"codex": client},
+		zerolog.Nop(),
+	)
+
+	poller.pollOnce(context.Background())
+
+	if got := chatStore.chats[agentSessionID].Title; got != "New chat" {
+		t.Fatalf("chat title = %q, want placeholder preserved when plugin returns empty", got)
+	}
+	if client.titleCalls.Load() != 1 {
+		t.Fatalf("GetChatTitle calls = %d, want 1", client.titleCalls.Load())
+	}
+}
+
+func TestShouldRefreshChatTitle(t *testing.T) {
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"", true},
+		{"   ", true},
+		{"New chat", true},
+		{"new chat", true},
+		{"  New Chat  ", true},
+		{"NEW CHAT", true},
+		{"Fix Codex chat names", false},
+		{"Working on something", false},
+		{"new chat extended", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			if got := shouldRefreshChatTitle(tt.title); got != tt.want {
+				t.Errorf("shouldRefreshChatTitle(%q) = %v, want %v", tt.title, got, tt.want)
+			}
+		})
 	}
 }
 

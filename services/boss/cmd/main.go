@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	bossalog "github.com/recurser/bossalib/log"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
+	"github.com/recurser/bossalib/telemetry"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -30,7 +32,20 @@ func run() error {
 	logCloser := bossalog.SetupFileOnly("boss")
 	defer func() { _ = logCloser.Close() }()
 
-	return rootCmd().Execute()
+	settings, _ := config.Load()
+	telemetryClient := telemetry.New(commandTelemetryConfig(settings))
+	defer telemetryClient.Close()
+
+	commandState := &executedCommandState{}
+	ctx := context.WithValue(context.Background(), commandTelemetryContextKey{}, telemetryClient)
+	ctx = context.WithValue(ctx, executedCommandContextKey{}, commandState)
+	root := rootCmd()
+	root.SetContext(ctx)
+	installExecutedCommandRecorder(root)
+
+	err := root.Execute()
+	captureCommand(ctx, telemetryClient, executedCommand(ctx), err)
+	return err
 }
 
 func rootCmd() *cobra.Command {

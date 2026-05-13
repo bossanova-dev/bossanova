@@ -340,9 +340,11 @@ func (s *SQLiteSessionStore) UpdateRepairDiagnostics(ctx context.Context, params
 		 SET last_repair_started_at    = ?,
 		     last_repair_runner_error  = ?,
 		     last_repair_exit_error    = ?,
-		     last_repair_attempt_count = `+countExpr+`
+		     last_repair_attempt_count = `+countExpr+`,
+		     last_repair_head_sha      = ?,
+		     last_repair_display_status = ?
 		 WHERE id = ?`,
-		startedAt, params.RunnerError, params.ExitError, params.SessionID)
+		startedAt, params.RunnerError, params.ExitError, params.HeadSHA, params.DisplayStatus, params.SessionID)
 	if err != nil {
 		return fmt.Errorf("update repair diagnostics: %w", err)
 	}
@@ -412,7 +414,8 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
-	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count
+	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
+	s.last_repair_head_sha, s.last_repair_display_status
 	FROM sessions s`
 
 // sessionSelectWithRepoSQL joins sessions with repos so ListActiveWithRepo
@@ -424,6 +427,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
+	s.last_repair_head_sha, s.last_repair_display_status,
 	COALESCE(r.display_name, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
@@ -443,7 +447,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
-		&repoDisplayName)
+		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &repoDisplayName)
 	if err != nil {
 		return nil, "", err
 	}
@@ -483,7 +487,8 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&lastCheckState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
-		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount)
+		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
+		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus)
 	if err != nil {
 		return nil, err
 	}

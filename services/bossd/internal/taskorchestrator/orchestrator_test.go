@@ -2338,15 +2338,15 @@ func TestEnqueue_AutoMergeBypassesActiveLock(t *testing.T) {
 	}
 }
 
-// TestEnqueue_MultipleAutoMergesRunConcurrently verifies that multiple
-// AUTO_MERGE tasks for the same repo run in parallel, not serialised.
-// This is the throughput half of the fix — without it, even with the
-// lock bypassed, slow merges would still process one at a time.
-func TestEnqueue_MultipleAutoMergesRunConcurrently(t *testing.T) {
+// TestEnqueue_MultipleAutoMergesAreRateLimited verifies that AUTO_MERGE tasks
+// still bypass the repo session lock, but the actual GitHub merge calls are
+// serialized to avoid secondary rate limits during Dependabot bursts.
+func TestEnqueue_MultipleAutoMergesAreRateLimited(t *testing.T) {
 	t.Parallel()
 
 	const n = 5
-	gate := make(chan struct{})
+	entered := make(chan struct{}, n)
+	release := make(chan struct{}, n)
 	var inflight atomic.Int32
 	var maxInflight atomic.Int32
 
@@ -2360,7 +2360,8 @@ func TestEnqueue_MultipleAutoMergesRunConcurrently(t *testing.T) {
 						break
 					}
 				}
-				<-gate
+				entered <- struct{}{}
+				<-release
 				inflight.Add(-1)
 				return nil
 			},
@@ -2378,17 +2379,20 @@ func TestEnqueue_MultipleAutoMergesRunConcurrently(t *testing.T) {
 		o.enqueue(context.Background(), task, repo, "dependabot")
 	}
 
-	// Wait until all n goroutines are blocked inside MergePR.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && inflight.Load() < n {
-		time.Sleep(10 * time.Millisecond)
+	for i := 0; i < n; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for merge %d to start", i+1)
+		}
+		if got := maxInflight.Load(); got != 1 {
+			t.Fatalf("expected max 1 in-flight merge, got %d", got)
+		}
+		release <- struct{}{}
 	}
 
-	got := maxInflight.Load()
-	close(gate)
-
-	if got < n {
-		t.Fatalf("expected %d concurrent merges, max observed was %d (auto-merges still serialised)", n, got)
+	if got := maxInflight.Load(); got != 1 {
+		t.Fatalf("expected serialized merges, max observed was %d", got)
 	}
 }
 

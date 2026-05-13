@@ -65,6 +65,66 @@ func TestRepoSlug(t *testing.T) {
 	}
 }
 
+func TestRepoWebLink(t *testing.T) {
+	tests := []struct {
+		name         string
+		originURL    string
+		wantProvider string
+		wantURL      string
+		wantOK       bool
+	}{
+		{
+			name:         "github https",
+			originURL:    "https://github.com/owner/repo.git",
+			wantProvider: "github",
+			wantURL:      "https://github.com/owner/repo",
+			wantOK:       true,
+		},
+		{
+			name:         "github ssh shorthand",
+			originURL:    "git@github.com:owner/repo.git",
+			wantProvider: "github",
+			wantURL:      "https://github.com/owner/repo",
+			wantOK:       true,
+		},
+		{
+			name:         "github ssh url",
+			originURL:    "ssh://git@github.com/owner/repo.git",
+			wantProvider: "github",
+			wantURL:      "https://github.com/owner/repo",
+			wantOK:       true,
+		},
+		{
+			name:      "gitlab hidden for now",
+			originURL: "git@gitlab.com:owner/repo.git",
+			wantOK:    false,
+		},
+		{
+			name:      "malformed hidden",
+			originURL: "not-a-repo",
+			wantOK:    false,
+		},
+		{
+			name:      "empty hidden",
+			originURL: "",
+			wantOK:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotProvider, gotURL, gotOK := RepoWebLink(tt.originURL)
+			if gotOK != tt.wantOK {
+				t.Fatalf("RepoWebLink(%q) ok = %v, want %v", tt.originURL, gotOK, tt.wantOK)
+			}
+			if gotProvider != tt.wantProvider || gotURL != tt.wantURL {
+				t.Errorf("RepoWebLink(%q) = (%q, %q), want (%q, %q)",
+					tt.originURL, gotProvider, gotURL, tt.wantProvider, tt.wantURL)
+			}
+		})
+	}
+}
+
 // TestConstructPRURL_Boundaries covers boundary mutations on the SSH detection
 // (`idx > 0`, `idx+1 >= len(s)`) and the user@ stripping (`at >= 0`).
 func TestConstructPRURL_Boundaries(t *testing.T) {

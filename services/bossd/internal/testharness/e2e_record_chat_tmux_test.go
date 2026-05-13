@@ -126,6 +126,9 @@ func installFakeCodexTUI(t *testing.T) string {
 // focused on the specific RecordChat behavior under test.
 func recordChatSetup(t *testing.T, fake *fakeTmux) (*testharness.Harness, context.Context, string) {
 	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
 	h := testharness.NewWithOptions(t, testharness.Options{TmuxCommandFactory: fake.factory})
 	ctx := context.Background()
 	repoDir := testharness.TempRepoDir(t)

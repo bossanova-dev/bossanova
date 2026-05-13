@@ -275,6 +275,8 @@ func TestRepairSession_RecordsOutcomeOnAgentExitError(t *testing.T) {
 	got := mock.recordOutcomeReqs[0]
 	assert.Equal(t, "exit status 1", got.GetExitError())
 	assert.Empty(t, got.GetRunnerError(), "RunnerError stays empty when the agent ran")
+	assert.Equal(t, "abc123", got.GetHeadSha())
+	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, got.GetDisplayStatus())
 
 	// A non-zero agent exit is "the agent gave up", not "the issue was
 	// resolved" — FIX_COMPLETE must not fire.
@@ -302,11 +304,8 @@ func TestRepairSession_RunReturnsExitError(t *testing.T) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	assert.False(t, rm.cooldowns["s1"].IsZero(), "cooldown set when run owned even on failure")
-	// A failed run (exit error) means the agent never produced a useful
-	// outcome on this commit — recording the SHA would block retries
-	// indefinitely until a new push, even though the next sweep should be
-	// allowed to try again. The 1-minute cooldown still prevents thrash.
-	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "lastAttemptCommit must NOT be set when the agent exited with an error")
+	assert.Equal(t, "abc123", rm.lastAttemptCommit["s1"], "agent exit failures count as an attempted repair for this head")
+	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, rm.lastAttemptDisplayStatus["s1"])
 }
 
 func TestRepairSession_NotInFixingChecks(t *testing.T) {
@@ -479,6 +478,7 @@ func TestMaybeRepair_SkipsSameCommit(t *testing.T) {
 	}
 	rm := newTestMonitor(mock)
 	rm.lastAttemptCommit["s1"] = "abc123"
+	rm.lastAttemptDisplayStatus["s1"] = bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING
 
 	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
 
@@ -487,6 +487,66 @@ func TestMaybeRepair_SkipsSameCommit(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	startCalls, _, _, _ := mock.snapshot()
 	assert.Equal(t, 0, startCalls, "must skip repair for the same commit")
+}
+
+func TestMaybeRepair_AllowsSameCommitDifferentStatus(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, PrDisplayHeadSha: "abc123"},
+	}
+	rm := newTestMonitor(mock)
+	rm.lastAttemptCommit["s1"] = "abc123"
+	rm.lastAttemptDisplayStatus["s1"] = bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, true)
+
+	waitFor(t, func() bool {
+		c, _, _, _ := mock.snapshot()
+		return c > 0
+	}, "StartChatRun called when same head has a different repair status")
+}
+
+func TestMaybeRepair_SkipsPersistedSameHeadStatusAfterAgentRun(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                      "s1",
+			State:                   bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			PrDisplayHeadSha:        "abc123",
+			LastRepairHeadSha:       "abc123",
+			LastRepairDisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING,
+			LastRepairExitError:     "exit status 1",
+		},
+	}
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	assert.Equal(t, 0, startCalls, "persisted same-head/status agent exit must not retry forever")
+}
+
+func TestMaybeRepair_AllowsPersistedRunnerFailureSameHeadStatus(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                      "s1",
+			State:                   bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			PrDisplayHeadSha:        "abc123",
+			LastRepairHeadSha:       "abc123",
+			LastRepairDisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING,
+			LastRepairRunnerError:   "claude not on PATH",
+		},
+	}
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+
+	waitFor(t, func() bool {
+		c, _, _, _ := mock.snapshot()
+		return c > 0
+	}, "StartChatRun called after runner failure because no agent repair ran")
 }
 
 func TestMaybeRepair_SkipsAlreadyRepairing(t *testing.T) {

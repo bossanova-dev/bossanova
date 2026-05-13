@@ -115,6 +115,7 @@ func runLogin(cmd *cobra.Command) error {
 	if err := mgr.Login(ctx); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
+	captureAuthChanged(cmd.Context(), commandTelemetryClient(cmd), "login")
 
 	// Notify daemon so it can connect upstream immediately.
 	notifyDaemonAuthChange("login")
@@ -137,6 +138,7 @@ func runLogout(cmd *cobra.Command) error {
 	if err := mgr.Logout(); err != nil {
 		return fmt.Errorf("logout: %w", err)
 	}
+	captureAuthChanged(cmd.Context(), commandTelemetryClient(cmd), "logout")
 
 	// Notify daemon so it can disconnect upstream.
 	notifyDaemonAuthChange("logout")

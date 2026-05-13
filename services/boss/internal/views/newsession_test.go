@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // stubClient implements client.BossClient for testing NewSessionModel.
@@ -285,6 +286,27 @@ func TestNewSession_SingleRepoAutoSelects(t *testing.T) {
 	if m.selectedRepoID != "repo-1" {
 		t.Fatalf("selectedRepoID = %q, want %q", m.selectedRepoID, "repo-1")
 	}
+}
+
+func TestNewSession_CapturesSessionCreatedTelemetry(t *testing.T) {
+	enableViewTelemetryForTest(t)
+	rec := &fakeTelemetry{}
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m.SetTelemetry(rec)
+
+	m = sendMsg(t, m, streamSessionCreatedMsg{session: &pb.Session{Id: "session-1"}})
+
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(rec.events))
+	}
+	if rec.events[0] != telemetry.EventSessionCreated {
+		t.Fatalf("event = %q, want %q", rec.events[0], telemetry.EventSessionCreated)
+	}
+	if got := rec.props[0]["source"]; got != "tui" {
+		t.Fatalf("source = %v, want tui", got)
+	}
+	assertNoSensitiveTelemetryProps(t, rec.props[0])
 }
 
 func TestNewSession_MultipleReposShowTable(t *testing.T) {

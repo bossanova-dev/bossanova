@@ -237,7 +237,10 @@ message RecordRepairOutcomeRequest {
   string exit_error = 4;
   // Agent-side session ID, useful for cross-referencing the agent log.
   string agent_session_id = 5;
+  // Head SHA and display status this repair attempt targeted. Used to avoid
+  // rerunning the same agent repair forever after a non-zero agent exit.
+  string head_sha = 6;
+  DisplayStatus display_status = 7;
 }
 
 message RecordRepairOutcomeResponse {}
-

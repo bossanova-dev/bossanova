@@ -1,8 +1,13 @@
 package views
 
 import (
+	"context"
 	"os/exec"
 	"testing"
+
+	bosspty "github.com/recurser/boss/internal/pty"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // TestTmuxSessionAlive_EmptyName verifies the empty-name fast path so the
@@ -55,5 +60,42 @@ func TestTmuxSessionAlive_RealTmux(t *testing.T) {
 		append(append([]string{}, socketArgs...), "has-session", "-t", name)...)
 	if err := probe.Run(); err != nil {
 		t.Fatalf("expected has-session to succeed against created session: %v", err)
+	}
+}
+
+type attachTelemetryStub struct {
+	stubClient
+}
+
+func (s *attachTelemetryStub) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
+	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
+}
+
+func TestAttach_CapturesChatCreatedAndAttachedTelemetry(t *testing.T) {
+	enableViewTelemetryForTest(t)
+	rec := &fakeTelemetry{}
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+	m.SetTelemetry(rec)
+
+	updated, cmd := m.Update(attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   nil,
+	})
+	_ = updated.(AttachModel)
+	if cmd == nil {
+		t.Fatal("expected attach exec cmd")
+	}
+
+	if len(rec.events) != 2 {
+		t.Fatalf("events = %d, want 2", len(rec.events))
+	}
+	if rec.events[0] != telemetry.EventChatCreated {
+		t.Fatalf("event[0] = %q, want %q", rec.events[0], telemetry.EventChatCreated)
+	}
+	if rec.events[1] != telemetry.EventChatAttached {
+		t.Fatalf("event[1] = %q, want %q", rec.events[1], telemetry.EventChatAttached)
+	}
+	for _, props := range rec.props {
+		assertNoSensitiveTelemetryProps(t, props)
 	}
 }

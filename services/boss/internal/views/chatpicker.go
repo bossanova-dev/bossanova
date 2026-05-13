@@ -14,6 +14,8 @@ import (
 	"github.com/recurser/boss/internal/agent"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/vcs"
 )
 
 // chatPickerSessionMsg carries a session fetched via RPC for the chat picker.
@@ -58,6 +60,19 @@ type newTabResultMsg struct {
 	err error
 }
 
+type repoWebLink struct {
+	provider string
+	url      string
+}
+
+type repoWebLinkMsg struct {
+	link repoWebLink
+}
+
+type webOpenResultMsg struct {
+	err error
+}
+
 // mergeResultMsg carries the result of an async MergeSession RPC call.
 type mergeResultMsg struct {
 	err error
@@ -74,6 +89,7 @@ type wakeResultMsg struct {
 // resuming a previous Claude Code conversation for a session.
 type ChatPickerModel struct {
 	client           client.BossClient
+	telemetry        telemetry.Client
 	ctx              context.Context
 	sessionID        string
 	highlightID      string               // agent session ID to auto-highlight after detach
@@ -98,7 +114,8 @@ type ChatPickerModel struct {
 
 	// Transient status line (e.g. "couldn't open new tab in <term>"),
 	// cleared on the next keypress.
-	statusMsg string
+	statusMsg   string
+	repoWebLink repoWebLink
 
 	// Remove confirmation
 	confirming             bool
@@ -115,6 +132,11 @@ type ChatPickerModel struct {
 	agents       []client.AgentInfo
 	agentTable   table.Model
 	pickingAgent bool // true while showing the one-shot agent picker
+}
+
+// SetTelemetry installs a telemetry client for successful chat-picker actions.
+func (m *ChatPickerModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
 }
 
 // NewChatPickerModel creates a ChatPickerModel for the given session.
@@ -172,6 +194,30 @@ func (m ChatPickerModel) listChats() tea.Cmd {
 		}
 		statuses, lastOutput := parseChatStatuses(m.client, m.ctx, m.sessionID)
 		return chatsListedMsg{chats: chats, daemonStatuses: statuses, daemonLastOutput: lastOutput}
+	}
+}
+
+func (m ChatPickerModel) fetchRepoWebLink() tea.Cmd {
+	if m.session == nil || m.session.GetRepoId() == "" {
+		return nil
+	}
+	repoID := m.session.GetRepoId()
+	return func() tea.Msg {
+		repos, err := m.client.ListRepos(m.ctx)
+		if err != nil {
+			return repoWebLinkMsg{}
+		}
+		for _, repo := range repos {
+			if repo.GetId() != repoID {
+				continue
+			}
+			provider, webURL, ok := vcs.RepoWebLink(repo.GetOriginUrl())
+			if !ok {
+				return repoWebLinkMsg{}
+			}
+			return repoWebLinkMsg{link: repoWebLink{provider: provider, url: webURL}}
+		}
+		return repoWebLinkMsg{}
 	}
 }
 
@@ -332,7 +378,11 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatPickerSessionMsg:
 		m.session = msg.session
-		return m, m.listChats()
+		return m, tea.Batch(m.listChats(), m.fetchRepoWebLink())
+
+	case repoWebLinkMsg:
+		m.repoWebLink = msg.link
+		return m, nil
 
 	case agentsMsg:
 		// Errors are non-fatal: an empty agent list collapses the picker
@@ -409,6 +459,17 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case newTabResultMsg:
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Couldn't open new tab: %v", msg.err)
+			return m, nil
+		}
+		captureViewTelemetry(m.ctx, m.telemetry, telemetry.EventChatAttached, map[string]any{
+			"source": "tui",
+			"action": "open",
+		})
+		return m, nil
+
+	case webOpenResultMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Couldn't open GitHub: %v", msg.err)
 		}
 		return m, nil
 
@@ -527,6 +588,13 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, func() tea.Msg {
 				return newTabResultMsg{err: openInNewTab(path)}
+			}
+		case "g":
+			if m.repoWebLink.provider == "github" && m.repoWebLink.url != "" {
+				repoURL := m.repoWebLink.url
+				return m, func() tea.Msg {
+					return webOpenResultMsg{err: openURLFunc(repoURL)}
+				}
 			}
 		case "m":
 			if !m.canMerge() {
@@ -784,6 +852,9 @@ func (m ChatPickerModel) View() tea.View {
 		middle := []string{"[n]ew chat", "[s]ettings"}
 		if m.newTabSupported {
 			middle = append(middle, "[t]erminal")
+		}
+		if m.repoWebLink.provider == "github" && m.repoWebLink.url != "" {
+			middle = append(middle, "[g]ithub")
 		}
 		if m.canMerge() {
 			middle = append(middle, "[m]erge")

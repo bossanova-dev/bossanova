@@ -65,6 +65,46 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestPostHogSettingsDefaultDisabled(t *testing.T) {
+	s := DefaultSettings()
+
+	if s.EventTracingEnabled {
+		t.Fatal("EventTracingEnabled default = true, want false")
+	}
+	if s.PostHogProjectToken != "" {
+		t.Fatalf("PostHogProjectToken default = %q, want empty", s.PostHogProjectToken)
+	}
+	if s.PostHogHost != "" {
+		t.Fatalf("PostHogHost default = %q, want empty", s.PostHogHost)
+	}
+}
+
+func TestPostHogSettingsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	in := DefaultSettings()
+	in.EventTracingEnabled = true
+	in.PostHogProjectToken = "phc_test"
+	in.PostHogHost = "https://eu.i.posthog.com"
+
+	if err := SaveTo(path, in); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	out, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if !out.EventTracingEnabled {
+		t.Fatal("EventTracingEnabled did not round-trip")
+	}
+	if out.PostHogProjectToken != "phc_test" {
+		t.Fatalf("PostHogProjectToken = %q", out.PostHogProjectToken)
+	}
+	if out.PostHogHost != "https://eu.i.posthog.com" {
+		t.Fatalf("PostHogHost = %q", out.PostHogHost)
+	}
+}
+
 func TestLoadFrom_BackfillsDefaultAgent(t *testing.T) {
 	// LoadFrom must guarantee a non-empty DefaultAgent on two file shapes:
 	//   1. Legacy file: omits default_agent entirely (older binary).

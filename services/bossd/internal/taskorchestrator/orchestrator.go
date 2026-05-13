@@ -64,6 +64,7 @@ type Orchestrator struct {
 	provider        vcs.Provider
 	baseSyncer      BaseBranchSyncer       // optional; nil-safe
 	livenessChecker SessionLivenessChecker // optional; nil-safe
+	autoMergeSem    chan struct{}
 	interval        time.Duration
 	logger          zerolog.Logger
 
@@ -103,6 +104,7 @@ func New(
 		provider:        provider,
 		baseSyncer:      baseSyncer,
 		livenessChecker: livenessChecker,
+		autoMergeSem:    make(chan struct{}, 1),
 		interval:        interval,
 		logger:          logger.With().Str("component", "task-orchestrator").Logger(),
 		queues:          make(map[string][]queuedTask),
@@ -663,6 +665,15 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 			Msg("cannot parse PR number for auto-merge")
 		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
 		return
+	}
+
+	if o.autoMergeSem != nil {
+		select {
+		case o.autoMergeSem <- struct{}{}:
+			defer func() { <-o.autoMergeSem }()
+		case <-ctx.Done():
+			return
+		}
 	}
 
 	o.logger.Info().

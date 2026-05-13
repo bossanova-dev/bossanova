@@ -6,7 +6,11 @@
 	test-docs test-integration-bossd
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
-all: clean generate format build plugins build-all plugins-all
+all:
+	$(MAKE) clean
+	$(MAKE) generate
+	$(MAKE) format
+	$(MAKE) build plugins build-all plugins-all
 
 # Pinned golangci-lint version. Must match the version used in CI
 # (.github/workflows/*.yml). Bumping requires coordinated changes to both.

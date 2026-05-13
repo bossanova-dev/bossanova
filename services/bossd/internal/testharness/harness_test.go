@@ -81,6 +81,7 @@ func TestHarness_CreateSession(t *testing.T) {
 	}
 	if sess == nil {
 		t.Fatal("expected session in response")
+		return
 	}
 	if sess.Title != "Fix login bug" {
 		t.Fatalf("expected title 'Fix login bug', got %q", sess.Title)

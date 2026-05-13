@@ -179,6 +179,9 @@ type Settings struct {
 	DefaultAgent          string         `json:"default_agent,omitempty"`
 	SkillsDeclined        bool           `json:"skills_declined,omitempty"`
 	PollIntervalSeconds   int            `json:"poll_interval_seconds,omitempty"`
+	EventTracingEnabled   bool           `json:"event_tracing_enabled,omitempty"`
+	PostHogProjectToken   string         `json:"posthog_project_token,omitempty"`
+	PostHogHost           string         `json:"posthog_host,omitempty"`
 	Plugins               []PluginConfig `json:"plugins,omitempty"`
 	Repair                RepairConfig   `json:"repair,omitzero"`
 	ProvidersAcknowledged bool           `json:"providers_acknowledged,omitempty"`

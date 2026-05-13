@@ -461,8 +461,9 @@ func (h *Harness) SeedSessionInState(t *testing.T, ctx context.Context, repoID s
 	}
 	if created == nil {
 		t.Fatal("SeedSessionInState: no SessionCreated in stream")
+	} else {
+		sessionID = created.Id
 	}
-	sessionID = created.Id
 
 	switch state {
 	case pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN:

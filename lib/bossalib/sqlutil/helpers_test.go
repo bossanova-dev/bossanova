@@ -73,9 +73,7 @@ func TestParseOptionalTime(t *testing.T) {
 		got := ParseOptionalTime(&s)
 		if got == nil {
 			t.Fatal("ParseOptionalTime(&valid) = nil, want non-nil")
-		}
-		want := time.Date(2024, 6, 15, 10, 30, 45, 0, time.UTC)
-		if !got.Equal(want) {
+		} else if want := time.Date(2024, 6, 15, 10, 30, 45, 0, time.UTC); !got.Equal(want) {
 			t.Errorf("ParseOptionalTime(%q) = %v, want %v", s, *got, want)
 		}
 	})

@@ -176,13 +176,13 @@ func (m LoginModel) View() tea.View {
 	var content string
 	switch m.phase {
 	case loginPhaseRequesting:
-		content = padding.Render(m.spinner.View() + " Requesting device code...")
+		content = padding.Render(m.spinner.View() + "Requesting device code...")
 
 	case loginPhasePolling:
 		content = padding.Render(
 			fmt.Sprintf("Your authentication code: %s\n\n", styleSelected.Render(m.userCode))+
 				fmt.Sprintf("Visit: %s\n\n", m.verifyURL)+
-				m.spinner.View()+" Waiting for authentication...",
+				m.spinner.View()+"Waiting for authentication...",
 		) + "\n" +
 			styleActionBar.Render("[esc] cancel")
 

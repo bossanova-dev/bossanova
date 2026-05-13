@@ -1,7 +1,10 @@
 package views
 
 import (
+	"context"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // resumeTickCmd exists to restart the self-perpetuating tick chain in views
@@ -33,5 +36,29 @@ func TestResumeTickCmd(t *testing.T) {
 		if resumeTickCmd(v) != nil {
 			t.Errorf("resumeTickCmd(%v) returned non-nil; expected nil", v)
 		}
+	}
+}
+
+func TestAppAttachDetachWiresChatPickerTelemetry(t *testing.T) {
+	rec := &fakeTelemetry{}
+	a := App{
+		ctx:        context.Background(),
+		activeView: ViewAttach,
+		telemetry:  rec,
+		width:      80,
+		height:     24,
+	}
+	a.attach = NewAttachModel(nil, a.ctx, nil, "session-1", "")
+	a.attach.agentSessionID = "agent-1"
+	a.attach.detach = true
+
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+
+	if got.activeView != ViewChatPicker {
+		t.Fatalf("activeView = %v, want %v", got.activeView, ViewChatPicker)
+	}
+	if got.chatPicker.telemetry != rec {
+		t.Fatal("chat picker telemetry was not preserved after attach detach")
 	}
 }

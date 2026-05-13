@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // settingsAgentStub embeds *stubClient so it satisfies BossClient — only
@@ -25,10 +26,54 @@ func TestSettings_RendersBuiltInRowsWithoutAgents(t *testing.T) {
 	withTempConfigHome(t)
 	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
 	out := m.View().Content
-	for _, want := range []string{"Worktree base directory", "Poll interval"} {
+	for _, want := range []string{
+		"Worktree base directory",
+		"Poll interval",
+		"tracing",
+		"Enable event tracing (for debugging problems)",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("settings missing %q in:\n%s", want, out)
 		}
+	}
+	for _, hidden := range []string{"PostHog project token", "PostHog host", "set when tracing is enabled"} {
+		if strings.Contains(out, hidden) {
+			t.Errorf("settings unexpectedly showed %q in:\n%s", hidden, out)
+		}
+	}
+}
+
+func TestSettings_EventTracingToggleSeedsDefaults(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindEventTracing {
+			m.cursor = i
+			break
+		}
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	m = updated.(SettingsModel)
+
+	if !m.settings.EventTracingEnabled {
+		t.Error("space did not enable event tracing")
+	}
+	if got := m.settings.PostHogProjectToken; got != telemetry.ProductionProjectToken {
+		t.Errorf("PostHogProjectToken = %q, want %q", got, telemetry.ProductionProjectToken)
+	}
+	if got := m.settings.PostHogHost; got != telemetry.DefaultHost {
+		t.Errorf("PostHogHost = %q, want %q", got, telemetry.DefaultHost)
+	}
+	out := m.View().Content
+	for _, want := range []string{"PostHog project token", "PostHog host"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("settings missing %q after enabling tracing in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "set when tracing is enabled") {
+		t.Errorf("settings showed obsolete tracing placeholder in:\n%s", out)
 	}
 }
 
@@ -192,6 +237,37 @@ func TestSettings_DefaultAgentRowAppearsForMultiAgent(t *testing.T) {
 		if r.Kind == settingsRowKindDefaultAgent {
 			t.Error("Default agent row should not appear with a single agent")
 		}
+	}
+}
+
+func TestSettings_DefaultAgentAgentsThenTracingOrder(t *testing.T) {
+	withTempConfigHome(t)
+	stub := &settingsAgentStub{
+		stubClient: &stubClient{},
+		agents: []client.AgentInfo{
+			{Name: "claude", UserSettings: []client.UserSetting{{Key: "x", Label: "X", Type: client.SettingTypeBool}}},
+			{Name: "codex", UserSettings: []client.UserSetting{{Key: "y", Label: "Y", Type: client.SettingTypeBool}}},
+		},
+	}
+	m := NewSettingsModel(stub, context.Background())
+
+	indexOf := func(kind settingsRowKind, label string) int {
+		for i, row := range m.rows {
+			if row.Kind == kind && row.Label == label {
+				return i
+			}
+		}
+		return -1
+	}
+
+	defaultAgent := indexOf(settingsRowKindDefaultAgent, "Default agent")
+	claude := indexOf(settingsRowKindAgentHeader, "claude")
+	codex := indexOf(settingsRowKindAgentHeader, "codex")
+	tracing := indexOf(settingsRowKindTracingHeader, "tracing")
+	eventTracing := indexOf(settingsRowKindEventTracing, "Enable event tracing (for debugging problems)")
+	if defaultAgent < 0 || claude <= defaultAgent || codex <= claude || tracing <= codex || eventTracing <= tracing {
+		t.Fatalf("unexpected row order: default=%d claude=%d codex=%d tracing=%d event=%d rows=%v",
+			defaultAgent, claude, codex, tracing, eventTracing, m.rows)
 	}
 }
 

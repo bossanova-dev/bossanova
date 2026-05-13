@@ -98,6 +98,7 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 		}
 	}
 	app := views.NewApp(c, newOptionalAuthManager(cmd))
+	app.WithTelemetry(commandTelemetryClient(cmd))
 	if configure != nil {
 		configure(&app)
 	}

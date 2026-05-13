@@ -90,6 +90,8 @@ func SessionToProto(s *models.Session) *pb.Session {
 	p.LastRepairRunnerError = s.LastRepairRunnerError
 	p.LastRepairExitError = s.LastRepairExitError
 	p.LastRepairAttemptCount = int32(s.LastRepairAttemptCount)
+	p.LastRepairHeadSha = s.LastRepairHeadSHA
+	p.LastRepairDisplayStatus = pb.DisplayStatus(s.LastRepairDisplayStatus)
 	if s.LastRepairStartedAt != nil {
 		p.LastRepairStartedAt = timestamppb.New(*s.LastRepairStartedAt)
 	}

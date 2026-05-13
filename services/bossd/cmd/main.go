@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -27,6 +29,7 @@ import (
 	bossalog "github.com/recurser/bossalib/log"
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
+	libtelemetry "github.com/recurser/bossalib/telemetry"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -42,6 +45,7 @@ import (
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/taskorchestrator"
+	daemontelemetry "github.com/recurser/bossd/internal/telemetry"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/recurser/bossd/internal/upstream"
 	"github.com/recurser/bossd/internal/vcs/github"
@@ -338,6 +342,8 @@ func run(opts runOpts) error {
 	// --- Settings + Display Poller ---
 
 	settings, _ := config.Load()
+	telemetryClient := libtelemetry.New(daemontelemetry.ConfigFromSettings(settings))
+	defer telemetryClient.Close()
 
 	// Bossd-owned log dir for agent runs. Lives outside the worktree so a
 	// hostile/buggy plugin can't path-traverse via symlinks. Plugin opens
@@ -1158,6 +1164,8 @@ func run(opts runOpts) error {
 
 	// --- Ready hook (tests) ---
 
+	telemetryClient.Capture(context.Background(), libtelemetry.EventDaemonStarted, daemonDistinctID(), nil)
+
 	if opts.onReady != nil {
 		safego.Go(log.Logger, opts.onReady)
 	}
@@ -1227,6 +1235,19 @@ func run(opts runOpts) error {
 
 	log.Info().Msg("daemon stopped")
 	return nil
+}
+
+func daemonDistinctID() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return "daemon:unknown"
+	}
+	sum := sha256.Sum256([]byte(hostname))
+	hash := hex.EncodeToString(sum[:])
+	if len(hash) < 16 {
+		return "daemon:unknown"
+	}
+	return "daemon:" + hash[:16]
 }
 
 // sessionGetterAdapter wires db.SessionStore.Get into the

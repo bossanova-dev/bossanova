@@ -64,12 +64,15 @@ const config: Config = {
       logo: {
         alt: 'Bossanova',
         src: 'img/logo.png',
+        href: 'https://bossanova.dev',
+        target: '_self',
       },
       items: [
         {
           href: 'https://bossanova.dev/cloud',
           label: 'Cloud',
           position: 'right',
+          target: '_self',
         },
         {
           to: '/',
@@ -80,22 +83,26 @@ const config: Config = {
           href: 'https://bossanova.dev/pricing',
           label: 'Pricing',
           position: 'right',
+          target: '_self',
         },
         {
           href: 'https://github.com/bossanova-dev/bossanova',
           label: 'GitHub',
           position: 'right',
+          target: '_blank',
         },
         {
           href: 'https://app.bossanova.dev',
           label: 'Sign in',
           position: 'right',
+          target: '_self',
         },
         {
           href: 'https://bossanova.dev/quick-start',
           label: 'Try Now',
           position: 'right',
           className: 'navbar__link--cta',
+          target: '_self',
         },
       ],
     },

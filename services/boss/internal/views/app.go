@@ -10,6 +10,7 @@ import (
 	bosspty "github.com/recurser/boss/internal/pty"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // View identifies which screen is currently active.
@@ -37,6 +38,7 @@ const (
 type App struct {
 	client          client.BossClient
 	auth            *auth.Manager
+	telemetry       telemetry.Client
 	ctx             context.Context
 	ptyManager      *bosspty.Manager
 	activeView      View
@@ -58,6 +60,12 @@ type App struct {
 	width           int
 	height          int
 	quitting        bool
+}
+
+// WithTelemetry installs a telemetry client for action-level view events.
+func (a *App) WithTelemetry(client telemetry.Client) *App {
+	a.telemetry = client
+	return a
 }
 
 // NewApp creates a new App wired to the daemon client.
@@ -93,6 +101,7 @@ func (a *App) SetInitialView(v View) {
 // SetAttachSession sets the session ID to attach to. Must be called after SetInitialView(ViewAttach).
 func (a *App) SetAttachSession(sessionID, resumeID string) {
 	a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, sessionID, resumeID)
+	a.attach.SetTelemetry(a.telemetry)
 }
 
 // SetInitialAgent overrides the agent for new sessions created via the
@@ -104,6 +113,7 @@ func (a *App) SetInitialAgent(name string) {
 
 func (a App) newSessionModel() NewSessionModel {
 	m := NewNewSessionModel(a.client, a.ctx)
+	m.SetTelemetry(a.telemetry)
 	settings, err := config.Load()
 	if err == nil {
 		m.SetPreferredAgent(settings.DefaultAgent)
@@ -209,6 +219,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.newSession.Init()
 		case ViewChatPicker:
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, msg.sessionID, "")
+			a.chatPicker.SetTelemetry(a.telemetry)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			return a, a.chatPicker.Init()
@@ -240,6 +251,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.settings.Init()
 		case ViewAttach:
 			a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, msg.sessionID, msg.resumeID)
+			a.attach.SetTelemetry(a.telemetry)
 			a.attach.SetOverrideAgent(msg.agentName)
 			return a, a.attach.Init()
 		case ViewLogin:
@@ -290,6 +302,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// session creation must NOT — the user has just configured
 				// the session and expects to start chatting immediately.
 				a.attach = NewAttachModel(a.client, a.ctx, a.ptyManager, sess.Id, "")
+				a.attach.SetTelemetry(a.telemetry)
 				a.activeView = ViewAttach
 				return a, a.attach.Init()
 			}
@@ -359,6 +372,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				highlightID = a.chatPicker.chats[cursor].AgentSessionId
 			}
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, a.sessionSettings.sessionID, highlightID)
+			a.chatPicker.SetTelemetry(a.telemetry)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			a.activeView = ViewChatPicker
@@ -386,6 +400,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sessionID := a.attach.SessionID()
 			agentSessionID := a.attach.AgentSessionID()
 			a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, agentSessionID)
+			a.chatPicker.SetTelemetry(a.telemetry)
 			a.chatPicker.width = a.width
 			a.chatPicker.height = a.height
 			a.activeView = ViewChatPicker

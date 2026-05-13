@@ -116,7 +116,7 @@ func parseRepairConfig(configJSON string) (*repairConfig, error) {
 //
 // Locking discipline: every read or write of the mutable fields below
 // (ctx, cancel, stopped, paused, config, repairing, cooldowns,
-// lastAttemptCommit, and the test* overrides) MUST happen with mu held.
+// lastAttemptCommit, lastAttemptDisplayStatus, and the test* overrides) MUST happen with mu held.
 // In particular, anything derived from config (cooldownDuration,
 // pollInterval, sweepInterval, stuckTimeout, forceAdvanceTimeout, skillName)
 // must be re-read under the lock — values cached across an unlock are
@@ -131,18 +131,19 @@ type repairMonitor struct {
 	host   hostClient
 	logger zerolog.Logger
 
-	mu                      sync.Mutex
-	ctx                     context.Context      // Workflow context
-	cancel                  context.CancelFunc   // Cancel function for the workflow
-	stopped                 bool                 // True after CancelWorkflow until next StartWorkflow
-	paused                  bool                 // True after PauseWorkflow until ResumeWorkflow
-	config                  *repairConfig        // Parsed config from StartWorkflowRequest
-	repairing               map[string]bool      // Sessions currently being repaired
-	cooldowns               map[string]time.Time // Last repair attempt time per session
-	lastAttemptCommit       map[string]string    // Head SHA of last repair attempt per session
-	testSweepInterval       time.Duration        // Override sweep interval for tests
-	testStuckTimeout        time.Duration        // Override stuck timeout for tests
-	testForceAdvanceTimeout time.Duration        // Override force-advance timeout for tests
+	mu                       sync.Mutex
+	ctx                      context.Context      // Workflow context
+	cancel                   context.CancelFunc   // Cancel function for the workflow
+	stopped                  bool                 // True after CancelWorkflow until next StartWorkflow
+	paused                   bool                 // True after PauseWorkflow until ResumeWorkflow
+	config                   *repairConfig        // Parsed config from StartWorkflowRequest
+	repairing                map[string]bool      // Sessions currently being repaired
+	cooldowns                map[string]time.Time // Last repair attempt time per session
+	lastAttemptCommit        map[string]string    // Head SHA of last repair attempt per session
+	lastAttemptDisplayStatus map[string]bossanovav1.DisplayStatus
+	testSweepInterval        time.Duration // Override sweep interval for tests
+	testStuckTimeout         time.Duration // Override stuck timeout for tests
+	testForceAdvanceTimeout  time.Duration // Override force-advance timeout for tests
 
 	// wg tracks every goroutine the monitor launches (repair sessions and
 	// the two sweep loops). Shutdown cancels ctx and Waits on wg with a
@@ -153,14 +154,15 @@ type repairMonitor struct {
 func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &repairMonitor{
-		host:              host,
-		logger:            logger,
-		ctx:               ctx,
-		cancel:            cancel,
-		stopped:           true, // Reject notifications until StartWorkflow sets config.
-		repairing:         make(map[string]bool),
-		cooldowns:         make(map[string]time.Time),
-		lastAttemptCommit: make(map[string]string),
+		host:                     host,
+		logger:                   logger,
+		ctx:                      ctx,
+		cancel:                   cancel,
+		stopped:                  true, // Reject notifications until StartWorkflow sets config.
+		repairing:                make(map[string]bool),
+		cooldowns:                make(map[string]time.Time),
+		lastAttemptCommit:        make(map[string]string),
+		lastAttemptDisplayStatus: make(map[string]bossanovav1.DisplayStatus),
 	}
 }
 
@@ -449,6 +451,17 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	repoName := info.RepoName
 	sessionTitle := info.SessionTitle
 	headSHA := info.HeadSHA
+	if headSHA != "" &&
+		info.LastRepairHeadSHA == headSHA &&
+		info.LastRepairDisplayStatus == displayStatus &&
+		info.LastRepairRunnerError == "" {
+		m.logger.Info().
+			Str("session_id", sessionID).
+			Str("head_sha", headSHA).
+			Int32("display_status", int32(displayStatus)).
+			Msg("already attempted repair on this commit according to persisted diagnostics, skipping")
+		return
+	}
 
 	// Re-acquire lock to mark as repairing and re-check every guard. The
 	// world may have moved while we were doing RPCs without the lock:
@@ -467,11 +480,12 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		m.mu.Unlock()
 		return
 	}
-	if headSHA != "" && m.lastAttemptCommit[sessionID] == headSHA {
+	if headSHA != "" && m.lastAttemptCommit[sessionID] == headSHA && m.lastAttemptDisplayStatus[sessionID] == displayStatus {
 		m.mu.Unlock()
 		m.logger.Info().
 			Str("session_id", sessionID).
 			Str("head_sha", headSHA).
+			Int32("display_status", int32(displayStatus)).
 			Msg("already attempted repair on this commit, skipping")
 		return
 	}
@@ -493,12 +507,15 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 // to make its decisions. Decoupling from the proto session type keeps the
 // idle-gate logic isolated and easy to test.
 type sessionInfo struct {
-	Repairable         bool
-	HasActiveChat      bool
-	LastChatActivityAt time.Time // zero if no live chat or unknown
-	RepoName           string
-	SessionTitle       string
-	HeadSHA            string
+	Repairable              bool
+	HasActiveChat           bool
+	LastChatActivityAt      time.Time // zero if no live chat or unknown
+	RepoName                string
+	SessionTitle            string
+	HeadSHA                 string
+	LastRepairHeadSHA       string
+	LastRepairDisplayStatus bossanovav1.DisplayStatus
+	LastRepairRunnerError   string
 }
 
 // lookupSession resolves the daemon's view of the session and returns the
@@ -523,10 +540,13 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 			continue
 		}
 		info := sessionInfo{
-			HasActiveChat: sess.GetHasActiveChat(),
-			RepoName:      sess.GetRepoDisplayName(),
-			SessionTitle:  sess.GetTitle(),
-			HeadSHA:       sess.GetPrDisplayHeadSha(),
+			HasActiveChat:           sess.GetHasActiveChat(),
+			RepoName:                sess.GetRepoDisplayName(),
+			SessionTitle:            sess.GetTitle(),
+			HeadSHA:                 sess.GetPrDisplayHeadSha(),
+			LastRepairHeadSHA:       sess.GetLastRepairHeadSha(),
+			LastRepairDisplayStatus: sess.GetLastRepairDisplayStatus(),
+			LastRepairRunnerError:   sess.GetLastRepairRunnerError(),
 		}
 		if ts := sess.GetLastChatActivityAt(); ts != nil {
 			info.LastChatActivityAt = ts.AsTime()
@@ -739,9 +759,9 @@ func (m *repairMonitor) periodicSweep(ctx context.Context) {
 // daemon also enforces one-active-Claude-per-session via StartClaudeRun.
 // Losing that race surfaces as AlreadyExists and is treated as a soft skip:
 // no cooldown recorded, no IsRepairing flag set, so the winner's cleanup
-// owns both. attemptRan controls whether lastAttemptCommit is updated, so
-// infrastructure failures (StartClaudeRun, WaitClaudeRun) don't block a
-// retry on the same commit.
+// owns both. attemptRan controls whether lastAttemptCommit is updated:
+// a completed agent run, even with a non-zero exit, blocks same-head/status
+// retries; StartChatRun and WaitChatRun infrastructure failures stay retryable.
 func (m *repairMonitor) repairSession(
 	ctx context.Context,
 	sessionID, repoName, sessionName string,
@@ -774,6 +794,7 @@ func (m *repairMonitor) repairSession(
 		}
 		if attemptRan && headSHA != "" {
 			m.lastAttemptCommit[sessionID] = headSHA
+			m.lastAttemptDisplayStatus[sessionID] = displayStatus
 		}
 		m.mu.Unlock()
 
@@ -792,6 +813,8 @@ func (m *repairMonitor) repairSession(
 					RunnerError:    outcomeRunnerError,
 					ExitError:      outcomeExitError,
 					AgentSessionId: outcomeAgentSessionID,
+					HeadSha:        headSHA,
+					DisplayStatus:  displayStatus,
 				}); err != nil {
 					log.Warn().Err(err).Msg("failed to record repair outcome")
 				}
@@ -868,16 +891,14 @@ func (m *repairMonitor) repairSession(
 		log.Error().Err(waitErr).Msg("wait for repair run failed")
 		return
 	}
+	// The agent process ran and reported an outcome. Whether it exits clean
+	// or non-zero, do not rerun the same head/status forever.
+	attemptRan = true
 	if exitErr := waitResp.GetExitError(); exitErr != "" {
 		outcomeExitError = exitErr
 		log.Error().Str("error", exitErr).Msg("repair attempt failed")
 		return
 	}
-	// Only record the SHA after a clean run. WaitChatRun errors and
-	// non-empty exit errors are infrastructure-class failures: we have no
-	// signal that the agent considered the issue at all, so the next sweep
-	// must be free to retry. The cooldown still throttles thrash.
-	attemptRan = true
 
 	log.Info().Msg("repair attempt completed successfully")
 

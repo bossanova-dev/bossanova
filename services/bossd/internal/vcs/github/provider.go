@@ -423,7 +423,7 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 
 // ListOpenPRs returns all open pull requests for a repository.
 func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
-	out, err := p.runGH(ctx,
+	out, err := p.runGHWithTransientRetry(ctx, "list open PRs",
 		"pr", "list",
 		"--repo", repoFlag(repoPath),
 		"--state", "open",
@@ -463,7 +463,7 @@ func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSu
 
 // ListClosedPRs returns recently-closed (not merged) pull requests.
 func (p *Provider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
-	out, err := p.runGH(ctx,
+	out, err := p.runGHWithTransientRetry(ctx, "list closed PRs",
 		"pr", "list",
 		"--repo", repoFlag(repoPath),
 		"--state", "closed",
@@ -513,7 +513,7 @@ func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, strat
 		flag = "--squash"
 	}
 
-	_, err := p.runGH(ctx,
+	_, err := p.runGHWithTransientRetry(ctx, "merge PR",
 		"pr", "merge", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
 		flag,
@@ -655,6 +655,71 @@ func defaultRunGH(ctx context.Context, args ...string) (string, error) {
 		return "", fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
+}
+
+func (p *Provider) runGHWithTransientRetry(ctx context.Context, op string, args ...string) (string, error) {
+	const maxAttempts = 4
+	backoff := 30 * time.Second
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		out, err := p.runGH(ctx, args...)
+		if err == nil {
+			return out, nil
+		}
+		if !isGitHubTransient(err) {
+			return "", err
+		}
+		lastErr = err
+		if attempt == maxAttempts {
+			break
+		}
+
+		p.logger.Warn().Err(err).
+			Str("op", op).
+			Int("attempt", attempt).
+			Dur("backoff", backoff).
+			Msg("github transient error, retrying")
+
+		p.sleepFn(backoff)
+		backoff *= 2
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+	}
+
+	return "", lastErr
+}
+
+func isGitHubTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	transientFragments := []string{
+		"api rate limit",
+		"secondary rate limit",
+		"too many requests",
+		"bad gateway",
+		"service unavailable",
+		"gateway timeout",
+		"http 429",
+		"http 502",
+		"http 503",
+		"http 504",
+		"non-200 ok status code: 502",
+		"non-200 ok status code: 503",
+		"non-200 ok status code: 504",
+	}
+	for _, fragment := range transientFragments {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 // parsePRNumberFromURL extracts the PR number from a GitHub PR URL.

@@ -50,6 +50,7 @@ func TestDisplayPoller_PollsSessionWithPR(t *testing.T) {
 	e := tracker.Get("sess-1")
 	if e == nil {
 		t.Fatal("expected tracker entry for sess-1, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusPassing {
 		t.Errorf("Status = %d, want %d (Passing)", e.Status, vcs.DisplayStatusPassing)
@@ -118,6 +119,7 @@ func TestDisplayPoller_MergedPR(t *testing.T) {
 	e := tracker.Get("sess-1")
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusMerged {
 		t.Errorf("Status = %d, want %d (Merged)", e.Status, vcs.DisplayStatusMerged)
@@ -159,6 +161,7 @@ func TestDisplayPoller_FailingChecks(t *testing.T) {
 	e := tracker.Get("sess-1")
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusFailing {
 		t.Errorf("Status = %d, want %d (Failing)", e.Status, vcs.DisplayStatusFailing)
@@ -203,6 +206,7 @@ func TestDisplayPoller_ChangesRequested(t *testing.T) {
 	e := tracker.Get("sess-1")
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusRejected {
 		t.Errorf("Status = %d, want %d (Rejected)", e.Status, vcs.DisplayStatusRejected)
@@ -281,6 +285,7 @@ func TestDisplayPoller_CheckResultsError_PreservesPrevious(t *testing.T) {
 	e := tracker.Get("sess-1")
 	if e == nil {
 		t.Fatal("previous entry must be preserved on API error, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusFailing {
 		t.Errorf("Status = %d, want %d (Failing — previous status sticks on error)", e.Status, vcs.DisplayStatusFailing)
@@ -360,6 +365,7 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 	e := tracker.Get("sess-1")
 	if e == nil {
 		t.Fatal("expected tracker entry, got nil")
+		return
 	}
 	if e.Status != vcs.DisplayStatusDraft {
 		t.Errorf("Status = %d, want %d (Draft)", e.Status, vcs.DisplayStatusDraft)

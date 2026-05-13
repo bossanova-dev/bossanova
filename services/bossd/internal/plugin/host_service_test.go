@@ -323,7 +323,7 @@ func TestStartAgentRun_HappyPath(t *testing.T) {
 
 	resp, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "sess-1",
-		Prompt:    "/boss-repair",
+		Prompt:    "fix this bug",
 	})
 	if err != nil {
 		t.Fatalf("StartAgentRun: %v", err)
@@ -334,8 +334,8 @@ func TestStartAgentRun_HappyPath(t *testing.T) {
 	if client.startCall.workDir != "/tmp/wt" {
 		t.Errorf("workDir = %q, want /tmp/wt", client.startCall.workDir)
 	}
-	if client.startCall.plan != "/boss-repair" {
-		t.Errorf("plan = %q, want /boss-repair", client.startCall.plan)
+	if client.startCall.plan != "fix this bug" {
+		t.Errorf("plan = %q, want fix this bug", client.startCall.plan)
 	}
 	if client.startCall.logPath == "" {
 		t.Error("logPath should be set from agentLogsDir")
@@ -345,6 +345,26 @@ func TestStartAgentRun_HappyPath(t *testing.T) {
 	}
 	if got := srv.activeRuns["sess-1"]; got.agentName != "claude" {
 		t.Errorf("activeRuns[sess-1].agentName = %q, want claude", got.agentName)
+	}
+}
+
+func TestStartAgentRun_RejectsBossRepairPrompt(t *testing.T) {
+	client := newFakeAgentClient()
+	client.startResp = "claude-abc"
+	srv := newRepairTestServer(client, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	_, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+	})
+	if grpcstatus.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", grpcstatus.Code(err))
+	}
+	if !strings.Contains(err.Error(), "StartChatRun") {
+		t.Fatalf("error = %q, want StartChatRun guidance", err.Error())
+	}
+	if client.startCall.plan != "" {
+		t.Fatalf("StartRun plan = %q, want no headless repair launch", client.startCall.plan)
 	}
 }
 
@@ -363,7 +383,7 @@ func TestStartAgentRun_SessionNotFound(t *testing.T) {
 
 	_, err := srv.StartAgentRun(t.Context(), &bossanovav1.StartAgentRunHostRequest{
 		SessionId: "missing",
-		Prompt:    "/boss-repair",
+		Prompt:    "fix this bug",
 	})
 	if grpcstatus.Code(err) != codes.NotFound {
 		t.Fatalf("code = %v, want NotFound", grpcstatus.Code(err))

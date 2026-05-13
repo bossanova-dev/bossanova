@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // settingsRowKind tags a row with the action it represents. The kind drives
@@ -18,13 +19,17 @@ import (
 type settingsRowKind int
 
 const (
-	settingsRowKindBool         settingsRowKind = iota // checkbox toggle (plugin Bool config)
-	settingsRowKindString                              // text input (plugin String config)
-	settingsRowKindEnum                                // cycle picker (plugin Enum config)
-	settingsRowKindWorktree                            // built-in worktree base directory
-	settingsRowKindPollInterval                        // built-in poll interval seconds
-	settingsRowKindDefaultAgent                        // cycle picker over loaded agents
-	settingsRowKindAgentHeader                         // pseudo-row: section header (non-interactive)
+	settingsRowKindBool          settingsRowKind = iota // checkbox toggle (plugin Bool config)
+	settingsRowKindString                               // text input (plugin String config)
+	settingsRowKindEnum                                 // cycle picker (plugin Enum config)
+	settingsRowKindWorktree                             // built-in worktree base directory
+	settingsRowKindPollInterval                         // built-in poll interval seconds
+	settingsRowKindDefaultAgent                         // cycle picker over loaded agents
+	settingsRowKindAgentHeader                          // pseudo-row: section header (non-interactive)
+	settingsRowKindTracingHeader                        // pseudo-row: tracing section header (non-interactive)
+	settingsRowKindEventTracing                         // built-in event tracing toggle
+	settingsRowKindPostHogToken                         // built-in PostHog project token
+	settingsRowKindPostHogHost                          // built-in PostHog host
 )
 
 // settingsRow is a single addressable line in the settings TUI. Header
@@ -160,6 +165,17 @@ func (m *SettingsModel) rebuildRows() {
 		}
 	}
 
+	m.rows = append(m.rows,
+		settingsRow{Kind: settingsRowKindTracingHeader, Label: "tracing", IsHeader: true},
+		settingsRow{Kind: settingsRowKindEventTracing, Label: "Enable event tracing (for debugging problems)"},
+	)
+	if m.settings.EventTracingEnabled {
+		m.rows = append(m.rows,
+			settingsRow{Kind: settingsRowKindPostHogToken, Label: "PostHog project token"},
+			settingsRow{Kind: settingsRowKindPostHogHost, Label: "PostHog host"},
+		)
+	}
+
 	// Clamp cursor to a non-header row.
 	if m.cursor >= len(m.rows) {
 		m.cursor = 0
@@ -217,7 +233,7 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	}
 	row := m.rows[m.cursor]
 	switch row.Kind {
-	case settingsRowKindAgentHeader:
+	case settingsRowKindAgentHeader, settingsRowKindTracingHeader:
 		// Header rows are non-interactive and the cursor never lands on
 		// one (moveCursor skips them); nothing to do.
 		return m, nil
@@ -244,6 +260,29 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	case settingsRowKindString:
 		m.editingRow = m.cursor
 		m.stringInput.SetValue(config.PluginConfigString(&m.settings, row.Plugin, row.Key))
+		return m, m.stringInput.Focus()
+	case settingsRowKindEventTracing:
+		m.settings.EventTracingEnabled = !m.settings.EventTracingEnabled
+		if m.settings.EventTracingEnabled {
+			if m.settings.PostHogProjectToken == "" {
+				m.settings.PostHogProjectToken = telemetry.ProductionProjectToken
+			}
+			if m.settings.PostHogHost == "" {
+				m.settings.PostHogHost = telemetry.DefaultHost
+			}
+		}
+		if err := config.Save(m.settings); err != nil {
+			m.err = err
+		} else {
+			m.rebuildRows()
+		}
+	case settingsRowKindPostHogToken:
+		m.editingRow = m.cursor
+		m.stringInput.SetValue(m.settings.PostHogProjectToken)
+		return m, m.stringInput.Focus()
+	case settingsRowKindPostHogHost:
+		m.editingRow = m.cursor
+		m.stringInput.SetValue(m.settings.PostHogHost)
 		return m, m.stringInput.Focus()
 	case settingsRowKindWorktree:
 		m.editingRow = m.cursor
@@ -294,6 +333,8 @@ func (m SettingsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case settingsRowKindPollInterval:
 		m.pollIntervalInput, cmd = m.pollIntervalInput.Update(msg)
 	case settingsRowKindString:
+		m.stringInput, cmd = m.stringInput.Update(msg)
+	case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
 		m.stringInput, cmd = m.stringInput.Update(msg)
 	}
 	return m, cmd
@@ -351,6 +392,28 @@ func (m SettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 		m.editingRow = -1
 		m.err = nil
 		m.stringInput.Blur()
+	case settingsRowKindPostHogToken:
+		m.settings.PostHogProjectToken = strings.TrimSpace(m.stringInput.Value())
+		if err := config.Save(m.settings); err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.editingRow = -1
+		m.err = nil
+		m.stringInput.Blur()
+	case settingsRowKindPostHogHost:
+		host := strings.TrimSpace(m.stringInput.Value())
+		if host == "" {
+			host = telemetry.DefaultHost
+		}
+		m.settings.PostHogHost = host
+		if err := config.Save(m.settings); err != nil {
+			m.err = err
+			return m, nil
+		}
+		m.editingRow = -1
+		m.err = nil
+		m.stringInput.Blur()
 	}
 	return m, nil
 }
@@ -369,6 +432,8 @@ func (m SettingsModel) cancelEdit() (tea.Model, tea.Cmd) {
 			m.pollIntervalInput.SetValue("")
 		}
 	case settingsRowKindString:
+		m.stringInput.Blur()
+	case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
 		m.stringInput.Blur()
 	}
 	m.editingRow = -1
@@ -437,6 +502,12 @@ func (m SettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, edi
 			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.stringInput.View()))
 			b.WriteString("\n")
 			return
+		case settingsRowKindPostHogToken, settingsRowKindPostHogHost:
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("  %s:", row.Label)))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.stringInput.View()))
+			b.WriteString("\n")
+			return
 		}
 	}
 
@@ -476,6 +547,24 @@ func (m SettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, edi
 			intervalStr = strconv.Itoa(m.settings.PollIntervalSeconds)
 		}
 		line = fmt.Sprintf("%sPoll interval (seconds): %s", cursor, intervalStr)
+	case settingsRowKindEventTracing:
+		check := " "
+		if m.settings.EventTracingEnabled {
+			check = "x"
+		}
+		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)
+	case settingsRowKindPostHogToken:
+		val := m.settings.PostHogProjectToken
+		if val == "" {
+			val = "(not set)"
+		}
+		line = fmt.Sprintf("%s%s: %s", cursor, row.Label, val)
+	case settingsRowKindPostHogHost:
+		val := m.settings.PostHogHost
+		if val == "" {
+			val = telemetry.DefaultHost
+		}
+		line = fmt.Sprintf("%s%s: %s", cursor, row.Label, val)
 	case settingsRowKindDefaultAgent:
 		val := m.settings.DefaultAgent
 		if val == "" {

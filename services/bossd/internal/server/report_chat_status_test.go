@@ -46,8 +46,7 @@ func TestReportChatStatus_IgnoresTmuxTrackedChat(t *testing.T) {
 	got := tracker.Get("abc")
 	if got == nil {
 		t.Fatalf("tracker entry missing after report")
-	}
-	if got.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
+	} else if got.Status != pb.ChatStatus_CHAT_STATUS_QUESTION {
 		t.Fatalf("expected QUESTION (daemon poller's value preserved), got %v", got.Status)
 	}
 }
@@ -79,8 +78,7 @@ func TestReportChatStatus_AcceptsNonTmuxChat(t *testing.T) {
 	got := tracker.Get("xyz")
 	if got == nil {
 		t.Fatalf("tracker entry missing after report")
-	}
-	if got.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+	} else if got.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
 		t.Fatalf("expected WORKING, got %v", got.Status)
 	}
 }

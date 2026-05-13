@@ -60,16 +60,42 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'Bossanova',
+      title: 'bossanova',
       logo: {
         alt: 'Bossanova',
         src: 'img/logo.png',
       },
       items: [
         {
+          href: 'https://bossanova.dev/cloud',
+          label: 'Cloud',
+          position: 'right',
+        },
+        {
+          to: '/',
+          label: 'Docs',
+          position: 'right',
+        },
+        {
+          href: 'https://bossanova.dev/pricing',
+          label: 'Pricing',
+          position: 'right',
+        },
+        {
           href: 'https://github.com/bossanova-dev/bossanova',
           label: 'GitHub',
           position: 'right',
+        },
+        {
+          href: 'https://app.bossanova.dev',
+          label: 'Sign in',
+          position: 'right',
+        },
+        {
+          href: 'https://bossanova.dev/quick-start',
+          label: 'Try Now',
+          position: 'right',
+          className: 'navbar__link--cta',
         },
       ],
     },

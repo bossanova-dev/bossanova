@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // issueSearchDebounce is the wait between the last filter keystroke and the
@@ -146,8 +147,9 @@ type formData struct {
 
 // NewSessionModel is the multi-step wizard for creating a new coding session.
 type NewSessionModel struct {
-	client client.BossClient
-	ctx    context.Context
+	client    client.BossClient
+	telemetry telemetry.Client
+	ctx       context.Context
 
 	phase  newSessionPhase
 	err    error
@@ -219,6 +221,11 @@ type NewSessionModel struct {
 	// Layout
 	width  int
 	height int
+}
+
+// SetTelemetry installs a telemetry client for successful session creation.
+func (m *NewSessionModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
 }
 
 // NewNewSessionModel creates a NewSessionModel wired to the daemon client.
@@ -733,6 +740,9 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// readNextStreamMsg closes the stream on terminal events.
 		m.createdSess = msg.session
 		m.done = true
+		captureViewTelemetry(m.ctx, m.telemetry, telemetry.EventSessionCreated, map[string]any{
+			"source": "tui",
+		})
 		return m, nil
 
 	case streamErrorMsg:

@@ -11,6 +11,7 @@ import (
 
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -23,6 +24,8 @@ type chatPickerStub struct {
 	wakeChatCalls []wakeChatCall
 	wakeResp      *pb.WakeChatResponse
 	wakeErr       error
+	session       *pb.Session
+	repos         []*pb.Repo
 }
 
 type wakeChatCall struct {
@@ -65,6 +68,9 @@ func (s *chatPickerStub) GetChatStatuses(context.Context, string) ([]*pb.ChatSta
 
 // GetSession must not panic — refreshStatuses calls it on every tick.
 func (s *chatPickerStub) GetSession(context.Context, string) (*pb.Session, error) {
+	if s.session != nil {
+		return s.session, nil
+	}
 	return &pb.Session{Id: "session-1"}, nil
 }
 
@@ -82,7 +88,7 @@ func (s *chatPickerStub) RegisterRepo(context.Context, *pb.RegisterRepoRequest) 
 func (s *chatPickerStub) CloneAndRegisterRepo(context.Context, *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListRepos(context.Context) ([]*pb.Repo, error) { panic("unused") }
+func (s *chatPickerStub) ListRepos(context.Context) ([]*pb.Repo, error) { return s.repos, nil }
 func (s *chatPickerStub) RemoveRepo(context.Context, string) error      { panic("unused") }
 func (s *chatPickerStub) UpdateRepo(context.Context, *pb.UpdateRepoRequest) (*pb.Repo, error) {
 	panic("unused")
@@ -283,6 +289,28 @@ func TestChatPicker_WakeResultMsg_RendersOutcome(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChatPicker_CapturesOpenTelemetryOnNewTabSuccess(t *testing.T) {
+	enableViewTelemetryForTest(t)
+	rec := &fakeTelemetry{}
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.SetTelemetry(rec)
+
+	updated, _ := m.Update(newTabResultMsg{})
+	m = updated.(ChatPickerModel)
+
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(rec.events))
+	}
+	if rec.events[0] != telemetry.EventChatAttached {
+		t.Fatalf("event = %q, want %q", rec.events[0], telemetry.EventChatAttached)
+	}
+	if got := rec.props[0]["action"]; got != "open" {
+		t.Fatalf("action = %v, want open", got)
+	}
+	assertNoSensitiveTelemetryProps(t, rec.props[0])
 }
 
 // TestChatPicker_RendersRepairChatTitle is the TUI smoke test for Task 6
@@ -497,5 +525,134 @@ func TestChatPicker_WakeResultMsg_ErrorSurfaced(t *testing.T) {
 	want := "Wake failed: daemon down"
 	if got != want {
 		t.Errorf("statusMsg = %q, want %q", got, want)
+	}
+}
+
+func TestChatPicker_LoadsGitHubRepoWebLink(t *testing.T) {
+	stub := &chatPickerStub{
+		session: &pb.Session{Id: "session-1", RepoId: "repo-1"},
+		repos: []*pb.Repo{
+			{Id: "repo-1", OriginUrl: "git@github.com:owner/repo.git"},
+		},
+	}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+
+	updated, cmd := m.Update(chatPickerSessionMsg{session: stub.session})
+	m = updated.(ChatPickerModel)
+	if cmd == nil {
+		t.Fatal("expected session load to return a batched command")
+	}
+
+	msg := m.fetchRepoWebLink()()
+	updated, _ = m.Update(msg)
+	m = updated.(ChatPickerModel)
+
+	if m.repoWebLink.provider != "github" {
+		t.Fatalf("repoWebLink.provider = %q, want github", m.repoWebLink.provider)
+	}
+	if m.repoWebLink.url != "https://github.com/owner/repo" {
+		t.Fatalf("repoWebLink.url = %q, want https://github.com/owner/repo", m.repoWebLink.url)
+	}
+}
+
+func TestChatPicker_HidesGitHubActionForNonGitHubRepo(t *testing.T) {
+	stub := &chatPickerStub{
+		session: &pb.Session{Id: "session-1", RepoId: "repo-1"},
+		repos: []*pb.Repo{
+			{Id: "repo-1", OriginUrl: "git@gitlab.com:owner/repo.git"},
+		},
+	}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	m.session = stub.session
+
+	msg := m.fetchRepoWebLink()()
+	updated, _ := m.Update(msg)
+	m = updated.(ChatPickerModel)
+
+	if m.repoWebLink.url != "" {
+		t.Fatalf("repoWebLink.url = %q, want empty", m.repoWebLink.url)
+	}
+}
+
+func TestChatPicker_G_OpensGitHubRepo(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.repoWebLink = repoWebLink{provider: "github", url: "https://github.com/owner/repo"}
+
+	var opened string
+	oldOpenURL := openURLFunc
+	openURLFunc = func(rawURL string) error {
+		opened = rawURL
+		return nil
+	}
+	defer func() { openURLFunc = oldOpenURL }()
+
+	_, cmd := m.Update(keyPress('g'))
+	if cmd == nil {
+		t.Fatal("expected a command from pressing g with a GitHub web link")
+	}
+	_ = cmd()
+	if opened != "https://github.com/owner/repo" {
+		t.Fatalf("opened URL = %q, want https://github.com/owner/repo", opened)
+	}
+}
+
+func TestChatPicker_G_FallsThroughToTableWithoutGitHubRepo(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.chats = append(m.chats, &pb.ClaudeChat{
+		SessionId:      "session-1",
+		AgentSessionId: "agent-2",
+		Title:          "Second chat",
+		CreatedAt:      timestamppb.Now(),
+	})
+	m.buildTableRows()
+	m.table.SetCursor(1)
+
+	var opened bool
+	oldOpenURL := openURLFunc
+	openURLFunc = func(string) error {
+		opened = true
+		return nil
+	}
+	defer func() { openURLFunc = oldOpenURL }()
+
+	updated, cmd := m.Update(keyPress('g'))
+	if cmd != nil {
+		_ = cmd()
+	}
+	m = updated.(ChatPickerModel)
+	if opened {
+		t.Fatal("openURLFunc called without a GitHub web link")
+	}
+	if got := m.table.Cursor(); got != 0 {
+		t.Fatalf("table cursor after g = %d, want 0", got)
+	}
+}
+
+func TestChatPicker_RendersGitHubActionWhenRepoWebLinkAvailable(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+	m.repoWebLink = repoWebLink{provider: "github", url: "https://github.com/owner/repo"}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if !strings.Contains(rendered, "[g]ithub") {
+		t.Fatalf("rendered chat picker missing [g]ithub action:\\n%s", rendered)
+	}
+}
+
+func TestChatPicker_HidesGitHubActionWithoutRepoWebLink(t *testing.T) {
+	stub := &chatPickerStub{}
+	m := seedChatPicker(stub, statusWorking)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+	if strings.Contains(rendered, "[g]ithub") {
+		t.Fatalf("rendered chat picker should not show [g]ithub action without repo link:\\n%s", rendered)
 	}
 }

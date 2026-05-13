@@ -210,6 +210,8 @@ message Session {
   string last_repair_runner_error = 40;
   string last_repair_exit_error = 41;
   int32 last_repair_attempt_count = 42;
+  string last_repair_head_sha = 44;
+  DisplayStatus last_repair_display_status = 45;
 
   // Last time any of the session's live chat processes produced output.
   // Populated server-side from the chat tracker — the max LastOutputAt across

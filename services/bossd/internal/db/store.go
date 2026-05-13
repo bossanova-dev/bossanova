@@ -155,10 +155,12 @@ type SessionStore interface {
 // UpdateRepairDiagnosticsParams carries the per-attempt outcome that the
 // repair plugin reports via host.RecordRepairOutcome.
 type UpdateRepairDiagnosticsParams struct {
-	SessionID   string
-	StartedAt   time.Time
-	RunnerError string
-	ExitError   string
+	SessionID     string
+	StartedAt     time.Time
+	RunnerError   string
+	ExitError     string
+	HeadSHA       string
+	DisplayStatus int32
 }
 
 // CreateAgentChatParams holds the parameters for creating a new agent chat record.

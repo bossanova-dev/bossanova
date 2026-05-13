@@ -19,8 +19,11 @@ func runRepairDoctor(cmd *cobra.Command) error {
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 	defer cancel()
+	telemetryClient := commandTelemetryClient(cmd)
+	captureRepairStarted(ctx, telemetryClient)
 	resp, err := c.RepairDoctor(ctx)
 	if err != nil {
+		captureRepairCompleted(ctx, telemetryClient, "error")
 		return fmt.Errorf("RepairDoctor: %w", err)
 	}
 
@@ -61,8 +64,10 @@ func runRepairDoctor(cmd *cobra.Command) error {
 	_, _ = fmt.Fprintln(out)
 	if allOK {
 		_, _ = fmt.Fprintln(out, "All checks passed.")
+		captureRepairCompleted(ctx, telemetryClient, "success")
 		return nil
 	}
 	_, _ = fmt.Fprintln(out, "One or more checks failed — see details above.")
+	captureRepairCompleted(ctx, telemetryClient, "error")
 	return fmt.Errorf("repair doctor reported failures")
 }

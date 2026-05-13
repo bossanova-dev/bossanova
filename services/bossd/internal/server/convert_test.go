@@ -252,6 +252,7 @@ func TestProtoToTimestamp(t *testing.T) {
 		got := protoToTimestamp(ts)
 		if got == nil {
 			t.Fatal("expected non-nil")
+			return
 		}
 		if !got.Equal(now) {
 			t.Errorf("got %v, want %v", *got, now)
@@ -280,6 +281,7 @@ func TestAttentionStatusToProto(t *testing.T) {
 		got := attentionStatusToProto(a)
 		if got == nil {
 			t.Fatal("expected non-nil")
+			return
 		}
 		if !got.NeedsAttention {
 			t.Error("NeedsAttention should be true")
@@ -305,6 +307,7 @@ func TestAttentionStatusToProto(t *testing.T) {
 		got := attentionStatusToProto(a)
 		if got == nil {
 			t.Fatal("expected non-nil")
+			return
 		}
 		if got.Reason != pb.AttentionReason_ATTENTION_REASON_REVIEW_REQUESTED {
 			t.Errorf("Reason = %v, want REVIEW_REQUESTED", got.Reason)

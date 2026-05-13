@@ -335,6 +335,108 @@ func TestCreateDraftPR_RespectsContextCancellation(t *testing.T) {
 	}
 }
 
+func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
+	var calls atomic.Int32
+	var slept atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return "", fmt.Errorf("gh pr list: HTTP 403: You have exceeded a secondary rate limit")
+		}
+		return `[]`, nil
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {
+			slept.Add(1)
+		}),
+	)
+
+	if _, err := p.ListOpenPRs(context.Background(), "owner/repo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("got %d calls, want 2", got)
+	}
+	if got := slept.Load(); got != 1 {
+		t.Errorf("got %d sleeps, want 1", got)
+	}
+}
+
+func TestListOpenPRs_RetriesPrimaryRateLimit(t *testing.T) {
+	var calls atomic.Int32
+	var slept atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return "", fmt.Errorf("gh pr list: HTTP 429: API rate limit exceeded for user ID")
+		}
+		return `[]`, nil
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {
+			slept.Add(1)
+		}),
+	)
+
+	if _, err := p.ListOpenPRs(context.Background(), "owner/repo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("got %d calls, want 2", got)
+	}
+	if got := slept.Load(); got != 1 {
+		t.Errorf("got %d sleeps, want 1", got)
+	}
+}
+
+func TestMergePR_RetriesBadGateway(t *testing.T) {
+	var calls atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		n := calls.Add(1)
+		if n == 1 {
+			return "", fmt.Errorf("gh pr merge: non-200 OK status code: 502 Bad Gateway")
+		}
+		return "", nil
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {}),
+	)
+
+	if err := p.MergePR(context.Background(), "owner/repo", 42, "rebase"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("got %d calls, want 2", got)
+	}
+}
+
+func TestMergePR_DoesNotRetryPermanentError(t *testing.T) {
+	var calls atomic.Int32
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		calls.Add(1)
+		return "", fmt.Errorf("gh pr merge: GraphQL: Pull request is not mergeable")
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {}),
+	)
+
+	err := p.MergePR(context.Background(), "owner/repo", 42, "rebase")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("got %d calls, want 1", got)
+	}
+}
+
 // graphqlThreadsResponse builds a fake GraphQL response with the given threads.
 // Each thread is (isResolved bool, authorLogin string).
 func graphqlThreadsResponse(threads ...struct {

@@ -577,20 +577,22 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 			}
 
 			pbSess := &bossanovav1.Session{
-				Id:                     sess.ID,
-				RepoId:                 sess.RepoID,
-				RepoDisplayName:        repo.DisplayName,
-				Title:                  sess.Title,
-				BranchName:             sess.BranchName,
-				State:                  sessionStateToProto(sess.State),
-				DisplayStatus:          vcsDisplayStatusToProto(displayStatus),
-				DisplayHasFailures:     hasFailures,
-				DisplayIsRepairing:     isRepairing,
-				HasActiveChat:          hasActiveChat,
-				PrDisplayHeadSha:       headSHA,
-				LastRepairRunnerError:  sess.LastRepairRunnerError,
-				LastRepairExitError:    sess.LastRepairExitError,
-				LastRepairAttemptCount: int32(sess.LastRepairAttemptCount),
+				Id:                      sess.ID,
+				RepoId:                  sess.RepoID,
+				RepoDisplayName:         repo.DisplayName,
+				Title:                   sess.Title,
+				BranchName:              sess.BranchName,
+				State:                   sessionStateToProto(sess.State),
+				DisplayStatus:           vcsDisplayStatusToProto(displayStatus),
+				DisplayHasFailures:      hasFailures,
+				DisplayIsRepairing:      isRepairing,
+				HasActiveChat:           hasActiveChat,
+				PrDisplayHeadSha:        headSHA,
+				LastRepairRunnerError:   sess.LastRepairRunnerError,
+				LastRepairExitError:     sess.LastRepairExitError,
+				LastRepairAttemptCount:  int32(sess.LastRepairAttemptCount),
+				LastRepairHeadSha:       sess.LastRepairHeadSHA,
+				LastRepairDisplayStatus: bossanovav1.DisplayStatus(sess.LastRepairDisplayStatus),
 			}
 			if !sess.UpdatedAt.IsZero() {
 				pbSess.UpdatedAt = timestamppb.New(sess.UpdatedAt)
@@ -849,6 +851,10 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 	if sessionID == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
 	}
+	if strings.TrimSpace(req.GetPrompt()) == "/boss-repair" {
+		return nil, grpcstatus.Error(codes.FailedPrecondition,
+			"/boss-repair must run through StartChatRun so the repair has a chat row and tmux session")
+	}
 
 	sess, err := s.sessionStore.Get(ctx, sessionID)
 	if err != nil {
@@ -1000,10 +1006,12 @@ func (s *HostServiceServer) RecordRepairOutcome(ctx context.Context, req *bossan
 		startedAt = time.Now()
 	}
 	if err := s.sessionStore.UpdateRepairDiagnostics(ctx, db.UpdateRepairDiagnosticsParams{
-		SessionID:   sessionID,
-		StartedAt:   startedAt,
-		RunnerError: req.GetRunnerError(),
-		ExitError:   req.GetExitError(),
+		SessionID:     sessionID,
+		StartedAt:     startedAt,
+		RunnerError:   req.GetRunnerError(),
+		ExitError:     req.GetExitError(),
+		HeadSHA:       req.GetHeadSha(),
+		DisplayStatus: int32(req.GetDisplayStatus()),
 	}); err != nil {
 		return nil, grpcstatus.Errorf(codes.Internal, "update repair diagnostics: %v", err)
 	}

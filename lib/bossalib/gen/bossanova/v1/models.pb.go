@@ -1230,10 +1230,12 @@ type Session struct {
 	// last_repair_attempt_count is a *consecutive-failure* counter: clean
 	// runs reset it to zero, failed runs increment it. Total attempts are
 	// not tracked.
-	LastRepairStartedAt    *timestamppb.Timestamp `protobuf:"bytes,39,opt,name=last_repair_started_at,json=lastRepairStartedAt,proto3,oneof" json:"last_repair_started_at,omitempty"`
-	LastRepairRunnerError  string                 `protobuf:"bytes,40,opt,name=last_repair_runner_error,json=lastRepairRunnerError,proto3" json:"last_repair_runner_error,omitempty"`
-	LastRepairExitError    string                 `protobuf:"bytes,41,opt,name=last_repair_exit_error,json=lastRepairExitError,proto3" json:"last_repair_exit_error,omitempty"`
-	LastRepairAttemptCount int32                  `protobuf:"varint,42,opt,name=last_repair_attempt_count,json=lastRepairAttemptCount,proto3" json:"last_repair_attempt_count,omitempty"`
+	LastRepairStartedAt     *timestamppb.Timestamp `protobuf:"bytes,39,opt,name=last_repair_started_at,json=lastRepairStartedAt,proto3,oneof" json:"last_repair_started_at,omitempty"`
+	LastRepairRunnerError   string                 `protobuf:"bytes,40,opt,name=last_repair_runner_error,json=lastRepairRunnerError,proto3" json:"last_repair_runner_error,omitempty"`
+	LastRepairExitError     string                 `protobuf:"bytes,41,opt,name=last_repair_exit_error,json=lastRepairExitError,proto3" json:"last_repair_exit_error,omitempty"`
+	LastRepairAttemptCount  int32                  `protobuf:"varint,42,opt,name=last_repair_attempt_count,json=lastRepairAttemptCount,proto3" json:"last_repair_attempt_count,omitempty"`
+	LastRepairHeadSha       string                 `protobuf:"bytes,44,opt,name=last_repair_head_sha,json=lastRepairHeadSha,proto3" json:"last_repair_head_sha,omitempty"`
+	LastRepairDisplayStatus DisplayStatus          `protobuf:"varint,45,opt,name=last_repair_display_status,json=lastRepairDisplayStatus,proto3,enum=bossanova.v1.DisplayStatus" json:"last_repair_display_status,omitempty"`
 	// Last time any of the session's live chat processes produced output.
 	// Populated server-side from the chat tracker — the max LastOutputAt across
 	// all of the session's chat tracker entries whose heartbeat is fresh
@@ -1568,6 +1570,20 @@ func (x *Session) GetLastRepairAttemptCount() int32 {
 		return x.LastRepairAttemptCount
 	}
 	return 0
+}
+
+func (x *Session) GetLastRepairHeadSha() string {
+	if x != nil {
+		return x.LastRepairHeadSha
+	}
+	return ""
+}
+
+func (x *Session) GetLastRepairDisplayStatus() DisplayStatus {
+	if x != nil {
+		return x.LastRepairDisplayStatus
+	}
+	return DisplayStatus_DISPLAY_STATUS_UNSPECIFIED
 }
 
 func (x *Session) GetLastChatActivityAt() *timestamppb.Timestamp {
@@ -3000,7 +3016,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\x86\x12\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\x91\x13\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -3052,7 +3068,9 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x16last_repair_started_at\x18' \x01(\v2\x1a.google.protobuf.TimestampH\tR\x13lastRepairStartedAt\x88\x01\x01\x127\n" +
 	"\x18last_repair_runner_error\x18( \x01(\tR\x15lastRepairRunnerError\x123\n" +
 	"\x16last_repair_exit_error\x18) \x01(\tR\x13lastRepairExitError\x129\n" +
-	"\x19last_repair_attempt_count\x18* \x01(\x05R\x16lastRepairAttemptCount\x12R\n" +
+	"\x19last_repair_attempt_count\x18* \x01(\x05R\x16lastRepairAttemptCount\x12/\n" +
+	"\x14last_repair_head_sha\x18, \x01(\tR\x11lastRepairHeadSha\x12X\n" +
+	"\x1alast_repair_display_status\x18- \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\x17lastRepairDisplayStatus\x12R\n" +
 	"\x15last_chat_activity_at\x18+ \x01(\v2\x1a.google.protobuf.TimestampH\n" +
 	"R\x12lastChatActivityAt\x88\x01\x01B\x13\n" +
 	"\x11_agent_session_idB\f\n" +
@@ -3389,37 +3407,38 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	12, // 9: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
 	9,  // 10: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
 	36, // 11: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
-	36, // 12: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
-	7,  // 13: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
-	8,  // 14: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	36, // 15: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	36, // 16: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
-	5,  // 17: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
-	2,  // 18: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
-	3,  // 19: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
-	6,  // 20: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
-	5,  // 21: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
-	27, // 22: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
-	28, // 23: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
-	29, // 24: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
-	30, // 25: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
-	31, // 26: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
-	32, // 27: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
-	20, // 28: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
-	21, // 29: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
-	10, // 30: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	36, // 31: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
-	36, // 32: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	36, // 33: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	36, // 34: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	36, // 35: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	36, // 36: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
-	15, // 37: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
-	38, // [38:38] is the sub-list for method output_type
-	38, // [38:38] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	11, // 12: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
+	36, // 13: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	7,  // 14: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
+	8,  // 15: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
+	36, // 16: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	36, // 17: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	5,  // 18: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
+	2,  // 19: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
+	3,  // 20: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
+	6,  // 21: bossanova.v1.ReviewComment.state:type_name -> bossanova.v1.ReviewState
+	5,  // 22: bossanova.v1.PRSummary.state:type_name -> bossanova.v1.PRState
+	27, // 23: bossanova.v1.VCSEvent.checks_passed:type_name -> bossanova.v1.ChecksPassedEvent
+	28, // 24: bossanova.v1.VCSEvent.checks_failed:type_name -> bossanova.v1.ChecksFailedEvent
+	29, // 25: bossanova.v1.VCSEvent.conflict_detected:type_name -> bossanova.v1.ConflictDetectedEvent
+	30, // 26: bossanova.v1.VCSEvent.review_submitted:type_name -> bossanova.v1.ReviewSubmittedEvent
+	31, // 27: bossanova.v1.VCSEvent.pr_merged:type_name -> bossanova.v1.PRMergedEvent
+	32, // 28: bossanova.v1.VCSEvent.pr_closed:type_name -> bossanova.v1.PRClosedEvent
+	20, // 29: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
+	21, // 30: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
+	10, // 31: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
+	36, // 32: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	36, // 33: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	36, // 34: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	36, // 35: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	36, // 36: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	36, // 37: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	15, // 38: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
+	39, // [39:39] is the sub-list for method output_type
+	39, // [39:39] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_bossanova_v1_models_proto_init() }

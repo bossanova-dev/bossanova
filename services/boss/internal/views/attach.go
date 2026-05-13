@@ -15,6 +15,7 @@ import (
 	"github.com/recurser/boss/internal/client"
 	bosspty "github.com/recurser/boss/internal/pty"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -45,6 +46,7 @@ type attachErrMsg struct {
 // AttachModel launches an interactive Claude Code TUI in the session's worktree.
 type AttachModel struct {
 	client         client.BossClient
+	telemetry      telemetry.Client
 	ctx            context.Context
 	manager        *bosspty.Manager
 	sessionID      string
@@ -64,6 +66,11 @@ type AttachModel struct {
 	// creation time. Empty inherits the parent session's AgentName. Set
 	// by the chat picker before pushing onto the attach view.
 	overrideAgent string
+}
+
+// SetTelemetry installs a telemetry client for successful attach actions.
+func (m *AttachModel) SetTelemetry(client telemetry.Client) {
+	m.telemetry = client
 }
 
 // SetOverrideAgent supplies a per-chat agent override that's forwarded as
@@ -144,6 +151,16 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("daemon did not return a tmux session name; check that tmux is installed")
 			return m, nil
 		}
+		if !resume {
+			captureViewTelemetry(m.ctx, m.telemetry, telemetry.EventChatCreated, map[string]any{
+				"source": "tui",
+			})
+		}
+		captureViewTelemetry(m.ctx, m.telemetry, telemetry.EventChatAttached, map[string]any{
+			"source": "tui",
+			"action": "attach",
+			"resume": resume,
+		})
 
 		// Attach to the daemon-owned tmux session. Ctrl+X / Ctrl+] are
 		// bound to detach-client by the daemon's bindDetachKeys, so the

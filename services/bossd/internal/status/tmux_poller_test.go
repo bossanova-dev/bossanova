@@ -738,6 +738,7 @@ func TestTmuxStatusPoller_DeadSessionStopsTracker(t *testing.T) {
 	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected stopped tracker entry after dead tmux session")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_STOPPED {
 		t.Errorf("tracker status = %v, want STOPPED", entry.Status)
@@ -1278,6 +1279,7 @@ func TestPollOnceMissingAgentClientFallsThroughToIdle(t *testing.T) {
 	entry := tracker.Get(agentSessionID)
 	if entry == nil {
 		t.Fatal("expected entry after poll")
+		return
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
 		t.Errorf("expected IDLE for chat with missing agent client, got %v", entry.Status)

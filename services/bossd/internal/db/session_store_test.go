@@ -32,10 +32,12 @@ func TestUpdateRepairDiagnostics_CountResetsOnSuccess(t *testing.T) {
 	mustUpdate := func(runnerErr, exitErr string) {
 		t.Helper()
 		err := sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
-			SessionID:   sess.ID,
-			StartedAt:   time.Now(),
-			RunnerError: runnerErr,
-			ExitError:   exitErr,
+			SessionID:     sess.ID,
+			StartedAt:     time.Now(),
+			RunnerError:   runnerErr,
+			ExitError:     exitErr,
+			HeadSHA:       "abc123",
+			DisplayStatus: 3,
 		})
 		if err != nil {
 			t.Fatalf("update repair diagnostics: %v", err)
@@ -71,5 +73,46 @@ func TestUpdateRepairDiagnostics_CountResetsOnSuccess(t *testing.T) {
 	mustUpdate("", "exit status 2")
 	if got := count(); got != 1 {
 		t.Fatalf("after fail-after-success, count=%d, want 1 (consecutive failures, not total attempts)", got)
+	}
+}
+
+func TestUpdateRepairDiagnostics_RoundTripsAttemptIdentity(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Repair identity test",
+		WorktreePath: "/tmp/wt/repair-identity",
+		BranchName:   "feat/repair-identity",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	err = sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+		SessionID:     sess.ID,
+		StartedAt:     time.Now(),
+		ExitError:     "exit status 1",
+		HeadSHA:       "def456",
+		DisplayStatus: 4,
+	})
+	if err != nil {
+		t.Fatalf("update repair diagnostics: %v", err)
+	}
+
+	got, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.LastRepairHeadSHA != "def456" {
+		t.Fatalf("LastRepairHeadSHA=%q, want def456", got.LastRepairHeadSHA)
+	}
+	if got.LastRepairDisplayStatus != 4 {
+		t.Fatalf("LastRepairDisplayStatus=%d, want 4", got.LastRepairDisplayStatus)
 	}
 }

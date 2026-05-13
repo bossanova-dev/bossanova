@@ -25,6 +25,21 @@ func RepoSlug(originURL string) string {
 	return slug
 }
 
+// RepoWebLink converts a git origin URL into a provider web URL.
+// The provider string lets callers keep provider-specific labels outside
+// parsing code. v1 intentionally exposes only GitHub; GitLab can be added
+// here without changing each UI surface.
+func RepoWebLink(originURL string) (provider, webURL string, ok bool) {
+	host, slug := parseOriginURL(originURL)
+	if host == "" || slug == "" {
+		return "", "", false
+	}
+	if strings.EqualFold(host, "github.com") {
+		return "github", fmt.Sprintf("https://github.com/%s", slug), true
+	}
+	return "", "", false
+}
+
 // parseOriginURL splits an origin URL into (host, "owner/repo").
 // Returns ("", "") if the URL cannot be parsed.
 func parseOriginURL(originURL string) (host, slug string) {

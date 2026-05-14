@@ -128,7 +128,10 @@ The file is optional — when it's absent, defaults apply. Both `boss` and `boss
 |---|---|---|---|
 | `worktree_base_dir` | string | `~/.bossanova/worktrees` | Directory where per-session git worktrees are created. Auto-created on load. |
 | `default_agent` | string | `claude` | Name of the default agent plugin used for new sessions. Set to `codex` to start Codex sessions by default. |
-| `skills_declined` | bool | `false` | Set after the user declines the one-time skills install prompt so it's not shown again. |
+| `skills_declined` | bool | `false` | Legacy Claude-only decline flag from older releases. |
+| `skills_declined_by_agent` | object | omitted | Per-agent skill install prompt declines, keyed by agent name (`claude`, `codex`). |
+| `skills_declined_manifest_by_agent` | object | omitted | Skill payload manifest recorded when a prompt is declined; a changed manifest prompts again. |
+| `skills_installed_manifest_by_agent` | object | omitted | Skill payload manifest last installed per agent. Claude skills install to `~/.claude/skills`; Codex skills install to `~/.codex/skills`. |
 | `poll_interval_seconds` | int | `120` | How often the TUI polls for PR display status, in seconds. |
 | `plugins` | array | auto-discovered | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own binary. |
 | `repair` | object | defaults below | Repair plugin configuration. |

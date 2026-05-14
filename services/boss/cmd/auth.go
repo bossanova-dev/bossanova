@@ -115,12 +115,12 @@ func runLogin(cmd *cobra.Command) error {
 	if err := mgr.Login(ctx); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
-	captureAuthChanged(cmd.Context(), commandTelemetryClient(cmd), "login")
+	status := mgr.Status()
+	captureAuthChangedWithEmail(cmd.Context(), commandTelemetryClient(cmd), "login", status.Email)
 
 	// Notify daemon so it can connect upstream immediately.
 	notifyDaemonAuthChange("login")
 
-	status := mgr.Status()
 	if status.Email != "" {
 		fmt.Printf("Logged in as %s\n", status.Email)
 	} else {
@@ -134,11 +134,12 @@ func runLogout(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	status := mgr.Status()
 
 	if err := mgr.Logout(); err != nil {
 		return fmt.Errorf("logout: %w", err)
 	}
-	captureAuthChanged(cmd.Context(), commandTelemetryClient(cmd), "logout")
+	captureAuthChangedWithEmail(cmd.Context(), commandTelemetryClient(cmd), "logout", status.Email)
 
 	// Notify daemon so it can disconnect upstream.
 	notifyDaemonAuthChange("logout")

@@ -84,7 +84,7 @@ func TestPostHogSettingsRoundTrip(t *testing.T) {
 	in := DefaultSettings()
 	in.EventTracingEnabled = true
 	in.PostHogProjectToken = "phc_test"
-	in.PostHogHost = "https://eu.i.posthog.com"
+	in.PostHogHost = "https://k.bossanova.dev"
 
 	if err := SaveTo(path, in); err != nil {
 		t.Fatalf("SaveTo: %v", err)
@@ -100,7 +100,7 @@ func TestPostHogSettingsRoundTrip(t *testing.T) {
 	if out.PostHogProjectToken != "phc_test" {
 		t.Fatalf("PostHogProjectToken = %q", out.PostHogProjectToken)
 	}
-	if out.PostHogHost != "https://eu.i.posthog.com" {
+	if out.PostHogHost != "https://k.bossanova.dev" {
 		t.Fatalf("PostHogHost = %q", out.PostHogHost)
 	}
 }

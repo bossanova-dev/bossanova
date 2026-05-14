@@ -39,7 +39,7 @@ func newClient(cmd *cobra.Command) (client.BossClient, error) {
 	// Skip auto-start when socket is explicitly provided (test mode).
 	if os.Getenv("BOSS_SOCKET") == "" {
 		if err := daemon.EnsureRunning(socketPath); err != nil {
-			return nil, fmt.Errorf("daemon: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
+			return nil, fmt.Errorf("daemon failed: %w\nRun 'boss daemon install' to set up automatic startup, or start bossd manually", err)
 		}
 	}
 
@@ -528,7 +528,7 @@ func runDaemonInstall(cmd *cobra.Command) error {
 
 	force, _ := cmd.Flags().GetBool("force")
 	if err := daemon.Install(bossdPath, force); err != nil {
-		return fmt.Errorf("install daemon: %w", err)
+		return fmt.Errorf("install daemon failed: %w", err)
 	}
 
 	st, _ := daemon.GetStatus()
@@ -542,7 +542,7 @@ func runDaemonInstall(cmd *cobra.Command) error {
 
 func runDaemonUninstall(_ *cobra.Command) error {
 	if err := daemon.Uninstall(); err != nil {
-		return fmt.Errorf("uninstall daemon: %w", err)
+		return fmt.Errorf("uninstall daemon failed: %w", err)
 	}
 	fmt.Println("Daemon uninstalled.")
 	return nil

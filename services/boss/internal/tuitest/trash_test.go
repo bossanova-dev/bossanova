@@ -40,6 +40,7 @@ func TestTUI_TrashRestore(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(sessions...),
+		tuitest.WithChats(testChats()...),
 	)
 
 	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
@@ -57,12 +58,16 @@ func TestTUI_TrashRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "Trash is empty") ||
-			!strings.Contains(screen, "Add dark mode")
-	})
-	if err != nil {
-		t.Fatal(err)
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Initial implementation") ||
+			strings.Contains(screen, "Loading chats")
+	}); err != nil {
+		t.Fatalf("expected chat picker after restore; screen:\n%s", h.Driver.Screen())
+	}
+	if h.Driver.ScreenContains("Loading chats") {
+		if err := h.Driver.WaitForText(waitTimeout, "Initial implementation"); err != nil {
+			t.Fatalf("expected restored session chats after loading; screen:\n%s", h.Driver.Screen())
+		}
 	}
 
 	var found bool
@@ -264,6 +269,7 @@ func TestTUI_TrashRestoreAndVerifyHome(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(sessions...),
+		tuitest.WithChats(testChats()...),
 	)
 
 	if err := h.Driver.WaitForText(waitTimeout, "Fix login bug"); err != nil {
@@ -282,12 +288,16 @@ func TestTUI_TrashRestoreAndVerifyHome(t *testing.T) {
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)
 	}
-	err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "Trash is empty") ||
-			!strings.Contains(screen, "Add dark mode")
-	})
-	if err != nil {
-		t.Fatal(err)
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Initial implementation") ||
+			strings.Contains(screen, "Loading chats")
+	}); err != nil {
+		t.Fatalf("expected chat picker after restore; screen:\n%s", h.Driver.Screen())
+	}
+	if h.Driver.ScreenContains("Loading chats") {
+		if err := h.Driver.WaitForText(waitTimeout, "Initial implementation"); err != nil {
+			t.Fatalf("expected restored session chats after loading; screen:\n%s", h.Driver.Screen())
+		}
 	}
 
 	// Go back to home.

@@ -2,18 +2,13 @@ package tmux
 
 import (
 	"context"
-	"os/exec"
 	"testing"
-	"time"
 )
 
 func TestE2E_Lifecycle(t *testing.T) {
-	// Skip if tmux not installed.
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not installed, skipping E2E tests")
-	}
+	skipIfNoTmux(t)
 
-	c := NewClient()
+	c, _ := newTestTmuxClient(t)
 	ctx := context.Background()
 
 	// Verify tmux is available.
@@ -21,8 +16,7 @@ func TestE2E_Lifecycle(t *testing.T) {
 		t.Fatal("tmux should be available")
 	}
 
-	// Create a unique session name.
-	name := "boss-e2e-" + time.Now().Format("20060102150405")
+	name := uniqueSessionName("boss-e2e")
 	workDir := t.TempDir()
 
 	// Clean up on exit.

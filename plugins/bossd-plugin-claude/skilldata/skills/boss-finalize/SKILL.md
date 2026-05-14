@@ -15,12 +15,12 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 
 | #   | Requirement                     | How to Verify                                                                                                                                                                                           |
 | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **All quality gates pass**      | Run `make` (full build), then `make lint` and `make test`. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on origin/main.                                        |
-| 2   | **PR number in ALL commits**    | Every commit on this branch (compared to origin/main) MUST have `[#PR-NUM]` in the message. Check with `git log origin/main..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
+| 1   | **All quality gates pass**      | Discover and run the repo's quality gates. Prefer a single project-declared aggregate command when it covers build/lint/test; otherwise run the minimal non-duplicative command set. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on the PR base branch. |
+| 2   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
 | 3   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                     |
 | 4   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
 | 5   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready` to mark the PR as ready for review. Do NOT leave the PR as a draft.                                                                        |
-| 6   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto main and resolve conflicts before completing.                                          |
+| 6   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                             |
 
 **If you complete without satisfying ALL SIX requirements, you have failed this workflow.**
 
@@ -34,47 +34,85 @@ Run these commands to understand what needs to be done:
 
 ```bash
 git status                            # Uncommitted changes?
-git log origin/main..HEAD --oneline   # ALL commits on this branch (vs main)
+BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
+if [ -z "$BASE_BRANCH" ]; then
+  CURRENT_BRANCH=$(git branch --show-current)
+  BASE_BRANCH=$(
+    git for-each-ref --format='%(refname:short)' refs/remotes/origin |
+      sed 's#^origin/##' |
+      grep -Fvx HEAD |
+      grep -Fvx "$CURRENT_BRANCH" |
+      while read -r branch; do
+        git merge-base --is-ancestor HEAD "origin/$branch" && continue
+        base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue
+        printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"
+      done |
+      sort -nr |
+      awk 'NR == 1 {print $2}'
+  )
+  [ -n "$BASE_BRANCH" ] && echo "Using inferred git base branch: $BASE_BRANCH"
+fi
+test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }
+git fetch origin "$BASE_BRANCH"
+git log "origin/$BASE_BRANCH"..HEAD --oneline   # ALL commits on this branch (vs PR base)
 gh pr view --json number -q .number   # Get PR number
 ```
 
-**IMPORTANT:** Always compare to `origin/main`, not `origin/HEAD`. This shows ALL commits on your branch that aren't in main, regardless of whether they're "pushed" to the feature branch.
+**IMPORTANT:** Always compare to `origin/$BASE_BRANCH`, not the feature branch or default branch. If GitHub metadata is unavailable, the git fallback infers the most likely base from fetched `origin/*` branches; verify the printed branch before continuing. This shows ALL commits on your branch that aren't in the PR base branch, regardless of whether they're "pushed" to the feature branch.
 
 **Determine your situation:**
 
 - **Uncommitted changes exist?** → Go to Step 2
 - **Commits exist on branch?** → Go to Step 4 (MUST check PR numbers!)
-- **No commits on branch vs main?** → Skip to Step 7
+- **No commits on branch vs PR base?** → Skip to Step 7
 
 ### Step 2: Run Quality Gates
 
-**This step is NON-NEGOTIABLE. You MUST run ALL quality gates and they MUST pass.**
+**This step is NON-NEGOTIABLE. You MUST run the repo's quality gates and they MUST pass.**
 
-#### Step 2a: Full Build (includes generate + format)
+#### Step 2a: Discover the Gate Commands
 
-The default `make` target runs `clean → generate → format → build` in the correct order. This ensures generated code (protobuf, etc.) exists before anything else runs.
+Find the commands this repo expects contributors to run. Check these sources in order:
 
-```bash
-make
-```
+1. User/project instructions (`AGENTS.md`, `CLAUDE.md`, `README`, `CONTRIBUTING`, package docs)
+2. CI workflows (`.github/workflows`, Buildkite, CircleCI, GitLab CI, etc.)
+3. Project command files (`Makefile`, `justfile`, `Taskfile.yml`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, etc.)
 
-**If `make` fails due to missing dependencies** (e.g., `node_modules missing`, `protoc-gen-es: no such file`), you MUST install them first:
+Choose the smallest command set that covers the repo's required generate/build/lint/test checks without running the same check twice.
 
-```bash
-cd services/web && pnpm install && cd ../..
-make
-```
+#### Step 2b: Run Project Gates
 
-**Do NOT skip `make` and jump straight to individual targets.** The `generate` step creates code that `lint`, `test`, and `build` all depend on. Without it, everything downstream fails.
-
-#### Step 2b: Lint and Test
-
-After `make` succeeds, run lint and test:
+Prefer an explicit aggregate gate when present and complete:
 
 ```bash
-make lint     # Lint all modules (golangci-lint + buf lint)
-make test     # Run tests across all modules
+make              # Only if Makefile exists and default target is the project gate
+make check        # Common aggregate gate
+make ci           # Common CI-equivalent gate
+just check        # If justfile declares the project gate
+task check        # If Taskfile declares the project gate
 ```
+
+If the aggregate gate does not cover everything, run only the missing targets that exist. Examples:
+
+```bash
+make build
+make lint
+make test
+```
+
+For repos without a Makefile, use the native project commands. Examples:
+
+```bash
+pnpm lint && pnpm test
+npm run lint && npm test
+go test ./...
+cargo test
+pytest
+```
+
+**Do not assume `make` exists. Do not blindly run `make`, then `make lint`, then `make test`.** Inspect the repo first. Some `make` targets already include lint and test; some repos have no Makefile.
+
+**If gates fail due to missing dependencies** (e.g., `node_modules missing`, missing codegen tool), install the repo's documented dependencies first, then re-run the same gate commands.
 
 **If format changed files:** Stage the formatting fixes and include them in your commit.
 
@@ -82,10 +120,10 @@ make test     # Run tests across all modules
 
 #### ⛔ "Pre-existing" failures — verify before dismissing
 
-**Do NOT assume a failure is pre-existing.** A failure is only pre-existing if it also fails on `origin/main`. Before dismissing any failure:
+**Do NOT assume a failure is pre-existing.** A failure is only pre-existing if it also fails on the PR base branch. Before dismissing any failure:
 
 1. Check if it's a missing prerequisite (generated code, dependencies) — if so, fix it
-2. If you believe it's truly pre-existing, verify by checking CI on main or running the same command on main
+2. If you believe it's truly pre-existing, verify by checking CI on the PR base branch or running the same command on the PR base branch
 3. Only after verification can you note it and proceed — and you MUST inform the user explicitly
 
 ### Step 3: Commit Changes
@@ -101,8 +139,8 @@ Use conventional-commit format (see the `git-committing` skill). Always include 
 PR_NUM=$(gh pr view --json number -q .number 2>/dev/null || echo "UNKNOWN")
 echo "PR number: $PR_NUM"
 
-# Show ALL commits on this branch (compared to main)
-git log origin/main..HEAD --oneline
+# Show ALL commits on this branch (compared to PR base)
+git log origin/$BASE_BRANCH..HEAD --oneline
 ```
 
 **Check EVERY commit message for `[#PR-NUM]`:**
@@ -117,7 +155,7 @@ git log origin/main..HEAD --oneline
 .claude/skills/boss-finalize/add-pr-numbers.sh
 ```
 
-**DO NOT skip this step.** Even if the branch is "up to date with origin", the commits still need PR numbers. The script compares against origin/main, not the feature branch.
+**DO NOT skip this step.** Even if the branch is "up to date with origin", the commits still need PR numbers. The script compares against the PR base branch, not the feature branch.
 
 **After the script completes, force-push to update the branch:**
 
@@ -130,7 +168,7 @@ git push --force-with-lease
 **Verify ALL commits now have PR numbers before proceeding:**
 
 ```bash
-git log origin/main..HEAD --oneline | grep -v "\[#"
+git log origin/$BASE_BRANCH..HEAD --oneline | grep -v "\[#"
 # Should return NOTHING - if it returns commits, they still need fixing
 ```
 
@@ -139,7 +177,7 @@ git log origin/main..HEAD --oneline | grep -v "\[#"
 **This step is NON-NEGOTIABLE. You MUST squash commits into logical groups before pushing.**
 
 ```bash
-git log origin/main..HEAD --oneline
+git log origin/$BASE_BRANCH..HEAD --oneline
 ```
 
 **Squashing rules:**
@@ -158,8 +196,8 @@ git log origin/main..HEAD --oneline
 **After squashing, verify:**
 
 ```bash
-git log origin/main..HEAD --oneline          # Clean, logical commits
-git log origin/main..HEAD --oneline | grep -v "\[#"  # All have PR numbers
+git log origin/$BASE_BRANCH..HEAD --oneline          # Clean, logical commits
+git log origin/$BASE_BRANCH..HEAD --oneline | grep -v "\[#"  # All have PR numbers
 ```
 
 ### Step 6: Push to Remote
@@ -229,10 +267,10 @@ gh pr view --json mergeable -q .mergeable
 
 **If the result is `CONFLICTING`:**
 
-1. Fetch the latest main: `git fetch origin main`
-2. Rebase onto main: `git rebase origin/main`
+1. Fetch the PR base branch: `git fetch origin $BASE_BRANCH`
+2. Rebase onto the PR base branch: `git rebase origin/$BASE_BRANCH`
 3. Resolve any conflicts during the rebase
-4. Re-run quality gates (`make`, `make lint`, `make test`) to ensure nothing broke
+4. Re-run the repo's quality gates to ensure nothing broke
 5. Force-push: `git push --force-with-lease`
 6. Wait and re-check: `gh pr view --json mergeable -q .mergeable`
 7. Repeat until `MERGEABLE`
@@ -272,9 +310,8 @@ git status            # Confirm clean state
 
 Before saying "done", verify ALL items:
 
-- [ ] Full build passed (`make` — includes clean, generate, format, build)
-- [ ] `make lint` passed
-- [ ] `make test` passed
+- [ ] Repo quality gates discovered from project instructions, CI, or command files
+- [ ] Minimal non-duplicative gate command set passed
 - [ ] All commits have `[#PR-NUM]` in message
 - [ ] Commits squashed into logical groups (force-pushed)
 - [ ] Empty "create pull request" commits dropped
@@ -290,22 +327,23 @@ Before saying "done", verify ALL items:
 
 | Failure                              | Why It's Wrong         | What You Should Have Done                                                                            |
 | ------------------------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| Skipped `make` (full build)          | Generated code missing | Run `make` first — it does clean, generate, format, build in order. Then `make lint` and `make test` |
-| Skipped quality gates                | CI will fail           | Run ALL gates: `make`, `make lint`, `make test`                                                      |
-| Dismissed failure as "pre-existing"  | Failure was fixable    | Verify on origin/main before dismissing. Missing generated code is NOT pre-existing — run `make`     |
-| Missing dependencies in worktree     | Generate/format fails  | Run `cd services/web && pnpm install` before `make` if node_modules is missing                       |
+| Skipped project gate discovery       | Wrong commands run     | Inspect project instructions, CI, and command files before choosing gates                            |
+| Ran duplicate gate commands          | Slow and noisy         | Prefer one aggregate command when it covers build/lint/test; otherwise run only missing targets      |
+| Skipped quality gates                | CI will fail           | Run the repo's required build/lint/test gates                                                        |
+| Dismissed failure as "pre-existing"  | Failure was fixable    | Verify on the PR base branch before dismissing. Missing generated code or dependencies are NOT pre-existing |
+| Missing dependencies in worktree     | Generate/format fails  | Install the repo's documented dependencies, then re-run the same gate commands                       |
 | Stopped to ask permission to push    | Blocked automation     | Just push — do NOT ask for permission. Force-push is expected and authorized.                        |
 | Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/boss-finalize/add-pr-numbers.sh` to fix ALL commits                              |
 | Reported issue but didn't fix        | Commits still broken   | You MUST run the script, not just report that commits need fixing                                    |
-| Used `origin/HEAD` not `origin/main` | Wrong comparison       | Always compare to `origin/main` to find all branch commits                                           |
-| Branch "up to date" so skipped       | Commits still need PR# | Even pushed commits need PR numbers - compare to main, not feature branch                            |
+| Compared against feature branch      | Wrong comparison       | Always compare to `origin/$BASE_BRANCH` to find all branch commits                                   |
+| Branch "up to date" so skipped       | Commits still need PR# | Even pushed commits need PR numbers - compare to the PR base branch, not feature branch              |
 | Didn't squash commits                | Messy history          | ALWAYS squash into logical groups — this is mandatory, not optional                                  |
 | Said "ready when you are"            | Work stranded          | YOU push immediately — do not wait for user to do it or ask permission                               |
 | Left session with failing checks     | CI is red              | Run `gh pr checks`, investigate failures with `gh run view --log-failed`, fix and re-push            |
 | Ignored failing check as "unrelated" | CI still red           | Even if unrelated, inform user and get explicit acknowledgment                                       |
 | Left empty "create PR" commit        | Messy history          | Use `drop` in rebase to remove empty scaffolding commits like `chore: [skip ci] create pull request` |
 | Left PR as draft                     | Not reviewable         | Run `gh pr ready` to mark the PR as ready for review before completing                               |
-| Left PR with merge conflicts         | PR can't be merged     | Run `gh pr view --json mergeable -q .mergeable`, rebase onto main if `CONFLICTING`                   |
+| Left PR with merge conflicts         | PR can't be merged     | Run `gh pr view --json mergeable -q .mergeable`, rebase onto the PR base branch if `CONFLICTING`     |
 
 ---
 

@@ -118,6 +118,14 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 		return
 	}
 
+	if prStatus.State == vcs.PRStateMerged || prStatus.State == vcs.PRStateClosed {
+		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
+		info.HeadSHA = prStatus.HeadSHA
+		p.tracker.Set(sessionID, info)
+		p.persistSnapshot(ctx, sessionID, prStatus, nil, info)
+		return
+	}
+
 	// Skip checks and reviews for draft PRs — they aren't ready for review
 	// so CI results and review comments are not actionable. This saves 2 API
 	// calls per draft PR per poll cycle.
@@ -149,7 +157,10 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
 	info.HeadSHA = prStatus.HeadSHA
 	p.tracker.Set(sessionID, info)
+	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
+}
 
+func (p *DisplayPoller) persistSnapshot(ctx context.Context, sessionID string, prStatus *vcs.PRStatus, checks []vcs.CheckResult, info vcs.DisplayInfo) {
 	if p.snapshots != nil {
 		raw, err := json.Marshal(checks)
 		if err != nil {

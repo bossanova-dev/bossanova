@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -110,6 +112,8 @@ func TestDisplayPoller_MergedPR(t *testing.T) {
 	}
 
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged}
+	vp.checkResultsErr = fmt.Errorf("no checks reported")
+	vp.reviewCommentsErr = fmt.Errorf("reviews should not be fetched")
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
 	poller.Run(ctx)
@@ -123,6 +127,111 @@ func TestDisplayPoller_MergedPR(t *testing.T) {
 	}
 	if e.Status != vcs.DisplayStatusMerged {
 		t.Errorf("Status = %d, want %d (Merged)", e.Status, vcs.DisplayStatusMerged)
+	}
+	if vp.getCheckResultsCalls != 0 {
+		t.Errorf("GetCheckResults called %d times, want 0 for merged PR", vp.getCheckResultsCalls)
+	}
+	if vp.getReviewCommentsCalls != 0 {
+		t.Errorf("GetReviewComments called %d times, want 0 for merged PR", vp.getReviewCommentsCalls)
+	}
+}
+
+func TestDisplayPoller_MergedPRPersistsSnapshot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	snapshots := newMockCheckSnapshotStore()
+	logger := zerolog.Nop()
+
+	prNum := 10
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateMerged, HeadSHA: "abc123"}
+	vp.checkResultsErr = fmt.Errorf("no checks reported")
+	vp.reviewCommentsErr = fmt.Errorf("reviews should not be fetched")
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
+	poller.SetSnapshotStore(snapshots)
+	poller.Run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	snaps := snapshots.all()
+	if len(snaps) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snaps))
+	}
+	if snaps[0].SessionID != "sess-1" {
+		t.Errorf("SessionID = %q, want sess-1", snaps[0].SessionID)
+	}
+	if snaps[0].HeadSHA != "abc123" {
+		t.Errorf("HeadSHA = %q, want abc123", snaps[0].HeadSHA)
+	}
+	if snaps[0].ComputedStatus != int(vcs.DisplayStatusMerged) {
+		t.Errorf("ComputedStatus = %d, want %d (Merged)", snaps[0].ComputedStatus, vcs.DisplayStatusMerged)
+	}
+	if vp.getCheckResultsCalls != 0 {
+		t.Errorf("GetCheckResults called %d times, want 0 for merged PR", vp.getCheckResultsCalls)
+	}
+	if vp.getReviewCommentsCalls != 0 {
+		t.Errorf("GetReviewComments called %d times, want 0 for merged PR", vp.getReviewCommentsCalls)
+	}
+}
+
+func TestDisplayPoller_ClosedPRSkipsChecksAndReviews(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	prNum := 10
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed}
+	vp.checkResultsErr = fmt.Errorf("no checks reported")
+	vp.reviewCommentsErr = fmt.Errorf("reviews should not be fetched")
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
+	poller.Run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	e := tracker.Get("sess-1")
+	if e == nil {
+		t.Fatal("expected tracker entry, got nil")
+		return
+	}
+	if e.Status != vcs.DisplayStatusClosed {
+		t.Errorf("Status = %d, want %d (Closed)", e.Status, vcs.DisplayStatusClosed)
+	}
+	if vp.getCheckResultsCalls != 0 {
+		t.Errorf("GetCheckResults called %d times, want 0 for closed PR", vp.getCheckResultsCalls)
+	}
+	if vp.getReviewCommentsCalls != 0 {
+		t.Errorf("GetReviewComments called %d times, want 0 for closed PR", vp.getReviewCommentsCalls)
 	}
 }
 
@@ -381,3 +490,42 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+type mockCheckSnapshotStore struct {
+	mu    sync.Mutex
+	snaps []db.CheckSnapshot
+}
+
+func newMockCheckSnapshotStore() *mockCheckSnapshotStore {
+	return &mockCheckSnapshotStore{}
+}
+
+func (m *mockCheckSnapshotStore) Insert(_ context.Context, snap db.CheckSnapshot) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snaps = append(m.snaps, snap)
+	return nil
+}
+
+func (m *mockCheckSnapshotStore) RecentBySession(_ context.Context, sessionID string, limit int) ([]db.CheckSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []db.CheckSnapshot
+	for i := len(m.snaps) - 1; i >= 0; i-- {
+		if m.snaps[i].SessionID == sessionID {
+			out = append(out, m.snaps[i])
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (m *mockCheckSnapshotStore) all() []db.CheckSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]db.CheckSnapshot, len(m.snaps))
+	copy(out, m.snaps)
+	return out
+}

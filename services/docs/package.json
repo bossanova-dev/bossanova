@@ -21,6 +21,7 @@
     "@mdx-js/react": "^3.0.0",
     "asciinema-player": "^3.15.1",
     "clsx": "^2.1.0",
+    "posthog-js": "^1.373.4",
     "prism-react-renderer": "^2.4.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"

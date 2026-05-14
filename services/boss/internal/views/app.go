@@ -382,6 +382,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewTrash:
 		updated, cmd := a.trash.Update(msg)
 		a.trash = updated.(TrashModel)
+		if sessionID := a.trash.RestoredSessionID(); sessionID != "" {
+			a.chatPicker = NewChatPickerModel(a.client, a.ctx, sessionID, "")
+			a.chatPicker.SetTelemetry(a.telemetry)
+			a.chatPicker.width = a.width
+			a.chatPicker.height = a.height
+			a.activeView = ViewChatPicker
+			return a, a.chatPicker.Init()
+		}
 		if a.trash.Cancelled() {
 			return a, a.switchToHome()
 		}

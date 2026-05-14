@@ -64,18 +64,20 @@ Find the section of the plan corresponding to the current flight leg. Note:
 
 Run the mechanical checks first. These must pass before any further verification.
 
-```bash
-# 1. Auto-fix formatting
-make format
+Discover this repo's commands from project instructions, CI, and command files (`Makefile`, `justfile`, `Taskfile.yml`, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, etc.). Prefer one aggregate command if it covers format/lint/test; otherwise run the smallest non-duplicative command set that covers those gates.
 
-# 2. Run the test suite
-make test
+```bash
+# Examples only; use the commands discovered for this repo
+make check
+make format && make test
+pnpm lint && pnpm test
+go test ./...
 ```
 
 ### Quality Gate Rules
 
-- Run `make format` first — it auto-fixes formatting issues
-- Run `make test` to verify tests pass
+- Run the repo's formatter or lint fixer if one exists
+- Run the repo's test command
 - **If format changes files**: Stage them with `git add`
 - **If tests fail**: Fix the issues, re-run, repeat until passing
 - **Do NOT proceed** to Step 3 until quality gates pass
@@ -84,8 +86,7 @@ make test
 
 ```
 ┌─────────────────────────┐
-│  Run make format        │
-│  Run make test          │
+│  Run repo quality gates │
 └──────────┬──────────────┘
            │
      ┌─────▼─────┐
@@ -102,7 +103,7 @@ make test
 
 ## Step 3: Plan Verification Tests
 
-Now plan **spec-driven tests** — verification that the implementation actually does what the plan says it should do. This goes beyond `make test`.
+Now plan **spec-driven tests** — verification that the implementation actually does what the plan says it should do. This goes beyond the repo's regular test command.
 
 ### 3.1 Review What Changed
 
@@ -116,7 +117,7 @@ Check the plan document for the current flight leg's `### Post-Flight Checks` se
 
 - What behavior to verify
 - Expected outcomes
-- How to test (curl, Playwright, make test, manual inspection, etc.)
+- How to test (HTTP request, Playwright, repo test command, manual inspection, etc.)
 
 ### 3.3 Plan Concrete Test Steps
 
@@ -143,7 +144,7 @@ Based on the spec and what changed, plan specific verification steps. Examples:
 **Skip:**
 
 - Exhaustive testing of unchanged code
-- Tests that duplicate what `make test` already covers
+- Tests that duplicate what the repo's regular test command already covers
 - Manual-only checks that the agent can't perform
 
 ---
@@ -176,7 +177,7 @@ For each test:
            ▼
      Diagnose failure
      Fix the code
-     Re-run quality gates (make format && make test)
+      Re-run repo quality gates
            │
            └──→ Re-run this test
 ```
@@ -200,8 +201,8 @@ Before returning control to the caller, explicitly state what was verified and y
 ## Post-Flight Checks: PASSED
 
 ### Quality Gates
-- make format: PASSED
-- make test: PASSED
+- [gate command]: PASSED
+- [gate command]: PASSED
 
 ### Verification Tests
 - [Test 1 description]: PASSED — [brief result]
@@ -238,8 +239,8 @@ Post-flight checks are complete. Return control to the calling skill or the user
 ## Checklist
 
 - [ ] Plan document read for current flight leg
-- [ ] `make format` passed (files staged if changed)
-- [ ] `make test` passed
+- [ ] Repo quality gate commands discovered
+- [ ] Repo quality gates passed (files staged if format changed)
 - [ ] Verification tests planned from the spec
 - [ ] Each verification test executed
 - [ ] Failures fixed and re-verified
@@ -252,7 +253,7 @@ Post-flight checks are complete. Return control to the calling skill or the user
 
 | Anti-Pattern             | Problem                        | Fix                                               |
 | ------------------------ | ------------------------------ | ------------------------------------------------- |
-| Only running `make test` | Misses spec-level verification | Plan tests from the spec, not just the test suite |
+| Only running regular tests | Misses spec-level verification | Plan tests from the spec, not just the test suite |
 | Single-pass testing      | Leaves failures unfixed        | Fix-and-retry loop until passing                  |
 | Testing everything       | Wastes time on unchanged code  | Focus on what the flight leg built                |
 | Skipping the spec        | Tests don't match requirements | Always read the plan first                        |

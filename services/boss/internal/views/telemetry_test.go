@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/recurser/bossalib/config"
@@ -9,16 +10,19 @@ import (
 )
 
 type fakeTelemetry struct {
-	events []telemetry.Event
-	props  []map[string]any
+	events      []telemetry.Event
+	distinctIDs []string
+	props       []map[string]any
 }
 
-func (f *fakeTelemetry) Capture(_ context.Context, event telemetry.Event, _ string, props map[string]any) {
+func (f *fakeTelemetry) Capture(_ context.Context, event telemetry.Event, distinctID string, props map[string]any) {
 	f.events = append(f.events, event)
+	f.distinctIDs = append(f.distinctIDs, distinctID)
 	f.props = append(f.props, props)
 }
 
 func (f *fakeTelemetry) Identify(context.Context, string, map[string]any) {}
+func (f *fakeTelemetry) Alias(context.Context, string, string)            {}
 func (f *fakeTelemetry) Close()                                           {}
 
 func assertNoSensitiveTelemetryProps(t *testing.T, props map[string]any) {
@@ -61,6 +65,16 @@ func TestCaptureViewTelemetryCapturesWhenEnabled(t *testing.T) {
 		t.Fatalf("source = %v, want tui", got)
 	}
 	assertNoSensitiveTelemetryProps(t, rec.props[0])
+}
+
+func TestViewDistinctIDUsesHyphenatedSharedHelper(t *testing.T) {
+	got := viewDistinctID()
+	if !strings.HasPrefix(got, "local-") {
+		t.Fatalf("viewDistinctID() = %q, want local- prefix", got)
+	}
+	if strings.Contains(got, ":") {
+		t.Fatalf("viewDistinctID() = %q, want no colon", got)
+	}
 }
 
 func enableViewTelemetryForTest(t *testing.T) {

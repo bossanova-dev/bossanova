@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 // TestRun_GracefulShutdown_NoGoroutineLeak boots the full daemon with an
@@ -104,5 +106,22 @@ func TestRun_GracefulShutdown_NoGoroutineLeak(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("run did not return within 15s of SIGTERM")
+	}
+}
+
+func TestDaemonDistinctIDUsesHyphenatedSharedHelper(t *testing.T) {
+	got := daemonDistinctIDFromHostname("host-value")
+	want := telemetry.DaemonDistinctID("host-value")
+	if got != want {
+		t.Fatalf("daemonDistinctIDFromHostname() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, ":") {
+		t.Fatalf("daemon distinct ID %q contains colon", got)
+	}
+}
+
+func TestDaemonDistinctIDFallbackIsHyphenated(t *testing.T) {
+	if got := daemonDistinctIDFromHostname(""); got != "daemon-unknown" {
+		t.Fatalf("daemonDistinctIDFromHostname empty = %q, want daemon-unknown", got)
 	}
 }

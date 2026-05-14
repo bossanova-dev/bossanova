@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -218,6 +220,31 @@ func skipIfNoTmux(t *testing.T) {
 	}
 }
 
+func newTestTmuxClient(t *testing.T) (*Client, CommandFactory) {
+	t.Helper()
+
+	socketDir, err := os.MkdirTemp("/tmp", "boss-tmux-*")
+	if err != nil {
+		t.Fatalf("create tmux socket dir: %v", err)
+	}
+	socketPath := filepath.Join(socketDir, "s")
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if name == "tmux" {
+			args = append([]string{"-S", socketPath}, args...)
+		}
+		return exec.CommandContext(ctx, name, args...)
+	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = factory(ctx, "tmux", "kill-server").Run()
+		_ = os.RemoveAll(socketDir)
+	})
+
+	return NewClient(WithCommandFactory(factory)), factory
+}
+
 // uniqueSessionName generates a session name that won't collide with
 // concurrent test runs on the same machine. tmux session names cannot
 // contain `.` (it's the window/pane separator), so use the nanosecond
@@ -243,7 +270,7 @@ func TestTerminalAttach_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
-	c := NewClient()
+	c, cmdFactory := newTestTmuxClient(t)
 	name := uniqueSessionName("boss-attach-rt")
 	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
 
@@ -259,11 +286,12 @@ func TestTerminalAttach_RoundTrip(t *testing.T) {
 	}
 
 	att, err := NewTerminalAttach(ctx, AttachConfig{
-		AttachID:    "test-attach-1",
-		SessionName: name,
-		Cols:        80,
-		Rows:        24,
-		TmuxClient:  c,
+		AttachID:       "test-attach-1",
+		SessionName:    name,
+		Cols:           80,
+		Rows:           24,
+		TmuxClient:     c,
+		CommandFactory: cmdFactory,
 	})
 	if err != nil {
 		t.Fatalf("NewTerminalAttach: %v", err)
@@ -303,7 +331,7 @@ func TestTerminalAttach_Resize(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
-	c := NewClient()
+	c, cmdFactory := newTestTmuxClient(t)
 	name := uniqueSessionName("boss-attach-rs")
 	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
 
@@ -314,7 +342,7 @@ func TestTerminalAttach_Resize(t *testing.T) {
 	}
 
 	att, err := NewTerminalAttach(ctx, AttachConfig{
-		AttachID: "rs", SessionName: name, Cols: 80, Rows: 24, TmuxClient: c,
+		AttachID: "rs", SessionName: name, Cols: 80, Rows: 24, TmuxClient: c, CommandFactory: cmdFactory,
 	})
 	if err != nil {
 		t.Fatalf("NewTerminalAttach: %v", err)
@@ -332,7 +360,7 @@ func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
-	c := NewClient()
+	c, cmdFactory := newTestTmuxClient(t)
 	name := uniqueSessionName("boss-attach-bp")
 	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
 
@@ -343,11 +371,12 @@ func TestTerminalAttach_BackpressureRaisesLost(t *testing.T) {
 	}
 
 	att, err := NewTerminalAttach(ctx, AttachConfig{
-		AttachID:    "bp",
-		SessionName: name,
-		Cols:        200,
-		Rows:        50,
-		TmuxClient:  c,
+		AttachID:       "bp",
+		SessionName:    name,
+		Cols:           200,
+		Rows:           50,
+		TmuxClient:     c,
+		CommandFactory: cmdFactory,
 		// 64 bytes guarantees every PTY read overflows — even slow runners
 		// under -race will see Lost=true raised on essentially every emit.
 		RingBufferSize: 64,
@@ -412,7 +441,7 @@ func TestTerminalAttach_ExitFiresWhenSessionKilled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
-	c := NewClient()
+	c, cmdFactory := newTestTmuxClient(t)
 	name := uniqueSessionName("boss-attach-x")
 	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
 
@@ -423,7 +452,7 @@ func TestTerminalAttach_ExitFiresWhenSessionKilled(t *testing.T) {
 	}
 
 	att, err := NewTerminalAttach(ctx, AttachConfig{
-		AttachID: "x", SessionName: name, Cols: 80, Rows: 24, TmuxClient: c,
+		AttachID: "x", SessionName: name, Cols: 80, Rows: 24, TmuxClient: c, CommandFactory: cmdFactory,
 	})
 	if err != nil {
 		t.Fatalf("NewTerminalAttach: %v", err)
@@ -489,7 +518,7 @@ func TestTerminalAttach_InputAfterCloseReturnsErr(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), integrationTestTimeout)
 	defer cancel()
 
-	c := NewClient()
+	c, cmdFactory := newTestTmuxClient(t)
 	name := uniqueSessionName("boss-attach-ic")
 	t.Cleanup(func() { _ = c.KillSession(context.Background(), name) })
 
@@ -499,7 +528,7 @@ func TestTerminalAttach_InputAfterCloseReturnsErr(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	att, err := NewTerminalAttach(ctx, AttachConfig{
-		AttachID: "ic", SessionName: name, Cols: 80, Rows: 24, TmuxClient: c,
+		AttachID: "ic", SessionName: name, Cols: 80, Rows: 24, TmuxClient: c, CommandFactory: cmdFactory,
 	})
 	if err != nil {
 		t.Fatalf("NewTerminalAttach: %v", err)

@@ -2,25 +2,45 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
 	"github.com/spf13/cobra"
 )
 
 type fakeTelemetry struct {
-	events []telemetry.Event
-	props  []map[string]any
+	events      []telemetry.Event
+	distinctIDs []string
+	props       []map[string]any
+	identifies  []struct {
+		distinctID string
+		props      map[string]any
+	}
+	aliases [][2]string
 }
 
-func (f *fakeTelemetry) Capture(_ context.Context, event telemetry.Event, _ string, props map[string]any) {
+func (f *fakeTelemetry) Capture(_ context.Context, event telemetry.Event, distinctID string, props map[string]any) {
 	f.events = append(f.events, event)
+	f.distinctIDs = append(f.distinctIDs, distinctID)
 	f.props = append(f.props, props)
 }
 
-func (f *fakeTelemetry) Identify(context.Context, string, map[string]any) {}
-func (f *fakeTelemetry) Close()                                           {}
+func (f *fakeTelemetry) Identify(_ context.Context, distinctID string, props map[string]any) {
+	f.identifies = append(f.identifies, struct {
+		distinctID string
+		props      map[string]any
+	}{distinctID: distinctID, props: props})
+}
+
+func (f *fakeTelemetry) Alias(_ context.Context, alias, distinctID string) {
+	f.aliases = append(f.aliases, [2]string{alias, distinctID})
+}
+
+func (f *fakeTelemetry) Close() {}
 
 func TestCommandTelemetryConfigDisabledByDefault(t *testing.T) {
 	cfg := commandTelemetryConfig(config.DefaultSettings())
@@ -123,14 +143,130 @@ func TestCaptureRepairStartedAndCompletedExcludesSensitiveProps(t *testing.T) {
 	}
 }
 
+func TestLocalDistinctIDUsesHyphenatedSharedHelper(t *testing.T) {
+	got := localDistinctID()
+	if !strings.HasPrefix(got, "local-") {
+		t.Fatalf("localDistinctID() = %q, want local- prefix", got)
+	}
+	if strings.Contains(got, ":") {
+		t.Fatalf("localDistinctID() = %q, want no colon", got)
+	}
+}
+
+func TestTelemetryDistinctIDUsesSignedInEmail(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	writeAuthTokensForTest(t, "person@example.com")
+
+	got := commandDistinctID()
+	want := telemetry.UserDistinctID("person@example.com")
+	if got != want {
+		t.Fatalf("commandDistinctID() = %q, want %q", got, want)
+	}
+}
+
+func TestIdentifySignedInUserSendsEmailProperty(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	writeAuthTokensForTest(t, "person@example.com")
+	rec := &fakeTelemetry{}
+
+	identifyCommandUser(context.Background(), rec)
+
+	if len(rec.identifies) != 1 {
+		t.Fatalf("identifies = %d, want 1", len(rec.identifies))
+	}
+	wantDistinctID := telemetry.UserDistinctID("person@example.com")
+	if got := rec.identifies[0].distinctID; got != wantDistinctID {
+		t.Fatalf("identify distinctID = %q, want %q", got, wantDistinctID)
+	}
+	if got := rec.identifies[0].props["email"]; got != "person@example.com" {
+		t.Fatalf("identify email = %v, want person@example.com", got)
+	}
+}
+
+func TestCaptureAuthChangedAliasesLocalUserOnLogin(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	writeAuthTokensForTest(t, "person@example.com")
+	rec := &fakeTelemetry{}
+
+	captureAuthChanged(context.Background(), rec, "login")
+
+	if len(rec.aliases) != 1 {
+		t.Fatalf("aliases = %d, want 1", len(rec.aliases))
+	}
+	want := [2]string{localDistinctID(), telemetry.UserDistinctID("person@example.com")}
+	if rec.aliases[0] != want {
+		t.Fatalf("alias = %#v, want %#v", rec.aliases[0], want)
+	}
+}
+
+func TestCaptureAuthChangedReadsSignedInEmailOnceOnLogin(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	rec := &fakeTelemetry{}
+	calls := 0
+	original := commandTelemetryEmailLookup
+	commandTelemetryEmailLookup = func() string {
+		calls++
+		return "person@example.com"
+	}
+	t.Cleanup(func() { commandTelemetryEmailLookup = original })
+
+	captureAuthChanged(context.Background(), rec, "login")
+
+	if calls != 1 {
+		t.Fatalf("commandTelemetryEmail calls = %d, want 1", calls)
+	}
+	wantDistinctID := telemetry.UserDistinctID("person@example.com")
+	if len(rec.identifies) != 1 {
+		t.Fatalf("identifies = %d, want 1", len(rec.identifies))
+	}
+	if len(rec.aliases) != 1 {
+		t.Fatalf("aliases = %d, want 1", len(rec.aliases))
+	}
+	if len(rec.distinctIDs) != 1 || rec.distinctIDs[0] != wantDistinctID {
+		t.Fatalf("capture distinctIDs = %#v, want [%q]", rec.distinctIDs, wantDistinctID)
+	}
+}
+
+func TestCaptureAuthChangedWithEmailPreservesLogoutUserIdentity(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	rec := &fakeTelemetry{}
+
+	captureAuthChangedWithEmail(context.Background(), rec, "logout", "person@example.com")
+
+	wantDistinctID := telemetry.UserDistinctID("person@example.com")
+	if len(rec.distinctIDs) != 1 {
+		t.Fatalf("distinctIDs = %d, want 1", len(rec.distinctIDs))
+	}
+	if rec.distinctIDs[0] != wantDistinctID {
+		t.Fatalf("logout distinctID = %q, want %q", rec.distinctIDs[0], wantDistinctID)
+	}
+}
+
 func enableCommandTelemetryForTest(t *testing.T) {
 	t.Helper()
 	_, cleanup := setupTestConfigEnv(t)
 	t.Cleanup(cleanup)
+	t.Setenv("BOSS_KEYRING_BACKEND", "file")
 	settings := config.DefaultSettings()
 	settings.EventTracingEnabled = true
 	if err := config.Save(settings); err != nil {
 		t.Fatalf("config.Save: %v", err)
+	}
+}
+
+func writeAuthTokensForTest(t *testing.T, email string) {
+	t.Helper()
+	store, err := auth.NewKeychainStore(true)
+	if err != nil {
+		t.Fatalf("new keychain store: %v", err)
+	}
+	if err := store.Save(&auth.Tokens{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		Email:        email,
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("save tokens: %v", err)
 	}
 }
 

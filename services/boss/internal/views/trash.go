@@ -56,6 +56,7 @@ type TrashModel struct {
 	deleting      bool
 	deletingAll   bool
 	restoring     bool
+	restoredID    string
 
 	// Layout
 	width  int
@@ -190,6 +191,7 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			return m, nil
 		}
+		m.restoredID = msg.id
 		m.removeSession(msg.id)
 		return m, nil
 
@@ -290,6 +292,9 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // Cancelled returns true if the user exited the trash view.
 func (m TrashModel) Cancelled() bool { return m.cancel }
+
+// RestoredSessionID returns the session restored by the latest successful restore.
+func (m TrashModel) RestoredSessionID() string { return m.restoredID }
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m TrashModel) tableHeight() int {

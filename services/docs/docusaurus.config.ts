@@ -2,6 +2,9 @@ import { themes as prismThemes } from 'prism-react-renderer';
 import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+const posthogHost = process.env.PUBLIC_POSTHOG_HOST ?? 'https://k.bossanova.dev';
+const posthogProjectToken = process.env.PUBLIC_POSTHOG_PROJECT_TOKEN;
+
 const config: Config = {
   title: 'Bossanova',
   tagline: 'Manage multiple AI coding-agent sessions from one terminal.',
@@ -14,6 +17,11 @@ const config: Config = {
   projectName: 'bossanova',
 
   onBrokenLinks: 'throw',
+
+  customFields: {
+    posthogHost,
+    posthogProjectToken,
+  },
 
   markdown: {
     hooks: {

@@ -669,7 +669,7 @@ func (h HomeModel) loginAction() string {
 func (h HomeModel) View() tea.View {
 	if h.err != nil {
 		return tea.NewView(
-			renderError(fmt.Sprintf("Cannot connect to daemon: %v", h.err), h.width) +
+			renderError(fmt.Sprintf("Cannot connect to daemon (%v)", h.err), h.width) +
 				"\n" +
 				lipgloss.NewStyle().Padding(0, 2).Render("Start the daemon with: bossd") +
 				"\n" +

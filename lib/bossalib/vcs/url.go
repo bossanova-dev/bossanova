@@ -5,6 +5,41 @@ import (
 	"strings"
 )
 
+type webLinkProvider struct {
+	name           string
+	matchesHost    func(string) bool
+	repoURL        func(host, slug string) string
+	pullRequestURL func(host, slug string, prNumber int) string
+}
+
+var webLinkProviders = []webLinkProvider{
+	{
+		name: "github",
+		matchesHost: func(host string) bool {
+			return strings.EqualFold(host, "github.com")
+		},
+		repoURL: func(_ string, slug string) string {
+			return fmt.Sprintf("https://github.com/%s", slug)
+		},
+		pullRequestURL: func(_ string, slug string, prNumber int) string {
+			if prNumber <= 0 {
+				return ""
+			}
+			return fmt.Sprintf("https://github.com/%s/pull/%d", slug, prNumber)
+		},
+	},
+}
+
+func webLinkProviderForHost(host string) *webLinkProvider {
+	for i := range webLinkProviders {
+		provider := &webLinkProviders[i]
+		if provider.matchesHost(host) {
+			return provider
+		}
+	}
+	return nil
+}
+
 // ConstructPRURL constructs a GitHub PR URL from an origin URL and PR number.
 // Returns empty string if the origin URL cannot be parsed.
 func ConstructPRURL(originURL string, prNumber int) string {
@@ -34,10 +69,33 @@ func RepoWebLink(originURL string) (provider, webURL string, ok bool) {
 	if host == "" || slug == "" {
 		return "", "", false
 	}
-	if strings.EqualFold(host, "github.com") {
-		return "github", fmt.Sprintf("https://github.com/%s", slug), true
+	providerSpec := webLinkProviderForHost(host)
+	if providerSpec == nil {
+		return "", "", false
 	}
-	return "", "", false
+	webURL = providerSpec.repoURL(host, slug)
+	if webURL == "" {
+		return "", "", false
+	}
+	return providerSpec.name, webURL, true
+}
+
+// PullRequestWebLink converts a git origin URL and PR number into a provider
+// pull request web URL. Add providers here once the UI supports their labels.
+func PullRequestWebLink(originURL string, prNumber int) (provider, webURL string, ok bool) {
+	host, slug := parseOriginURL(originURL)
+	if host == "" || slug == "" || prNumber <= 0 {
+		return "", "", false
+	}
+	providerSpec := webLinkProviderForHost(host)
+	if providerSpec == nil {
+		return "", "", false
+	}
+	webURL = providerSpec.pullRequestURL(host, slug, prNumber)
+	if webURL == "" {
+		return "", "", false
+	}
+	return providerSpec.name, webURL, true
 }
 
 // parseOriginURL splits an origin URL into (host, "owner/repo").

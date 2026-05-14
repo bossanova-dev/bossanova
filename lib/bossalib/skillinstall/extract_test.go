@@ -17,6 +17,17 @@ func testFS() fstest.MapFS {
 	}
 }
 
+func changedFS() fstest.MapFS {
+	return fstest.MapFS{
+		"skills/boss/SKILL.md":           {Data: []byte("# Boss CLI Reference\nAll commands.")},
+		"skills/boss-test/SKILL.md":      {Data: []byte("# Test Skill\nDo the changed thing.")},
+		"skills/boss-other/SKILL.md":     {Data: []byte("# Other Skill\nDo other thing.")},
+		"skills/boss-new/SKILL.md":       {Data: []byte("# New Skill\nDo new thing.")},
+		"skills/boss-finalize/add-pr.sh": {Data: []byte("#!/bin/sh\necho ok")},
+		"skills/boss-finalize/SKILL.md":  {Data: []byte("# Finalize\nLand it.")},
+	}
+}
+
 func TestExtract(t *testing.T) {
 	dest := t.TempDir()
 	if err := Extract(dest, testFS()); err != nil {
@@ -216,6 +227,50 @@ func TestDefaultDir(t *testing.T) {
 	}
 }
 
+func TestDirForAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tests := []struct {
+		name  string
+		agent Agent
+		want  string
+	}{
+		{name: "claude", agent: AgentClaude, want: filepath.Join(home, ".claude", "skills")},
+		{name: "codex", agent: AgentCodex, want: filepath.Join(home, ".codex", "skills")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := DirForAgent(tt.agent)
+			if err != nil {
+				t.Fatalf("DirForAgent: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("DirForAgent(%q) = %q, want %q", tt.agent, got, tt.want)
+			}
+		})
+	}
+
+	if _, err := DirForAgent(Agent("unknown")); err == nil {
+		t.Fatal("DirForAgent unknown: got nil error, want error")
+	}
+}
+
+func TestManifestChangesWhenEmbeddedSkillsChange(t *testing.T) {
+	a, err := Manifest(testFS())
+	if err != nil {
+		t.Fatalf("Manifest(testFS): %v", err)
+	}
+	b, err := Manifest(changedFS())
+	if err != nil {
+		t.Fatalf("Manifest(changedFS): %v", err)
+	}
+	if a == b {
+		t.Fatal("Manifest did not change after embedded skill content changed")
+	}
+}
+
 func TestIsInstalled(t *testing.T) {
 	dir := t.TempDir()
 
@@ -245,5 +300,152 @@ func TestIsInstalled(t *testing.T) {
 func TestIsInstalledNonexistentDir(t *testing.T) {
 	if IsInstalled("/nonexistent/path/that/does/not/exist") {
 		t.Error("expected false for nonexistent directory")
+	}
+}
+
+func TestNeedsUpdateFalseAfterExtract(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if needs {
+		t.Fatal("NeedsUpdate = true, want false after fresh extract")
+	}
+}
+
+func TestNeedsUpdateDetectsInstalledContentDrift(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	path := filepath.Join(dest, Namespace, "boss-test", "SKILL.md")
+	if err := os.WriteFile(path, []byte("local edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for installed content drift")
+	}
+}
+
+func TestNeedsUpdateDetectsEmbeddedContentChangeAndNewSkill(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+
+	needs, err := NeedsUpdate(dest, changedFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for changed embedded skills")
+	}
+}
+
+func TestNeedsUpdateDetectsStaleInstalledSkillDir(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	stale := filepath.Join(dest, Namespace, "boss-removed")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "SKILL.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for stale installed skill")
+	}
+}
+
+func TestNeedsUpdateDetectsMissingTopLevelSymlink(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dest, "boss-test")); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for missing top-level symlink")
+	}
+}
+
+func TestNeedsUpdateDetectsStaleTopLevelSymlink(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(Namespace, "boss-removed"), filepath.Join(dest, "boss-removed")); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for stale top-level symlink")
+	}
+}
+
+func TestEnsureUpdatedDoesNotInstallIntoEmptyDirectory(t *testing.T) {
+	dest := t.TempDir()
+	updated, err := EnsureUpdated(dest, testFS())
+	if err != nil {
+		t.Fatalf("EnsureUpdated: %v", err)
+	}
+	if updated {
+		t.Fatal("EnsureUpdated updated empty dir, want no-op")
+	}
+	if _, err := os.Stat(filepath.Join(dest, Namespace)); !os.IsNotExist(err) {
+		t.Fatalf("namespace exists after no-op, err=%v", err)
+	}
+}
+
+func TestEnsureUpdatedRefreshesStaleInstall(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	path := filepath.Join(dest, Namespace, "boss-test", "SKILL.md")
+	if err := os.WriteFile(path, []byte("local edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := EnsureUpdated(dest, testFS())
+	if err != nil {
+		t.Fatalf("EnsureUpdated: %v", err)
+	}
+	if !updated {
+		t.Fatal("EnsureUpdated = false, want true")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "# Test Skill\nDo the thing." {
+		t.Fatalf("stale content not refreshed: %q", string(data))
 	}
 }

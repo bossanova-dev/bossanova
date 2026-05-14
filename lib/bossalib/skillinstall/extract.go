@@ -1,10 +1,15 @@
 package skillinstall
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,13 +24,33 @@ func isBossSkill(name string) bool {
 // this namespace, mirroring how gstack organises its skills.
 const Namespace = "bossanova"
 
+// Agent identifies a coding agent with a global skill directory.
+type Agent string
+
+const (
+	AgentClaude Agent = "claude"
+	AgentCodex  Agent = "codex"
+)
+
 // DefaultDir returns the global Claude skills directory (~/.claude/skills).
 func DefaultDir() (string, error) {
+	return DirForAgent(AgentClaude)
+}
+
+// DirForAgent returns the global skill directory for a supported coding agent.
+func DirForAgent(agent Agent) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claude", "skills"), nil
+	switch agent {
+	case AgentClaude:
+		return filepath.Join(home, ".claude", "skills"), nil
+	case AgentCodex:
+		return filepath.Join(home, ".codex", "skills"), nil
+	default:
+		return "", fmt.Errorf("unsupported agent %q", agent)
+	}
 }
 
 // IsInstalled returns true if the bossanova namespace directory exists in dir
@@ -42,6 +67,159 @@ func IsInstalled(dir string) bool {
 		}
 	}
 	return false
+}
+
+// Manifest returns a deterministic hash of the embedded boss skill payload.
+func Manifest(fsys fs.FS) (string, error) {
+	files, err := embeddedFiles(fsys)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	for _, file := range files {
+		_, _ = h.Write([]byte(file.rel))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(file.data)
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// NeedsUpdate reports whether an already-installed boss skill tree differs
+// from the embedded payload or has a broken top-level symlink layout.
+func NeedsUpdate(dir string, fsys fs.FS) (bool, error) {
+	if !IsInstalled(dir) {
+		return false, nil
+	}
+	files, err := embeddedFiles(fsys)
+	if err != nil {
+		return false, err
+	}
+
+	expectedFiles := make(map[string][]byte, len(files))
+	expectedSkills := map[string]bool{}
+	for _, file := range files {
+		expectedFiles[file.rel] = file.data
+		skill := strings.Split(file.rel, "/")[0]
+		if isBossSkill(skill) {
+			expectedSkills[skill] = true
+		}
+
+		installedPath := filepath.Join(dir, Namespace, filepath.FromSlash(file.rel))
+		data, err := os.ReadFile(installedPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return true, nil
+			}
+			return false, err
+		}
+		if !bytes.Equal(data, file.data) {
+			return true, nil
+		}
+	}
+
+	nsDir := filepath.Join(dir, Namespace)
+	if err := filepath.WalkDir(nsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path == nsDir {
+				return nil
+			}
+			rel, err := filepath.Rel(nsDir, path)
+			if err != nil {
+				return err
+			}
+			if filepath.Dir(rel) == "." && isBossSkill(filepath.Base(rel)) && !expectedSkills[filepath.Base(rel)] {
+				return errNeedsUpdate
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(nsDir, path)
+		if err != nil {
+			return err
+		}
+		if _, ok := expectedFiles[filepath.ToSlash(rel)]; !ok {
+			return errNeedsUpdate
+		}
+		return nil
+	}); err != nil {
+		if err == errNeedsUpdate {
+			return true, nil
+		}
+		return false, err
+	}
+
+	for skill := range expectedSkills {
+		link := filepath.Join(dir, skill)
+		target, err := os.Readlink(link)
+		if err != nil {
+			return true, nil
+		}
+		if target != filepath.Join(Namespace, skill) {
+			return true, nil
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if isBossSkill(name) && !expectedSkills[name] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// EnsureUpdated refreshes installed boss skills only when the installed tree
+// differs from the embedded payload. It does not install into an empty target.
+func EnsureUpdated(dir string, fsys fs.FS) (bool, error) {
+	needs, err := NeedsUpdate(dir, fsys)
+	if err != nil || !needs {
+		return false, err
+	}
+	if err := Extract(dir, fsys); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+type embeddedFile struct {
+	rel  string
+	data []byte
+}
+
+var errNeedsUpdate = errors.New("skills need update")
+
+func embeddedFiles(fsys fs.FS) ([]embeddedFile, error) {
+	var files []embeddedFile
+	if err := fs.WalkDir(fsys, "skills", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return fmt.Errorf("read embedded skill: %w", err)
+		}
+		files = append(files, embeddedFile{
+			rel:  strings.TrimPrefix(path, "skills/"),
+			data: data,
+		})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
+	return files, nil
 }
 
 // Extract writes embedded skill files from fsys into dir/bossanova/

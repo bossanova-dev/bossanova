@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/recurser/boss/internal/skillinstall"
@@ -367,41 +368,161 @@ func configCmd() *cobra.Command {
 	return cfg
 }
 
-// maybeInstallSkills prompts the user to install boss skills into ~/.claude/skills/
-// on first run. If skills are already installed, this is a no-op (the daemon handles updates).
+type skillInstallAgent struct {
+	name    string
+	command string
+	agent   libskillinstall.Agent
+}
+
+var (
+	skillInstallAgents = []skillInstallAgent{
+		{name: "Claude", command: "claude", agent: libskillinstall.AgentClaude},
+		{name: "Codex", command: "codex", agent: libskillinstall.AgentCodex},
+	}
+	skillInstallLookPath   = exec.LookPath
+	skillInstallIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	skillInstallReadAnswer = func() string {
+		var answer string
+		if _, err := fmt.Scanln(&answer); err != nil {
+			return ""
+		}
+		return answer
+	}
+)
+
+// maybeInstallSkills prompts the user to install or update boss skills for each
+// available coding agent on startup. Prompts are shown in agent order.
 func maybeInstallSkills() error {
 	if os.Getenv("BOSS_SKIP_SKILLS") != "" {
 		return nil
 	}
-	dir, err := libskillinstall.DefaultDir()
+	if !skillInstallIsTerminal() {
+		return nil
+	}
+	manifest, err := libskillinstall.Manifest(skillinstall.SkillsFS)
 	if err != nil {
 		return nil // non-fatal
 	}
 	settings, _ := config.Load()
-	if libskillinstall.IsInstalled(dir) || settings.SkillsDeclined {
-		return nil // already installed or user opted out
-	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return nil // non-interactive, skip silently
-	}
+	settingsChanged := false
 
-	fmt.Fprintf(os.Stderr, "Install boss skills to %s? [Y/n] ", dir)
-	var answer string
-	if _, err := fmt.Scanln(&answer); err != nil {
-		answer = "" // default to yes on read error
+	for _, target := range skillInstallAgents {
+		if _, err := skillInstallLookPath(target.command); err != nil {
+			continue
+		}
+		dir, err := libskillinstall.DirForAgent(target.agent)
+		if err != nil {
+			continue
+		}
+		installed := libskillinstall.IsInstalled(dir)
+		needsUpdate := false
+		if installed {
+			needsUpdate, err = libskillinstall.NeedsUpdate(dir, skillinstall.SkillsFS)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to check %s skills: %v\n", target.name, err)
+				continue
+			}
+		}
+		agentName := string(target.agent)
+		if installed && !needsUpdate {
+			if rememberInstalledSkillManifest(&settings, agentName, manifest) {
+				settingsChanged = true
+			}
+			continue
+		}
+		if skillPromptDeclined(settings, target.agent, installed, manifest) {
+			continue
+		}
+
+		action := "Install"
+		preposition := "to"
+		if installed {
+			action = "Update"
+			preposition = "in"
+		}
+		fmt.Fprintf(os.Stderr, "%s boss skills for %s %s %s? [Y/n] ", action, target.name, preposition, dir)
+		answer := strings.ToLower(strings.TrimSpace(skillInstallReadAnswer()))
+		if answer == "n" || answer == "no" {
+			if rememberDeclinedSkillPrompt(&settings, agentName, manifest) {
+				settingsChanged = true
+			}
+			continue
+		}
+		if err := libskillinstall.Extract(dir, skillinstall.SkillsFS); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to install %s skills: %v\n", target.name, err)
+			continue
+		}
+		if rememberInstalledSkillManifest(&settings, agentName, manifest) {
+			settingsChanged = true
+		}
+		if clearDeclinedSkillPrompt(&settings, agentName) {
+			settingsChanged = true
+		}
+		if target.agent == libskillinstall.AgentClaude {
+			if settings.SkillsDeclined {
+				settingsChanged = true
+			}
+			settings.SkillsDeclined = false
+		}
+		if installed {
+			fmt.Fprintf(os.Stderr, "Boss skills updated for %s.\n", target.name)
+		} else {
+			fmt.Fprintf(os.Stderr, "Boss skills installed for %s.\n", target.name)
+		}
 	}
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	if answer == "n" || answer == "no" {
-		settings.SkillsDeclined = true
+	if settingsChanged {
 		_ = config.Save(settings)
-		return nil
-	}
-	if err := libskillinstall.Extract(dir, skillinstall.SkillsFS); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to install skills: %v\n", err)
-	} else {
-		fmt.Fprintln(os.Stderr, "Boss skills installed.")
 	}
 	return nil
+}
+
+func skillPromptDeclined(settings config.Settings, agent libskillinstall.Agent, installed bool, manifest string) bool {
+	agentName := string(agent)
+	declined := settings.SkillsDeclinedByAgent[agentName]
+	declinedManifest := settings.SkillsDeclinedManifestByAgent[agentName]
+	if agent == libskillinstall.AgentClaude && settings.SkillsDeclined && !declined && declinedManifest == "" {
+		return !installed
+	}
+	return declined && declinedManifest == manifest
+}
+
+func rememberDeclinedSkillPrompt(settings *config.Settings, agentName, manifest string) bool {
+	if settings.SkillsDeclinedByAgent == nil {
+		settings.SkillsDeclinedByAgent = map[string]bool{}
+	}
+	if settings.SkillsDeclinedManifestByAgent == nil {
+		settings.SkillsDeclinedManifestByAgent = map[string]string{}
+	}
+	changed := !settings.SkillsDeclinedByAgent[agentName] || settings.SkillsDeclinedManifestByAgent[agentName] != manifest
+	settings.SkillsDeclinedByAgent[agentName] = true
+	settings.SkillsDeclinedManifestByAgent[agentName] = manifest
+	return changed
+}
+
+func rememberInstalledSkillManifest(settings *config.Settings, agentName, manifest string) bool {
+	if settings.SkillsInstalledManifestByAgent == nil {
+		settings.SkillsInstalledManifestByAgent = map[string]string{}
+	}
+	changed := settings.SkillsInstalledManifestByAgent[agentName] != manifest
+	settings.SkillsInstalledManifestByAgent[agentName] = manifest
+	return changed
+}
+
+func clearDeclinedSkillPrompt(settings *config.Settings, agentName string) bool {
+	changed := false
+	if settings.SkillsDeclinedByAgent != nil {
+		if settings.SkillsDeclinedByAgent[agentName] {
+			changed = true
+		}
+		delete(settings.SkillsDeclinedByAgent, agentName)
+	}
+	if settings.SkillsDeclinedManifestByAgent != nil {
+		if _, ok := settings.SkillsDeclinedManifestByAgent[agentName]; ok {
+			changed = true
+		}
+		delete(settings.SkillsDeclinedManifestByAgent, agentName)
+	}
+	return changed
 }
 
 func trashCmd() *cobra.Command {

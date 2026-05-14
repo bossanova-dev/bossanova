@@ -175,17 +175,20 @@ func hasPlatformSuffix(name string) bool {
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
-	WorktreeBaseDir       string         `json:"worktree_base_dir"`
-	DefaultAgent          string         `json:"default_agent,omitempty"`
-	SkillsDeclined        bool           `json:"skills_declined,omitempty"`
-	PollIntervalSeconds   int            `json:"poll_interval_seconds,omitempty"`
-	EventTracingEnabled   bool           `json:"event_tracing_enabled,omitempty"`
-	PostHogProjectToken   string         `json:"posthog_project_token,omitempty"`
-	PostHogHost           string         `json:"posthog_host,omitempty"`
-	Plugins               []PluginConfig `json:"plugins,omitempty"`
-	Repair                RepairConfig   `json:"repair,omitzero"`
-	ProvidersAcknowledged bool           `json:"providers_acknowledged,omitempty"`
-	KnownAgentProviders   []string       `json:"known_agent_providers,omitempty"`
+	WorktreeBaseDir                string            `json:"worktree_base_dir"`
+	DefaultAgent                   string            `json:"default_agent,omitempty"`
+	SkillsDeclined                 bool              `json:"skills_declined,omitempty"`
+	SkillsDeclinedByAgent          map[string]bool   `json:"skills_declined_by_agent,omitempty"`
+	SkillsDeclinedManifestByAgent  map[string]string `json:"skills_declined_manifest_by_agent,omitempty"`
+	SkillsInstalledManifestByAgent map[string]string `json:"skills_installed_manifest_by_agent,omitempty"`
+	PollIntervalSeconds            int               `json:"poll_interval_seconds,omitempty"`
+	EventTracingEnabled            bool              `json:"event_tracing_enabled,omitempty"`
+	PostHogProjectToken            string            `json:"posthog_project_token,omitempty"`
+	PostHogHost                    string            `json:"posthog_host,omitempty"`
+	Plugins                        []PluginConfig    `json:"plugins,omitempty"`
+	Repair                         RepairConfig      `json:"repair,omitzero"`
+	ProvidersAcknowledged          bool              `json:"providers_acknowledged,omitempty"`
+	KnownAgentProviders            []string          `json:"known_agent_providers,omitempty"`
 }
 
 // PluginConfigBool reads a boolean-valued entry from a named plugin's

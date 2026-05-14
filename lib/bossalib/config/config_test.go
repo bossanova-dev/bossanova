@@ -40,6 +40,15 @@ func TestSaveAndLoad(t *testing.T) {
 		WorktreeBaseDir:     "/custom/worktrees",
 		DefaultAgent:        "opencode",
 		PollIntervalSeconds: 60,
+		SkillsDeclinedByAgent: map[string]bool{
+			"codex": true,
+		},
+		SkillsDeclinedManifestByAgent: map[string]string{
+			"codex": "declined-manifest",
+		},
+		SkillsInstalledManifestByAgent: map[string]string{
+			"claude": "installed-manifest",
+		},
 	}
 
 	if err := SaveTo(path, original); err != nil {
@@ -62,6 +71,15 @@ func TestSaveAndLoad(t *testing.T) {
 	if loaded.PollIntervalSeconds != original.PollIntervalSeconds {
 		t.Errorf("PollIntervalSeconds: got %d, want %d",
 			loaded.PollIntervalSeconds, original.PollIntervalSeconds)
+	}
+	if !loaded.SkillsDeclinedByAgent["codex"] {
+		t.Errorf("SkillsDeclinedByAgent[codex]: got false, want true")
+	}
+	if loaded.SkillsDeclinedManifestByAgent["codex"] != "declined-manifest" {
+		t.Errorf("SkillsDeclinedManifestByAgent[codex]: got %q", loaded.SkillsDeclinedManifestByAgent["codex"])
+	}
+	if loaded.SkillsInstalledManifestByAgent["claude"] != "installed-manifest" {
+		t.Errorf("SkillsInstalledManifestByAgent[claude]: got %q", loaded.SkillsInstalledManifestByAgent["claude"])
 	}
 }
 

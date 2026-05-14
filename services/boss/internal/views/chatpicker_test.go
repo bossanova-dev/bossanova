@@ -555,6 +555,29 @@ func TestChatPicker_LoadsGitHubRepoWebLink(t *testing.T) {
 	}
 }
 
+func TestChatPicker_LoadsGitHubPullRequestWebLinkWhenPRNumberKnown(t *testing.T) {
+	prNumber := int32(42)
+	stub := &chatPickerStub{
+		session: &pb.Session{Id: "session-1", RepoId: "repo-1", PrNumber: &prNumber},
+		repos: []*pb.Repo{
+			{Id: "repo-1", OriginUrl: "git@github.com:owner/repo.git"},
+		},
+	}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	m.session = stub.session
+
+	msg := m.fetchRepoWebLink()()
+	updated, _ := m.Update(msg)
+	m = updated.(ChatPickerModel)
+
+	if m.repoWebLink.provider != "github" {
+		t.Fatalf("repoWebLink.provider = %q, want github", m.repoWebLink.provider)
+	}
+	if m.repoWebLink.url != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("repoWebLink.url = %q, want https://github.com/owner/repo/pull/42", m.repoWebLink.url)
+	}
+}
+
 func TestChatPicker_HidesGitHubActionForNonGitHubRepo(t *testing.T) {
 	stub := &chatPickerStub{
 		session: &pb.Session{Id: "session-1", RepoId: "repo-1"},

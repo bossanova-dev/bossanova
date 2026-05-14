@@ -5,7 +5,8 @@
 # Usage: ./add-pr-numbers.sh [PR_NUMBER]
 #
 # If PR_NUMBER is not provided, it will be fetched from the current PR using gh cli.
-# This script rebases all commits since the branch diverged from origin/main,
+# Set BASE_BRANCH to override PR base discovery.
+# This script rebases all commits since the branch diverged from the PR base branch,
 # adding [#PR_NUMBER] to any commit message that doesn't already have it.
 #
 
@@ -26,8 +27,34 @@ fi
 
 echo "PR number: #$PR_NUM"
 
-# Find the base commit (where branch diverged from main)
-BASE_COMMIT=$(git merge-base HEAD origin/main)
+# Find the base commit (where branch diverged from the PR base branch)
+if [ -z "$BASE_BRANCH" ]; then
+  BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
+fi
+if [ -z "$BASE_BRANCH" ]; then
+  CURRENT_BRANCH=$(git branch --show-current)
+  BASE_BRANCH=$(
+    git for-each-ref --format='%(refname:short)' refs/remotes/origin |
+      sed 's#^origin/##' |
+      grep -Fvx HEAD |
+      grep -Fvx "$CURRENT_BRANCH" |
+      while read -r branch; do
+        git merge-base --is-ancestor HEAD "origin/$branch" && continue
+        base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue
+        printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"
+      done |
+      sort -nr |
+      awk 'NR == 1 {print $2}'
+  )
+  [ -n "$BASE_BRANCH" ] && echo "Using inferred git base branch: $BASE_BRANCH"
+fi
+if [ -z "$BASE_BRANCH" ]; then
+  echo "Error: Could not determine PR base branch. Set BASE_BRANCH or ensure you're on a PR branch."
+  exit 1
+fi
+echo "Base branch: $BASE_BRANCH"
+git fetch origin "$BASE_BRANCH"
+BASE_COMMIT=$(git merge-base HEAD "origin/$BASE_BRANCH")
 echo "Base commit: $BASE_COMMIT"
 
 # Count commits to process

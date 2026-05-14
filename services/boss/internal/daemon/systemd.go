@@ -221,7 +221,7 @@ func platformEnsureRunning(socketPath string) error {
 	// Fall back to starting bossd directly as a background process.
 	bossdPath, err := ResolveBossdPath()
 	if err != nil {
-		return fmt.Errorf("cannot auto-start daemon: %w", err)
+		return fmt.Errorf("cannot auto-start daemon because start failed: %w", err)
 	}
 
 	cmd := exec.Command(bossdPath)

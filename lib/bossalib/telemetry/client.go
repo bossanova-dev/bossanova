@@ -2,10 +2,11 @@ package telemetry
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
 
 	"github.com/posthog/posthog-go"
 	"github.com/recurser/bossalib/config"
+	"github.com/rs/zerolog/log"
 )
 
 type Config struct {
@@ -19,6 +20,7 @@ type Config struct {
 type Client interface {
 	Capture(ctx context.Context, event Event, distinctID string, properties map[string]any)
 	Identify(ctx context.Context, distinctID string, properties map[string]any)
+	Alias(ctx context.Context, alias, distinctID string)
 	Close()
 }
 
@@ -26,6 +28,7 @@ type noopClient struct{}
 
 func (noopClient) Capture(context.Context, Event, string, map[string]any) {}
 func (noopClient) Identify(context.Context, string, map[string]any)       {}
+func (noopClient) Alias(context.Context, string, string)                  {}
 func (noopClient) Close()                                                 {}
 
 type postHogClient struct {
@@ -69,12 +72,37 @@ func New(cfg Config) Client {
 	if !cfg.Enabled || cfg.ProjectToken == "" {
 		return noopClient{}
 	}
-	inner, err := posthog.NewWithConfig(cfg.ProjectToken, posthog.Config{Endpoint: cfg.Host})
+	inner, err := posthog.NewWithConfig(cfg.ProjectToken, postHogConfig(cfg.Host))
 	if err != nil {
-		slog.Warn("posthog telemetry disabled", "error", err)
+		log.Warn().Err(err).Msg("posthog telemetry disabled")
 		return noopClient{}
 	}
 	return &postHogClient{cfg: cfg, inner: inner}
+}
+
+func postHogConfig(host string) posthog.Config {
+	return posthog.Config{
+		Endpoint: host,
+		Logger:   postHogLogger{},
+	}
+}
+
+type postHogLogger struct{}
+
+func (postHogLogger) Debugf(format string, args ...interface{}) {
+	log.Debug().Str("component", "posthog").Msg(fmt.Sprintf(format, args...))
+}
+
+func (postHogLogger) Logf(format string, args ...interface{}) {
+	log.Info().Str("component", "posthog").Msg(fmt.Sprintf(format, args...))
+}
+
+func (postHogLogger) Warnf(format string, args ...interface{}) {
+	log.Warn().Str("component", "posthog").Msg(fmt.Sprintf(format, args...))
+}
+
+func (postHogLogger) Errorf(format string, args ...interface{}) {
+	log.Error().Str("component", "posthog").Msg(fmt.Sprintf(format, args...))
 }
 
 func (c *postHogClient) Capture(ctx context.Context, event Event, distinctID string, properties map[string]any) {
@@ -90,7 +118,7 @@ func (c *postHogClient) Capture(ctx context.Context, event Event, distinctID str
 		Event:      string(event),
 		Properties: posthog.Properties(props),
 	}); err != nil {
-		slog.Warn("posthog capture enqueue failed", "event", event, "error", err)
+		log.Warn().Err(err).Str("event", string(event)).Msg("posthog capture enqueue failed")
 	}
 }
 
@@ -99,18 +127,27 @@ func (c *postHogClient) Identify(ctx context.Context, distinctID string, propert
 	if distinctID == "" {
 		return
 	}
-	props := FilterProperties(properties)
+	props := FilterIdentifyProperties(properties)
 	if err := c.inner.Enqueue(posthog.Identify{
 		DistinctId: distinctID,
 		Properties: posthog.Properties(props),
 	}); err != nil {
-		slog.Warn("posthog identify enqueue failed", "error", err)
+		log.Warn().Err(err).Msg("posthog identify enqueue failed")
+	}
+}
+
+func (c *postHogClient) Alias(_ context.Context, alias, distinctID string) {
+	if c == nil || c.inner == nil || alias == "" || distinctID == "" || alias == distinctID {
+		return
+	}
+	if err := c.inner.Enqueue(posthog.Alias{Alias: alias, DistinctId: distinctID}); err != nil {
+		log.Warn().Err(err).Msg("posthog alias enqueue failed")
 	}
 }
 
 func (c *postHogClient) Close() {
 	if err := c.inner.Close(); err != nil {
-		slog.Warn("posthog close failed", "error", err)
+		log.Warn().Err(err).Msg("posthog close failed")
 	}
 }
 
@@ -121,6 +158,14 @@ func FilterProperties(properties map[string]any) map[string]any {
 			continue
 		}
 		filtered[key] = value
+	}
+	return filtered
+}
+
+func FilterIdentifyProperties(properties map[string]any) map[string]any {
+	filtered := FilterProperties(properties)
+	if email, ok := properties["email"]; ok && isSafeScalar(email) {
+		filtered["email"] = email
 	}
 	return filtered
 }

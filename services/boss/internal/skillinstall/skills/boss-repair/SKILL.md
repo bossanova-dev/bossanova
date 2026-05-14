@@ -41,6 +41,10 @@ Based on the output, categorize the issue:
 - **Failing Checks**: PR checks show failures (tests, lint, build)
 - **Review Feedback**: PR has requested changes or comments
 
+**1.3 Identify Project Gate Commands**
+
+Before running local checks, discover this repo's commands from project instructions, CI, and command files (`Makefile`, `justfile`, `Taskfile.yml`, `package.json`, `go.mod`, etc.). Use the smallest non-duplicative command set that covers the failing area.
+
 ### Phase 2: Execute Repair Strategy
 
 #### Strategy A: Merge Conflicts
@@ -49,11 +53,30 @@ Based on the output, categorize the issue:
 
 **Resolution**:
 
-1. Fetch and merge base branch:
+1. Fetch and merge the PR base branch:
 
    ```bash
-   git fetch origin main
-   git merge origin/main
+   BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
+   if [ -z "$BASE_BRANCH" ]; then
+     CURRENT_BRANCH=$(git branch --show-current)
+     BASE_BRANCH=$(
+       git for-each-ref --format='%(refname:short)' refs/remotes/origin |
+         sed 's#^origin/##' |
+         grep -Fvx HEAD |
+         grep -Fvx "$CURRENT_BRANCH" |
+         while read -r branch; do
+           git merge-base --is-ancestor HEAD "origin/$branch" && continue
+           base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue
+           printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"
+         done |
+         sort -nr |
+         awk 'NR == 1 {print $2}'
+     )
+     [ -n "$BASE_BRANCH" ] && echo "Using inferred git base branch: $BASE_BRANCH"
+   fi
+   test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }
+   git fetch origin "$BASE_BRANCH"
+   git merge "origin/$BASE_BRANCH"
    ```
 
 2. Identify conflicting files:
@@ -71,10 +94,13 @@ Based on the output, categorize the issue:
      - Merging logic intelligently if needed
    - Use Edit tool to remove conflict markers and apply resolution
 
-4. Test the resolution:
+4. Test the resolution with the repo's formatting and test gates:
 
    ```bash
-   make format && make test
+   # Examples only; use the commands discovered for this repo
+   pnpm lint && pnpm test
+   go test ./...
+   cargo test
    ```
 
 5. Commit the resolution:
@@ -82,7 +108,7 @@ Based on the output, categorize the issue:
    ```bash
    git add <resolved-files>
    git commit -m "$(cat <<'EOF'
-   fix(merge): resolve conflicts with main branch
+   fix(merge): resolve conflicts with base branch
 
    Resolved merge conflicts by [brief description of strategy].
 
@@ -119,9 +145,12 @@ Based on the output, categorize the issue:
    - Read test output to identify failing tests
    - Read the test file and implementation
    - Fix the root cause (not just the symptom)
-   - Run tests locally to verify:
+   - Run the relevant test command locally to verify:
      ```bash
-     make test
+     # Examples only; use the command discovered for this repo
+     pnpm test
+     go test ./...
+     cargo test
      ```
    - Commit the fix:
      ```bash
@@ -131,9 +160,12 @@ Based on the output, categorize the issue:
      ```
 
 4. For **lint/format failures**:
-   - Run formatting:
+   - Run the repo's formatter or lint fixer:
      ```bash
-     make format
+     # Examples only; use the command discovered for this repo
+     pnpm lint --fix
+     gofmt -w <files>
+     cargo fmt
      ```
    - Commit if changes were made:
      ```bash
@@ -145,9 +177,12 @@ Based on the output, categorize the issue:
 5. For **build failures**:
    - Read build output to identify error
    - Fix compilation/build issues
-   - Verify locally:
+   - Verify locally with the repo's build command:
      ```bash
-     make build
+     # Examples only; use the command discovered for this repo
+     pnpm build
+     go test ./...
+     cargo build
      ```
    - Commit and push the fix
 
@@ -227,9 +262,12 @@ Based on the output, categorize the issue:
    **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline and resolve with an explanation, or ask for clarification.
 
 3. After implementing changes:
-   - Run tests and formatting:
+   - Run the repo's formatting and test gates:
      ```bash
-     make format && make test
+     # Examples only; use the commands discovered for this repo
+     pnpm lint && pnpm test
+     go test ./...
+     cargo test
      ```
    - Commit with reference to review feedback:
 
@@ -335,7 +373,7 @@ If the repair requires information not available (e.g., design decisions, extern
 
 1. **Root Cause Over Symptoms**: Fix the underlying issue, not just the visible error
 2. **Minimal Changes**: Only change what's necessary to resolve the issue
-3. **Test Locally**: Always run `make format && make test` before pushing
+3. **Test Locally**: Always run the repo's formatting and test gates before pushing
 4. **Clear Commits**: Write descriptive commit messages that explain the fix
 5. **Atomic Repairs**: Each repair attempt should be self-contained
 6. **Fail Fast**: If unable to fix, exit quickly to avoid wasting time
@@ -363,10 +401,10 @@ If the repair requires information not available (e.g., design decisions, extern
 Problem: PR shows conflict status, git reports conflicts in server.go
 
 Resolution:
-1. git fetch origin main && git merge origin/main
+1. Fetch and merge the PR base branch
 2. Read server.go, see conflict in import statements
 3. Keep both imports (they're independent)
-4. make format && make test (passes)
+4. Run repo formatting and test gates (passes)
 5. git add server.go && git commit -m "fix(merge): resolve import conflicts"
 6. git push
 
@@ -384,7 +422,7 @@ Resolution:
 3. Read user_handler_test.go and user_handler.go
 4. Found bug: missing validation check for email field
 5. Add validation in user_handler.go
-6. make test → passes
+6. Repo test command passes
 7. git add . && git commit -m "fix(user): add email validation in create handler"
 8. git push
 
@@ -401,7 +439,7 @@ Resolution:
 2. Read the file mentioned in comment
 3. Extract logic into new helper function
 4. Update calling code to use helper
-5. make format && make test → passes
+5. Repo formatting and test gates pass
 6. git add . && git commit -m "refactor(handlers): extract validation logic to helper"
 7. git push
 8. gh pr comment --body "Extracted as requested. PTAL!"
@@ -446,7 +484,7 @@ Before completing the repair:
 
 - [ ] Problem identified and categorized
 - [ ] Appropriate repair strategy executed
-- [ ] Local tests passed (`make format && make test`)
+- [ ] Local formatting and test gates passed
 - [ ] Changes committed with descriptive message
 - [ ] Changes pushed to origin
 - [ ] PR status verified (improved or checks pending)
@@ -460,7 +498,7 @@ The repair is successful when:
 
 1. ✅ Changes are pushed to the PR branch
 2. ✅ No conflicts remain (`git status` is clean)
-3. ✅ Local tests pass (`make test` succeeds)
+3. ✅ Local tests pass (repo test command succeeds)
 4. ✅ PR checks are passing or pending (not failing)
 5. ✅ Review feedback addressed (if applicable)
 6. ✅ All review threads resolved — either fixed, declined with explanation, or asked for clarification (no silently skipped threads)

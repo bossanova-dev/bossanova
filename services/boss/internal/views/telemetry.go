@@ -2,8 +2,6 @@ package views
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 
 	"github.com/recurser/bossalib/config"
@@ -30,13 +28,8 @@ func viewTelemetryEnabled() bool {
 
 func viewDistinctID() string {
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "local:unknown"
+	if err != nil {
+		return telemetry.LocalDistinctID("")
 	}
-	sum := sha256.Sum256([]byte(home))
-	hash := hex.EncodeToString(sum[:])
-	if len(hash) < 16 {
-		return "local:unknown"
-	}
-	return "local:" + hash[:16]
+	return telemetry.LocalDistinctID(home)
 }

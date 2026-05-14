@@ -3,10 +3,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -1239,15 +1237,14 @@ func run(opts runOpts) error {
 
 func daemonDistinctID() string {
 	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
-		return "daemon:unknown"
+	if err != nil {
+		return libtelemetry.DaemonDistinctID("")
 	}
-	sum := sha256.Sum256([]byte(hostname))
-	hash := hex.EncodeToString(sum[:])
-	if len(hash) < 16 {
-		return "daemon:unknown"
-	}
-	return "daemon:" + hash[:16]
+	return daemonDistinctIDFromHostname(hostname)
+}
+
+func daemonDistinctIDFromHostname(hostname string) string {
+	return libtelemetry.DaemonDistinctID(hostname)
 }
 
 // sessionGetterAdapter wires db.SessionStore.Get into the

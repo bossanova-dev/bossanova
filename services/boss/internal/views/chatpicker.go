@@ -202,6 +202,7 @@ func (m ChatPickerModel) fetchRepoWebLink() tea.Cmd {
 		return nil
 	}
 	repoID := m.session.GetRepoId()
+	prNumber := int(m.session.GetPrNumber())
 	return func() tea.Msg {
 		repos, err := m.client.ListRepos(m.ctx)
 		if err != nil {
@@ -210,6 +211,9 @@ func (m ChatPickerModel) fetchRepoWebLink() tea.Cmd {
 		for _, repo := range repos {
 			if repo.GetId() != repoID {
 				continue
+			}
+			if provider, webURL, ok := vcs.PullRequestWebLink(repo.GetOriginUrl(), prNumber); ok {
+				return repoWebLinkMsg{link: repoWebLink{provider: provider, url: webURL}}
 			}
 			provider, webURL, ok := vcs.RepoWebLink(repo.GetOriginUrl())
 			if !ok {

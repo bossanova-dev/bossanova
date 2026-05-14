@@ -26,3 +26,12 @@ func TestConfigFromSettingsUsesBossdApp(t *testing.T) {
 		t.Fatalf("ConfigFromSettings ProjectToken = %q, want %q", cfg.ProjectToken, libtelemetry.ProductionProjectToken)
 	}
 }
+
+func TestConfigFromSettingsUsesFirstPartyDefaultHost(t *testing.T) {
+	s := config.DefaultSettings()
+	s.EventTracingEnabled = true
+	cfg := ConfigFromSettings(s)
+	if cfg.Host != libtelemetry.ProductionPostHogHost {
+		t.Fatalf("Host = %q, want %q", cfg.Host, libtelemetry.ProductionPostHogHost)
+	}
+}

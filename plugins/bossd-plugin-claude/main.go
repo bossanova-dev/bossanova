@@ -54,9 +54,12 @@ func runnerOptsFromEnv() []RunnerOption {
 	return opts
 }
 
-// ensureSkillsInstalled re-extracts the embedded boss skills into
-// ~/.claude/skills/* if they were previously installed there. No-op if
-// the user never installed boss skills via the CLI.
+// ensureSkillsInstalled refreshes the boss skills under ~/.claude/skills/*
+// only when the installed tree differs from the embedded payload. No-op if
+// the user never installed boss skills via the CLI, and no-op when the
+// payload already matches — which prevents the plugin from clobbering an
+// up-to-date install on every daemon restart and ping-ponging with the
+// CLI's startup prompt.
 func ensureSkillsInstalled() error {
 	skillsDir, err := libskillinstall.DefaultDir()
 	if err != nil {
@@ -65,5 +68,6 @@ func ensureSkillsInstalled() error {
 	if !libskillinstall.IsInstalled(skillsDir) {
 		return nil
 	}
-	return libskillinstall.Extract(skillsDir, skilldata.SkillsFS)
+	_, err = libskillinstall.EnsureUpdated(skillsDir, skilldata.SkillsFS)
+	return err
 }

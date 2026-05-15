@@ -160,6 +160,9 @@ func (f *fakeRepoStore) Create(ctx context.Context, p db.CreateRepoParams) (*mod
 func (f *fakeRepoStore) GetByPath(ctx context.Context, path string) (*models.Repo, error) {
 	panic("not used")
 }
+func (f *fakeRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
+	panic("not used")
+}
 func (f *fakeRepoStore) List(ctx context.Context) ([]*models.Repo, error) { panic("not used") }
 func (f *fakeRepoStore) Update(ctx context.Context, id string, p db.UpdateRepoParams) (*models.Repo, error) {
 	panic("not used")
@@ -738,6 +741,9 @@ func (e *erroringRepoStore) Create(ctx context.Context, p db.CreateRepoParams) (
 	panic("not used")
 }
 func (e *erroringRepoStore) GetByPath(ctx context.Context, path string) (*models.Repo, error) {
+	panic("not used")
+}
+func (e *erroringRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
 	panic("not used")
 }
 func (e *erroringRepoStore) List(ctx context.Context) ([]*models.Repo, error) { panic("not used") }

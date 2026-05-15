@@ -38,6 +38,7 @@ type RepoStore interface {
 	Create(ctx context.Context, params CreateRepoParams) (*models.Repo, error)
 	Get(ctx context.Context, id string) (*models.Repo, error)
 	GetByPath(ctx context.Context, localPath string) (*models.Repo, error)
+	GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error)
 	List(ctx context.Context) ([]*models.Repo, error)
 	Update(ctx context.Context, id string, params UpdateRepoParams) (*models.Repo, error)
 	Delete(ctx context.Context, id string) error
@@ -114,12 +115,13 @@ type UpdateSessionParams struct {
 	DisplaySpinner *bool
 }
 
-// SessionWithRepo pairs a Session with its owning repo's display name, so
+// SessionWithRepo pairs a Session with its owning repo metadata, so
 // callers that need both can fetch them in a single join query rather than
 // issuing a follow-up Get per session.
 type SessionWithRepo struct {
 	*models.Session
 	RepoDisplayName string
+	RepoOriginURL   string
 }
 
 // SessionStore defines the interface for session persistence.

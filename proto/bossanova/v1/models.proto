@@ -221,6 +221,9 @@ message Session {
   // output for `idle_repair_threshold_minutes` is treated as idle, so repair
   // can proceed even though the claude process is still attached.
   optional google.protobuf.Timestamp last_chat_activity_at = 43;
+
+  // Denormalized repo origin URL, populated server-side for webhook routing.
+  string repo_origin_url = 46;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

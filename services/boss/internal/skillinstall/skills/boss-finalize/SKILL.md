@@ -38,7 +38,7 @@ BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
 if [ -z "$BASE_BRANCH" ]; then
   CURRENT_BRANCH=$(git branch --show-current)
   UPSTREAM_BRANCH=$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null | sed 's#^origin/##' || true)
-  BASE_BRANCH=$(git for-each-ref --format='%(refname:short)' refs/remotes/origin | sed 's#^origin/##' | grep -vx HEAD | grep -vx "$CURRENT_BRANCH" | { if [ -n "$UPSTREAM_BRANCH" ]; then grep -vx "$UPSTREAM_BRANCH"; else cat; fi; } | while read -r branch; do base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue; printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"; done | sort -nr | awk 'NR == 1 {print $2}')
+  BASE_BRANCH=$(git for-each-ref --format='%(refname:short)' refs/remotes/origin | sed 's#^origin/##' | grep -Fvx HEAD | grep -Fvx "$CURRENT_BRANCH" | { if [ -n "$UPSTREAM_BRANCH" ]; then grep -Fvx "$UPSTREAM_BRANCH"; else cat; fi; } | while read -r branch; do base=$(git merge-base HEAD "origin/$branch" 2>/dev/null) || continue; git merge-base --is-ancestor HEAD "origin/$branch" 2>/dev/null && continue; printf '%s %s\n' "$(git show -s --format=%ct "$base")" "$branch"; done | sort -nr | awk 'NR == 1 {print $2}')
   [ -n "$BASE_BRANCH" ] && echo "Using inferred git base branch: $BASE_BRANCH"
 fi
 test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }

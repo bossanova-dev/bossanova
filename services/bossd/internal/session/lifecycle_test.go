@@ -69,16 +69,19 @@ func (m *mockSessionStore) Get(_ context.Context, id string) (*models.Session, e
 	return s, nil
 }
 
-func (m *mockSessionStore) List(_ context.Context, _ string) ([]*models.Session, error) {
+func (m *mockSessionStore) List(_ context.Context, repoID string) ([]*models.Session, error) {
 	var result []*models.Session
 	for _, s := range m.sessions {
+		if repoID != "" && s.RepoID != repoID {
+			continue
+		}
 		result = append(result, s)
 	}
 	return result, nil
 }
 
-func (m *mockSessionStore) ListActive(_ context.Context, _ string) ([]*models.Session, error) {
-	return m.List(context.Background(), "")
+func (m *mockSessionStore) ListActive(_ context.Context, repoID string) ([]*models.Session, error) {
+	return m.List(context.Background(), repoID)
 }
 
 func (m *mockSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
@@ -252,6 +255,22 @@ func (m *mockRepoStore) Get(_ context.Context, id string) (*models.Repo, error) 
 
 func (m *mockRepoStore) GetByPath(_ context.Context, _ string) (*models.Repo, error) {
 	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *mockRepoStore) GetByOrigin(_ context.Context, originURL string) (*models.Repo, error) {
+	_, targetWebURL, targetOK := vcs.RepoWebLink(originURL)
+	for _, r := range m.repos {
+		if r.OriginURL == originURL {
+			return r, nil
+		}
+		if targetOK {
+			_, repoWebURL, repoOK := vcs.RepoWebLink(r.OriginURL)
+			if repoOK && repoWebURL == targetWebURL {
+				return r, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("repo origin %s not found", originURL)
 }
 
 func (m *mockRepoStore) List(_ context.Context) ([]*models.Repo, error) {
@@ -562,6 +581,7 @@ type mockVCSProvider struct {
 
 	getCheckResultsCalls   int
 	getReviewCommentsCalls int
+	getPRStatusPRNumbers   []int
 }
 
 func newMockVCSProvider() *mockVCSProvider {
@@ -579,7 +599,8 @@ func (m *mockVCSProvider) CreateDraftPR(_ context.Context, opts vcs.CreatePROpts
 	return m.nextPRInfo, nil
 }
 
-func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, _ int) (*vcs.PRStatus, error) {
+func (m *mockVCSProvider) GetPRStatus(_ context.Context, _ string, prNumber int) (*vcs.PRStatus, error) {
+	m.getPRStatusPRNumbers = append(m.getPRStatusPRNumbers, prNumber)
 	if m.nextPRStatus != nil {
 		return m.nextPRStatus, nil
 	}

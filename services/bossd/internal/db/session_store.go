@@ -118,11 +118,11 @@ func (s *SQLiteSessionStore) ListActiveWithRepo(ctx context.Context, repoID stri
 
 	var out []*SessionWithRepo
 	for rows.Next() {
-		sess, repoName, err := scanSessionWithRepo(rows)
+		sess, repoName, repoOriginURL, err := scanSessionWithRepo(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName})
+		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName, RepoOriginURL: repoOriginURL})
 	}
 	return out, rows.Err()
 }
@@ -148,11 +148,11 @@ func (s *SQLiteSessionStore) ListWithRepo(ctx context.Context, repoID string) ([
 
 	var out []*SessionWithRepo
 	for rows.Next() {
-		sess, repoName, err := scanSessionWithRepo(rows)
+		sess, repoName, repoOriginURL, err := scanSessionWithRepo(rows)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName})
+		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName, RepoOriginURL: repoOriginURL})
 	}
 	return out, rows.Err()
 }
@@ -428,17 +428,17 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status,
-	COALESCE(r.display_name, '')
+	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
 
-func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
+func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, error) {
 	var sess models.Session
 	var state, lastCheckState, automationEnabled int
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
 	var lastRepairStartedAt *int64
-	var repoDisplayName string
+	var repoDisplayName, repoOriginURL string
 	err := s.Scan(&sess.ID, &sess.RepoID, &sess.Title, &sess.Plan,
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
@@ -447,9 +447,9 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
-		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &repoDisplayName)
+		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &repoDisplayName, &repoOriginURL)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
@@ -470,7 +470,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, error) {
 		t := time.Unix(*lastRepairStartedAt, 0)
 		sess.LastRepairStartedAt = &t
 	}
-	return &sess, repoDisplayName, nil
+	return &sess, repoDisplayName, repoOriginURL, nil
 }
 
 func scanSession(s sqlutil.Scanner) (*models.Session, error) {

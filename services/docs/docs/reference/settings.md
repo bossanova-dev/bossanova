@@ -126,3 +126,82 @@ hardcoded default.
 | `XDG_STATE_HOME`  | Where rotated log files live                                                              |
 | `XDG_RUNTIME_DIR` | Where the `bossd` Unix socket lives (override with `BOSS_SOCKET`)                         |
 | `HOME`            | Used to resolve `~/.claude/skills/` and `~/.bossanova/`                                   |
+
+## GitHub App integration
+
+Bossanova receives GitHub PR, check, status, review, and comment events through
+the GitHub App webhook endpoint on the orchestrator.
+
+Configure the GitHub App with these URLs:
+
+| GitHub App setting              | Value                                                |
+| ------------------------------- | ---------------------------------------------------- |
+| Homepage URL                    | `https://app.bossanova.dev/github/setup`             |
+| Setup URL                       | `https://app.bossanova.dev/github/setup`             |
+| User authorization callback URL | `https://app.bossanova.dev/github/setup`             |
+| Webhook URL                     | `https://orchestrator.bossanova.dev/webhooks/github` |
+
+The Homepage URL, Setup URL, and User authorization callback URL must match
+`BOSSO_GITHUB_APP_CALLBACK_URL`. Enable **Request user authorization during
+installation** and **Redirect on update**. Set the GitHub webhook secret to the
+same value as `BOSSO_GITHUB_APP_WEBHOOK_SECRET`.
+
+Required repository permissions:
+
+| Permission    | Access         |
+| ------------- | -------------- |
+| Pull requests | Read and write |
+| Checks        | Read and write |
+| Contents      | Read-only      |
+| Metadata      | Read-only      |
+| Statuses      | Read and write |
+
+Subscribe to these events:
+
+- `pull_request`
+- `check_run`
+- `check_suite`
+- `status`
+- `push`
+- `issue_comment`
+- `pull_request_review`
+
+Required environment variables:
+
+| Terraform Cloud variable                 | Fly runtime secret                | Source                                                                     |
+| ---------------------------------------- | --------------------------------- | -------------------------------------------------------------------------- |
+| `TF_VAR_bosso_github_app_id`             | `BOSSO_GITHUB_APP_ID`             | GitHub App settings page, App ID                                           |
+| `TF_VAR_bosso_github_app_slug`           | `BOSSO_GITHUB_APP_SLUG`           | GitHub App URL slug                                                        |
+| `TF_VAR_bosso_github_app_private_key`    | `BOSSO_GITHUB_APP_PRIVATE_KEY`    | GitHub App private key PEM, stored as one escaped env value                |
+| `TF_VAR_bosso_github_app_webhook_secret` | `BOSSO_GITHUB_APP_WEBHOOK_SECRET` | Webhook secret configured on the GitHub App                                |
+| `TF_VAR_bosso_github_app_callback_url`   | `BOSSO_GITHUB_APP_CALLBACK_URL`   | Frontend setup route, for example `https://app.bossanova.dev/github/setup` |
+| `TF_VAR_bosso_github_app_client_id`      | `BOSSO_GITHUB_APP_CLIENT_ID`      | GitHub App settings page, Client ID                                        |
+| `TF_VAR_bosso_github_app_client_secret`  | `BOSSO_GITHUB_APP_CLIENT_SECRET`  | GitHub App generated client secret                                         |
+
+Mark the private key, webhook secret, and client secret as sensitive in
+Terraform Cloud. Terraform stores the desired GitHub App values for
+configuration wiring, but it does not run `flyctl` or apply Fly secrets. Do not
+pass secret values as command-line arguments; process argv can be inspected.
+
+To sync Fly runtime secrets, create a local `0600` env file from the same secret
+source, then import it through stdin:
+
+```bash
+chmod 0600 bosso-github-app.env
+flyctl secrets import --stage -a bosso-production < bosso-github-app.env
+flyctl secrets deploy -a bosso-production
+```
+
+For staging, use `-a bosso-staging`. The env file must contain the runtime
+`BOSSO_GITHUB_APP_*` names, not the `TF_VAR_bosso_github_app_*` Terraform Cloud
+wrapper names. Never commit the env file.
+
+Webhook behavior:
+
+- GitHub signs webhook payloads with the app webhook secret.
+- The orchestrator verifies the signature, then routes the event by
+  `installation_id` to the WorkOS user that completed setup.
+- Pull request events trigger a targeted refresh for the affected repository
+  and PR.
+- The polling fallback backs off for 5 minutes on repositories that recently
+  delivered webhooks.

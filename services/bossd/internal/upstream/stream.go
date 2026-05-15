@@ -266,10 +266,10 @@ type SessionCommandHandler interface {
 	WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (outcome pb.WakeChatResult_Outcome, tmuxName string, reason string, errorCode pb.CommandResult_ErrorCode, err error)
 }
 
-// WebhookDispatcher forwards a webhook payload to whatever in-daemon
+// WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon
 // subscriber handles it. Returning (ok, err) keeps the dispatcher
 // boilerplate uniform with the Stop/Pause/Resume paths.
-type WebhookDispatcher interface {
+type WebhookCommandDispatcher interface {
 	Dispatch(ctx context.Context, ev *pb.WebhookEvent) error
 }
 
@@ -420,7 +420,7 @@ type StreamClient struct {
 	tokenProvider    TokenProvider
 	commandHandler   SessionCommandHandler
 	transferHandler  TransferHandler
-	webhooks         WebhookDispatcher
+	webhooks         WebhookCommandDispatcher
 	attacher         SessionAttacher
 	reRegister       ReRegisterFunc
 	authState        *AuthState
@@ -473,7 +473,7 @@ type StreamClientConfig struct {
 	// the T3.6 behaviour. Real daemons wire a concrete implementation in
 	// the task that lands the source/target session-lifecycle work.
 	TransferHandler TransferHandler
-	Webhooks        WebhookDispatcher
+	Webhooks        WebhookCommandDispatcher
 	Attacher        SessionAttacher
 
 	// ReRegister, when set, is called by the Run loop after a stream

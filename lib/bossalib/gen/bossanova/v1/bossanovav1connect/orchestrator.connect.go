@@ -84,6 +84,18 @@ const (
 	// OrchestratorServiceDeleteWebhookConfigProcedure is the fully-qualified name of the
 	// OrchestratorService's DeleteWebhookConfig RPC.
 	OrchestratorServiceDeleteWebhookConfigProcedure = "/bossanova.v1.OrchestratorService/DeleteWebhookConfig"
+	// OrchestratorServiceGetGitHubAppInstallURLProcedure is the fully-qualified name of the
+	// OrchestratorService's GetGitHubAppInstallURL RPC.
+	OrchestratorServiceGetGitHubAppInstallURLProcedure = "/bossanova.v1.OrchestratorService/GetGitHubAppInstallURL"
+	// OrchestratorServiceCompleteGitHubAppSetupProcedure is the fully-qualified name of the
+	// OrchestratorService's CompleteGitHubAppSetup RPC.
+	OrchestratorServiceCompleteGitHubAppSetupProcedure = "/bossanova.v1.OrchestratorService/CompleteGitHubAppSetup"
+	// OrchestratorServiceListGitHubAppReposProcedure is the fully-qualified name of the
+	// OrchestratorService's ListGitHubAppRepos RPC.
+	OrchestratorServiceListGitHubAppReposProcedure = "/bossanova.v1.OrchestratorService/ListGitHubAppRepos"
+	// OrchestratorServiceDisconnectGitHubAppRepoProcedure is the fully-qualified name of the
+	// OrchestratorService's DisconnectGitHubAppRepo RPC.
+	OrchestratorServiceDisconnectGitHubAppRepoProcedure = "/bossanova.v1.OrchestratorService/DisconnectGitHubAppRepo"
 	// OrchestratorServiceReportBugProcedure is the fully-qualified name of the OrchestratorService's
 	// ReportBug RPC.
 	OrchestratorServiceReportBugProcedure = "/bossanova.v1.OrchestratorService/ReportBug"
@@ -138,6 +150,11 @@ type OrchestratorServiceClient interface {
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
 	DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error)
+	// GitHub App repository registration. User-authenticated.
+	GetGitHubAppInstallURL(context.Context, *connect.Request[v1.GetGitHubAppInstallURLRequest]) (*connect.Response[v1.GetGitHubAppInstallURLResponse], error)
+	CompleteGitHubAppSetup(context.Context, *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error)
+	ListGitHubAppRepos(context.Context, *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error)
+	DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error)
 	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -256,6 +273,30 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("DeleteWebhookConfig")),
 			connect.WithClientOptions(opts...),
 		),
+		getGitHubAppInstallURL: connect.NewClient[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetGitHubAppInstallURLProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetGitHubAppInstallURL")),
+			connect.WithClientOptions(opts...),
+		),
+		completeGitHubAppSetup: connect.NewClient[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCompleteGitHubAppSetupProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CompleteGitHubAppSetup")),
+			connect.WithClientOptions(opts...),
+		),
+		listGitHubAppRepos: connect.NewClient[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse](
+			httpClient,
+			baseURL+OrchestratorServiceListGitHubAppReposProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ListGitHubAppRepos")),
+			connect.WithClientOptions(opts...),
+		),
+		disconnectGitHubAppRepo: connect.NewClient[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse](
+			httpClient,
+			baseURL+OrchestratorServiceDisconnectGitHubAppRepoProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("DisconnectGitHubAppRepo")),
+			connect.WithClientOptions(opts...),
+		),
 		reportBug: connect.NewClient[v1.ReportBugRequest, v1.ReportBugResponse](
 			httpClient,
 			baseURL+OrchestratorServiceReportBugProcedure,
@@ -267,24 +308,28 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 
 // orchestratorServiceClient implements OrchestratorServiceClient.
 type orchestratorServiceClient struct {
-	registerDaemon      *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
-	daemonStream        *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
-	listDaemons         *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
-	transferSession     *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
-	proxyListSessions   *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
-	proxyGetSession     *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
-	proxyAttachSession  *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
-	proxyStopSession    *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
-	proxyPauseSession   *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
-	proxyResumeSession  *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
-	proxyWakeChat       *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
-	proxyStreamChats    *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
-	issueAttachToken    *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
-	terminalStream      *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
-	createWebhookConfig *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
-	listWebhookConfigs  *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
-	deleteWebhookConfig *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
-	reportBug           *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
+	registerDaemon          *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
+	daemonStream            *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
+	listDaemons             *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
+	transferSession         *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
+	proxyListSessions       *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
+	proxyGetSession         *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
+	proxyAttachSession      *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
+	proxyStopSession        *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
+	proxyPauseSession       *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
+	proxyResumeSession      *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
+	proxyWakeChat           *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
+	proxyStreamChats        *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
+	issueAttachToken        *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
+	terminalStream          *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
+	createWebhookConfig     *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
+	listWebhookConfigs      *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
+	deleteWebhookConfig     *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
+	getGitHubAppInstallURL  *connect.Client[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse]
+	completeGitHubAppSetup  *connect.Client[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse]
+	listGitHubAppRepos      *connect.Client[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse]
+	disconnectGitHubAppRepo *connect.Client[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse]
+	reportBug               *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
 }
 
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
@@ -372,6 +417,26 @@ func (c *orchestratorServiceClient) DeleteWebhookConfig(ctx context.Context, req
 	return c.deleteWebhookConfig.CallUnary(ctx, req)
 }
 
+// GetGitHubAppInstallURL calls bossanova.v1.OrchestratorService.GetGitHubAppInstallURL.
+func (c *orchestratorServiceClient) GetGitHubAppInstallURL(ctx context.Context, req *connect.Request[v1.GetGitHubAppInstallURLRequest]) (*connect.Response[v1.GetGitHubAppInstallURLResponse], error) {
+	return c.getGitHubAppInstallURL.CallUnary(ctx, req)
+}
+
+// CompleteGitHubAppSetup calls bossanova.v1.OrchestratorService.CompleteGitHubAppSetup.
+func (c *orchestratorServiceClient) CompleteGitHubAppSetup(ctx context.Context, req *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error) {
+	return c.completeGitHubAppSetup.CallUnary(ctx, req)
+}
+
+// ListGitHubAppRepos calls bossanova.v1.OrchestratorService.ListGitHubAppRepos.
+func (c *orchestratorServiceClient) ListGitHubAppRepos(ctx context.Context, req *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error) {
+	return c.listGitHubAppRepos.CallUnary(ctx, req)
+}
+
+// DisconnectGitHubAppRepo calls bossanova.v1.OrchestratorService.DisconnectGitHubAppRepo.
+func (c *orchestratorServiceClient) DisconnectGitHubAppRepo(ctx context.Context, req *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error) {
+	return c.disconnectGitHubAppRepo.CallUnary(ctx, req)
+}
+
 // ReportBug calls bossanova.v1.OrchestratorService.ReportBug.
 func (c *orchestratorServiceClient) ReportBug(ctx context.Context, req *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {
 	return c.reportBug.CallUnary(ctx, req)
@@ -426,6 +491,11 @@ type OrchestratorServiceHandler interface {
 	CreateWebhookConfig(context.Context, *connect.Request[v1.CreateWebhookConfigRequest]) (*connect.Response[v1.CreateWebhookConfigResponse], error)
 	ListWebhookConfigs(context.Context, *connect.Request[v1.ListWebhookConfigsRequest]) (*connect.Response[v1.ListWebhookConfigsResponse], error)
 	DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error)
+	// GitHub App repository registration. User-authenticated.
+	GetGitHubAppInstallURL(context.Context, *connect.Request[v1.GetGitHubAppInstallURLRequest]) (*connect.Response[v1.GetGitHubAppInstallURLResponse], error)
+	CompleteGitHubAppSetup(context.Context, *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error)
+	ListGitHubAppRepos(context.Context, *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error)
+	DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error)
 	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -540,6 +610,30 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("DeleteWebhookConfig")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceGetGitHubAppInstallURLHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetGitHubAppInstallURLProcedure,
+		svc.GetGitHubAppInstallURL,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetGitHubAppInstallURL")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceCompleteGitHubAppSetupHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCompleteGitHubAppSetupProcedure,
+		svc.CompleteGitHubAppSetup,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CompleteGitHubAppSetup")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceListGitHubAppReposHandler := connect.NewUnaryHandler(
+		OrchestratorServiceListGitHubAppReposProcedure,
+		svc.ListGitHubAppRepos,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ListGitHubAppRepos")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceDisconnectGitHubAppRepoHandler := connect.NewUnaryHandler(
+		OrchestratorServiceDisconnectGitHubAppRepoProcedure,
+		svc.DisconnectGitHubAppRepo,
+		connect.WithSchema(orchestratorServiceMethods.ByName("DisconnectGitHubAppRepo")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceReportBugHandler := connect.NewUnaryHandler(
 		OrchestratorServiceReportBugProcedure,
 		svc.ReportBug,
@@ -582,6 +676,14 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceListWebhookConfigsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceDeleteWebhookConfigProcedure:
 			orchestratorServiceDeleteWebhookConfigHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetGitHubAppInstallURLProcedure:
+			orchestratorServiceGetGitHubAppInstallURLHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCompleteGitHubAppSetupProcedure:
+			orchestratorServiceCompleteGitHubAppSetupHandler.ServeHTTP(w, r)
+		case OrchestratorServiceListGitHubAppReposProcedure:
+			orchestratorServiceListGitHubAppReposHandler.ServeHTTP(w, r)
+		case OrchestratorServiceDisconnectGitHubAppRepoProcedure:
+			orchestratorServiceDisconnectGitHubAppRepoHandler.ServeHTTP(w, r)
 		case OrchestratorServiceReportBugProcedure:
 			orchestratorServiceReportBugHandler.ServeHTTP(w, r)
 		default:
@@ -659,6 +761,22 @@ func (UnimplementedOrchestratorServiceHandler) ListWebhookConfigs(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) DeleteWebhookConfig(context.Context, *connect.Request[v1.DeleteWebhookConfigRequest]) (*connect.Response[v1.DeleteWebhookConfigResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DeleteWebhookConfig is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetGitHubAppInstallURL(context.Context, *connect.Request[v1.GetGitHubAppInstallURLRequest]) (*connect.Response[v1.GetGitHubAppInstallURLResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetGitHubAppInstallURL is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CompleteGitHubAppSetup(context.Context, *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CompleteGitHubAppSetup is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ListGitHubAppRepos(context.Context, *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ListGitHubAppRepos is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DisconnectGitHubAppRepo is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {

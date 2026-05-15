@@ -69,6 +69,15 @@ func (m *mockRepoStore) GetByPath(_ context.Context, _ string) (*models.Repo, er
 	return nil, nil
 }
 
+func (m *mockRepoStore) GetByOrigin(_ context.Context, originURL string) (*models.Repo, error) {
+	for _, r := range m.repos {
+		if r.OriginURL == originURL {
+			return r, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *mockRepoStore) List(_ context.Context) ([]*models.Repo, error) {
 	return m.repos, nil
 }

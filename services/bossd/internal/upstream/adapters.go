@@ -1,6 +1,6 @@
 // Package upstream — adapters.go holds the concrete implementations
 // that bridge the StreamClient's collaborator interfaces
-// (SessionCommandHandler, WebhookDispatcher, SessionAttacher, snapshot
+// (SessionCommandHandler, WebhookCommandDispatcher, SessionAttacher, snapshot
 // readers) to the daemon's existing stores and lifecycle. Kept in the
 // upstream package (rather than cmd/main.go) so the type signatures sit
 // next to the interfaces they implement and unit tests can cover them.
@@ -221,7 +221,7 @@ func (a *CommandHandlerAdapter) Resume(ctx context.Context, sessionID string) (*
 
 // --- Webhook dispatcher (no-op stub) ---
 
-// NoopWebhookDispatcher satisfies WebhookDispatcher but does nothing.
+// NoopWebhookDispatcher satisfies WebhookCommandDispatcher but does nothing.
 // bossd has no in-daemon webhook subscriber today (webhooks flow
 // directly into bosso); keeping this as a visible no-op keeps the
 // interface satisfied and the WARN log makes it obvious when bosso

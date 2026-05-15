@@ -3,12 +3,20 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
+	"github.com/recurser/bossalib/vcs"
 )
+
+// ErrAmbiguousOrigin is returned by GetByOrigin when the canonical-URL
+// fallback finds more than one repo whose stored origin maps to the same
+// canonical web URL. Webhook routing must fail loud here rather than pick
+// an arbitrary repo and silently refresh the wrong sessions.
+var ErrAmbiguousOrigin = errors.New("multiple repos match canonical origin URL")
 
 var _ RepoStore = (*SQLiteRepoStore)(nil)
 
@@ -52,6 +60,44 @@ func (s *SQLiteRepoStore) GetByPath(ctx context.Context, localPath string) (*mod
 		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_address_reviews, can_auto_resolve_conflicts, merge_strategy, linear_api_key, created_at, updated_at
 		 FROM repos WHERE local_path = ?`, localPath)
 	return scanRepo(row)
+}
+
+func (s *SQLiteRepoStore) GetByOrigin(ctx context.Context, originURL string) (*models.Repo, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, display_name, local_path, origin_url, default_base_branch, worktree_base_dir, setup_script, can_auto_merge, can_auto_merge_dependabot, can_auto_address_reviews, can_auto_resolve_conflicts, merge_strategy, linear_api_key, created_at, updated_at
+		 FROM repos WHERE origin_url = ?`, originURL)
+	repo, err := scanRepo(row)
+	if err == nil {
+		return repo, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	_, targetWebURL, ok := vcs.RepoWebLink(originURL)
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+
+	repos, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var match *models.Repo
+	for _, repo := range repos {
+		_, repoWebURL, ok := vcs.RepoWebLink(repo.OriginURL)
+		if !ok || repoWebURL != targetWebURL {
+			continue
+		}
+		if match != nil {
+			return nil, fmt.Errorf("%w: %q", ErrAmbiguousOrigin, targetWebURL)
+		}
+		match = repo
+	}
+	if match == nil {
+		return nil, sql.ErrNoRows
+	}
+	return match, nil
 }
 
 func (s *SQLiteRepoStore) List(ctx context.Context) ([]*models.Repo, error) {

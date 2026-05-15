@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -72,5 +73,45 @@ func TestEnsureSkillsInstalled_UpdatesWhenInstalled(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(skillsDir, "*", "SKILL.md"))
 	if len(matches) == 0 {
 		t.Errorf("expected SKILL.md files extracted, got none")
+	}
+}
+
+// Regression: if the on-disk skills already match the embedded payload,
+// ensureSkillsInstalled must NOT rewrite them. Rewriting unconditionally
+// caused the CLI's startup prompt to fire on every `make dev` because each
+// daemon restart silently re-extracted the plugin's embed over the install
+// the CLI had just written.
+func TestEnsureSkillsInstalled_NoOpWhenAlreadyUpToDate(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	skillsDir, err := libskillinstall.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := libskillinstall.Extract(skillsDir, skilldata.SkillsFS); err != nil {
+		t.Fatalf("seed Extract: %v", err)
+	}
+	probe := filepath.Join(skillsDir, libskillinstall.Namespace, "boss-finalize", "SKILL.md")
+	infoBefore, err := os.Stat(probe)
+	if err != nil {
+		t.Fatalf("stat probe: %v", err)
+	}
+	// Backdate mtime so a no-op leaves it visibly distinct from "rewritten now".
+	old := infoBefore.ModTime().Add(-time.Hour)
+	if err := os.Chtimes(probe, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	if err := ensureSkillsInstalled(); err != nil {
+		t.Fatalf("ensureSkillsInstalled: %v", err)
+	}
+
+	infoAfter, err := os.Stat(probe)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !infoAfter.ModTime().Equal(old) {
+		t.Errorf("ensureSkillsInstalled rewrote probe (mtime %v → %v) when on-disk already matched embed",
+			old, infoAfter.ModTime())
 	}
 }

@@ -64,6 +64,11 @@ service OrchestratorService {
   rpc CreateWebhookConfig(CreateWebhookConfigRequest) returns (CreateWebhookConfigResponse);
   rpc ListWebhookConfigs(ListWebhookConfigsRequest) returns (ListWebhookConfigsResponse);
   rpc DeleteWebhookConfig(DeleteWebhookConfigRequest) returns (DeleteWebhookConfigResponse);
+  // GitHub App repository registration. User-authenticated.
+  rpc GetGitHubAppInstallURL(GetGitHubAppInstallURLRequest) returns (GetGitHubAppInstallURLResponse);
+  rpc CompleteGitHubAppSetup(CompleteGitHubAppSetupRequest) returns (CompleteGitHubAppSetupResponse);
+  rpc ListGitHubAppRepos(ListGitHubAppReposRequest) returns (ListGitHubAppReposResponse);
+  rpc DisconnectGitHubAppRepo(DisconnectGitHubAppRepoRequest) returns (DisconnectGitHubAppRepoResponse);
 
   // Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
   // resolves the caller's identity when a bearer token is present.
@@ -325,6 +330,54 @@ message DeleteWebhookConfigRequest {
 }
 
 message DeleteWebhookConfigResponse {}
+
+// --- GitHub App Repository Registration ---
+
+message GetGitHubAppInstallURLRequest {
+  // Optional absolute URL to return to after GitHub setup. Empty uses bosso default.
+  string return_url = 1;
+}
+
+message GetGitHubAppInstallURLResponse {
+  string install_url = 1;
+}
+
+message CompleteGitHubAppSetupRequest {
+  int64 installation_id = 1;
+  // Server-issued setup state returned by GetGitHubAppInstallURL.
+  string state = 2;
+  // GitHub OAuth code returned by the GitHub App setup callback. Exchanged once
+  // for a user access token to verify the caller can access installation_id.
+  string github_code = 3;
+}
+
+message CompleteGitHubAppSetupResponse {
+  repeated GitHubAppRepoStatus repos = 1;
+}
+
+message ListGitHubAppReposRequest {}
+
+message ListGitHubAppReposResponse {
+  repeated GitHubAppRepoStatus repos = 1;
+}
+
+message DisconnectGitHubAppRepoRequest {
+  string repo_origin_url = 1;
+}
+
+message DisconnectGitHubAppRepoResponse {}
+
+message GitHubAppRepoStatus {
+  string repo_origin_url = 1;
+  string owner = 2;
+  string name = 3;
+  int64 installation_id = 4;
+  bool installed = 5;
+  bool webhook_healthy = 6;
+  google.protobuf.Timestamp last_delivery_at = 7;
+  string last_delivery_status = 8;
+  string last_error = 9;
+}
 
 // --- Bug reporting ---
 

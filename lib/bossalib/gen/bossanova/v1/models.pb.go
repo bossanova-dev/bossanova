@@ -1244,8 +1244,10 @@ type Session struct {
 	// output for `idle_repair_threshold_minutes` is treated as idle, so repair
 	// can proceed even though the claude process is still attached.
 	LastChatActivityAt *timestamppb.Timestamp `protobuf:"bytes,43,opt,name=last_chat_activity_at,json=lastChatActivityAt,proto3,oneof" json:"last_chat_activity_at,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Denormalized repo origin URL, populated server-side for webhook routing.
+	RepoOriginUrl string `protobuf:"bytes,46,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1591,6 +1593,13 @@ func (x *Session) GetLastChatActivityAt() *timestamppb.Timestamp {
 		return x.LastChatActivityAt
 	}
 	return nil
+}
+
+func (x *Session) GetRepoOriginUrl() string {
+	if x != nil {
+		return x.RepoOriginUrl
+	}
+	return ""
 }
 
 // Attempt represents a fix attempt within a session.
@@ -3016,7 +3025,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\x91\x13\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\xb9\x13\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -3072,7 +3081,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x14last_repair_head_sha\x18, \x01(\tR\x11lastRepairHeadSha\x12X\n" +
 	"\x1alast_repair_display_status\x18- \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\x17lastRepairDisplayStatus\x12R\n" +
 	"\x15last_chat_activity_at\x18+ \x01(\v2\x1a.google.protobuf.TimestampH\n" +
-	"R\x12lastChatActivityAt\x88\x01\x01B\x13\n" +
+	"R\x12lastChatActivityAt\x88\x01\x01\x12&\n" +
+	"\x0frepo_origin_url\x18. \x01(\tR\rrepoOriginUrlB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

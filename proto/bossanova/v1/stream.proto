@@ -335,6 +335,10 @@ message WebhookEvent {
   bytes payload = 4;
   // Selected headers for replay context (e.g. X-GitHub-Delivery, X-GitHub-Event).
   map<string, string> headers = 5;
+  // Parsed by bosso for routing only. Zero means unknown or not PR-scoped.
+  int32 pull_request = 6;
+  // GitHub App installation ID. Zero for legacy/manual webhooks.
+  int64 installation_id = 7;
 }
 
 // --- TerminalStream messages (web-tmux-attach feature) ---

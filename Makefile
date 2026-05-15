@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean deps format generate lint \
+.PHONY: all build build-all build-docs clean copy-skills deps format generate lint \
 	lint-check-version lint-docs \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
 	plugins plugins-all release release-codex-check \
@@ -54,6 +54,13 @@ LDFLAGS := -s -w \
 PROTO_SOURCES := $(wildcard proto/bossanova/v1/*.proto) buf.gen.yaml
 GEN_STAMP := .generate.stamp
 WEB_DEPS_STAMP := node_modules/.modules.yaml
+
+# Canonical and mirrored copies of the embedded boss-skill payload.
+# services/boss/.../skills is the source of truth; the plugin copy is a mirror
+# refreshed by `copy-skills` so both binaries embed identical bytes (otherwise
+# they ping-pong overwriting ~/.claude/skills on every restart).
+SKILLS_SRC_DIR := services/boss/internal/skillinstall/skills
+SKILLS_PLUGIN_DIR := plugins/bossd-plugin-claude/skilldata/skills
 
 
 claude:
@@ -139,6 +146,14 @@ setup-worktree:
 $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
 	pnpm install
 
+## copy-skills: Mirror canonical embedded boss skills into the plugin copy.
+## go:embed can't reach across module boundaries, so the bossd-plugin-claude
+## binary needs its own copy of the skill payload. Without this sync the two
+## embedded copies drift and clobber each other's installs in ~/.claude/skills
+## on every CLI/daemon restart.
+copy-skills:
+	@rsync -a --delete "$(SKILLS_SRC_DIR)/" "$(SKILLS_PLUGIN_DIR)/"
+
 ## generate: Run buf generate to produce Go code from proto definitions
 generate: $(GEN_STAMP)
 
@@ -178,8 +193,12 @@ plugins: $(addprefix $(BIN_DIR)/,$(PLUGIN_BINS))
 $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $@ ./plugins/bossd-plugin-$*
 
+# bossd-plugin-claude embeds the boss skill payload; refresh the mirror before
+# linking so the plugin binary and the boss CLI ship identical bytes.
+$(BIN_DIR)/bossd-plugin-claude: copy-skills
+
 ## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP)
+test: $(GEN_STAMP) copy-skills
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
 		$(MAKE) -C $$mod test; \
@@ -220,6 +239,9 @@ test-$(2):
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-test,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
+
+# Plugin claude tests rely on the embedded skill payload — keep it in sync.
+test-claude: copy-skills
 
 ## lint-check-version: Fail if installed golangci-lint does not match $(GOLANGCI_LINT_VERSION)
 lint-check-version:
@@ -305,6 +327,10 @@ endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-build,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
+# bossd-plugin-claude embeds the boss skill payload — keep the per-plugin
+# convenience target in sync with the pattern rule above.
+build-claude: copy-skills
+
 ## format: Format Go code (gofmt + golangci-lint), web code, package.json files, and markdown
 format: lint-check-version
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
@@ -349,7 +375,7 @@ build-all: $(GEN_STAMP)
 	fi
 
 ## plugins-all: Cross-platform plugin builds for distribution
-plugins-all: $(GEN_STAMP)
+plugins-all: $(GEN_STAMP) copy-skills
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%%/*}; \
 		arch=$${platform##*/}; \

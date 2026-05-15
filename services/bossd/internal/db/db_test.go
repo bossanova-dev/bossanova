@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -84,6 +85,11 @@ func TestMissingIndexesUsed(t *testing.T) {
 			name:  "agent_chats.agent_session_id",
 			query: "SELECT id FROM agent_chats WHERE agent_session_id = ?",
 			index: "idx_agent_chats_agent_session_id",
+		},
+		{
+			name:  "repos.origin_url",
+			query: "SELECT id FROM repos WHERE origin_url = ?",
+			index: "idx_repos_origin_url",
 		},
 	}
 
@@ -420,9 +426,15 @@ func TestSessionStore_ListActiveWithRepo(t *testing.T) {
 			if r.RepoDisplayName != "repo-a" {
 				t.Errorf("repoA session got display %q, want repo-a", r.RepoDisplayName)
 			}
+			if r.RepoOriginURL != "https://github.com/test/a.git" {
+				t.Errorf("repoA session got origin %q, want https://github.com/test/a.git", r.RepoOriginURL)
+			}
 		case repoB.ID:
 			if r.RepoDisplayName != "repo-b" {
 				t.Errorf("repoB session got display %q, want repo-b", r.RepoDisplayName)
+			}
+			if r.RepoOriginURL != "https://github.com/test/b.git" {
+				t.Errorf("repoB session got origin %q, want https://github.com/test/b.git", r.RepoOriginURL)
 			}
 		default:
 			t.Errorf("unexpected repoID %q", r.RepoID)
@@ -438,8 +450,8 @@ func TestSessionStore_ListActiveWithRepo(t *testing.T) {
 		t.Fatalf("filtered len = %d, want 3", len(onlyA))
 	}
 	for _, r := range onlyA {
-		if r.RepoID != repoA.ID || r.RepoDisplayName != "repo-a" {
-			t.Errorf("filtered row repoID=%q display=%q", r.RepoID, r.RepoDisplayName)
+		if r.RepoID != repoA.ID || r.RepoDisplayName != "repo-a" || r.RepoOriginURL != "https://github.com/test/a.git" {
+			t.Errorf("filtered row repoID=%q display=%q origin=%q", r.RepoID, r.RepoDisplayName, r.RepoOriginURL)
 		}
 	}
 }
@@ -493,6 +505,9 @@ func TestSessionStore_ListWithRepo(t *testing.T) {
 	for _, r := range rows {
 		if r.RepoDisplayName != "repo-a" {
 			t.Errorf("display = %q, want repo-a", r.RepoDisplayName)
+		}
+		if r.RepoOriginURL != "https://github.com/test/a.git" {
+			t.Errorf("origin = %q, want https://github.com/test/a.git", r.RepoOriginURL)
 		}
 		switch r.ID {
 		case active.ID:
@@ -764,6 +779,114 @@ func TestRepoStore_UpdateOriginURL(t *testing.T) {
 	if got.OriginURL != newURL {
 		t.Errorf("origin_url = %q, want %q", got.OriginURL, newURL)
 	}
+}
+
+func TestRepoStore_GetByOrigin(t *testing.T) {
+	cases := []struct {
+		name          string
+		storedOrigin  string
+		lookupOrigins []string
+	}{
+		{
+			name:         "exact https git remote",
+			storedOrigin: "https://github.com/owner/repo.git",
+			lookupOrigins: []string{
+				"https://github.com/owner/repo.git",
+				"https://github.com/owner/repo",
+			},
+		},
+		{
+			name:         "ssh git remote",
+			storedOrigin: "git@github.com:owner/repo.git",
+			lookupOrigins: []string{
+				"git@github.com:owner/repo.git",
+				"https://github.com/owner/repo",
+			},
+		},
+		{
+			name:         "html url",
+			storedOrigin: "https://github.com/owner/repo",
+			lookupOrigins: []string{
+				"https://github.com/owner/repo",
+				"https://github.com/owner/repo.git",
+				"git@github.com:owner/repo.git",
+			},
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupTestDB(t)
+			store := NewRepoStore(db)
+			ctx := context.Background()
+
+			repo, err := store.Create(ctx, CreateRepoParams{
+				DisplayName:       tc.name,
+				LocalPath:         "/tmp/repo-origin-" + string(rune('a'+i)),
+				OriginURL:         tc.storedOrigin,
+				DefaultBaseBranch: "main",
+				WorktreeBaseDir:   "/tmp/worktrees",
+			})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+
+			for _, lookupOrigin := range tc.lookupOrigins {
+				got, err := store.GetByOrigin(ctx, lookupOrigin)
+				if err != nil {
+					t.Fatalf("get by origin %q: %v", lookupOrigin, err)
+				}
+				if got.ID != repo.ID {
+					t.Errorf("repo ID for %q = %q, want %q", lookupOrigin, got.ID, repo.ID)
+				}
+			}
+		})
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		db := setupTestDB(t)
+		store := NewRepoStore(db)
+		ctx := context.Background()
+
+		if _, err := store.GetByOrigin(ctx, "https://github.com/test/missing.git"); err != sql.ErrNoRows {
+			t.Fatalf("missing origin err = %v, want sql.ErrNoRows", err)
+		}
+	})
+
+	t.Run("ambiguous canonical match fails loud", func(t *testing.T) {
+		// Two local checkouts of the same GitHub repo registered with
+		// different remote forms must not silently route a webhook to one
+		// of them — webhook PR refresh would update the wrong session.
+		db := setupTestDB(t)
+		store := NewRepoStore(db)
+		ctx := context.Background()
+
+		if _, err := store.Create(ctx, CreateRepoParams{
+			DisplayName:       "https checkout",
+			LocalPath:         "/tmp/repo-https",
+			OriginURL:         "https://github.com/owner/repo.git",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/wt-https",
+		}); err != nil {
+			t.Fatalf("create https repo: %v", err)
+		}
+		if _, err := store.Create(ctx, CreateRepoParams{
+			DisplayName:       "ssh checkout",
+			LocalPath:         "/tmp/repo-ssh",
+			OriginURL:         "git@github.com:owner/repo.git",
+			DefaultBaseBranch: "main",
+			WorktreeBaseDir:   "/tmp/wt-ssh",
+		}); err != nil {
+			t.Fatalf("create ssh repo: %v", err)
+		}
+
+		// Webhook arrives with the html_url form — neither stored origin
+		// matches exactly, so the canonical fallback runs and finds two.
+		_, err := store.GetByOrigin(ctx, "https://github.com/owner/repo")
+		if !errors.Is(err, ErrAmbiguousOrigin) {
+			t.Fatalf("ambiguous origin err = %v, want ErrAmbiguousOrigin", err)
+		}
+	})
 }
 
 func TestForeignKeyCascade_DeleteRepo(t *testing.T) {

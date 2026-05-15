@@ -69,6 +69,7 @@ func (a *sessionListerAdapter) ListSessions(ctx context.Context) ([]*bossanovav1
 	for _, r := range rows {
 		pbSess := server.SessionToProto(r.Session)
 		pbSess.RepoDisplayName = r.RepoDisplayName
+		pbSess.RepoOriginUrl = r.RepoOriginURL
 		pbSessions = append(pbSessions, pbSess)
 	}
 	return pbSessions, nil
@@ -660,6 +661,7 @@ func run(opts runOpts) error {
 		if row.RepoID != "" {
 			if r, err := repos.Get(ctx, row.RepoID); err == nil && r != nil {
 				pbSess.RepoDisplayName = r.DisplayName
+				pbSess.RepoOriginUrl = r.OriginURL
 			}
 		}
 		streamBus.Publish(upstream.StreamEvent{
@@ -915,7 +917,7 @@ func run(opts runOpts) error {
 			Events:         streamBus,
 			TokenProvider:  tokenProvider,
 			CommandHandler: cmdHandler,
-			Webhooks:       &upstream.NoopWebhookDispatcher{Logger: log.Logger},
+			Webhooks:       upstream.NewWebhookDispatcher(displayPoller, log.Logger),
 			Attacher:       attacher,
 			ReRegister:     reRegister,
 			AuthState:      authState,

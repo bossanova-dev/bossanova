@@ -489,7 +489,185 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 	}
 }
 
+func TestRefreshPRTargetsOnlyMatchingSessions(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-a"] = &models.Repo{ID: "repo-a", OriginURL: "git@github.com:owner/repo-a.git"}
+	repos.repos["repo-b"] = &models.Repo{ID: "repo-b", OriginURL: "git@github.com:owner/repo-b.git"}
+
+	sessions.sessions["s1"] = &models.Session{ID: "s1", RepoID: "repo-a", PRNumber: intPtr(42)}
+	sessions.sessions["s2"] = &models.Session{ID: "s2", RepoID: "repo-a", PRNumber: intPtr(99)}
+	sessions.sessions["s3"] = &models.Session{ID: "s3", RepoID: "repo-b", PRNumber: intPtr(42)}
+
+	success := vcs.CheckConclusionSuccess
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, HeadSHA: "abc", Mergeable: boolPtr(true)}
+	vp.nextCheckResults = []vcs.CheckResult{
+		{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+	}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "https://github.com/owner/repo-a", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	e := tracker.Get("s1")
+	if e == nil {
+		t.Fatal("expected tracker entry for s1, got nil")
+	}
+	if e.HeadSHA != "abc" {
+		t.Errorf("s1 HeadSHA = %q, want abc", e.HeadSHA)
+	}
+	if tracker.Get("s2") != nil {
+		t.Fatalf("expected no tracker entry for s2")
+	}
+	if tracker.Get("s3") != nil {
+		t.Fatalf("expected no tracker entry for s3")
+	}
+	if len(vp.getPRStatusPRNumbers) != 1 || vp.getPRStatusPRNumbers[0] != 42 {
+		t.Fatalf("GetPRStatus PR numbers = %v, want [42]", vp.getPRStatusPRNumbers)
+	}
+}
+
+func TestRefreshPRReturnsErrorForUnknownRepo(t *testing.T) {
+	ctx := context.Background()
+	poller := NewDisplayPoller(
+		newMockSessionStore(),
+		newMockRepoStore(),
+		newMockVCSProvider(),
+		status.NewDisplayTracker(),
+		time.Minute,
+		zerolog.Nop(),
+	)
+
+	if err := poller.RefreshPR(ctx, "owner/missing", 42); err == nil {
+		t.Fatal("expected error for unknown repo")
+	}
+}
+
+func TestPollIntervalStretchesAfterRecentWebhookRefresh(t *testing.T) {
+	poller := NewDisplayPoller(
+		newMockSessionStore(),
+		newMockRepoStore(),
+		newMockVCSProvider(),
+		status.NewDisplayTracker(),
+		30*time.Second,
+		zerolog.Nop(),
+	)
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	poller.recordRefresh("owner/repo", now)
+
+	if got := poller.intervalFor("owner/repo", now.Add(time.Minute)); got != webhookHealthyInterval {
+		t.Fatalf("intervalFor = %s, want %s", got, webhookHealthyInterval)
+	}
+}
+
+func TestPollIntervalRevertsAfterStaleWebhook(t *testing.T) {
+	configured := 30 * time.Second
+	poller := NewDisplayPoller(
+		newMockSessionStore(),
+		newMockRepoStore(),
+		newMockVCSProvider(),
+		status.NewDisplayTracker(),
+		configured,
+		zerolog.Nop(),
+	)
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	poller.recordRefresh("owner/repo", now.Add(-webhookHealthyWindow-time.Nanosecond))
+
+	if got := poller.intervalFor("owner/repo", now); got != configured {
+		t.Fatalf("intervalFor = %s, want %s", got, configured)
+	}
+}
+
+func TestPollIntervalSkipsRecentlyPolledSessionWhenWebhookHealthy(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	success := vcs.CheckConclusionSuccess
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true)}
+	vp.nextCheckResults = []vcs.CheckResult{
+		{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+	}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 30*time.Second, logger)
+	poller.poll(ctx)
+	if len(vp.getPRStatusPRNumbers) != 1 {
+		t.Fatalf("first poll GetPRStatus calls = %d, want 1", len(vp.getPRStatusPRNumbers))
+	}
+
+	poller.recordRefresh("owner/repo", time.Now())
+	poller.poll(ctx)
+
+	if len(vp.getPRStatusPRNumbers) != 1 {
+		t.Fatalf("second poll GetPRStatus calls = %d, want still 1", len(vp.getPRStatusPRNumbers))
+	}
+}
+
+func TestPollIntervalRefreshPRSuppressesImmediateScheduledPoll(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	success := vcs.CheckConclusionSuccess
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true)}
+	vp.nextCheckResults = []vcs.CheckResult{
+		{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+	}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 30*time.Second, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", prNum); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+	if len(vp.getPRStatusPRNumbers) != 1 {
+		t.Fatalf("RefreshPR GetPRStatus calls = %d, want 1", len(vp.getPRStatusPRNumbers))
+	}
+
+	poller.poll(ctx)
+
+	if len(vp.getPRStatusPRNumbers) != 1 {
+		t.Fatalf("scheduled poll GetPRStatus calls = %d, want still 1", len(vp.getPRStatusPRNumbers))
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
+
+func intPtr(i int) *int { return &i }
 
 type mockCheckSnapshotStore struct {
 	mu    sync.Mutex

@@ -1904,9 +1904,13 @@ type WebhookEvent struct {
 	// Raw webhook body. Already HMAC-verified by bosso.
 	Payload []byte `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
 	// Selected headers for replay context (e.g. X-GitHub-Delivery, X-GitHub-Event).
-	Headers       map[string]string `protobuf:"bytes,5,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Headers map[string]string `protobuf:"bytes,5,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Parsed by bosso for routing only. Zero means unknown or not PR-scoped.
+	PullRequest int32 `protobuf:"varint,6,opt,name=pull_request,json=pullRequest,proto3" json:"pull_request,omitempty"`
+	// GitHub App installation ID. Zero for legacy/manual webhooks.
+	InstallationId int64 `protobuf:"varint,7,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *WebhookEvent) Reset() {
@@ -1972,6 +1976,20 @@ func (x *WebhookEvent) GetHeaders() map[string]string {
 		return x.Headers
 	}
 	return nil
+}
+
+func (x *WebhookEvent) GetPullRequest() int32 {
+	if x != nil {
+		return x.PullRequest
+	}
+	return 0
+}
+
+func (x *WebhookEvent) GetInstallationId() int64 {
+	if x != nil {
+		return x.InstallationId
+	}
+	return 0
 }
 
 // TerminalAttachCommand: bosso → daemon. Carried inside TerminalClientMessage.
@@ -2703,14 +2721,16 @@ const file_bossanova_v1_stream_proto_rawDesc = "" +
 	"\x0eTransferCancel\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x8a\x02\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xd6\x02\n" +
 	"\fWebhookEvent\x12&\n" +
 	"\x0frepo_origin_url\x18\x01 \x01(\tR\rrepoOriginUrl\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x1d\n" +
 	"\n" +
 	"event_type\x18\x03 \x01(\tR\teventType\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12A\n" +
-	"\aheaders\x18\x05 \x03(\v2'.bossanova.v1.WebhookEvent.HeadersEntryR\aheaders\x1a:\n" +
+	"\aheaders\x18\x05 \x03(\v2'.bossanova.v1.WebhookEvent.HeadersEntryR\aheaders\x12!\n" +
+	"\fpull_request\x18\x06 \x01(\x05R\vpullRequest\x12'\n" +
+	"\x0finstallation_id\x18\a \x01(\x03R\x0einstallationId\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"u\n" +

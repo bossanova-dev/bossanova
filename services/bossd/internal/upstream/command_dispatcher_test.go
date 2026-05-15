@@ -79,7 +79,7 @@ func (f *fakeAttacher) Attach(_ context.Context, sessionID, commandID string) (<
 // test never touch them.
 func newDispatcherClient(
 	handler SessionCommandHandler,
-	webhooks WebhookDispatcher,
+	webhooks WebhookCommandDispatcher,
 	attacher SessionAttacher,
 ) *StreamClient {
 	return NewStreamClient(StreamClientConfig{

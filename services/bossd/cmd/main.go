@@ -28,6 +28,7 @@ import (
 	"github.com/recurser/bossalib/migrate"
 	"github.com/recurser/bossalib/models"
 	libtelemetry "github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -69,7 +70,7 @@ func (a *sessionListerAdapter) ListSessions(ctx context.Context) ([]*bossanovav1
 	for _, r := range rows {
 		pbSess := server.SessionToProto(r.Session)
 		pbSess.RepoDisplayName = r.RepoDisplayName
-		pbSess.RepoOriginUrl = r.RepoOriginURL
+		pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.RepoOriginURL)
 		pbSessions = append(pbSessions, pbSess)
 	}
 	return pbSessions, nil
@@ -661,7 +662,7 @@ func run(opts runOpts) error {
 		if row.RepoID != "" {
 			if r, err := repos.Get(ctx, row.RepoID); err == nil && r != nil {
 				pbSess.RepoDisplayName = r.DisplayName
-				pbSess.RepoOriginUrl = r.OriginURL
+				pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
 			}
 		}
 		streamBus.Publish(upstream.StreamEvent{
@@ -787,14 +788,26 @@ func run(opts runOpts) error {
 		// Snapshot readers pull from the bossd stores, projecting
 		// to the slim pb types the snapshot expects.
 		snapshotSessions := upstream.NewSessionSnapshotReader(sessionLister)
+		// Snapshot the canonical https://<host>/<owner>/<repo> form of each
+		// repo's origin URL so it matches the identifier bosso's webhook
+		// dispatcher routes by (the GitHub html_url / GitLab web_url, also
+		// normalized on the receiving end). Internal DB IDs would never
+		// match a webhook payload. Repos without a parseable origin
+		// (local-only, malformed) drop out — they can't receive webhooks
+		// anyway, so leaving them out of the snapshot's repo set is
+		// strictly correct.
 		snapshotRepos := upstream.NewRepoSnapshotReader(func(ctx context.Context) ([]string, error) {
 			rs, err := repos.List(ctx)
 			if err != nil {
 				return nil, err
 			}
-			out := make([]string, len(rs))
-			for i, r := range rs {
-				out[i] = r.ID
+			out := make([]string, 0, len(rs))
+			for _, r := range rs {
+				canonical := vcs.NormalizeRepoURL(r.OriginURL)
+				if canonical == "" {
+					continue
+				}
+				out = append(out, canonical)
 			}
 			return out, nil
 		})

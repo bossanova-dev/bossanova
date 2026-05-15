@@ -13,6 +13,25 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// CanonicalRepoOriginURL returns the canonical https://<host>/<owner>/<repo>
+// form of originURL via vcs.NormalizeRepoURL. All bossd paths that populate
+// pb.Session.RepoOriginUrl must route through this — bosso's webhook
+// dispatcher matches sessions by canonical URL, so a raw SSH form on the
+// session record causes "no_ready_daemon" drops even with a matching daemon.
+//
+// Returns the input unchanged when NormalizeRepoURL can't parse it: a
+// hand-crafted bad URL is rarer than an empty string, and empty would
+// silently match every daemon with no repoIDs.
+func CanonicalRepoOriginURL(originURL string) string {
+	if originURL == "" {
+		return ""
+	}
+	if canonical := vcs.NormalizeRepoURL(originURL); canonical != "" {
+		return canonical
+	}
+	return originURL
+}
+
 // repoToProto converts a domain Repo to its protobuf representation.
 func repoToProto(r *models.Repo) *pb.Repo {
 	p := &pb.Repo{

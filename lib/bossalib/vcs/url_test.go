@@ -65,6 +65,70 @@ func TestRepoSlug(t *testing.T) {
 	}
 }
 
+func TestNormalizeRepoURL(t *testing.T) {
+	tests := []struct {
+		name      string
+		originURL string
+		want      string
+	}{
+		// GitHub: SSH shorthand, ssh://, https — all collapse to canonical form.
+		{"github ssh shorthand", "git@github.com:owner/repo.git", "https://github.com/owner/repo"},
+		{"github ssh url", "ssh://git@github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"github https with .git", "https://github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"github https no .git", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"github https trailing slash", "https://github.com/owner/repo/", "https://github.com/owner/repo"},
+		{"github git protocol", "git://github.com/owner/repo.git", "https://github.com/owner/repo"},
+
+		// GitLab.com (host-agnostic — works without provider registration).
+		{"gitlab ssh shorthand", "git@gitlab.com:owner/repo.git", "https://gitlab.com/owner/repo"},
+		{"gitlab https", "https://gitlab.com/owner/repo", "https://gitlab.com/owner/repo"},
+
+		// Self-hosted instances. The whole point of this helper: no
+		// provider registry, so a private GitLab/Gitea on a custom host
+		// still normalizes to the same form the matching webhook will
+		// carry.
+		{"self-hosted ssh", "git@git.company.com:team/service.git", "https://git.company.com/team/service"},
+		{"self-hosted https", "https://git.company.com/team/service", "https://git.company.com/team/service"},
+		{"self-hosted ssh:// with port-less host", "ssh://git@git.company.com/team/service.git", "https://git.company.com/team/service"},
+
+		// Unparseable inputs return "" so callers can filter.
+		{"empty", "", ""},
+		{"bare name", "foobar", ""},
+		{"trailing colon no path", "git@host:", ""},
+		{"leading colon not SSH", ":foo", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeRepoURL(tt.originURL)
+			if got != tt.want {
+				t.Errorf("NormalizeRepoURL(%q) = %q, want %q", tt.originURL, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeRepoURL_Idempotent confirms canonical output is a fixed
+// point — feeding the result back through the normalizer yields the
+// same string. This is the contract callers rely on when they put the
+// snapshot side and the webhook side through the same helper.
+func TestNormalizeRepoURL_Idempotent(t *testing.T) {
+	inputs := []string{
+		"git@github.com:owner/repo.git",
+		"https://github.com/owner/repo",
+		"ssh://git@git.company.com/team/service.git",
+	}
+	for _, in := range inputs {
+		t.Run(in, func(t *testing.T) {
+			once := NormalizeRepoURL(in)
+			twice := NormalizeRepoURL(once)
+			if once != twice {
+				t.Errorf("NormalizeRepoURL not idempotent: first=%q second=%q", once, twice)
+			}
+		})
+	}
+}
+
 func TestRepoWebLink(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -582,3 +582,6 @@ mutate-$(2):
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-mutate,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
+
+ngrok:
+	ngrok http --url=bossanova.ngrok.app 8080

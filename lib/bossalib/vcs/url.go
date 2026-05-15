@@ -60,10 +60,33 @@ func RepoSlug(originURL string) string {
 	return slug
 }
 
+// NormalizeRepoURL converts any supported git origin URL form into the
+// canonical https://<host>/<owner>/<repo> form. Returns "" if the input
+// cannot be parsed (empty, malformed, no owner/repo path).
+//
+// Unlike RepoWebLink, this function is host-agnostic: it relies on
+// mechanical SSH-shorthand → HTTPS conversion (the same convention
+// GitHub, GitLab, Gitea, Bitbucket, and self-hosted instances all
+// follow) rather than a registry of known providers. That makes it
+// safe to use as the single canonical identifier shared between bossd's
+// repo snapshot and bosso's webhook dispatcher: a new git host works
+// without registering it anywhere, as long as both ends route through
+// this helper.
+func NormalizeRepoURL(originURL string) string {
+	host, slug := parseOriginURL(originURL)
+	if host == "" || slug == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://%s/%s", host, slug)
+}
+
 // RepoWebLink converts a git origin URL into a provider web URL.
 // The provider string lets callers keep provider-specific labels outside
 // parsing code. v1 intentionally exposes only GitHub; GitLab can be added
 // here without changing each UI surface.
+//
+// For repo-identity normalization without per-provider gating, prefer
+// NormalizeRepoURL — it produces the same https URL for unknown hosts too.
 func RepoWebLink(originURL string) (provider, webURL string, ok bool) {
 	host, slug := parseOriginURL(originURL)
 	if host == "" || slug == "" {

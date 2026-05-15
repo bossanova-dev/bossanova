@@ -804,7 +804,7 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 	// Hydrate attention status from session state and repo flags.
 	if repo, err := s.repos.Get(ctx, session.RepoID); err == nil {
 		p.RepoDisplayName = repo.DisplayName
-		p.RepoOriginUrl = repo.OriginURL
+		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 		p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(session, repo))
 	}
 
@@ -866,7 +866,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		p := SessionToProto(sess)
 		if repo, ok := repoCache[sess.RepoID]; ok {
 			p.RepoDisplayName = repo.DisplayName
-			p.RepoOriginUrl = repo.OriginURL
+			p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 			p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(sess, repo))
 		}
 		pbSessions[i] = p
@@ -1291,7 +1291,7 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 	p := SessionToProto(sess)
 	if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil {
 		p.RepoDisplayName = repo.DisplayName
-		p.RepoOriginUrl = repo.OriginURL
+		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 	}
 
 	return connect.NewResponse(&pb.UpdateSessionResponse{Session: p}), nil
@@ -1348,7 +1348,7 @@ func (s *Server) sessionProtoWithRepo(ctx context.Context, sess *models.Session)
 	if sess.RepoID != "" {
 		if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil && repo != nil {
 			p.RepoDisplayName = repo.DisplayName
-			p.RepoOriginUrl = repo.OriginURL
+			p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 		}
 	}
 	return p

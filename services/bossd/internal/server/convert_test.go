@@ -16,6 +16,39 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// TestCanonicalRepoOriginURL pins the contract that bossd writes the
+// canonical https form into pb.Session.RepoOriginUrl. Without this,
+// bosso's webhook dispatcher routes by canonical URL while bossd
+// reports the raw DB OriginURL (often the SSH form), and webhook
+// deliveries silently regress to "no_ready_daemon" even when bossd
+// has a matching session — caught in #327 and #345.
+func TestCanonicalRepoOriginURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"https github", "https://github.com/owner/repo", "https://github.com/owner/repo"},
+		{"https with .git", "https://github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"ssh shorthand", "git@github.com:owner/repo.git", "https://github.com/owner/repo"},
+		{"ssh proto", "ssh://git@github.com/owner/repo.git", "https://github.com/owner/repo"},
+		{"GHES ssh", "git@github.company.com:team/svc.git", "https://github.company.com/team/svc"},
+		{"empty input", "", ""},
+		// Unparseable input: keep the original rather than dropping to "" —
+		// empty would silently match every daemon with no repoIDs, so
+		// preserving the input is the safer fallback.
+		{"unparseable", "not-a-real-url", "not-a-real-url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CanonicalRepoOriginURL(tt.in)
+			if got != tt.want {
+				t.Errorf("CanonicalRepoOriginURL(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConstructPRURL(t *testing.T) {
 	tests := []struct {
 		name      string

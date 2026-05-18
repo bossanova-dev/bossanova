@@ -216,6 +216,11 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	poller := session.NewPoller(sessions, repos, realtimeProvider, time.Hour, session.DefaultPollTimeout, logger)
 	realtimeDispatcher := session.NewDispatcher(sessions, repos, realtimeProvider, nil, logger)
 	pollerEvents := poller.Run(realtimeCtx)
+	select {
+	case <-poller.InitialPollDone():
+	case <-time.After(time.Second):
+		t.Fatal("wait for realtime poller startup poll")
+	}
 	webhookEventCh := make(chan session.SessionEvent, 64)
 	merged := mergeSessionEvents(realtimeCtx, pollerEvents, webhookEventCh)
 	emitter := session.NewSessionEventEmitter(&harnessLookup{sessions: sessions, repos: repos}, webhookEventCh, logger)

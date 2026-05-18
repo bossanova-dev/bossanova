@@ -126,6 +126,7 @@ type process struct {
 	earlyOutputMu     sync.Mutex
 	earlyOutput       []byte
 	earlyOutputFull   chan struct{}
+	earlyOutputNotify chan struct{}
 	earlyOutputActive bool
 }
 
@@ -135,12 +136,11 @@ type process struct {
 // `codex exec --json` output (~150 bytes).
 const earlyOutputCap = 8 * 1024
 
-// earlyOutputTimeout bounds how long Runner.Start waits for the early
-// output buffer to fill before invoking SessionIDFromOutput on whatever's
-// arrived. Two seconds still keeps StartRun responsive while avoiding false
-// misses on loaded machines where process startup and stdout copy scheduling
-// can exceed half a second.
-const earlyOutputTimeout = 2 * time.Second
+// earlyOutputTimeout bounds how long Runner.Start waits for a canonical session
+// ID to appear in early output. New-output notifications keep normal startup
+// fast; the longer fallback prevents loaded CI from returning a caller-provided
+// session hint before the agent gets CPU.
+const earlyOutputTimeout = 10 * time.Second
 
 // Option configures a Runner via NewRunner's variadic options.
 type Option func(*Runner)
@@ -295,6 +295,7 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	if r.sessionIDFromOutput != nil {
 		p.earlyOutput = make([]byte, 0, earlyOutputCap)
 		p.earlyOutputFull = make(chan struct{})
+		p.earlyOutputNotify = make(chan struct{}, 1)
 		p.earlyOutputActive = true
 	}
 
@@ -386,24 +387,37 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	// like codex use this to surface the agent-generated UUID emitted on
 	// the `thread.started` event.
 	if r.sessionIDFromOutput != nil {
-		select {
-		case <-p.earlyOutputFull:
-		case <-p.done:
-		case <-time.After(earlyOutputTimeout):
-		}
-		p.earlyOutputMu.Lock()
-		snapshot := make([]byte, len(p.earlyOutput))
-		copy(snapshot, p.earlyOutput)
-		p.earlyOutputMu.Unlock()
-		if discovered := r.sessionIDFromOutput(snapshot); discovered != "" {
-			// Re-key the process map so future Stop/IsRunning/ExitError
-			// calls find the process under the canonical session ID.
-			r.mu.Lock()
-			delete(r.procs, sessionID)
-			p.sessionID = discovered
-			r.procs[discovered] = p
-			r.mu.Unlock()
-			sessionID = discovered
+		timer := time.NewTimer(earlyOutputTimeout)
+		defer timer.Stop()
+		terminal := false
+		for {
+			p.earlyOutputMu.Lock()
+			snapshot := make([]byte, len(p.earlyOutput))
+			copy(snapshot, p.earlyOutput)
+			p.earlyOutputMu.Unlock()
+			if discovered := r.sessionIDFromOutput(snapshot); discovered != "" {
+				// Re-key the process map so future Stop/IsRunning/ExitError
+				// calls find the process under the canonical session ID.
+				r.mu.Lock()
+				delete(r.procs, sessionID)
+				p.sessionID = discovered
+				r.procs[discovered] = p
+				r.mu.Unlock()
+				sessionID = discovered
+				break
+			}
+			if terminal {
+				break
+			}
+			select {
+			case <-p.earlyOutputNotify:
+			case <-p.earlyOutputFull:
+				terminal = true
+			case <-p.done:
+				terminal = true
+			case <-timer.C:
+				terminal = true
+			}
 		}
 	}
 
@@ -610,6 +624,12 @@ func (lw *lineWriter) Write(data []byte) (int, error) {
 				toWrite = toWrite[:remaining]
 			}
 			lw.proc.earlyOutput = append(lw.proc.earlyOutput, toWrite...)
+			if len(toWrite) > 0 {
+				select {
+				case lw.proc.earlyOutputNotify <- struct{}{}:
+				default:
+				}
+			}
 			if len(lw.proc.earlyOutput) >= earlyOutputCap {
 				lw.proc.earlyOutputActive = false
 				close(lw.proc.earlyOutputFull)

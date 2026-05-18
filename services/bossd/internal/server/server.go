@@ -168,7 +168,6 @@ func New(cfg Config) *Server {
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
 		tmux:               cfg.Tmux,
-		branchStartLocks:   map[string]*branchStartLock{},
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
 		onSessionDeleted:   cfg.OnSessionDeleted,
@@ -839,7 +838,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 				_ = pr.Close()
 				result := <-done
 				if result.err != nil {
-					s.cleanupFailedCreateSession(ctx, sess.ID)
+					s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
 				}
 				return err
 			}
@@ -854,7 +853,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		startErr = result.err
 	}
 	if err := startErr; err != nil {
-		s.cleanupFailedCreateSession(ctx, sess.ID)
+		s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
 		if errors.Is(err, gitpkg.ErrBranchExists) {
 			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
 		}

@@ -163,7 +163,7 @@ If the agent doesn't have the boss skills available, two things to check:
 
 If neither check resolves it, file an issue with the daemon log. Skill install is not user-configurable today.
 
-### Agent has no permission to do X
+### Claude Code agent has no permission to do X
 
 By default, the `claude` plugin runs Claude Code without the
 `--dangerously-skip-permissions` flag, so the agent prompts for any
@@ -179,6 +179,14 @@ The flag is stored at `plugins[claude].config.dangerously_skip_permissions`
 in `settings.json`. Read [Security and
 Permissions](../reference/security-and-permissions.md) before flipping it
 on. It makes the agent more capable and more dangerous in equal measure.
+
+For Codex sessions started through Bossanova, configure the `codex`
+plugin settings in the TUI or in `settings.json`. Bossanova forwards
+`plugins[codex].config.sandbox` and `plugins[codex].config.approval` to
+Codex as `--sandbox` and `--ask-for-approval`; see [Security and
+Permissions](../reference/security-and-permissions.md#codex). Bossanova
+does not map `plugins[claude].config.dangerously_skip_permissions` to
+Codex behavior.
 
 ## Workspace and worktree
 

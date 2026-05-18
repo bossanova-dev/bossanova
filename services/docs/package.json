@@ -19,6 +19,7 @@
     "@docusaurus/preset-classic": "^3.8.0",
     "@easyops-cn/docusaurus-search-local": "^0.49.2",
     "@mdx-js/react": "^3.0.0",
+    "@sentry/react": "^10.53.1",
     "asciinema-player": "^3.15.1",
     "clsx": "^2.1.0",
     "posthog-js": "^1.373.4",
@@ -31,8 +32,12 @@
     "@docusaurus/tsconfig": "^3.8.0",
     "@docusaurus/types": "^3.8.0",
     "@types/react": "^19.2.14",
+    "@vitejs/plugin-react": "6.0.1",
+    "jsdom": "^29.1.1",
     "prettier": "^3.8.3",
-    "typescript": "~6.0.3"
+    "typescript": "~6.0.3",
+    "vite": "8.0.11",
+    "vitest": "^4.1.5"
   },
   "engines": {
     "node": ">=18.0"
@@ -44,6 +49,7 @@
     "format": "prettier --write 'docs/**/*.{md,mdx}' '*.{ts,tsx,json}' 'src/**/*.{ts,tsx,css}' 'sidebars.ts' 'docusaurus.config.ts'",
     "lint": "prettier --check 'docs/**/*.{md,mdx}' '*.{ts,tsx,json}' 'src/**/*.{ts,tsx,css}' 'sidebars.ts' 'docusaurus.config.ts'",
     "start": "docusaurus serve",
+    "test:unit": "vitest run",
     "typecheck": "tsc --noEmit"
   }
 }

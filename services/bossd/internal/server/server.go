@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"errors"
 
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/errortrack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/machine"
@@ -71,7 +73,9 @@ type Server struct {
 	pluginHost         *plugin.Host
 	tmux               *tmux.Client
 	chatWakeGroup      singleflight.Group // per-chat idempotency for WakeChat
-	wakeHook           wakeHook           // test-only: zero in production; see wake_chat.go
+	branchStartMu      sync.Mutex
+	branchStartLocks   map[string]*branchStartLock
+	wakeHook           wakeHook // test-only: zero in production; see wake_chat.go
 	completionNotifier session.SessionCompletionNotifier
 	authNotifier       AuthNotifier
 	onSessionDeleted   func(context.Context, string)
@@ -81,6 +85,11 @@ type Server struct {
 	srv                *http.Server
 
 	bossanovav1connect.UnimplementedDaemonServiceHandler
+}
+
+type branchStartLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 var (
@@ -159,6 +168,7 @@ func New(cfg Config) *Server {
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
 		tmux:               cfg.Tmux,
+		branchStartLocks:   map[string]*branchStartLock{},
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
 		onSessionDeleted:   cfg.OnSessionDeleted,
@@ -194,7 +204,7 @@ func (s *Server) Listen(socketPath string) error {
 	}
 
 	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(s)
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(errortrack.Interceptor()))
 	mux.Handle(path, handler)
 
 	s.srv = &http.Server{
@@ -609,6 +619,83 @@ func installedPluginStatus(p plugin.PluginStatus) pb.InstalledPlugin_Status {
 
 // --- Session Lifecycle ---
 
+func (s *Server) lockBranchStart(repoID, branch string) func() {
+	if repoID == "" || branch == "" {
+		return func() {}
+	}
+	key := repoID + "\x00" + branch
+
+	s.branchStartMu.Lock()
+	if s.branchStartLocks == nil {
+		s.branchStartLocks = map[string]*branchStartLock{}
+	}
+	lock := s.branchStartLocks[key]
+	if lock == nil {
+		lock = &branchStartLock{}
+		s.branchStartLocks[key] = lock
+	}
+	lock.refs++
+	s.branchStartMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+
+		s.branchStartMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.branchStartLocks, key)
+		}
+		s.branchStartMu.Unlock()
+	}
+}
+
+func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branch string, stream *connect.ServerStream[pb.CreateSessionResponse]) (bool, error) {
+	if branch == "" {
+		return false, nil
+	}
+	active, err := s.sessions.ListActive(ctx, repoID)
+	if err != nil {
+		return false, connect.NewError(connect.CodeInternal, fmt.Errorf("list active sessions: %w", err))
+	}
+	for _, sess := range active {
+		if sess.BranchName != branch {
+			continue
+		}
+		if sess.WorktreePath == "" {
+			return true, connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("session already starting for branch %q", branch))
+		}
+		if _, err := os.Stat(sess.WorktreePath); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return true, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("session already exists for branch %q but worktree directory is missing", branch))
+			}
+			return true, connect.NewError(connect.CodeInternal, fmt.Errorf("stat existing session worktree: %w", err))
+		}
+		return true, stream.Send(&pb.CreateSessionResponse{
+			Event: &pb.CreateSessionResponse_SessionCreated{
+				SessionCreated: &pb.SessionCreated{
+					Session: SessionToProto(sess),
+				},
+			},
+		})
+	}
+	return false, nil
+}
+
+func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID string) {
+	if failedSess, getErr := s.sessions.Get(ctx, sessionID); getErr == nil {
+		if failedSess.RepoID != "" && failedSess.BranchName != "" && failedSess.WorktreePath != "" {
+			if repo, repoErr := s.repos.Get(ctx, failedSess.RepoID); repoErr == nil {
+				_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{failedSess.BranchName})
+			}
+		}
+	}
+	_ = s.sessions.Delete(ctx, sessionID)
+	if s.onSessionDeleted != nil {
+		s.onSessionDeleted(ctx, sessionID)
+	}
+}
+
 func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
 	msg := req.Msg
 	if msg.RepoId == "" {
@@ -654,6 +741,18 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		headBranch = *msg.BranchName
 	}
 
+	unlockBranch := s.lockBranchStart(msg.RepoId, headBranch)
+	branchLocked := true
+	defer func() {
+		if branchLocked {
+			unlockBranch()
+		}
+	}()
+
+	if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, stream); handled || err != nil {
+		return err
+	}
+
 	// Resolve the agent name. The proto field is a oneof (*string), so an
 	// unset request falls back to Settings.DefaultAgent — which Task 3
 	// backfills to "claude" when the settings file omits it. As an ergonomic
@@ -681,6 +780,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		RepoID:     msg.RepoId,
 		Title:      msg.Title,
 		Plan:       msg.Plan,
+		BranchName: headBranch,
 		BaseBranch: baseBranch,
 		AgentName:  agentName,
 		PRNumber:   prNumber,
@@ -695,6 +795,8 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 	if err != nil {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
+	unlockBranch()
+	branchLocked = false
 
 	// Start the session lifecycle: create worktree, start Claude, fire state machine.
 	// Quick chat sessions skip worktree/branch/PR creation entirely.
@@ -736,7 +838,9 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 				// for it to finish so we don't leak.
 				_ = pr.Close()
 				result := <-done
-				_ = result.err
+				if result.err != nil {
+					s.cleanupFailedCreateSession(ctx, sess.ID)
+				}
 				return err
 			}
 		}
@@ -750,20 +854,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		startErr = result.err
 	}
 	if err := startErr; err != nil {
-		// Re-fetch session to get worktree/branch info set during lifecycle.
-		if failedSess, getErr := s.sessions.Get(ctx, sess.ID); getErr == nil {
-			// Clean up worktree and branch (local + remote).
-			if failedSess.RepoID != "" && failedSess.BranchName != "" {
-				if repo, repoErr := s.repos.Get(ctx, failedSess.RepoID); repoErr == nil {
-					_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{failedSess.BranchName})
-				}
-			}
-		}
-		// Delete the orphaned session record.
-		_ = s.sessions.Delete(ctx, sess.ID)
-		if s.onSessionDeleted != nil {
-			s.onSessionDeleted(ctx, sess.ID)
-		}
+		s.cleanupFailedCreateSession(ctx, sess.ID)
 		if errors.Is(err, gitpkg.ErrBranchExists) {
 			return connect.NewError(connect.CodeAlreadyExists, fmt.Errorf("branch already exists for this session title"))
 		}

@@ -133,14 +133,16 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 
 	// Tmux NewSession was called with argv from the agent plugin's
 	// BuildInteractiveCommand, not a hardcoded slice. The fake agent
-	// returns argv shaped like ["sh", "-c", "claude --session-id <id> ..."].
+	// returns the bare claude argv (no shell wrapper) — the production
+	// plugin must do the same so claude gets a real PTY on stdout; the
+	// daemon now captures pane output via `tmux pipe-pane` post-spawn.
 	newSess := h.findCall("new-session")
 	if newSess == nil {
 		t.Fatal("expected tmux new-session call")
 	}
 	joined := strings.Join(newSess.args, " ")
-	if !strings.Contains(joined, "sh -c") {
-		t.Errorf("expected new-session argv to use sh -c shape, got: %s", joined)
+	if strings.Contains(joined, " sh -c ") || strings.Contains(joined, " bash -c ") {
+		t.Errorf("new-session argv must NOT be shell-wrapped (breaks claude TTY detection), got: %s", joined)
 	}
 	if !strings.Contains(joined, "claude --session-id "+agentSessionID) {
 		t.Errorf("expected new-session argv to embed claude --session-id %s, got: %s", agentSessionID, joined)
@@ -162,6 +164,23 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 		if !h.tmuxFake.hasSubcommand(sub) {
 			t.Errorf("expected tmux %s call from SendPlan, none recorded", sub)
 		}
+	}
+
+	// pipe-pane must have armed: this is the new on-disk capture path
+	// that replaces the broken bash-c-tee wrapping the claude plugin
+	// used to apply in BuildInteractiveCommand. Without this, repair
+	// chats (and any other unattended chat) would lose their log
+	// history the moment the tmux session ended.
+	pipe := h.findCall("pipe-pane")
+	if pipe == nil {
+		t.Fatal("expected tmux pipe-pane call after new-session")
+	}
+	pipeJoined := strings.Join(pipe.args, " ")
+	if !strings.Contains(pipeJoined, "cat >>") {
+		t.Errorf("pipe-pane args must use append-mode `cat >>` so re-spawns don't truncate prior capture, got: %s", pipeJoined)
+	}
+	if !strings.Contains(pipeJoined, agentSessionID+".log") {
+		t.Errorf("pipe-pane log path must include agent_session_id+.log, got: %s", pipeJoined)
 	}
 
 	// No row deletions expected on the happy path.
@@ -280,8 +299,11 @@ func TestStartTmuxChat_ChatCreateFails(t *testing.T) {
 }
 
 // TestStartTmuxChat_UpdateTmuxSessionNameFails verifies that an
-// UpdateTmuxSessionName failure tears tmux down AND deletes the orphaned
-// agent_chats row, so a retry doesn't leak.
+// UpdateTmuxSessionName failure tears tmux down AND preserves the
+// agent_chats row with a start_error reason. Pre-#350 the row was
+// deleted on failure, which made repeated repair attempts vanish from
+// the chat list entirely; the row is now kept so the operator can see
+// the attempt and read why it failed.
 func TestStartTmuxChat_UpdateTmuxSessionNameFails(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
@@ -294,13 +316,25 @@ func TestStartTmuxChat_UpdateTmuxSessionNameFails(t *testing.T) {
 	if !h.tmuxFake.hasSubcommand("kill-session") {
 		t.Error("expected tmux kill-session after UpdateTmuxSessionName failure")
 	}
-	if len(h.chats.deletedAgentSessionIDs) != 1 {
-		t.Errorf("expected 1 row delete after UpdateTmuxSessionName failure, got %v", h.chats.deletedAgentSessionIDs)
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("expected NO row delete after UpdateTmuxSessionName failure (row must be preserved as failed-to-start), got %v", h.chats.deletedAgentSessionIDs)
+	}
+	if len(h.chats.markStartFailedCalls) != 1 {
+		t.Fatalf("expected 1 MarkStartFailed call after UpdateTmuxSessionName failure, got %d", len(h.chats.markStartFailedCalls))
+	}
+	if !strings.Contains(h.chats.markStartFailedCalls[0].reason, "persist tmux session name failed") {
+		t.Errorf("MarkStartFailed reason missing context, got %q", h.chats.markStartFailedCalls[0].reason)
 	}
 }
 
-// TestStartTmuxChat_SendPlanFails verifies that a SendPlan failure tears
-// tmux down AND deletes the orphaned agent_chats row.
+// TestStartTmuxChat_SendPlanFails verifies that a SendPlan failure
+// tears tmux down AND preserves the agent_chats row stamped with a
+// start_error. This is the exact failure mode the user hit on PRs
+// #9499, #361, #362 — claude bailed before showing the ❯ ready marker,
+// SendPlan timed out at 5 s, repair counter incremented to 321×, and
+// the chat list showed zero entries because the row was being deleted.
+// Preserving the row is what surfaces the "(failed to start)" badge in
+// the chat list so the operator can finally see what each attempt did.
 func TestStartTmuxChat_SendPlanFails(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
@@ -316,8 +350,14 @@ func TestStartTmuxChat_SendPlanFails(t *testing.T) {
 	if !h.tmuxFake.hasSubcommand("kill-session") {
 		t.Error("expected tmux kill-session after SendPlan failure")
 	}
-	if len(h.chats.deletedAgentSessionIDs) != 1 {
-		t.Errorf("expected 1 row delete after SendPlan failure, got %v", h.chats.deletedAgentSessionIDs)
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("expected NO row delete after SendPlan failure (row must be preserved as failed-to-start), got %v", h.chats.deletedAgentSessionIDs)
+	}
+	if len(h.chats.markStartFailedCalls) != 1 {
+		t.Fatalf("expected 1 MarkStartFailed call after SendPlan failure, got %d", len(h.chats.markStartFailedCalls))
+	}
+	if !strings.Contains(h.chats.markStartFailedCalls[0].reason, "send plan failed") {
+		t.Errorf("MarkStartFailed reason missing context, got %q", h.chats.markStartFailedCalls[0].reason)
 	}
 }
 
@@ -561,8 +601,9 @@ func TestStartTmuxChat_HookOptsEmpty_DoesNotConfigureHook(t *testing.T) {
 
 // TestStartTmuxChat_HookOptsTokenWithoutHookPort_FailsClosed verifies that
 // a token without a configured hook port is rejected with FailedPrecondition
-// and tears the live tmux session + chat row down so a retry can mint
-// fresh state.
+// and tears the live tmux session down. The agent_chats row is preserved
+// (with a start_error reason) rather than deleted so the chat list still
+// shows the attempt.
 func TestStartTmuxChat_HookOptsTokenWithoutHookPort_FailsClosed(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
@@ -578,14 +619,22 @@ func TestStartTmuxChat_HookOptsTokenWithoutHookPort_FailsClosed(t *testing.T) {
 	if !h.tmuxFake.hasSubcommand("kill-session") {
 		t.Error("expected tmux kill-session after hook port precondition failure")
 	}
-	if len(h.chats.deletedAgentSessionIDs) != 1 {
-		t.Errorf("expected 1 row delete after hook port precondition failure, got %v", h.chats.deletedAgentSessionIDs)
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("expected NO row delete after hook port precondition failure (row preserved as failed-to-start), got %v", h.chats.deletedAgentSessionIDs)
+	}
+	if len(h.chats.markStartFailedCalls) != 1 {
+		t.Fatalf("expected 1 MarkStartFailed call after hook port precondition failure, got %d", len(h.chats.markStartFailedCalls))
+	}
+	if !strings.Contains(h.chats.markStartFailedCalls[0].reason, "hook port not configured") {
+		t.Errorf("MarkStartFailed reason missing context, got %q", h.chats.markStartFailedCalls[0].reason)
 	}
 }
 
 // TestStartTmuxChat_HookConfigureFails_TearsDown verifies that a
-// ConfigureFinalizeHook RPC failure tears tmux down AND deletes the
-// orphaned agent_chats row, mirroring the SendPlan cleanup path.
+// ConfigureFinalizeHook RPC failure tears tmux down. The agent_chats
+// row is preserved (with a start_error reason) — mirrors the SendPlan
+// preservation path, so all StartTmuxChat failures surface in the chat
+// list rather than vanishing.
 func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
@@ -599,8 +648,14 @@ func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 	if !h.tmuxFake.hasSubcommand("kill-session") {
 		t.Error("expected tmux kill-session after ConfigureFinalizeHook failure")
 	}
-	if len(h.chats.deletedAgentSessionIDs) != 1 {
-		t.Errorf("expected 1 row delete after ConfigureFinalizeHook failure, got %v", h.chats.deletedAgentSessionIDs)
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Errorf("expected NO row delete after ConfigureFinalizeHook failure (row preserved as failed-to-start), got %v", h.chats.deletedAgentSessionIDs)
+	}
+	if len(h.chats.markStartFailedCalls) != 1 {
+		t.Fatalf("expected 1 MarkStartFailed call after ConfigureFinalizeHook failure, got %d", len(h.chats.markStartFailedCalls))
+	}
+	if !strings.Contains(h.chats.markStartFailedCalls[0].reason, "configure finalize hook failed") {
+		t.Errorf("MarkStartFailed reason missing context, got %q", h.chats.markStartFailedCalls[0].reason)
 	}
 	// SendPlan should NOT have run — failure happens before step 9.
 	if h.tmuxFake.hasSubcommand("load-buffer") {

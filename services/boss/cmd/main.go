@@ -11,9 +11,11 @@ import (
 	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/errortrack"
 	bossalog "github.com/recurser/bossalib/log"
 	libskillinstall "github.com/recurser/bossalib/skillinstall"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -34,6 +36,27 @@ func run() error {
 	defer func() { _ = logCloser.Close() }()
 
 	settings, _ := config.Load()
+	bossEnv := config.EnvOr("BOSS_ENV", "local")
+	var errortrackClose = func() {}
+	if settings.ErrorTrackingEnabled {
+		// boss reuses the daemon DSN per decision #1A.
+		errortrackDSN := config.EnvOr("BOSS_SENTRY_DSN", "https://f8081ecc39984438b534485cb56a7391@o4511396716871680.ingest.de.sentry.io/4511396747608144")
+		close, err := errortrack.Init(errortrack.Opts{
+			DSN:         errortrackDSN,
+			App:         "boss",
+			Environment: bossEnv,
+			Release:     buildinfo.Version + "-" + buildinfo.Commit,
+		})
+		if err != nil {
+			// boss writes file-only logs (SetupFileOnly) -- log.Warn
+			// here will land in the boss log file, not corrupt the TUI.
+			log.Warn().Err(err).Msg("errortrack disabled")
+		} else {
+			errortrackClose = close
+		}
+	}
+	defer errortrackClose()
+
 	telemetryClient := telemetry.New(commandTelemetryConfig(settings))
 	defer telemetryClient.Close()
 

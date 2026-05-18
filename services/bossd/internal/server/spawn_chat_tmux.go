@@ -179,10 +179,13 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	if deps.Argv == nil {
 		return spawnResult{}, fmt.Errorf("spawn chat tmux: argv builder not configured")
 	}
-	// LogPath is intentionally empty: this is the user-attached path where
-	// the operator is reading tmux directly, not the unattended-headless
-	// path StartTmuxChat handles. Plugins treat empty LogPath as "don't
-	// tee" (LogTeeArgv is a no-op when the path is empty).
+	// LogPath is intentionally empty: this is the user-attached path
+	// where the operator is reading tmux directly, not the unattended-
+	// headless path StartTmuxChat handles. Even if it weren't empty,
+	// the plugin's BuildInteractiveCommand no longer consumes LogPath
+	// at all — pane capture is wired post-NewSession via tmux pipe-pane
+	// by StartTmuxChat, and the WakeChat path here just doesn't need
+	// any. Keeping the empty argument makes the contract explicit.
 	args, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, "")
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)

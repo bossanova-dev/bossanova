@@ -683,6 +683,66 @@ func TestListSessions_LeavesLastChatActivityNilWhenNoLiveChat(t *testing.T) {
 	}
 }
 
+// TestListSessions_IgnoresFailedStartChatsForActiveCheck verifies that an
+// agent_chats row whose StartError is non-empty is excluded from the
+// HasActiveChat / LastChatActivityAt computation, even when the chat
+// tracker still has a fresh entry for that agent_session_id.
+//
+// Regression: a pre-fix repair attempt left an orphan tmux pane alive.
+// The post-fix code preserves the failed-start agent_chats row (good),
+// but the row's AgentSessionID was still being looked up in the chat
+// tracker — and the tmux poller kept that entry warm because the pane
+// hadn't been killed. Result: HasActiveChat=true forever, repair idle
+// gate defers every sweep, session never auto-repairs.
+func TestListSessions_IgnoresFailedStartChatsForActiveCheck(t *testing.T) {
+	repoID := "repo-1"
+	sessID := "sess-1"
+	failedAgentSessionID := "chat-failed-start"
+
+	// Fresh tracker entry for the failed chat's agent_session_id — this
+	// simulates an orphan tmux pane that the tmux_poller is still
+	// stamping heartbeats against.
+	tracker := status.NewTracker()
+	tracker.Update(failedAgentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+
+	startErr := "send plan failed: ready marker not seen in pane"
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo"}},
+	}
+	srv.sessionStore = &fakeSessionStoreWithListActive{
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {{ID: sessID, RepoID: repoID, Title: "my session"}},
+		},
+	}
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.agentChats = &fakeAgentChatStore{
+		chatsBySession: map[string][]*models.AgentChat{
+			sessID: {
+				{AgentSessionID: failedAgentSessionID, StartError: &startErr},
+			},
+		},
+	}
+	srv.chatTracker = tracker
+
+	resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	sessions := resp.GetSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.GetHasActiveChat() {
+		t.Error("HasActiveChat should be false when the only chat has StartError set")
+	}
+	if s.GetLastChatActivityAt() != nil {
+		t.Errorf("LastChatActivityAt should be nil for failed-start chats, got %v", s.GetLastChatActivityAt())
+	}
+}
+
 func TestHostServiceProviderErrorPropagates(t *testing.T) {
 	mock := &mockVCSProvider{
 		err: errors.New("GitHub API rate limit exceeded"),

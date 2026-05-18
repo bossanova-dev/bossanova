@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,6 +105,13 @@ func TestSanitizeBranchName(t *testing.T) {
 				t.Errorf("sanitizeBranchName(%q) = %q, want %q", tt.title, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsBranchAlreadyExistsGitOutput(t *testing.T) {
+	err := fmt.Errorf("git worktree add -b dave/won-470 /tmp/wt origin/dev: exit status 255: Preparing worktree (new branch 'dave/won-470')\nfatal: a branch named 'dave/won-470' already exists")
+	if !isBranchAlreadyExistsGitOutput(err) {
+		t.Fatal("expected branch-already-exists git output to be detected")
 	}
 }
 

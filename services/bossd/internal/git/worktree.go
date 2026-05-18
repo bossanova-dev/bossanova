@@ -22,6 +22,15 @@ import (
 // exists and the caller did not set Force in CreateOpts.
 var ErrBranchExists = errors.New("branch already exists")
 
+func isBranchAlreadyExistsGitOutput(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "fatal: a branch named ") &&
+		strings.Contains(msg, " already exists")
+}
+
 // ErrBaseBranchNotReady is returned by EnsureBaseBranchReadyForSync when the
 // main repo cannot be safely fast-forwarded to match origin/<base>. The error
 // message always explains the condition (dirty tree, divergence, etc.) so
@@ -364,6 +373,9 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	if _, err := runGit(ctx, opts.RepoPath,
 		"worktree", "add", "-b", branch, wtPath, "origin/"+opts.BaseBranch,
 	); err != nil {
+		if isBranchAlreadyExistsGitOutput(err) {
+			return nil, ErrBranchExists
+		}
 		return nil, fmt.Errorf("worktree add: %w", err)
 	}
 

@@ -132,6 +132,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.LastCheckState != nil {
 		s.LastCheckState = machine.CheckState(*params.LastCheckState)
 	}
+	if params.LastObservedReviewState != nil {
+		s.LastObservedReviewState = *params.LastObservedReviewState
+	}
 	if params.AttemptCount != nil {
 		s.AttemptCount = *params.AttemptCount
 	}
@@ -312,10 +315,16 @@ type mockAgentChatStore struct {
 	createCalls            []db.CreateAgentChatParams
 	tmuxNameUpdates        []tmuxNameUpdate
 	deletedAgentSessionIDs []string
+	markStartFailedCalls   []markStartFailedCall
 	chatsBySession         map[string][]*models.AgentChat // returned by ListBySession when set
 	chatsWithTmux          []*models.AgentChat            // returned by ListWithTmuxSession when set
 	createErr              error
 	updateTmuxNameErr      error
+}
+
+type markStartFailedCall struct {
+	agentSessionID string
+	reason         string
 }
 
 type tmuxNameUpdate struct {
@@ -368,6 +377,13 @@ func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessi
 }
 
 func (m *mockAgentChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
+	return nil
+}
+
+func (m *mockAgentChatStore) MarkStartFailed(_ context.Context, agentSessionID, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.markStartFailedCalls = append(m.markStartFailedCalls, markStartFailedCall{agentSessionID: agentSessionID, reason: reason})
 	return nil
 }
 

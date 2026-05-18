@@ -41,7 +41,8 @@ const (
 type ReviewState int
 
 const (
-	ReviewStateApproved ReviewState = iota + 1
+	ReviewStateUnspecified ReviewState = iota
+	ReviewStateApproved
 	ReviewStateChangesRequested
 	ReviewStateCommented
 	ReviewStateDismissed
@@ -49,13 +50,14 @@ const (
 
 // PRStatus represents the current status of a pull/merge request.
 type PRStatus struct {
-	State      PRState
-	Mergeable  *bool
-	Draft      bool
-	Title      string
-	HeadBranch string
-	BaseBranch string
-	HeadSHA    string
+	State             PRState
+	Mergeable         *bool
+	Draft             bool
+	Title             string
+	HeadBranch        string
+	BaseBranch        string
+	HeadSHA           string
+	LatestReviewState ReviewState
 }
 
 // CheckResult represents the result of a single CI check.

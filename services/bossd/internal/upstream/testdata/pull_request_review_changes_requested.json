@@ -1,0 +1,19 @@
+{
+  "action": "submitted",
+  "review": {
+    "state": "changes_requested",
+    "body": "needs work",
+    "user": {
+      "login": "reviewer"
+    }
+  },
+  "pull_request": {
+    "number": 345
+  },
+  "repository": {
+    "html_url": "https://github.com/recurser/bossanova"
+  },
+  "installation": {
+    "id": 132472308
+  }
+}

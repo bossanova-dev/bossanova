@@ -462,6 +462,96 @@ func TestRefreshClient_Error(t *testing.T) {
 	}
 }
 
+// TestPipePane verifies the wrapper issues `tmux pipe-pane -o -t <name>
+// 'cat >> <quoted-log>'` so pane output is mirrored to disk without
+// wrapping the running process in a shell pipe. The interactive launch
+// regression that this replaces (bash -c "claude | tee log") made the
+// agent's stdout a non-TTY pipe; pipe-pane lives outside the agent
+// process so its PTY is unaffected.
+func TestPipePane(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.PipePane(ctx, "boss-pp-sess", "/tmp/boss-pp/abc.log"); err != nil {
+		t.Fatalf("PipePane failed: %v", err)
+	}
+
+	want := []string{"tmux", "pipe-pane", "-o", "-t", "boss-pp-sess", "cat >> '/tmp/boss-pp/abc.log'"}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 tmux call, got %d: %v", len(mock.calls), mock.calls)
+	}
+	if !equalSlices(mock.calls[0], want) {
+		t.Errorf("PipePane args: expected %v, got %v", want, mock.calls[0])
+	}
+}
+
+// TestPipePane_QuotesLogPath asserts that single quotes inside the log
+// path are escaped via the '\” idiom rather than being passed through
+// raw (which would prematurely close the shell-quoted string and let
+// the rest of the path be interpreted as a shell command).
+func TestPipePane_QuotesLogPath(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+	ctx := context.Background()
+
+	if err := c.PipePane(ctx, "boss-pp-q", "/tmp/foo's bar.log"); err != nil {
+		t.Fatalf("PipePane failed: %v", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 tmux call, got %d", len(mock.calls))
+	}
+	pipeArg := mock.calls[0][len(mock.calls[0])-1]
+	want := `cat >> '/tmp/foo'\''s bar.log'`
+	if pipeArg != want {
+		t.Errorf("PipePane shell-arg: expected %q, got %q", want, pipeArg)
+	}
+}
+
+// TestPipePane_EmptySessionName guards the empty-name validation so
+// callers can't accidentally invoke `tmux pipe-pane -t` with no target
+// (which would apply pipe-pane to the most recently active tmux pane,
+// almost certainly not the chat session we meant).
+func TestPipePane_EmptySessionName(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+
+	if err := c.PipePane(context.Background(), "", "/tmp/x.log"); err == nil {
+		t.Fatal("expected error for empty session name, got nil")
+	}
+	if len(mock.calls) != 0 {
+		t.Errorf("expected no tmux calls when session name is empty, got %d", len(mock.calls))
+	}
+}
+
+// TestPipePane_EmptyLogPath guards against silently arming pipe-pane to
+// `cat >> ”` — that would shell-error on every byte the pane wrote.
+// Better to fail loud at the call site.
+func TestPipePane_EmptyLogPath(t *testing.T) {
+	mock := &mockCommandFactory{}
+	c := NewClient(WithCommandFactory(mock.factory))
+
+	if err := c.PipePane(context.Background(), "boss-pp", ""); err == nil {
+		t.Fatal("expected error for empty log path, got nil")
+	}
+	if len(mock.calls) != 0 {
+		t.Errorf("expected no tmux calls when log path is empty, got %d", len(mock.calls))
+	}
+}
+
+// TestPipePane_Error verifies a tmux invocation failure surfaces as an
+// error rather than being swallowed. Catches mutations like err != nil →
+// err == nil that would silently leave the chat with no on-disk log.
+func TestPipePane_Error(t *testing.T) {
+	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "false")
+	}))
+
+	if err := c.PipePane(context.Background(), "boss-pp", "/tmp/x.log"); err == nil {
+		t.Fatal("expected error when tmux invocation fails, got nil")
+	}
+}
+
 func TestHasSession(t *testing.T) {
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))

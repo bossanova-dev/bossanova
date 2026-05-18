@@ -49,6 +49,7 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 			mgr := NewManager()
 			cmd := exec.Command("cat")
 			pcmd := NewPTYCommand(mgr, "test-detach-"+tc.name, cmd)
+			pcmd.inputReady = make(chan struct{})
 			pcmd.SetStdin(slave)
 			pcmd.SetStdout(slave)
 			pcmd.SetStderr(slave)
@@ -84,7 +85,11 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 				_ = master.Close()
 			}()
 
-			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-pcmd.inputReady:
+			case <-time.After(5 * time.Second):
+				t.Fatal("PTYCommand did not start reading input within 5s")
+			}
 			if _, err := master.Write(tc.bytes); err != nil {
 				t.Fatalf("write detach bytes: %v", err)
 			}

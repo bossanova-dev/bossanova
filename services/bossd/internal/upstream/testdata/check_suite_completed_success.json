@@ -1,0 +1,17 @@
+{
+  "action": "completed",
+  "check_suite": {
+    "conclusion": "success",
+    "pull_requests": [
+      {
+        "number": 345
+      }
+    ]
+  },
+  "repository": {
+    "html_url": "https://github.com/recurser/bossanova"
+  },
+  "installation": {
+    "id": 132472308
+  }
+}

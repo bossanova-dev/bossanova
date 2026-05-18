@@ -183,6 +183,7 @@ type Settings struct {
 	SkillsInstalledManifestByAgent map[string]string `json:"skills_installed_manifest_by_agent,omitempty"`
 	PollIntervalSeconds            int               `json:"poll_interval_seconds,omitempty"`
 	EventTracingEnabled            bool              `json:"event_tracing_enabled,omitempty"`
+	ErrorTrackingEnabled           bool              `json:"error_tracking_enabled,omitempty"`
 	PostHogProjectToken            string            `json:"posthog_project_token,omitempty"`
 	PostHogHost                    string            `json:"posthog_host,omitempty"`
 	Plugins                        []PluginConfig    `json:"plugins,omitempty"`

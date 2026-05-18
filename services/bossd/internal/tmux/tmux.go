@@ -271,6 +271,67 @@ func (c *Client) RefreshClient(ctx context.Context, sessionName string) error {
 	return nil
 }
 
+// PipePane arms `tmux pipe-pane` on the session's primary pane so that
+// everything written to the pane is mirrored to logPath via
+// `cat >> <quoted-path>`. Used as a non-invasive replacement for the
+// previous in-process pipe wrapping (`bash -c "... | tee log"`): tee
+// inside a pipe made the agent's stdout a non-TTY, which modern claude
+// auto-degrades to headless-print mode and refuses to run. pipe-pane
+// taps the pane's output stream from outside the process, so the
+// running agent keeps a real PTY on stdout while bossd still gets a
+// persistent log on disk.
+//
+//   - The `-o` flag toggles the pipe: calling pipe-pane twice on an
+//     already-piped session would stop the recording, so callers must
+//     only invoke this once per session lifetime. Use the matching
+//     no-op when re-spawning (NewSession produces a fresh pane, so no
+//     toggling concern there).
+//   - logPath is shell-quoted (single-quoted, with embedded single
+//     quotes escaped) before being interpolated into the pipe command;
+//     no untrusted operator input ever reaches this argument today, but
+//     bossd's agentLogsDir + agent_session_id+".log" is still a path
+//     the daemon owns and quoting it costs nothing.
+//   - Append (`cat >>`) rather than truncate (`cat >`) so a re-spawn
+//     after a tmux crash doesn't blow away the prior pane history that
+//     a previous pipe-pane already captured.
+//   - Idempotent at the "did we attach a pipe" level only: if a stale
+//     `pipe-pane -o` is already in effect on this session for whatever
+//     reason, a second call here will TOGGLE IT OFF. Production callers
+//     only invoke this once, right after NewSession, so the freshness
+//     of the pane is guaranteed.
+//
+// Returns an error if `tmux pipe-pane` itself exits non-zero. Best-
+// effort use by the caller is fine — losing on-disk capture must not
+// abort the chat launch — but the error is surfaced so the caller can
+// log it.
+func (c *Client) PipePane(ctx context.Context, sessionName, logPath string) error {
+	if sessionName == "" {
+		return fmt.Errorf("session name is required")
+	}
+	if logPath == "" {
+		return fmt.Errorf("log path is required")
+	}
+	pipeCmd := "cat >> " + shellSingleQuote(logPath)
+	cmd := c.cmdFunc(ctx, "tmux", "pipe-pane", "-o", "-t", sessionName, pipeCmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("tmux pipe-pane -t %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux pipe-pane -t %q: %w", sessionName, err)
+	}
+	return nil
+}
+
+// shellSingleQuote wraps s for inclusion in a single-quoted shell
+// string, escaping any embedded single quotes via the canonical
+// '\” idiom. Mirrors the helper in lib/bossalib/agentruntime so the
+// tmux package stays free of an extra dependency.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // SessionName generates a tmux session name from repository and session IDs.
 // Format: boss-{first8repoID}-{first8sessionID}
 func SessionName(repoID, sessionID string) string {

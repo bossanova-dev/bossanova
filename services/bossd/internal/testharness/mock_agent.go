@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/recurser/bossalib/agentruntime"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
 )
@@ -61,12 +60,13 @@ func (*MockAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.
 
 func (m *MockAgentClient) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	// Mirror the shape each real plugin produces so tests catch wrapping
-	// regressions like the empty-LogPath `tee ''` bug. We deliberately
-	// route through agentruntime.LogTeeArgv (the same call site real
-	// plugins use) instead of conditionally hand-rolling the argv — the
-	// LogTeeArgv contract is the bit that broke last time, and exercising
-	// it here means the existing e2e RecordChat coverage acts as a
-	// regression net for any future change to that helper.
+	// regressions. Both claude and codex now return bare argv from this
+	// RPC — the previous `bash -c "... | tee log"` wrap (via
+	// agentruntime.LogTeeArgv) made claude's stdout a pipe, which modern
+	// claude detects as non-interactive and refuses with the
+	// "--print needs stdin or prompt" error. Pane capture has moved to
+	// `tmux pipe-pane`, set up by the daemon after NewSession; the
+	// LogPath field is accepted but no longer shapes the response.
 	switch m.name() {
 	case "codex":
 		// Mirrors plugins/bossd-plugin-codex: positional `resume` subcommand.
@@ -74,9 +74,7 @@ func (m *MockAgentClient) BuildInteractiveCommand(_ context.Context, req *bossan
 		if req.Resume {
 			args = append(args, "resume", req.SessionId)
 		}
-		return &bossanovav1.BuildInteractiveCommandResponse{
-			Argv: agentruntime.LogTeeArgv(args, req.LogPath),
-		}, nil
+		return &bossanovav1.BuildInteractiveCommandResponse{Argv: args}, nil
 	default:
 		// Mirrors plugins/bossd-plugin-claude: --resume / --session-id flag.
 		flag := "--session-id"
@@ -84,9 +82,7 @@ func (m *MockAgentClient) BuildInteractiveCommand(_ context.Context, req *bossan
 			flag = "--resume"
 		}
 		args := []string{"claude", flag, req.SessionId}
-		return &bossanovav1.BuildInteractiveCommandResponse{
-			Argv: agentruntime.LogTeeArgv(args, req.LogPath),
-		}, nil
+		return &bossanovav1.BuildInteractiveCommandResponse{Argv: args}, nil
 	}
 }
 

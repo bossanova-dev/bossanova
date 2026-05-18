@@ -3,8 +3,10 @@ package views
 import (
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // TestRenderDisplayStatus_ReadsCompositeFields verifies that the new direct
@@ -183,6 +185,92 @@ func TestRepairFailureHint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := repairFailureHint(tc.sess); got != tc.want {
 				t.Errorf("repairFailureHint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRepairFailureHint_RetryInSuffix covers the "retry in ~Xm" tail
+// that surfaces the exponential-backoff window. Without this suffix
+// the operator sees "repair failed (5×)" with no clue why no new
+// attempt is firing — the wait could be 16m and the next sweep is in
+// 1m, but the UI doesn't show that.
+func TestRepairFailureHint_RetryInSuffix(t *testing.T) {
+	// Attempt #3 → wait 4m. LastRepairStartedAt 1m ago → 3m remaining.
+	startedAt := time.Now().Add(-1 * time.Minute)
+	sess := &pb.Session{
+		LastRepairAttemptCount: 3,
+		LastRepairExitError:    "exit status 1",
+		LastRepairStartedAt:    timestamppb.New(startedAt),
+	}
+	got := repairFailureHint(sess)
+	// Allow slight skew from time.Now() between test and func: assert
+	// the prefix and a 3m-ish suffix.
+	wantPrefix := "⚠ repair failed (3×), retry in ~"
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Fatalf("repairFailureHint = %q, want prefix %q", got, wantPrefix)
+	}
+	if !strings.HasSuffix(got, "m") {
+		t.Errorf("repairFailureHint retry suffix should round to minutes, got %q", got)
+	}
+}
+
+// TestRepairFailureHint_NoRetryInWhenElapsed covers the case where the
+// backoff window has already elapsed — the next sweep will fire
+// imminently and adding "retry in ~0m" would be noise. The hint
+// degrades to the base "repair failed (N×)" label.
+func TestRepairFailureHint_NoRetryInWhenElapsed(t *testing.T) {
+	// Attempt #2 → wait 2m. Started 5m ago → window long elapsed.
+	startedAt := time.Now().Add(-5 * time.Minute)
+	sess := &pb.Session{
+		LastRepairAttemptCount: 2,
+		LastRepairExitError:    "exit status 1",
+		LastRepairStartedAt:    timestamppb.New(startedAt),
+	}
+	got := repairFailureHint(sess)
+	want := "⚠ repair failed (2×)"
+	if got != want {
+		t.Errorf("repairFailureHint = %q, want %q", got, want)
+	}
+}
+
+// TestRepairRetryRemaining pins the schedule that mirrors the repair
+// plugin's cooldownFor(). If the two ever drift, the TUI estimate will
+// silently mislead operators about when the next attempt will fire.
+func TestRepairRetryRemaining(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name      string
+		count     int32
+		startedAt time.Time
+		wantMin   time.Duration // wait derived for that count
+	}{
+		{"count 0 returns 0", 0, now, 0},
+		{"count 1 waits 1m", 1, now, time.Minute},
+		{"count 2 waits 2m", 2, now, 2 * time.Minute},
+		{"count 3 waits 4m", 3, now, 4 * time.Minute},
+		{"count 4 waits 8m", 4, now, 8 * time.Minute},
+		{"count 5 waits 16m", 5, now, 16 * time.Minute},
+		{"count 6 caps at 30m", 6, now, 30 * time.Minute},
+		{"count 1000 still 30m", 1000, now, 30 * time.Minute},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := repairRetryRemaining(tc.count, tc.startedAt)
+			// `repairRetryRemaining` subtracts time.Since(startedAt) — for
+			// startedAt=now that's ~0, so got ≈ wantMin within a few ms.
+			if tc.wantMin == 0 {
+				if got != 0 {
+					t.Errorf("got %s, want 0", got)
+				}
+				return
+			}
+			diff := tc.wantMin - got
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff > time.Second {
+				t.Errorf("got %s, want ~%s (diff %s)", got, tc.wantMin, diff)
 			}
 		})
 	}

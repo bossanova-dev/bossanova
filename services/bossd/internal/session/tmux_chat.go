@@ -165,6 +165,28 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
 
+	// Step 5a: arm pipe-pane so pane output is mirrored to logPath. This
+	// replaces the previous in-process `claude … | tee log` wrapping the
+	// claude plugin used to apply in BuildInteractiveCommand: piping the
+	// agent's stdout through tee made isatty(stdout)=false, and modern
+	// claude treats a non-TTY stdout as headless-print mode (it bails
+	// with "Input must be provided either through stdin or as a prompt
+	// argument when using --print"). pipe-pane attaches the mirror
+	// outside the process so claude keeps a real PTY on stdout.
+	//
+	// Best-effort: a pipe-pane failure must not abort the chat launch.
+	// The pane is alive, claude is running, the user can attach and
+	// drive it interactively; losing on-disk capture is a degraded but
+	// usable state.
+	if err := l.tmux.PipePane(ctx, tmuxName, logPath); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("agentSessionID", agentSessionID).
+			Str("tmuxSession", tmuxName).
+			Str("logPath", logPath).
+			Msg("pipe-pane failed; chat continues without on-disk capture")
+	}
+
 	l.logger.Info().
 		Str("session", sessionID).
 		Str("agentSessionID", agentSessionID).
@@ -186,12 +208,8 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 
 	// Step 7: stamp the tmux session name onto the row.
 	if err := l.agentChats.UpdateTmuxSessionName(ctx, agentSessionID, &tmuxName); err != nil {
-		l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
-		if delErr := l.agentChats.DeleteByAgentSessionID(ctx, agentSessionID); delErr != nil {
-			l.logger.Warn().Err(delErr).
-				Str("agentSessionID", agentSessionID).
-				Msg("failed to delete chat row after tmux name persist failure")
-		}
+		l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
+			"persist tmux session name failed: "+err.Error())
 		return "", fmt.Errorf("persist tmux session name for session %s: %w", sessionID, err)
 	}
 
@@ -200,16 +218,14 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 	// settings.local.json (matcher `bossd-agent-run-<id>`, URL
 	// `/hooks/agent-run-complete/<id>`); the cron's session-keyed entry
 	// — if any — is preserved untouched. Failures here tear down the
-	// tmux session and delete the agent_chats row so a retry can mint
-	// fresh state.
+	// tmux session and stamp the agent_chats row as failed-to-start so
+	// the operator can see the attempt in the chat list (the row is no
+	// longer deleted — that was hiding the entire repair-attempt
+	// history when SendPlan timed out further down).
 	if hookOpts.Token != "" {
 		if l.hookPort == 0 {
-			l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
-			if delErr := l.agentChats.DeleteByAgentSessionID(ctx, agentSessionID); delErr != nil {
-				l.logger.Warn().Err(delErr).
-					Str("agentSessionID", agentSessionID).
-					Msg("failed to delete chat row after missing hook port teardown")
-			}
+			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
+				"hook port not configured")
 			return "", grpcstatus.Errorf(codes.FailedPrecondition,
 				"hook port not configured: SetHookPort must be called before StartTmuxChat with a hook token")
 		}
@@ -221,12 +237,8 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 			HookPort:       int32(l.hookPort),
 		})
 		if err != nil {
-			l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
-			if delErr := l.agentChats.DeleteByAgentSessionID(ctx, agentSessionID); delErr != nil {
-				l.logger.Warn().Err(delErr).
-					Str("agentSessionID", agentSessionID).
-					Msg("failed to delete chat row after ConfigureFinalizeHook failure")
-			}
+			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
+				"configure finalize hook failed: "+err.Error())
 			return "", fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
 		}
 		// Hookless agents (e.g. codex) — arm the daemon-side poll fallback
@@ -240,18 +252,42 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 		}
 	}
 
-	// Step 9: inject the prompt as a bracketed paste.
+	// Step 9: inject the prompt as a bracketed paste. This is the step
+	// that broke for every repair attempt before #350: the broken
+	// `bash -c "claude … | tee log"` argv caused the pane to show a
+	// "--print needs stdin or prompt" error from claude and the ready
+	// marker (❯) never appeared, so SendPlan timed out at 5s. We now
+	// preserve the chat row with a start_error rather than deleting it,
+	// so the operator can see exactly what was attempted even when the
+	// agent never came up.
 	if err := l.tmux.SendPlan(ctx, tmuxName, prompt); err != nil {
-		l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
-		if delErr := l.agentChats.DeleteByAgentSessionID(ctx, agentSessionID); delErr != nil {
-			l.logger.Warn().Err(delErr).
-				Str("agentSessionID", agentSessionID).
-				Msg("failed to delete chat row after SendPlan failure")
-		}
+		l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
+			"send plan failed: "+err.Error())
 		return "", fmt.Errorf("send plan to tmux session %q: %w", tmuxName, err)
 	}
 
 	return agentSessionID, nil
+}
+
+// failStartBestEffort tears down a tmux session created by a failing
+// StartTmuxChat AND stamps the agent_chats row with a short reason so
+// the row stays visible in the chat list as a "(failed to start)"
+// entry. Replaces the previous teardown shape that deleted the row —
+// that made hammer-looping failures (e.g. repair on a PR with a 5×
+// SendPlan timeout per minute) silently invisible to the operator.
+//
+// Best-effort: both the tmux kill and the DB stamp log on failure but
+// never bubble up, because the caller is already on a failure path and
+// has its own error to surface.
+func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSessionID, tmuxName, reason string) {
+	l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
+	if markErr := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); markErr != nil {
+		l.logger.Warn().Err(markErr).
+			Str("session", sessionID).
+			Str("agentSessionID", agentSessionID).
+			Str("reason", reason).
+			Msg("failed to mark agent_chat row as start-failed; row may still show as live")
+	}
 }
 
 // findLiveTmuxChat scans the session's existing agent_chats rows for an

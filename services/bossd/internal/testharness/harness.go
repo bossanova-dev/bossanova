@@ -27,6 +27,7 @@ import (
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/migrate"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -35,6 +36,7 @@ import (
 	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
+	"github.com/recurser/bossd/internal/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -53,6 +55,9 @@ type Options struct {
 	// this nil — the daemon then short-circuits ensureChatTmuxSession on
 	// the !Available check.
 	TmuxCommandFactory tmux.CommandFactory
+	// WorkflowServices receive display status notifications from the same
+	// DisplayTracker change point that production wires to the plugin host.
+	WorkflowServices []pluginpkg.WorkflowService
 }
 
 // Harness provides a fully wired bossd daemon for E2E tests.
@@ -65,6 +70,8 @@ type Harness struct {
 	CronJobs   db.CronJobStore
 	Lifecycle  *session.Lifecycle
 	Server     *server.Server
+	Provider   *StubProvider
+	Dispatcher *upstream.WebhookDispatcher
 	Tmux       *tmux.Client
 	Git        *MockWorktreeManager
 	Agent      *MockAgentRunner
@@ -89,6 +96,8 @@ type Harness struct {
 	socketPath string
 	httpServer *http.Server
 	listener   net.Listener
+	ctx        context.Context
+	cancel     context.CancelFunc
 	closed     atomic.Bool
 
 	deletedMu       sync.Mutex
@@ -182,6 +191,37 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// to empty, so merges fall through unless a test explicitly calls
 	// DisplayTracker.Set with a non-passing status.
 	display := status.NewDisplayTracker()
+	if len(opts.WorkflowServices) > 0 {
+		workflowServices := append([]pluginpkg.WorkflowService(nil), opts.WorkflowServices...)
+		display.SetOnChange(func(sessionID string, _ *status.DisplayEntry, newEntry *status.DisplayEntry) {
+			for _, svc := range workflowServices {
+				svc := svc
+				safego.Go(logger, func() {
+					cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := svc.NotifyStatusChange(cctx, sessionID, pb.DisplayStatus(newEntry.Status), newEntry.HasFailures); err != nil {
+						logger.Warn().Err(err).Str("session_id", sessionID).Msg("failed to notify workflow service of status change")
+					}
+				})
+			}
+		})
+	}
+
+	// Realtime webhook harness. This mirrors bossd's poller + dispatcher +
+	// webhook fan-in path in-process, with a separate deterministic VCS
+	// provider so webhook E2E tests can seed PR/check state without mutating
+	// legacy lifecycle mocks.
+	realtimeProvider := NewStubProvider()
+	realtimeCtx, realtimeCancel := context.WithCancel(context.Background())
+	poller := session.NewPoller(sessions, repos, realtimeProvider, time.Hour, session.DefaultPollTimeout, logger)
+	realtimeDispatcher := session.NewDispatcher(sessions, repos, realtimeProvider, nil, logger)
+	pollerEvents := poller.Run(realtimeCtx)
+	webhookEventCh := make(chan session.SessionEvent, 64)
+	merged := mergeSessionEvents(realtimeCtx, pollerEvents, webhookEventCh)
+	emitter := session.NewSessionEventEmitter(&harnessLookup{sessions: sessions, repos: repos}, webhookEventCh, logger)
+	displayPoller := session.NewDisplayPoller(sessions, repos, realtimeProvider, display, time.Hour, logger)
+	webhookDispatcher := upstream.NewWebhookDispatcherWithEmitter(displayPoller, emitter, logger)
+	_ = safego.Go(logger, func() { realtimeDispatcher.Run(realtimeCtx, merged) })
 
 	// Server.
 	h := &Harness{}
@@ -296,6 +336,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.CronJobs = cronJobs
 	h.Lifecycle = lifecycle
 	h.Server = srv
+	h.Provider = realtimeProvider
+	h.Dispatcher = webhookDispatcher
 	h.Tmux = tmuxClient
 	h.Git = gitMock
 	h.Agent = agentMock
@@ -307,6 +349,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.socketPath = socketPath
 	h.httpServer = httpServer
 	h.listener = ln
+	h.ctx = realtimeCtx
+	h.cancel = realtimeCancel
 
 	// Single cleanup hook ensures Close runs at test teardown even when
 	// the test forgets to call it explicitly. Close is idempotent.
@@ -348,6 +392,9 @@ func (h *Harness) Close() {
 	if !h.closed.CompareAndSwap(false, true) {
 		return
 	}
+	if h.cancel != nil {
+		h.cancel()
+	}
 	if h.HookServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -370,6 +417,66 @@ func TempRepoDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	return dir
+}
+
+// Ctx returns the harness daemon context used by the in-process realtime path.
+func (h *Harness) Ctx() context.Context {
+	return h.ctx
+}
+
+// SeedRepo creates a repository row and returns its ID.
+func (h *Harness) SeedRepo(t *testing.T, originURL string) string {
+	t.Helper()
+	repo, err := h.Repos.Create(context.Background(), db.CreateRepoParams{
+		DisplayName:       "test-repo",
+		LocalPath:         t.TempDir(),
+		OriginURL:         originURL,
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("SeedRepo: create repo: %v", err)
+	}
+	return repo.ID
+}
+
+// SeedSession creates a session row with a PR number and state, returning its ID.
+func (h *Harness) SeedSession(t *testing.T, repoID string, prNumber int, initialState pb.SessionState) string {
+	t.Helper()
+	prURL := fmt.Sprintf("https://github.com/test/repo/pull/%d", prNumber)
+	sess, err := h.Sessions.Create(context.Background(), db.CreateSessionParams{
+		RepoID:       repoID,
+		Title:        "seed-session",
+		Plan:         "seed",
+		WorktreePath: t.TempDir(),
+		BranchName:   fmt.Sprintf("seed-pr-%d", prNumber),
+		BaseBranch:   "main",
+		PRNumber:     &prNumber,
+		PRURL:        &prURL,
+	})
+	if err != nil {
+		t.Fatalf("SeedSession: create session: %v", err)
+	}
+	state := int(initialState)
+	if _, err := h.Sessions.Update(context.Background(), sess.ID, db.UpdateSessionParams{State: &state}); err != nil {
+		t.Fatalf("SeedSession: update state: %v", err)
+	}
+	return sess.ID
+}
+
+// PostGitHubWebhook dispatches a GitHub webhook event through the harness's
+// in-process upstream dispatcher.
+func (h *Harness) PostGitHubWebhook(t *testing.T, eventType string, payload []byte, prScope int, repoOrigin string) {
+	t.Helper()
+	if err := h.Dispatcher.Dispatch(h.ctx, &pb.WebhookEvent{
+		EventType:     eventType,
+		Payload:       payload,
+		Provider:      "github",
+		RepoOriginUrl: repoOrigin,
+		PullRequest:   int32(prScope),
+	}); err != nil {
+		t.Fatalf("PostGitHubWebhook: dispatch: %v", err)
+	}
 }
 
 // AttachAndDrain opens a server-streaming AttachSession RPC for the given
@@ -604,4 +711,67 @@ func migrationsDir() string {
 // every existing test that doesn't care about tmux.
 func unavailableTmuxFactory(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 	return exec.CommandContext(ctx, "false")
+}
+
+type harnessLookup struct {
+	sessions db.SessionStore
+	repos    db.RepoStore
+}
+
+type repoPRSessionLister interface {
+	ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error)
+}
+
+func (l *harnessLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.SessionForPR, error) {
+	repo, err := l.repos.GetByOrigin(ctx, repoOriginURL)
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := l.sessions.(repoPRSessionLister)
+	if !ok {
+		return nil, fmt.Errorf("session store does not support ListByRepoAndPR")
+	}
+	rows, err := lister.ListByRepoAndPR(ctx, repo.ID, prNumber)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.SessionForPR, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, session.SessionForPR{ID: row.ID})
+	}
+	return out, nil
+}
+
+func mergeSessionEvents(ctx context.Context, a, b <-chan session.SessionEvent) <-chan session.SessionEvent {
+	out := make(chan session.SessionEvent, 64)
+	safego.Go(zerolog.Nop(), func() {
+		defer close(out)
+		for a != nil || b != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-a:
+				if !ok {
+					a = nil
+					continue
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			case ev, ok := <-b:
+				if !ok {
+					b = nil
+					continue
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	})
+	return out
 }

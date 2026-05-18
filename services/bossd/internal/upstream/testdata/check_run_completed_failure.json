@@ -1,0 +1,20 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 11111,
+    "name": "lint",
+    "status": "completed",
+    "conclusion": "failure",
+    "pull_requests": [
+      {
+        "number": 345
+      }
+    ]
+  },
+  "repository": {
+    "html_url": "https://github.com/recurser/bossanova"
+  },
+  "installation": {
+    "id": 132472308
+  }
+}

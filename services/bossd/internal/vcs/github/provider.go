@@ -19,17 +19,17 @@ import (
 // Compile-time interface check.
 var _ vcs.Provider = (*Provider)(nil)
 
-// reviewBotUsers lists bot accounts whose COMMENTED reviews may be promoted
-// to CHANGES_REQUESTED so they surface as "rejected" in the TUI. Bot code-review
-// tools cannot submit Request Changes reviews, so they post comments instead.
+// isReviewBotLogin reports whether a GitHub login belongs to a bot account whose
+// COMMENTED reviews may be promoted to CHANGES_REQUESTED so they surface as
+// "rejected" in the TUI. Bot code-review tools cannot always submit Request
+// Changes reviews, so they post resolvable review threads instead.
 //
 // Promotion is conditional: a bot's COMMENTED review is only promoted if the bot
 // has at least one unresolved review thread on the PR. When all threads are
 // resolved, the review stays as COMMENTED (showing as "reviewed" rather than
 // "rejected").
-var reviewBotUsers = map[string]bool{
-	"cursor[bot]":       true,
-	"cubic-dev-ai[bot]": true,
+func isReviewBotLogin(login string) bool {
+	return strings.HasSuffix(login, "[bot]")
 }
 
 // ghFunc is the signature for executing gh CLI commands.
@@ -251,7 +251,7 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 	out, err := p.runGH(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName,headRefOid",
+		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName,headRefOid,reviews",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get PR status: %w", err)
@@ -265,6 +265,9 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 		HeadRefName string `json:"headRefName"`
 		BaseRefName string `json:"baseRefName"`
 		HeadRefOid  string `json:"headRefOid"`
+		Reviews     []struct {
+			State string `json:"state"`
+		} `json:"reviews"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return nil, fmt.Errorf("parse PR status: %w", err)
@@ -282,6 +285,12 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 	if raw.Mergeable != "" && raw.Mergeable != "UNKNOWN" {
 		m := raw.Mergeable == "MERGEABLE"
 		status.Mergeable = &m
+	}
+	for _, review := range raw.Reviews {
+		state := parseReviewState(review.State)
+		if state != vcs.ReviewStateUnspecified {
+			status.LatestReviewState = state
+		}
 	}
 
 	return status, nil
@@ -377,6 +386,7 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 	}
 
 	var raw []struct {
+		ID   int64 `json:"id"`
 		User struct {
 			Login string `json:"login"`
 		} `json:"user"`
@@ -387,37 +397,76 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 		return nil, fmt.Errorf("parse reviews: %w", err)
 	}
 
-	// First pass: check if any bot COMMENTED reviews exist. If not, skip the
+	// First pass: collect bot COMMENTED review authors. If none exist, skip the
 	// GraphQL call entirely (zero overhead for non-bot PRs).
-	hasBotCommented := false
+	botReviewUsers := make(map[string]bool)
 	for _, r := range raw {
-		if parseReviewState(r.State) == vcs.ReviewStateCommented && reviewBotUsers[r.User.Login] {
-			hasBotCommented = true
-			break
+		if parseReviewState(r.State) == vcs.ReviewStateCommented && isReviewBotLogin(r.User.Login) {
+			botReviewUsers[r.User.Login] = true
 		}
 	}
 
 	var botsWithUnresolved map[string]bool
-	if hasBotCommented {
-		botsWithUnresolved = p.unresolvedThreadAuthors(ctx, repoPath, prID, reviewBotUsers)
+	if len(botReviewUsers) > 0 {
+		botsWithUnresolved = p.unresolvedThreadAuthors(ctx, repoPath, prID, botReviewUsers)
 	}
 
-	comments := make([]vcs.ReviewComment, len(raw))
-	for i, r := range raw {
+	comments := make([]vcs.ReviewComment, 0, len(raw))
+	for _, r := range raw {
 		state := parseReviewState(r.State)
 		// Promote bot COMMENTED reviews to CHANGES_REQUESTED only when the bot
 		// has unresolved review threads. This avoids false "rejected" status
 		// when all review issues have been addressed.
-		if state == vcs.ReviewStateCommented && reviewBotUsers[r.User.Login] && botsWithUnresolved[r.User.Login] {
+		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] && botsWithUnresolved[r.User.Login] {
 			state = vcs.ReviewStateChangesRequested
 		}
-		comments[i] = vcs.ReviewComment{
+		comments = append(comments, vcs.ReviewComment{
 			Author: r.User.Login,
 			Body:   r.Body,
 			State:  state,
+		})
+		if state == vcs.ReviewStateChangesRequested && r.ID != 0 {
+			inlineComments, err := p.getInlineReviewComments(ctx, repoPath, prID, r.ID)
+			if err != nil {
+				return nil, err
+			}
+			comments = append(comments, inlineComments...)
 		}
 	}
 
+	return comments, nil
+}
+
+func (p *Provider) getInlineReviewComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error) {
+	out, err := p.runGH(ctx,
+		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/comments", repoFlag(repoPath), prID, reviewID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get review comments: %w", err)
+	}
+
+	var raw []struct {
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Body string  `json:"body"`
+		Path *string `json:"path"`
+		Line *int    `json:"line"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parse review comments: %w", err)
+	}
+
+	comments := make([]vcs.ReviewComment, 0, len(raw))
+	for _, r := range raw {
+		comments = append(comments, vcs.ReviewComment{
+			Author: r.User.Login,
+			Body:   r.Body,
+			State:  vcs.ReviewStateChangesRequested,
+			Path:   r.Path,
+			Line:   r.Line,
+		})
+	}
 	return comments, nil
 }
 

@@ -157,6 +157,25 @@ func (s *SQLiteSessionStore) ListWithRepo(ctx context.Context, repoID string) ([
 	return out, rows.Err()
 }
 
+func (s *SQLiteSessionStore) ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*SessionWithRepo, error) {
+	query := sessionSelectWithRepoSQL + " WHERE s.repo_id = ? AND s.pr_number = ? AND s.archived_at IS NULL ORDER BY s.created_at DESC"
+	rows, err := s.db.QueryContext(ctx, query, repoID, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions by repo and PR: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*SessionWithRepo
+	for rows.Next() {
+		sess, repoName, repoOriginURL, err := scanSessionWithRepo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName, RepoOriginURL: repoOriginURL})
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
 	if repoID == "" {
 		query := sessionSelectSQL + " WHERE s.archived_at IS NOT NULL ORDER BY s.created_at DESC"
@@ -214,6 +233,10 @@ func (s *SQLiteSessionStore) Update(ctx context.Context, id string, params Updat
 	if params.LastCheckState != nil {
 		sets = append(sets, "last_check_state = ?")
 		args = append(args, *params.LastCheckState)
+	}
+	if params.LastObservedReviewState != nil {
+		sets = append(sets, "last_observed_review_state = ?")
+		args = append(args, *params.LastObservedReviewState)
 	}
 	if params.AutomationEnabled != nil {
 		sets = append(sets, "automation_enabled = ?")
@@ -412,7 +435,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
+	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status
@@ -424,7 +447,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 // still appears with an empty display name.
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
-	s.last_check_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
+	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
 	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status,
@@ -433,7 +456,7 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 
 func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, error) {
 	var sess models.Session
-	var state, lastCheckState, automationEnabled int
+	var state, lastCheckState, lastObservedReviewState, automationEnabled int
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
@@ -443,7 +466,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
-		&lastCheckState, &automationEnabled, &sess.AttemptCount,
+		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
@@ -453,6 +476,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 	}
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
+	sess.LastObservedReviewState = lastObservedReviewState
 	sess.AutomationEnabled = automationEnabled != 0
 	sess.DisplayIntent = int32(displayIntent)
 	sess.DisplaySpinner = displaySpinner != 0
@@ -475,7 +499,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 
 func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	var sess models.Session
-	var state, lastCheckState, automationEnabled int
+	var state, lastCheckState, lastObservedReviewState, automationEnabled int
 	var archivedAt, createdAt, updatedAt *string
 	var displayIntent int
 	var displaySpinner int
@@ -484,7 +508,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&sess.WorktreePath, &sess.BranchName, &sess.BaseBranch,
 		&state, &sess.AgentSessionID, &sess.PRNumber, &sess.PRURL,
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
-		&lastCheckState, &automationEnabled, &sess.AttemptCount,
+		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
 		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
@@ -494,6 +518,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 	}
 	sess.State = machine.State(state)
 	sess.LastCheckState = machine.CheckState(lastCheckState)
+	sess.LastObservedReviewState = lastObservedReviewState
 	sess.AutomationEnabled = automationEnabled != 0
 	sess.DisplayIntent = int32(displayIntent)
 	sess.DisplaySpinner = displaySpinner != 0

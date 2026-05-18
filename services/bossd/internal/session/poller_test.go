@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -227,6 +228,177 @@ func TestPollerEmitsConflictDetected(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for event")
+	}
+}
+
+func TestCheckSession_EmitsReviewSubmittedWhenStateChanges(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sess := &models.Session{
+		ID:                      "sess-1",
+		RepoID:                  "repo-1",
+		State:                   machine.GreenDraft,
+		PRNumber:                &prNum,
+		LastObservedReviewState: int(vcs.ReviewStateUnspecified),
+	}
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:             vcs.PRStateOpen,
+		LatestReviewState: vcs.ReviewStateChangesRequested,
+	}
+	vp.nextReviewComments = []vcs.ReviewComment{{Body: "fix this"}}
+
+	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
+	ch := make(chan SessionEvent, 1)
+	poller.checkSession(ctx, ch, repo, sess)
+
+	select {
+	case ev := <-ch:
+		if ev.SessionID != "sess-1" {
+			t.Errorf("session = %q, want sess-1", ev.SessionID)
+		}
+		review, ok := ev.Event.(vcs.ReviewSubmitted)
+		if !ok {
+			t.Fatalf("event type = %T, want ReviewSubmitted", ev.Event)
+		}
+		if review.PRID != prNum || review.State != vcs.ReviewStateChangesRequested {
+			t.Errorf("review = %+v, want PRID=%d State=ChangesRequested", review, prNum)
+		}
+		if len(review.Comments) != 1 || review.Comments[0].Body != "fix this" {
+			t.Fatalf("review comments = %+v, want fetched review comments", review.Comments)
+		}
+	default:
+		t.Fatal("expected ReviewSubmitted event")
+	}
+	if vp.getReviewCommentsCalls != 1 {
+		t.Fatalf("GetReviewComments calls = %d, want 1", vp.getReviewCommentsCalls)
+	}
+}
+
+func TestCheckSession_DoesNotEmitReviewSubmittedWhenCommentFetchFails(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sess := &models.Session{
+		ID:                      "sess-1",
+		RepoID:                  "repo-1",
+		State:                   machine.GreenDraft,
+		PRNumber:                &prNum,
+		LastObservedReviewState: int(vcs.ReviewStateUnspecified),
+	}
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:             vcs.PRStateOpen,
+		LatestReviewState: vcs.ReviewStateChangesRequested,
+	}
+	vp.reviewCommentsErr = errors.New("review comments unavailable")
+
+	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
+	ch := make(chan SessionEvent, 1)
+	poller.checkSession(ctx, ch, repo, sess)
+
+	select {
+	case ev := <-ch:
+		t.Fatalf("unexpected event: %+v", ev)
+	default:
+	}
+	if vp.getReviewCommentsCalls != 1 {
+		t.Fatalf("GetReviewComments calls = %d, want 1", vp.getReviewCommentsCalls)
+	}
+}
+
+func TestCheckSession_EmitsReviewSubmittedWhenPassingChecksEventIsSkipped(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sess := &models.Session{
+		ID:                      "sess-1",
+		RepoID:                  "repo-1",
+		State:                   machine.GreenDraft,
+		PRNumber:                &prNum,
+		LastObservedReviewState: int(vcs.ReviewStateUnspecified),
+	}
+	success := vcs.CheckConclusionSuccess
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:             vcs.PRStateOpen,
+		LatestReviewState: vcs.ReviewStateChangesRequested,
+	}
+	vp.nextCheckResults = []vcs.CheckResult{{Status: vcs.CheckStatusCompleted, Conclusion: &success}}
+	vp.nextReviewComments = []vcs.ReviewComment{{Body: "fix green PR"}}
+
+	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
+	ch := make(chan SessionEvent, 1)
+	poller.checkSession(ctx, ch, repo, sess)
+
+	select {
+	case ev := <-ch:
+		review, ok := ev.Event.(vcs.ReviewSubmitted)
+		if !ok {
+			t.Fatalf("event type = %T, want ReviewSubmitted", ev.Event)
+		}
+		if len(review.Comments) != 1 || review.Comments[0].Body != "fix green PR" {
+			t.Fatalf("review comments = %+v, want fetched review comments", review.Comments)
+		}
+	default:
+		t.Fatal("expected ReviewSubmitted event")
+	}
+}
+
+func TestCheckSession_DoesNotEmitReviewSubmittedWithActionableCIEvent(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sess := &models.Session{
+		ID:                      "sess-1",
+		RepoID:                  "repo-1",
+		State:                   machine.GreenDraft,
+		PRNumber:                &prNum,
+		LastObservedReviewState: int(vcs.ReviewStateUnspecified),
+	}
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:             vcs.PRStateOpen,
+		LatestReviewState: vcs.ReviewStateChangesRequested,
+	}
+	failure := vcs.CheckConclusionFailure
+	vp.nextCheckResults = []vcs.CheckResult{
+		{Status: vcs.CheckStatusCompleted, Conclusion: &failure},
+	}
+
+	poller := NewPoller(sessions, repos, vp, time.Minute, DefaultPollTimeout, logger)
+	ch := make(chan SessionEvent, 2)
+	poller.checkSession(ctx, ch, repo, sess)
+
+	select {
+	case ev := <-ch:
+		if _, ok := ev.Event.(vcs.ChecksFailed); !ok {
+			t.Fatalf("event type = %T, want ChecksFailed", ev.Event)
+		}
+	default:
+		t.Fatal("expected ChecksFailed event")
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("unexpected second event %T", ev.Event)
+	default:
 	}
 }
 

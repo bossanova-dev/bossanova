@@ -28,6 +28,7 @@ const (
 	settingsRowKindAgentHeader                          // pseudo-row: section header (non-interactive)
 	settingsRowKindTracingHeader                        // pseudo-row: tracing section header (non-interactive)
 	settingsRowKindEventTracing                         // built-in event tracing toggle
+	settingsRowKindErrorTracking                        // built-in error tracking toggle (Sentry)
 	settingsRowKindPostHogToken                         // built-in PostHog project token
 	settingsRowKindPostHogHost                          // built-in PostHog host
 )
@@ -168,6 +169,7 @@ func (m *SettingsModel) rebuildRows() {
 	m.rows = append(m.rows,
 		settingsRow{Kind: settingsRowKindTracingHeader, Label: "tracing", IsHeader: true},
 		settingsRow{Kind: settingsRowKindEventTracing, Label: "Enable event tracing (for debugging problems)"},
+		settingsRow{Kind: settingsRowKindErrorTracking, Label: "Enable error tracking (sends panics to Sentry)"},
 	)
 	if m.settings.EventTracingEnabled {
 		m.rows = append(m.rows,
@@ -275,6 +277,11 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			m.err = err
 		} else {
 			m.rebuildRows()
+		}
+	case settingsRowKindErrorTracking:
+		m.settings.ErrorTrackingEnabled = !m.settings.ErrorTrackingEnabled
+		if err := config.Save(m.settings); err != nil {
+			m.err = err
 		}
 	case settingsRowKindPostHogToken:
 		m.editingRow = m.cursor
@@ -553,6 +560,12 @@ func (m SettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, edi
 			check = "x"
 		}
 		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)
+	case settingsRowKindErrorTracking:
+		val := "OFF"
+		if m.settings.ErrorTrackingEnabled {
+			val = "ON"
+		}
+		line = fmt.Sprintf("%s%s: %s", cursor, row.Label, val)
 	case settingsRowKindPostHogToken:
 		val := m.settings.PostHogProjectToken
 		if val == "" {

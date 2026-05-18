@@ -25,6 +25,7 @@ type ConflictDetected struct {
 // ReviewSubmitted indicates a code review was submitted on a PR.
 type ReviewSubmitted struct {
 	PRID     int
+	State    ReviewState
 	Comments []ReviewComment
 }
 

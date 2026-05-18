@@ -96,6 +96,14 @@ func (s *NotifyingAgentChatStore) UpdateProviderSessionID(ctx context.Context, a
 	return nil
 }
 
+func (s *NotifyingAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID, reason string) error {
+	if err := s.inner.MarkStartFailed(ctx, agentSessionID, reason); err != nil {
+		return err
+	}
+	s.notifyAfterUpdate(ctx, agentSessionID)
+	return nil
+}
+
 func (s *NotifyingAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
 	// Fetch first so the notification carries the chat that is about to
 	// disappear — subscribers need session_id to scope the delete to a

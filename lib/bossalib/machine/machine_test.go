@@ -220,6 +220,21 @@ func TestFixingChecksRejectsConflictDetected(t *testing.T) {
 	}
 }
 
+func TestPRMergedFromFixingChecks(t *testing.T) {
+	m := New(CreatingWorktree)
+	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksFailed} {
+		if err := m.Fire(e); err != nil {
+			t.Fatalf("Fire(%s): %v", e, err)
+		}
+	}
+	assertState(t, m, FixingChecks)
+
+	if err := m.Fire(PRMerged); err != nil {
+		t.Fatalf("Fire(PRMerged): %v", err)
+	}
+	assertState(t, m, Merged)
+}
+
 func TestConflictDetectedFromGreenDraft(t *testing.T) {
 	m := New(CreatingWorktree)
 	for _, e := range []Event{WorktreeCreated, AgentStarted, PlanComplete, BranchPushed, PROpened, ChecksPassed} {

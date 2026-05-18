@@ -37,16 +37,15 @@ Dependabot updates, syncing with Linear.
 
 See [How It Works](../how-it-works.md) for the components and the worktree lifecycle.
 
-### Do I need a separate Claude Code subscription or API key?
+### Do I need a separate Claude Code subscription or Codex login?
 
 Yes. Bring your own. The bundled `claude` plugin manages a Claude Code
 subprocess, and the bundled `codex` plugin manages an OpenAI Codex CLI
 subprocess. They do not log in for you. If you can run `claude` or
 `codex` from a terminal, the matching plugin can drive it. See
-[Plugins](../plugins.md) for the contract.
-
-The same model will hold for the future OpenCode runner plugin: each
-plugin shells out to the agent CLI you already have authenticated.
+[Plugins](../plugins.md) for the contract. Future runner plugins follow
+the same model: each plugin shells out to the agent CLI you already have
+authenticated.
 
 ## Automation
 
@@ -77,9 +76,9 @@ off rather than spin.
 ### Why does the daemon need an agent runner plugin to start sessions?
 
 Bossd itself doesn't know how to talk to Claude, Codex, or OpenCode. That
-job lives in a runner plugin: `bossd-plugin-claude` for Claude Code,
-`bossd-plugin-codex` for OpenAI Codex CLI, and `bossd-plugin-opencode`
-on the roadmap. The plugin
+job lives in a runner plugin: `bossd-plugin-claude` for Claude Code and
+`bossd-plugin-codex` for OpenAI Codex CLI. OpenCode support is on the
+roadmap through `bossd-plugin-opencode`. The plugin
 satisfies the `AgentRunnerService` gRPC contract and owns the subprocess
 lifecycle for its agent.
 
@@ -168,6 +167,7 @@ For step-by-step reproduction guidance, see
 
 ### What agents does Bossanova support?
 
-Bossanova supports Claude Code through `bossd-plugin-claude` and OpenAI Codex
-CLI through `bossd-plugin-codex`. OpenCode support is coming soon through
-`bossd-plugin-opencode`.
+Bossanova supports Claude Code through `bossd-plugin-claude` and OpenAI
+Codex CLI through `bossd-plugin-codex`.
+
+OpenCode support is coming soon through `bossd-plugin-opencode`.

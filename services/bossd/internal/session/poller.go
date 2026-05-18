@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -38,6 +39,9 @@ type Poller struct {
 	logger      zerolog.Logger
 	done        chan struct{}
 
+	initialPollDone     chan struct{}
+	initialPollDoneOnce sync.Once
+
 	// timeoutCount is only accessed from the Run goroutine.
 	timeoutCount int
 }
@@ -56,13 +60,14 @@ func NewPoller(
 		pollTimeout = DefaultPollTimeout
 	}
 	return &Poller{
-		sessions:    sessions,
-		repos:       repos,
-		provider:    provider,
-		interval:    interval,
-		pollTimeout: pollTimeout,
-		logger:      logger,
-		done:        make(chan struct{}),
+		sessions:        sessions,
+		repos:           repos,
+		provider:        provider,
+		interval:        interval,
+		pollTimeout:     pollTimeout,
+		logger:          logger,
+		done:            make(chan struct{}),
+		initialPollDone: make(chan struct{}),
 	}
 }
 
@@ -80,6 +85,7 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 
 		// Poll immediately on start, then on each tick.
 		p.runOnce(ctx, ch)
+		p.initialPollDoneOnce.Do(func() { close(p.initialPollDone) })
 
 		for {
 			select {
@@ -117,6 +123,10 @@ func (p *Poller) runOnce(ctx context.Context, ch chan<- SessionEvent) {
 // Done returns a channel that is closed when the Run goroutine exits.
 // Useful for coordinating shutdown.
 func (p *Poller) Done() <-chan struct{} { return p.done }
+
+// InitialPollDone returns a channel that closes after Run finishes its
+// startup poll. Tests use it to avoid racing setup with the immediate poll.
+func (p *Poller) InitialPollDone() <-chan struct{} { return p.initialPollDone }
 
 // poll checks all sessions in pollable states and emits events.
 //

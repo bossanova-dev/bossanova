@@ -355,6 +355,13 @@ echo '{"type":"event_msg","payload":{"type":"task_complete"}}'
 exit 0
 `
 
+const fakeBinThreadStartedAfterBanner = `#!/usr/bin/env bash
+echo 'warning: loading config' >&2
+sleep 0.05
+echo '{"type":"thread.started","thread_id":"delayed-uuid"}'
+exit 0
+`
+
 // TestRunnerSessionIDFromOutput verifies the SessionIDFromOutput hook
 // re-keys the runner's session ID to whatever the hook discovers in the
 // early stdout — the caller's "ignored-hint" value must be replaced by
@@ -410,6 +417,46 @@ func TestRunnerSessionIDFromOutput(t *testing.T) {
 		default:
 			time.Sleep(20 * time.Millisecond)
 		}
+	}
+}
+
+func TestRunnerSessionIDFromOutputWaitsPastBanner(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fake-thread-after-banner.sh")
+	if err := os.WriteFile(binPath, []byte(fakeBinThreadStartedAfterBanner), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "agent.log")
+
+	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{
+		BinaryName: "fake",
+		BuildArgv: func(in agentruntime.BuildArgvInput) []string {
+			return []string{binPath}
+		},
+		SessionIDFromOutput: func(buf []byte) string {
+			marker := []byte(`"thread_id":"`)
+			idx := strings.Index(string(buf), string(marker))
+			if idx < 0 {
+				return ""
+			}
+			rest := string(buf[idx+len(marker):])
+			end := strings.IndexByte(rest, '"')
+			if end < 0 {
+				return ""
+			}
+			return rest[:end]
+		},
+	})
+
+	sid, err := r.Start(context.Background(), dir, "", nil, "temporary-hint", logPath)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if sid != "delayed-uuid" {
+		t.Fatalf("Start returned sid=%q, want delayed-uuid after banner output", sid)
+	}
+	if r.IsRunning("temporary-hint") {
+		t.Error("IsRunning still finds process under caller-supplied hint after delayed SessionIDFromOutput re-keyed it")
 	}
 }
 

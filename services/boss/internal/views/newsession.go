@@ -1084,9 +1084,6 @@ func (m *NewSessionModel) selectedRepo() *pb.Repo {
 
 // startCreating builds a CreateSessionRequest and fires the RPC.
 func (m *NewSessionModel) startCreating() tea.Cmd {
-	if m.phase == newSessionPhaseCreating {
-		return nil
-	}
 	m.phase = newSessionPhaseCreating
 	m.setupLines = nil // Clear setup output from any previous attempt
 	repo := m.selectedRepo()

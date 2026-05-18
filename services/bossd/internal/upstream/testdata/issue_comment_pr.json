@@ -1,0 +1,21 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 345,
+    "pull_request": {
+      "url": "https://api.github.com/repos/recurser/bossanova/pulls/345"
+    }
+  },
+  "comment": {
+    "body": "thoughts?",
+    "user": {
+      "login": "dave"
+    }
+  },
+  "repository": {
+    "html_url": "https://github.com/recurser/bossanova"
+  },
+  "installation": {
+    "id": 132472308
+  }
+}

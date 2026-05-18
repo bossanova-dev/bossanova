@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -223,6 +224,15 @@ func TestServer_ConfigureFinalizeHook_RunScoped(t *testing.T) {
 	}
 }
 
+// TestServer_BuildInteractiveCommand pins the bare-argv contract. The
+// previous shell-wrapping shape (`bash -c "claude … | tee log"`) made
+// claude's stdout a pipe rather than a tmux PTY, which modern claude
+// auto-detects as non-interactive and bails on with "Input must be
+// provided either through stdin or as a prompt argument when using
+// --print". The caller (services/bossd/internal/session/tmux_chat.go)
+// now captures pane output via `tmux pipe-pane` instead, so this RPC
+// must return the plain process argv with no tee, no bash wrapper, no
+// `set -o pipefail`.
 func TestServer_BuildInteractiveCommand(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
 
@@ -232,15 +242,14 @@ func TestServer_BuildInteractiveCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	if len(resp.Argv) < 3 || resp.Argv[0] != "bash" || resp.Argv[1] != "-c" {
-		t.Fatalf("Argv expected bash -c <script>, got %v", resp.Argv)
+	want := []string{"claude", "--session-id", "abc-123"}
+	if !reflect.DeepEqual(resp.Argv, want) {
+		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
 	}
-	script := resp.Argv[2]
-	if !strings.Contains(script, "--session-id abc-123") {
-		t.Errorf("script does not pass --session-id: %q", script)
-	}
-	if !strings.Contains(script, "tee") || !strings.Contains(script, "/data/logs/abc-123.log") {
-		t.Errorf("script does not tee to log path: %q", script)
+	for _, a := range resp.Argv {
+		if a == "bash" || a == "sh" || strings.Contains(a, "tee ") || strings.Contains(a, "| ") {
+			t.Errorf("Argv must not be shell-wrapped (pipe-tee breaks TTY detection): %v", resp.Argv)
+		}
 	}
 }
 
@@ -253,8 +262,25 @@ func TestServer_BuildInteractiveCommand_Resume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	if !strings.Contains(resp.Argv[2], "--resume rid") {
-		t.Errorf("resume flag missing: %q", resp.Argv[2])
+	want := []string{"claude", "--resume", "rid"}
+	if !reflect.DeepEqual(resp.Argv, want) {
+		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
+	}
+}
+
+func TestServer_BuildInteractiveCommand_DangerouslySkipPermissions(t *testing.T) {
+	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
+	srv.runner.dangerouslySkipPermissions = true
+
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "xyz", Resume: false,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	want := []string{"claude", "--session-id", "xyz", "--dangerously-skip-permissions"}
+	if !reflect.DeepEqual(resp.Argv, want) {
+		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
 	}
 }
 

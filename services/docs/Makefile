@@ -11,8 +11,9 @@ deps:
 format:
 	pnpm run format
 
-## test: Typecheck and build (build is the strictest test for static docs)
+## test: Typecheck, run unit tests, and build static docs
 test: typecheck
+	pnpm run test:unit
 	pnpm run build
 
 ## lint: Typecheck and prettier format check

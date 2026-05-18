@@ -559,6 +559,119 @@ func TestMaybeRepair_SkipsAlreadyRepairing(t *testing.T) {
 	assert.Equal(t, 0, startCalls)
 }
 
+// TestCooldownFor pins the exponential-backoff schedule that protects
+// against the hammer loop behind the production 321× counter on the
+// Dependabot PRs. Schedule with the default 1-minute base: 1m, 2m, 4m,
+// 8m, 16m, then cap at 30m. Pre-fix the cooldown was a flat 1m forever
+// regardless of attempt count, which let a stuck PR rack up ~60 attempts/hr.
+func TestCooldownFor(t *testing.T) {
+	base := time.Minute
+	tests := []struct {
+		name         string
+		attemptCount int32
+		want         time.Duration
+	}{
+		{"no failures uses base floor", 0, base},
+		{"negative defensively uses base", -3, base},
+		{"first failure waits base", 1, base},
+		{"second failure doubles", 2, 2 * base},
+		{"third failure", 3, 4 * base},
+		{"fourth failure", 4, 8 * base},
+		{"fifth failure", 5, 16 * base},
+		{"sixth failure caps at 30m", 6, 30 * time.Minute},
+		{"tenth failure still capped", 10, 30 * time.Minute},
+		{"huge count never overflows", 1000, 30 * time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cooldownFor(tc.attemptCount, base))
+		})
+	}
+}
+
+// TestCooldownFor_RespectsConfiguredBase verifies that an operator who
+// raises the floor via CooldownMinutes gets a proportionally longer
+// schedule until maxCooldownDuration. Larger bases reach the cap sooner.
+func TestCooldownFor_RespectsConfiguredBase(t *testing.T) {
+	tests := []struct {
+		name         string
+		base         time.Duration
+		attemptCount int32
+		want         time.Duration
+	}{
+		{"ten minute base first failure", 10 * time.Minute, 1, 10 * time.Minute},
+		{"ten minute base second failure doubles", 10 * time.Minute, 2, 20 * time.Minute},
+		{"ten minute base third failure caps", 10 * time.Minute, 3, 30 * time.Minute},
+		{"ten minute base later failures stay capped", 10 * time.Minute, 10, 30 * time.Minute},
+		{"fifteen minute base first failure", 15 * time.Minute, 1, 15 * time.Minute},
+		{"fifteen minute base second failure reaches cap", 15 * time.Minute, 2, 30 * time.Minute},
+		{"fifteen minute base later failures stay capped", 15 * time.Minute, 3, 30 * time.Minute},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, cooldownFor(tc.attemptCount, tc.base))
+		})
+	}
+}
+
+// TestMaybeRepair_SkipsDuringExponentialBackoff covers the regression that
+// motivated the persisted-state cooldown: a stuck PR with N consecutive
+// failures must wait the exponential-backoff window — sourced from the
+// daemon-persisted last_repair_started_at + last_repair_attempt_count so a
+// daemon restart can't reset the schedule and immediately re-fire. Before
+// the fix, m.cooldowns was in-memory only and lost on restart; combined
+// with the flat 1m cooldown that gave the 321× count.
+func TestMaybeRepair_SkipsDuringExponentialBackoff(t *testing.T) {
+	mock := newTestMock()
+	// Persisted state: 5 consecutive failures. cooldownFor(5, 1m) = 16m.
+	// LastRepairStartedAt = 1 minute ago — well inside the 16m window.
+	startedAt := time.Now().Add(-1 * time.Minute)
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                     "s1",
+			State:                  bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			LastRepairAttemptCount: 5,
+			LastRepairStartedAt:    timestamppb.New(startedAt),
+		},
+	}
+	rm := newTestMonitor(mock)
+	// Critically: the in-memory `cooldowns` map is empty (simulating a
+	// daemon restart). The persisted-state gate must still block.
+	assert.True(t, rm.cooldowns["s1"].IsZero(), "in-memory cooldown must be empty for this regression test")
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	assert.Equal(t, 0, startCalls, "exponential backoff must skip repair when persisted attempt count says we should wait")
+}
+
+// TestMaybeRepair_FiresAfterExponentialBackoffElapsed verifies the
+// counterpart: once the backoff window has elapsed, repair fires
+// normally. Counter=3 → wait=4m; LastRepairStartedAt=5m ago, so the
+// gate has elapsed and the attempt proceeds.
+func TestMaybeRepair_FiresAfterExponentialBackoffElapsed(t *testing.T) {
+	mock := newTestMock()
+	startedAt := time.Now().Add(-5 * time.Minute)
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                     "s1",
+			State:                  bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			LastRepairAttemptCount: 3, // wait = 4m, elapsed = 5m → fire
+			LastRepairStartedAt:    timestamppb.New(startedAt),
+			LastRepairRunnerError:  "previous attempt failed",
+		},
+	}
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+
+	waitFor(t, func() bool {
+		c, _, _, _ := mock.snapshot()
+		return c > 0
+	}, "StartChatRun called once exponential backoff window elapsed")
+}
+
 // --- CONFLICT-aware lookupSession tests ---
 //
 // Conflicts are independent of plan completion: a PR can become unmergeable

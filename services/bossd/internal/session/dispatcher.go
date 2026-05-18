@@ -291,6 +291,20 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 }
 
 func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Machine, sess *models.Session, event vcs.ReviewSubmitted) error {
+	reviewState := int(event.State)
+	if event.State != vcs.ReviewStateChangesRequested {
+		if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
+			LastObservedReviewState: &reviewState,
+		}); err != nil {
+			return fmt.Errorf("update session review state: %w", err)
+		}
+		d.logger.Info().
+			Str("session", sess.ID).
+			Int("reviewState", int(event.State)).
+			Msg("review submitted without changes requested, skipping fix loop")
+		return nil
+	}
+
 	if err := sm.FireCtx(ctx, machine.ReviewSubmitted); err != nil {
 		return fmt.Errorf("fire review_submitted: %w", err)
 	}
@@ -298,8 +312,9 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 	newState := int(sm.State())
 	attemptCount := sm.Context().AttemptCount
 	update := db.UpdateSessionParams{
-		State:        &newState,
-		AttemptCount: &attemptCount,
+		State:                   &newState,
+		AttemptCount:            &attemptCount,
+		LastObservedReviewState: &reviewState,
 	}
 
 	if sm.State() == machine.Blocked {

@@ -211,16 +211,17 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 		MaxAttempts:  machine.MaxAttempts,
 		HasPR:        sess.PRNumber != nil,
 	})
-	emitIf := func(ev machine.Event, vcsEvent vcs.Event) {
+	emitIf := func(ev machine.Event, vcsEvent vcs.Event) bool {
 		if !sm.CanFire(ev) {
 			p.logger.Debug().
 				Str("session", sess.ID).
 				Str("state", sess.State.String()).
 				Str("event", ev.String()).
 				Msg("poller: skipping emit; event not permitted in current state")
-			return
+			return false
 		}
 		p.emit(ctx, ch, sess.ID, vcsEvent)
+		return true
 	}
 
 	// Check PR status for merge/close/conflict.
@@ -253,25 +254,40 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 		return
 	}
 
-	if len(checks) == 0 {
-		// No checks yet — wait for next poll.
-		return
+	if len(checks) > 0 {
+		overall := aggregateChecks(checks)
+		switch overall {
+		case vcs.ChecksOverallPassed:
+			if emitIf(machine.ChecksPassed, vcs.ChecksPassed{PRID: prID}) {
+				return
+			}
+		case vcs.ChecksOverallFailed:
+			var failed []vcs.CheckResult
+			for _, c := range checks {
+				if c.Conclusion != nil && *c.Conclusion == vcs.CheckConclusionFailure {
+					failed = append(failed, c)
+				}
+			}
+			if emitIf(machine.ChecksFailed, vcs.ChecksFailed{PRID: prID, FailedChecks: failed}) {
+				return
+			}
+		default:
+			// ChecksOverallPending — do nothing, wait for next poll.
+		}
 	}
 
-	overall := aggregateChecks(checks)
-	switch overall {
-	case vcs.ChecksOverallPassed:
-		emitIf(machine.ChecksPassed, vcs.ChecksPassed{PRID: prID})
-	case vcs.ChecksOverallFailed:
-		var failed []vcs.CheckResult
-		for _, c := range checks {
-			if c.Conclusion != nil && *c.Conclusion == vcs.CheckConclusionFailure {
-				failed = append(failed, c)
+	if prStatus.LatestReviewState != vcs.ReviewStateUnspecified &&
+		prStatus.LatestReviewState != vcs.ReviewState(sess.LastObservedReviewState) {
+		event := vcs.ReviewSubmitted{PRID: prID, State: prStatus.LatestReviewState}
+		if prStatus.LatestReviewState == vcs.ReviewStateChangesRequested {
+			comments, err := p.provider.GetReviewComments(ctx, repoPath, prID)
+			if err != nil {
+				p.logger.Warn().Err(err).Str("session", sess.ID).Msg("poller: get review comments")
+				return
 			}
+			event.Comments = comments
 		}
-		emitIf(machine.ChecksFailed, vcs.ChecksFailed{PRID: prID, FailedChecks: failed})
-	default:
-		// ChecksOverallPending — do nothing, wait for next poll.
+		emitIf(machine.ReviewSubmitted, event)
 	}
 }
 

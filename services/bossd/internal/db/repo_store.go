@@ -182,14 +182,45 @@ func (s *SQLiteRepoStore) Update(ctx context.Context, id string, params UpdateRe
 }
 
 func (s *SQLiteRepoStore) Delete(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM repos WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_check_snapshots WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+		return fmt.Errorf("delete check snapshots: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workflows WHERE repo_id = ?`, id); err != nil {
+		return fmt.Errorf("delete workflows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM task_mappings WHERE repo_id = ?`, id); err != nil {
+		return fmt.Errorf("delete task mappings: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+		return fmt.Errorf("delete attempts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_chats WHERE session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+		return fmt.Errorf("delete agent chats: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE cron_jobs SET last_run_session_id = NULL WHERE last_run_session_id IN (SELECT id FROM sessions WHERE repo_id = ?)`, id); err != nil {
+		return fmt.Errorf("detach cron job last run sessions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cron_jobs WHERE repo_id = ?`, id); err != nil {
+		return fmt.Errorf("delete cron jobs: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE repo_id = ?`, id); err != nil {
+		return fmt.Errorf("delete sessions: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM repos WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete repo: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
 }
 
 // scanRepo scans a repo from any scanner (*sql.Row or *sql.Rows).

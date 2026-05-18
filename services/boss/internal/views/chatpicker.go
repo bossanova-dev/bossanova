@@ -318,6 +318,15 @@ func (m *ChatPickerModel) buildTableRows() {
 	for i, chat := range m.chats {
 		daemon := m.daemonStatuses[chat.AgentSessionId]
 		statusStr := renderClaudeStatus(daemon, m.spinner)
+		// A chat with start_error set never came up — the agent_chats
+		// row was created but StartTmuxChat hit a failure (e.g.
+		// SendPlan timeout from claude's broken --print regression
+		// pre-#350). The row is preserved so the operator can see the
+		// attempt; surface that explicitly here instead of letting the
+		// row look like a fresh "stopped" chat.
+		if chat.GetStartError() != "" {
+			statusStr = renderChatStartFailed()
+		}
 		if chat.AgentSessionId != "" && chat.AgentSessionId == m.deletingAgentSessionID {
 			statusStr = renderRowPendingStatus(m.spinner, "deleting")
 		}

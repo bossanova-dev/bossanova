@@ -8,7 +8,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/recurser/bossalib/agentruntime"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/plugin/hostclient"
 	"github.com/recurser/bossalib/statusdetect"
@@ -98,6 +97,24 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, req *bossanovav1.Confi
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: true}, nil
 }
 
+// BuildInteractiveCommand returns the bare claude argv for tmux-hosted
+// runs. It must NOT wrap the argv in a `bash -c "claude … | tee log"`
+// pipeline (the shape this RPC used pre-#350): piping claude's stdout
+// through tee makes isatty(stdout)=false, and modern claude treats a
+// non-TTY stdout as headless-print mode. Without a -p/--print prompt
+// arg it errors with "Input must be provided either through stdin or as
+// a prompt argument when using --print", the tmux pane never shows the
+// ❯ ready marker, SendPlan times out at 5s, and every repair attempt
+// fails forever.
+//
+// Log capture for interactive runs is the caller's job. The bossd
+// host-side StartTmuxChat (services/bossd/internal/session/tmux_chat.go)
+// arms `tmux pipe-pane` against the LogPath the caller passed in this
+// request, which mirrors pane output to disk without touching claude's
+// stdio.
+//
+// req.LogPath is accepted for API compatibility but intentionally
+// unused — bossd reads it from its own state, not from this response.
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
 	args := []string{"claude"}
 	if req.Resume {
@@ -108,9 +125,7 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if s.runner.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv: agentruntime.LogTeeArgv(args, req.LogPath),
-	}, nil
+	return &bossanovav1.BuildInteractiveCommandResponse{Argv: args}, nil
 }
 
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation

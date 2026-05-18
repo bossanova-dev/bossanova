@@ -2745,8 +2745,15 @@ type ClaudeChat struct {
 	// Provider-owned resume/session UUID. Empty when provider uses agent_session_id
 	// directly or the value has not been discovered yet.
 	ProviderSessionId string `protobuf:"bytes,9,opt,name=provider_session_id,json=providerSessionId,proto3" json:"provider_session_id,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Short human-readable reason the agent never came up for this chat
+	// (e.g. "send plan failed: ready marker ❯ not seen within 5s").
+	// Empty on the happy path; non-empty rows are preserved as
+	// "attempted but never came up" entries so the chat list can show a
+	// (failed to start) badge instead of silently swallowing the
+	// attempt.
+	StartError    string `protobuf:"bytes,10,opt,name=start_error,json=startError,proto3" json:"start_error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ClaudeChat) Reset() {
@@ -2838,6 +2845,13 @@ func (x *ClaudeChat) GetAgentName() string {
 func (x *ClaudeChat) GetProviderSessionId() string {
 	if x != nil {
 		return x.ProviderSessionId
+	}
+	return ""
+}
+
+func (x *ClaudeChat) GetStartError() string {
+	if x != nil {
+		return x.StartError
 	}
 	return ""
 }
@@ -3189,7 +3203,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0fneeds_attention\x18\x01 \x01(\bR\x0eneedsAttention\x125\n" +
 	"\x06reason\x18\x02 \x01(\x0e2\x1d.bossanova.v1.AttentionReasonR\x06reason\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x120\n" +
-	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xce\x02\n" +
+	"\x05since\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x05since\"\xef\x02\n" +
 	"\n" +
 	"ClaudeChat\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -3203,7 +3217,10 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x11tmux_session_name\x18\a \x01(\tR\x0ftmuxSessionName\x12\x1d\n" +
 	"\n" +
 	"agent_name\x18\b \x01(\tR\tagentName\x12.\n" +
-	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\"\xbc\x04\n" +
+	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\x12\x1f\n" +
+	"\vstart_error\x18\n" +
+	" \x01(\tR\n" +
+	"startError\"\xbc\x04\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +

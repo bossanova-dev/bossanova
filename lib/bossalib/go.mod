@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	connectrpc.com/connect v1.19.1
 	github.com/99designs/keyring v1.2.2
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/posthog/posthog-go v1.12.5
 	github.com/pressly/goose/v3 v3.27.0
@@ -48,5 +49,4 @@ require (
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260217215200-42d3e9bedb6d // indirect
-	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )

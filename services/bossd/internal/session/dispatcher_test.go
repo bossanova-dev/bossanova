@@ -473,7 +473,7 @@ func TestDispatcherReviewAutoAddressDisabled(t *testing.T) {
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{
 		SessionID: "sess-1",
-		Event:     vcs.ReviewSubmitted{PRID: 42, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
+		Event:     vcs.ReviewSubmitted{PRID: 42, State: vcs.ReviewStateChangesRequested, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
 	}
 	close(ch)
 
@@ -511,7 +511,7 @@ func TestDispatcherReviewAutoAddressEnabled(t *testing.T) {
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{
 		SessionID: "sess-1",
-		Event:     vcs.ReviewSubmitted{PRID: 42, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
+		Event:     vcs.ReviewSubmitted{PRID: 42, State: vcs.ReviewStateChangesRequested, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
 	}
 	close(ch)
 
@@ -525,6 +525,68 @@ func TestDispatcherReviewAutoAddressEnabled(t *testing.T) {
 
 	if len(fh.reviewCalls) != 1 {
 		t.Errorf("expected 1 review call, got %d", len(fh.reviewCalls))
+	}
+	if got := sessions.sessions["sess-1"].LastObservedReviewState; got != int(vcs.ReviewStateChangesRequested) {
+		t.Errorf("last observed review state = %v, want ChangesRequested", got)
+	}
+}
+
+func TestDispatcherReviewSubmittedNonActionableStates(t *testing.T) {
+	tests := []struct {
+		name  string
+		state vcs.ReviewState
+	}{
+		{
+			name:  "approved",
+			state: vcs.ReviewStateApproved,
+		},
+		{
+			name:  "commented",
+			state: vcs.ReviewStateCommented,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			fh := newMockFixHandler()
+			logger := zerolog.Nop()
+
+			repos.repos["repo-1"] = &models.Repo{
+				ID:                    "repo-1",
+				CanAutoAddressReviews: true,
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:     "sess-1",
+				RepoID: "repo-1",
+				State:  machine.ReadyForReview,
+			}
+
+			d := NewDispatcher(sessions, repos, vp, fh, logger)
+
+			ch := make(chan SessionEvent, 1)
+			ch <- SessionEvent{
+				SessionID: "sess-1",
+				Event:     vcs.ReviewSubmitted{PRID: 42, State: tt.state, Comments: []vcs.ReviewComment{{Body: "looks good"}}},
+			}
+			close(ch)
+
+			d.Run(ctx, ch)
+
+			sess := sessions.sessions["sess-1"]
+			if sess.State != machine.ReadyForReview {
+				t.Errorf("state = %v, want ReadyForReview", sess.State)
+			}
+			if sess.LastObservedReviewState != int(tt.state) {
+				t.Errorf("last observed review state = %v, want %v", sess.LastObservedReviewState, tt.state)
+			}
+			if len(fh.reviewCalls) != 0 {
+				t.Errorf("expected 0 review calls, got %d", len(fh.reviewCalls))
+			}
+		})
 	}
 }
 
@@ -618,7 +680,7 @@ func TestDispatcherNilFixLoop_ReviewSubmitted(t *testing.T) {
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{
 		SessionID: "sess-1",
-		Event:     vcs.ReviewSubmitted{PRID: 42, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
+		Event:     vcs.ReviewSubmitted{PRID: 42, State: vcs.ReviewStateChangesRequested, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
 	}
 	close(ch)
 

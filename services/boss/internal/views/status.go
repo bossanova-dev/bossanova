@@ -3,6 +3,7 @@ package views
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
@@ -82,11 +83,19 @@ func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 	return styleForIntent(sess.GetDisplayIntent()).Render(label)
 }
 
-// repairFailureHint returns a short suffix like "⚠ repair (3×)" when the
-// session's last repair attempt failed. Empty when there has been no
-// attempt or the last attempt was clean. Kept distinct from the main
-// STATUS label so the existing `failing` / `repairing` rendering stays
-// intact and the hint reads as auxiliary context.
+// repairFailureHint returns a short suffix like "⚠ repair failed (5×,
+// retry in ~16m)" when the session's last repair attempt failed. Empty
+// when there has been no attempt or the last attempt was clean. Kept
+// distinct from the main STATUS label so the existing `failing` /
+// `repairing` rendering stays intact and the hint reads as auxiliary
+// context.
+//
+// The "retry in" suffix surfaces the exponential-backoff window the
+// repair plugin enforces — without it the operator would see "repair
+// failed (5×)" with no clue why no new attempt is firing. Estimate is
+// based on the default 1-minute base cooldown; operators who tune
+// CooldownMinutes will see a slightly inaccurate ETA but still in the
+// right ballpark.
 func repairFailureHint(sess *pb.Session) string {
 	count := sess.GetLastRepairAttemptCount()
 	if count == 0 {
@@ -95,10 +104,52 @@ func repairFailureHint(sess *pb.Session) string {
 	if sess.GetLastRepairRunnerError() == "" && sess.GetLastRepairExitError() == "" {
 		return ""
 	}
+	base := fmt.Sprintf("⚠ repair failed (%d×)", count)
 	if count == 1 {
-		return "⚠ repair failed"
+		base = "⚠ repair failed"
 	}
-	return fmt.Sprintf("⚠ repair failed (%d×)", count)
+	startedAt := sess.GetLastRepairStartedAt()
+	if startedAt == nil {
+		return base
+	}
+	remaining := repairRetryRemaining(count, startedAt.AsTime())
+	if remaining <= 0 {
+		return base
+	}
+	return fmt.Sprintf("%s, retry in ~%s", base, shortDuration(remaining))
+}
+
+// repairRetryRemaining mirrors the repair plugin's cooldownFor()
+// schedule so the TUI can show an accurate retry-in estimate without
+// importing from plugins/bossd-plugin-repair. Schedule with the 1-min
+// base: 1m, 2m, 4m, 8m, 16m, then capped at 30m. attemptCount<=0
+// returns 0 (no failures recorded).
+func repairRetryRemaining(attemptCount int32, startedAt time.Time) time.Duration {
+	if attemptCount <= 0 {
+		return 0
+	}
+	const base = time.Minute
+	const maxWait = 30 * time.Minute
+	shift := int(attemptCount) - 1
+	if shift > 16 {
+		shift = 16
+	}
+	wait := base << uint(shift)
+	if wait <= 0 || wait > maxWait {
+		wait = maxWait
+	}
+	return wait - time.Since(startedAt)
+}
+
+// shortDuration renders a Duration as the most informative compact
+// label for the repair retry-in hint: "Xm" for >= 1 minute, "Xs"
+// otherwise. The repair backoff lives entirely in minute-or-larger
+// land so the seconds branch is mostly defensive.
+func shortDuration(d time.Duration) string {
+	if d >= time.Minute {
+		return fmt.Sprintf("%dm", int(d.Round(time.Minute).Minutes()))
+	}
+	return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))
 }
 
 // styleForIntent maps a DisplayIntent to its lipgloss style for the TUI.
@@ -137,6 +188,17 @@ func renderClaudeStatus(status string, sp spinner.Model) string {
 	default:
 		return styleStatusMuted.Render("stopped")
 	}
+}
+
+// renderChatStartFailed returns a styled status string for a chat that
+// never came up because StartTmuxChat hit a failure before SendPlan
+// succeeded (e.g. SendPlan timeout when claude bailed with its
+// "--print needs stdin or prompt" error, ConfigureFinalizeHook RPC
+// failure). The chat row is preserved with StartError set so the
+// operator can see what was attempted — this is the status badge that
+// surfaces that.
+func renderChatStartFailed() string {
+	return styleStatusDanger.Render("× failed")
 }
 
 // renderPRLink returns an underlined, OSC 8 hyperlinked PR label (e.g. "#12")

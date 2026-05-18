@@ -268,6 +268,7 @@ func (m *mockChatStore) UpdateTmuxSessionName(_ context.Context, _ string, _ *st
 func (m *mockChatStore) UpdateProviderSessionID(_ context.Context, _ string, _ *string) error {
 	return nil
 }
+func (m *mockChatStore) MarkStartFailed(_ context.Context, _, _ string) error     { return nil }
 func (m *mockChatStore) DeleteByAgentSessionID(_ context.Context, _ string) error { return nil }
 func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
 	m.mu.Lock()

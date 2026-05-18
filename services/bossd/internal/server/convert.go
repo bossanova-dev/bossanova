@@ -134,6 +134,9 @@ func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 	if c.ProviderSessionID != nil {
 		out.ProviderSessionId = *c.ProviderSessionID
 	}
+	if c.StartError != nil {
+		out.StartError = *c.StartError
+	}
 	return out
 }
 

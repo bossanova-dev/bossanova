@@ -6,8 +6,51 @@ import (
 
 	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/testharness"
 )
+
+func TestHarness_BootsCleanly(t *testing.T) {
+	h := testharness.New(t)
+
+	repoID := h.SeedRepo(t, "https://github.com/test/repo.git")
+	if repoID == "" {
+		t.Fatal("expected repo ID")
+	}
+
+	sessionID := h.SeedSession(t, repoID, 42, pb.SessionState_SESSION_STATE_AWAITING_CHECKS)
+	if sessionID == "" {
+		t.Fatal("expected session ID")
+	}
+}
+
+func TestHarness_WebhookRefreshUpdatesSharedDisplayTracker(t *testing.T) {
+	h := testharness.New(t)
+
+	repoOrigin := "https://github.com/test/repo.git"
+	repoID := h.SeedRepo(t, repoOrigin)
+	sessionID := h.SeedSession(t, repoID, 42, pb.SessionState_SESSION_STATE_AWAITING_CHECKS)
+
+	mergeable := true
+	h.Provider.SetPRStatus(42, &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable})
+	success := vcs.CheckConclusionSuccess
+	h.Provider.SetCheckResults(42, []vcs.CheckResult{{
+		ID:         "ci",
+		Name:       "ci",
+		Status:     vcs.CheckStatusCompleted,
+		Conclusion: &success,
+	}})
+
+	h.PostGitHubWebhook(t, "pull_request", nil, 42, repoOrigin)
+
+	entry := h.DisplayTracker.Get(sessionID)
+	if entry == nil {
+		t.Fatal("expected shared display tracker entry")
+	}
+	if entry.Status != vcs.DisplayStatusPassing {
+		t.Fatalf("display status = %v, want %v", entry.Status, vcs.DisplayStatusPassing)
+	}
+}
 
 func TestHarness_PingViaClient(t *testing.T) {
 	h := testharness.New(t)

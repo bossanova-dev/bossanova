@@ -564,6 +564,17 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 					hasActiveChat = true
 				} else {
 					for _, chat := range chats {
+						// Skip chats whose start failed: the agent_chats row is
+						// preserved (so the operator sees the × failed badge) but
+						// the agent never came up, so any tracker entry on its
+						// AgentSessionID is an orphan tmux pane keeping the
+						// heartbeat warm. Counting it as an active chat makes the
+						// repair plugin's idle gate defer forever — the
+						// failed-start row would permanently block its own session
+						// from being auto-repaired.
+						if chat.StartError != nil && *chat.StartError != "" {
+							continue
+						}
 						chatEntry := s.chatTracker.Get(chat.AgentSessionID)
 						if chatEntry == nil {
 							continue

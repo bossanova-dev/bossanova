@@ -1,0 +1,15 @@
+{
+  "action": "closed",
+  "number": 345,
+  "pull_request": {
+    "number": 345,
+    "merged": true,
+    "state": "closed"
+  },
+  "repository": {
+    "html_url": "https://github.com/recurser/bossanova"
+  },
+  "installation": {
+    "id": 132472308
+  }
+}

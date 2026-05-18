@@ -431,6 +431,13 @@ message ClaudeChat {
   // Provider-owned resume/session UUID. Empty when provider uses agent_session_id
   // directly or the value has not been discovered yet.
   string provider_session_id = 9;
+  // Short human-readable reason the agent never came up for this chat
+  // (e.g. "send plan failed: ready marker ❯ not seen within 5s").
+  // Empty on the happy path; non-empty rows are preserved as
+  // "attempted but never came up" entries so the chat list can show a
+  // (failed to start) badge instead of silently swallowing the
+  // attempt.
+  string start_error = 10;
 }
 
 // CronJobStatus is the derived run-status for a cron job, computed from

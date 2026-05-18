@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/migrate"
@@ -189,6 +190,93 @@ func TestRepoStore_CRUD(t *testing.T) {
 	_, err = store.Get(ctx, repo.ID)
 	if err != sql.ErrNoRows {
 		t.Errorf("get after delete: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestRepoStore_DeleteCleansDependents(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	taskMappings := NewTaskMappingStore(db)
+	workflows := NewWorkflowStore(db)
+	attempts := NewAttemptStore(db)
+	agentChats := NewAgentChatStore(db)
+	checkSnapshots := NewCheckSnapshotStore(db)
+	cronJobs := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess := createTestSession(t, sessionStore, repo.ID)
+	if _, err := workflows.Create(ctx, CreateWorkflowParams{
+		SessionID: sess.ID,
+		RepoID:    repo.ID,
+		PlanPath:  "docs/plans/delete-test.md",
+		MaxLegs:   1,
+	}); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	mapping, err := taskMappings.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "task-delete-test",
+		PluginName: "test",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create task mapping: %v", err)
+	}
+	sessionID := sess.ID
+	sessionIDPtr := &sessionID
+	if _, err := taskMappings.Update(ctx, mapping.ID, UpdateTaskMappingParams{SessionID: &sessionIDPtr}); err != nil {
+		t.Fatalf("attach task mapping: %v", err)
+	}
+	if _, err := attempts.Create(ctx, CreateAttemptParams{SessionID: sess.ID, Trigger: 1}); err != nil {
+		t.Fatalf("create attempt: %v", err)
+	}
+	if _, err := agentChats.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-delete-test",
+		Title:          "delete test",
+	}); err != nil {
+		t.Fatalf("create agent chat: %v", err)
+	}
+	if err := checkSnapshots.Insert(ctx, CheckSnapshot{
+		SessionID:      sess.ID,
+		PolledAt:       time.Now(),
+		HeadSHA:        "abc123",
+		RawJSON:        "[]",
+		ComputedStatus: 1,
+	}); err != nil {
+		t.Fatalf("insert check snapshot: %v", err)
+	}
+	cron, err := cronJobs.Create(ctx, CreateCronJobParams{
+		RepoID:   repo.ID,
+		Name:     "delete-test",
+		Prompt:   "run",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+	if err := cronJobs.UpdateLastRun(ctx, cron.ID, UpdateCronJobLastRunParams{
+		SessionID: &sessionID,
+		RanAt:     time.Now(),
+		Outcome:   models.CronJobOutcomePRCreated,
+	}); err != nil {
+		t.Fatalf("update cron last run: %v", err)
+	}
+
+	if err := repoStore.Delete(ctx, repo.ID); err != nil {
+		t.Fatalf("delete repo with dependents: %v", err)
+	}
+
+	for _, table := range []string{"repos", "sessions", "workflows", "task_mappings", "attempts", "agent_chats", "session_check_snapshots", "cron_jobs"} {
+		var count int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0", table, count)
+		}
 	}
 }
 
@@ -524,6 +612,96 @@ func TestSessionStore_ListWithRepo(t *testing.T) {
 	}
 	if !sawActive || !sawArchived {
 		t.Errorf("missing session: active=%v archived=%v", sawActive, sawArchived)
+	}
+}
+
+func TestSessionStore_ListByRepoAndPRReturnsActiveMatchingSessionsOnly(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewSessionStore(db)
+	ctx := context.Background()
+
+	repoA, err := repoStore.Create(ctx, CreateRepoParams{
+		DisplayName:       "repo-a",
+		LocalPath:         "/tmp/list-by-pr-a",
+		OriginURL:         "https://github.com/test/list-by-pr-a.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/wt/list-by-pr-a",
+	})
+	if err != nil {
+		t.Fatalf("create repoA: %v", err)
+	}
+	repoB, err := repoStore.Create(ctx, CreateRepoParams{
+		DisplayName:       "repo-b",
+		LocalPath:         "/tmp/list-by-pr-b",
+		OriginURL:         "https://github.com/test/list-by-pr-b.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/wt/list-by-pr-b",
+	})
+	if err != nil {
+		t.Fatalf("create repoB: %v", err)
+	}
+
+	prNumber := 42
+	otherPR := 43
+	matching, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repoA.ID,
+		Title:        "matching",
+		WorktreePath: "/tmp/wt/matching",
+		BranchName:   "matching",
+		BaseBranch:   "main",
+		PRNumber:     &prNumber,
+	})
+	if err != nil {
+		t.Fatalf("create matching: %v", err)
+	}
+	archived, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repoA.ID,
+		Title:        "archived",
+		WorktreePath: "/tmp/wt/archived",
+		BranchName:   "archived",
+		BaseBranch:   "main",
+		PRNumber:     &prNumber,
+	})
+	if err != nil {
+		t.Fatalf("create archived: %v", err)
+	}
+	if err := store.Archive(ctx, archived.ID); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	if _, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repoA.ID,
+		Title:        "wrong-pr",
+		WorktreePath: "/tmp/wt/wrong-pr",
+		BranchName:   "wrong-pr",
+		BaseBranch:   "main",
+		PRNumber:     &otherPR,
+	}); err != nil {
+		t.Fatalf("create wrong-pr: %v", err)
+	}
+	if _, err := store.Create(ctx, CreateSessionParams{
+		RepoID:       repoB.ID,
+		Title:        "wrong-repo",
+		WorktreePath: "/tmp/wt/wrong-repo",
+		BranchName:   "wrong-repo",
+		BaseBranch:   "main",
+		PRNumber:     &prNumber,
+	}); err != nil {
+		t.Fatalf("create wrong-repo: %v", err)
+	}
+
+	rows, err := store.ListByRepoAndPR(ctx, repoA.ID, prNumber)
+	if err != nil {
+		t.Fatalf("list by repo and PR: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len = %d, want 1", len(rows))
+	}
+	if rows[0].ID != matching.ID {
+		t.Fatalf("session ID = %q, want %q", rows[0].ID, matching.ID)
+	}
+	if rows[0].ArchivedAt != nil {
+		t.Fatal("matching session should be active")
 	}
 }
 

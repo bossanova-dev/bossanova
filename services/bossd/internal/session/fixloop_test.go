@@ -447,7 +447,8 @@ func TestDispatcherReviewSubmitted(t *testing.T) {
 	ch <- SessionEvent{
 		SessionID: "sess-1",
 		Event: vcs.ReviewSubmitted{
-			PRID: 42,
+			PRID:  42,
+			State: vcs.ReviewStateChangesRequested,
 			Comments: []vcs.ReviewComment{
 				{Author: "bob", Body: "Fix this", State: vcs.ReviewStateChangesRequested},
 			},
@@ -482,7 +483,7 @@ func TestDispatcherReviewSubmittedMaxAttempts(t *testing.T) {
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{
 		SessionID: "sess-1",
-		Event:     vcs.ReviewSubmitted{PRID: 42},
+		Event:     vcs.ReviewSubmitted{PRID: 42, State: vcs.ReviewStateChangesRequested},
 	}
 	close(ch)
 

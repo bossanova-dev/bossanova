@@ -22,6 +22,7 @@ import (
 
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/errortrack"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	bossalog "github.com/recurser/bossalib/log"
@@ -74,6 +75,52 @@ func (a *sessionListerAdapter) ListSessions(ctx context.Context) ([]*bossanovav1
 		pbSessions = append(pbSessions, pbSess)
 	}
 	return pbSessions, nil
+}
+
+type repoPRSessionStore interface {
+	ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error)
+}
+
+type displayPollerSessionLookup struct {
+	sessions db.SessionStore
+	repos    db.RepoStore
+}
+
+func (a *displayPollerSessionLookup) SessionsForPR(ctx context.Context, repoOriginURL string, prNumber int) ([]session.SessionForPR, error) {
+	repo, err := a.repos.GetByOrigin(ctx, repoOriginURL)
+	if err != nil || repo == nil {
+		return nil, err
+	}
+
+	var rows []*db.SessionWithRepo
+	if lister, ok := a.sessions.(repoPRSessionStore); ok {
+		rows, err = lister.ListByRepoAndPR(ctx, repo.ID, prNumber)
+	} else {
+		rows, err = a.sessions.ListWithRepo(ctx, repo.ID)
+		if err == nil {
+			rows = filterSessionsByPR(rows, prNumber)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]session.SessionForPR, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, session.SessionForPR{ID: row.ID})
+	}
+	return out, nil
+}
+
+func filterSessionsByPR(rows []*db.SessionWithRepo, prNumber int) []*db.SessionWithRepo {
+	out := make([]*db.SessionWithRepo, 0, len(rows))
+	for _, row := range rows {
+		if row.PRNumber == nil || *row.PRNumber != prNumber {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 func main() {
@@ -342,6 +389,24 @@ func run(opts runOpts) error {
 	// --- Settings + Display Poller ---
 
 	settings, _ := config.Load()
+	bossEnv := config.EnvOr("BOSS_ENV", "local")
+	var errortrackClose = func() {}
+	if settings.ErrorTrackingEnabled {
+		errortrackDSN := config.EnvOr("BOSSD_SENTRY_DSN", "https://f8081ecc39984438b534485cb56a7391@o4511396716871680.ingest.de.sentry.io/4511396747608144")
+		close, err := errortrack.Init(errortrack.Opts{
+			DSN:         errortrackDSN,
+			App:         "bossd",
+			Environment: bossEnv,
+			Release:     buildinfo.Version + "-" + buildinfo.Commit,
+		})
+		if err != nil {
+			log.Warn().Err(err).Msg("errortrack disabled")
+		} else {
+			errortrackClose = close
+		}
+	}
+	defer errortrackClose()
+
 	telemetryClient := libtelemetry.New(daemontelemetry.ConfigFromSettings(settings))
 	defer telemetryClient.Close()
 
@@ -677,6 +742,8 @@ func run(opts runOpts) error {
 	var terminalStreamClient *upstream.TerminalStreamClient
 	var authNotifier server.AuthNotifier
 	var cmdHandlerStream *upstream.CommandHandlerAdapter
+	webhookEventCh := make(chan session.SessionEvent, 64)
+	emitter := session.NewSessionEventEmitter(&displayPollerSessionLookup{sessions: sessions, repos: repos}, webhookEventCh, log.Logger)
 	if cfg := upstream.ConfigFromEnv(); cfg != nil {
 		// ConnectRPC bidi streams (DaemonStream) require HTTP/2. Over
 		// TLS that's handled via ALPN automatically; over plain HTTP
@@ -930,7 +997,7 @@ func run(opts runOpts) error {
 			Events:         streamBus,
 			TokenProvider:  tokenProvider,
 			CommandHandler: cmdHandler,
-			Webhooks:       upstream.NewWebhookDispatcher(displayPoller, log.Logger),
+			Webhooks:       upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, ghProvider, log.Logger),
 			Attacher:       attacher,
 			ReRegister:     reRegister,
 			AuthState:      authState,
@@ -1027,9 +1094,10 @@ func run(opts runOpts) error {
 	// runs goroutines that outlive any single RPC handler. pollerCancel is
 	// invoked during shutdown, draining all armed polls.
 	lifecycle.SetDaemonCtx(pollerCtx)
-	events := poller.Run(pollerCtx)
+	pollerEvents := poller.Run(pollerCtx)
+	merged := mergeSessionEvents(pollerCtx, pollerEvents, webhookEventCh)
 	trackDone(poller.Done())
-	dispatcherDone := safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, events) })
+	dispatcherDone := safego.Go(log.Logger, func() { dispatcher.Run(pollerCtx, merged) })
 	trackDone(dispatcherDone)
 
 	// Start task orchestrator (polls plugin task sources).
@@ -1446,4 +1514,38 @@ func decodeJWTClaimsForLog(token string) (iss, sub, aud, exp string, err error) 
 		expStr = fmt.Sprintf("%s (in %s)", t.Format(time.RFC3339), time.Until(t).Round(time.Second))
 	}
 	return claims.Iss, claims.Sub, string(claims.Aud), expStr, nil
+}
+
+func mergeSessionEvents(ctx context.Context, a, b <-chan session.SessionEvent) <-chan session.SessionEvent {
+	out := make(chan session.SessionEvent, 64)
+	go func() {
+		defer close(out)
+		for a != nil || b != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-a:
+				if !ok {
+					a = nil
+					continue
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			case ev, ok := <-b:
+				if !ok {
+					b = nil
+					continue
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out
 }

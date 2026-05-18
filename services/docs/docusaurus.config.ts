@@ -4,6 +4,8 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const posthogHost = process.env.PUBLIC_POSTHOG_HOST ?? 'https://k.bossanova.dev';
 const posthogProjectToken = process.env.PUBLIC_POSTHOG_PROJECT_TOKEN;
+const bossEnv = process.env.PUBLIC_BOSS_ENV ?? 'production';
+const buildSha = process.env.PUBLIC_BUILD_SHA;
 
 const config: Config = {
   title: 'Bossanova',
@@ -21,7 +23,11 @@ const config: Config = {
   customFields: {
     posthogHost,
     posthogProjectToken,
+    bossEnv,
+    buildSha,
   },
+
+  clientModules: ['./src/clientModule.ts'],
 
   markdown: {
     hooks: {

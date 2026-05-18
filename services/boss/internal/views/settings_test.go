@@ -43,6 +43,47 @@ func TestSettings_RendersBuiltInRowsWithoutAgents(t *testing.T) {
 	}
 }
 
+func TestSettings_RendersErrorTrackingRow(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	view := m.View().Content
+	if !strings.Contains(view, "Enable error tracking") {
+		t.Errorf("settings view missing error tracking row.\nGot:\n%s", view)
+	}
+}
+
+func TestSettings_ErrorTrackingToggle(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	var idx = -1
+	for i, r := range m.rows {
+		if r.Kind == settingsRowKindErrorTracking {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("settingsRowKindErrorTracking row not found")
+	}
+	m.cursor = idx
+
+	if m.settings.ErrorTrackingEnabled {
+		t.Fatalf("precondition: ErrorTrackingEnabled should default to false")
+	}
+
+	newModel, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	sm := newModel.(SettingsModel)
+	if !sm.settings.ErrorTrackingEnabled {
+		t.Errorf("ErrorTrackingEnabled did not flip to true after Enter")
+	}
+
+	newModel, _ = sm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	sm = newModel.(SettingsModel)
+	if sm.settings.ErrorTrackingEnabled {
+		t.Errorf("ErrorTrackingEnabled did not flip back to false")
+	}
+}
+
 func TestSettings_EventTracingToggleSeedsDefaults(t *testing.T) {
 	withTempConfigHome(t)
 	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
@@ -268,6 +309,46 @@ func TestSettings_DefaultAgentAgentsThenTracingOrder(t *testing.T) {
 	if defaultAgent < 0 || claude <= defaultAgent || codex <= claude || tracing <= codex || eventTracing <= tracing {
 		t.Fatalf("unexpected row order: default=%d claude=%d codex=%d tracing=%d event=%d rows=%v",
 			defaultAgent, claude, codex, tracing, eventTracing, m.rows)
+	}
+}
+
+func TestSettings_ErrorTrackingImmediatelyFollowsEventTracingWhenTracingEnabled(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindEventTracing {
+			m.cursor = i
+			break
+		}
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
+	m = updated.(SettingsModel)
+
+	eventTracing := -1
+	errorTracking := -1
+	postHogToken := -1
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindEventTracing {
+			eventTracing = i
+		}
+		if row.Kind == settingsRowKindErrorTracking {
+			errorTracking = i
+		}
+		if row.Kind == settingsRowKindPostHogToken {
+			postHogToken = i
+		}
+	}
+
+	if eventTracing < 0 || errorTracking < 0 || postHogToken < 0 {
+		t.Fatalf("missing expected tracing rows: event=%d error=%d token=%d rows=%v", eventTracing, errorTracking, postHogToken, m.rows)
+	}
+	if errorTracking != eventTracing+1 {
+		t.Fatalf("error tracking row should immediately follow event tracing: event=%d error=%d rows=%v", eventTracing, errorTracking, m.rows)
+	}
+	if postHogToken <= errorTracking {
+		t.Fatalf("PostHog rows should follow error tracking: error=%d token=%d rows=%v", errorTracking, postHogToken, m.rows)
 	}
 }
 

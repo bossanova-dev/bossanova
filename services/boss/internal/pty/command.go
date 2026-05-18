@@ -52,6 +52,8 @@ type PTYCommand struct {
 	// Set after Run() returns.
 	Detached      bool
 	ProcessExited bool
+
+	inputReady chan struct{}
 }
 
 // NewPTYCommand creates a PTYCommand for launching or reattaching to a Claude process.
@@ -88,7 +90,8 @@ func (c *PTYCommand) stdinFile() *os.File {
 func (c *PTYCommand) Run() error {
 	// Put the real terminal in raw mode so keystrokes are forwarded
 	// immediately without echo. The PTY slave handles its own modes.
-	fd := int(c.stdinFile().Fd())
+	stdinFile := c.stdinFile()
+	fd := int(stdinFile.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return err
@@ -143,8 +146,11 @@ func (c *PTYCommand) Run() error {
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 4096)
-		stdinFd := int(c.stdinFile().Fd())
+		stdinFd := fd
 		cancelFd := int(cancelR.Fd())
+		if c.inputReady != nil {
+			close(c.inputReady)
+		}
 		// pending carries an incomplete terminal-query reply across reads.
 		// See stripTerminalQueryReplies for the leak it defends against.
 		var pending []byte

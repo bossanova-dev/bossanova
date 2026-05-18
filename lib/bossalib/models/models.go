@@ -40,30 +40,31 @@ type Repo struct {
 
 // Session represents an agent coding session.
 type Session struct {
-	ID                string
-	RepoID            string
-	Title             string
-	Plan              string
-	WorktreePath      string
-	BranchName        string
-	BaseBranch        string
-	State             machine.State
-	AgentSessionID    *string
-	AgentName         string
-	PRNumber          *int
-	PRURL             *string
-	TrackerID         *string
-	TrackerURL        *string
-	TmuxSessionName   *string
-	LastCheckState    machine.CheckState
-	AutomationEnabled bool
-	AttemptCount      int
-	BlockedReason     *string
-	ArchivedAt        *time.Time
-	CronJobID         *string
-	HookToken         *string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                      string
+	RepoID                  string
+	Title                   string
+	Plan                    string
+	WorktreePath            string
+	BranchName              string
+	BaseBranch              string
+	State                   machine.State
+	AgentSessionID          *string
+	AgentName               string
+	PRNumber                *int
+	PRURL                   *string
+	TrackerID               *string
+	TrackerURL              *string
+	TmuxSessionName         *string
+	LastCheckState          machine.CheckState
+	LastObservedReviewState int
+	AutomationEnabled       bool
+	AttemptCount            int
+	BlockedReason           *string
+	ArchivedAt              *time.Time
+	CronJobID               *string
+	HookToken               *string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 
 	// Composite display fields, persisted so every client renders the same
 	// label/intent/spinner verbatim. Populated by the DisplayStatusComputer in
@@ -111,7 +112,14 @@ type AgentChat struct {
 	Title             string
 	DaemonID          string  // Originating daemon (empty = local)
 	TmuxSessionName   *string // tmux session name for this chat (nil = no tmux)
-	CreatedAt         time.Time
+	// StartError is set when the agent failed to start for this chat
+	// (e.g. SendPlan timed out, ConfigureFinalizeHook returned error).
+	// nil on the happy path; non-nil rows are preserved as historical
+	// "attempted but never came up" entries so the chat list can show a
+	// (failed to start) badge instead of silently swallowing the
+	// attempt.
+	StartError *string
+	CreatedAt  time.Time
 }
 
 // TaskMappingStatus represents the state of a task mapping.

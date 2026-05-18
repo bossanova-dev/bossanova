@@ -30,10 +30,22 @@ const repairCleanupTimeout = 30 * time.Second
 const repairStatusClearTimeout = 5 * time.Second
 
 const (
-	// defaultCooldownDuration is the minimum time between repair attempts for the same session.
+	// defaultCooldownDuration is the minimum time between repair attempts
+	// for the same session. The actual wait between attempts is then
+	// extended by exponential backoff via cooldownFor — see that helper
+	// for the schedule. This default is the base of the exponent and the
+	// post-success / post-restart cooldown.
 	defaultCooldownDuration = 1 * time.Minute
 	// defaultSweepInterval is how often the periodic sweep runs.
 	defaultSweepInterval = 1 * time.Minute
+	// maxCooldownDuration caps the exponential backoff so a long-running
+	// hammer loop on a genuinely-broken PR never waits more than 30 m
+	// between attempts. The previous code had no cap and a flat 1 m
+	// cooldown; that combination racked up 321 attempts over five hours
+	// on the Dependabot PRs that motivated this fix. With the cap +
+	// backoff: steady-state cadence is one attempt per 30 m (~48/day),
+	// down from one per minute (~1440/day).
+	maxCooldownDuration = 30 * time.Minute
 	// defaultStuckTimeout is how long a session must be in ImplementingPlan
 	// before it is considered stuck and eligible for automatic advancement.
 	defaultStuckTimeout = 5 * time.Minute
@@ -69,6 +81,44 @@ func (c *repairConfig) cooldownDuration() time.Duration {
 		return time.Duration(c.CooldownMinutes) * time.Minute
 	}
 	return defaultCooldownDuration
+}
+
+// cooldownFor returns the wait that must elapse since the last repair
+// attempt for this session before another attempt may fire, accounting
+// for exponential backoff on consecutive failures.
+//
+// Schedule with the 1-minute default base:
+//
+//	attemptCount   wait
+//	0  (no fail)   base (just the floor; counter resets on a clean run)
+//	1              base * 1   = 1 m
+//	2              base * 2   = 2 m
+//	3              base * 4   = 4 m
+//	4              base * 8   = 8 m
+//	5              base * 16  = 16 m
+//	6+             capped at maxCooldownDuration (30 m)
+//
+// base is the configured floor — operators who configure a longer
+// minimum get a proportionally longer schedule until the next doubled
+// value reaches maxCooldownDuration. Larger bases therefore hit the cap
+// sooner; for example, base=15 m yields 15 m, 30 m, then 30 m thereafter.
+func cooldownFor(attemptCount int32, base time.Duration) time.Duration {
+	if attemptCount <= 0 {
+		return base
+	}
+	if base <= 0 || base >= maxCooldownDuration {
+		return maxCooldownDuration
+	}
+	const maxShift = 16 // 2^16 is well past the cap for supported bases.
+	shift := int(attemptCount) - 1
+	if shift > maxShift {
+		shift = maxShift
+	}
+	factor := time.Duration(1) << uint(shift)
+	if base > maxCooldownDuration/factor {
+		return maxCooldownDuration
+	}
+	return base * factor
 }
 
 func (c *repairConfig) sweepInterval() time.Duration {
@@ -369,16 +419,22 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		return
 	}
 
-	// Check cooldown.
-	cooldown := m.config.cooldownDuration()
+	// Fast-path cooldown check on the in-memory map. The map only tracks
+	// attempts from the current process so this is just a "did we
+	// already attempt very recently" optimization — the authoritative
+	// exponential-backoff gate runs after lookupSession, using the
+	// persisted last_repair_started_at / last_repair_attempt_count so
+	// the schedule survives daemon restarts. The base cooldown is also
+	// the floor that the exponential is built from.
+	baseCooldown := m.config.cooldownDuration()
 	if lastAttempt, ok := m.cooldowns[sessionID]; ok {
 		elapsed := time.Since(lastAttempt)
-		if elapsed < cooldown {
+		if elapsed < baseCooldown {
 			m.mu.Unlock()
 			m.logger.Info().
 				Str("session_id", sessionID).
-				Dur("cooldown_remaining", cooldown-elapsed).
-				Msg("cooldown period not expired, skipping repair")
+				Dur("cooldown_remaining", baseCooldown-elapsed).
+				Msg("base cooldown not expired (in-memory), skipping repair")
 			return
 		}
 	}
@@ -463,6 +519,28 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		return
 	}
 
+	// Authoritative exponential-backoff gate. Sourced from persisted
+	// last_repair_started_at + last_repair_attempt_count so a daemon
+	// restart can't reset the schedule and let the next sweep fire an
+	// immediate retry — that was the regression behind the 321× counter
+	// on the production Dependabot PRs. The in-memory `m.cooldowns`
+	// fast-path above is just an "already attempted this minute"
+	// short-circuit; this is the real wait.
+	if info.LastRepairAttemptCount > 0 && !info.LastRepairStartedAt.IsZero() {
+		wait := cooldownFor(info.LastRepairAttemptCount, baseCooldown)
+		elapsed := time.Since(info.LastRepairStartedAt)
+		if elapsed < wait {
+			m.logger.Info().
+				Str("session_id", sessionID).
+				Int32("attempt_count", info.LastRepairAttemptCount).
+				Dur("wait", wait).
+				Dur("elapsed", elapsed).
+				Dur("remaining", wait-elapsed).
+				Msg("exponential backoff active, skipping repair")
+			return
+		}
+	}
+
 	// Re-acquire lock to mark as repairing and re-check every guard. The
 	// world may have moved while we were doing RPCs without the lock:
 	// StartWorkflow could have swapped m.config (so cooldownDuration must be
@@ -516,6 +594,15 @@ type sessionInfo struct {
 	LastRepairHeadSHA       string
 	LastRepairDisplayStatus bossanovav1.DisplayStatus
 	LastRepairRunnerError   string
+	// LastRepairStartedAt and LastRepairAttemptCount are sourced from
+	// the daemon-persisted last_repair_* columns so the cooldown gate
+	// survives daemon restarts and plugin reloads. The previous
+	// implementation only consulted the in-memory `m.cooldowns` map,
+	// which reset to empty on every restart and let the failed PRs
+	// re-fire immediately — one of the reasons the production counter
+	// reached 321×.
+	LastRepairStartedAt    time.Time
+	LastRepairAttemptCount int32
 }
 
 // lookupSession resolves the daemon's view of the session and returns the
@@ -547,9 +634,13 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 			LastRepairHeadSHA:       sess.GetLastRepairHeadSha(),
 			LastRepairDisplayStatus: sess.GetLastRepairDisplayStatus(),
 			LastRepairRunnerError:   sess.GetLastRepairRunnerError(),
+			LastRepairAttemptCount:  sess.GetLastRepairAttemptCount(),
 		}
 		if ts := sess.GetLastChatActivityAt(); ts != nil {
 			info.LastChatActivityAt = ts.AsTime()
+		}
+		if ts := sess.GetLastRepairStartedAt(); ts != nil {
+			info.LastRepairStartedAt = ts.AsTime()
 		}
 		state := sess.GetState()
 		if isRepairableState(state, displayStatus) {

@@ -456,6 +456,44 @@ func graphqlThreadsResponse(threads ...struct {
 	)
 }
 
+func TestGetReviewComments_ChangesRequestedIncludesInlineComments(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
+			return `[
+				{"user":{"login":"reviewer"},"body":"fix this line","path":"main.go","line":42}
+			]`, nil
+		}
+		return `[
+			{"id":123,"user":{"login":"reviewer"},"body":"summary","state":"CHANGES_REQUESTED"},
+			{"id":456,"user":{"login":"reviewer"},"body":"follow-up approval","state":"APPROVED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 3 {
+		t.Fatalf("got %d comments, want summaries plus inline comment", len(comments))
+	}
+	if comments[1].Body != "fix this line" {
+		t.Fatalf("inline comment body = %q, want fix this line", comments[1].Body)
+	}
+	if comments[1].Path == nil || *comments[1].Path != "main.go" {
+		t.Fatalf("inline comment path = %v, want main.go", comments[1].Path)
+	}
+	if comments[1].Line == nil || *comments[1].Line != 42 {
+		t.Fatalf("inline comment line = %v, want 42", comments[1].Line)
+	}
+	if comments[1].State != vcs.ReviewStateChangesRequested {
+		t.Fatalf("inline comment state = %v, want ChangesRequested", comments[1].State)
+	}
+	if comments[2].State != vcs.ReviewStateApproved {
+		t.Fatalf("final review state = %v, want Approved", comments[2].State)
+	}
+}
+
 func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
@@ -479,15 +517,20 @@ func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 				struct {
 					resolved bool
 					author   string
-				}{false, "cursor"},
+				}{false, "chatgpt-codex-connector"},
 				struct {
 					resolved bool
 					author   string
-				}{true, "cursor"},
+				}{true, "chatgpt-codex-connector"},
 			), nil
 		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"fix this line","path":"main.go","line":42}
+			]`, nil
+		}
 		return `[
-			{"user":{"login":"cursor[bot]"},"body":"found issues","state":"COMMENTED"},
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"},
 			{"user":{"login":"human-reviewer"},"body":"looks good","state":"COMMENTED"}
 		]`, nil
 	}
@@ -497,14 +540,26 @@ func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(comments) != 2 {
-		t.Fatalf("got %d comments, want 2", len(comments))
+	if len(comments) != 3 {
+		t.Fatalf("got %d comments, want promoted summary, inline comment, and human comment", len(comments))
 	}
 	if comments[0].State != vcs.ReviewStateChangesRequested {
 		t.Errorf("bot comment state = %v, want ChangesRequested", comments[0].State)
 	}
-	if comments[1].State != vcs.ReviewStateCommented {
-		t.Errorf("human comment state = %v, want Commented", comments[1].State)
+	if comments[1].Body != "fix this line" {
+		t.Fatalf("inline comment body = %q, want fix this line", comments[1].Body)
+	}
+	if comments[1].Path == nil || *comments[1].Path != "main.go" {
+		t.Fatalf("inline comment path = %v, want main.go", comments[1].Path)
+	}
+	if comments[1].Line == nil || *comments[1].Line != 42 {
+		t.Fatalf("inline comment line = %v, want 42", comments[1].Line)
+	}
+	if comments[1].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("inline comment state = %v, want ChangesRequested", comments[1].State)
+	}
+	if comments[2].State != vcs.ReviewStateCommented {
+		t.Errorf("human comment state = %v, want Commented", comments[2].State)
 	}
 }
 
@@ -640,6 +695,9 @@ func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 					author   string
 				}{true, "cubic-dev-ai"},
 			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/comments") {
+			return `[]`, nil
 		}
 		return `[
 			{"user":{"login":"cursor[bot]"},"body":"issue found","state":"COMMENTED"},

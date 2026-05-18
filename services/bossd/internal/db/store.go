@@ -89,23 +89,24 @@ type CreateSessionParams struct {
 
 // UpdateSessionParams holds the fields that can be updated on a session.
 type UpdateSessionParams struct {
-	Title             *string
-	State             *int
-	WorktreePath      *string
-	BranchName        *string
-	AgentSessionID    **string
-	PRNumber          **int
-	PRURL             **string
-	TrackerID         **string
-	TrackerURL        **string
-	TmuxSessionName   **string
-	LastCheckState    *int
-	AutomationEnabled *bool
-	AttemptCount      *int
-	BlockedReason     **string
-	ArchivedAt        **string // ISO 8601 string or nil
-	CronJobID         **string
-	HookToken         **string // double pointer: nil = don't update, *nil = clear (cleared on finalize success)
+	Title                   *string
+	State                   *int
+	WorktreePath            *string
+	BranchName              *string
+	AgentSessionID          **string
+	PRNumber                **int
+	PRURL                   **string
+	TrackerID               **string
+	TrackerURL              **string
+	TmuxSessionName         **string
+	LastCheckState          *int
+	LastObservedReviewState *int
+	AutomationEnabled       *bool
+	AttemptCount            *int
+	BlockedReason           **string
+	ArchivedAt              **string // ISO 8601 string or nil
+	CronJobID               **string
+	HookToken               **string // double pointer: nil = don't update, *nil = clear (cleared on finalize success)
 
 	// Composite display fields, updated by the DisplayStatusComputer (Step 2).
 	// Pointer-typed so a nil value means "don't touch" and a zero value means
@@ -183,6 +184,14 @@ type AgentChatStore interface {
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error
 	UpdateProviderSessionID(ctx context.Context, agentSessionID string, providerSessionID *string) error
+	// MarkStartFailed records a short human-readable reason that the
+	// agent never came up for this chat, AND clears tmux_session_name
+	// in the same statement so the chat is no longer treated as
+	// resumable. Used by StartTmuxChat's failure paths (SendPlan
+	// timeout, hook misconfiguration, post-create errors) instead of
+	// DeleteByAgentSessionID: the row is preserved so the chat list
+	// can surface the failed attempt.
+	MarkStartFailed(ctx context.Context, agentSessionID, reason string) error
 	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
 	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
 }

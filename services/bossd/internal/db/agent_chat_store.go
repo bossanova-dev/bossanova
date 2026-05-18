@@ -32,8 +32,8 @@ func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentCha
 		agentName = "claude"
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO agent_chats (id, session_id, agent_session_id, provider_session_id, agent_name, title, start_error, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
 		id, params.SessionID, params.AgentSessionID, params.ProviderSessionID, agentName, params.Title, now,
 	)
 	if err != nil {
@@ -53,7 +53,7 @@ func (s *SQLiteAgentChatStore) Create(ctx context.Context, params CreateAgentCha
 
 func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, created_at
 		 FROM agent_chats
 		 WHERE agent_session_id = ?`,
 		agentSessionID,
@@ -74,7 +74,7 @@ func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSes
 
 func (s *SQLiteAgentChatStore) ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, created_at
 		 FROM agent_chats
 		 WHERE session_id = ?
 		 ORDER BY created_at DESC`,
@@ -140,6 +140,24 @@ func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agen
 	return nil
 }
 
+// MarkStartFailed stamps a short reason on the row and clears
+// tmux_session_name in a single statement, used by StartTmuxChat's
+// failure paths. Mirrors UpdateTmuxSessionName(..., nil) for the
+// idempotency side and adds the human-readable reason that the chat
+// list view surfaces as a "(failed to start)" badge. reason="" is
+// allowed (e.g. for tests) but reads like a happy-path row aside from
+// the cleared tmux name, so callers should pass something diagnostic.
+func (s *SQLiteAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID, reason string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_chats SET start_error = ?, tmux_session_name = NULL WHERE agent_session_id = ?`,
+		reason, agentSessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark agent_chat start failed: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error {
 	_, err := s.db.ExecContext(ctx,
 		`DELETE FROM agent_chats WHERE agent_session_id = ?`, agentSessionID)
@@ -151,7 +169,7 @@ func (s *SQLiteAgentChatStore) DeleteByAgentSessionID(ctx context.Context, agent
 
 func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, created_at
+		`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, created_at
 		 FROM agent_chats
 		 WHERE tmux_session_name IS NOT NULL AND tmux_session_name != ''
 		 ORDER BY created_at DESC`,
@@ -175,7 +193,7 @@ func (s *SQLiteAgentChatStore) ListWithTmuxSession(ctx context.Context) ([]*mode
 func scanAgentChat(rows *sql.Rows) (*models.AgentChat, error) {
 	var c models.AgentChat
 	var createdAt string
-	if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentSessionID, &c.ProviderSessionID, &c.AgentName, &c.Title, &c.DaemonID, &c.TmuxSessionName, &createdAt); err != nil {
+	if err := rows.Scan(&c.ID, &c.SessionID, &c.AgentSessionID, &c.ProviderSessionID, &c.AgentName, &c.Title, &c.DaemonID, &c.TmuxSessionName, &c.StartError, &createdAt); err != nil {
 		return nil, fmt.Errorf("scan agent_chat: %w", err)
 	}
 	c.CreatedAt = sqlutil.ParseTime(createdAt)

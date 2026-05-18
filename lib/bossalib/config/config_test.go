@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -780,5 +781,57 @@ func TestDedupPluginConfigs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSettings_ErrorTrackingEnabled_Default(t *testing.T) {
+	var s Settings
+	if s.ErrorTrackingEnabled {
+		t.Fatal("ErrorTrackingEnabled default = true, want false")
+	}
+}
+
+func TestSettings_ErrorTrackingEnabled_RoundTrip(t *testing.T) {
+	in := Settings{ErrorTrackingEnabled: true}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"error_tracking_enabled":true`) {
+		t.Fatalf("marshal did not use error_tracking_enabled JSON key: %s", data)
+	}
+	var out Settings
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.ErrorTrackingEnabled {
+		t.Fatal("ErrorTrackingEnabled did not round-trip")
+	}
+}
+
+func TestSettings_ErrorTrackingEnabled_ForwardCompat(t *testing.T) {
+	// Regression: a config.json written before this field existed
+	// must still load cleanly and leave ErrorTrackingEnabled=false.
+	legacy := []byte(`{"worktree_base_dir":"/x","event_tracing_enabled":true}`)
+	var s Settings
+	if err := json.Unmarshal(legacy, &s); err != nil {
+		t.Fatalf("unmarshal legacy config: %v", err)
+	}
+	if s.ErrorTrackingEnabled {
+		t.Error("legacy config produced ErrorTrackingEnabled=true")
+	}
+	if !s.EventTracingEnabled {
+		t.Error("EventTracingEnabled from legacy config got lost")
+	}
+}
+
+func TestSettings_ErrorTrackingEnabled_OmittedWhenFalse(t *testing.T) {
+	s := Settings{}
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "error_tracking_enabled") {
+		t.Errorf("default-false field leaked into JSON: %s", data)
 	}
 }

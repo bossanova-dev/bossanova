@@ -215,6 +215,7 @@ func (m *Machine) configure(initial State) *stateless.StateMachine {
 		OnEntry(m.actionOnEnterFixing).
 		Permit(FixComplete, AwaitingChecks).
 		PermitDynamic(FixFailed, m.retryOrBlock).
+		Permit(PRMerged, Merged).
 		Permit(PRClosed, Closed).
 		Permit(Block, Blocked)
 

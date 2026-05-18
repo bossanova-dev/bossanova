@@ -54,9 +54,12 @@ func (f *fakeAgentForLifecycle) ConfigureFinalizeHook(_ context.Context, req *bo
 func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	// Mirror the shape of plugins/bossd-plugin-claude's real argv so cron
 	// tests that assert on the substring "claude --session-id " still pass
-	// against the extracted StartTmuxChat path.
+	// against the extracted StartTmuxChat path. The production plugin
+	// returns bare argv (no shell wrapper) so tmux can spawn claude
+	// directly on a PTY; capture-to-disk is handled by `tmux pipe-pane`
+	// after the spawn, not by piping stdout through tee.
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv: []string{"sh", "-c", "claude --session-id " + req.SessionId + " 2>&1 | tee " + req.LogPath},
+		Argv: []string{"claude", "--session-id", req.SessionId},
 	}, nil
 }
 

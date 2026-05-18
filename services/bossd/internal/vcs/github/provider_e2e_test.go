@@ -260,6 +260,12 @@ func TestE2E_GitHub_GetReviewComments(t *testing.T) {
 		},
 		stdout: fixture(t, "reviews_with_comments.json"),
 	})
+	f.expect(ghResponder{
+		match: func(args []string) bool {
+			return len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "/comments")
+		},
+		stdout: `[]`,
+	})
 	p := newProvider(f)
 
 	comments, err := p.GetReviewComments(context.Background(), testRepo, 42)

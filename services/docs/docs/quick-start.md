@@ -1,154 +1,167 @@
 ---
 title: Quick Start
-description: 'Walk through your first Bossanova session end-to-end: install, add a repo, chat with the agent, wait for CI, and archive when done.'
+description: 'Walk through Bossanova end-to-end: install, open the TUI, add a repo, start sessions, watch PR and CI state, schedule recurring work, clean up old chats, and sign in to Bossanova Cloud.'
 ---
 
-# Your first session
+import AsciinemaDemo from '@site/src/components/AsciinemaDemo';
 
-This page walks you from a fresh install to a merged-and-archived
-session. Skip steps you've already done; cross-links point at the relevant
-settings or guide page where one exists.
+# Quick Start
+
+This page walks you from a fresh install to the core Bossanova flow: add a repo,
+start agent work, chat with the agent, follow pull request and CI state,
+schedule recurring sessions, archive finished work, clean up old chats, and sign
+in to Bossanova Cloud when you want browser access.
+
+Skip steps you've already done; cross-links point at the relevant settings or
+guide page where one exists.
 
 ## 1. Install
 
-Install `boss`, `bossd`, and the bundled agent plugins (`bossd-plugin-claude`
-and `bossd-plugin-codex`) via Homebrew or from source. The full instructions, including how to
-verify the daemon is running, live on the dedicated install page.
+Install Bossanova with Homebrew:
 
-See **[Installation](./install.md)**.
+```bash
+brew install bossanova-dev/tap/bossanova
+```
+
+Then start the daemon:
+
+```bash
+bossd start
+```
+
+The daemon owns session state, worktree cleanup, GitHub sync, and browser access.
 
 ## 2. Open boss for the first time
+
+Launch the terminal UI:
 
 ```bash
 boss
 ```
 
-The first launch runs a preflight check:
-it verifies that `bossd` is reachable, that at least one agent runner
-plugin (e.g. `bossd-plugin-claude` or `bossd-plugin-codex`) is loaded, and that your shell can
-reach `git`. Without an agent plugin the daemon stays healthy but you
-won't be able to start sessions. If the selected agent CLI is not on
-`PATH`, install Claude Code or OpenAI Codex CLI first.
+The home screen is the control center for active coding-agent work. It shows
+sessions across repositories, with branch, pull request, review, and CI state in
+one place.
 
-You'll land on the empty home view with a prompt to add a repo.
+<AsciinemaDemo src="/img/screenshots/tour/boss-open-dashboard.cast" />
 
-![Boss Terminal UI (TUI) on first launch, empty home view prompting you to add a repo](/img/screenshots/quick-start-first-launch.png)
+On a fresh install, the repo list starts empty.
 
 ## 3. Add a repo
 
-There are three ways, in order of speed.
+Press `r` to load the repository list, then press `a` to add a new repository.
+Provide the path to a local folder if you already have the repository checked
+out. Provide a GitHub URL if you want to check out a repository that you do not
+yet have locally.
 
-**A. One-liner from a local repo directory.** Fastest if you're
-already inside the repo:
+<AsciinemaDemo src="/img/screenshots/tour/boss-add-repo.cast" />
 
-```bash
-cd /path/to/your/repo
-boss repo add
-```
+You can open an existing checkout or clone from a URL.
 
-**B. Terminal UI (TUI) Repo Add (local path).** From the home view press `r`,
-choose **Open project**, and point it at an existing local clone.
+## 4. Configure repo settings
 
-**C. TUI Repo Add (clone from URL).** From the home view press `r`,
-choose **Clone from URL**, paste a `https://...` or `git@...` URL, and
-pick a destination path. Bossd clones it for you and registers the
-result.
+Open the repo settings before your first serious session. Confirm the base
+branch, worktree directory, agent runner, and PR behavior match how this repo
+ships.
 
-The Repo Add wizard is documented in full at
-the Repos screen (`r` from Home).
+<AsciinemaDemo src="/img/screenshots/tour/boss-repo-settings.cast" />
 
-![Boss TUI Repo Add wizard showing the Open project / Clone from URL choice](/img/screenshots/quick-start-add-repo.png)
+Bossanova works best when each repo has a predictable default runner:
 
-## 4. Configure (optional)
+- **Claude Code**: install `bossd-plugin-claude`.
+- **Codex**: install `bossd-plugin-codex`.
+- **Custom runner**: configure the command in repo settings.
 
-Before your first session, it's worth opening repo settings (press
-`r` from the home view, then `enter` on the repo) to set:
-
-- **Setup script:** runs after every worktree is created so the
-  agent gets a working dev environment. See
-  [Setup scripts](./guides/setup-scripts.md).
-- **Linear API key:** unlocks the "Work on a Linear issue" session
-  type when starting a session.
-- **Automation flags:** opt this repo into auto-merge, CI repair, and
-  other plugin-driven automation.
-
-Run `boss repo update <repo-id> --help` for the full field list.
-The defaults are fine. You can come back to this later.
-
-![Boss TUI repo settings view with the setup script and automation toggles visible](/img/screenshots/quick-start-repo-settings.png)
+See [Agent Runners](./guides/agent-runners.md) and
+[Settings](./reference/settings.md) for the full configuration surface.
 
 ## 5. Start a session
 
-From the home view press `n`. The new-session wizard asks for two
-things:
+Press `n` from the home screen.
 
-1. **Repo:** pick from the list of registered repos.
-2. **Session type:** one of:
-   - **Create a new PR:** fresh branch off your default branch.
-   - **Work on an existing PR:** attach to an open PR.
-   - **Quick Chat:** work directly in the repo's base folder, no
-     worktree.
-   - **Work on a Linear issue:** only shown when the repo has a
-     Linear API key configured.
+The new-session flow asks for the repo, agent runner, and task. Bossanova creates
+the branch and worktree before handing the prompt to the agent.
 
-Then enter a session name (used as the branch name and PR title for
-new-PR sessions). Bossd creates the worktree, runs the setup script,
-and hands the agent its first prompt.
+<AsciinemaDemo src="/img/screenshots/tour/boss-new-session.cast" />
 
-![New-session wizard showing the session-type table with PR / Quick Chat / Linear options](/img/screenshots/quick-start-new-session.png)
+Pick the session type that matches the job:
+
+- **PR session** for implementation work that should land through GitHub.
+- **Quick Chat** for lightweight questions or repo exploration.
+- **Linear** when you want to start from an issue.
 
 ## 6. Chat with the agent
 
-The TUI drops you into the agent's chat pane. Type your prompt and
-press enter. The agent has the bundled
-skills (small markdown helper files Bossanova installs alongside the agent) loaded: `boss`, `boss-repair`,
-`boss-verify`, and `boss-finalize`, so it knows how to drive the
-boss CLI and run the project's quality gates without you having to
-spell them out.
+Open a session and attach to the chat.
 
-Long-running sessions can be detached (`ctrl+x` or `ctrl+]` from
-inside the chat pane. Press `?` from the chat pane for the keymap)
-and re-attached later from home (`enter` on the row). See
-[Parallel sessions](./concepts/worktrees.md#multiple-sessions) for how multiple
-agents run side by side.
+Use the chat pane when the agent needs direction, review, or a final decision.
+Bossanova keeps the session state visible without turning every interaction into
+a separate shell workflow.
 
-![Agent chat pane mid-conversation with skills loaded and a streaming reply](/img/screenshots/quick-start-chat.png)
+Use `Ctrl-X` to detach from a session and leave it running, or use `Ctrl-C`
+twice to stop the session and exit.
 
-## 7. Wait for CI to pass
+<AsciinemaDemo src="/img/screenshots/tour/boss-chat.cast" />
 
-For **Create a new PR** sessions, the agent opens the PR itself when
-it considers the work done, typically via `gh pr create` after its
-final commit. The PR number and CI status surface in the home view's
-**PR** and **STATUS** columns within a few seconds (driven by the
-daemon poll loop).
+## 7. Watch PR and CI state
 
-If automation is enabled for the repo, the
-[repair plugin](./plugins.md#automation) watches the PR after it opens.
-When CI fails, reviews request changes, or the base branch moves, it
-starts a repair session that checks out the PR branch, makes the fix,
-commits it, pushes it, and re-checks the PR until it is ready to merge.
-See [PR Lifecycle](./guides/pr-lifecycle.md) for the full flow.
+Return to the dashboard to see whether work is running, waiting for review,
+blocked on CI, or ready to merge.
 
-![Home view with a session showing a PR number and green CI status](/img/screenshots/quick-start-pr-open.png)
+<AsciinemaDemo src="/img/screenshots/tour/boss-pr-status.cast" />
 
-## 8. Archive when done
+For the full pull request flow, see
+[PR Lifecycle](./guides/pr-lifecycle.md).
 
-Once the PR is merged (or you've decided to abandon it), archive the
-session:
+## 8. Set up scheduled jobs
 
-- **From home:** highlight the row and press `a`.
-- **From the CLI:** `boss archive <session-id>`.
+Open the scheduled sessions view to create recurring agent work.
 
-Archiving removes the worktree but leaves the branch intact, so a
-merged PR's history is untouched, and a stale branch can still be
-inspected later. Archived sessions live on in the Trash view (`t` from Home)
-until you purge them.
+Scheduled jobs are useful for repeated maintenance: dependency checks, weekly
+cleanup, release prep, or any coding task that starts from the same prompt.
 
-![Home view after archiving, the row is gone and the worktree directory is cleaned up](/img/screenshots/quick-start-archive.png)
+<AsciinemaDemo src="/img/screenshots/tour/boss-cron.cast" />
+
+See [Scheduled Sessions](./guides/scheduled-sessions.md) for schedule format and
+failure behavior.
+
+## 9. Archive finished work
+
+Press `a` on a completed session.
+
+Archiving removes the local worktree while keeping the branch and pull request
+history available.
+
+<AsciinemaDemo src="/img/screenshots/tour/boss-archive.cast" />
+
+## 10. Clean up old chats
+
+Open Trash to review archived chats and permanently delete the ones you no
+longer need.
+
+Archiving keeps completed work out of the active dashboard. Trash gives you the
+final cleanup step when a branch, PR, or chat history is no longer useful.
+
+<AsciinemaDemo src="/img/screenshots/tour/boss-trash.cast" />
+
+## 11. Sign in to Bossanova Cloud
+
+Sign in from the TUI when you want browser access to the same local sessions.
+
+Bossanova Cloud is a paid add-on to the free Bossanova client. It lets you
+manage coding sessions remotely from the web and manage boss sessions on
+multiple machines in one place. Sessions are securely streamed to the browser so
+you can work from anywhere.
+
+<AsciinemaDemo src="/img/screenshots/tour/boss-cloud-sign-in.cast" />
+
+See [Web App](./guides/web.md) for the full cloud setup.
 
 ## Next steps
 
-- [How It Works](./how-it-works.md): the daemon, plugins, and event loop.
-- [Web App](./guides/web.md): drive the same sessions from a browser.
-- [Settings](./reference/settings.md): plugins, paths, cloud sync.
-- [Troubleshooting](./help/troubleshooting.md): when things go sideways.
+- Learn the full pull request flow in [PR Lifecycle](./guides/pr-lifecycle.md).
+- Schedule recurring work with
+  [Scheduled Sessions](./guides/scheduled-sessions.md).
+- Set up browser access in [Web App](./guides/web.md).
+- Use the [CLI Reference](./reference/cli-reference.md) when you need exact
+  command flags.

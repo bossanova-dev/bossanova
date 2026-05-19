@@ -28,6 +28,9 @@ type MockWorktreeManager struct {
 	// CreateFunc overrides the default Create behavior when set.
 	CreateFunc func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
 
+	// CreateFromExistingBranchFunc overrides the default CreateFromExistingBranch behavior when set.
+	CreateFromExistingBranchFunc func(ctx context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error)
+
 	// CloneFunc overrides the default Clone behavior when set.
 	CloneFunc func(ctx context.Context, cloneURL, localPath string) error
 
@@ -269,10 +272,14 @@ func (m *MockWorktreeManager) FetchBase(_ context.Context, _, _ string) error {
 	return err
 }
 
-func (m *MockWorktreeManager) CreateFromExistingBranch(_ context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
+func (m *MockWorktreeManager) CreateFromExistingBranch(ctx context.Context, opts gitpkg.CreateFromExistingBranchOpts) (*gitpkg.CreateResult, error) {
 	m.mu.Lock()
 	m.CreateFromExistingBranchCalls = append(m.CreateFromExistingBranchCalls, opts)
+	fn := m.CreateFromExistingBranchFunc
 	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, opts)
+	}
 	path := fmt.Sprintf("/tmp/worktrees/%s", opts.BranchName)
 	_ = os.MkdirAll(path, 0o755)
 	return &gitpkg.CreateResult{

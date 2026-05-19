@@ -20,9 +20,8 @@ you can see at a glance which slot still needs a real screenshot.
 | `tui-overview.png`                  | `intro.md`                   | Main TUI showing several active sessions across multiple repos.                            |
 | `tui-session-detail.png`            | `how-it-works.md`            | The session detail view for a single agent session, showing tmux pane and PR status.       |
 | `tui-settings.png`                  | `settings.md`                | The boss TUI settings view (`boss settings`) with `--skip-permissions` toggled visible.    |
-| `quick-start-first-launch.png`      | `quick-start.md`             | Boss TUI on first launch, empty home view prompting you to add a repo.                     |
 | `quick-start-add-repo.png`          | `quick-start.md`             | Repo Add wizard showing the Open project / Clone from URL choice.                          |
-| `quick-start-repo-settings.png`     | `quick-start.md`             | Repo settings view with the setup script and autopilot toggles visible.                    |
+| `tour/boss-repo-settings.cast`      | `quick-start.md`             | Repo settings flow with setup command, merge strategy, and automation toggles visible.     |
 | `quick-start-new-session.png`       | `quick-start.md`             | New-session wizard showing the session-type table (PR / Quick Chat / Linear).              |
 | `quick-start-chat.png`              | `quick-start.md`             | Agent chat pane mid-conversation with skills loaded and a streaming reply.                 |
 | `quick-start-review-diff.png`       | `quick-start.md`             | Terminal split showing the agent's commits and a git diff in the worktree.                 |

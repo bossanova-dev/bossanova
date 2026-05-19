@@ -168,6 +168,7 @@ func New(cfg Config) *Server {
 		provider:           cfg.Provider,
 		pluginHost:         cfg.PluginHost,
 		tmux:               cfg.Tmux,
+		branchStartLocks:   map[string]*branchStartLock{},
 		completionNotifier: cfg.CompletionNotifier,
 		authNotifier:       cfg.AuthNotifier,
 		onSessionDeleted:   cfg.OnSessionDeleted,
@@ -838,7 +839,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 				_ = pr.Close()
 				result := <-done
 				if result.err != nil {
-					s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
+					s.cleanupFailedCreateSession(ctx, sess.ID)
 				}
 				return err
 			}
@@ -986,6 +987,9 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 				pbSessions[i].DisplayIsRepairing = e.IsRepairing
 			}
 		}
+	}
+	for _, p := range pbSessions {
+		suppressStaleConflictAttention(p)
 	}
 
 	// Workflow display status used to be hydrated from the workflows table,

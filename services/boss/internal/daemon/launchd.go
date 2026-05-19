@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -163,6 +164,26 @@ func platformUninstall() error {
 		return fmt.Errorf("remove plist: %w", err)
 	}
 
+	return nil
+}
+
+func platformRestart() error {
+	if skipLaunchctl() {
+		return nil
+	}
+
+	plistPath, err := platformServicePath()
+	if err != nil {
+		return err
+	}
+
+	target := "gui/" + strconv.Itoa(os.Getuid())
+	_ = exec.Command("launchctl", "bootout", target, plistPath).Run()
+
+	cmd := exec.Command("launchctl", "bootstrap", target, plistPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 

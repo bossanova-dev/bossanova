@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -13,11 +14,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/preflight"
+	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/boss/internal/views"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
@@ -131,6 +134,174 @@ func waitForDaemon(cmd *cobra.Command, origErr error) (client.BossClient, error)
 
 func runTUI(cmd *cobra.Command) error {
 	return launchTUI(cmd, nil)
+}
+
+var upgradeCurrentVersion = func() string {
+	return buildinfo.Version
+}
+
+var checkUpgrade = func(ctx context.Context, current string) (upgrade.CheckResult, error) {
+	return upgrade.Checker{}.Check(ctx, current)
+}
+
+var executablePath = os.Executable
+
+var installUpgrade = func(ctx context.Context, plan upgrade.InstallPlan) error {
+	return upgrade.Installer{}.Install(ctx, plan)
+}
+
+// verifyUpgradeVersion confirms a user-supplied --version actually exists on
+// GitHub. Indirected through a var so tests can stub it without hitting the
+// network.
+var verifyUpgradeVersion = func(ctx context.Context, version string) error {
+	return upgrade.VerifyReleaseTag(ctx, nil, "", version)
+}
+
+var restartDaemon = daemon.Restart
+
+var loadSettings = config.Load
+
+var discoverPlugins = config.DiscoverPlugins
+
+func currentExecutableDir() (string, error) {
+	path, err := executablePath()
+	if err != nil {
+		return "", fmt.Errorf("executable path: %w", err)
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("absolute executable path: %w", err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	return filepath.Dir(resolvedPath), nil
+}
+
+func defaultPluginDir(goos string) (string, error) {
+	switch goos {
+	case "darwin", "linux":
+		return config.UserPluginDir()
+	default:
+		return "", fmt.Errorf("unsupported plugin install platform %s", goos)
+	}
+}
+
+func upgradePluginDir(goos string) (string, error) {
+	settings, err := loadSettings()
+	if err != nil {
+		return "", fmt.Errorf("load settings: %w", err)
+	}
+	if dir, ok, err := commonEnabledPluginDir(settings.Plugins); err != nil {
+		return "", err
+	} else if ok {
+		return dir, nil
+	}
+	if dir, ok, err := commonEnabledPluginDir(discoverPlugins()); err != nil {
+		return "", err
+	} else if ok {
+		return dir, nil
+	}
+	return defaultPluginDir(goos)
+}
+
+func commonEnabledPluginDir(plugins []config.PluginConfig) (string, bool, error) {
+	dir := ""
+	for _, plugin := range plugins {
+		if !plugin.Enabled || plugin.Path == "" {
+			continue
+		}
+		pluginDir := filepath.Clean(filepath.Dir(plugin.Path))
+		if dir == "" {
+			dir = pluginDir
+			continue
+		}
+		if pluginDir != dir {
+			return "", false, fmt.Errorf("enabled plugin paths span multiple directories (%s and %s); upgrade via your package manager or configure plugins in one directory", dir, pluginDir)
+		}
+	}
+	return dir, dir != "", nil
+}
+
+func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
+	ctx := cmd.Context()
+	current := upgradeCurrentVersion()
+
+	targetVersion := ""
+	if opts.Version != "" {
+		version, ok, dev := upgrade.NormalizeVersion(opts.Version)
+		if dev || !ok {
+			return fmt.Errorf("invalid upgrade version %q", opts.Version)
+		}
+		if semver.Prerelease(version) != "" {
+			return fmt.Errorf("prerelease upgrade version %q requires an explicit prerelease channel", opts.Version)
+		}
+		targetVersion = version
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "upgrade target: %s\n", targetVersion)
+		if opts.CheckOnly {
+			if err := verifyUpgradeVersion(ctx, targetVersion); err != nil {
+				return fmt.Errorf("verify upgrade version: %w", err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "release %s exists on GitHub\n", targetVersion)
+			return nil
+		}
+	} else {
+		if _, ok, dev := upgrade.NormalizeVersion(current); dev || !ok {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "boss upgrade checks require a stable release version (current: %s)\n", current)
+			return nil
+		}
+
+		result, err := checkUpgrade(ctx, current)
+		if err != nil {
+			return fmt.Errorf("check upgrade: %w", err)
+		}
+		if !result.Available {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "boss is up to date (%s)\n", current)
+			return nil
+		}
+		targetVersion = result.LatestVersion
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "upgrade available: %s -> %s\n", current, targetVersion)
+		if opts.CheckOnly {
+			return nil
+		}
+	}
+	if !opts.Yes {
+		return fmt.Errorf("refusing interactive upgrade without --yes")
+	}
+	binDir, err := currentExecutableDir()
+	if err != nil {
+		return err
+	}
+	pluginDir, err := upgradePluginDir(runtime.GOOS)
+	if err != nil {
+		return err
+	}
+	plan := upgrade.InstallPlan{
+		Version:    targetVersion,
+		ReleaseURL: "https://github.com/bossanova-dev/bossanova/releases/download/" + targetVersion,
+		GOOS:       runtime.GOOS,
+		GOARCH:     runtime.GOARCH,
+		BinDir:     binDir,
+		PluginDir:  pluginDir,
+	}
+	if err := plan.Validate(); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "installing %s assets into %s\n", targetVersion, plan.BinDir)
+	if err := installUpgrade(ctx, plan); err != nil {
+		return fmt.Errorf("install upgrade: %w", err)
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "upgrade installed %s\n", targetVersion)
+	if opts.NoRestart {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restart skipped (--no-restart)")
+	} else {
+		if err := restartDaemon(); err != nil {
+			return fmt.Errorf("restart daemon: %w", err)
+		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restarted")
+	}
+	return nil
 }
 
 func runLS(cmd *cobra.Command) error {

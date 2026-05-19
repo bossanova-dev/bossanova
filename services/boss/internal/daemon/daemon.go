@@ -54,6 +54,11 @@ func Uninstall() error {
 	return platformUninstall()
 }
 
+// Restart restarts the installed daemon through the platform service manager.
+func Restart() error {
+	return platformRestart()
+}
+
 // GetStatus returns the current daemon status.
 func GetStatus() (*Status, error) {
 	return platformGetStatus()

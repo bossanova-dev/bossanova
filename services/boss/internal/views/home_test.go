@@ -2,13 +2,16 @@ package views
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/upgrade"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -48,7 +51,7 @@ func TestRenderAttentionIndicator(t *testing.T) {
 					Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
 				},
 			},
-			want: lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8C00")).Render("!"),
+			want: "",
 		},
 		{
 			name: "review requested does not render indicator",
@@ -105,6 +108,44 @@ func TestHomeBuildTableRows_RendersRepairWarningUnderName(t *testing.T) {
 	}
 	if got := rows[1][3]; !strings.Contains(got, "repair failed (2") {
 		t.Fatalf("warning row NAME column = %q, want repair warning", got)
+	}
+	if got := rows[1][5]; got != "" {
+		t.Fatalf("warning row STATUS column = %q, want empty", got)
+	}
+}
+
+func TestHomeBuildTableRows_RendersAttentionWarningUnderName(t *testing.T) {
+	h := HomeModel{
+		sessions: []*pb.Session{
+			{
+				Id:              "sess-1",
+				RepoDisplayName: "wondercanvas",
+				Title:           "[WON-832] Improve cache eviction behaviour",
+				DisplayLabel:    "working",
+				DisplayIntent:   pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,
+				AttentionStatus: &pb.AttentionStatus{
+					NeedsAttention: true,
+					Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
+					Summary:        "auto-resolve conflicts disabled, needs human",
+				},
+			},
+		},
+	}
+
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("table rows = %d, want 2: session row plus attention warning row", len(rows))
+	}
+	if got := rows[0][1]; got != "" {
+		t.Fatalf("session attention column = %q, want empty when warning row is rendered", got)
+	}
+	if got := rows[0][5]; strings.Contains(got, "auto-resolve") {
+		t.Fatalf("STATUS column contains attention warning %q; warning belongs under NAME", got)
+	}
+	if got := rows[1][3]; !strings.Contains(got, "auto-resolve conflicts disabled") {
+		t.Fatalf("warning row NAME column = %q, want attention warning", got)
 	}
 	if got := rows[1][5]; got != "" {
 		t.Fatalf("warning row STATUS column = %q, want empty", got)
@@ -455,6 +496,20 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 		}
 	})
 
+	t.Run("key=h no longer opens history", func(t *testing.T) {
+		h := HomeModel{
+			ctx:       context.Background(),
+			repoCount: 1,
+			loading:   false,
+			sessions:  []*pb.Session{{Id: "sess-1"}},
+		}
+		h.buildTableRows()
+		_, cmd := h.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
+		if cmd != nil {
+			t.Fatal("key h returned command, want nil")
+		}
+	})
+
 	// [l] with auth configured and not logged-in dispatches ViewLogin.
 	t.Run("key=l dispatches ViewLogin when not logged in", func(t *testing.T) {
 		// We need a non-nil authMgr to enable [l]; use a real zero-value Manager.
@@ -558,6 +613,21 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 	}
 }
 
+func TestHomeViewDoesNotOfferHistoryAction(t *testing.T) {
+	h := HomeModel{
+		ctx:       context.Background(),
+		repoCount: 1,
+		loading:   false,
+		sessions:  []*pb.Session{{Id: "sess-1"}},
+	}
+	h.buildTableRows()
+
+	content := h.View().Content
+	if strings.Contains(content, "[h]istory") {
+		t.Fatalf("home action bar offered [h]istory, want removed; got: %s", content)
+	}
+}
+
 func TestApplyMergedOptimisticOverride(t *testing.T) {
 	passing := pb.DisplayStatus_DISPLAY_STATUS_PASSING
 	merged := pb.DisplayStatus_DISPLAY_STATUS_MERGED
@@ -644,5 +714,239 @@ func TestViewEmptyStateWithRepos(t *testing.T) {
 	// Should NOT show welcome message when repos exist
 	if strings.Contains(content, "Welcome to Bossanova") {
 		t.Errorf("should not show welcome message when repos exist, got: %s", content)
+	}
+}
+
+func TestHomeUpgradeBannerRenders(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+
+	model, _ := h.Update(upgradeCheckMsg{
+		current:   "v1.2.3",
+		latest:    "v1.2.4",
+		available: true,
+	})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Upgrade available") {
+		t.Fatalf("expected upgrade banner, got: %s", content)
+	}
+	if !strings.Contains(content, "v1.2.4") {
+		t.Fatalf("expected latest version in upgrade banner, got: %s", content)
+	}
+}
+
+func TestHomeUpgradeSuccessPromptsRestart(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+
+	model, _ := h.Update(upgradeRunMsg{})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Upgrade installed") {
+		t.Fatalf("expected upgrade-installed prompt, got: %s", content)
+	}
+	if !strings.Contains(content, "r restart") {
+		t.Fatalf("expected restart action in prompt, got: %s", content)
+	}
+	// The reviewer specifically asked for a relaunch hint; ensure the
+	// running TUI does not silently keep using the old binary.
+	if !strings.Contains(content, "Quit boss") {
+		t.Fatalf("expected 'Quit boss' relaunch hint, got: %s", content)
+	}
+}
+
+func TestHomeUpgradeAfterRestartTellsUserToRelaunch(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+
+	model, _ := h.Update(upgradeRunMsg{})
+	h = model.(HomeModel)
+	model, _ = h.Update(daemonRestartMsg{})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "re-launch") {
+		t.Fatalf("expected re-launch hint after restart, got: %s", content)
+	}
+}
+
+func TestHomeUpgradeFailureRendersError(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+
+	model, _ := h.Update(upgradeRunMsg{err: errors.New("checksum mismatch")})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "checksum mismatch") {
+		t.Fatalf("expected upgrade error, got: %s", content)
+	}
+}
+
+func TestHomeUpgradeCheckFailureIsSilent(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+
+	model, _ := h.Update(upgradeCheckMsg{err: errors.New("offline")})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if strings.Contains(content, "Upgrade:") {
+		t.Fatalf("passive upgrade check error rendered upgrade error banner: %s", content)
+	}
+	if strings.Contains(content, "offline") {
+		t.Fatalf("passive upgrade check error rendered raw error: %s", content)
+	}
+}
+
+func TestHomeUpgradeCheckSkipsInvalidBuildVersions(t *testing.T) {
+	for _, version := range []string{"dev", "not-semver"} {
+		t.Run(version, func(t *testing.T) {
+			called := false
+			cmd := checkUpgradeCmdForVersion(context.Background(), version, func(context.Context, string) (upgrade.CheckResult, error) {
+				called = true
+				return upgrade.CheckResult{Available: true}, nil
+			})
+
+			msg, ok := cmd().(upgradeCheckMsg)
+			if !ok {
+				t.Fatalf("cmd() returned %T, want upgradeCheckMsg", msg)
+			}
+			if called {
+				t.Fatalf("checker called for invalid build version %q", version)
+			}
+			if msg.err != nil {
+				t.Fatalf("invalid build version returned error: %v", msg.err)
+			}
+			if msg.available {
+				t.Fatalf("invalid build version returned available upgrade")
+			}
+		})
+	}
+}
+
+func TestHomeUpgradeDismissPersistsSnooze(t *testing.T) {
+	oldCachePath := upgradeCachePath
+	oldNow := upgradeNow
+	defer func() {
+		upgradeCachePath = oldCachePath
+		upgradeNow = oldNow
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "upgrade-cache.json")
+	upgradeCachePath = func() string { return cachePath }
+	pinned := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	upgradeNow = func() time.Time { return pinned }
+
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+	model, _ := h.Update(upgradeCheckMsg{
+		current:   "v1.2.3",
+		latest:    "v1.2.4",
+		url:       "https://example.test/release",
+		available: true,
+	})
+	h = model.(HomeModel)
+	model, _ = h.Update(tea.KeyPressMsg{Code: 'U', Text: "U"})
+	h = model.(HomeModel)
+
+	if h.upgradeAvailable {
+		t.Fatal("upgradeAvailable = true after dismiss, want false")
+	}
+
+	entry, ok, err := upgrade.ReadCache(cachePath)
+	if err != nil || !ok {
+		t.Fatalf("ReadCache() = (_, %v, %v), want (entry, true, nil)", ok, err)
+	}
+	if entry.SnoozedVersion != "v1.2.4" {
+		t.Fatalf("SnoozedVersion = %q, want v1.2.4", entry.SnoozedVersion)
+	}
+	if !entry.SnoozedUntil.After(pinned) {
+		t.Fatalf("SnoozedUntil = %v, want after now (%v)", entry.SnoozedUntil, pinned)
+	}
+}
+
+func TestHomeUpgradeCheckPreservesSnoozeAcrossRefresh(t *testing.T) {
+	oldCachePath := upgradeCachePath
+	oldNow := upgradeNow
+	defer func() {
+		upgradeCachePath = oldCachePath
+		upgradeNow = oldNow
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "upgrade-cache.json")
+	upgradeCachePath = func() string { return cachePath }
+	pinned := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	upgradeNow = func() time.Time { return pinned }
+
+	// Write a prior cache entry that is past its TTL but has an active
+	// snooze for v1.2.4 that runs for another six days.
+	if err := upgrade.WriteCache(cachePath, upgrade.CacheEntry{
+		CheckedAt:      pinned.Add(-48 * time.Hour),
+		CurrentVersion: "v1.2.3",
+		LatestVersion:  "v1.2.4",
+		ReleaseURL:     "https://example.test/release",
+		SnoozedVersion: "v1.2.4",
+		SnoozedUntil:   pinned.Add(6 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("WriteCache() error = %v", err)
+	}
+
+	msg := checkUpgradeCmdForVersion(context.Background(), "v1.2.3", func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{
+			CurrentVersion: "v1.2.3",
+			LatestVersion:  "v1.2.4",
+			ReleaseURL:     "https://example.test/release",
+			Available:      true,
+		}, nil
+	})().(upgradeCheckMsg)
+
+	if msg.available {
+		t.Fatal("fresh check reported available=true despite active snooze; snooze was dropped on cache refresh")
+	}
+
+	entry, ok, err := upgrade.ReadCache(cachePath)
+	if err != nil || !ok {
+		t.Fatalf("ReadCache() after refresh = (_, %v, %v), want preserved entry", ok, err)
+	}
+	if entry.SnoozedVersion != "v1.2.4" {
+		t.Fatalf("SnoozedVersion after refresh = %q, want v1.2.4", entry.SnoozedVersion)
+	}
+}
+
+func TestHomeUpgradeCheckUsesFreshCache(t *testing.T) {
+	oldCachePath := upgradeCachePath
+	oldNow := upgradeNow
+	defer func() {
+		upgradeCachePath = oldCachePath
+		upgradeNow = oldNow
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "upgrade-cache.json")
+	upgradeCachePath = func() string { return cachePath }
+	upgradeNow = func() time.Time { return time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC) }
+
+	calls := 0
+	check := func(context.Context, string) (upgrade.CheckResult, error) {
+		calls++
+		return upgrade.CheckResult{
+			CurrentVersion: "v1.2.3",
+			LatestVersion:  "v1.2.4",
+			ReleaseURL:     "https://example.test/stable",
+			Available:      true,
+		}, nil
+	}
+
+	first := checkUpgradeCmdForVersion(context.Background(), "v1.2.3", check)().(upgradeCheckMsg)
+	second := checkUpgradeCmdForVersion(context.Background(), "v1.2.3", check)().(upgradeCheckMsg)
+
+	if calls != 1 {
+		t.Fatalf("checker calls = %d, want 1", calls)
+	}
+	if !first.available || !second.available || second.latest != "v1.2.4" {
+		t.Fatalf("cached upgrade messages = first %+v second %+v, want available v1.2.4", first, second)
 	}
 }

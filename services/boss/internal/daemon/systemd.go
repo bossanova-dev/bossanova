@@ -161,6 +161,18 @@ func platformUninstall() error {
 	return nil
 }
 
+func platformRestart() error {
+	if skipLaunchctl() {
+		return nil
+	}
+
+	cmd := exec.Command("systemctl", "--user", "restart", ServiceName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl --user restart %s: %w: %s", ServiceName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // platformGetStatus returns the current daemon status via systemctl.
 func platformGetStatus() (*Status, error) {
 	unitPath, err := platformServicePath()

@@ -97,6 +97,7 @@ func rootCmd() *cobra.Command {
 
 	root.AddCommand(
 		versionCmd(),
+		upgradeCmd(),
 		lsCmd(),
 		showCmd(),
 		chatsCmd(),

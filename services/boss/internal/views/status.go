@@ -83,6 +83,34 @@ func renderDisplayStatus(sess *pb.Session, sp spinner.Model) string {
 	return styleForIntent(sess.GetDisplayIntent()).Render(label)
 }
 
+func sessionWarningHints(sess *pb.Session) []string {
+	if sess == nil {
+		return nil
+	}
+	hints := make([]string, 0, 2)
+	if hint := repairFailureHint(sess); hint != "" {
+		hints = append(hints, hint)
+	}
+	if hint := attentionWarningHint(sess); hint != "" {
+		hints = append(hints, hint)
+	}
+	return hints
+}
+
+func attentionWarningHint(sess *pb.Session) string {
+	if sess == nil || sess.GetAttentionStatus() == nil || !sess.GetAttentionStatus().GetNeedsAttention() {
+		return ""
+	}
+	summary := strings.TrimSpace(sess.GetAttentionStatus().GetSummary())
+	if summary == "" {
+		return ""
+	}
+	if strings.HasPrefix(summary, "⚠") {
+		return summary
+	}
+	return "⚠ " + summary
+}
+
 // repairFailureHint returns a short suffix like "⚠ repair failed (5×,
 // retry in ~16m)" when the session's last repair attempt failed. Empty
 // when there has been no attempt or the last attempt was clean. Kept

@@ -1,240 +1,173 @@
-# bossanova
+# <img src="https://bossanova.dev/logo.png" height="25" width="25" /> bossanova
 
-Manage multiple AI coding-agent sessions from one terminal.
+<p>
+  <a href="https://github.com/bossanova-dev/bossanova/releases"><img src="https://img.shields.io/github/v/release/bossanova-dev/bossanova" alt="Latest release"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
 
-![Bossanova TUI showing 6 active coding-agent sessions with status indicators across multiple repos](services/docs/static/img/screenshots/tui-overview.png)
+Bossanova is an orchestrator for Claude Code and Codex.
 
-## Install
+Orchestrate AI agents across multiple machines in isolated workspaces. Repair
+and respond to reviews automatically. Run scheduled tasks. Control remote Claude
+Code and Codex sessions from the web (remote control requires a Bossanova Cloud
+subscription).
+
+## Getting Started
+
+Start with one command:
+
+```bash
+boss
+```
+
+From there, the terminal UI (TUI) handles the core workflow:
+
+- [Open the dashboard](#open-the-dashboard)
+- [Add a repository](#add-a-repository)
+- [Configure repo settings](#configure-repo-settings)
+- [Start a session](#start-a-session)
+- [Chat with the agent](#chat-with-the-agent)
+- [Watch PR and CI state](#watch-pr-and-ci-state)
+- [Set up scheduled jobs](#set-up-scheduled-jobs)
+- [Archive finished work](#archive-finished-work)
+- [Clean up old chats](#clean-up-old-chats)
+- [Sign in to Bossanova Cloud](#sign-in-to-bossanova-cloud)
+
+### Open the dashboard
+
+The home screen shows active sessions across your repositories, grouped around
+the pull requests and human decisions that need attention.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-open-dashboard.gif" alt="opening the Bossanova dashboard" width="900">
+
+### Add a repository
+
+Use the TUI to add a local checkout once. After that, Bossanova can create
+isolated worktrees for future sessions in that repository.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-add-repo.gif" alt="adding a repository in the Bossanova TUI" width="900">
+
+### Configure repo settings
+
+Confirm the setup command, merge strategy, and automation toggles before
+starting serious work in the repository.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-repo-settings.gif" alt="configuring repository settings in the Bossanova TUI" width="900">
+
+### Start a session
+
+Press `n` from the home screen.
+
+Pick the repository, choose the agent runner, describe the work, and let
+Bossanova create the branch and worktree for the session.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-new-session.gif" alt="starting a new coding-agent session in the Bossanova TUI" width="900">
+
+### Chat with the agent
+
+Open a session and attach to the agent chat.
+
+Bossanova keeps the terminal focused on the active conversation while the daemon
+tracks lifecycle state in the background.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-chat.gif" alt="chatting with an AI coding agent in Bossanova" width="900">
+
+### Watch PR and CI state
+
+Return to the home screen to see whether work is still running, waiting for
+review, blocked on CI, or ready to merge.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-pr-status.gif" alt="watching pull request and CI status in Bossanova" width="900">
+
+### Set up scheduled jobs
+
+Open the scheduled sessions view to create recurring agent work.
+
+Use scheduled jobs for chores that should happen on a cadence: dependency
+checks, weekly cleanup, release prep, or any repeated coding task that starts
+from the same prompt.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-cron.gif" alt="setting up a Bossanova scheduled job" width="900">
+
+### Archive finished work
+
+Press `a` on a completed session.
+
+Archiving removes the local worktree while keeping the branch and pull request
+history intact.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-archive.gif" alt="archiving a completed Bossanova session" width="900">
+
+### Clean up old chats
+
+Open Trash to review archived chats and permanently delete the ones you no
+longer need.
+
+Archiving keeps completed work out of the active dashboard; Trash gives you the
+final cleanup step when a branch, PR, or chat history is no longer useful.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-trash.gif" alt="deleting old archived chats from Bossanova Trash" width="900">
+
+### Sign in to Bossanova Cloud
+
+Sign in from the TUI when you want browser access to the same local sessions.
+
+Bossanova Cloud is a paid add-on to the free Bossanova client. It lets you
+manage coding sessions remotely from the web and manage boss sessions on
+multiple machines in one place. Sessions are securely streamed to the browser so
+you can work from anywhere.
+
+<img src="services/marketing/public/screenshots/tour/gifs/boss-cloud-sign-in.gif" alt="signing in to Bossanova Cloud from the TUI" width="900">
+
+## Installation
+
+Install with Homebrew:
 
 ```bash
 brew install bossanova-dev/tap/bossanova
 ```
 
-## Documentation
-
-Full docs live at **[docs.bossanova.dev](https://docs.bossanova.dev)** —
-quick start, configuration, plugin overview, and more.
-
-## What You Get
-
-- **boss** - Terminal UI for managing coding-agent sessions across repositories
-- **bossd** - Background daemon handling session lifecycle and git operations
-
-Bossd supports plugins (`bossd-plugin-*` binaries) for autonomous PR handling,
-dependency updates, CI repair, and other automation. Agents run as plugins too:
-`bossd-plugin-claude` owns Claude Code sessions, and `bossd-plugin-codex` owns
-OpenAI Codex CLI sessions. Run `make plugins` to build all plugin binaries; the
-daemon will refuse to start sessions if no agent-runner plugin is installed.
-
-## Prerequisites
-
-- A supported coding-agent CLI - [Claude Code](https://claude.ai/download) or
-  [OpenAI Codex CLI](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started)
-  matching the runner plugin you plan to use
-- [GitHub CLI](https://cli.github.com/) - Required for PR operations
-
-## How It Works
-
-Bossanova uses git worktrees to isolate each coding-agent session in its own directory. The daemon (bossd) manages session lifecycle, monitors PR status, and coordinates plugins. The TUI (boss) provides a unified view across all active sessions.
-
-Sessions run in dedicated worktrees, allowing simultaneous work on multiple features without conflicts. Plugins listen for events (PR creation, CI failures, merge conflicts) and take autonomous actions.
-
-## Setup Scripts
-
-Each repository can have an optional setup script that runs automatically whenever a new worktree is created for a session. This is useful for installing dependencies, copying configuration files, or any other per-worktree initialization.
-
-### Configuring
-
-Set a setup script when adding a repo, or update it later:
+Then open the TUI:
 
 ```bash
-boss repo update my-repo --setup-script "npm install"
+boss
 ```
 
-Clear it with an empty string:
+See the docs for [installation](https://docs.bossanova.dev/install),
+[quick start](https://docs.bossanova.dev/quick-start), and
+[CLI reference](https://docs.bossanova.dev/reference/cli-reference).
+
+## What It Runs
+
+- **`boss`**: the terminal UI for managing agent sessions.
+- **`bossd`**: the local daemon that owns session lifecycle and git operations.
+- **Agent plugins**: bundled Claude Code and Codex runners, plus automation
+  plugins for repair, review, scheduled work, and integrations.
+- **Boss Cloud**: optional browser access to the same local sessions, with
+  real-time GitHub updates for conflicts, code review comments, and failing
+  checks.
+
+Read more in [How It Works](https://docs.bossanova.dev/how-it-works),
+[Plugins](https://docs.bossanova.dev/plugins), and
+[Security and Permissions](https://docs.bossanova.dev/reference/security-and-permissions).
+
+## Build From Source
 
 ```bash
-boss repo update my-repo --setup-script ""
-```
-
-### Environment Variables
-
-The following environment variables are available to the setup script:
-
-| Variable | Description |
-|---|---|
-| `REPO_DIR` | Path to the main git repository (the original clone) |
-| `WORKTREE_DIR` | Path to the worktree being set up |
-
-These let you reference files in the main repo without hardcoding paths. For example, to copy an `.env` file into each new worktree:
-
-```bash
-boss repo update my-repo --setup-script 'cp "$REPO_DIR/.env" "$WORKTREE_DIR/.env" && npm install'
-```
-
-## Configuration
-
-Bossanova reads global settings from a JSON file on disk:
-
-- **macOS:** `~/Library/Application Support/bossanova/settings.json`
-- **Linux:** `$XDG_CONFIG_HOME/bossanova/settings.json` (defaults to `~/.config/bossanova/settings.json`)
-
-The file is optional — when it's absent, defaults apply. Both `boss` and `bossd` read the same file.
-
-### Example
-
-```json
-{
-  "worktree_base_dir": "/Users/you/work/worktrees",
-  "default_agent": "claude",
-  "poll_interval_seconds": 120,
-  "plugins": [
-    {
-      "name": "claude",
-      "path": "/opt/homebrew/libexec/plugins/bossd-plugin-claude",
-      "enabled": true,
-      "config": {
-        "dangerously_skip_permissions": "true"
-      }
-    },
-    {
-      "name": "codex",
-      "path": "/opt/homebrew/libexec/plugins/bossd-plugin-codex",
-      "enabled": true
-    },
-    {
-      "name": "repair",
-      "path": "/opt/homebrew/libexec/plugins/bossd-plugin-repair",
-      "enabled": true
-    }
-  ],
-  "repair": {
-    "skills": { "repair": "boss-repair" },
-    "cooldown_minutes": 1,
-    "poll_interval_seconds": 5,
-    "sweep_interval_minutes": 10
-  },
-  "cloud": {
-    "orchestrator_url": "https://orchestrator.bossanova.dev",
-    "workos_client_id": "client_01KP805YXXAMZSN2YB4NGXS9XB",
-    "daemon_id": "dave-macbook"
-  }
-}
-```
-
-### Top-level fields
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `worktree_base_dir` | string | `~/.bossanova/worktrees` | Directory where per-session git worktrees are created. Auto-created on load. |
-| `default_agent` | string | `claude` | Name of the default agent plugin used for new sessions. Set to `codex` to start Codex sessions by default. |
-| `skills_declined` | bool | `false` | Legacy Claude-only decline flag from older releases. |
-| `skills_declined_by_agent` | object | omitted | Per-agent skill install prompt declines, keyed by agent name (`claude`, `codex`). |
-| `skills_declined_manifest_by_agent` | object | omitted | Skill payload manifest recorded when a prompt is declined; a changed manifest prompts again. |
-| `skills_installed_manifest_by_agent` | object | omitted | Skill payload manifest last installed per agent. Claude skills install to `~/.claude/skills`; Codex skills install to `~/.codex/skills`. |
-| `poll_interval_seconds` | int | `120` | How often the TUI polls for PR display status, in seconds. |
-| `plugins` | array | auto-discovered | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own binary. |
-| `repair` | object | defaults below | Repair plugin configuration. |
-| `cloud` | object | defaults below | Cloud-sync settings for `bossd` and `boss login`. |
-
-### `plugins[]` entries
-
-| Field | Type | Description |
-|---|---|---|
-| `name` | string | Plugin name (matches the suffix after `bossd-plugin-`). |
-| `path` | string | Absolute path to the plugin binary. |
-| `enabled` | bool | When `false`, the plugin is loaded-but-inert. |
-| `version` | string | Optional version string, informational. |
-| `config` | object | Plugin-specific string key/value pairs. |
-
-### `claude` plugin `config` keys
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `dangerously_skip_permissions` | string `"true"` / `"false"` | `"false"` (omit for default) | Pass `--dangerously-skip-permissions` to Claude Code. Off by default. Toggle via `boss settings --skip-permissions` / `--no-skip-permissions`, or in the boss TUI settings view. **Known gap:** the value is honored by the daemon-side tmux paths (interactive sessions, cron-spawned sessions) but is not yet forwarded into the plugin process — see the comment on `WithDangerouslySkipPermissions` in `plugins/bossd-plugin-claude/runner.go` for the design choices to wire it through. |
-
-### `repair` fields
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `skills.repair` | string | `boss-repair` | Skill invoked to attempt repair. |
-| `cooldown_minutes` | int | `1` | Minimum gap between repair attempts on the same session. |
-| `poll_interval_seconds` | int | `5` | Poll interval for repair status checks. |
-| `sweep_interval_minutes` | int | `10` | How often the plugin sweeps for sessions needing repair. |
-
-### `cloud` fields
-
-These control how `bossd` and `boss login` connect to the cloud orchestrator. All are optional; defaults target production.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `cloud.orchestrator_url` | string | `https://orchestrator.bossanova.dev` | URL `bossd` syncs with. Set to `""` for local-only mode. |
-| `cloud.workos_client_id` | string | prod WorkOS client | WorkOS client used by `boss login`. Override when pointing at a staging orchestrator. |
-| `cloud.daemon_id` | string | machine hostname | Stable identifier this daemon registers under. Change it carefully — each value creates a separate daemon record on the orchestrator. |
-
-**Note:** these fields configure the Go binaries only. The web app's WorkOS client is baked in at build time and is not affected by local `settings.json`.
-
-**Precedence** (highest wins):
-
-1. CLI flag (e.g. `boss --remote <url>`)
-2. Environment variable (`BOSSD_ORCHESTRATOR_URL`, `BOSS_WORKOS_CLIENT_ID`, `BOSSD_DAEMON_ID`)
-3. `settings.json` `cloud.*`
-4. Hardcoded default
-
-> The `cloud` block is part of an approved-but-not-yet-implemented change. Until it lands, use the matching environment variables. See the plan at `~/.claude/plans/i-have-released-to-floofy-tarjan.md`.
-
-## Alternative Install
-
-```bash
-curl -fsSL https://bossanova.dev/install.sh | sh
-```
-
-The curl installer downloads the latest GitHub Release binaries for
-macOS or Linux. It checks for a supported coding-agent CLI (`claude` or
-`codex`), GitHub CLI, and a SHA-256 tool before installing.
-
-## Build from Source
-
-Requires macOS with [Homebrew](https://brew.sh/). The `make deps` target
-installs everything else (`go`, `buf`, `golangci-lint`, `jq`, `gh`,
-`gremlins`, and the `protoc-gen-go`/`protoc-gen-connect-go` buf plugins).
-
-```bash
-git clone https://github.com/recurser/bossanova.git
+git clone https://github.com/bossanova-dev/bossanova.git
 cd bossanova
-make deps
 make
 ```
 
-Binaries land in `bin/`. The Go-based buf plugins install into `$(go env GOPATH)/bin`
-(usually `~/go/bin`) — if that directory isn't on your `PATH`, `make deps` will
-print the command to add it.
+## Contributing
 
-Other useful targets:
-
-| Target | What it does |
-|---|---|
-| `make build` | Build `boss` and `bossd` only (skips plugins and cross-compiles) |
-| `make plugins` | Build the `bossd-plugin-*` binaries |
-| `make test` | Run tests across all modules |
-| `make lint` | Run `golangci-lint` and `buf lint` |
-| `make clean` | Remove `bin/` and generated code |
-
-## Uninstall
+Issues and pull requests are welcome. Before opening a PR, run:
 
 ```bash
-# Stop and remove daemon
-boss daemon stop
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.bossanova.bossd.plist
-rm ~/Library/LaunchAgents/com.bossanova.bossd.plist
-
-# Remove binaries
-brew uninstall boss
-
-# Or if installed via curl|sh:
-rm /usr/local/bin/boss*
-rm /usr/local/bin/bossd*
-
-# Remove data (optional)
-rm -rf ~/.boss
+make lint
+make test
 ```
+
+## License
+
+MIT

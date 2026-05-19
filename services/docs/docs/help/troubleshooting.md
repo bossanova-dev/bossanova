@@ -302,15 +302,15 @@ The TUI's preflight check shows
 Two recovery paths:
 
 ```bash
-boss daemon install   # set up automatic startup (macOS LaunchAgent)
-bossd                 # run it manually in another terminal
+boss daemon install   # install and start the background service
+bossd                 # foreground fallback in another terminal
 ```
 
-`boss daemon status` reports whether the daemon is installed and
-running and prints its PID. For log content, tail the `bossd.log`
-file directly. See
-[Setup script exits non-zero](#setup-script-exits-non-zero) above for
-the path.
+On macOS, `boss daemon install` creates
+`~/Library/LaunchAgents/com.bossanova.bossd.plist` and loads it with
+`launchctl`. Homebrew installs the binaries but does not start this service for
+you. `boss daemon status` reports whether the daemon is installed and running
+and prints its PID.
 
 ### Plugins missing
 

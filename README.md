@@ -38,21 +38,21 @@ From there, the terminal UI (TUI) handles the core workflow:
 The home screen shows active sessions across your repositories, grouped around
 the pull requests and human decisions that need attention.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-open-dashboard.gif" alt="opening the Bossanova dashboard" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-open-dashboard.gif" alt="opening the Bossanova dashboard" width="900">
 
 ### Add a repository
 
 Use the TUI to add a local checkout once. After that, Bossanova can create
 isolated worktrees for future sessions in that repository.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-add-repo.gif" alt="adding a repository in the Bossanova TUI" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-add-repo.gif" alt="adding a repository in the Bossanova TUI" width="900">
 
 ### Configure repo settings
 
 Confirm the setup command, merge strategy, and automation toggles before
 starting serious work in the repository.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-repo-settings.gif" alt="configuring repository settings in the Bossanova TUI" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-repo-settings.gif" alt="configuring repository settings in the Bossanova TUI" width="900">
 
 ### Start a session
 
@@ -61,7 +61,7 @@ Press `n` from the home screen.
 Pick the repository, choose the agent runner, describe the work, and let
 Bossanova create the branch and worktree for the session.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-new-session.gif" alt="starting a new coding-agent session in the Bossanova TUI" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-new-session.gif" alt="starting a new coding-agent session in the Bossanova TUI" width="900">
 
 ### Chat with the agent
 
@@ -70,14 +70,14 @@ Open a session and attach to the agent chat.
 Bossanova keeps the terminal focused on the active conversation while the daemon
 tracks lifecycle state in the background.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-chat.gif" alt="chatting with an AI coding agent in Bossanova" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-chat.gif" alt="chatting with an AI coding agent in Bossanova" width="900">
 
 ### Watch PR and CI state
 
 Return to the home screen to see whether work is still running, waiting for
 review, blocked on CI, or ready to merge.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-pr-status.gif" alt="watching pull request and CI status in Bossanova" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-pr-status.gif" alt="watching pull request and CI status in Bossanova" width="900">
 
 ### Set up scheduled jobs
 
@@ -87,7 +87,7 @@ Use scheduled jobs for chores that should happen on a cadence: dependency
 checks, weekly cleanup, release prep, or any repeated coding task that starts
 from the same prompt.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-cron.gif" alt="setting up a Bossanova scheduled job" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-cron.gif" alt="setting up a Bossanova scheduled job" width="900">
 
 ### Archive finished work
 
@@ -96,7 +96,7 @@ Press `a` on a completed session.
 Archiving removes the local worktree while keeping the branch and pull request
 history intact.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-archive.gif" alt="archiving a completed Bossanova session" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-archive.gif" alt="archiving a completed Bossanova session" width="900">
 
 ### Clean up old chats
 
@@ -106,7 +106,7 @@ longer need.
 Archiving keeps completed work out of the active dashboard; Trash gives you the
 final cleanup step when a branch, PR, or chat history is no longer useful.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-trash.gif" alt="deleting old archived chats from Bossanova Trash" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-trash.gif" alt="deleting old archived chats from Bossanova Trash" width="900">
 
 ### Sign in to Bossanova Cloud
 
@@ -117,7 +117,7 @@ manage coding sessions remotely from the web and manage boss sessions on
 multiple machines in one place. Sessions are securely streamed to the browser so
 you can work from anywhere.
 
-<img src="services/marketing/public/screenshots/tour/gifs/boss-cloud-sign-in.gif" alt="signing in to Bossanova Cloud from the TUI" width="900">
+<img src="https://bossanova.dev/screenshots/tour/gifs/boss-cloud-sign-in.gif" alt="signing in to Bossanova Cloud from the TUI" width="900">
 
 ## Installation
 

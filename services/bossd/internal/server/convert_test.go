@@ -75,6 +75,40 @@ func TestConstructPRURL(t *testing.T) {
 	}
 }
 
+func TestSuppressStaleConflictAttention(t *testing.T) {
+	p := &pb.Session{
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING,
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
+			Summary:        "auto-resolve conflicts disabled, needs human",
+		},
+	}
+
+	suppressStaleConflictAttention(p)
+
+	if p.AttentionStatus != nil {
+		t.Fatalf("AttentionStatus = %+v, want nil for non-conflict display status", p.AttentionStatus)
+	}
+}
+
+func TestSuppressStaleConflictAttentionKeepsCurrentConflict(t *testing.T) {
+	p := &pb.Session{
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_CONFLICT,
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
+			Summary:        "auto-resolve conflicts disabled, needs human",
+		},
+	}
+
+	suppressStaleConflictAttention(p)
+
+	if p.AttentionStatus == nil || !p.AttentionStatus.NeedsAttention {
+		t.Fatalf("AttentionStatus = %+v, want current conflict warning kept", p.AttentionStatus)
+	}
+}
+
 func TestRepoToProto(t *testing.T) {
 	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 	script := "make install"

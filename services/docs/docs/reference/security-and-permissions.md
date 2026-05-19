@@ -1,6 +1,6 @@
 ---
 title: Security and Permissions
-description: What a Bossanova agent session can touch on your machine, where agent approvals come in, the Claude Code dangerously_skip_permissions toggle, and the three independent kill switches.
+description: What a Bossanova agent session can touch on your machine, where approvals come in, the dangerously_skip_permissions toggle, and the three independent kill switches.
 ---
 
 # Security and Permissions
@@ -33,13 +33,7 @@ If you want a hardened version of this story (containers, ephemeral
 VMs, scoped credentials) it is not in the box today. The pieces below
 are the levers that exist.
 
-## Agent CLI permissions
-
-Bossanova does not implement its own per-tool approval layer. It starts
-the configured agent CLI and lets that CLI enforce its own approval,
-sandbox, and authentication model.
-
-### Claude Code
+## Per-tool permissions (Claude Code)
 
 Out of the box, Claude Code prompts before each non-trivial tool call.
 `Bash`, `Edit`, `Write`, etc. That prompt is the primary safety
@@ -52,29 +46,9 @@ list of tool gates and how to configure them in
 
 Bossanova's only contribution to per-tool permissions is the
 `dangerously_skip_permissions` toggle below, i.e. the single switch
-that turns the Claude Code prompts off.
+that turns the prompts off.
 
-### Codex
-
-The `codex` plugin starts the OpenAI Codex CLI as the selected agent
-runner. Codex still owns the approval and sandbox semantics, but
-Bossanova can pass Codex-specific settings through when it starts a
-session:
-
-- `plugins[codex].config.sandbox` maps to `codex --sandbox <mode>`.
-- `plugins[codex].config.approval` maps to
-  `codex --ask-for-approval <policy>`.
-- `plugins[codex].config.dangerously_bypass_approvals_and_sandbox`
-  maps to `codex --dangerously-bypass-approvals-and-sandbox` and
-  overrides the sandbox and approval settings.
-
-These settings are exposed in the Bossanova TUI settings view and are
-projected into the plugin subprocess as `BOSS_PLUGIN_*` environment
-variables. Bossanova does not translate the Claude Code
-`dangerously_skip_permissions` setting into Codex flags; configure the
-`codex` plugin settings instead.
-
-## The Claude Code `dangerously_skip_permissions` toggle
+## The `dangerously_skip_permissions` toggle
 
 `--dangerously-skip-permissions` is the Claude Code flag that disables
 the per-tool prompts. With it on, the agent runs every tool call
@@ -236,7 +210,7 @@ declaration. **A malicious plugin can do anything `bossd` can do**.
 read the SQLite DB, read the keychain, push to git, hit the network,
 delete worktrees. Trust the plugins you install.
 
-Bundled plugins (claude, codex, dependabot, linear, repair) ship in the
+Bundled plugins (claude, dependabot, linear, repair) ship in the
 release tarball and are reviewed in the same repo as the daemon. If
 you side-load a plugin from elsewhere, you've extended the trust
 boundary to its author.

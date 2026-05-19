@@ -83,7 +83,7 @@ func TestAttach_CapturesChatCreatedAndAttachedTelemetry(t *testing.T) {
 	})
 	_ = updated.(AttachModel)
 	if cmd == nil {
-		t.Fatal("expected attach exec cmd")
+		t.Fatal("expected a tick cmd from attachReadyMsg")
 	}
 
 	if len(rec.events) != 2 {
@@ -97,5 +97,87 @@ func TestAttach_CapturesChatCreatedAndAttachedTelemetry(t *testing.T) {
 	}
 	for _, props := range rec.props {
 		assertNoSensitiveTelemetryProps(t, props)
+	}
+}
+
+// TestAttach_AttachReadyDefersExec verifies that the launching message stays
+// rendered after attachReadyMsg arrives: m.launching must remain true and
+// m.pendingExec must be primed for the follow-up tick. Without this, the
+// "Launching... Press Ctrl+X to detach" line flashes for only the RPC time.
+func TestAttach_AttachReadyDefersExec(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+
+	updated, cmd := m.Update(attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   nil,
+	})
+	got := updated.(AttachModel)
+
+	if !got.launching {
+		t.Fatal("launching = false after attachReadyMsg, want true (the message must keep rendering)")
+	}
+	if got.pendingExec == nil {
+		t.Fatal("pendingExec = nil after attachReadyMsg, want a non-nil stash")
+	}
+	if got.pendingExec.tmuxName != "boss-test-chat" {
+		t.Errorf("pendingExec.tmuxName = %q, want %q", got.pendingExec.tmuxName, "boss-test-chat")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want a tick cmd that will fire startExecMsg")
+	}
+}
+
+// TestAttach_StartExecCompletesLaunch verifies that once startExecMsg
+// fires, the launching flag is dropped, the pendingExec is consumed, and
+// a non-nil cmd (the actual tea.Exec) is returned.
+func TestAttach_StartExecCompletesLaunch(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+
+	updated, _ := m.Update(attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   nil,
+	})
+	primed := updated.(AttachModel)
+	if primed.pendingExec == nil {
+		t.Fatal("precondition: pendingExec not set by attachReadyMsg")
+	}
+
+	updated2, cmd := primed.Update(startExecMsg{})
+	got := updated2.(AttachModel)
+
+	if got.launching {
+		t.Error("launching = true after startExecMsg, want false")
+	}
+	if got.pendingExec != nil {
+		t.Error("pendingExec still set after startExecMsg, want nil")
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil after startExecMsg, want the tea.Exec cmd")
+	}
+}
+
+// TestAttach_StartExecAfterDetachIsNoop verifies that if the user has
+// already pressed esc (m.detach = true) while we were waiting on the
+// launching-display tick, the eventual startExecMsg does not relaunch
+// the exec. Without the guard, the user would be re-attached against
+// their will after detaching.
+func TestAttach_StartExecAfterDetachIsNoop(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+
+	updated, _ := m.Update(attachReadyMsg{
+		session: &pb.Session{Id: "session-1"},
+		chats:   nil,
+	})
+	primed := updated.(AttachModel)
+	primed.detach = true
+
+	updated2, cmd := primed.Update(startExecMsg{})
+	got := updated2.(AttachModel)
+
+	if cmd != nil {
+		t.Error("cmd != nil after detach + startExecMsg, want nil (no exec should fire)")
+	}
+	if got.pendingExec != nil {
+		t.Error("pendingExec still set after detach + startExecMsg, want cleared")
 	}
 }

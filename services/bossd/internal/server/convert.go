@@ -117,6 +117,19 @@ func SessionToProto(s *models.Session) *pb.Session {
 	return p
 }
 
+func suppressStaleConflictAttention(p *pb.Session) {
+	if p == nil || p.GetAttentionStatus() == nil {
+		return
+	}
+	if p.GetAttentionStatus().GetReason() != pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE {
+		return
+	}
+	if p.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_CONFLICT {
+		return
+	}
+	p.AttentionStatus = nil
+}
+
 // agentChatToProto converts a domain AgentChat to its protobuf representation.
 func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 	out := &pb.ClaudeChat{

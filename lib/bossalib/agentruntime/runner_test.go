@@ -24,6 +24,8 @@ echo "second line"
 exit 0
 `
 
+const runnerExitTimeout = 10 * time.Second
+
 func writeFakeBin(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -77,7 +79,7 @@ func TestRunnerStartCapturesOutputToLog(t *testing.T) {
 		t.Fatalf("session id = %q, want sess-1", sid)
 	}
 
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(runnerExitTimeout)
 	for r.IsRunning(sid) {
 		select {
 		case <-deadline:
@@ -115,7 +117,7 @@ func TestRunnerStart_WritesNDJSON(t *testing.T) {
 	}
 
 	// Wait for the fake to exit and lineWriter to flush.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(runnerExitTimeout)
 	for time.Now().Before(deadline) {
 		if !r.IsRunning(sid) {
 			break
@@ -123,7 +125,7 @@ func TestRunnerStart_WritesNDJSON(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if r.IsRunning(sid) {
-		t.Fatal("runner still alive after 2s")
+		t.Fatalf("runner still alive after %s", runnerExitTimeout)
 	}
 
 	data, err := os.ReadFile(logPath)
@@ -355,12 +357,25 @@ echo '{"type":"event_msg","payload":{"type":"task_complete"}}'
 exit 0
 `
 
-const fakeBinThreadStartedAfterBanner = `#!/usr/bin/env bash
-echo 'warning: loading config' >&2
-sleep 0.05
-echo '{"type":"thread.started","thread_id":"delayed-uuid"}'
+const fakeBinThreadStartedThenSleeps = `#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"fast-1234"}'
+sleep 3
 exit 0
 `
+
+func threadIDFromOutput(buf []byte) string {
+	marker := []byte(`"thread_id":"`)
+	idx := strings.Index(string(buf), string(marker))
+	if idx < 0 {
+		return ""
+	}
+	rest := string(buf[idx+len(marker):])
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
 
 // TestRunnerSessionIDFromOutput verifies the SessionIDFromOutput hook
 // re-keys the runner's session ID to whatever the hook discovers in the
@@ -420,10 +435,10 @@ func TestRunnerSessionIDFromOutput(t *testing.T) {
 	}
 }
 
-func TestRunnerSessionIDFromOutputWaitsPastBanner(t *testing.T) {
+func TestRunnerSessionIDFromOutputReturnsWhenIDArrives(t *testing.T) {
 	dir := t.TempDir()
-	binPath := filepath.Join(dir, "fake-thread-after-banner.sh")
-	if err := os.WriteFile(binPath, []byte(fakeBinThreadStartedAfterBanner), 0o755); err != nil {
+	binPath := filepath.Join(dir, "fake-thread-sleep.sh")
+	if err := os.WriteFile(binPath, []byte(fakeBinThreadStartedThenSleeps), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	logPath := filepath.Join(dir, "agent.log")
@@ -433,30 +448,24 @@ func TestRunnerSessionIDFromOutputWaitsPastBanner(t *testing.T) {
 		BuildArgv: func(in agentruntime.BuildArgvInput) []string {
 			return []string{binPath}
 		},
-		SessionIDFromOutput: func(buf []byte) string {
-			marker := []byte(`"thread_id":"`)
-			idx := strings.Index(string(buf), string(marker))
-			if idx < 0 {
-				return ""
-			}
-			rest := string(buf[idx+len(marker):])
-			end := strings.IndexByte(rest, '"')
-			if end < 0 {
-				return ""
-			}
-			return rest[:end]
-		},
+		SessionIDFromOutput: threadIDFromOutput,
 	})
 
-	sid, err := r.Start(context.Background(), dir, "", nil, "temporary-hint", logPath)
+	started := time.Now()
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath)
+	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if sid != "delayed-uuid" {
-		t.Fatalf("Start returned sid=%q, want delayed-uuid after banner output", sid)
+	if sid != "fast-1234" {
+		t.Fatalf("Start returned sid=%q, want fast-1234", sid)
 	}
-	if r.IsRunning("temporary-hint") {
-		t.Error("IsRunning still finds process under caller-supplied hint after delayed SessionIDFromOutput re-keyed it")
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("Start took %s after session ID output; want under 1.5s", elapsed)
+	}
+
+	if err := r.Stop(sid); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }
 

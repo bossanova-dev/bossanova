@@ -391,6 +391,9 @@ func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE task_mappings SET session_id = NULL WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("detach task mappings: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_check_snapshots WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("delete check snapshots: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM workflows WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete workflows: %w", err)
 	}
@@ -399,6 +402,9 @@ func (s *SQLiteSessionStore) Delete(ctx context.Context, id string) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM attempts WHERE session_id = ?`, id); err != nil {
 		return fmt.Errorf("delete attempts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE cron_jobs SET last_run_session_id = NULL WHERE last_run_session_id = ?`, id); err != nil {
+		return fmt.Errorf("detach cron job last run session: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)

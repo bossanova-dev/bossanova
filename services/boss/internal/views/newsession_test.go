@@ -20,6 +20,7 @@ type stubClient struct {
 	created          *pb.Session
 	createErr        error
 	createReq        *pb.CreateSessionRequest // captures the last CreateSession request
+	createCalls      int
 	prs              []*pb.PRSummary
 	prsErr           error
 	trackerIssues    []*pb.TrackerIssue
@@ -33,6 +34,7 @@ func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
 }
 
 func (s *stubClient) CreateSession(_ context.Context, req *pb.CreateSessionRequest) (client.CreateSessionStream, error) {
+	s.createCalls++
 	s.createReq = req
 	if s.createErr != nil {
 		return nil, s.createErr
@@ -803,6 +805,40 @@ func TestNewSession_LinearTicketNewBranch(t *testing.T) {
 	wantPlan := "Linear issue:\n\n[ENG-789] New feature\n\nAdd new feature\n"
 	if sc.createReq.Plan != wantPlan {
 		t.Fatalf("CreateSession plan = %q, want %q", sc.createReq.Plan, wantPlan)
+	}
+}
+
+func TestNewSession_StartCreatingIsIdempotentWhileCreating(t *testing.T) {
+	sc := &stubClient{
+		repos: []*pb.Repo{
+			{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main", LinearApiKey: "lin_api_abc123"},
+		},
+		trackerIssues: []*pb.TrackerIssue{
+			{
+				ExternalId: "ENG-789",
+				Title:      "New feature",
+				BranchName: "eng-789-new-feature",
+			},
+		},
+		created: &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	m.selectedType = sessionTypeLinearTicket
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+	m.selectedIssue = sc.trackerIssues[0]
+
+	first := m.startCreating()
+	second := m.startCreating()
+	if first != nil {
+		first()
+	}
+	if second != nil {
+		second()
+	}
+
+	if sc.createCalls != 1 {
+		t.Fatalf("CreateSession calls = %d, want 1", sc.createCalls)
 	}
 }
 

@@ -3,6 +3,9 @@ package views
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -13,10 +16,32 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/boss/internal/daemon"
+	"github.com/recurser/boss/internal/upgrade"
+	"github.com/recurser/bossalib/buildinfo"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-const pollInterval = 2 * time.Second
+const (
+	pollInterval        = 2 * time.Second
+	upgradeCheckTimeout = 5 * time.Second
+	upgradeCacheTTL     = 24 * time.Hour
+)
+
+// upgradeNow is the clock source used by the upgrade-check goroutine. Tests
+// override it to pin a fixed instant.
+var upgradeNow = time.Now
+
+// upgradeCachePath returns the on-disk path for the upgrade banner cache.
+// Returns "" if the user's cache directory is unavailable; callers treat an
+// empty path as "cache disabled" and skip both reads and writes.
+var upgradeCachePath = func() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "bossanova", "upgrade-cache.json")
+}
 
 // sessionListMsg carries the result of a ListSessions RPC call,
 // along with daemon-side heartbeat statuses for cross-instance display.
@@ -44,6 +69,24 @@ type authStatusMsg struct {
 	loggedIn bool
 	email    string
 }
+
+type upgradeCheckMsg struct {
+	current   string
+	latest    string
+	url       string
+	available bool
+	err       error
+}
+
+type upgradeRunMsg struct {
+	err error
+}
+
+type daemonRestartMsg struct {
+	err error
+}
+
+type upgradeCheckFunc func(context.Context, string) (upgrade.CheckResult, error)
 
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
@@ -80,17 +123,28 @@ type HomeModel struct {
 	loggedIn         bool
 	loggedInEmail    string
 	logoutConfirming bool
+
+	// Upgrade banner / restart prompt
+	upgradeAvailable bool
+	upgradeCurrent   string
+	upgradeLatest    string
+	upgradeURL       string
+	upgradeChecking  bool
+	upgradeError     string
+	upgradeDone      bool
+	restartPrompt    bool
 }
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
 func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manager) HomeModel {
 	return HomeModel{
-		client:  c,
-		ctx:     ctx,
-		authMgr: authMgr,
-		spinner: newStatusSpinner(),
-		loading: true,
-		table:   newBossTable(nil, nil, 0),
+		client:          c,
+		ctx:             ctx,
+		authMgr:         authMgr,
+		spinner:         newStatusSpinner(),
+		loading:         true,
+		table:           newBossTable(nil, nil, 0),
+		upgradeChecking: true,
 	}
 }
 
@@ -149,7 +203,7 @@ func (h HomeModel) sessionIndexForTableCursor(cursor int) (int, bool) {
 			return i, true
 		}
 		row++
-		if repairFailureHint(sess) != "" {
+		for range sessionWarningHints(sess) {
 			if cursor == row {
 				return i, true
 			}
@@ -165,7 +219,7 @@ func (h HomeModel) primarySessionRows() []int {
 	for _, sess := range h.sessions {
 		rows = append(rows, row)
 		row++
-		if repairFailureHint(sess) != "" {
+		for range sessionWarningHints(sess) {
 			row++
 		}
 	}
@@ -175,9 +229,7 @@ func (h HomeModel) primarySessionRows() []int {
 func (h HomeModel) tableDataRowCount() int {
 	rows := len(h.sessions)
 	for _, sess := range h.sessions {
-		if repairFailureHint(sess) != "" {
-			rows++
-		}
+		rows += len(sessionWarningHints(sess))
 	}
 	return rows
 }
@@ -189,7 +241,7 @@ func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 			return row
 		}
 		row++
-		if repairFailureHint(sess) != "" {
+		for range sessionWarningHints(sess) {
 			row++
 		}
 	}
@@ -239,11 +291,89 @@ func (h *HomeModel) normalizeTableCursor(previousCursor int) {
 }
 
 func (h HomeModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick}
+	cmds := []tea.Cmd{fetchSessions(h.client, h.ctx), fetchRepoCount(h.client, h.ctx), tickCmd(), h.spinner.Tick, checkUpgradeCmd(h.ctx)}
 	if h.authMgr != nil {
 		cmds = append(cmds, fetchAuthStatus(h.authMgr))
 	}
 	return tea.Batch(cmds...)
+}
+
+func checkUpgradeCmd(ctx context.Context) tea.Cmd {
+	checker := upgrade.Checker{}
+	return checkUpgradeCmdForVersion(ctx, buildinfo.Version, checker.Check)
+}
+
+func checkUpgradeCmdForVersion(ctx context.Context, current string, check upgradeCheckFunc) tea.Cmd {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	version, ok, dev := upgrade.NormalizeVersion(current)
+	if !ok || dev {
+		return func() tea.Msg {
+			return upgradeCheckMsg{}
+		}
+	}
+	if check == nil {
+		checker := upgrade.Checker{}
+		check = checker.Check
+	}
+	return func() tea.Msg {
+		now := upgradeNow()
+		cachePath := upgradeCachePath()
+		if cachePath != "" {
+			if entry, ok, err := upgrade.ReadFreshCache(cachePath, version, now, upgradeCacheTTL); err == nil && ok {
+				return upgradeCheckMsg{
+					current:   entry.CurrentVersion,
+					latest:    entry.LatestVersion,
+					url:       entry.ReleaseURL,
+					available: upgrade.CompareStableVersions(entry.CurrentVersion, entry.LatestVersion) == upgrade.CompareOlder && !entry.Suppressed(now, entry.LatestVersion),
+				}
+			}
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, upgradeCheckTimeout)
+		defer cancel()
+		result, err := check(checkCtx, version)
+		available := result.Available
+		if err == nil && cachePath != "" {
+			entry := upgrade.CacheEntry{
+				CheckedAt:      now,
+				CurrentVersion: result.CurrentVersion,
+				LatestVersion:  result.LatestVersion,
+				ReleaseURL:     result.ReleaseURL,
+			}
+			// Preserve a prior snooze across the cache refresh — without
+			// this the user's dismiss is silently discarded the moment
+			// the cache TTL expires.
+			if prior, ok, _ := upgrade.ReadCache(cachePath); ok && prior.SnoozedVersion == result.LatestVersion && !prior.SnoozedUntil.IsZero() && now.Before(prior.SnoozedUntil) {
+				entry.SnoozedVersion = prior.SnoozedVersion
+				entry.SnoozedUntil = prior.SnoozedUntil
+				if available {
+					available = false
+				}
+			}
+			_ = upgrade.WriteCache(cachePath, entry)
+		}
+		return upgradeCheckMsg{
+			current:   result.CurrentVersion,
+			latest:    result.LatestVersion,
+			url:       result.ReleaseURL,
+			available: available,
+			err:       err,
+		}
+	}
+}
+
+func runUpgradeCmd(executable string) tea.Cmd {
+	return tea.ExecProcess(
+		exec.Command(executable, "upgrade", "--yes", "--no-restart"),
+		func(err error) tea.Msg { return upgradeRunMsg{err: err} },
+	)
+}
+
+func restartDaemonCmd() tea.Cmd {
+	return func() tea.Msg {
+		return daemonRestartMsg{err: daemon.Restart()}
+	}
 }
 
 // renderAttentionIndicator returns a colored "!" for sessions needing attention,
@@ -256,7 +386,7 @@ func renderAttentionIndicator(sess *pb.Session) string {
 	case pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS:
 		return styleStatusDanger.Render("!")
 	case pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8C00")).Render("!")
+		return ""
 	default:
 		return styleStatusWarning.Render("!")
 	}
@@ -311,9 +441,7 @@ func (h *HomeModel) buildTableRows() {
 		if agents[i] == "" {
 			agents[i] = "-"
 		}
-		if hint := repairFailureHint(sess); hint != "" {
-			nameWidthLabels = append(nameWidthLabels, hint)
-		}
+		nameWidthLabels = append(nameWidthLabels, sessionWarningHints(sess)...)
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
 			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
@@ -368,7 +496,7 @@ func (h *HomeModel) buildTableRows() {
 		}
 		row = append(row, pr, statusStyled)
 		rows = append(rows, row)
-		if hint := repairFailureHint(sess); hint != "" {
+		for _, hint := range sessionWarningHints(sess) {
 			hintRow := table.Row{"", "", "", styleStatusMuted.Render(hint)}
 			if showAgentColumn {
 				hintRow = append(hintRow, "")
@@ -435,6 +563,37 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case authStatusMsg:
 		h.loggedIn = msg.loggedIn
 		h.loggedInEmail = msg.email
+		return h, nil
+
+	case upgradeCheckMsg:
+		h.upgradeChecking = false
+		if msg.err != nil {
+			return h, nil
+		}
+		h.upgradeAvailable = msg.available
+		h.upgradeCurrent = msg.current
+		h.upgradeLatest = msg.latest
+		h.upgradeURL = msg.url
+		return h, nil
+
+	case upgradeRunMsg:
+		if msg.err != nil {
+			h.upgradeError = msg.err.Error()
+			return h, nil
+		}
+		h.upgradeError = ""
+		h.upgradeDone = true
+		h.restartPrompt = true
+		return h, nil
+
+	case daemonRestartMsg:
+		if msg.err != nil {
+			h.upgradeError = msg.err.Error()
+			return h, nil
+		}
+		h.upgradeError = ""
+		h.restartPrompt = false
+		h.upgradeAvailable = false
 		return h, nil
 
 	case sessionListMsg:
@@ -510,6 +669,40 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.confirming {
 			return h.updateArchiveConfirm(msg)
 		}
+		if h.restartPrompt {
+			switch msg.String() {
+			case "r", "enter":
+				return h, restartDaemonCmd()
+			case "esc", "n":
+				h.restartPrompt = false
+				return h, nil
+			}
+		}
+		if h.upgradeAvailable {
+			switch msg.String() {
+			case "u":
+				executable, err := os.Executable()
+				if err != nil {
+					h.upgradeError = err.Error()
+					return h, nil
+				}
+				h.upgradeError = ""
+				return h, runUpgradeCmd(executable)
+			case "U":
+				h.upgradeAvailable = false
+				if path := upgradeCachePath(); path != "" {
+					_ = upgrade.SnoozeUpgrade(
+						path,
+						h.upgradeCurrent,
+						h.upgradeLatest,
+						h.upgradeURL,
+						upgradeNow(),
+						upgrade.DefaultSnoozeDuration,
+					)
+				}
+				return h, nil
+			}
+		}
 
 		switch msg.String() {
 		case "n":
@@ -534,7 +727,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			return h, func() tea.Msg { return switchViewMsg{view: ViewLogin} }
-		case "h", "enter":
+		case "enter":
 			if sess := h.selectedSession(); sess != nil {
 				if sess.Id != "" && sess.Id == h.archivingSessionID {
 					return h, nil
@@ -616,6 +809,37 @@ func renderError(msg string, width int) string {
 	return s.Render(msg)
 }
 
+func (h HomeModel) upgradeStatusView() string {
+	var lines []string
+	if h.upgradeError != "" {
+		lines = append(lines, renderError("Upgrade: "+h.upgradeError, h.width))
+	}
+	switch {
+	case h.restartPrompt:
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render("Upgrade installed. Quit boss after restart to use the new binary.  r restart  n later"))
+	case h.upgradeDone:
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render("Upgrade installed. Quit boss (q) and re-launch to use the new binary."))
+	case h.upgradeAvailable:
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf(
+			"Upgrade available: boss %s -> %s  u upgrade  U dismiss",
+			h.upgradeCurrent,
+			h.upgradeLatest,
+		)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (h HomeModel) withUpgradeStatus(content string) string {
+	status := h.upgradeStatusView()
+	if status == "" {
+		return content
+	}
+	if content == "" {
+		return status
+	}
+	return status + "\n" + content
+}
+
 // StateLabel returns a short human-readable label for a session state.
 func StateLabel(state pb.SessionState) string {
 	switch state {
@@ -679,7 +903,7 @@ func (h HomeModel) View() tea.View {
 
 	if h.loading {
 		return tea.NewView(
-			lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions..."),
+			h.withUpgradeStatus(lipgloss.NewStyle().Padding(0, 2).Render("Loading sessions...")),
 		)
 	}
 
@@ -709,7 +933,7 @@ func (h HomeModel) View() tea.View {
 			) + "\n" +
 				actionBar(actions, []string{"[q]uit"})
 		}
-		return tea.NewView(content)
+		return tea.NewView(h.withUpgradeStatus(content))
 	}
 
 	var b strings.Builder
@@ -737,24 +961,18 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		// Show attention summary for selected session if it needs attention.
-		if sess := h.selectedSession(); sess != nil && sessionNeedsAttention(sess) {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
-				"⚠ " + sess.AttentionStatus.Summary))
-			b.WriteString("\n")
-		}
 		navActions := []string{"[n]ew", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
 		if la := h.loginAction(); la != "" {
 			navActions = append(navActions, la)
 		}
 		b.WriteString(actionBar(
-			[]string{"[enter] select", "[h]istory", "[a]rchive"},
+			[]string{"[enter] select", "[a]rchive"},
 			navActions,
 			[]string{"[q]uit"},
 		))
 	}
 
-	return tea.NewView(b.String())
+	return tea.NewView(h.withUpgradeStatus(b.String()))
 }
 
 // tickMsg signals a polling refresh.

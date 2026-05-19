@@ -19,6 +19,23 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// minLaunchingDisplay is the floor on how long the "Launching... Press
+// Ctrl+X to detach" message stays on screen before we hand off to tmux.
+// Tuned so users actually see the detach shortcut even on a warm daemon.
+const minLaunchingDisplay = 1500 * time.Millisecond
+
+// startExecMsg fires once the minLaunchingDisplay budget has elapsed.
+// It triggers the deferred tea.Exec that attaches to tmux.
+type startExecMsg struct{}
+
+// pendingExec carries the prepared exec across the launching delay.
+// Populated in the attachReadyMsg handler, consumed in startExecMsg.
+type pendingExec struct {
+	ptycmd      *bosspty.PTYCommand
+	tmuxName    string
+	prefillPlan string // empty unless first attach with a plan to paste
+}
+
 // agentFinishedMsg signals that the interactive Claude process has exited or
 // the user has detached from it.
 type agentFinishedMsg struct {
@@ -66,6 +83,14 @@ type AttachModel struct {
 	// creation time. Empty inherits the parent session's AgentName. Set
 	// by the chat picker before pushing onto the attach view.
 	overrideAgent string
+
+	// launchStartedAt is captured in NewAttachModel so the minimum-display
+	// budget covers the entire launch path, not just the post-RPC tail.
+	launchStartedAt time.Time
+
+	// pendingExec is set in the attachReadyMsg handler and consumed by
+	// the startExecMsg handler once the launching-display delay elapses.
+	pendingExec *pendingExec
 }
 
 // SetTelemetry installs a telemetry client for successful attach actions.
@@ -81,12 +106,13 @@ func (m *AttachModel) SetOverrideAgent(name string) { m.overrideAgent = name }
 // If resumeID is non-empty, Claude Code will be launched with --resume.
 func NewAttachModel(c client.BossClient, parentCtx context.Context, manager *bosspty.Manager, sessionID, resumeID string) AttachModel {
 	return AttachModel{
-		client:    c,
-		ctx:       parentCtx,
-		manager:   manager,
-		sessionID: sessionID,
-		resumeID:  resumeID,
-		launching: true,
+		client:          c,
+		ctx:             parentCtx,
+		manager:         manager,
+		sessionID:       sessionID,
+		resumeID:        resumeID,
+		launching:       true,
+		launchStartedAt: time.Now(),
 	}
 }
 
@@ -113,7 +139,6 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case attachReadyMsg:
 		m.session = msg.session
-		m.launching = false
 
 		// Decide whether this is a fresh first attach to a tracker-backed
 		// session that should have its plan pasted into Claude's input box.
@@ -132,9 +157,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// chat AND ensure a tmux session is hosting it. Doing the create on
 		// the daemon side means the tmux server outlives bossd (it
 		// double-forks), so the user can kill bossd, restart it, and
-		// reattach to the same chat without losing state — which the pre-
-		// PR-#179 architecture provided implicitly via tmux indirection
-		// and the post-#179 "direct exec" replacement quietly lost.
+		// reattach to the same chat without losing state.
 		resume := m.resumeID != ""
 		if resume {
 			m.agentSessionID = m.resumeID
@@ -162,22 +185,55 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"resume": resume,
 		})
 
-		// Attach to the daemon-owned tmux session. Ctrl+X / Ctrl+] are
-		// bound to detach-client by the daemon's bindDetachKeys, so the
-		// keystroke detaches the client cleanly and the exec returns 0.
-		// We distinguish "user detached" from "claude exited" in
-		// agentFinishedMsg by probing tmux has-session afterwards.
+		// Build the tmux-attach exec command and bosspty wrapper. We do
+		// this synchronously so that, by the time the launching-display
+		// delay elapses, the manager already knows about the session and
+		// the user's Ctrl+X intercept has somewhere to land.
 		agentCmd := exec.Command("tmux", "attach", "-t", tmuxName)
 		agentCmd.Dir = msg.session.GetWorktreePath()
-
 		m.manager.RegisterSession(m.agentSessionID, m.sessionID)
 		ptycmd := bosspty.NewPTYCommand(m.manager, m.agentSessionID, agentCmd)
 
-		if prefillPlan != "" {
-			go prefillClaudeInput(m.ctx, m.manager, m.agentSessionID, prefillPlan)
+		// Stash everything needed for the deferred exec and stay in the
+		// launching state so View() keeps rendering the Ctrl+X hint.
+		m.pendingExec = &pendingExec{
+			ptycmd:      ptycmd,
+			tmuxName:    tmuxName,
+			prefillPlan: prefillPlan,
 		}
 
-		return m, tea.Exec(ptycmd, func(err error) tea.Msg {
+		// Schedule the actual tea.Exec for whenever the rest of the
+		// minimum-display budget runs out. If RPCs already took longer
+		// than the budget, fire startExecMsg on the next Update cycle.
+		remaining := minLaunchingDisplay - time.Since(m.launchStartedAt)
+		if remaining <= 0 {
+			return m, func() tea.Msg { return startExecMsg{} }
+		}
+		return m, tea.Tick(remaining, func(time.Time) tea.Msg {
+			return startExecMsg{}
+		})
+
+	case startExecMsg:
+		// Nothing to do if the user already bailed via esc (m.detach)
+		// or if some duplicate startExecMsg snuck through after we
+		// consumed the stash. Clear pendingExec in both cases so no
+		// stale state hangs around.
+		if m.detach || m.pendingExec == nil {
+			m.pendingExec = nil
+			return m, nil
+		}
+		pe := m.pendingExec
+		m.pendingExec = nil
+		m.launching = false
+
+		// Kick the prefill goroutine off here (not in attachReadyMsg)
+		// so its 3 s processWait window starts when the manager is
+		// about to start the *Process, not 1.5 s earlier.
+		if pe.prefillPlan != "" {
+			go prefillClaudeInput(m.ctx, m.manager, m.agentSessionID, pe.prefillPlan)
+		}
+
+		return m, tea.Exec(pe.ptycmd, func(err error) tea.Msg {
 			// Clear the primary screen buffer so Claude content doesn't
 			// linger in scrollback when boss exits alt screen.
 			fmt.Print("\033[2J\033[H\033[3J")
@@ -186,9 +242,7 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			//   - the tmux session is still alive (the chat survives even
 			//     if bosspty didn't see the keystroke, e.g. user typed the
 			//     literal `tmux detach` prefix or detached via the menu).
-			// Both should agree under normal use; a permissive OR means we
-			// never strand a still-alive chat behind an "ended" UI.
-			detached := ptycmd.Detached || tmuxSessionAlive(tmuxName)
+			detached := pe.ptycmd.Detached || tmuxSessionAlive(pe.tmuxName)
 			return agentFinishedMsg{err: err, detached: detached}
 		})
 

@@ -101,9 +101,17 @@ func DedupPluginConfigs(cfgs []PluginConfig) ([]PluginConfig, bool) {
 // DiscoverPlugins scans for plugin binaries relative to the running binary's
 // location. It checks ../libexec/plugins/ first (Homebrew layout, resolving
 // symlinks), then falls back to the binary's own directory (dev mode where
-// all binaries live in bin/). Returns an empty slice if no plugins are found.
+// all binaries live in bin/), then the per-user plugin dir used by upgrades.
+// Returns an empty slice if no plugins are found.
 func DiscoverPlugins() []PluginConfig {
-	return discoverPluginsFrom("")
+	if plugins := discoverPluginsFrom(""); len(plugins) > 0 {
+		return plugins
+	}
+	dir, err := UserPluginDir()
+	if err != nil {
+		return nil
+	}
+	return scanForPlugins(dir)
 }
 
 // discoverPluginsFrom is the testable core of DiscoverPlugins. When binDir is
@@ -171,6 +179,16 @@ func hasPlatformSuffix(name string) bool {
 		}
 	}
 	return false
+}
+
+// UserPluginDir returns the per-user plugin directory shared by boss upgrade
+// and bossd plugin auto-discovery.
+func UserPluginDir() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "bossanova", "plugins"), nil
 }
 
 // Settings holds global Bossanova configuration.

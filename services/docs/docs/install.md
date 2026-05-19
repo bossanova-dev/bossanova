@@ -32,8 +32,8 @@ curl -fsSL https://bossanova.dev/install.sh | sh
 
 The curl installer downloads the latest GitHub Release binaries for
 macOS (`darwin-amd64`, `darwin-arm64`) or Linux (`linux-amd64`). It
-checks for a supported coding-agent CLI (`claude` or `codex`), GitHub
-CLI, and a SHA-256 tool before installing.
+currently checks for the Claude Code CLI, GitHub CLI, and a SHA-256
+tool before installing.
 
 ## Build from source
 

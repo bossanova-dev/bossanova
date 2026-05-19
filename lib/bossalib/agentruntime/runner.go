@@ -125,8 +125,8 @@ type process struct {
 	// so the existing tests pay zero cost.
 	earlyOutputMu     sync.Mutex
 	earlyOutput       []byte
+	earlyOutputReady  chan struct{}
 	earlyOutputFull   chan struct{}
-	earlyOutputNotify chan struct{}
 	earlyOutputActive bool
 }
 
@@ -136,11 +136,11 @@ type process struct {
 // `codex exec --json` output (~150 bytes).
 const earlyOutputCap = 8 * 1024
 
-// earlyOutputTimeout bounds how long Runner.Start waits for a canonical session
-// ID to appear in early output. New-output notifications keep normal startup
-// fast; the longer fallback prevents loaded CI from returning a caller-provided
-// session hint before the agent gets CPU.
-const earlyOutputTimeout = 10 * time.Second
+// earlyOutputTimeout bounds how long Runner.Start waits for the early
+// output buffer to produce a discoverable session ID. Two seconds still keeps
+// StartRun responsive while avoiding false misses on loaded machines where
+// process startup and stdout copy scheduling can exceed half a second.
+const earlyOutputTimeout = 2 * time.Second
 
 // Option configures a Runner via NewRunner's variadic options.
 type Option func(*Runner)
@@ -294,8 +294,8 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 	}
 	if r.sessionIDFromOutput != nil {
 		p.earlyOutput = make([]byte, 0, earlyOutputCap)
+		p.earlyOutputReady = make(chan struct{}, 1)
 		p.earlyOutputFull = make(chan struct{})
-		p.earlyOutputNotify = make(chan struct{}, 1)
 		p.earlyOutputActive = true
 	}
 
@@ -380,21 +380,27 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 			Msg("agent process exited")
 	})
 
-	// SessionIDFromOutput discovery: wait briefly for the subprocess to
-	// emit its first ~8KB of stdout/stderr (or hit a timeout) then call
-	// the hook. If the hook returns a non-empty session ID, that becomes
-	// our return value — overriding the caller-provided hint. Plugins
-	// like codex use this to surface the agent-generated UUID emitted on
-	// the `thread.started` event.
+	// SessionIDFromOutput discovery: wait briefly for the subprocess to emit
+	// stdout/stderr, retrying the hook as fresh bytes arrive. If the hook
+	// returns a non-empty session ID, that becomes our return value —
+	// overriding the caller-provided hint. Plugins like codex use this to
+	// surface the agent-generated UUID emitted on the `thread.started` event.
 	if r.sessionIDFromOutput != nil {
 		timer := time.NewTimer(earlyOutputTimeout)
 		defer timer.Stop()
-		terminal := false
-		for {
-			p.earlyOutputMu.Lock()
-			snapshot := make([]byte, len(p.earlyOutput))
-			copy(snapshot, p.earlyOutput)
-			p.earlyOutputMu.Unlock()
+
+		for doneWaiting := false; !doneWaiting; {
+			select {
+			case <-p.earlyOutputReady:
+			case <-p.earlyOutputFull:
+				doneWaiting = true
+			case <-p.done:
+				doneWaiting = true
+			case <-timer.C:
+				doneWaiting = true
+			}
+
+			snapshot := p.snapshotEarlyOutput()
 			if discovered := r.sessionIDFromOutput(snapshot); discovered != "" {
 				// Re-key the process map so future Stop/IsRunning/ExitError
 				// calls find the process under the canonical session ID.
@@ -406,22 +412,25 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 				sessionID = discovered
 				break
 			}
-			if terminal {
-				break
-			}
-			select {
-			case <-p.earlyOutputNotify:
-			case <-p.earlyOutputFull:
-				terminal = true
-			case <-p.done:
-				terminal = true
-			case <-timer.C:
-				terminal = true
-			}
 		}
+		p.stopEarlyOutputCapture()
 	}
 
 	return sessionID, nil
+}
+
+func (p *process) snapshotEarlyOutput() []byte {
+	p.earlyOutputMu.Lock()
+	defer p.earlyOutputMu.Unlock()
+	snapshot := make([]byte, len(p.earlyOutput))
+	copy(snapshot, p.earlyOutput)
+	return snapshot
+}
+
+func (p *process) stopEarlyOutputCapture() {
+	p.earlyOutputMu.Lock()
+	p.earlyOutputActive = false
+	p.earlyOutputMu.Unlock()
 }
 
 // readLogTail returns up to n bytes from the end of the file at path.
@@ -615,7 +624,7 @@ func (lw *lineWriter) Write(data []byte) (int, error) {
 	// hold the per-process mutex independently of the lineWriter mutex
 	// so the goroutine reading the buffer in Start cannot deadlock with
 	// fresh subprocess writes.
-	if lw.proc.earlyOutputActive {
+	if lw.proc.earlyOutputReady != nil {
 		lw.proc.earlyOutputMu.Lock()
 		if lw.proc.earlyOutputActive {
 			remaining := earlyOutputCap - len(lw.proc.earlyOutput)
@@ -623,10 +632,10 @@ func (lw *lineWriter) Write(data []byte) (int, error) {
 			if len(toWrite) > remaining {
 				toWrite = toWrite[:remaining]
 			}
-			lw.proc.earlyOutput = append(lw.proc.earlyOutput, toWrite...)
 			if len(toWrite) > 0 {
+				lw.proc.earlyOutput = append(lw.proc.earlyOutput, toWrite...)
 				select {
-				case lw.proc.earlyOutputNotify <- struct{}{}:
+				case lw.proc.earlyOutputReady <- struct{}{}:
 				default:
 				}
 			}

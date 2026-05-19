@@ -448,6 +448,64 @@ func TestSessionStore_CRUD(t *testing.T) {
 	}
 }
 
+func TestSessionStore_DeleteCleansDependents(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	checkSnapshots := NewCheckSnapshotStore(db)
+	cronJobs := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess := createTestSession(t, sessionStore, repo.ID)
+	if err := checkSnapshots.Insert(ctx, CheckSnapshot{
+		SessionID:      sess.ID,
+		PolledAt:       time.Now(),
+		HeadSHA:        "session-delete-sha",
+		RawJSON:        "[]",
+		ComputedStatus: 1,
+	}); err != nil {
+		t.Fatalf("insert check snapshot: %v", err)
+	}
+	cron, err := cronJobs.Create(ctx, CreateCronJobParams{
+		RepoID:   repo.ID,
+		Name:     "session-delete-test",
+		Prompt:   "run",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+	if err := cronJobs.UpdateLastRun(ctx, cron.ID, UpdateCronJobLastRunParams{
+		SessionID: &sess.ID,
+		RanAt:     time.Now(),
+		Outcome:   models.CronJobOutcomePRCreated,
+	}); err != nil {
+		t.Fatalf("update cron last run: %v", err)
+	}
+
+	if err := sessionStore.Delete(ctx, sess.ID); err != nil {
+		t.Fatalf("delete session with dependents: %v", err)
+	}
+
+	var snapshotCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_check_snapshots WHERE session_id = ?`, sess.ID).Scan(&snapshotCount); err != nil {
+		t.Fatalf("count check snapshots: %v", err)
+	}
+	if snapshotCount != 0 {
+		t.Fatalf("session_check_snapshots count = %d, want 0", snapshotCount)
+	}
+
+	var lastRunSessionID sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT last_run_session_id FROM cron_jobs WHERE id = ?`, cron.ID).Scan(&lastRunSessionID); err != nil {
+		t.Fatalf("select cron last run session: %v", err)
+	}
+	if lastRunSessionID.Valid {
+		t.Fatalf("cron last_run_session_id = %q, want NULL", lastRunSessionID.String)
+	}
+}
+
 // TestSessionStore_ListActiveWithRepo verifies the join-based list returns
 // each session alongside its repo's display name in a single query, rather
 // than the old N+1 list-then-loop pattern. The structural guarantee (single

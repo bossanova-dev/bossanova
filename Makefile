@@ -1,9 +1,9 @@
 .PHONY: all build build-all build-docs clean copy-skills deps format generate lint \
 	lint-check-version lint-docs \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
-	plugins plugins-all release release-codex-check \
+	plugins plugins-all readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-race \
-	test-docs test-integration-bossd
+	test-docs test-integration-bossd test-public-mirror test-readme
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all:
@@ -28,6 +28,10 @@ PLUGIN_BINS     := $(notdir $(PLUGIN_MODULES))
 
 # Mutation testing output directory
 MUTATE_DIR := .mutate
+
+# README tour recordings and generated GIFs.
+README_TOUR_DIR := services/marketing/public/screenshots/tour
+README_TOUR_GIF_DIR := $(README_TOUR_DIR)/gifs
 
 # Suppress clang deployment-version warnings from CGO dependencies
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
@@ -199,6 +203,8 @@ $(BIN_DIR)/bossd-plugin-claude: copy-skills
 
 ## test: Run tests across all modules (generates protos first if needed)
 test: $(GEN_STAMP) copy-skills
+	$(MAKE) test-readme
+	$(MAKE) test-public-mirror
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
 		$(MAKE) -C $$mod test; \
@@ -283,6 +289,32 @@ lint-bossd: lint-check-version
 	cd services/bossd && golangci-lint run ./...
 
 ## Per-module docs targets
+test-readme:
+	node scripts/check-readme-assets.mjs
+
+## readme-gifs: Generate README GIFs from tour asciinema casts
+readme-gifs:
+	@if ! command -v agg >/dev/null 2>&1; then \
+		echo "agg is required. Install with: brew install asciinema/agg/agg"; \
+		exit 1; \
+	fi
+	@mkdir -p "$(README_TOUR_GIF_DIR)"
+	@set -e; \
+	for cast in "$(README_TOUR_DIR)"/*.cast; do \
+		name=$$(basename "$$cast" .cast); \
+		echo "==> $$name.gif"; \
+		agg \
+			--text-font-family "JetBrains Mono,Fira Code,SF Mono,Menlo,Consolas,DejaVu Sans Mono,Liberation Mono" \
+			--font-size 24 \
+			--line-height 1.25 \
+			--speed 1 \
+			"$$cast" \
+			"$(README_TOUR_GIF_DIR)/$$name.gif"; \
+	done
+
+test-public-mirror:
+	node scripts/check-public-mirror-workflows.mjs
+
 test-docs:
 	$(MAKE) -C services/docs test
 

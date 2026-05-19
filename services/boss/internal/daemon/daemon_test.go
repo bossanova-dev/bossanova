@@ -56,6 +56,13 @@ func TestWaitForSocket(t *testing.T) {
 	}
 }
 
+func TestRestartSkipsServiceManagerWhenEnvSet(t *testing.T) {
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	if err := Restart(); err != nil {
+		t.Fatalf("Restart with skip env: %v", err)
+	}
+}
+
 // TestResolveBossdPath_PrefersExecutableDir verifies that ResolveBossdPath
 // returns the bossd binary that lives next to the running executable,
 // even when a different bossd is also on PATH.

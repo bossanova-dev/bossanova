@@ -23,13 +23,20 @@ Install Bossanova with Homebrew:
 brew install bossanova-dev/tap/bossanova
 ```
 
-Then start the daemon:
+Then install and start the daemon as a background service:
 
 ```bash
-bossd start
+boss daemon install
 ```
 
-The daemon owns session state, worktree cleanup, GitHub sync, and browser access.
+Homebrew installs the `boss` and `bossd` binaries, but it does not automatically
+register or start the daemon. `boss daemon install` is Bossanova's service setup
+wrapper. On macOS it writes `~/Library/LaunchAgents/com.bossanova.bossd.plist`
+and loads it with `launchctl` as a user LaunchAgent. On Linux it creates and
+enables a user systemd service.
+
+The daemon starts at login and restarts if it exits. It owns session state,
+worktree cleanup, GitHub sync, and browser access.
 
 ## 2. Open boss for the first time
 

@@ -348,8 +348,22 @@ func (m *mockAgentChatStore) Create(_ context.Context, params db.CreateAgentChat
 	}, nil
 }
 
-func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, _ string) (*models.AgentChat, error) {
-	return nil, nil
+func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*models.AgentChat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if chat.AgentSessionID == agentSessionID {
+				return chat, nil
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if chat.AgentSessionID == agentSessionID {
+			return chat, nil
+		}
+	}
+	return nil, db.ErrAgentChatNotFound
 }
 
 func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
@@ -359,6 +373,19 @@ func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) 
 		return nil, nil
 	}
 	return m.chatsBySession[sessionID], nil
+}
+
+func (m *mockAgentChatStore) ListBySessions(_ context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	chatsBySession := make(map[string][]*models.AgentChat, len(sessionIDs))
+	if m.chatsBySession == nil {
+		return chatsBySession, nil
+	}
+	for _, id := range sessionIDs {
+		chatsBySession[id] = m.chatsBySession[id]
+	}
+	return chatsBySession, nil
 }
 
 func (m *mockAgentChatStore) UpdateTitle(_ context.Context, _, _ string) error {
@@ -373,6 +400,18 @@ func (m *mockAgentChatStore) UpdateTmuxSessionName(_ context.Context, agentSessi
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tmuxNameUpdates = append(m.tmuxNameUpdates, tmuxNameUpdate{agentSessionID: agentSessionID, name: name})
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if chat.AgentSessionID == agentSessionID {
+				chat.TmuxSessionName = name
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if chat.AgentSessionID == agentSessionID {
+			chat.TmuxSessionName = name
+		}
+	}
 	return m.updateTmuxNameErr
 }
 
@@ -384,6 +423,20 @@ func (m *mockAgentChatStore) MarkStartFailed(_ context.Context, agentSessionID, 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.markStartFailedCalls = append(m.markStartFailedCalls, markStartFailedCall{agentSessionID: agentSessionID, reason: reason})
+	for _, chats := range m.chatsBySession {
+		for _, chat := range chats {
+			if chat.AgentSessionID == agentSessionID {
+				chat.TmuxSessionName = nil
+				chat.StartError = &reason
+			}
+		}
+	}
+	for _, chat := range m.chatsWithTmux {
+		if chat.AgentSessionID == agentSessionID {
+			chat.TmuxSessionName = nil
+			chat.StartError = &reason
+		}
+	}
 	return nil
 }
 
@@ -1930,13 +1983,15 @@ type fakeTmux struct {
 	mu                sync.Mutex
 	calls             []recordedTmuxCall
 	failSubcommand    map[string]bool // subcommand → return non-zero
-	capturePaneOutput string          // output for capture-pane stdout
-	available         bool            // controls whether `tmux -V` succeeds
+	failStderr        map[string]string
+	capturePaneOutput string // output for capture-pane stdout
+	available         bool   // controls whether `tmux -V` succeeds
 }
 
 func newFakeTmux() *fakeTmux {
 	return &fakeTmux{
 		failSubcommand:    map[string]bool{},
+		failStderr:        map[string]string{},
 		capturePaneOutput: "Welcome to Claude\n❯\n",
 		available:         true,
 	}
@@ -1965,6 +2020,9 @@ func (f *fakeTmux) factory(ctx context.Context, name string, args ...string) *ex
 	f.calls = append(f.calls, recordedTmuxCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
 
 	if f.failSubcommand[subcommand] {
+		if stderr := f.failStderr[subcommand]; stderr != "" {
+			return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"$1\" >&2; exit 1", "sh", stderr)
+		}
 		return exec.CommandContext(ctx, "false")
 	}
 	if subcommand == "capture-pane" {

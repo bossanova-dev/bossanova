@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -12,6 +13,18 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func protoString(s string) string {
+	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
+func protoStringPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := protoString(*s)
+	return &v
+}
 
 // CanonicalRepoOriginURL returns the canonical https://<host>/<owner>/<repo>
 // form of originURL via vcs.NormalizeRepoURL. All bossd paths that populate
@@ -35,23 +48,23 @@ func CanonicalRepoOriginURL(originURL string) string {
 // repoToProto converts a domain Repo to its protobuf representation.
 func repoToProto(r *models.Repo) *pb.Repo {
 	p := &pb.Repo{
-		Id:                      r.ID,
-		DisplayName:             r.DisplayName,
-		LocalPath:               r.LocalPath,
-		OriginUrl:               r.OriginURL,
-		DefaultBaseBranch:       r.DefaultBaseBranch,
-		WorktreeBaseDir:         r.WorktreeBaseDir,
+		Id:                      protoString(r.ID),
+		DisplayName:             protoString(r.DisplayName),
+		LocalPath:               protoString(r.LocalPath),
+		OriginUrl:               protoString(r.OriginURL),
+		DefaultBaseBranch:       protoString(r.DefaultBaseBranch),
+		WorktreeBaseDir:         protoString(r.WorktreeBaseDir),
 		CanAutoMerge:            r.CanAutoMerge,
 		CanAutoMergeDependabot:  r.CanAutoMergeDependabot,
 		CanAutoAddressReviews:   r.CanAutoAddressReviews,
 		CanAutoResolveConflicts: r.CanAutoResolveConflicts,
-		MergeStrategy:           string(r.MergeStrategy),
-		LinearApiKey:            r.LinearAPIKey,
+		MergeStrategy:           protoString(string(r.MergeStrategy)),
+		LinearApiKey:            protoString(r.LinearAPIKey),
 		CreatedAt:               timestamppb.New(r.CreatedAt),
 		UpdatedAt:               timestamppb.New(r.UpdatedAt),
 	}
 	if r.SetupScript != nil {
-		p.SetupScript = r.SetupScript
+		p.SetupScript = protoStringPtr(r.SetupScript)
 	}
 	return p
 }
@@ -59,45 +72,45 @@ func repoToProto(r *models.Repo) *pb.Repo {
 // SessionToProto converts a domain Session to its protobuf representation.
 func SessionToProto(s *models.Session) *pb.Session {
 	p := &pb.Session{
-		Id:                s.ID,
-		RepoId:            s.RepoID,
-		Title:             s.Title,
-		Plan:              s.Plan,
-		WorktreePath:      s.WorktreePath,
-		BranchName:        s.BranchName,
-		BaseBranch:        s.BaseBranch,
+		Id:                protoString(s.ID),
+		RepoId:            protoString(s.RepoID),
+		Title:             protoString(s.Title),
+		Plan:              protoString(s.Plan),
+		WorktreePath:      protoString(s.WorktreePath),
+		BranchName:        protoString(s.BranchName),
+		BaseBranch:        protoString(s.BaseBranch),
 		State:             pb.SessionState(s.State),
 		LastCheckState:    pb.ChecksOverall(s.LastCheckState),
-		AgentName:         s.AgentName,
+		AgentName:         protoString(s.AgentName),
 		AutomationEnabled: s.AutomationEnabled,
 		AttemptCount:      int32(s.AttemptCount),
 		CreatedAt:         timestamppb.New(s.CreatedAt),
 		UpdatedAt:         timestamppb.New(s.UpdatedAt),
-		DisplayLabel:      s.DisplayLabel,
+		DisplayLabel:      protoString(s.DisplayLabel),
 		DisplayIntent:     pb.DisplayIntent(s.DisplayIntent),
 		DisplaySpinner:    s.DisplaySpinner,
 	}
 	if s.AgentSessionID != nil {
-		p.AgentSessionId = s.AgentSessionID
+		p.AgentSessionId = protoStringPtr(s.AgentSessionID)
 	}
 	if s.PRNumber != nil {
 		n := int32(*s.PRNumber)
 		p.PrNumber = &n
 	}
 	if s.PRURL != nil {
-		p.PrUrl = s.PRURL
+		p.PrUrl = protoStringPtr(s.PRURL)
 	}
 	if s.TrackerID != nil {
-		p.TrackerId = s.TrackerID
+		p.TrackerId = protoStringPtr(s.TrackerID)
 	}
 	if s.TrackerURL != nil {
-		p.TrackerUrl = s.TrackerURL
+		p.TrackerUrl = protoStringPtr(s.TrackerURL)
 	}
 	if s.TmuxSessionName != nil {
-		p.TmuxSessionName = s.TmuxSessionName
+		p.TmuxSessionName = protoStringPtr(s.TmuxSessionName)
 	}
 	if s.BlockedReason != nil {
-		p.BlockedReason = s.BlockedReason
+		p.BlockedReason = protoStringPtr(s.BlockedReason)
 	}
 	if s.ArchivedAt != nil {
 		p.ArchivedAt = timestamppb.New(*s.ArchivedAt)
@@ -106,10 +119,10 @@ func SessionToProto(s *models.Session) *pb.Session {
 	// HostService.RecordRepairOutcome. Forwarded here so `boss show <id>`
 	// and the TUI list view can surface "failing ⚠ repair: claude not in
 	// PATH (3×)" hints without an extra round trip.
-	p.LastRepairRunnerError = s.LastRepairRunnerError
-	p.LastRepairExitError = s.LastRepairExitError
+	p.LastRepairRunnerError = protoString(s.LastRepairRunnerError)
+	p.LastRepairExitError = protoString(s.LastRepairExitError)
 	p.LastRepairAttemptCount = int32(s.LastRepairAttemptCount)
-	p.LastRepairHeadSha = s.LastRepairHeadSHA
+	p.LastRepairHeadSha = protoString(s.LastRepairHeadSHA)
 	p.LastRepairDisplayStatus = pb.DisplayStatus(s.LastRepairDisplayStatus)
 	if s.LastRepairStartedAt != nil {
 		p.LastRepairStartedAt = timestamppb.New(*s.LastRepairStartedAt)
@@ -133,22 +146,22 @@ func suppressStaleConflictAttention(p *pb.Session) {
 // agentChatToProto converts a domain AgentChat to its protobuf representation.
 func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 	out := &pb.ClaudeChat{
-		Id:             c.ID,
-		SessionId:      c.SessionID,
-		AgentSessionId: c.AgentSessionID,
-		AgentName:      c.AgentName,
-		Title:          c.Title,
-		DaemonId:       c.DaemonID,
+		Id:             protoString(c.ID),
+		SessionId:      protoString(c.SessionID),
+		AgentSessionId: protoString(c.AgentSessionID),
+		AgentName:      protoString(c.AgentName),
+		Title:          protoString(c.Title),
+		DaemonId:       protoString(c.DaemonID),
 		CreatedAt:      timestamppb.New(c.CreatedAt),
 	}
 	if c.TmuxSessionName != nil {
-		out.TmuxSessionName = *c.TmuxSessionName
+		out.TmuxSessionName = protoString(*c.TmuxSessionName)
 	}
 	if c.ProviderSessionID != nil {
-		out.ProviderSessionId = *c.ProviderSessionID
+		out.ProviderSessionId = protoString(*c.ProviderSessionID)
 	}
 	if c.StartError != nil {
-		out.StartError = *c.StartError
+		out.StartError = protoString(*c.StartError)
 	}
 	return out
 }

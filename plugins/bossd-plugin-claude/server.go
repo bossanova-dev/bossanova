@@ -125,7 +125,11 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if s.runner.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	return &bossanovav1.BuildInteractiveCommandResponse{Argv: args}, nil
+	return &bossanovav1.BuildInteractiveCommandResponse{
+		Argv:          args,
+		ReadyMarker:   "❯",
+		CommandPrefix: "/",
+	}, nil
 }
 
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation

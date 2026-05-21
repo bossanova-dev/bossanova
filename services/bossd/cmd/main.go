@@ -1036,6 +1036,7 @@ func run(opts runOpts) error {
 		Attempts:           attempts,
 		AgentChats:         agentChats,
 		Workflows:          workflows,
+		TaskMappings:       taskMappings,
 		CronJobs:           cronJobs,
 		CheckSnapshots:     checkSnapshots,
 		CronScheduler:      cronScheduler,

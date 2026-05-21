@@ -68,6 +68,10 @@ func (s *NotifyingAgentChatStore) ListBySession(ctx context.Context, sessionID s
 	return s.inner.ListBySession(ctx, sessionID)
 }
 
+func (s *NotifyingAgentChatStore) ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error) {
+	return s.inner.ListBySessions(ctx, sessionIDs)
+}
+
 func (s *NotifyingAgentChatStore) UpdateTitle(ctx context.Context, id string, title string) error {
 	return s.inner.UpdateTitle(ctx, id, title)
 }

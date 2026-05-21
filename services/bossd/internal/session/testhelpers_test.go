@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"strings"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
@@ -14,9 +15,14 @@ var _ agent.AgentRunnerClient = (*fakeAgentForLifecycle)(nil)
 // Tests that exercise the HookToken path inject this via lc.SetAgent.
 // The LastConfigureHookReq field lets callers verify what was passed.
 type fakeAgentForLifecycle struct {
-	LastConfigureHookReq *bossanovav1.ConfigureFinalizeHookRequest
-	IsSupported          bool  // controls ConfigureFinalizeHook response
-	ConfigureHookErr     error // when non-nil, ConfigureFinalizeHook returns it
+	LastConfigureHookReq        *bossanovav1.ConfigureFinalizeHookRequest
+	LastBuildInteractiveCommand *bossanovav1.BuildInteractiveCommandRequest
+	IsSupported                 bool  // controls ConfigureFinalizeHook response
+	ConfigureHookErr            error // when non-nil, ConfigureFinalizeHook returns it
+	ReadyMarker                 string
+	CommandPrefix               string
+	ConsumesInitialInput        bool
+	OnConfigureHook             func()
 }
 
 func newFakeAgent() *fakeAgentForLifecycle {
@@ -45,6 +51,9 @@ func (f *fakeAgentForLifecycle) ExitStatus(_ context.Context, _ *bossanovav1.Age
 
 func (f *fakeAgentForLifecycle) ConfigureFinalizeHook(_ context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	f.LastConfigureHookReq = req
+	if f.OnConfigureHook != nil {
+		f.OnConfigureHook()
+	}
 	if f.ConfigureHookErr != nil {
 		return nil, f.ConfigureHookErr
 	}
@@ -52,14 +61,30 @@ func (f *fakeAgentForLifecycle) ConfigureFinalizeHook(_ context.Context, req *bo
 }
 
 func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	f.LastBuildInteractiveCommand = req
 	// Mirror the shape of plugins/bossd-plugin-claude's real argv so cron
 	// tests that assert on the substring "claude --session-id " still pass
 	// against the extracted StartTmuxChat path. The production plugin
 	// returns bare argv (no shell wrapper) so tmux can spawn claude
 	// directly on a PTY; capture-to-disk is handled by `tmux pipe-pane`
 	// after the spawn, not by piping stdout through tee.
+	argv := []string{"claude", "--session-id", req.SessionId}
+	if f.ConsumesInitialInput {
+		if req.GetInitialCommand() != "" {
+			prefix := f.CommandPrefix
+			if prefix == "" {
+				prefix = "/"
+			}
+			argv = append(argv, prefix+strings.TrimLeft(req.GetInitialCommand(), "/$"))
+		} else if req.GetInitialPrompt() != "" {
+			argv = append(argv, req.GetInitialPrompt())
+		}
+	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv: []string{"claude", "--session-id", req.SessionId},
+		Argv:                 argv,
+		ReadyMarker:          f.ReadyMarker,
+		CommandPrefix:        f.CommandPrefix,
+		ConsumesInitialInput: f.ConsumesInitialInput,
 	}, nil
 }
 

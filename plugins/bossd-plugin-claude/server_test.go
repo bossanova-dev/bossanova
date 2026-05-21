@@ -246,6 +246,12 @@ func TestServer_BuildInteractiveCommand(t *testing.T) {
 	if !reflect.DeepEqual(resp.Argv, want) {
 		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
 	}
+	if resp.ReadyMarker != "❯" {
+		t.Fatalf("ReadyMarker: got %q, want %q", resp.ReadyMarker, "❯")
+	}
+	if resp.CommandPrefix != "/" {
+		t.Fatalf("CommandPrefix: got %q, want /", resp.CommandPrefix)
+	}
 	for _, a := range resp.Argv {
 		if a == "bash" || a == "sh" || strings.Contains(a, "tee ") || strings.Contains(a, "| ") {
 			t.Errorf("Argv must not be shell-wrapped (pipe-tee breaks TTY detection): %v", resp.Argv)
@@ -265,6 +271,12 @@ func TestServer_BuildInteractiveCommand_Resume(t *testing.T) {
 	want := []string{"claude", "--resume", "rid"}
 	if !reflect.DeepEqual(resp.Argv, want) {
 		t.Fatalf("Argv: got %v, want %v", resp.Argv, want)
+	}
+	if resp.ReadyMarker != "❯" {
+		t.Fatalf("ReadyMarker: got %q, want %q", resp.ReadyMarker, "❯")
+	}
+	if resp.CommandPrefix != "/" {
+		t.Fatalf("CommandPrefix: got %q, want /", resp.CommandPrefix)
 	}
 }
 

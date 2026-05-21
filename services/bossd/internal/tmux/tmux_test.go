@@ -568,6 +568,43 @@ func TestHasSession(t *testing.T) {
 	}
 }
 
+func TestHasSessionStatusDistinguishesTmuxErrors(t *testing.T) {
+	ctx := context.Background()
+
+	missing := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"can't find session: missing\" >&2; exit 1")
+	}))
+	exists, err := missing.HasSessionStatus(ctx, "missing")
+	if err != nil {
+		t.Fatalf("missing HasSessionStatus error = %v, want nil", err)
+	}
+	if exists {
+		t.Fatal("missing HasSessionStatus exists = true, want false")
+	}
+
+	unavailable := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"error connecting to /tmp/tmux/default\" >&2; exit 1")
+	}))
+	if _, err := unavailable.HasSessionStatus(ctx, "maybe-live"); err == nil {
+		t.Fatal("tmux command error returned nil error")
+	}
+}
+
+func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
+	pane := strings.Join([]string{
+		"❯ /boss-repair",
+		"repair output",
+		"❯",
+	}, "\n")
+	if lineStillAtPrompt(pane, "/boss-repair") {
+		t.Fatal("scrollback prompt line reported as current input")
+	}
+
+	if !lineStillAtPrompt("repair output\n❯ /boss-repair\n", "/boss-repair") {
+		t.Fatal("current prompt input was not detected")
+	}
+}
+
 func TestKillSession_NotExist(t *testing.T) {
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -854,6 +891,163 @@ func TestSendPlan_HappyPath_Order(t *testing.T) {
 	enterCall := calls[len(calls)-1]
 	if !equalSlices(enterCall.args, []string{"-t", "boss-test-sess", "Enter"}) {
 		t.Errorf("send-keys args = %v, want [-t boss-test-sess Enter]", enterCall.args)
+	}
+}
+
+func TestSendPlan_CustomReadyMarker(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{
+			"Welcome to Codex\n",
+			"Welcome to Codex\n›\n",
+		},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.SendPlanWithReadyMarker(context.Background(), "boss-test-sess", "fix it", "›"); err != nil {
+		t.Fatalf("SendPlanWithReadyMarker: unexpected error: %v", err)
+	}
+
+	calls := fake.callsCopy()
+	if len(calls) == 0 || calls[len(calls)-1].subcommand != "send-keys" {
+		t.Fatalf("expected SendPlanWithReadyMarker to paste and submit, calls = %+v", calls)
+	}
+}
+
+func TestSendLineWithReadyMarker_UsesLiteralKeysAndEnter(t *testing.T) {
+	fake := &sendPlanRecordingFactory{
+		capturePaneOutputs: []string{
+			"Welcome to Codex\n›\n",
+		},
+	}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		deadline:     time.Second,
+		pollInterval: 5 * time.Millisecond,
+		readyMarker:  "›",
+	}); err != nil {
+		t.Fatalf("SendLineWithReadyMarker: unexpected error: %v", err)
+	}
+
+	calls := fake.callsCopy()
+	if len(calls) < 3 {
+		t.Fatalf("expected capture-pane plus two send-keys calls, got %+v", calls)
+	}
+	for _, call := range calls {
+		switch call.subcommand {
+		case "load-buffer", "paste-buffer":
+			t.Fatalf("SendLineWithReadyMarker must not use bracketed paste, saw %s", call.subcommand)
+		}
+	}
+
+	textCall := calls[len(calls)-2]
+	if textCall.subcommand != "send-keys" ||
+		!equalSlices(textCall.args, []string{"-t", "boss-test-sess", "-l", "$boss-repair"}) {
+		t.Fatalf("literal send-keys call = %+v", textCall)
+	}
+	enterCall := calls[len(calls)-1]
+	if enterCall.subcommand != "send-keys" ||
+		!equalSlices(enterCall.args, []string{"-t", "boss-test-sess", "Enter"}) {
+		t.Fatalf("Enter send-keys call = %+v", enterCall)
+	}
+}
+
+func TestSendLineWithReadyMarker_ReturnsErrorWhenCommandRemainsAtPrompt(t *testing.T) {
+	t.Parallel()
+
+	var calls []sendPlanCall
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		calls = append(calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+		switch subcommand {
+		case "capture-pane":
+			return exec.CommandContext(ctx, "printf", "%s", "ready\n› $boss-repair\n")
+		default:
+			return exec.CommandContext(ctx, "true")
+		}
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 5 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+
+	if err == nil {
+		t.Fatal("expected command submission verification error")
+	}
+	if !strings.Contains(err.Error(), "command was not submitted") {
+		t.Fatalf("expected command submission error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "$boss-repair") {
+		t.Fatalf("expected stuck command in error, got %v", err)
+	}
+	assertTmuxLiteralEnterOrder(t, calls, "$boss-repair")
+}
+
+func TestSendLineWithReadyMarker_SucceedsWhenCommandLeavesPrompt(t *testing.T) {
+	t.Parallel()
+
+	captureCount := 0
+	var calls []sendPlanCall
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		calls = append(calls, sendPlanCall{subcommand: subcommand, args: append([]string(nil), args[1:]...)})
+		if subcommand == "capture-pane" {
+			captureCount++
+			if captureCount == 1 {
+				return exec.CommandContext(ctx, "printf", "%s", "ready\n› \n")
+			}
+			return exec.CommandContext(ctx, "printf", "%s", "working\nRunning boss-repair\n")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	err := c.sendLine(context.Background(), "boss-test-sess", "$boss-repair", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+
+	if err != nil {
+		t.Fatalf("SendLineWithReadyMarker: unexpected error: %v", err)
+	}
+	assertTmuxLiteralEnterOrder(t, calls, "$boss-repair")
+}
+
+func assertTmuxLiteralEnterOrder(t *testing.T, calls []sendPlanCall, line string) {
+	t.Helper()
+
+	var literalIndex, enterIndex = -1, -1
+	for i, call := range calls {
+		if call.subcommand != "send-keys" {
+			continue
+		}
+		args := strings.Join(call.args, "\x00")
+		if strings.Contains(args, "-l\x00"+line) {
+			literalIndex = i
+		}
+		if strings.HasSuffix(args, "\x00Enter") {
+			enterIndex = i
+		}
+	}
+
+	if literalIndex == -1 {
+		t.Fatalf("missing literal send-keys call for %q in %#v", line, calls)
+	}
+	if enterIndex == -1 {
+		t.Fatalf("missing Enter send-keys call in %#v", calls)
+	}
+	if literalIndex > enterIndex {
+		t.Fatalf("literal send-keys must happen before Enter: literal=%d enter=%d", literalIndex, enterIndex)
 	}
 }
 

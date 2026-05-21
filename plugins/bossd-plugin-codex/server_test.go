@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -131,13 +130,11 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// TestBuildInteractiveCommandUsesLogTeeArgv verifies the interactive argv
-// is wrapped in LogTeeArgv (bash -c '... 2>&1 | tee <log>'), that
-// fresh sessions invoke `codex` directly without `resume`, and that resume
-// sessions append `resume <UUID>` as a positional subcommand. The shell
-// must be bash (not sh) because LogTeeArgv uses `set -o pipefail`, a
-// bash extension that fails on dash/ash.
-func TestBuildInteractiveCommandUsesLogTeeArgv(t *testing.T) {
+// TestBuildInteractiveCommandKeepsTTY verifies the interactive argv runs codex
+// directly in the tmux pane. TmuxChat mirrors output with pipe-pane, so wrapping
+// the command in a tee pipeline would make stdout non-TTY and codex exits
+// before the ready marker appears.
+func TestBuildInteractiveCommandKeepsTTY(t *testing.T) {
 	s := newTestServer(t)
 	logPath := "/tmp/codex.log"
 
@@ -148,18 +145,26 @@ func TestBuildInteractiveCommandUsesLogTeeArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	if len(resp.Argv) < 3 || resp.Argv[0] != "bash" || resp.Argv[1] != "-c" {
-		t.Fatalf("Argv expected bash -c <script>, got %v", resp.Argv)
+	if len(resp.Argv) == 0 {
+		t.Fatalf("Argv empty")
 	}
-	script := resp.Argv[2]
-	if !strings.Contains(script, "codex") {
-		t.Errorf("script does not invoke codex: %q", script)
+	if resp.Argv[0] != "codex" {
+		t.Fatalf("Argv expected codex directly, got %v", resp.Argv)
 	}
-	if strings.Contains(script, "resume") {
-		t.Errorf("fresh interactive command should not contain 'resume': %q", script)
+	if contains(resp.Argv, "bash") || contains(resp.Argv, "tee") || contains(resp.Argv, logPath) {
+		t.Fatalf("Argv should not tee or wrap codex output, got %v", resp.Argv)
 	}
-	if !strings.Contains(script, "tee") || !strings.Contains(script, logPath) {
-		t.Errorf("script does not tee to log path: %q", script)
+	if contains(resp.Argv, "resume") {
+		t.Errorf("fresh interactive command should not contain resume: %v", resp.Argv)
+	}
+	if resp.ReadyMarker != "›" {
+		t.Fatalf("ReadyMarker = %q, want Codex prompt marker %q", resp.ReadyMarker, "›")
+	}
+	if resp.CommandPrefix != "$" {
+		t.Fatalf("CommandPrefix = %q, want $", resp.CommandPrefix)
+	}
+	if resp.ConsumesInitialInput {
+		t.Fatal("ConsumesInitialInput = true with no startup input")
 	}
 
 	// Resume.
@@ -169,8 +174,67 @@ func TestBuildInteractiveCommandUsesLogTeeArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand(resume): %v", err)
 	}
-	if !strings.Contains(respR.Argv[2], "resume uuid-9") {
-		t.Errorf("resume script missing 'resume uuid-9' positional: %q", respR.Argv[2])
+	want := []string{"codex", "resume", "uuid-9"}
+	if !equalStrings(respR.Argv, want) {
+		t.Errorf("resume argv = %v, want %v", respR.Argv, want)
+	}
+	if respR.ReadyMarker != "›" {
+		t.Fatalf("resume ReadyMarker = %q, want Codex prompt marker %q", respR.ReadyMarker, "›")
+	}
+	if respR.CommandPrefix != "$" {
+		t.Fatalf("resume CommandPrefix = %q, want $", respR.CommandPrefix)
+	}
+	if respR.ConsumesInitialInput {
+		t.Fatal("resume ConsumesInitialInput = true with no startup input")
+	}
+}
+
+func TestBuildInteractiveCommandEmbedsStartupCommand(t *testing.T) {
+	s := newTestServer(t)
+
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:      "abc",
+		InitialCommand: "boss-repair",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if got, want := resp.Argv[len(resp.Argv)-1], "$boss-repair"; got != want {
+		t.Fatalf("fresh command argv last = %q, want %q; argv=%v", got, want, resp.Argv)
+	}
+	if !resp.ConsumesInitialInput {
+		t.Fatal("ConsumesInitialInput = false, want true")
+	}
+	if resp.ReadyMarker != "›" {
+		t.Fatalf("ReadyMarker = %q, want Codex prompt marker %q", resp.ReadyMarker, "›")
+	}
+	if resp.CommandPrefix != "$" {
+		t.Fatalf("CommandPrefix = %q, want $", resp.CommandPrefix)
+	}
+}
+
+func TestBuildInteractiveCommandEmbedsStartupPromptOnResume(t *testing.T) {
+	s := newTestServer(t)
+
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:     "uuid-9",
+		Resume:        true,
+		InitialPrompt: "repair this PR",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand(resume): %v", err)
+	}
+	if len(resp.Argv) < 4 {
+		t.Fatalf("resume argv too short: %v", resp.Argv)
+	}
+	if got, want := resp.Argv[:3], []string{"codex", "resume", "uuid-9"}; !equalStrings(got, want) {
+		t.Fatalf("resume argv prefix = %v, want %v", got, want)
+	}
+	if got, want := resp.Argv[len(resp.Argv)-1], "repair this PR"; got != want {
+		t.Fatalf("resume argv last = %q, want %q; argv=%v", got, want, resp.Argv)
+	}
+	if !resp.ConsumesInitialInput {
+		t.Fatal("ConsumesInitialInput = false, want true")
 	}
 }
 
@@ -189,10 +253,9 @@ func TestBuildInteractiveCommandIncludesRunnerOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	script := resp.Argv[2]
 	for _, want := range []string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request", "--model", "gpt-5"} {
-		if !strings.Contains(script, want) {
-			t.Errorf("script missing %q: %s", want, script)
+		if !contains(resp.Argv, want) {
+			t.Errorf("argv missing %q: %v", want, resp.Argv)
 		}
 	}
 }
@@ -213,15 +276,14 @@ func TestBuildInteractiveCommandIncludesDangerouslyBypass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	script := resp.Argv[2]
-	if !strings.Contains(script, "--dangerously-bypass-approvals-and-sandbox") {
-		t.Errorf("script missing --dangerously-bypass-approvals-and-sandbox: %s", script)
+	if !contains(resp.Argv, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Errorf("argv missing --dangerously-bypass-approvals-and-sandbox: %v", resp.Argv)
 	}
-	if strings.Contains(script, "--sandbox") {
-		t.Errorf("script should drop --sandbox when bypass is on: %s", script)
+	if contains(resp.Argv, "--sandbox") {
+		t.Errorf("argv should drop --sandbox when bypass is on: %v", resp.Argv)
 	}
-	if strings.Contains(script, "--ask-for-approval") {
-		t.Errorf("script should drop --ask-for-approval when bypass is on: %s", script)
+	if contains(resp.Argv, "--ask-for-approval") {
+		t.Errorf("argv should drop --ask-for-approval when bypass is on: %v", resp.Argv)
 	}
 }
 
@@ -260,12 +322,11 @@ func TestIsRunningReportsRunnerState(t *testing.T) {
 	}
 }
 
-// TestExitStatusUnknownSessionIsComplete asserts ExitStatus for a session
-// the runner doesn't know about reports IsComplete=true with an empty
-// ExitError. The poll-fallback loop relies on this so a stale session ID
-// (e.g. daemon restart bookkeeping) doesn't pin the daemon in IsComplete=false
-// forever.
-func TestExitStatusUnknownSessionIsComplete(t *testing.T) {
+// TestExitStatusUnknownHeadlessRunnerSessionIsComplete documents the
+// headless StartRun polling contract. Interactive tmux chats are launched via
+// BuildInteractiveCommand and must not use this runner status as proof of chat
+// completion.
+func TestExitStatusUnknownHeadlessRunnerSessionIsComplete(t *testing.T) {
 	s := newTestServer(t)
 	resp, err := s.ExitStatus(context.Background(), &bossanovav1.AgentExitStatusRequest{
 		SessionId: "session-the-runner-never-knew",

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,10 +16,26 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// repairSkill is the skill the repair plugin invokes on Claude when a PR
-// needs auto-repair. Hard-coded for now; making it overridable via
-// repairConfig is a small follow-up if needed.
-const repairSkill = "/boss-repair"
+// repairCommand is the boss command the repair plugin asks the active coding
+// agent to run. The daemon formats it with the agent runner's command prefix.
+const repairCommand = "boss-repair"
+
+var alreadyExistsAgentSessionRE = regexp.MustCompile(`agent_session_id=([^)]+)`)
+
+func isInteractiveChatIncomplete(exitErr string) bool {
+	return strings.Contains(exitErr, "interactive chat did not report completion")
+}
+
+func agentSessionIDFromAlreadyExists(err error) string {
+	if err == nil {
+		return ""
+	}
+	matches := alreadyExistsAgentSessionRE.FindStringSubmatch(err.Error())
+	if len(matches) != 2 {
+		return ""
+	}
+	return matches[1]
+}
 
 // repairCleanupTimeout bounds the detached cleanup context the repair
 // goroutine uses for post-run RPCs (SetRepairStatus, FireSessionEvent,
@@ -510,7 +528,8 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	if headSHA != "" &&
 		info.LastRepairHeadSHA == headSHA &&
 		info.LastRepairDisplayStatus == displayStatus &&
-		info.LastRepairRunnerError == "" {
+		info.LastRepairRunnerError == "" &&
+		!isInteractiveChatIncomplete(info.LastRepairExitError) {
 		m.logger.Info().
 			Str("session_id", sessionID).
 			Str("head_sha", headSHA).
@@ -594,6 +613,7 @@ type sessionInfo struct {
 	LastRepairHeadSHA       string
 	LastRepairDisplayStatus bossanovav1.DisplayStatus
 	LastRepairRunnerError   string
+	LastRepairExitError     string
 	// LastRepairStartedAt and LastRepairAttemptCount are sourced from
 	// the daemon-persisted last_repair_* columns so the cooldown gate
 	// survives daemon restarts and plugin reloads. The previous
@@ -634,6 +654,7 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 			LastRepairHeadSHA:       sess.GetLastRepairHeadSha(),
 			LastRepairDisplayStatus: sess.GetLastRepairDisplayStatus(),
 			LastRepairRunnerError:   sess.GetLastRepairRunnerError(),
+			LastRepairExitError:     sess.GetLastRepairExitError(),
 			LastRepairAttemptCount:  sess.GetLastRepairAttemptCount(),
 		}
 		if ts := sess.GetLastChatActivityAt(); ts != nil {
@@ -932,23 +953,59 @@ func (m *repairMonitor) repairSession(
 
 	startResp, err := m.host.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{
 		SessionId: sessionID,
-		Prompt:    repairSkill,
+		Command:   repairCommand,
 		Title:     "Repair: " + sessionName,
 	})
 	if err != nil {
 		if grpcstatus.Code(err) == codes.AlreadyExists {
-			// Soft skip — another instance owns this run, do not record an
-			// outcome here (the winner's deferred cleanup will).
-			log.Info().Err(err).Msg("another repair run is active, skipping repair")
+			staleAgentSessionID := agentSessionIDFromAlreadyExists(err)
+			if staleAgentSessionID == "" {
+				// Soft skip — another instance owns this run, do not record an
+				// outcome here (the winner's deferred cleanup will).
+				log.Info().Err(err).Msg("another repair run is active, skipping repair")
+				return
+			}
+			reclaimResp, reclaimErr := m.host.ReclaimRepairChat(ctx, &bossanovav1.ReclaimRepairChatHostRequest{
+				SessionId:      sessionID,
+				AgentSessionId: staleAgentSessionID,
+				Reason:         "repair StartChatRun returned AlreadyExists; daemon validated stale repair chat and reclaimed it",
+			})
+			if reclaimErr != nil {
+				log.Info().Err(reclaimErr).
+					Str("stale_agent_session_id", staleAgentSessionID).
+					Msg("repair chat reclaim failed, skipping repair")
+				return
+			}
+			log.Info().
+				Str("stale_agent_session_id", staleAgentSessionID).
+				Bool("reclaimed", reclaimResp.GetReclaimed()).
+				Str("tmux_session_name", reclaimResp.GetTmuxSessionName()).
+				Msg("reclaimed stale repair chat, retrying repair")
+
+			startResp, err = m.host.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{
+				SessionId: sessionID,
+				Command:   repairCommand,
+				Title:     "Repair: " + sessionName,
+			})
+			if err != nil {
+				if grpcstatus.Code(err) == codes.AlreadyExists {
+					log.Info().Err(err).Msg("another repair run is active after reclaim, skipping repair")
+					return
+				}
+				outcomeRunnerError = err.Error()
+				outcomeShouldRecord = true
+				log.Error().Err(err).Msg("failed to start repair chat run after reclaim")
+				return
+			}
+		} else {
+			// Daemon-side StartChatRun refusal (eg. "claude not on PATH",
+			// "agent client not configured"). Record so the TUI surfaces the
+			// reason instead of the operator having to grep daemon stderr.
+			outcomeRunnerError = err.Error()
+			outcomeShouldRecord = true
+			log.Error().Err(err).Msg("failed to start repair chat run")
 			return
 		}
-		// Daemon-side StartChatRun refusal (eg. "claude not on PATH",
-		// "agent client not configured"). Record so the TUI surfaces the
-		// reason instead of the operator having to grep daemon stderr.
-		outcomeRunnerError = err.Error()
-		outcomeShouldRecord = true
-		log.Error().Err(err).Msg("failed to start repair chat run")
-		return
 	}
 	runOwned = true
 	outcomeShouldRecord = true
@@ -982,14 +1039,19 @@ func (m *repairMonitor) repairSession(
 		log.Error().Err(waitErr).Msg("wait for repair run failed")
 		return
 	}
-	// The agent process ran and reported an outcome. Whether it exits clean
-	// or non-zero, do not rerun the same head/status forever.
-	attemptRan = true
 	if exitErr := waitResp.GetExitError(); exitErr != "" {
 		outcomeExitError = exitErr
 		log.Error().Str("error", exitErr).Msg("repair attempt failed")
+		if !isInteractiveChatIncomplete(exitErr) {
+			// The agent process ran and reported a real non-zero outcome. Do
+			// not rerun the same head/status forever for those failures.
+			attemptRan = true
+		}
 		return
 	}
+	// The chat reported clean completion. Do not rerun the same head/status
+	// forever after a successful repair attempt.
+	attemptRan = true
 
 	log.Info().Msg("repair attempt completed successfully")
 

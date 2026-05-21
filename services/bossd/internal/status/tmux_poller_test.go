@@ -251,6 +251,9 @@ func (m *mockChatStore) GetByAgentSessionID(_ context.Context, agentSessionID st
 func (m *mockChatStore) ListBySession(_ context.Context, _ string) ([]*models.AgentChat, error) {
 	return nil, nil
 }
+func (m *mockChatStore) ListBySessions(_ context.Context, _ []string) (map[string][]*models.AgentChat, error) {
+	return nil, nil
+}
 func (m *mockChatStore) UpdateTitle(_ context.Context, _, _ string) error { return nil }
 func (m *mockChatStore) UpdateTitleByAgentSessionID(_ context.Context, agentSessionID, title string) error {
 	m.mu.Lock()

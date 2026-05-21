@@ -713,7 +713,7 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 			Int("pr", prNumber).
 			Str("repo", repo.displayName).
 			Msg("auto-merge failed")
-		o.updateMappingStatus(ctx, mapping.ID, models.TaskMappingStatusFailed)
+		o.updateMappingStatusWithDetails(ctx, mapping.ID, models.TaskMappingStatusFailed, taskFailureDetails(err))
 		return
 	}
 
@@ -841,13 +841,39 @@ func (o *Orchestrator) handleNotifyUser(ctx context.Context, task *bossanovav1.T
 
 // updateMappingStatus is a helper to update a task mapping's status.
 func (o *Orchestrator) updateMappingStatus(ctx context.Context, mappingID string, status models.TaskMappingStatus) {
-	if _, err := o.taskMappings.Update(ctx, mappingID, db.UpdateTaskMappingParams{
+	o.updateMappingStatusWithDetails(ctx, mappingID, status, "")
+}
+
+func (o *Orchestrator) updateMappingStatusWithDetails(ctx context.Context, mappingID string, status models.TaskMappingStatus, details string) {
+	params := db.UpdateTaskMappingParams{
 		Status: &status,
-	}); err != nil {
+	}
+	if status == models.TaskMappingStatusFailed {
+		if details != "" {
+			lastError := details
+			lastErrorPtr := &lastError
+			params.LastError = &lastErrorPtr
+		}
+	} else {
+		var clearLastError *string
+		params.LastError = &clearLastError
+	}
+
+	if _, err := o.taskMappings.Update(ctx, mappingID, params); err != nil {
 		o.logger.Error().Err(err).
 			Str("mapping", mappingID).
 			Msg("update task mapping status failed")
 	}
+}
+
+func taskFailureDetails(err error) string {
+	if err == nil {
+		return ""
+	}
+	if details, ok := vcs.ActionableDetails(err); ok {
+		return details
+	}
+	return err.Error()
 }
 
 // parsePRNumberFromExternalID extracts the PR number from an external

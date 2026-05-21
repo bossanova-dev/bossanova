@@ -437,6 +437,41 @@ func TestMergePR_DoesNotRetryPermanentError(t *testing.T) {
 	}
 }
 
+func TestMergePR_ClassifiesWorkflowScopeError(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		return "", fmt.Errorf("gh pr merge 4 --repo freshclaim/marketing --rebase --delete-branch: exit status 1: GraphQL: refusing to allow an OAuth App to create or update workflow `.github/workflows/_quality-gate.yml` without `workflow` scope (mergePullRequest)")
+	}
+
+	p := New(zerolog.Nop(),
+		WithRunGH(fakeGH),
+		WithSleepFunc(func(time.Duration) {}),
+	)
+
+	err := p.MergePR(context.Background(), "freshclaim/marketing", 4, "rebase")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var actionable *vcs.ActionableError
+	if !errors.As(err, &actionable) {
+		t.Fatalf("expected actionable error, got %T: %v", err, err)
+	}
+	if actionable.Code != vcs.ErrorCodeGitHubWorkflowScopeRequired {
+		t.Errorf("got code %q, want %q", actionable.Code, vcs.ErrorCodeGitHubWorkflowScopeRequired)
+	}
+
+	message := actionable.OperatorMessage()
+	for _, want := range []string{
+		"Auto-merge blocked: GitHub token lacks workflow permission",
+		"PR #4 in freshclaim/marketing changes a file under .github/workflows",
+		"gh auth refresh -h github.com -s workflow",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("operator message missing %q:\n%s", want, message)
+		}
+	}
+}
+
 // graphqlThreadsResponse builds a fake GraphQL response with the given threads.
 // Each thread is (isResolved bool, authorLogin string).
 func graphqlThreadsResponse(threads ...struct {

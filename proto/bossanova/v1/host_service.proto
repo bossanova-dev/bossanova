@@ -63,6 +63,12 @@ service HostService {
   // the run state so a future call doesn't deadlock.
   rpc WaitChatRun(WaitChatRunHostRequest) returns (WaitChatRunHostResponse);
 
+  // ReclaimRepairChat kills and detaches one daemon-validated Repair chat that
+  // is blocking a fresh StartChatRun attempt after daemon restart. The daemon
+  // only reclaims rows whose title starts with "Repair:" and whose session_id
+  // matches the request.
+  rpc ReclaimRepairChat(ReclaimRepairChatHostRequest) returns (ReclaimRepairChatHostResponse);
+
   // RecordRepairOutcome persists the result of a repair attempt onto the
   // session row so the TUI can surface "last repair: claude not in PATH (3×)"
   // hints alongside the existing display status. Called by the repair
@@ -198,11 +204,16 @@ message WaitAgentRunHostResponse {
 message StartChatRunHostRequest {
   // Session ID whose worktree should host the run.
   string session_id = 1;
-  // Prompt to feed the agent (typed as a bracketed paste into the tmux pane).
+  // Raw prompt to feed the agent (typed as a bracketed paste into the tmux pane).
+  // Mutually exclusive with command.
   string prompt = 2;
   // Chat title surfaced in the chat list (eg. `Repair: <session>` or
   // `Run "<cron>"`).
   string title = 3;
+  // Boss command name without any agent-specific prefix (eg. "boss-repair").
+  // The daemon formats it using the loaded AgentRunner plugin's command_prefix.
+  // Mutually exclusive with prompt.
+  string command = 4;
 }
 
 message StartChatRunHostResponse {
@@ -221,6 +232,25 @@ message WaitChatRunHostResponse {
   // Empty on clean exit, otherwise the exit error from the hook payload
   // or a synthetic message when the wait deadline elapsed.
   string exit_error = 1;
+}
+
+// --- ReclaimRepairChat ---
+
+message ReclaimRepairChatHostRequest {
+  // Session whose repair attempt is blocked.
+  string session_id = 1;
+  // Existing agent session ID from the StartChatRun AlreadyExists message.
+  string agent_session_id = 2;
+  // Human-readable diagnostic stored on the reclaimed chat row.
+  string reason = 3;
+}
+
+message ReclaimRepairChatHostResponse {
+  // True when a tmux session was killed or an already-dead tmux reference was
+  // detached from the chat row.
+  bool reclaimed = 1;
+  // The tmux session name that was detached, empty when the row had none.
+  string tmux_session_name = 2;
 }
 
 // --- RecordRepairOutcome ---

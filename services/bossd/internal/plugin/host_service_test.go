@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -577,6 +579,7 @@ func (f *fakeSessionStoreWithListActive) ListActive(_ context.Context, repoID st
 type fakeAgentChatStore struct {
 	db.AgentChatStore
 	chatsBySession map[string][]*models.AgentChat
+	updatedTmux    []string
 }
 
 func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
@@ -740,6 +743,67 @@ func TestListSessions_IgnoresFailedStartChatsForActiveCheck(t *testing.T) {
 	}
 	if s.GetLastChatActivityAt() != nil {
 		t.Errorf("LastChatActivityAt should be nil for failed-start chats, got %v", s.GetLastChatActivityAt())
+	}
+}
+
+// TestListSessions_IgnoresStaleRepairChatsForActiveCheck verifies that a
+// repair-owned tmux chat with durable stale evidence does not make the parent
+// session look user-active. StartChatRun and ReclaimRepairChat own repair-chat
+// concurrency; ListSessions' HasActiveChat field is the user-idle gate that
+// decides whether repair may start.
+func TestListSessions_IgnoresStaleRepairChatsForActiveCheck(t *testing.T) {
+	repoID := "repo-1"
+	sessID := "sess-1"
+	repairAgentSessionID := "chat-repair-stale"
+	tmuxName := "boss-repair-stale"
+
+	tracker := status.NewTracker()
+	tracker.Update(repairAgentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_IDLE, time.Now())
+
+	agentLogsDir := t.TempDir()
+	logPath := filepath.Join(agentLogsDir, repairAgentSessionID+".log")
+	if err := os.WriteFile(logPath, []byte("old repair output\n"), 0o600); err != nil {
+		t.Fatalf("write repair log: %v", err)
+	}
+	old := time.Now().Add(-31 * time.Minute)
+	if err := os.Chtimes(logPath, old, old); err != nil {
+		t.Fatalf("age repair log: %v", err)
+	}
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.agentLogsDir = agentLogsDir
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo"}},
+	}
+	srv.sessionStore = &fakeSessionStoreWithListActive{
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {{ID: sessID, RepoID: repoID, Title: "my session"}},
+		},
+	}
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.agentChats = &fakeAgentChatStore{
+		chatsBySession: map[string][]*models.AgentChat{
+			sessID: {
+				{AgentSessionID: repairAgentSessionID, Title: "Repair: my session", TmuxSessionName: &tmuxName},
+			},
+		},
+	}
+	srv.chatTracker = tracker
+
+	resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	sessions := resp.GetSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.GetHasActiveChat() {
+		t.Error("HasActiveChat should be false when the only active chat is a repair chat")
+	}
+	if s.GetLastChatActivityAt() != nil {
+		t.Errorf("LastChatActivityAt should be nil for stale repair chats, got %v", s.GetLastChatActivityAt())
 	}
 }
 
@@ -1066,6 +1130,15 @@ func (s *HostServiceServer) setWaitChatRunDeadline(d time.Duration) {
 	s.waitChatRunDeadline = d
 }
 
+func (s *HostServiceServer) registerChatRunForTest(agentSessionID string, mode chatRunCompletionMode) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	s.runCompletion[agentSessionID] = activeChatRun{
+		done:           make(chan completionResult, 1),
+		completionMode: mode,
+	}
+}
+
 // --- StartChatRun / WaitChatRun (Task 4) ---
 
 // fakeChatLifecycle is a programmable ChatLifecycle for the StartChatRun
@@ -1074,34 +1147,185 @@ func (s *HostServiceServer) setWaitChatRunDeadline(d time.Duration) {
 type fakeChatLifecycle struct {
 	mu         sync.Mutex
 	startCalls int
+	killCalls  int
 	lastReq    struct {
 		sessionID string
-		prompt    string
+		input     session.ChatInput
 		title     string
 		hookOpts  session.HookOpts
 	}
-	startResp string
-	startErr  error
+	lastKill struct {
+		sessionID      string
+		agentSessionID string
+	}
+	startResp             string
+	startErr              error
+	killErr               error
+	reclaimRepairChatFunc func(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
+	reclaimRepairChatReqs []struct {
+		sessionID      string
+		agentSessionID string
+		reason         string
+	}
 	// startFunc, when non-nil, takes precedence over startResp/startErr.
 	// Used by the AlreadyExists test to have the lifecycle return the
 	// existing agent_session_id alongside a typed gRPC error.
-	startFunc func(ctx context.Context, sessionID, prompt, title string, hookOpts session.HookOpts) (string, error)
+	startFunc func(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error)
 }
 
-func (f *fakeChatLifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title string, hookOpts session.HookOpts) (string, error) {
+func (f *fakeChatLifecycle) StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error) {
 	f.mu.Lock()
 	f.startCalls++
 	f.lastReq.sessionID = sessionID
-	f.lastReq.prompt = prompt
+	f.lastReq.input = input
 	f.lastReq.title = title
 	f.lastReq.hookOpts = hookOpts
 	fn := f.startFunc
 	resp, err := f.startResp, f.startErr
 	f.mu.Unlock()
 	if fn != nil {
-		return fn(ctx, sessionID, prompt, title, hookOpts)
+		return fn(ctx, sessionID, input, title, hookOpts)
 	}
 	return resp, err
+}
+
+func (f *fakeChatLifecycle) KillChatTmuxSession(_ context.Context, sessionID, agentSessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killCalls++
+	f.lastKill.sessionID = sessionID
+	f.lastKill.agentSessionID = agentSessionID
+	return f.killErr
+}
+
+func (f *fakeChatLifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error) {
+	f.mu.Lock()
+	f.reclaimRepairChatReqs = append(f.reclaimRepairChatReqs, struct {
+		sessionID      string
+		agentSessionID string
+		reason         string
+	}{sessionID: sessionID, agentSessionID: agentSessionID, reason: reason})
+	fn := f.reclaimRepairChatFunc
+	f.mu.Unlock()
+
+	if fn != nil {
+		return fn(ctx, sessionID, agentSessionID, reason)
+	}
+	return session.ReclaimRepairChatResult{}, nil
+}
+
+func TestHostServiceReclaimRepairChat_DelegatesToLifecycle(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	lc := &fakeChatLifecycle{}
+	lc.reclaimRepairChatFunc = func(_ context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error) {
+		if sessionID != "s1" {
+			t.Fatalf("sessionID = %q, want s1", sessionID)
+		}
+		if agentSessionID != "agent-1" {
+			t.Fatalf("agentSessionID = %q, want agent-1", agentSessionID)
+		}
+		if reason != "stale repair chat" {
+			t.Fatalf("reason = %q, want stale repair chat", reason)
+		}
+		return session.ReclaimRepairChatResult{Reclaimed: true, TmuxSessionName: "boss-repair-1"}, nil
+	}
+	srv.SetLifecycle(lc)
+
+	resp, err := srv.ReclaimRepairChat(t.Context(), &bossanovav1.ReclaimRepairChatHostRequest{
+		SessionId:      "s1",
+		AgentSessionId: "agent-1",
+		Reason:         "stale repair chat",
+	})
+	if err != nil {
+		t.Fatalf("ReclaimRepairChat: %v", err)
+	}
+	if !resp.GetReclaimed() {
+		t.Fatal("expected Reclaimed=true")
+	}
+	if resp.GetTmuxSessionName() != "boss-repair-1" {
+		t.Fatalf("TmuxSessionName = %q, want boss-repair-1", resp.GetTmuxSessionName())
+	}
+}
+
+func TestHostServiceReclaimRepairChat_RefusesActiveRunState(t *testing.T) {
+	lc := &fakeChatLifecycle{}
+	lc.reclaimRepairChatFunc = func(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
+		t.Fatal("lifecycle reclaim called for active daemon-owned run")
+		return session.ReclaimRepairChatResult{}, nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", AgentName: "claude", WorktreePath: "/tmp/wt"})
+	client := srv.agentClients["claude"].(*fakeAgentClient)
+	client.running["agent-active-1"] = true
+
+	srv.runMu.Lock()
+	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-active-1"}
+	srv.agentSessionByID["agent-active-1"] = "claude"
+	srv.runMu.Unlock()
+
+	_, err := srv.ReclaimRepairChat(t.Context(), &bossanovav1.ReclaimRepairChatHostRequest{
+		SessionId:      "sess-1",
+		AgentSessionId: "agent-active-1",
+		Reason:         "must not kill active repair",
+	})
+	if err == nil {
+		t.Fatal("expected active-run reclaim refusal")
+	}
+	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("code = %s, want FailedPrecondition", got)
+	}
+	if len(lc.reclaimRepairChatReqs) != 0 {
+		t.Fatalf("lifecycle reclaim calls = %d, want 0", len(lc.reclaimRepairChatReqs))
+	}
+}
+
+func TestHostServiceReclaimRepairChat_RefusesDaemonOwnedInteractiveRun(t *testing.T) {
+	lc := &fakeChatLifecycle{}
+	lc.reclaimRepairChatFunc = func(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
+		t.Fatal("lifecycle reclaim called for daemon-owned interactive run")
+		return session.ReclaimRepairChatResult{}, nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", AgentName: "claude", WorktreePath: "/tmp/wt"})
+
+	srv.runMu.Lock()
+	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-interactive-1"}
+	srv.agentSessionByID["agent-interactive-1"] = "claude"
+	srv.runMu.Unlock()
+
+	_, err := srv.ReclaimRepairChat(t.Context(), &bossanovav1.ReclaimRepairChatHostRequest{
+		SessionId:      "sess-1",
+		AgentSessionId: "agent-interactive-1",
+		Reason:         "must not reclaim owned interactive repair",
+	})
+	if err == nil {
+		t.Fatal("expected daemon-owned interactive reclaim refusal")
+	}
+	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("code = %s, want FailedPrecondition", got)
+	}
+	if len(lc.reclaimRepairChatReqs) != 0 {
+		t.Fatalf("lifecycle reclaim calls = %d, want 0", len(lc.reclaimRepairChatReqs))
+	}
+}
+
+func TestHostServiceReclaimRepairChat_RefusesNonRepairChat(t *testing.T) {
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	lc := &fakeChatLifecycle{}
+	lc.reclaimRepairChatFunc = func(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
+		return session.ReclaimRepairChatResult{}, session.ErrRepairChatNotReclaimable
+	}
+	srv.SetLifecycle(lc)
+
+	_, err := srv.ReclaimRepairChat(t.Context(), &bossanovav1.ReclaimRepairChatHostRequest{
+		SessionId:      "s1",
+		AgentSessionId: "agent-1",
+		Reason:         "manual chat",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("code = %s, want FailedPrecondition", got)
+	}
 }
 
 // newChatRunTestServer builds a HostServiceServer wired with a fake
@@ -1147,7 +1371,7 @@ func TestStartChatRun_HappyPath(t *testing.T) {
 	if lc.startCalls != 1 {
 		t.Errorf("StartTmuxChat call count = %d, want 1", lc.startCalls)
 	}
-	if lc.lastReq.sessionID != "sess-1" || lc.lastReq.prompt != "/boss-repair" || lc.lastReq.title != "Repair: sess-1" {
+	if lc.lastReq.sessionID != "sess-1" || lc.lastReq.input.Prompt != "/boss-repair" || lc.lastReq.title != "Repair: sess-1" {
 		t.Errorf("StartTmuxChat req = %+v, want sess-1 / /boss-repair / Repair: sess-1", lc.lastReq)
 	}
 	if lc.lastReq.hookOpts.Token == "" {
@@ -1177,6 +1401,24 @@ func TestStartChatRun_HappyPath(t *testing.T) {
 	}
 }
 
+func TestStartChatRun_CommandPath(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-abc"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Command:   "boss-repair",
+		Title:     "Repair: sess-1",
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+
+	if lc.lastReq.input.Command != "boss-repair" || lc.lastReq.input.Prompt != "" {
+		t.Fatalf("StartTmuxChat input = %+v, want command boss-repair", lc.lastReq.input)
+	}
+}
+
 func TestStartChatRun_EmptySessionID(t *testing.T) {
 	lc := &fakeChatLifecycle{startResp: "agent-x"}
 	srv := newChatRunTestServer(lc)
@@ -1196,6 +1438,21 @@ func TestStartChatRun_EmptyPrompt(t *testing.T) {
 
 	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
 		SessionId: "sess-1",
+		Title:     "T",
+	})
+	if grpcstatus.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", grpcstatus.Code(err))
+	}
+}
+
+func TestStartChatRun_PromptAndCommand(t *testing.T) {
+	lc := &fakeChatLifecycle{startResp: "agent-x"}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "please inspect this branch",
+		Command:   "boss-repair",
 		Title:     "T",
 	})
 	if grpcstatus.Code(err) != codes.InvalidArgument {
@@ -1336,7 +1593,7 @@ func TestStartChatRun_ConcurrentSecondReturnsAlreadyExists(t *testing.T) {
 func TestStartChatRun_LifecycleAlreadyExistsPropagated(t *testing.T) {
 	const existing = "agent-existing-1234"
 	lc := &fakeChatLifecycle{
-		startFunc: func(_ context.Context, _, _, _ string, _ session.HookOpts) (string, error) {
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
 			return existing, grpcstatus.Errorf(codes.AlreadyExists, "tmux chat already active")
 		},
 	}
@@ -1359,6 +1616,98 @@ func TestStartChatRun_LifecycleAlreadyExistsPropagated(t *testing.T) {
 	}
 }
 
+func TestStartChatRun_RepairLifecycleAlreadyExistsDoesNotKillOrRetry(t *testing.T) {
+	const existing = "agent-existing-repair-1234"
+
+	lc := &fakeChatLifecycle{
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+			return existing, grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		},
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+		Title:     "$boss-repair",
+	})
+	if grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists", grpcstatus.Code(err))
+	}
+	if resp == nil || resp.GetAgentSessionId() != existing {
+		t.Fatalf("AgentSessionId = %v, want %q echoed alongside AlreadyExists", resp, existing)
+	}
+	if lc.startCalls != 1 {
+		t.Fatalf("StartTmuxChat calls = %d, want 1", lc.startCalls)
+	}
+	if lc.killCalls != 0 {
+		t.Fatalf("KillChatTmuxSession calls = %d, want 0", lc.killCalls)
+	}
+}
+
+func TestStartChatRun_RepairLifecycleAlreadyExistsAcrossRegistrationGap(t *testing.T) {
+	const existing = "agent-starting-repair-1234"
+
+	lc := &fakeChatLifecycle{
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+			return existing, grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		},
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "/boss-repair",
+		Title:     "$boss-repair",
+	})
+	if grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists", grpcstatus.Code(err))
+	}
+	if resp == nil || resp.GetAgentSessionId() != existing {
+		t.Fatalf("AgentSessionId = %v, want %q echoed alongside AlreadyExists", resp, existing)
+	}
+	if lc.startCalls != 1 {
+		t.Fatalf("StartTmuxChat calls = %d, want 1", lc.startCalls)
+	}
+	if lc.killCalls != 0 {
+		t.Fatalf("KillChatTmuxSession calls = %d, want 0", lc.killCalls)
+	}
+}
+
+func TestStartChatRun_NonRepairLifecycleAlreadyExistsDoesNotClearOrRetry(t *testing.T) {
+	const existing = "agent-existing-manual-1234"
+
+	lc := &fakeChatLifecycle{
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+			return existing, grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		},
+	}
+	chatStore := &fakeAgentChatStore{}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	srv.agentChats = chatStore
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1",
+		Prompt:    "please inspect this branch",
+		Title:     "Manual inspection",
+	})
+	if grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists", grpcstatus.Code(err))
+	}
+	if resp == nil || resp.GetAgentSessionId() != existing {
+		t.Fatalf("AgentSessionId = %v, want %q echoed alongside AlreadyExists", resp, existing)
+	}
+	if lc.startCalls != 1 {
+		t.Fatalf("StartTmuxChat calls = %d, want 1", lc.startCalls)
+	}
+	if lc.killCalls != 0 {
+		t.Fatalf("KillChatTmuxSession calls = %d, want 0", lc.killCalls)
+	}
+	if len(chatStore.updatedTmux) != 0 {
+		t.Fatalf("tmux name updates = %d, want 0", len(chatStore.updatedTmux))
+	}
+}
+
 // TestStartChatRun_AlreadyExistsAcrossWire confirms that the existing
 // agent_session_id round-trips through a real gRPC server when the
 // lifecycle returns AlreadyExists. The reviewer's concern: gRPC drops
@@ -1373,7 +1722,7 @@ func TestStartChatRun_LifecycleAlreadyExistsPropagated(t *testing.T) {
 func TestStartChatRun_AlreadyExistsAcrossWire(t *testing.T) {
 	const existing = "agent-existing-wire-9999"
 	lc := &fakeChatLifecycle{
-		startFunc: func(_ context.Context, _, _, _ string, _ session.HookOpts) (string, error) {
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
 			return existing, grpcstatus.Errorf(codes.AlreadyExists, "tmux chat already active")
 		},
 	}
@@ -1430,9 +1779,7 @@ func TestStartChatRun_AlreadyExistsAcrossWire(t *testing.T) {
 
 func TestWaitChatRun_HookSignalsCleanExit(t *testing.T) {
 	srv := newRunCompleteServer()
-	srv.runHookTokens["agent-x"] = "tok"
-	srv.runSessionByID["agent-x"] = "sess-1"
-	srv.runCompletion["agent-x"] = make(chan completionResult, 1)
+	srv.registerRun("sess-1", "agent-x", "tok")
 
 	// Drive the hook from a goroutine so the wait actually sleeps before
 	// the signal arrives (mirrors the production race window).
@@ -1465,9 +1812,7 @@ func TestWaitChatRun_HookSignalsCleanExit(t *testing.T) {
 
 func TestWaitChatRun_PropagatesExitError(t *testing.T) {
 	srv := newRunCompleteServer()
-	srv.runHookTokens["agent-x"] = "tok"
-	srv.runSessionByID["agent-x"] = "sess-1"
-	srv.runCompletion["agent-x"] = make(chan completionResult, 1)
+	srv.registerRun("sess-1", "agent-x", "tok")
 
 	const wantErr = "claude crashed: signal: killed"
 	go func() {
@@ -1501,6 +1846,30 @@ func TestWaitChatRun_EmptyAgentSessionID(t *testing.T) {
 	}
 }
 
+func TestWaitChatRun_HooklessInteractiveRunReturnsExplicitTimeout(t *testing.T) {
+	t.Parallel()
+
+	srv := newRunCompleteServer()
+	agentSessionID := "codex-chat-1"
+	srv.registerChatRunForTest(agentSessionID, chatRunCompletionExplicit)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	resp, err := srv.WaitChatRun(ctx, &bossanovav1.WaitChatRunHostRequest{
+		AgentSessionId: agentSessionID,
+	})
+	if err != nil {
+		t.Fatalf("WaitChatRun returned RPC error: %v", err)
+	}
+	if resp.GetExitError() == "" {
+		t.Fatal("expected explicit exit error for hookless interactive run")
+	}
+	if !strings.Contains(resp.GetExitError(), "interactive chat did not report completion") {
+		t.Fatalf("unexpected exit error: %q", resp.GetExitError())
+	}
+}
+
 // TestWaitChatRun_DeadlineExpires verifies that when no Stop hook
 // arrives, the synthetic exit_error fires and all maps are cleaned up
 // so a future StartChatRun on the same session isn't shadowed by stale
@@ -1510,9 +1879,7 @@ func TestWaitChatRun_DeadlineExpires(t *testing.T) {
 	srv.setWaitChatRunDeadline(50 * time.Millisecond)
 	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-x"}
 	srv.agentSessionByID["agent-x"] = "claude"
-	srv.runHookTokens["agent-x"] = "tok"
-	srv.runSessionByID["agent-x"] = "sess-1"
-	srv.runCompletion["agent-x"] = make(chan completionResult, 1)
+	srv.registerRun("sess-1", "agent-x", "tok")
 	srv.displayTracker.SetRepairing("sess-1", true)
 
 	resp, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
@@ -1551,9 +1918,7 @@ func TestWaitChatRun_ContextCancelled(t *testing.T) {
 	srv := newRunCompleteServer()
 	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "agent-x"}
 	srv.agentSessionByID["agent-x"] = "claude"
-	srv.runHookTokens["agent-x"] = "tok"
-	srv.runSessionByID["agent-x"] = "sess-1"
-	srv.runCompletion["agent-x"] = make(chan completionResult, 1)
+	srv.registerRun("sess-1", "agent-x", "tok")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {

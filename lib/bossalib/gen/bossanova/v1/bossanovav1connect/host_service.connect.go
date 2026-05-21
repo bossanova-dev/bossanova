@@ -66,6 +66,9 @@ const (
 	HostServiceStartChatRunProcedure = "/bossanova.v1.HostService/StartChatRun"
 	// HostServiceWaitChatRunProcedure is the fully-qualified name of the HostService's WaitChatRun RPC.
 	HostServiceWaitChatRunProcedure = "/bossanova.v1.HostService/WaitChatRun"
+	// HostServiceReclaimRepairChatProcedure is the fully-qualified name of the HostService's
+	// ReclaimRepairChat RPC.
+	HostServiceReclaimRepairChatProcedure = "/bossanova.v1.HostService/ReclaimRepairChat"
 	// HostServiceRecordRepairOutcomeProcedure is the fully-qualified name of the HostService's
 	// RecordRepairOutcome RPC.
 	HostServiceRecordRepairOutcomeProcedure = "/bossanova.v1.HostService/RecordRepairOutcome"
@@ -110,6 +113,11 @@ type HostServiceClient interface {
 	// clean exit). On deadline, returns a synthetic exit error and cleans up
 	// the run state so a future call doesn't deadlock.
 	WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error)
+	// ReclaimRepairChat kills and detaches one daemon-validated Repair chat that
+	// is blocking a fresh StartChatRun attempt after daemon restart. The daemon
+	// only reclaims rows whose title starts with "Repair:" and whose session_id
+	// matches the request.
+	ReclaimRepairChat(context.Context, *connect.Request[v1.ReclaimRepairChatHostRequest]) (*connect.Response[v1.ReclaimRepairChatHostResponse], error)
 	// RecordRepairOutcome persists the result of a repair attempt onto the
 	// session row so the TUI can surface "last repair: claude not in PATH (3×)"
 	// hints alongside the existing display status. Called by the repair
@@ -202,6 +210,12 @@ func NewHostServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(hostServiceMethods.ByName("WaitChatRun")),
 			connect.WithClientOptions(opts...),
 		),
+		reclaimRepairChat: connect.NewClient[v1.ReclaimRepairChatHostRequest, v1.ReclaimRepairChatHostResponse](
+			httpClient,
+			baseURL+HostServiceReclaimRepairChatProcedure,
+			connect.WithSchema(hostServiceMethods.ByName("ReclaimRepairChat")),
+			connect.WithClientOptions(opts...),
+		),
 		recordRepairOutcome: connect.NewClient[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse](
 			httpClient,
 			baseURL+HostServiceRecordRepairOutcomeProcedure,
@@ -225,6 +239,7 @@ type hostServiceClient struct {
 	waitAgentRun        *connect.Client[v1.WaitAgentRunHostRequest, v1.WaitAgentRunHostResponse]
 	startChatRun        *connect.Client[v1.StartChatRunHostRequest, v1.StartChatRunHostResponse]
 	waitChatRun         *connect.Client[v1.WaitChatRunHostRequest, v1.WaitChatRunHostResponse]
+	reclaimRepairChat   *connect.Client[v1.ReclaimRepairChatHostRequest, v1.ReclaimRepairChatHostResponse]
 	recordRepairOutcome *connect.Client[v1.RecordRepairOutcomeRequest, v1.RecordRepairOutcomeResponse]
 }
 
@@ -288,6 +303,11 @@ func (c *hostServiceClient) WaitChatRun(ctx context.Context, req *connect.Reques
 	return c.waitChatRun.CallUnary(ctx, req)
 }
 
+// ReclaimRepairChat calls bossanova.v1.HostService.ReclaimRepairChat.
+func (c *hostServiceClient) ReclaimRepairChat(ctx context.Context, req *connect.Request[v1.ReclaimRepairChatHostRequest]) (*connect.Response[v1.ReclaimRepairChatHostResponse], error) {
+	return c.reclaimRepairChat.CallUnary(ctx, req)
+}
+
 // RecordRepairOutcome calls bossanova.v1.HostService.RecordRepairOutcome.
 func (c *hostServiceClient) RecordRepairOutcome(ctx context.Context, req *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error) {
 	return c.recordRepairOutcome.CallUnary(ctx, req)
@@ -332,6 +352,11 @@ type HostServiceHandler interface {
 	// clean exit). On deadline, returns a synthetic exit error and cleans up
 	// the run state so a future call doesn't deadlock.
 	WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error)
+	// ReclaimRepairChat kills and detaches one daemon-validated Repair chat that
+	// is blocking a fresh StartChatRun attempt after daemon restart. The daemon
+	// only reclaims rows whose title starts with "Repair:" and whose session_id
+	// matches the request.
+	ReclaimRepairChat(context.Context, *connect.Request[v1.ReclaimRepairChatHostRequest]) (*connect.Response[v1.ReclaimRepairChatHostResponse], error)
 	// RecordRepairOutcome persists the result of a repair attempt onto the
 	// session row so the TUI can surface "last repair: claude not in PATH (3×)"
 	// hints alongside the existing display status. Called by the repair
@@ -420,6 +445,12 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(hostServiceMethods.ByName("WaitChatRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hostServiceReclaimRepairChatHandler := connect.NewUnaryHandler(
+		HostServiceReclaimRepairChatProcedure,
+		svc.ReclaimRepairChat,
+		connect.WithSchema(hostServiceMethods.ByName("ReclaimRepairChat")),
+		connect.WithHandlerOptions(opts...),
+	)
 	hostServiceRecordRepairOutcomeHandler := connect.NewUnaryHandler(
 		HostServiceRecordRepairOutcomeProcedure,
 		svc.RecordRepairOutcome,
@@ -452,6 +483,8 @@ func NewHostServiceHandler(svc HostServiceHandler, opts ...connect.HandlerOption
 			hostServiceStartChatRunHandler.ServeHTTP(w, r)
 		case HostServiceWaitChatRunProcedure:
 			hostServiceWaitChatRunHandler.ServeHTTP(w, r)
+		case HostServiceReclaimRepairChatProcedure:
+			hostServiceReclaimRepairChatHandler.ServeHTTP(w, r)
 		case HostServiceRecordRepairOutcomeProcedure:
 			hostServiceRecordRepairOutcomeHandler.ServeHTTP(w, r)
 		default:
@@ -509,6 +542,10 @@ func (UnimplementedHostServiceHandler) StartChatRun(context.Context, *connect.Re
 
 func (UnimplementedHostServiceHandler) WaitChatRun(context.Context, *connect.Request[v1.WaitChatRunHostRequest]) (*connect.Response[v1.WaitChatRunHostResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.WaitChatRun is not implemented"))
+}
+
+func (UnimplementedHostServiceHandler) ReclaimRepairChat(context.Context, *connect.Request[v1.ReclaimRepairChatHostRequest]) (*connect.Response[v1.ReclaimRepairChatHostResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.HostService.ReclaimRepairChat is not implemented"))
 }
 
 func (UnimplementedHostServiceHandler) RecordRepairOutcome(context.Context, *connect.Request[v1.RecordRepairOutcomeRequest]) (*connect.Response[v1.RecordRepairOutcomeResponse], error) {

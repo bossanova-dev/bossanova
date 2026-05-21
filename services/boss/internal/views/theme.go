@@ -249,8 +249,8 @@ func renderBanner(active View, opts bannerOpts) string {
 				title = prLink + " " + title
 			}
 		}
-		if prStatus := renderSessionPRStatus(opts.session, opts.spinner); prStatus != "" {
-			title += " (" + prStatus + ")"
+		if displayStatus := renderDisplayStatus(opts.session, opts.spinner); displayStatus != "" {
+			title += " (" + displayStatus + ")"
 		}
 		line1 = title
 
@@ -275,7 +275,7 @@ func renderBanner(active View, opts bannerOpts) string {
 
 	default:
 		line1 = "Bossanova"
-		line2 = styleSubtle.Render("v" + buildinfo.Version)
+		line2 = styleSubtle.Render(buildinfo.Version)
 	}
 
 	banner := colorize(row1) + "  " + line1 + "\n" +

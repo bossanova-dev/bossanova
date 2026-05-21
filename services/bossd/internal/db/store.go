@@ -56,6 +56,7 @@ type CreateTaskMappingParams struct {
 type UpdateTaskMappingParams struct {
 	SessionID            **string // double pointer: nil = don't update, *nil = set to NULL
 	Status               *models.TaskMappingStatus
+	LastError            **string                   // double pointer: nil = don't update, *nil = clear
 	PendingUpdateStatus  **models.TaskMappingStatus // double pointer: nil = don't update, *nil = clear
 	PendingUpdateDetails **string                   // double pointer: nil = don't update, *nil = clear
 }
@@ -69,6 +70,7 @@ type TaskMappingStore interface {
 	Update(ctx context.Context, id string, params UpdateTaskMappingParams) (*models.TaskMapping, error)
 	Delete(ctx context.Context, id string) error
 	ListPending(ctx context.Context) ([]*models.TaskMapping, error)
+	ListRecentFailures(ctx context.Context, limit int) ([]*models.TaskMapping, error)
 	FailOrphanedMappings(ctx context.Context) (int64, error)
 }
 
@@ -180,6 +182,7 @@ type AgentChatStore interface {
 	Create(ctx context.Context, params CreateAgentChatParams) (*models.AgentChat, error)
 	GetByAgentSessionID(ctx context.Context, agentSessionID string) (*models.AgentChat, error)
 	ListBySession(ctx context.Context, sessionID string) ([]*models.AgentChat, error)
+	ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error)
 	UpdateTitle(ctx context.Context, id string, title string) error
 	UpdateTitleByAgentSessionID(ctx context.Context, agentSessionID string, title string) error
 	UpdateTmuxSessionName(ctx context.Context, agentSessionID string, name *string) error

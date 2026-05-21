@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	goproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -302,6 +303,47 @@ func TestClaudeChatToProto(t *testing.T) {
 	}
 	if p.CreatedAt == nil {
 		t.Error("CreatedAt should not be nil")
+	}
+}
+
+func TestAgentChatToProtoSanitizesInvalidUTF8(t *testing.T) {
+	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+	startError := "send plan failed: " + string([]byte{0xff, 0xfe}) + " not seen"
+	chat := &models.AgentChat{
+		ID:             "chat-1",
+		SessionID:      "sess-1",
+		AgentSessionID: "claude-abc",
+		Title:          "Repair chat",
+		StartError:     &startError,
+		CreatedAt:      now,
+	}
+
+	p := agentChatToProto(chat)
+	if _, err := goproto.Marshal(p); err != nil {
+		t.Fatalf("marshal sanitized chat: %v", err)
+	}
+	if p.StartError == startError {
+		t.Fatal("StartError was not sanitized")
+	}
+}
+
+func TestSessionToProtoSanitizesRepairErrors(t *testing.T) {
+	now := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+	sess := &models.Session{
+		ID:                    "sess-1",
+		RepoID:                "repo-1",
+		Title:                 "Repair target",
+		CreatedAt:             now,
+		UpdatedAt:             now,
+		LastRepairRunnerError: string([]byte{'r', 'u', 'n', 0xff}),
+	}
+
+	p := SessionToProto(sess)
+	if _, err := goproto.Marshal(p); err != nil {
+		t.Fatalf("marshal sanitized session: %v", err)
+	}
+	if p.LastRepairRunnerError == sess.LastRepairRunnerError {
+		t.Fatal("LastRepairRunnerError was not sanitized")
 	}
 }
 

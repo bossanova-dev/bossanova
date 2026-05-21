@@ -63,6 +63,14 @@ func (s *SQLiteTaskMappingStore) Update(ctx context.Context, id string, params U
 		sets = append(sets, "status = ?")
 		args = append(args, int(*params.Status))
 	}
+	if params.LastError != nil {
+		if *params.LastError == nil {
+			sets = append(sets, "last_error = NULL")
+		} else {
+			sets = append(sets, "last_error = ?")
+			args = append(args, **params.LastError)
+		}
+	}
 	if params.PendingUpdateStatus != nil {
 		if *params.PendingUpdateStatus == nil {
 			sets = append(sets, "pending_update_status = NULL")
@@ -121,6 +129,29 @@ func (s *SQLiteTaskMappingStore) ListPending(ctx context.Context) ([]*models.Tas
 	return mappings, rows.Err()
 }
 
+func (s *SQLiteTaskMappingStore) ListRecentFailures(ctx context.Context, limit int) ([]*models.TaskMapping, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.db.QueryContext(ctx, taskMappingSelectSQL+` WHERE status = ?
+		AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')
+		ORDER BY updated_at DESC, rowid DESC LIMIT ?`, int(models.TaskMappingStatusFailed), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent failed task mappings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var mappings []*models.TaskMapping
+	for rows.Next() {
+		m, err := scanTaskMapping(rows)
+		if err != nil {
+			return nil, err
+		}
+		mappings = append(mappings, m)
+	}
+	return mappings, rows.Err()
+}
+
 func (s *SQLiteTaskMappingStore) Get(ctx context.Context, id string) (*models.TaskMapping, error) {
 	row := s.db.QueryRowContext(ctx, taskMappingSelectSQL+" WHERE id = ?", id)
 	return scanTaskMapping(row)
@@ -147,7 +178,7 @@ func (s *SQLiteTaskMappingStore) FailOrphanedMappings(ctx context.Context) (int6
 }
 
 const taskMappingSelectSQL = `SELECT id, external_id, plugin_name, session_id, repo_id,
-	status, pending_update_status, pending_update_details, created_at, updated_at
+	status, last_error, pending_update_status, pending_update_details, created_at, updated_at
 	FROM task_mappings`
 
 func scanTaskMapping(s sqlutil.Scanner) (*models.TaskMapping, error) {
@@ -156,7 +187,7 @@ func scanTaskMapping(s sqlutil.Scanner) (*models.TaskMapping, error) {
 	var pendingStatus *int
 	var createdAt, updatedAt string
 	err := s.Scan(&m.ID, &m.ExternalID, &m.PluginName, &m.SessionID, &m.RepoID,
-		&status, &pendingStatus, &m.PendingUpdateDetails,
+		&status, &m.LastError, &pendingStatus, &m.PendingUpdateDetails,
 		&createdAt, &updatedAt)
 	if err != nil {
 		return nil, err

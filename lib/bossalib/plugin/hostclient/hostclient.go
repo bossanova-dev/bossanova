@@ -74,6 +74,9 @@ type Client interface {
 	// the chat list while it's running.
 	StartChatRun(ctx context.Context, req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error)
 	WaitChatRun(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error)
+	// ReclaimRepairChat clears a stale tmux-backed Repair chat that blocks a
+	// new repair run. The daemon validates ownership before killing tmux.
+	ReclaimRepairChat(ctx context.Context, req *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error)
 
 	// Repair diagnostics — persists the per-attempt outcome onto the session
 	// row so the TUI can surface "failing ⚠ repair: claude not in PATH (3×)"
@@ -251,6 +254,14 @@ func (c *EagerClient) WaitChatRun(ctx context.Context, req *bossanovav1.WaitChat
 	return client.WaitChatRun(ctx, req)
 }
 
+func (c *EagerClient) ReclaimRepairChat(ctx context.Context, req *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error) {
+	client, err := c.connect()
+	if err != nil {
+		return nil, err
+	}
+	return client.ReclaimRepairChat(ctx, req)
+}
+
 func (c *EagerClient) RecordRepairOutcome(ctx context.Context, req *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error) {
 	client, err := c.connect()
 	if err != nil {
@@ -338,6 +349,14 @@ func (c *DirectClient) StartChatRun(ctx context.Context, req *bossanovav1.StartC
 func (c *DirectClient) WaitChatRun(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error) {
 	resp := &bossanovav1.WaitChatRunHostResponse{}
 	if err := c.conn.Invoke(ctx, "/bossanova.v1.HostService/WaitChatRun", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *DirectClient) ReclaimRepairChat(ctx context.Context, req *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error) {
+	resp := &bossanovav1.ReclaimRepairChatHostResponse{}
+	if err := c.invokeUnary(ctx, "/bossanova.v1.HostService/ReclaimRepairChat", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

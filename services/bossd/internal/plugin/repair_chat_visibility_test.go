@@ -64,14 +64,14 @@ type dbWritingChatLifecycle struct {
 
 	// recorded fields for assertions
 	gotSessionID string
-	gotPrompt    string
+	gotInput     session.ChatInput
 	gotTitle     string
 	gotHookOpts  session.HookOpts
 }
 
-func (lc *dbWritingChatLifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title string, hookOpts session.HookOpts) (string, error) {
+func (lc *dbWritingChatLifecycle) StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error) {
 	lc.gotSessionID = sessionID
-	lc.gotPrompt = prompt
+	lc.gotInput = input
 	lc.gotTitle = title
 	lc.gotHookOpts = hookOpts
 
@@ -88,6 +88,14 @@ func (lc *dbWritingChatLifecycle) StartTmuxChat(ctx context.Context, sessionID, 
 		return "", err
 	}
 	return lc.agentSessionID, nil
+}
+
+func (lc *dbWritingChatLifecycle) KillChatTmuxSession(context.Context, string, string) error {
+	return nil
+}
+
+func (lc *dbWritingChatLifecycle) ReclaimRepairChat(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
+	return session.ReclaimRepairChatResult{}, nil
 }
 
 // TestStartChatRun_RepairChatVisibleInListChats is the regression test
@@ -164,8 +172,8 @@ func TestStartChatRun_RepairChatVisibleInListChats(t *testing.T) {
 	if lc.gotTitle != title {
 		t.Errorf("lifecycle saw title = %q, want %q", lc.gotTitle, title)
 	}
-	if lc.gotPrompt != "/boss-repair" {
-		t.Errorf("lifecycle saw prompt = %q, want /boss-repair", lc.gotPrompt)
+	if lc.gotInput.Prompt != "/boss-repair" {
+		t.Errorf("lifecycle saw prompt = %q, want /boss-repair", lc.gotInput.Prompt)
 	}
 	if lc.gotHookOpts.Token == "" {
 		t.Error("lifecycle should receive a non-empty hook token from StartChatRun")

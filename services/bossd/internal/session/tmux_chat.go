@@ -2,8 +2,12 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -11,10 +15,79 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/tmux"
 )
+
+const (
+	defaultAgentCommandPrefix      = "/"
+	repairChatReclaimIdleThreshold = 30 * time.Minute
+)
+
+var (
+	ErrRepairChatNotReclaimable  = errors.New("repair chat not reclaimable")
+	ErrRepairChatSessionMismatch = errors.New("repair chat belongs to a different session")
+	ErrRepairChatActive          = errors.New("repair chat active or not stale")
+)
+
+type ReclaimRepairChatResult struct {
+	Reclaimed       bool
+	TmuxSessionName string
+}
+
+const repairChatTitlePrefix = "Repair:"
+
+// IsRepairChatTitle reports whether a chat row belongs to the unattended
+// repair workflow. Repair chats have their own stale-reclaim path and should
+// not be counted as user activity for repair idle gating.
+func IsRepairChatTitle(title string) bool {
+	return strings.HasPrefix(title, repairChatTitlePrefix)
+}
+
+// RepairChatStaleForReclaim reports whether a repair chat has durable idle
+// evidence old enough for the repair plugin to reclaim it.
+func RepairChatStaleForReclaim(agentLogsDir string, chat *models.AgentChat, now time.Time) (bool, string, error) {
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+		return true, "repair chat has no live tmux pointer", nil
+	}
+	if agentLogsDir == "" {
+		return false, "agent logs dir not configured; refusing to kill live repair tmux without durable idle evidence", nil
+	}
+
+	logPath := agentLogPathFor(agentLogsDir, chat.AgentSessionID)
+	st, err := os.Stat(logPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Sprintf("agent log for %s is missing; refusing to kill live repair tmux without durable idle evidence", chat.AgentSessionID), nil
+		}
+		return false, "", fmt.Errorf("stat repair agent log for %s: %w", chat.AgentSessionID, err)
+	}
+
+	idleFor := now.Sub(st.ModTime())
+	if idleFor < repairChatReclaimIdleThreshold {
+		return false, fmt.Sprintf("repair chat last produced output %s ago; threshold is %s", idleFor.Round(time.Second), repairChatReclaimIdleThreshold), nil
+	}
+	return true, fmt.Sprintf("repair chat log idle for %s; threshold is %s", idleFor.Round(time.Second), repairChatReclaimIdleThreshold), nil
+}
+
+// ChatInput is the pane input for a tmux-hosted agent chat. Prompt is raw text;
+// Command is a boss command name without an agent-specific prefix.
+type ChatInput struct {
+	Prompt  string
+	Command string
+}
+
+func (i ChatInput) render(commandPrefix string) string {
+	if i.Command == "" {
+		return i.Prompt
+	}
+	if commandPrefix == "" {
+		commandPrefix = defaultAgentCommandPrefix
+	}
+	return commandPrefix + strings.TrimLeft(i.Command, "/$")
+}
 
 // StartTmuxChat boots a Claude (or other agent) run inside a detached tmux
 // session and registers it as an agent_chats row so the chat list view can
@@ -59,8 +132,8 @@ import (
 //     settings.local.json. The hook server then routes Stop POSTs for
 //     this run to /hooks/agent-run-complete/<agent_session_id>, which
 //     unblocks the matching WaitChatRun call. Skipped when Token is "".
-//  9. Inject the supplied prompt into the tmux session as a bracketed
-//     paste (see Client.SendPlan).
+//  9. Inject the supplied input into the tmux session unless the plugin
+//     embedded it in argv.
 //
 // Failures after step 5 (tmux is live) tear tmux down and delete the
 // agent_chats row before returning, so a retried sweep doesn't leak.
@@ -86,7 +159,7 @@ type HookOpts struct {
 // is non-empty. The cron path configures the hook earlier in StartSession
 // (keyed by session_id); the repair path passes a run-keyed token here so
 // the claude plugin can write a sibling Stop-hook entry.
-func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title string, hookOpts HookOpts) (string, error) {
+func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input ChatInput, title string, hookOpts HookOpts) (string, error) {
 	// Step 1a: tmux must be available; otherwise there's nowhere to host the run.
 	if l.tmux == nil || !l.tmux.Available(ctx) {
 		return "", grpcstatus.Errorf(codes.FailedPrecondition,
@@ -144,9 +217,11 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 	// Step 4: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId: agentSessionID,
-		Resume:    false,
-		LogPath:   logPath,
+		SessionId:      agentSessionID,
+		Resume:         false,
+		LogPath:        logPath,
+		InitialPrompt:  input.Prompt,
+		InitialCommand: input.Command,
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -154,6 +229,12 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 	if cmdResp == nil || len(cmdResp.Argv) == 0 {
 		return "", grpcstatus.Errorf(codes.FailedPrecondition,
 			"agent runner for session %s returned empty argv", sessionID)
+	}
+
+	if cmdResp.GetConsumesInitialInput() {
+		if err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts); err != nil {
+			return "", err
+		}
 	}
 
 	// Step 5: spawn the tmux session.
@@ -214,45 +295,34 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 	}
 
 	// Step 8: install a run-scoped Stop-hook entry when the caller asked
-	// for one. The claude plugin writes this as a SIBLING entry in
-	// settings.local.json (matcher `bossd-agent-run-<id>`, URL
-	// `/hooks/agent-run-complete/<id>`); the cron's session-keyed entry
-	// — if any — is preserved untouched. Failures here tear down the
-	// tmux session and stamp the agent_chats row as failed-to-start so
-	// the operator can see the attempt in the chat list (the row is no
-	// longer deleted — that was hiding the entire repair-attempt
-	// history when SendPlan timed out further down).
-	if hookOpts.Token != "" {
-		if l.hookPort == 0 {
-			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
-				"hook port not configured")
-			return "", grpcstatus.Errorf(codes.FailedPrecondition,
-				"hook port not configured: SetHookPort must be called before StartTmuxChat with a hook token")
-		}
-		hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
-			WorkDir:        sess.WorktreePath,
-			SessionId:      sessionID,
-			AgentSessionId: agentSessionID,
-			HookToken:      hookOpts.Token,
-			HookPort:       int32(l.hookPort),
-		})
-		if err != nil {
+	// for one. If argv already embeds startup input, this was done before
+	// tmux launch so a fast-finishing agent cannot beat hook configuration.
+	if !cmdResp.GetConsumesInitialInput() {
+		if err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts); err != nil {
 			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
 				"configure finalize hook failed: "+err.Error())
-			return "", fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
-		}
-		// Hookless agents (e.g. codex) — arm the daemon-side poll fallback
-		// so WaitChatRun still observes completion. Plugins that own a
-		// finalize hook (claude) skip this path; their Stop hook drives
-		// CompleteAgentRun directly.
-		if hookResp != nil && !hookResp.IsSupported {
-			if l.pollArmer != nil && l.daemonCtx != nil {
-				l.pollArmer.Arm(l.daemonCtx, agentSessionID, client)
-			}
+			return "", err
 		}
 	}
 
-	// Step 9: inject the prompt as a bracketed paste. This is the step
+	if cmdResp.GetConsumesInitialInput() {
+		return agentSessionID, nil
+	}
+
+	// Step 9: inject the prompt. Long prompt bodies use bracketed paste.
+	// Short command invocations use literal keys plus Enter; Codex has been
+	// observed leaving pasted "$boss-repair" text sitting idle in the input box.
+	prompt := input.render(cmdResp.GetCommandPrefix())
+	if input.Command != "" {
+		if err := l.tmux.SendLineWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
+			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
+				"send command failed: "+err.Error())
+			return "", fmt.Errorf("send command to tmux session %q: %w", tmuxName, err)
+		}
+		return agentSessionID, nil
+	}
+
+	// Step 9b: inject the prompt as a bracketed paste. This is the step
 	// that broke for every repair attempt before #350: the broken
 	// `bash -c "claude … | tee log"` argv caused the pane to show a
 	// "--print needs stdin or prompt" error from claude and the ready
@@ -260,13 +330,47 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID, prompt, title 
 	// preserve the chat row with a start_error rather than deleting it,
 	// so the operator can see exactly what was attempted even when the
 	// agent never came up.
-	if err := l.tmux.SendPlan(ctx, tmuxName, prompt); err != nil {
+	if err := l.tmux.SendPlanWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
 		l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
 			"send plan failed: "+err.Error())
 		return "", fmt.Errorf("send plan to tmux session %q: %w", tmuxName, err)
 	}
 
 	return agentSessionID, nil
+}
+
+func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client agent.AgentRunnerClient, workDir, sessionID, agentSessionID string, hookOpts HookOpts) error {
+	if hookOpts.Token == "" {
+		return nil
+	}
+	if l.hookPort == 0 {
+		return grpcstatus.Errorf(codes.FailedPrecondition,
+			"hook port not configured: SetHookPort must be called before StartTmuxChat with a hook token")
+	}
+	hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
+		WorkDir:        workDir,
+		SessionId:      sessionID,
+		AgentSessionId: agentSessionID,
+		HookToken:      hookOpts.Token,
+		HookPort:       int32(l.hookPort),
+	})
+	if err != nil {
+		return fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
+	}
+	if !hookResp.GetIsSupported() {
+		l.armPollFallbackForTmuxChat(agentSessionID, client)
+	}
+	return nil
+}
+
+func (l *Lifecycle) armPollFallbackForTmuxChat(agentSessionID string, client agent.AgentRunnerClient) {
+	if l.pollArmer == nil || l.daemonCtx == nil {
+		return
+	}
+	l.pollArmer.Arm(l.daemonCtx, agentSessionID, client)
+	l.logger.Info().
+		Str("agent_session", agentSessionID).
+		Msg("armed poll fallback for hookless interactive tmux chat")
 }
 
 // failStartBestEffort tears down a tmux session created by a failing
@@ -331,12 +435,116 @@ func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID string) (str
 	return "", false, nil
 }
 
+func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
+	if sessionID == "" {
+		return ReclaimRepairChatResult{}, fmt.Errorf("session_id is required")
+	}
+	if agentSessionID == "" {
+		return ReclaimRepairChatResult{}, fmt.Errorf("agent_session_id is required")
+	}
+	if reason == "" {
+		reason = "reclaimed stale repair chat"
+	}
+	if l.agentChats == nil {
+		return ReclaimRepairChatResult{}, fmt.Errorf("agent chat store not configured")
+	}
+
+	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		return ReclaimRepairChatResult{}, err
+	}
+	if chat == nil {
+		return ReclaimRepairChatResult{}, fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
+	}
+	if chat.SessionID != sessionID {
+		return ReclaimRepairChatResult{}, fmt.Errorf("%w: chat session %s requested session %s", ErrRepairChatSessionMismatch, chat.SessionID, sessionID)
+	}
+	if !strings.HasPrefix(chat.Title, repairChatTitlePrefix) {
+		return ReclaimRepairChatResult{}, fmt.Errorf("%w: title %q", ErrRepairChatNotReclaimable, chat.Title)
+	}
+
+	result := ReclaimRepairChatResult{Reclaimed: true}
+	if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
+		result.TmuxSessionName = *chat.TmuxSessionName
+		if l.tmux == nil {
+			return ReclaimRepairChatResult{}, fmt.Errorf("%w: tmux client not configured; cannot verify repair chat %s is dead", ErrRepairChatActive, result.TmuxSessionName)
+		}
+		tmuxAlive, tmuxErr := l.tmux.HasSessionStatus(ctx, result.TmuxSessionName)
+		if tmuxErr != nil {
+			return ReclaimRepairChatResult{}, fmt.Errorf("%w: cannot verify tmux session %s liveness: %v", ErrRepairChatActive, result.TmuxSessionName, tmuxErr)
+		}
+		if tmuxAlive {
+			stale, staleReason, staleErr := l.repairChatStaleForReclaim(chat)
+			if staleErr != nil {
+				return ReclaimRepairChatResult{}, staleErr
+			}
+			if !stale {
+				return ReclaimRepairChatResult{}, fmt.Errorf("%w: %s", ErrRepairChatActive, staleReason)
+			}
+			l.logger.Info().
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", result.TmuxSessionName).
+				Str("reason", staleReason).
+				Msg("repair chat is stale enough to reclaim")
+			if err := l.tmux.KillSession(ctx, result.TmuxSessionName); err != nil {
+				return ReclaimRepairChatResult{}, fmt.Errorf("kill repair tmux session %s: %w", result.TmuxSessionName, err)
+			}
+		}
+	}
+	if err := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); err != nil {
+		return ReclaimRepairChatResult{}, err
+	}
+	return result, nil
+}
+
+func (l *Lifecycle) repairChatStaleForReclaim(chat *models.AgentChat) (bool, string, error) {
+	return RepairChatStaleForReclaim(l.agentLogsDir, chat, time.Now())
+}
+
+// KillChatTmuxSession tears down the tmux-backed chat identified by
+// agentSessionID and only clears the chat row's tmux pointer after that tmux
+// session is gone.
+func (l *Lifecycle) KillChatTmuxSession(ctx context.Context, sessionID, agentSessionID string) error {
+	if l.agentChats == nil {
+		return fmt.Errorf("agent chat store not configured")
+	}
+	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		return fmt.Errorf("get agent chat %s: %w", agentSessionID, err)
+	}
+	if chat == nil {
+		return fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
+	}
+	if chat.SessionID != sessionID {
+		return fmt.Errorf("agent chat %s belongs to session %s, want %s", agentSessionID, chat.SessionID, sessionID)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
+		return nil
+	}
+	tmuxName := *chat.TmuxSessionName
+	if l.tmux == nil || !l.tmux.Available(ctx) {
+		return fmt.Errorf("tmux unavailable: cannot tear down chat tmux session %s", tmuxName)
+	}
+	if err := l.tmux.KillSession(ctx, tmuxName); err != nil {
+		return fmt.Errorf("kill chat tmux session %s: %w", tmuxName, err)
+	}
+	if err := l.agentChats.UpdateTmuxSessionName(ctx, agentSessionID, nil); err != nil {
+		return fmt.Errorf("clear chat tmux session name for %s: %w", agentSessionID, err)
+	}
+	return nil
+}
+
 // agentLogPathFor returns the bossd-owned log path for an agent session
 // inside agentLogsDir. Mirrors the per-session naming used elsewhere
 // (PluginRunner.logPathFor) so a single tail can follow either a headless
 // or interactive run by agent_session_id.
 func (l *Lifecycle) agentLogPathFor(agentSessionID string) string {
-	return filepath.Join(l.agentLogsDir, agentSessionID+".log")
+	return agentLogPathFor(l.agentLogsDir, agentSessionID)
+}
+
+func agentLogPathFor(agentLogsDir, agentSessionID string) string {
+	return filepath.Join(agentLogsDir, agentSessionID+".log")
 }
 
 // startCronTmuxChat is a thin wrapper around StartTmuxChat that supplies
@@ -355,7 +563,7 @@ func (l *Lifecycle) startCronTmuxChat(
 	// Cron sessions wire their session-keyed Stop hook earlier in
 	// StartSession; pass an empty HookOpts so StartTmuxChat doesn't
 	// install a duplicate run-keyed entry.
-	return l.StartTmuxChat(ctx, sessionID, session.Plan, `Run "`+cronName+`"`, HookOpts{})
+	return l.StartTmuxChat(ctx, sessionID, ChatInput{Prompt: session.Plan}, `Run "`+cronName+`"`, HookOpts{})
 }
 
 // killTmuxChatBestEffort tears down a tmux session created during a failed

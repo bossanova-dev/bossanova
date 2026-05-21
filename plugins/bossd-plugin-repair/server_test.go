@@ -51,6 +51,10 @@ type mockHostClient struct {
 	waitReqs  []*bossanovav1.WaitChatRunHostRequest
 	waitFunc  func(ctx context.Context, req *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error)
 
+	reclaimResp *bossanovav1.ReclaimRepairChatHostResponse
+	reclaimErr  error
+	reclaimReqs []*bossanovav1.ReclaimRepairChatHostRequest
+
 	fireEventCalls int
 	fireEventReqs  []*bossanovav1.FireSessionEventRequest
 
@@ -63,8 +67,9 @@ var _ hostClient = (*mockHostClient)(nil)
 
 func newTestMock() *mockHostClient {
 	return &mockHostClient{
-		startResp: &bossanovav1.StartChatRunHostResponse{AgentSessionId: "claude-1"},
-		waitResp:  &bossanovav1.WaitChatRunHostResponse{},
+		startResp:   &bossanovav1.StartChatRunHostResponse{AgentSessionId: "claude-1"},
+		waitResp:    &bossanovav1.WaitChatRunHostResponse{},
+		reclaimResp: &bossanovav1.ReclaimRepairChatHostResponse{Reclaimed: true, TmuxSessionName: "boss-repair-stale"},
 	}
 }
 
@@ -143,6 +148,16 @@ func (m *mockHostClient) WaitChatRun(ctx context.Context, req *bossanovav1.WaitC
 	return resp, err
 }
 
+func (m *mockHostClient) ReclaimRepairChat(_ context.Context, req *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reclaimReqs = append(m.reclaimReqs, req)
+	if m.reclaimErr != nil {
+		return nil, m.reclaimErr
+	}
+	return m.reclaimResp, nil
+}
+
 func (m *mockHostClient) snapshot() (startCalls, waitCalls, fireCalls int, setRepair []*bossanovav1.SetRepairStatusRequest) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -188,7 +203,8 @@ func TestRepairSession_HappyPath(t *testing.T) {
 	require.Equal(t, 1, startCalls, "StartChatRun called once")
 	require.Equal(t, 1, waitCalls, "WaitChatRun called once")
 	require.Equal(t, 1, fireCalls, "FIX_COMPLETE fired in FIXING_CHECKS")
-	require.Equal(t, "/boss-repair", mock.startReqs[0].GetPrompt())
+	require.Equal(t, "boss-repair", mock.startReqs[0].GetCommand())
+	require.Empty(t, mock.startReqs[0].GetPrompt())
 	// Title surfaces the repair run in the chat list as
 	// "Repair: <session-name>" so operators can attach via tmux.
 	require.Equal(t, "Repair: session-name", mock.startReqs[0].GetTitle())
@@ -228,6 +244,66 @@ func TestRepairSession_AlreadyExists(t *testing.T) {
 	// session's attempt count, otherwise two plugins racing on the same
 	// session would double-count and the TUI hint would lie.
 	assert.Empty(t, mock.recordOutcomeReqs, "AlreadyExists must not record a repair outcome")
+	assert.Empty(t, mock.reclaimReqs, "AlreadyExists without agent_session_id is an in-process race loss, not reclaimable")
+}
+
+func TestRepairSession_AlreadyExistsAgentIDReclaimRefusedSoftSkips(t *testing.T) {
+	mock := newTestMock()
+	mock.startErr = grpcstatus.Error(codes.AlreadyExists, "tmux chat already active for session s1 (agent_session_id=active-agent-1)")
+	mock.reclaimErr = grpcstatus.Error(codes.FailedPrecondition, "reclaim repair chat: repair chat active or not stale")
+
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+
+	rm.repairSession(t.Context(), "s1", "repo", "title",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123")
+
+	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
+	require.Equal(t, 1, startCalls)
+	require.Equal(t, 0, waitCalls)
+	require.Equal(t, 0, fireCalls)
+	require.Empty(t, setRepair, "losing/refused reclaim path must not set repair status")
+	require.Len(t, mock.reclaimReqs, 1)
+	require.Equal(t, "active-agent-1", mock.reclaimReqs[0].GetAgentSessionId())
+	require.Empty(t, mock.recordOutcomeReqs, "refused reclaim is a soft skip, not a failed repair attempt")
+
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	assert.False(t, rm.repairing["s1"])
+	assert.True(t, rm.cooldowns["s1"].IsZero(), "soft skip must not start cooldown")
+	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "soft skip did not run an agent attempt")
+}
+
+func TestRepairSession_AlreadyExistsAgentIDReclaimSuccessRetriesOnce(t *testing.T) {
+	mock := newTestMock()
+	calls := 0
+	mock.startFunc = func(req *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
+		calls++
+		if calls == 1 {
+			return nil, grpcstatus.Error(codes.AlreadyExists, "tmux chat already active for session s1 (agent_session_id=stale-agent-1)")
+		}
+		return &bossanovav1.StartChatRunHostResponse{AgentSessionId: "fresh-agent-1"}, nil
+	}
+	mock.reclaimResp = &bossanovav1.ReclaimRepairChatHostResponse{
+		Reclaimed:       true,
+		TmuxSessionName: "boss-stale-repair",
+	}
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+
+	rm.repairSession(t.Context(), "s1", "repo", "title",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123")
+
+	startCalls, waitCalls, _, setRepair := mock.snapshot()
+	require.Equal(t, 2, startCalls)
+	require.Equal(t, 1, waitCalls)
+	require.Len(t, mock.reclaimReqs, 1)
+	require.Equal(t, "s1", mock.reclaimReqs[0].GetSessionId())
+	require.Equal(t, "stale-agent-1", mock.reclaimReqs[0].GetAgentSessionId())
+	require.Contains(t, mock.reclaimReqs[0].GetReason(), "daemon validated stale repair chat")
+	require.NotEmpty(t, setRepair)
+	require.Len(t, mock.recordOutcomeReqs, 1)
+	require.Equal(t, "fresh-agent-1", mock.recordOutcomeReqs[0].GetAgentSessionId())
 }
 
 // TestRepairSession_RecordsOutcomeOnRunnerFailure asserts that a
@@ -306,6 +382,30 @@ func TestRepairSession_RunReturnsExitError(t *testing.T) {
 	assert.False(t, rm.cooldowns["s1"].IsZero(), "cooldown set when run owned even on failure")
 	assert.Equal(t, "abc123", rm.lastAttemptCommit["s1"], "agent exit failures count as an attempted repair for this head")
 	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, rm.lastAttemptDisplayStatus["s1"])
+}
+
+func TestRepairSession_WaitChatRunTimeoutDoesNotRecordAttemptedHead(t *testing.T) {
+	t.Parallel()
+
+	mock := newTestMock()
+	mock.waitResp = &bossanovav1.WaitChatRunHostResponse{
+		ExitError: "interactive chat did not report completion before wait deadline: context deadline exceeded",
+	}
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+
+	rm.repairSession(t.Context(), "s1", "repo", "title",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+
+	rm.mu.Lock()
+	lastAttemptCommit := rm.lastAttemptCommit["s1"]
+	lastAttemptStatus := rm.lastAttemptDisplayStatus["s1"]
+	rm.mu.Unlock()
+
+	assert.Equal(t, "", lastAttemptCommit, "timeout must not mark commit as attempted")
+	assert.Equal(t, bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED, lastAttemptStatus, "timeout must not mark status as attempted")
+	require.Len(t, mock.recordOutcomeReqs, 1)
+	assert.Contains(t, mock.recordOutcomeReqs[0].GetExitError(), "interactive chat did not report completion")
 }
 
 func TestRepairSession_NotInFixingChecks(t *testing.T) {
@@ -547,6 +647,28 @@ func TestMaybeRepair_AllowsPersistedRunnerFailureSameHeadStatus(t *testing.T) {
 		c, _, _, _ := mock.snapshot()
 		return c > 0
 	}, "StartChatRun called after runner failure because no agent repair ran")
+}
+
+func TestMaybeRepair_AllowsPersistedIncompleteInteractiveChatSameHeadStatus(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                      "s1",
+			State:                   bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			PrDisplayHeadSha:        "abc123",
+			LastRepairHeadSha:       "abc123",
+			LastRepairDisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING,
+			LastRepairExitError:     "interactive chat did not report completion before wait deadline: context deadline exceeded",
+		},
+	}
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+
+	waitFor(t, func() bool {
+		c, _, _, _ := mock.snapshot()
+		return c > 0
+	}, "StartChatRun called after incomplete interactive chat because no agent repair completed")
 }
 
 func TestMaybeRepair_SkipsAlreadyRepairing(t *testing.T) {

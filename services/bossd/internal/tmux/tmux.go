@@ -185,8 +185,24 @@ func (c *Client) bindDetachKeys(ctx context.Context, sessionName string) {
 
 // HasSession checks if a tmux session exists.
 func (c *Client) HasSession(ctx context.Context, name string) bool {
+	exists, _ := c.HasSessionStatus(ctx, name)
+	return exists
+}
+
+// HasSessionStatus checks if a tmux session exists and reports tmux command
+// failures separately from a definite "session missing" result.
+func (c *Client) HasSessionStatus(ctx context.Context, name string) (bool, error) {
 	cmd := c.cmdFunc(ctx, "tmux", "has-session", "-t", name)
-	return cmd.Run() == nil
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" || strings.Contains(msg, "can't find session") {
+			return false, nil
+		}
+		return false, fmt.Errorf("tmux has-session %q: %w (stderr: %s)", name, err, msg)
+	}
+	return true, nil
 }
 
 // KillSession kills a tmux session.
@@ -378,26 +394,49 @@ func (c *Client) CapturePane(ctx context.Context, sessionName string) (string, e
 // no-arg SendPlan; tests inject aggressive timeouts so the 5s deadline
 // never gates them.
 type sendPlanOpts struct {
-	deadline     time.Duration
-	pollInterval time.Duration
+	deadline         time.Duration
+	pollInterval     time.Duration
+	readyMarker      string
+	submitVerifyWait time.Duration
+	submitVerifyTick time.Duration
 }
 
-// SendPlan delivers a plan to a Claude tmux session as a bracketed paste.
+// SendPlan delivers a plan to a tmux-hosted agent session as a bracketed paste.
 //
-// It first polls capture-pane until Claude Code's input-box prompt
-// indicator (❯) appears (or the deadline is hit), then loads the plan
+// It first polls capture-pane until the agent's input-box prompt
+// indicator appears (or the deadline is hit), then loads the plan
 // into a tmux paste buffer via stdin and pastes it with bracketed paste
-// enabled (-p) so Claude treats the payload as a paste rather than raw
-// keystrokes. Finally it sends Enter to submit.
+// enabled (-p) so the agent treats the payload as a paste rather than
+// raw keystrokes. Finally it sends Enter to submit.
 //
 // Returns an error if the marker never appears within the deadline or if
 // any of the three tmux subcommands (load-buffer / paste-buffer /
 // send-keys) returns non-zero. The 5s deadline matches the existing
 // prefillClaudeInput marker wait in the boss attach view.
 func (c *Client) SendPlan(ctx context.Context, sessionName, plan string) error {
+	return c.SendPlanWithReadyMarker(ctx, sessionName, plan, sendPlanReadyMarker)
+}
+
+// SendPlanWithReadyMarker is SendPlan with an agent-specific readiness marker.
+// Empty readyMarker preserves the legacy Claude marker for old plugins.
+func (c *Client) SendPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
 	return c.sendPlan(ctx, sessionName, plan, sendPlanOpts{
 		deadline:     sendPlanDefaultDeadline,
 		pollInterval: sendPlanDefaultPollInterval,
+		readyMarker:  readyMarker,
+	})
+}
+
+// SendLineWithReadyMarker sends a short literal line and submits it with Enter.
+// Use this for command invocations where bracketed paste can leave some TUIs
+// with the command text loaded but not executed.
+func (c *Client) SendLineWithReadyMarker(ctx context.Context, sessionName, line, readyMarker string) error {
+	return c.sendLine(ctx, sessionName, line, sendPlanOpts{
+		deadline:         sendPlanDefaultDeadline,
+		pollInterval:     sendPlanDefaultPollInterval,
+		readyMarker:      readyMarker,
+		submitVerifyWait: 2 * time.Second,
+		submitVerifyTick: 100 * time.Millisecond,
 	})
 }
 
@@ -412,6 +451,9 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	}
 	if opts.pollInterval <= 0 {
 		opts.pollInterval = sendPlanDefaultPollInterval
+	}
+	if opts.readyMarker == "" {
+		opts.readyMarker = sendPlanReadyMarker
 	}
 
 	// Step 1: poll capture-pane for the ready marker.
@@ -456,6 +498,100 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 	return nil
 }
 
+// sendLine is the test-injectable variant of SendLineWithReadyMarker.
+func (c *Client) sendLine(ctx context.Context, sessionName, line string, opts sendPlanOpts) error {
+	if sessionName == "" {
+		return fmt.Errorf("session name is required")
+	}
+	if opts.deadline <= 0 {
+		opts.deadline = sendPlanDefaultDeadline
+	}
+	if opts.pollInterval <= 0 {
+		opts.pollInterval = sendPlanDefaultPollInterval
+	}
+	if opts.readyMarker == "" {
+		opts.readyMarker = sendPlanReadyMarker
+	}
+
+	if err := c.waitForReadyMarker(ctx, sessionName, opts); err != nil {
+		return err
+	}
+
+	textCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "-l", line)
+	var textStderr bytes.Buffer
+	textCmd.Stderr = &textStderr
+	if err := textCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(textStderr.String()); msg != "" {
+			return fmt.Errorf("tmux send-keys literal line for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux send-keys literal line for %q: %w", sessionName, err)
+	}
+
+	enterCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "Enter")
+	var enterStderr bytes.Buffer
+	enterCmd.Stderr = &enterStderr
+	if err := enterCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(enterStderr.String()); msg != "" {
+			return fmt.Errorf("tmux send-keys Enter for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux send-keys Enter for %q: %w", sessionName, err)
+	}
+	if opts.submitVerifyWait > 0 {
+		if err := c.waitForLineSubmission(ctx, sessionName, line, opts.submitVerifyWait, opts.submitVerifyTick); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) waitForLineSubmission(ctx context.Context, sessionName, line string, waitFor, tickEvery time.Duration) error {
+	if tickEvery <= 0 {
+		tickEvery = 100 * time.Millisecond
+	}
+
+	deadline := time.NewTimer(waitFor)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(tickEvery)
+	defer ticker.Stop()
+
+	for {
+		pane, err := c.CapturePane(ctx, sessionName)
+		if err != nil {
+			return fmt.Errorf("verify command submission: %w", err)
+		}
+		if !lineStillAtPrompt(pane, line) {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("command was not submitted; %q is still present at the tmux prompt", line)
+		case <-ticker.C:
+		}
+	}
+}
+
+func lineStillAtPrompt(pane, line string) bool {
+	lines := strings.Split(pane, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		raw := lines[i]
+		text := strings.TrimSpace(raw)
+		if text == "" {
+			continue
+		}
+		for _, prompt := range []string{"› ", "> ", "❯ "} {
+			if strings.HasPrefix(text, prompt) && strings.Contains(text, line) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
 // waitForReadyMarker polls CapturePane until the Claude Code ready marker
 // is observed or the deadline elapses. The first poll is immediate so
 // already-ready sessions return without sleeping.
@@ -472,13 +608,13 @@ func (c *Client) waitForReadyMarker(ctx context.Context, sessionName string, opt
 		out, err := c.CapturePane(ctx, sessionName)
 		if err == nil {
 			lastPane = out
-			if strings.Contains(out, sendPlanReadyMarker) {
+			if strings.Contains(out, opts.readyMarker) {
 				return nil
 			}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("ready marker %q not seen in pane %q within %s; last pane (truncated): %s",
-				sendPlanReadyMarker, sessionName, opts.deadline, truncatePaneForError(lastPane))
+				opts.readyMarker, sessionName, opts.deadline, truncatePaneForError(lastPane))
 		}
 		select {
 		case <-ctx.Done():

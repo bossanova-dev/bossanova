@@ -196,13 +196,6 @@ func styleForIntent(intent pb.DisplayIntent) lipgloss.Style {
 	}
 }
 
-// renderSessionPRStatus returns a styled PR status label for display next to
-// a session title (e.g. "checking", "failing"). Returns "" when there is no
-// meaningful PR status to show (idle / unspecified).
-func renderSessionPRStatus(sess *pb.Session, sp spinner.Model) string {
-	return styledPRStatus(sess, sp)
-}
-
 // renderClaudeStatus returns a styled status string for a Claude process
 // (working/idle/stopped) without PR display context.
 func renderClaudeStatus(status string, sp spinner.Model) string {

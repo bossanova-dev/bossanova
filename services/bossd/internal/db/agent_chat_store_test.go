@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,6 +77,60 @@ func TestAgentChatStore_CRUD(t *testing.T) {
 	chats, _ = chatStore.ListBySession(ctx, sess.ID)
 	if chats[0].Title != "Title by claude ID" {
 		t.Errorf("title after update by claude ID = %q, want %q", chats[0].Title, "Title by claude ID")
+	}
+}
+
+func TestAgentChatStore_MarkStartFailedSanitizesInvalidUTF8(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Chat start-error test",
+		WorktreePath: "/tmp/wt/chat-start-error",
+		BranchName:   "feat/chat-start-error",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	_, err = chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID:      sess.ID,
+		AgentSessionID: "agent-bad-start",
+		Title:          "Repair chat",
+	})
+	if err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+
+	reason := "send plan failed: " + string([]byte{0xff, 0xfe})
+	if err := chatStore.MarkStartFailed(ctx, "agent-bad-start", reason); err != nil {
+		t.Fatalf("mark start failed: %v", err)
+	}
+
+	chat, err := chatStore.GetByAgentSessionID(ctx, "agent-bad-start")
+	if err != nil {
+		t.Fatalf("get chat: %v", err)
+	}
+	if chat.StartError == nil {
+		t.Fatal("StartError is nil")
+	}
+	if *chat.StartError != strings.ToValidUTF8(reason, "\uFFFD") {
+		t.Fatalf("StartError = %q, want sanitized value", *chat.StartError)
+	}
+}
+
+func TestAgentChatStore_GetByAgentSessionIDReturnsNotFoundSentinel(t *testing.T) {
+	db := setupTestDB(t)
+	chatStore := NewAgentChatStore(db)
+
+	_, err := chatStore.GetByAgentSessionID(context.Background(), "missing-agent-session")
+	if !errors.Is(err, ErrAgentChatNotFound) {
+		t.Fatalf("GetByAgentSessionID error = %v, want ErrAgentChatNotFound", err)
 	}
 }
 

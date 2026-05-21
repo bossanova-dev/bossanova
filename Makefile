@@ -3,7 +3,7 @@
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
 	plugins plugins-all readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-race \
-	test-docs test-integration-bossd test-public-mirror test-readme
+	test-bosso-scale test-docs test-integration-bossd test-public-mirror test-readme
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all:
@@ -231,11 +231,14 @@ test-bossd:
 
 ## test-integration-bossd: Run bossd integration tests (requires tmux on PATH; gated by 'integration' build tag)
 test-integration-bossd:
-	cd services/bossd && go test -tags=integration -race ./internal/server/... -count=1
+	cd services/bossd && go test -tags=integration -race ./internal/server/... ./internal/testharness/... -count=1
 
 ifneq ($(wildcard services/bosso/go.mod),)
 test-bosso:
 	$(MAKE) -C services/bosso test
+
+test-bosso-scale:
+	cd services/bosso && go test ./internal/loadtest -run TestOrchestratorScaleSmoke -count=1
 endif
 
 # Auto-generate per-plugin test targets from detected modules

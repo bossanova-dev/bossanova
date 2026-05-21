@@ -569,7 +569,7 @@ func (p *Provider) MergePR(ctx context.Context, repoPath string, prID int, strat
 		"--delete-branch",
 	)
 	if err != nil {
-		return fmt.Errorf("merge PR: %w", err)
+		return fmt.Errorf("merge PR: %w", classifyMergeError(err, repoPath, prID))
 	}
 
 	p.logger.Info().

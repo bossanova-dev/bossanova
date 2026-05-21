@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -116,7 +118,13 @@ func (s *Server) RepairDoctor(ctx context.Context, _ *connect.Request[bossanovav
 	// Check 6: repair-eligible sessions?
 	resp.Checks = append(resp.Checks, s.repairEligibleSessionsCheck(ctx))
 
-	// Check 7: recent repair logs (seeded into the response so the CLI
+	// Check 7: recent task automation failures?
+	resp.Checks = append(resp.Checks, s.recentTaskMappingFailuresCheck(ctx))
+
+	// Check 8: gh auth can update workflow files?
+	resp.Checks = append(resp.Checks, githubWorkflowScopeCheck(ctx))
+
+	// Check 9: recent repair logs (seeded into the response so the CLI
 	// can render the file list independent of the pass/fail check).
 	if logsDir != "" {
 		resp.RecentLogs = recentRepairLogs(logsDir)
@@ -222,6 +230,57 @@ func claudeVersionCheck(ctx context.Context) *bossanovav1.RepairDoctorCheck {
 	}
 }
 
+func githubWorkflowScopeCheck(ctx context.Context) *bossanovav1.RepairDoctorCheck {
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(checkCtx, "gh", "api", "-i", "/user").CombinedOutput()
+	if err != nil {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "github workflow permission",
+			Ok:     false,
+			Detail: fmt.Sprintf("cannot inspect gh auth scopes with `gh api -i /user`: %v. Run `gh auth login --scopes repo,workflow` or `gh auth refresh -h github.com -s workflow`.", err),
+		}
+	}
+	scopes, found := parseGitHubOAuthScopes(string(out))
+	if !found {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "github workflow permission",
+			Ok:     false,
+			Detail: "gh auth did not expose OAuth scopes, and `gh api -i /user` cannot verify fine-grained PAT or GitHub App workflow grants. For fine-grained auth, grant repository Workflows: write. For classic gh auth, run `gh auth refresh -h github.com -s workflow`.",
+		}
+	}
+	if scopes["workflow"] {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "github workflow permission",
+			Ok:     true,
+			Detail: "gh auth exposes workflow scope so Boss can merge PRs that update `.github/workflows` files.",
+		}
+	}
+	return &bossanovav1.RepairDoctorCheck{
+		Name:   "github workflow permission",
+		Ok:     false,
+		Detail: "gh auth missing workflow scope; auto-merge will fail for PRs modifying `.github/workflows`. Run `gh auth refresh -h github.com -s workflow`, then restart bossd if it inherited GH_TOKEN or cached auth.",
+	}
+}
+
+func parseGitHubOAuthScopes(headers string) (map[string]bool, bool) {
+	for _, line := range strings.Split(headers, "\n") {
+		name, values, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || !strings.EqualFold(name, "x-oauth-scopes") {
+			continue
+		}
+		scopes := map[string]bool{}
+		for _, value := range strings.Split(values, ",") {
+			scope := strings.TrimSpace(value)
+			if scope != "" {
+				scopes[scope] = true
+			}
+		}
+		return scopes, true
+	}
+	return map[string]bool{}, false
+}
+
 // repairEligibleSessionsCheck classifies all open sessions into the four
 // states the repair plugin's lookupSession accepts (AwaitingChecks /
 // FixingChecks / GreenDraft / ReadyForReview) versus the ones it skips.
@@ -273,6 +332,68 @@ func (s *Server) repairEligibleSessionsCheck(ctx context.Context) *bossanovav1.R
 		Ok:     eligible > 0 || ineligible == 0,
 		Detail: fmt.Sprintf("eligible=%d ineligible=%d examples=%v", eligible, ineligible, examples),
 	}
+}
+
+func (s *Server) recentTaskMappingFailuresCheck(ctx context.Context) *bossanovav1.RepairDoctorCheck {
+	if s.taskMappings == nil {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "recent task automation failures",
+			Ok:     true,
+			Detail: "task mapping store is not configured for this daemon",
+		}
+	}
+	failures, err := s.taskMappings.ListRecentFailures(ctx, 5)
+	if err != nil {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "recent task automation failures",
+			Ok:     false,
+			Detail: fmt.Sprintf("failed to list recent task failures: %v", err),
+		}
+	}
+	if len(failures) == 0 {
+		return &bossanovav1.RepairDoctorCheck{
+			Name:   "recent task automation failures",
+			Ok:     true,
+			Detail: "no recent failed task mappings with operator-visible errors",
+		}
+	}
+	lines := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		lines = append(lines, formatTaskMappingFailure(failure))
+	}
+	return &bossanovav1.RepairDoctorCheck{
+		Name:   "recent task automation failures",
+		Ok:     false,
+		Detail: "recent task automation failures need attention: " + strings.Join(lines, "; "),
+	}
+}
+
+func formatTaskMappingFailure(mapping *models.TaskMapping) string {
+	if mapping == nil {
+		return "unknown task: failed with no task mapping details"
+	}
+	pr := "unknown PR"
+	if n, err := parsePRNumberFromExternalID(mapping.ExternalID); err == nil {
+		pr = fmt.Sprintf("PR #%d", n)
+	}
+	detail := "failed without recorded detail"
+	if mapping.LastError != nil && *mapping.LastError != "" {
+		detail = *mapping.LastError
+	}
+	return fmt.Sprintf("%s (%s): %s", pr, mapping.ExternalID, detail)
+}
+
+func parsePRNumberFromExternalID(externalID string) (int, error) {
+	parts := strings.Split(externalID, ":")
+	if len(parts) < 2 {
+		return 0, fmt.Errorf("invalid external ID format: %s", externalID)
+	}
+	last := parts[len(parts)-1]
+	n, err := strconv.Atoi(last)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse PR number from %q: %w", externalID, err)
+	}
+	return n, nil
 }
 
 // recentRepairLogs lists the newest repair-*.log files so the CLI can show

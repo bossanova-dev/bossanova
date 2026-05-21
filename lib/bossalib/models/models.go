@@ -143,6 +143,7 @@ type TaskMapping struct {
 	SessionID            *string
 	RepoID               string
 	Status               TaskMappingStatus
+	LastError            *string
 	PendingUpdateStatus  *TaskMappingStatus
 	PendingUpdateDetails *string
 	CreatedAt            time.Time

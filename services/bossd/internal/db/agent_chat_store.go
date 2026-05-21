@@ -3,11 +3,15 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/sqlutil"
 )
+
+var ErrAgentChatNotFound = errors.New("agent_chat not found")
 
 var _ AgentChatStore = (*SQLiteAgentChatStore)(nil)
 
@@ -67,7 +71,7 @@ func (s *SQLiteAgentChatStore) GetByAgentSessionID(ctx context.Context, agentSes
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("get agent_chat by agent_session_id: %w", err)
 		}
-		return nil, fmt.Errorf("agent_chat not found for agent_session_id %q", agentSessionID)
+		return nil, fmt.Errorf("%w for agent_session_id %q", ErrAgentChatNotFound, agentSessionID)
 	}
 	return scanAgentChat(rows)
 }
@@ -94,6 +98,54 @@ func (s *SQLiteAgentChatStore) ListBySession(ctx context.Context, sessionID stri
 		chats = append(chats, c)
 	}
 	return chats, rows.Err()
+}
+
+func (s *SQLiteAgentChatStore) ListBySessions(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, error) {
+	chatsBySession := make(map[string][]*models.AgentChat, len(sessionIDs))
+	if len(sessionIDs) == 0 {
+		return chatsBySession, nil
+	}
+
+	const chunkSize = 500
+	for start := 0; start < len(sessionIDs); start += chunkSize {
+		end := start + chunkSize
+		if end > len(sessionIDs) {
+			end = len(sessionIDs)
+		}
+		if err := s.listBySessionsChunk(ctx, sessionIDs[start:end], chatsBySession); err != nil {
+			return nil, err
+		}
+	}
+	return chatsBySession, nil
+}
+
+func (s *SQLiteAgentChatStore) listBySessionsChunk(ctx context.Context, sessionIDs []string, chatsBySession map[string][]*models.AgentChat) error {
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(sessionIDs)), ",")
+	args := make([]any, len(sessionIDs))
+	for i, id := range sessionIDs {
+		args[i] = id
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT id, session_id, agent_session_id, provider_session_id, agent_name, title, daemon_id, tmux_session_name, start_error, created_at
+		 FROM agent_chats
+		 WHERE session_id IN (%s)
+		 ORDER BY session_id, created_at DESC`, placeholders),
+		args...,
+	)
+	if err != nil {
+		return fmt.Errorf("list agent_chats by sessions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		c, err := scanAgentChat(rows)
+		if err != nil {
+			return err
+		}
+		chatsBySession[c.SessionID] = append(chatsBySession[c.SessionID], c)
+	}
+	return rows.Err()
 }
 
 func (s *SQLiteAgentChatStore) UpdateTitle(ctx context.Context, id string, title string) error {
@@ -150,7 +202,7 @@ func (s *SQLiteAgentChatStore) UpdateProviderSessionID(ctx context.Context, agen
 func (s *SQLiteAgentChatStore) MarkStartFailed(ctx context.Context, agentSessionID, reason string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE agent_chats SET start_error = ?, tmux_session_name = NULL WHERE agent_session_id = ?`,
-		reason, agentSessionID,
+		strings.ToValidUTF8(reason, "\uFFFD"), agentSessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("mark agent_chat start failed: %w", err)

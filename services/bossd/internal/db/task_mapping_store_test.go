@@ -127,6 +127,159 @@ func TestTaskMappingStore_UpdateStatusAndSessionID(t *testing.T) {
 	}
 }
 
+func TestTaskMappingStore_UpdateLastErrorAndClear(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewTaskMappingStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	m, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:https://github.com/foo/bar:43",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create mapping: %v", err)
+	}
+
+	failed := models.TaskMappingStatusFailed
+	lastError := "workflow scope mismatch: missing repo"
+	lastErrorPtr := &lastError
+	updated, err := store.Update(ctx, m.ID, UpdateTaskMappingParams{
+		Status:    &failed,
+		LastError: &lastErrorPtr,
+	})
+	if err != nil {
+		t.Fatalf("update last error: %v", err)
+	}
+	if updated.Status != models.TaskMappingStatusFailed {
+		t.Errorf("status = %v, want Failed", updated.Status)
+	}
+	if updated.LastError == nil || *updated.LastError != lastError {
+		t.Fatalf("last_error = %v, want %q", updated.LastError, lastError)
+	}
+
+	var clearLastError *string
+	updated, err = store.Update(ctx, m.ID, UpdateTaskMappingParams{
+		LastError: &clearLastError,
+	})
+	if err != nil {
+		t.Fatalf("clear last error: %v", err)
+	}
+	if updated.LastError != nil {
+		t.Fatalf("last_error = %q, want nil", *updated.LastError)
+	}
+}
+
+func TestTaskMappingStore_ListRecentFailures(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewTaskMappingStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	m1, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:https://github.com/foo/bar:1",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create m1: %v", err)
+	}
+	m2, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:https://github.com/foo/bar:2",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create m2: %v", err)
+	}
+	m3, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:https://github.com/foo/bar:3",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create m3: %v", err)
+	}
+
+	failed := models.TaskMappingStatusFailed
+	completed := models.TaskMappingStatusCompleted
+	firstError := "first failure"
+	firstErrorPtr := &firstError
+	if _, err := store.Update(ctx, m1.ID, UpdateTaskMappingParams{
+		Status:    &failed,
+		LastError: &firstErrorPtr,
+	}); err != nil {
+		t.Fatalf("fail m1: %v", err)
+	}
+	if _, err := store.Update(ctx, m2.ID, UpdateTaskMappingParams{
+		Status: &completed,
+	}); err != nil {
+		t.Fatalf("complete m2: %v", err)
+	}
+	latestError := "latest failure"
+	latestErrorPtr := &latestError
+	if _, err := store.Update(ctx, m3.ID, UpdateTaskMappingParams{
+		Status:    &failed,
+		LastError: &latestErrorPtr,
+	}); err != nil {
+		t.Fatalf("fail m3: %v", err)
+	}
+	m5, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:https://github.com/foo/bar:5",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create m5: %v", err)
+	}
+	if _, err := store.Update(ctx, m5.ID, UpdateTaskMappingParams{
+		Status: &failed,
+	}); err != nil {
+		t.Fatalf("fail m5: %v", err)
+	}
+	m4, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:https://github.com/foo/bar:4",
+		PluginName: "dependabot",
+		RepoID:     repo.ID,
+	})
+	if err != nil {
+		t.Fatalf("create m4: %v", err)
+	}
+	oldError := "old failure"
+	oldErrorPtr := &oldError
+	if _, err := store.Update(ctx, m4.ID, UpdateTaskMappingParams{
+		Status:    &failed,
+		LastError: &oldErrorPtr,
+	}); err != nil {
+		t.Fatalf("fail m4: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE task_mappings
+		SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-25 hours')
+		WHERE id = ?`, m4.ID); err != nil {
+		t.Fatalf("age m4: %v", err)
+	}
+
+	failures, err := store.ListRecentFailures(ctx, 10)
+	if err != nil {
+		t.Fatalf("list recent failures: %v", err)
+	}
+	if len(failures) != 3 {
+		t.Fatalf("failure count = %d, want 3", len(failures))
+	}
+	if failures[0].ExternalID != "dependabot:pr:https://github.com/foo/bar:5" {
+		t.Errorf("failures[0].ExternalID = %q, want suffix :5", failures[0].ExternalID)
+	}
+	if failures[1].ExternalID != "dependabot:pr:https://github.com/foo/bar:3" {
+		t.Errorf("failures[1].ExternalID = %q, want suffix :3", failures[1].ExternalID)
+	}
+	if failures[2].ExternalID != "dependabot:pr:https://github.com/foo/bar:1" {
+		t.Errorf("failures[2].ExternalID = %q, want suffix :1", failures[2].ExternalID)
+	}
+}
+
 func TestTaskMappingStore_ListPending(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)

@@ -494,9 +494,21 @@ message BuildInteractiveCommandRequest {
   string session_id = 1;
   bool resume = 2;
   string log_path = 3;     // argv MUST tee output here
+  string initial_prompt = 4;  // raw user prompt to submit at startup
+  string initial_command = 5; // boss command name without agent prefix
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;
+  // Prompt marker rendered by the interactive agent when it is ready for
+  // pasted input. Empty means the daemon uses its legacy Claude marker.
+  string ready_marker = 2;
+  // Prefix used to invoke boss-provided commands in the interactive agent.
+  // Examples: "/" for Claude Code, "$" for Codex. Empty preserves the
+  // legacy Claude slash prefix.
+  string command_prefix = 3;
+  // True when argv embeds initial_prompt/initial_command so the daemon must
+  // not inject input into the tmux pane after launch.
+  bool consumes_initial_input = 4;
 }
 
 message ResolveInteractiveSessionIDRequest {

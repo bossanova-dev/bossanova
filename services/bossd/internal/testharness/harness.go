@@ -93,6 +93,10 @@ type Harness struct {
 	// can register runs (Task 4) without going through the plugin broker.
 	HostService *pluginpkg.HostServiceServer
 
+	// AgentLogsDir is the bossd-owned directory where tmux-hosted agent
+	// output is written. E2E tests use it to seed durable repair activity.
+	AgentLogsDir string
+
 	socketPath string
 	httpServer *http.Server
 	listener   net.Listener
@@ -128,6 +132,14 @@ func NewWithDBPath(t *testing.T, dbPath string) *Harness {
 func NewWithOptions(t *testing.T, opts Options) *Harness {
 	t.Helper()
 	return newHarness(t, opts)
+}
+
+// SetAgentClientsForTest injects the agent runner registry used by HostService
+// StartChatRun/WaitChatRun. Tests use it to bind a deterministic fake agent
+// without loading plugin subprocesses.
+func (h *Harness) SetAgentClientsForTest(m map[string]agent.AgentRunnerClient) {
+	h.HostService.SetAgentClients(m)
+	h.Lifecycle.SetAgents(m)
 }
 
 // newHarness is the shared implementation behind New, NewWithDBPath, and
@@ -302,6 +314,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// Wire the lifecycle so tests that exercise StartChatRun directly
 	// (Task 4) hit the same plumbing the daemon installs in cmd/main.go.
 	hostService.SetLifecycle(lifecycle)
+	lifecycle.SetPollArmer(agent.NewPollFallback(logger, 100*time.Millisecond, 0, hostService))
+	lifecycle.SetDaemonCtx(realtimeCtx)
 
 	// Hook server — loopback HTTP server that receives Claude Stop-hook POSTs
 	// and dispatches Lifecycle.FinalizeSession. The bound port is plumbed
@@ -325,7 +339,9 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// agentLogsDir so it can resolve a per-agent-session log path to feed
 	// into BuildInteractiveCommand. Use t.TempDir so each harness run has
 	// an isolated directory and the file system is cleaned up automatically.
-	lifecycle.SetAgentLogsDir(t.TempDir())
+	agentLogsDir := t.TempDir()
+	hostService.SetAgentLogsDir(agentLogsDir)
+	lifecycle.SetAgentLogsDir(agentLogsDir)
 	go func() { _ = hookSrv.Serve() }()
 
 	h.DB = database
@@ -346,6 +362,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	h.Client = client
 	h.HookServer = hookSrv
 	h.HostService = hostService
+	h.AgentLogsDir = agentLogsDir
 	h.socketPath = socketPath
 	h.httpServer = httpServer
 	h.listener = ln

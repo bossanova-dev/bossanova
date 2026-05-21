@@ -3,13 +3,13 @@ package main
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/recurser/bossalib/agentruntime"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/plugin/hostclient"
 )
@@ -132,8 +132,9 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.Configu
 }
 
 // BuildInteractiveCommand returns the argv that boss/bossd should run inside
-// a tmux pane to attach a user-interactive codex session. Mirrors claude's
-// LogTeeArgv wiring so output is teed into the per-session log file.
+// a tmux pane to attach a user-interactive codex session. Output capture is
+// owned by bossd via tmux pipe-pane; wrapping codex in a tee pipeline makes
+// stdout non-TTY and codex exits before the ready marker appears.
 //
 // Resume vs fresh: codex resume is a positional subcommand, so a resume
 // invocation is `codex resume <UUID>`, not `codex --resume <UUID>`.
@@ -161,9 +162,23 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 			args = append(args, "--model", s.runner.model)
 		}
 	}
+	initialInput := codexInitialInput(req)
+	if initialInput != "" {
+		args = append(args, initialInput)
+	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv: agentruntime.LogTeeArgv(args, req.LogPath),
+		Argv:                 args,
+		ReadyMarker:          "›",
+		CommandPrefix:        "$",
+		ConsumesInitialInput: initialInput != "",
 	}, nil
+}
+
+func codexInitialInput(req *bossanovav1.BuildInteractiveCommandRequest) string {
+	if req.GetInitialCommand() != "" {
+		return "$" + strings.TrimLeft(req.GetInitialCommand(), "/$")
+	}
+	return req.GetInitialPrompt()
 }
 
 func (s *Server) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) { //nolint:unparam // interface implementation

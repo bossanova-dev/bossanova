@@ -3185,12 +3185,14 @@ func (x *ConfigureFinalizeHookResponse) GetIsSupported() bool {
 }
 
 type BuildInteractiveCommandRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Resume        bool                   `protobuf:"varint,2,opt,name=resume,proto3" json:"resume,omitempty"`
-	LogPath       string                 `protobuf:"bytes,3,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"` // argv MUST tee output here
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SessionId      string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Resume         bool                   `protobuf:"varint,2,opt,name=resume,proto3" json:"resume,omitempty"`
+	LogPath        string                 `protobuf:"bytes,3,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"`                      // argv MUST tee output here
+	InitialPrompt  string                 `protobuf:"bytes,4,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`    // raw user prompt to submit at startup
+	InitialCommand string                 `protobuf:"bytes,5,opt,name=initial_command,json=initialCommand,proto3" json:"initial_command,omitempty"` // boss command name without agent prefix
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *BuildInteractiveCommandRequest) Reset() {
@@ -3244,11 +3246,35 @@ func (x *BuildInteractiveCommandRequest) GetLogPath() string {
 	return ""
 }
 
+func (x *BuildInteractiveCommandRequest) GetInitialPrompt() string {
+	if x != nil {
+		return x.InitialPrompt
+	}
+	return ""
+}
+
+func (x *BuildInteractiveCommandRequest) GetInitialCommand() string {
+	if x != nil {
+		return x.InitialCommand
+	}
+	return ""
+}
+
 type BuildInteractiveCommandResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Argv          []string               `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Argv  []string               `protobuf:"bytes,1,rep,name=argv,proto3" json:"argv,omitempty"`
+	// Prompt marker rendered by the interactive agent when it is ready for
+	// pasted input. Empty means the daemon uses its legacy Claude marker.
+	ReadyMarker string `protobuf:"bytes,2,opt,name=ready_marker,json=readyMarker,proto3" json:"ready_marker,omitempty"`
+	// Prefix used to invoke boss-provided commands in the interactive agent.
+	// Examples: "/" for Claude Code, "$" for Codex. Empty preserves the
+	// legacy Claude slash prefix.
+	CommandPrefix string `protobuf:"bytes,3,opt,name=command_prefix,json=commandPrefix,proto3" json:"command_prefix,omitempty"`
+	// True when argv embeds initial_prompt/initial_command so the daemon must
+	// not inject input into the tmux pane after launch.
+	ConsumesInitialInput bool `protobuf:"varint,4,opt,name=consumes_initial_input,json=consumesInitialInput,proto3" json:"consumes_initial_input,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *BuildInteractiveCommandResponse) Reset() {
@@ -3286,6 +3312,27 @@ func (x *BuildInteractiveCommandResponse) GetArgv() []string {
 		return x.Argv
 	}
 	return nil
+}
+
+func (x *BuildInteractiveCommandResponse) GetReadyMarker() string {
+	if x != nil {
+		return x.ReadyMarker
+	}
+	return ""
+}
+
+func (x *BuildInteractiveCommandResponse) GetCommandPrefix() string {
+	if x != nil {
+		return x.CommandPrefix
+	}
+	return ""
+}
+
+func (x *BuildInteractiveCommandResponse) GetConsumesInitialInput() bool {
+	if x != nil {
+		return x.ConsumesInitialInput
+	}
+	return false
 }
 
 type ResolveInteractiveSessionIDRequest struct {
@@ -4206,14 +4253,19 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\thook_port\x18\x04 \x01(\x05R\bhookPort\x12(\n" +
 	"\x10agent_session_id\x18\x05 \x01(\tR\x0eagentSessionId\"B\n" +
 	"\x1dConfigureFinalizeHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"r\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xc2\x01\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
 	"\x06resume\x18\x02 \x01(\bR\x06resume\x12\x19\n" +
-	"\blog_path\x18\x03 \x01(\tR\alogPath\"5\n" +
+	"\blog_path\x18\x03 \x01(\tR\alogPath\x12%\n" +
+	"\x0einitial_prompt\x18\x04 \x01(\tR\rinitialPrompt\x12'\n" +
+	"\x0finitial_command\x18\x05 \x01(\tR\x0einitialCommand\"\xb5\x01\n" +
 	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
-	"\x04argv\x18\x01 \x03(\tR\x04argv\"\xac\x02\n" +
+	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
+	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +
+	"\x0ecommand_prefix\x18\x03 \x01(\tR\rcommandPrefix\x124\n" +
+	"\x16consumes_initial_input\x18\x04 \x01(\bR\x14consumesInitialInput\"\xac\x02\n" +
 	"\"ResolveInteractiveSessionIDRequest\x12\x19\n" +
 	"\bwork_dir\x18\x01 \x01(\tR\aworkDir\x120\n" +
 	"\x14requested_session_id\x18\x02 \x01(\tR\x12requestedSessionId\x12A\n" +

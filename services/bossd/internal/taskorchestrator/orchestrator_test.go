@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -99,6 +100,7 @@ type mockTaskMappingStore struct {
 	updateFn       func(ctx context.Context, id string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error)
 	deleteFn       func(ctx context.Context, id string) error
 	listPendingFn  func(ctx context.Context) ([]*models.TaskMapping, error)
+	listFailuresFn func(ctx context.Context, limit int) ([]*models.TaskMapping, error)
 	getFn          func(ctx context.Context, id string) (*models.TaskMapping, error)
 	failOrphanedFn func(ctx context.Context) (int64, error)
 	nextID         int
@@ -184,6 +186,13 @@ func (m *mockTaskMappingStore) Delete(ctx context.Context, id string) error {
 func (m *mockTaskMappingStore) ListPending(ctx context.Context) ([]*models.TaskMapping, error) {
 	if m.listPendingFn != nil {
 		return m.listPendingFn(ctx)
+	}
+	return nil, nil
+}
+
+func (m *mockTaskMappingStore) ListRecentFailures(ctx context.Context, limit int) ([]*models.TaskMapping, error) {
+	if m.listFailuresFn != nil {
+		return m.listFailuresFn(ctx, limit)
 	}
 	return nil, nil
 }
@@ -487,6 +496,115 @@ func TestRouteTask_AutoMerge_MergeError(t *testing.T) {
 
 	if updatedStatus != models.TaskMappingStatusFailed {
 		t.Errorf("expected status Failed, got %d", updatedStatus)
+	}
+}
+
+func TestRouteTask_AutoMerge_StoresActionableFailureDetail(t *testing.T) {
+	actionableErr := &vcs.ActionableError{
+		Code:    vcs.ErrorCodeGitHubWorkflowScopeRequired,
+		Summary: "Auto-merge blocked: GitHub token lacks workflow permission",
+		Detail:  "PR #4 in freshclaim/marketing changes a file under .github/workflows.",
+		Command: "gh auth refresh -h github.com -s workflow",
+		Err:     errors.New("github token missing workflow scope"),
+	}
+
+	var finalStatus models.TaskMappingStatus
+	var persistedLastError *string
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				return actionableErr
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					finalStatus = *params.Status
+				}
+				if params.LastError != nil {
+					persistedLastError = *params.LastError
+				}
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:https://github.com/freshclaim/marketing:4",
+		Title:      "Bump workflow action",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "https://github.com/freshclaim/marketing",
+		mergeStrategy: "rebase",
+	}, "dependabot")
+
+	if finalStatus != models.TaskMappingStatusFailed {
+		t.Errorf("expected status Failed, got %d", finalStatus)
+	}
+	if persistedLastError == nil {
+		t.Fatal("expected LastError to be persisted")
+	}
+	for _, want := range []string{
+		"Auto-merge blocked: GitHub token lacks workflow permission",
+		"PR #4 in freshclaim/marketing changes a file under .github/workflows.",
+		"Fix: gh auth refresh -h github.com -s workflow",
+	} {
+		if !strings.Contains(*persistedLastError, want) {
+			t.Errorf("LastError missing %q: %q", want, *persistedLastError)
+		}
+	}
+}
+
+func TestUpdateMappingStatus_ClearsLastErrorForNonFailedStatus(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Orchestrator)
+	}{
+		{
+			name: "wrapper",
+			run: func(orch *Orchestrator) {
+				orch.updateMappingStatus(context.Background(), "tm-1", models.TaskMappingStatusCompleted)
+			},
+		},
+		{
+			name: "with details",
+			run: func(orch *Orchestrator) {
+				orch.updateMappingStatusWithDetails(context.Background(), "tm-1", models.TaskMappingStatusSkipped, "stale failure")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured db.UpdateTaskMappingParams
+
+			orch := newTestOrchestrator(func(o *Orchestrator) {
+				o.taskMappings = &mockTaskMappingStore{
+					updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+						captured = params
+						return &models.TaskMapping{}, nil
+					},
+				}
+			})
+
+			tt.run(orch)
+
+			if captured.Status == nil {
+				t.Fatal("expected status update")
+			}
+			if *captured.Status == models.TaskMappingStatusFailed {
+				t.Fatalf("test setup must use non-failed status, got %d", *captured.Status)
+			}
+			if captured.LastError == nil {
+				t.Fatal("expected LastError clear sentinel to be sent")
+			}
+			if *captured.LastError != nil {
+				t.Fatalf("expected LastError clear sentinel, got %q", **captured.LastError)
+			}
+		})
 	}
 }
 

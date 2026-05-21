@@ -55,13 +55,14 @@ const defaultWaitChatRunDeadline = 30 * time.Minute
 // *session.Lifecycle satisfies this interface as-is.
 type ChatLifecycle interface {
 	// StartTmuxChat spawns a tmux-hosted agent run for sessionID with the
-	// supplied prompt and chat-list title. When hookOpts.Token is
+	// supplied input and chat-list title. When hookOpts.Token is
 	// non-empty the lifecycle installs a run-keyed Stop-hook entry
 	// pointing at the daemon hook server. Returns the resolved
 	// agent_session_id on success. On AlreadyExists the returned string
 	// is the existing run's agent_session_id alongside the typed gRPC
 	// error.
-	StartTmuxChat(ctx context.Context, sessionID, prompt, title string, hookOpts session.HookOpts) (string, error)
+	StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error)
+	ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
 }
 
 // HostServiceServer implements the HostService gRPC server on the daemon
@@ -99,10 +100,9 @@ type HostServiceServer struct {
 	// only receives the agent_session_id and must route the ExitStatus poll
 	// to the right plugin client. Populated atomically with activeRuns.
 	//
-	// runCompletion is keyed by agent_session_id. Each value is a buffered
-	// (cap 1) channel that receives a completionResult when the claude Stop
-	// hook POSTs /hooks/agent-run-complete/{id}, or when WaitChatRun's
-	// deadline elapses. Guarded by runMu.
+	// runCompletion is keyed by agent_session_id. Each value records a
+	// buffered (cap 1) completion channel plus the mode WaitChatRun should
+	// use if no completion signal arrives. Guarded by runMu.
 	//
 	// runHookTokens is keyed by agent_session_id. Maps to the per-run hook
 	// token registered when StartChatRun installed the run-scoped Stop hook.
@@ -125,7 +125,7 @@ type HostServiceServer struct {
 	runMu            sync.Mutex
 	activeRuns       map[string]activeRun
 	agentSessionByID map[string]string
-	runCompletion    map[string]chan completionResult
+	runCompletion    map[string]activeChatRun
 	runHookTokens    map[string]string
 	runSessionByID   map[string]string
 
@@ -152,6 +152,18 @@ type completionResult struct {
 	exitError string
 }
 
+type chatRunCompletionMode string
+
+const (
+	chatRunCompletionHook     chatRunCompletionMode = "hook"
+	chatRunCompletionExplicit chatRunCompletionMode = "explicit"
+)
+
+type activeChatRun struct {
+	done           chan completionResult
+	completionMode chatRunCompletionMode
+}
+
 // activeRun records the agent plugin name and agent session ID for an
 // in-flight StartAgentRun on a given boss session. agentName lets
 // WaitAgentRun and isAgentRunning route the follow-up RPCs to the right
@@ -170,7 +182,7 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 		provider:            provider,
 		activeRuns:          make(map[string]activeRun),
 		agentSessionByID:    make(map[string]string),
-		runCompletion:       make(map[string]chan completionResult),
+		runCompletion:       make(map[string]activeChatRun),
 		runHookTokens:       make(map[string]string),
 		runSessionByID:      make(map[string]string),
 		agentClients:        map[string]agent.AgentRunnerClient{},
@@ -194,9 +206,13 @@ func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 // reaching this point; in production the activeRuns mutex prevents two
 // live registrations for the same agent_session_id.
 func (s *HostServiceServer) registerRun(sessionID, agentSessionID, token string) chan completionResult {
+	return s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionHook)
+}
+
+func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessionID, token string, mode chatRunCompletionMode) chan completionResult {
 	ch := make(chan completionResult, 1)
 	s.runMu.Lock()
-	s.runCompletion[agentSessionID] = ch
+	s.runCompletion[agentSessionID] = activeChatRun{done: ch, completionMode: mode}
 	s.runHookTokens[agentSessionID] = token
 	s.runSessionByID[agentSessionID] = sessionID
 	s.runMu.Unlock()
@@ -361,6 +377,10 @@ var hostServiceDesc = grpc.ServiceDesc{
 			Handler:    hostServiceWaitChatRunHandler,
 		},
 		{
+			MethodName: "ReclaimRepairChat",
+			Handler:    hostServiceReclaimRepairChatHandler,
+		},
+		{
 			MethodName: "RecordRepairOutcome",
 			Handler:    hostServiceRecordRepairOutcomeHandler,
 		},
@@ -394,6 +414,7 @@ type hostServiceHandler interface {
 	WaitAgentRun(context.Context, *bossanovav1.WaitAgentRunHostRequest) (*bossanovav1.WaitAgentRunHostResponse, error)
 	StartChatRun(context.Context, *bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error)
 	WaitChatRun(context.Context, *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error)
+	ReclaimRepairChat(context.Context, *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error)
 	RecordRepairOutcome(context.Context, *bossanovav1.RecordRepairOutcomeRequest) (*bossanovav1.RecordRepairOutcomeResponse, error)
 }
 
@@ -564,6 +585,22 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 					hasActiveChat = true
 				} else {
 					for _, chat := range chats {
+						if session.IsRepairChatTitle(chat.Title) {
+							stale, staleReason, staleErr := session.RepairChatStaleForReclaim(s.agentLogsDir, chat, time.Now())
+							if staleErr != nil {
+								log.Warn().Err(staleErr).
+									Str("session_id", sess.ID).
+									Str("agent_session_id", chat.AgentSessionID).
+									Msg("failed to check repair chat stale state for active chat computation")
+							} else if stale {
+								log.Debug().
+									Str("session_id", sess.ID).
+									Str("agent_session_id", chat.AgentSessionID).
+									Str("reason", staleReason).
+									Msg("ignoring stale repair chat for active chat computation")
+								continue
+							}
+						}
 						// Skip chats whose start failed: the agent_chats row is
 						// preserved (so the operator sees the × failed badge) but
 						// the agent never came up, so any tracker entry on its
@@ -1075,9 +1112,9 @@ func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, 
 	// channel guards against double-signal: a duplicate POST finds the
 	// channel entry already gone (cleared on the first call) and the send
 	// is skipped. Either way the handler returns 200.
-	if ch, ok := s.runCompletion[agentSessionID]; ok {
+	if run, ok := s.runCompletion[agentSessionID]; ok {
 		select {
-		case ch <- completionResult{exitError: exitError}:
+		case run.done <- completionResult{exitError: exitError}:
 		default:
 		}
 		// INVARIANT: runHookTokens / runSessionByID intentionally survive
@@ -1129,14 +1166,14 @@ func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, 
 // SignalRunComplete fired) is a no-op.
 func (s *HostServiceServer) SignalRunComplete(agentSessionID, exitError string) {
 	s.runMu.Lock()
-	ch, ok := s.runCompletion[agentSessionID]
+	run, ok := s.runCompletion[agentSessionID]
 	if !ok {
 		s.runMu.Unlock()
 		// Run already cleaned up (e.g. hook arrived first). Idempotent no-op.
 		return
 	}
 	select {
-	case ch <- completionResult{exitError: exitError}:
+	case run.done <- completionResult{exitError: exitError}:
 	default:
 	}
 	delete(s.runCompletion, agentSessionID)
@@ -1213,8 +1250,11 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	if sessionID == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
 	}
-	if req.GetPrompt() == "" {
-		return nil, grpcstatus.Error(codes.InvalidArgument, "prompt is required")
+	if req.GetPrompt() == "" && req.GetCommand() == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "prompt or command is required")
+	}
+	if req.GetPrompt() != "" && req.GetCommand() != "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "prompt and command are mutually exclusive")
 	}
 	if req.GetTitle() == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "title is required")
@@ -1255,7 +1295,8 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// prompt as the final step of StartTmuxChat. A POST that arrived in
 	// the registration gap would 404 — operators would see a hook failure
 	// rather than a stuck session, but no current path reaches that gap.
-	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, req.GetPrompt(), req.GetTitle(), session.HookOpts{Token: token})
+	input := session.ChatInput{Prompt: req.GetPrompt(), Command: req.GetCommand()}
+	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), session.HookOpts{Token: token})
 	if err != nil {
 		// Pass typed gRPC errors (AlreadyExists, FailedPrecondition,
 		// Internal) through unchanged. Wrap untyped errors as Internal
@@ -1295,7 +1336,7 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	s.runMu.Unlock()
 	// Returned channel is unused here — WaitChatRun looks it up by
 	// agent_session_id when the operator (or repair plugin) calls in.
-	_ = s.registerRun(sessionID, agentSessionID, token)
+	_ = s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionExplicit)
 
 	return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID}, nil
 }
@@ -1312,17 +1353,20 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 	}
 
 	s.runMu.Lock()
-	ch, ok := s.runCompletion[agentSessionID]
+	run, ok := s.runCompletion[agentSessionID]
 	s.runMu.Unlock()
 	if !ok {
 		return nil, grpcstatus.Errorf(codes.FailedPrecondition, "no active chat run for agent_session_id %s", agentSessionID)
+	}
+	if run.completionMode == "" {
+		run.completionMode = chatRunCompletionHook
 	}
 
 	deadline := time.NewTimer(s.waitChatRunDeadline)
 	defer deadline.Stop()
 
 	select {
-	case res := <-ch:
+	case res := <-run.done:
 		s.cleanupRun(agentSessionID)
 		return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError}, nil
 	case <-deadline.C:
@@ -1336,12 +1380,78 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 			Msg("WaitChatRun: agent run did not signal completion within deadline; synthesising exit_error")
 		s.cleanupRun(agentSessionID)
 		return &bossanovav1.WaitChatRunHostResponse{
-			ExitError: fmt.Sprintf("agent run did not signal completion within %s", s.waitChatRunDeadline),
+			ExitError: waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
 		}, nil
 	case <-ctx.Done():
 		s.cleanupRun(agentSessionID)
+		if run.completionMode == chatRunCompletionExplicit {
+			return &bossanovav1.WaitChatRunHostResponse{
+				ExitError: waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+			}, nil
+		}
 		return nil, grpcstatus.FromContextError(ctx.Err()).Err()
 	}
+}
+
+func waitChatRunNoSignalMessage(mode chatRunCompletionMode, reason string) string {
+	if mode == chatRunCompletionExplicit {
+		return fmt.Sprintf("interactive chat did not report completion before wait deadline: %s", reason)
+	}
+	return fmt.Sprintf("agent run did not signal completion within %s", reason)
+}
+
+func (s *HostServiceServer) ReclaimRepairChat(ctx context.Context, req *bossanovav1.ReclaimRepairChatHostRequest) (*bossanovav1.ReclaimRepairChatHostResponse, error) {
+	if s.lifecycle == nil {
+		return nil, grpcstatus.Error(codes.FailedPrecondition, "lifecycle not configured")
+	}
+	sessionID := req.GetSessionId()
+	if sessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "session_id is required")
+	}
+	agentSessionID := req.GetAgentSessionId()
+	if agentSessionID == "" {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "agent_session_id is required")
+	}
+	if s.repairChatRunStillActive(sessionID, agentSessionID) {
+		return nil, grpcstatus.Errorf(codes.FailedPrecondition,
+			"reclaim repair chat: agent_session_id %s is still active for session %s", agentSessionID, sessionID)
+	}
+	reason := req.GetReason()
+	if reason == "" {
+		reason = "reclaimed stale repair chat"
+	}
+
+	res, err := s.lifecycle.ReclaimRepairChat(ctx, sessionID, agentSessionID, reason)
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrRepairChatNotReclaimable),
+			errors.Is(err, session.ErrRepairChatSessionMismatch),
+			errors.Is(err, session.ErrRepairChatActive):
+			return nil, grpcstatus.Errorf(codes.FailedPrecondition, "reclaim repair chat: %v", err)
+		default:
+			return nil, grpcstatus.Errorf(codes.Internal, "reclaim repair chat: %v", err)
+		}
+	}
+	return &bossanovav1.ReclaimRepairChatHostResponse{
+		Reclaimed:       res.Reclaimed,
+		TmuxSessionName: res.TmuxSessionName,
+	}, nil
+}
+
+func (s *HostServiceServer) repairChatRunStillActive(sessionID, agentSessionID string) bool {
+	var activeAgentName, indexedAgentName string
+
+	s.runMu.Lock()
+	if cur, ok := s.activeRuns[sessionID]; ok && cur.agentSessionID == agentSessionID {
+		activeAgentName = cur.agentName
+	}
+	indexedAgentName = s.agentSessionByID[agentSessionID]
+	s.runMu.Unlock()
+
+	if activeAgentName != "" || indexedAgentName != "" {
+		return true
+	}
+	return false
 }
 
 // cleanupRun deletes all per-run state for agentSessionID under runMu
@@ -1390,4 +1500,12 @@ func hostServiceWaitChatRunHandler(srv any, ctx context.Context, dec func(any) e
 		return nil, err
 	}
 	return srv.(hostServiceHandler).WaitChatRun(ctx, req)
+}
+
+func hostServiceReclaimRepairChatHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.ReclaimRepairChatHostRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(hostServiceHandler).ReclaimRepairChat(ctx, req)
 }

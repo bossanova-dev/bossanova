@@ -2,10 +2,13 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -24,6 +27,27 @@ import (
 // TestStartSession_CronJobID_*); this file targets the generic method
 // directly so any future caller (repair, interactive UI button) gets the
 // same coverage.
+
+func TestChatInputRenderCommandUsesAgentPrefix(t *testing.T) {
+	input := ChatInput{Command: "boss-repair"}
+	if got := input.render("$"); got != "$boss-repair" {
+		t.Fatalf("rendered command = %q, want $boss-repair", got)
+	}
+}
+
+func TestChatInputRenderCommandDefaultsToSlashPrefix(t *testing.T) {
+	input := ChatInput{Command: "boss-repair"}
+	if got := input.render(""); got != "/boss-repair" {
+		t.Fatalf("rendered command = %q, want /boss-repair", got)
+	}
+}
+
+func TestChatInputRenderPromptPreservesRawText(t *testing.T) {
+	input := ChatInput{Prompt: "/boss-repair"}
+	if got := input.render("$"); got != "/boss-repair" {
+		t.Fatalf("rendered prompt = %q, want /boss-repair", got)
+	}
+}
 
 // startTmuxChatHarness wires up everything Lifecycle.StartTmuxChat needs:
 // in-memory stores, a fake tmux client, an agent runner client returning
@@ -93,6 +117,73 @@ func (h *startTmuxChatHarness) findCall(subcommand string) *recordedTmuxCall {
 	return nil
 }
 
+func writeRepairChatLogAt(t *testing.T, h *startTmuxChatHarness, agentSessionID string, modTime time.Time) {
+	t.Helper()
+	logPath := h.lc.agentLogPathFor(agentSessionID)
+	if err := os.WriteFile(logPath, []byte("repair output\n"), 0o600); err != nil {
+		t.Fatalf("write repair chat log: %v", err)
+	}
+	if err := os.Chtimes(logPath, modTime, modTime); err != nil {
+		t.Fatalf("set repair chat log time: %v", err)
+	}
+}
+
+func TestKillChatTmuxSession_KillsLiveTmuxThenClearsChatPointer(t *testing.T) {
+	h := newStartTmuxChatHarness(t)
+	tmuxName := "bossd-agent-run-existing"
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {
+			{
+				SessionID:       "sess-1",
+				AgentSessionID:  "agent-existing",
+				TmuxSessionName: &tmuxName,
+			},
+		},
+	}
+
+	if err := h.lc.KillChatTmuxSession(t.Context(), "sess-1", "agent-existing"); err != nil {
+		t.Fatalf("KillChatTmuxSession: %v", err)
+	}
+	call := h.findCall("kill-session")
+	if call == nil {
+		t.Fatal("expected tmux kill-session")
+	}
+	if got, want := strings.Join(call.args, " "), "-t "+tmuxName; got != want {
+		t.Fatalf("kill-session args = %q, want %q", got, want)
+	}
+	if len(h.chats.tmuxNameUpdates) != 1 {
+		t.Fatalf("tmux name updates = %d, want 1", len(h.chats.tmuxNameUpdates))
+	}
+	if got := h.chats.tmuxNameUpdates[0].agentSessionID; got != "agent-existing" {
+		t.Fatalf("cleared agentSessionID = %q, want agent-existing", got)
+	}
+	if h.chats.tmuxNameUpdates[0].name != nil {
+		t.Fatalf("cleared tmux name = %q, want nil", *h.chats.tmuxNameUpdates[0].name)
+	}
+}
+
+func TestKillChatTmuxSession_DoesNotClearChatPointerWhenKillFails(t *testing.T) {
+	h := newStartTmuxChatHarness(t)
+	tmuxName := "bossd-agent-run-existing"
+	h.tmuxFake.failSubcommand["kill-session"] = true
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {
+			{
+				SessionID:       "sess-1",
+				AgentSessionID:  "agent-existing",
+				TmuxSessionName: &tmuxName,
+			},
+		},
+	}
+
+	if err := h.lc.KillChatTmuxSession(t.Context(), "sess-1", "agent-existing"); err == nil {
+		t.Fatal("KillChatTmuxSession error = nil, want error")
+	}
+	if len(h.chats.tmuxNameUpdates) != 0 {
+		t.Fatalf("tmux name updates = %d, want 0", len(h.chats.tmuxNameUpdates))
+	}
+}
+
 // TestStartTmuxChat_HappyPath exercises the full extracted path: idempotency
 // check finds nothing → BuildInteractiveCommand → tmux NewSession → row
 // Create with the supplied title → UpdateTmuxSessionName → SendPlan
@@ -106,7 +197,7 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 	const supplyTitle = "Repair: Some session"
 	const supplyPrompt = "/boss-repair"
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", supplyPrompt, supplyTitle, HookOpts{})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: supplyPrompt}, supplyTitle, HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -189,6 +280,20 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 	}
 }
 
+func TestStartTmuxChat_UsesAgentReadyMarker(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.agentFake.ReadyMarker = "›"
+	h.tmuxFake.capturePaneOutput = "OpenAI Codex\n›\n"
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair"}, "Repair: Some session", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if !h.tmuxFake.hasSubcommand("load-buffer") {
+		t.Fatal("expected SendPlan to accept the agent ready marker and load the prompt")
+	}
+}
+
 // TestStartTmuxChat_TmuxUnavailable verifies fail-closed behavior when tmux
 // isn't on PATH: typed FailedPrecondition error, no chat row created.
 func TestStartTmuxChat_TmuxUnavailable(t *testing.T) {
@@ -196,7 +301,7 @@ func TestStartTmuxChat_TmuxUnavailable(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.available = false
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when tmux unavailable")
 	}
@@ -216,7 +321,7 @@ func TestStartTmuxChat_AgentRunnerNotLoaded(t *testing.T) {
 	// Replace the agent registry with an empty map so claude is unloaded.
 	h.lc.SetAgents(map[string]agent.AgentRunnerClient{})
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when agent runner not loaded")
 	}
@@ -235,7 +340,7 @@ func TestStartTmuxChat_NewSessionFails(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.failSubcommand["new-session"] = true
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when tmux new-session fails")
 	}
@@ -261,7 +366,7 @@ func TestStartTmuxChat_EmptyArgvFails(t *testing.T) {
 	// Make BuildInteractiveCommand return empty argv.
 	h.lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": &emptyArgvAgent{}})
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when BuildInteractiveCommand returns empty argv")
 	}
@@ -283,7 +388,7 @@ func TestStartTmuxChat_ChatCreateFails(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.chats.createErr = fmt.Errorf("simulated DB failure")
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when Create fails")
 	}
@@ -309,7 +414,7 @@ func TestStartTmuxChat_UpdateTmuxSessionNameFails(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.chats.updateTmuxNameErr = fmt.Errorf("simulated update failure")
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when UpdateTmuxSessionName fails")
 	}
@@ -343,7 +448,7 @@ func TestStartTmuxChat_SendPlanFails(t *testing.T) {
 	// so SendPlan reaches the real failure.
 	h.tmuxFake.failSubcommand["load-buffer"] = true
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when SendPlan fails")
 	}
@@ -385,7 +490,7 @@ func TestStartTmuxChat_AlreadyExists_LiveTmux(t *testing.T) {
 	// returns 0 (success) when the subcommand is allowed. Default factory
 	// returns "true" so HasSession returns true.
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected AlreadyExists when a live tmux chat is present")
 	}
@@ -437,7 +542,7 @@ func TestStartTmuxChat_StaleTmux_PreservesRowAndStartsFresh(t *testing.T) {
 	// classified as a completed historical run.
 	h.tmuxFake.failSubcommand["has-session"] = true
 
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err != nil {
 		t.Fatalf("StartTmuxChat after stale row: %v", err)
 	}
@@ -479,6 +584,248 @@ func TestStartTmuxChat_StaleTmux_PreservesRowAndStartsFresh(t *testing.T) {
 	}
 }
 
+func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "repair-agent-1"
+	tmuxName := "boss-test-repair"
+	reason := "reclaimed stale repair chat after daemon restart"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-repair-1",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "Repair: stale rejected PR",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+	writeRepairChatLogAt(t, h, agentSessionID, time.Now().Add(-(repairChatReclaimIdleThreshold + time.Minute)))
+
+	res, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, reason)
+	if err != nil {
+		t.Fatalf("ReclaimRepairChat: %v", err)
+	}
+	if !res.Reclaimed {
+		t.Fatal("expected Reclaimed=true")
+	}
+	if res.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %q, want %q", res.TmuxSessionName, tmuxName)
+	}
+
+	call := h.findCall("kill-session")
+	if call == nil {
+		t.Fatal("expected tmux kill-session")
+	}
+	if got, want := call.args, []string{"-t", tmuxName}; !slices.Equal(got, want) {
+		t.Fatalf("kill-session args = %q, want %q", got, want)
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName != nil {
+		t.Fatalf("TmuxSessionName = %q, want nil", *chat.TmuxSessionName)
+	}
+	if chat.StartError == nil || *chat.StartError != reason {
+		t.Fatalf("StartError = %v, want %q", chat.StartError, reason)
+	}
+}
+
+func TestReclaimRepairChat_RefusesLiveRecentRepairChat(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "repair-recent-agent"
+	tmuxName := "boss-repair-recent"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-repair-recent",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "Repair: recent repair",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+	writeRepairChatLogAt(t, h, agentSessionID, time.Now())
+
+	_, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, "must not kill active repair")
+	if !errors.Is(err, ErrRepairChatActive) {
+		t.Fatalf("error = %v, want ErrRepairChatActive", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Fatalf("tmux session %q was killed for a recent repair", tmuxName)
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
+	}
+	if chat.StartError != nil {
+		t.Fatalf("StartError = %q, want nil for non-reclaimed active repair", *chat.StartError)
+	}
+}
+
+func TestReclaimRepairChat_RefusesLiveRepairWhenLogMissing(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "repair-missing-log-agent"
+	tmuxName := "boss-repair-missing-log"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-repair-missing-log",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "Repair: missing log",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+
+	_, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, "missing log must fail closed")
+	if !errors.Is(err, ErrRepairChatActive) {
+		t.Fatalf("error = %v, want ErrRepairChatActive", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Fatalf("tmux session %q was killed without durable stale evidence", tmuxName)
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
+	}
+	if chat.StartError != nil {
+		t.Fatalf("StartError = %q, want nil for non-reclaimed active repair", *chat.StartError)
+	}
+}
+
+func TestReclaimRepairChat_RefusesWhenTmuxLivenessErrors(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "repair-agent-tmux-error"
+	tmuxName := "boss-test-tmux-error"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-repair-tmux-error",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "Repair: tmux unavailable",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+	h.tmuxFake.failSubcommand["has-session"] = true
+	h.tmuxFake.failStderr["has-session"] = "error connecting to /tmp/tmux/default"
+
+	_, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, "must fail closed")
+	if !errors.Is(err, ErrRepairChatActive) {
+		t.Fatalf("ReclaimRepairChat error = %v, want ErrRepairChatActive", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Fatal("did not expect kill-session when tmux liveness cannot be verified")
+	}
+	if len(h.chats.markStartFailedCalls) != 0 {
+		t.Fatalf("MarkStartFailed calls = %d, want 0", len(h.chats.markStartFailedCalls))
+	}
+}
+
+func TestReclaimRepairChat_RefusesNonRepairChat(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "manual-agent-1"
+	tmuxName := "boss-test-manual"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-manual-1",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "Manual debugging chat",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+
+	res, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, "must not reclaim manual chat")
+	if !errors.Is(err, ErrRepairChatNotReclaimable) {
+		t.Fatalf("error = %v, want ErrRepairChatNotReclaimable", err)
+	}
+	if res.Reclaimed {
+		t.Fatal("expected Reclaimed=false")
+	}
+	if h.tmuxFake.hasSubcommand("kill-session") {
+		t.Fatal("did not expect tmux kill-session for non-repair chat")
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
+	}
+	if chat.StartError != nil {
+		t.Fatalf("StartError = %q, want nil", *chat.StartError)
+	}
+}
+
+func TestReclaimRepairChat_ClearsDeadTmuxReference(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "repair-agent-dead"
+	tmuxName := "boss-test-dead"
+	reason := "cleared stale repair chat reference"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-repair-dead",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "Repair: already dead",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+	h.tmuxFake.failSubcommand["has-session"] = true
+	h.tmuxFake.failStderr["has-session"] = "can't find session: boss-test-dead"
+
+	res, err := h.lc.ReclaimRepairChat(ctx, "sess-1", agentSessionID, reason)
+	if err != nil {
+		t.Fatalf("ReclaimRepairChat: %v", err)
+	}
+	if !res.Reclaimed {
+		t.Fatal("expected Reclaimed=true")
+	}
+	if res.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %q, want %q", res.TmuxSessionName, tmuxName)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Fatal("did not expect kill-session for already-dead tmux reference")
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName != nil {
+		t.Fatalf("TmuxSessionName = %q, want nil", *chat.TmuxSessionName)
+	}
+	if chat.StartError == nil || *chat.StartError != reason {
+		t.Fatalf("StartError = %v, want %q", chat.StartError, reason)
+	}
+}
+
 // TestStartTmuxChat_MissingAgentLogsDir verifies the fail-closed setter:
 // an unconfigured agentLogsDir returns FailedPrecondition before any
 // side effects.
@@ -487,7 +834,7 @@ func TestStartTmuxChat_MissingAgentLogsDir(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetAgentLogsDir("") // explicitly clear
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when agentLogsDir is unset")
 	}
@@ -506,7 +853,7 @@ func TestStartTmuxChat_NoWorktreePath(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.sessions.sessions["sess-1"].WorktreePath = ""
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when session has no worktree path")
 	}
@@ -548,6 +895,129 @@ func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 	}
 }
 
+func TestStartTmuxChat_CommandUsesLiteralKeys(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.agentFake.CommandPrefix = "$"
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+
+	if h.tmuxFake.hasSubcommand("load-buffer") || h.tmuxFake.hasSubcommand("paste-buffer") {
+		t.Fatal("command input should use literal send-keys, not bracketed paste")
+	}
+
+	var sendKeys []recordedTmuxCall
+	h.tmuxFake.mu.Lock()
+	for _, call := range h.tmuxFake.calls {
+		if call.subcommand == "send-keys" {
+			sendKeys = append(sendKeys, call)
+		}
+	}
+	h.tmuxFake.mu.Unlock()
+
+	if len(sendKeys) < 2 {
+		t.Fatalf("expected literal text + Enter send-keys calls, got %d", len(sendKeys))
+	}
+	tmuxName := tmux.ChatSessionName("repo-abcdef12", h.chats.createCalls[0].AgentSessionID)
+	textCall := sendKeys[len(sendKeys)-2]
+	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$boss-repair"}) {
+		t.Fatalf("literal send-keys args = %v", textCall.args)
+	}
+	enterCall := sendKeys[len(sendKeys)-1]
+	if !slices.Equal(enterCall.args, []string{"-t", tmuxName, "Enter"}) {
+		t.Fatalf("Enter send-keys args = %v", enterCall.args)
+	}
+	if h.agentFake.LastBuildInteractiveCommand.GetInitialCommand() != "boss-repair" {
+		t.Fatalf("InitialCommand = %q, want boss-repair", h.agentFake.LastBuildInteractiveCommand.GetInitialCommand())
+	}
+}
+
+func TestStartTmuxChat_ConsumedStartupInputSkipsPaneInjection(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.agentFake.CommandPrefix = "$"
+	h.agentFake.ConsumesInitialInput = true
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+
+	newSess := h.findCall("new-session")
+	if newSess == nil {
+		t.Fatal("expected tmux new-session call")
+	}
+	if joined := strings.Join(newSess.args, " "); !strings.Contains(joined, "$boss-repair") {
+		t.Fatalf("new-session argv should embed startup command, got: %s", joined)
+	}
+	if h.tmuxFake.hasSubcommand("load-buffer") || h.tmuxFake.hasSubcommand("paste-buffer") || h.tmuxFake.hasSubcommand("send-keys") {
+		t.Fatalf("consumed startup input should not inject pane input; calls=%v", h.tmuxFake.calls)
+	}
+	if h.agentFake.LastBuildInteractiveCommand.GetInitialCommand() != "boss-repair" {
+		t.Fatalf("InitialCommand = %q, want boss-repair", h.agentFake.LastBuildInteractiveCommand.GetInitialCommand())
+	}
+}
+
+func TestStartTmuxChat_ConfiguresHookBeforeLaunchForConsumedStartupInput(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetHookPort(12345)
+	h.agentFake.CommandPrefix = "$"
+	h.agentFake.ConsumesInitialInput = true
+
+	configuredBeforeLaunch := false
+	h.agentFake.OnConfigureHook = func() {
+		configuredBeforeLaunch = !h.tmuxFake.hasSubcommand("new-session")
+	}
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{Token: "tok"})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if h.agentFake.LastConfigureHookReq == nil {
+		t.Fatal("expected ConfigureFinalizeHook request")
+	}
+	if !configuredBeforeLaunch {
+		t.Fatal("ConfigureFinalizeHook should run before tmux new-session when startup input is embedded in argv")
+	}
+	if h.tmuxFake.hasSubcommand("load-buffer") || h.tmuxFake.hasSubcommand("paste-buffer") || h.tmuxFake.hasSubcommand("send-keys") {
+		t.Fatalf("consumed startup input should not inject pane input; calls=%v", h.tmuxFake.calls)
+	}
+}
+
+func TestStartTmuxChat_HooklessCommandArmsPollFallback(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetHookPort(54321)
+	h.agentFake.CommandPrefix = "$"
+	h.agentFake.IsSupported = false
+
+	armer := &fakePollArmer{}
+	h.lc.SetPollArmer(armer)
+	h.lc.SetDaemonCtx(ctx)
+
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-repair"}, "Repair: Some session", HookOpts{
+		Token: "repair-run-token",
+	})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if agentSessionID == "" {
+		t.Fatal("expected agent session id")
+	}
+	if !armer.armCalled {
+		t.Fatal("expected hookless interactive tmux command to arm poll fallback")
+	}
+	if armer.armedID != agentSessionID {
+		t.Fatalf("poll fallback armed for %q, want %q", armer.armedID, agentSessionID)
+	}
+}
+
 // TestStartTmuxChat_HookOptsToken_ConfiguresRunKeyedHook verifies that a
 // non-empty HookOpts.Token causes StartTmuxChat to call
 // ConfigureFinalizeHook with the agent_session_id, the supplied token, and
@@ -559,7 +1029,7 @@ func TestStartTmuxChat_HookOptsToken_ConfiguresRunKeyedHook(t *testing.T) {
 	h.lc.SetHookPort(54321)
 
 	const tok = "tok-run-12345"
-	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{Token: tok})
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: tok})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
@@ -591,7 +1061,7 @@ func TestStartTmuxChat_HookOptsEmpty_DoesNotConfigureHook(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(12345)
 
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{}); err != nil {
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
 	if h.agentFake.LastConfigureHookReq != nil {
@@ -609,7 +1079,7 @@ func TestStartTmuxChat_HookOptsTokenWithoutHookPort_FailsClosed(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	// Deliberately don't call SetHookPort.
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{Token: "tok"})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: "tok"})
 	if err == nil {
 		t.Fatal("expected error when hook port unset and HookOpts.Token non-empty")
 	}
@@ -641,7 +1111,7 @@ func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 	h.lc.SetHookPort(12345)
 	h.agentFake.ConfigureHookErr = fmt.Errorf("simulated hook config failure")
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{Token: "tok"})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: "tok"})
 	if err == nil {
 		t.Fatal("expected error when ConfigureFinalizeHook fails")
 	}
@@ -663,9 +1133,8 @@ func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 	}
 }
 
-// TestStartTmuxChatArmsPollWhenHookUnsupported verifies the run-keyed
-// path arms the poll fallback when the agent reports IsSupported=false
-// (e.g. codex). Plugins that own a finalize hook (claude) skip it.
+// TestStartTmuxChatArmsPollWhenHookUnsupported verifies hookless interactive
+// tmux chats get a daemon-side completion fallback.
 func TestStartTmuxChatArmsPollWhenHookUnsupported(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
@@ -676,15 +1145,18 @@ func TestStartTmuxChatArmsPollWhenHookUnsupported(t *testing.T) {
 	h.lc.SetPollArmer(armer)
 	h.lc.SetDaemonCtx(ctx)
 
-	id, err := h.lc.StartTmuxChat(ctx, "sess-1", "the prompt", "the title", HookOpts{Token: "tok-2"})
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "the prompt"}, "the title", HookOpts{Token: "tok-2"})
 	if err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
+	if id == "" {
+		t.Fatal("expected agent session id")
+	}
 	if !armer.armCalled {
-		t.Error("poll fallback should be armed when ConfigureFinalizeHook reports IsSupported=false")
+		t.Fatal("expected poll fallback to be armed when hook is unsupported")
 	}
 	if armer.armedID != id {
-		t.Errorf("armed agent_session_id = %q, want %q", armer.armedID, id)
+		t.Errorf("poll fallback armed for %q, want %q", armer.armedID, id)
 	}
 }
 
@@ -700,7 +1172,7 @@ func TestStartTmuxChatDoesNotArmPollWhenHookSupported(t *testing.T) {
 	h.lc.SetPollArmer(armer)
 	h.lc.SetDaemonCtx(ctx)
 
-	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", "p", "T", HookOpts{Token: "tok-2"}); err != nil {
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{Token: "tok-2"}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
 	if armer.armCalled {

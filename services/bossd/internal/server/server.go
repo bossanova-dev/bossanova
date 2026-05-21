@@ -2,7 +2,9 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,10 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"errors"
-
 	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/displaystatus"
 	"github.com/recurser/bossalib/errortrack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -37,6 +38,8 @@ import (
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+const maxSetupOutputLineBytes = 256 * 1024
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
 // On macOS: ~/Library/Application Support/bossanova/bossd.sock
@@ -59,6 +62,7 @@ type Server struct {
 	attempts           db.AttemptStore
 	agentChats         db.AgentChatStore
 	workflows          db.WorkflowStore
+	taskMappings       db.TaskMappingStore
 	cronJobs           db.CronJobStore
 	checkSnapshots     db.CheckSnapshotStore
 	cronScheduler      *cron.Scheduler
@@ -104,6 +108,7 @@ type Config struct {
 	Attempts           db.AttemptStore
 	AgentChats         db.AgentChatStore
 	Workflows          db.WorkflowStore
+	TaskMappings       db.TaskMappingStore
 	CronJobs           db.CronJobStore
 	CheckSnapshots     db.CheckSnapshotStore
 	CronScheduler      *cron.Scheduler
@@ -155,6 +160,7 @@ func New(cfg Config) *Server {
 		attempts:           cfg.Attempts,
 		agentChats:         cfg.AgentChats,
 		workflows:          cfg.Workflows,
+		taskMappings:       cfg.TaskMappings,
 		cronJobs:           cfg.CronJobs,
 		checkSnapshots:     cfg.CheckSnapshots,
 		cronScheduler:      cfg.CronScheduler,
@@ -205,16 +211,27 @@ func (s *Server) Listen(socketPath string) error {
 
 	mux := http.NewServeMux()
 	path, handler := bossanovav1connect.NewDaemonServiceHandler(s, connect.WithInterceptors(errortrack.Interceptor()))
-	mux.Handle(path, handler)
+	mux.Handle(path, withCreateSessionWriteDeadlineOverride(handler))
 
 	s.srv = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      120 * time.Second, // streaming RPCs need longer write timeout
+		WriteTimeout:      120 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	return nil
+}
+
+func withCreateSessionWriteDeadlineOverride(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == bossanovav1connect.DaemonServiceCreateSessionProcedure {
+			// CreateSession streams setup output and may legitimately run longer
+			// than the daemon's non-streaming write timeout.
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Serve blocks serving requests on the listener created by Listen. It
@@ -823,30 +840,17 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 			done <- lifecycleResult{err: err}
 		}()
 
-		// Stream setup script output lines to the client.
-		scanner := bufio.NewScanner(pr)
-		for scanner.Scan() {
-			if err := stream.Send(&pb.CreateSessionResponse{
-				Event: &pb.CreateSessionResponse_SetupOutput{
-					SetupOutput: &pb.SetupScriptOutput{
-						Text: scanner.Text(),
-					},
-				},
-			}); err != nil {
-				// Client disconnected — close the pipe reader to unblock
-				// the goroutine if it's blocked on pw.Write(), then wait
-				// for it to finish so we don't leak.
-				_ = pr.Close()
-				result := <-done
-				if result.err != nil {
-					s.cleanupFailedCreateSession(ctx, sess.ID)
-				}
-				return err
-			}
+		if err := streamSetupOutput(pr, stream); err != nil {
+			// Client disconnected or the setup-output pipe failed — close the
+			// pipe reader to unblock the goroutine if it's blocked on pw.Write(),
+			// then wait for it to finish before removing the persisted session.
+			_ = pr.Close()
+			<-done
+			s.cleanupFailedCreateSession(context.WithoutCancel(ctx), sess.ID)
+			return err
 		}
 
-		// Close the pipe reader to unblock the goroutine if it's still
-		// writing (e.g. scanner hit MaxScanTokenSize and stopped reading).
+		// Close the pipe reader to unblock the goroutine if it's still writing.
 		_ = pr.Close()
 
 		// Pipe closed — lifecycle goroutine is done.
@@ -878,6 +882,42 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 			},
 		},
 	})
+}
+
+type createSessionSender interface {
+	Send(*pb.CreateSessionResponse) error
+}
+
+func streamSetupOutput(r io.Reader, stream createSessionSender) error {
+	reader := bufio.NewReaderSize(r, maxSetupOutputLineBytes+1)
+	for {
+		line, err := reader.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("setup output line exceeds %d bytes", maxSetupOutputLineBytes))
+		}
+		if len(line) > 0 {
+			line = bytes.TrimSuffix(line, []byte("\n"))
+			line = bytes.TrimSuffix(line, []byte("\r"))
+			if len(line) > maxSetupOutputLineBytes {
+				return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("setup output line exceeds %d bytes", maxSetupOutputLineBytes))
+			}
+			if sendErr := stream.Send(&pb.CreateSessionResponse{
+				Event: &pb.CreateSessionResponse_SetupOutput{
+					SetupOutput: &pb.SetupScriptOutput{
+						Text: string(line),
+					},
+				},
+			}); sendErr != nil {
+				return sendErr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return connect.NewError(connect.CodeInternal, fmt.Errorf("read setup output: %w", err))
+		}
+	}
 }
 
 func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {
@@ -996,6 +1036,22 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	// which was populated by the autopilot plugin. With autopilot gone the
 	// table has no writers, so the derivation has been removed. Phase 4 of
 	// the autopilot removal will reintroduce a repair-driven derivation.
+
+	chatsBySession, chatsLoaded := s.chatsBySessionForStatuses(ctx, sessionIDs)
+	for _, p := range pbSessions {
+		_, hasDisplayEntry := entries[p.Id]
+		chatStatus, ok := s.chatStatusFromSessionChats(ctx, chatsBySession[p.Id], chatsLoaded)
+		if !ok || (!hasDisplayEntry && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED) {
+			continue
+		}
+		out := displaystatus.Compute(displaystatus.Input{
+			Session:    p,
+			ChatStatus: chatStatus,
+		})
+		p.DisplayLabel = out.Label
+		p.DisplayIntent = out.Intent
+		p.DisplaySpinner = out.Spinner
+	}
 
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
 }
@@ -1741,10 +1797,35 @@ func (s *Server) UpdateChatTitle(ctx context.Context, req *connect.Request[pb.Up
 	return connect.NewResponse(&pb.UpdateChatTitleResponse{}), nil
 }
 
+func (s *Server) killChatTmuxSession(ctx context.Context, chat *models.AgentChat) {
+	if chat == nil || chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" || s.tmux == nil {
+		return
+	}
+
+	tmuxName := *chat.TmuxSessionName
+	if err := s.tmux.KillSession(ctx, tmuxName); err != nil {
+		s.logger.Warn().Err(err).
+			Str("session", chat.SessionID).
+			Str("agentSessionID", chat.AgentSessionID).
+			Str("tmuxSession", tmuxName).
+			Msg("failed to kill chat tmux session during delete")
+	}
+}
+
+func isAgentChatNotFound(err error) bool {
+	return errors.Is(err, db.ErrAgentChatNotFound)
+}
+
 func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
 	if req.Msg.AgentSessionId == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("agent_session_id is required"))
 	}
+
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, req.Msg.AgentSessionId)
+	if err != nil && !isAgentChatNotFound(err) {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get chat: %w", err))
+	}
+	s.killChatTmuxSession(ctx, chat)
 
 	if err := s.agentChats.DeleteByAgentSessionID(ctx, req.Msg.AgentSessionId); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete chat: %w", err))
@@ -1871,50 +1952,9 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 	statuses := make([]*pb.SessionStatusEntry, 0, len(req.Msg.SessionIds))
 
 	for _, sessionID := range req.Msg.SessionIds {
-		chats, err := s.agentChats.ListBySession(ctx, sessionID)
-		if err != nil {
-			s.logger.Warn().Err(err).Str("session_id", sessionID).Msg("list chats for session status")
+		best, ok := s.chatStatusForSession(ctx, sessionID)
+		if !ok {
 			continue
-		}
-		if len(chats) == 0 {
-			statuses = append(statuses, &pb.SessionStatusEntry{
-				SessionId: sessionID,
-				Status:    pb.ChatStatus_CHAT_STATUS_STOPPED,
-			})
-			continue
-		}
-
-		agentSessionIDs := make([]string, len(chats))
-		for i, c := range chats {
-			agentSessionIDs[i] = c.AgentSessionID
-		}
-		entries := s.chatStatus.GetBatch(agentSessionIDs)
-
-		// Compute best status: question > working > idle > stopped.
-		best := pb.ChatStatus_CHAT_STATUS_STOPPED
-		for _, e := range entries {
-			if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
-				best = pb.ChatStatus_CHAT_STATUS_QUESTION
-				break
-			}
-			if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && best != pb.ChatStatus_CHAT_STATUS_QUESTION {
-				best = pb.ChatStatus_CHAT_STATUS_WORKING
-			}
-			if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best == pb.ChatStatus_CHAT_STATUS_STOPPED {
-				best = pb.ChatStatus_CHAT_STATUS_IDLE
-			}
-		}
-		// When heartbeats report stopped, fall back to per-chat tmux liveness.
-		// Default to IDLE (not WORKING) — the poller will upgrade to WORKING
-		// within 3s if Claude is actually producing output.
-		if best == pb.ChatStatus_CHAT_STATUS_STOPPED {
-			for _, c := range chats {
-				if c.TmuxSessionName != nil && *c.TmuxSessionName != "" &&
-					s.lifecycle.IsTmuxSessionAlive(ctx, *c.TmuxSessionName) {
-					best = pb.ChatStatus_CHAT_STATUS_IDLE
-					break
-				}
-			}
 		}
 
 		statuses = append(statuses, &pb.SessionStatusEntry{
@@ -1924,6 +1964,76 @@ func (s *Server) GetSessionStatuses(ctx context.Context, req *connect.Request[pb
 	}
 
 	return connect.NewResponse(&pb.GetSessionStatusesResponse{Statuses: statuses}), nil
+}
+
+func (s *Server) chatsBySessionForStatuses(ctx context.Context, sessionIDs []string) (map[string][]*models.AgentChat, bool) {
+	if s.chatStatus == nil || s.agentChats == nil {
+		return nil, true
+	}
+	chatsBySession, err := s.agentChats.ListBySessions(ctx, sessionIDs)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("list chats for session statuses")
+		return nil, false
+	}
+	return chatsBySession, true
+}
+
+func (s *Server) chatStatusForSession(ctx context.Context, sessionID string) (pb.ChatStatus, bool) {
+	if s.chatStatus == nil || s.agentChats == nil {
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, true
+	}
+	chats, err := s.agentChats.ListBySession(ctx, sessionID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("session_id", sessionID).Msg("list chats for session status")
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, false
+	}
+	return s.chatStatusFromSessionChats(ctx, chats, true)
+}
+
+func (s *Server) chatStatusFromSessionChats(ctx context.Context, chats []*models.AgentChat, loaded bool) (pb.ChatStatus, bool) {
+	if s.chatStatus == nil || s.agentChats == nil {
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, true
+	}
+	if !loaded {
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, false
+	}
+	if len(chats) == 0 {
+		return pb.ChatStatus_CHAT_STATUS_STOPPED, true
+	}
+
+	agentSessionIDs := make([]string, len(chats))
+	for i, c := range chats {
+		agentSessionIDs[i] = c.AgentSessionID
+	}
+	entries := s.chatStatus.GetBatch(agentSessionIDs)
+
+	// Compute best status: question > working > idle > stopped.
+	best := pb.ChatStatus_CHAT_STATUS_STOPPED
+	for _, e := range entries {
+		if e.Status == pb.ChatStatus_CHAT_STATUS_QUESTION {
+			best = pb.ChatStatus_CHAT_STATUS_QUESTION
+			break
+		}
+		if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && best != pb.ChatStatus_CHAT_STATUS_QUESTION {
+			best = pb.ChatStatus_CHAT_STATUS_WORKING
+		}
+		if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && best == pb.ChatStatus_CHAT_STATUS_STOPPED {
+			best = pb.ChatStatus_CHAT_STATUS_IDLE
+		}
+	}
+	// When heartbeats report stopped, fall back to per-chat tmux liveness.
+	// Default to IDLE (not WORKING) — the poller will upgrade to WORKING
+	// within 3s if Claude is actually producing output.
+	if best == pb.ChatStatus_CHAT_STATUS_STOPPED && s.lifecycle != nil {
+		for _, c := range chats {
+			if c.TmuxSessionName != nil && *c.TmuxSessionName != "" &&
+				s.lifecycle.IsTmuxSessionAlive(ctx, *c.TmuxSessionName) {
+				best = pb.ChatStatus_CHAT_STATUS_IDLE
+				break
+			}
+		}
+	}
+	return best, true
 }
 
 // --- Context Resolution ---

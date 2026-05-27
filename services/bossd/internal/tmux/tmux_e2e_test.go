@@ -52,9 +52,10 @@ func TestE2E_Lifecycle(t *testing.T) {
 		t.Fatal("session should not exist after kill")
 	}
 
-	// Killing again should be idempotent (no error).
+	// Killing again after the last session exits can leave no tmux server.
+	// That is a definite "no sessions exist" result and remains idempotent.
 	err = c.KillSession(ctx, name)
 	if err != nil {
-		t.Fatalf("killing already-dead session should be idempotent: %v", err)
+		t.Fatalf("killing already-dead session: %v", err)
 	}
 }

@@ -23,11 +23,27 @@ Install Bossanova with Homebrew:
 brew install bossanova-dev/tap/bossanova
 ```
 
-Then start the daemon:
+Then install the daemon service:
 
 ```bash
-bossd start
+boss daemon install
 ```
+
+Check that it is running:
+
+```bash
+boss daemon status
+```
+
+Expected output:
+
+```text
+Daemon is running.
+  PID:     11537
+  service: ~/Library/LaunchAgents/com.bossanova.bossd.plist
+```
+
+The PID and service path vary by machine.
 
 The daemon owns session state, worktree cleanup, GitHub sync, and browser access.
 

@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -489,6 +490,8 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	idleThreshold := m.config.idleRepairThreshold()
 	m.mu.Unlock()
 
+	replaceExistingReason := ""
+	var replaceExistingObservedLastChatActivityAt time.Time
 	if info.HasActiveChat {
 		if info.LastChatActivityAt.IsZero() {
 			// HasActiveChat=true but no activity timestamp — fail closed and
@@ -520,6 +523,12 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 			Dur("silent_for", silentFor).
 			Dur("idle_threshold", idleThreshold).
 			Msg("chat attached but idle past threshold, proceeding with repair")
+		replaceExistingReason = fmt.Sprintf(
+			"auto-repair replacing idle chat after %s of silence; threshold %s",
+			silentFor.Round(time.Second),
+			idleThreshold,
+		)
+		replaceExistingObservedLastChatActivityAt = info.LastChatActivityAt
 	}
 
 	repoName := info.RepoName
@@ -596,7 +605,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// context so Shutdown can wait for it without aborting writes.
 	go func() {
 		defer m.wg.Done()
-		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA)
+		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt)
 	}()
 }
 
@@ -861,6 +870,22 @@ func (m *repairMonitor) periodicSweep(ctx context.Context) {
 	}
 }
 
+func repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason string, replaceExistingObservedLastChatActivityAt time.Time) *bossanovav1.StartChatRunHostRequest {
+	req := &bossanovav1.StartChatRunHostRequest{
+		SessionId: sessionID,
+		Command:   repairCommand,
+		Title:     "Repair: " + sessionName,
+	}
+	if replaceExistingReason != "" {
+		req.ReplaceExistingChat = true
+		req.ReplaceExistingReason = replaceExistingReason
+		if !replaceExistingObservedLastChatActivityAt.IsZero() {
+			req.ReplaceExistingObservedLastChatActivityAt = timestamppb.New(replaceExistingObservedLastChatActivityAt)
+		}
+	}
+	return req
+}
+
 // repairSession drives a single Claude repair run for a failing/conflicted/
 // rejected session. It asks the daemon to spawn a Claude process in the
 // session's worktree (StartClaudeRun), waits for it to exit (WaitClaudeRun),
@@ -880,6 +905,8 @@ func (m *repairMonitor) repairSession(
 	displayStatus bossanovav1.DisplayStatus,
 	hasFailures bool,
 	headSHA string,
+	replaceExistingReason string,
+	replaceExistingObservedLastChatActivityAt time.Time,
 ) {
 	log := m.logger.With().
 		Str("session_id", sessionID).
@@ -951,11 +978,7 @@ func (m *repairMonitor) repairSession(
 		Bool("has_failures", hasFailures).
 		Msg("starting repair attempt")
 
-	startResp, err := m.host.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{
-		SessionId: sessionID,
-		Command:   repairCommand,
-		Title:     "Repair: " + sessionName,
-	})
+	startResp, err := m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt))
 	if err != nil {
 		if grpcstatus.Code(err) == codes.AlreadyExists {
 			staleAgentSessionID := agentSessionIDFromAlreadyExists(err)
@@ -982,11 +1005,7 @@ func (m *repairMonitor) repairSession(
 				Str("tmux_session_name", reclaimResp.GetTmuxSessionName()).
 				Msg("reclaimed stale repair chat, retrying repair")
 
-			startResp, err = m.host.StartChatRun(ctx, &bossanovav1.StartChatRunHostRequest{
-				SessionId: sessionID,
-				Command:   repairCommand,
-				Title:     "Repair: " + sessionName,
-			})
+			startResp, err = m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt))
 			if err != nil {
 				if grpcstatus.Code(err) == codes.AlreadyExists {
 					log.Info().Err(err).Msg("another repair run is active after reclaim, skipping repair")

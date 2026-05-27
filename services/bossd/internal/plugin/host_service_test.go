@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // mockVCSProvider is a minimal mock for vcs.Provider used in host_service tests.
@@ -1167,6 +1168,12 @@ type fakeChatLifecycle struct {
 		agentSessionID string
 		reason         string
 	}
+	replaceBlockingChatForRepairFunc func(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
+	replaceBlockingChatForRepairReqs []struct {
+		sessionID      string
+		agentSessionID string
+		reason         string
+	}
 	// startFunc, when non-nil, takes precedence over startResp/startErr.
 	// Used by the AlreadyExists test to have the lifecycle return the
 	// existing agent_session_id alongside a typed gRPC error.
@@ -1211,6 +1218,26 @@ func (f *fakeChatLifecycle) ReclaimRepairChat(ctx context.Context, sessionID, ag
 	if fn != nil {
 		return fn(ctx, sessionID, agentSessionID, reason)
 	}
+	return session.ReclaimRepairChatResult{}, nil
+}
+
+func (f *fakeChatLifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error) {
+	f.mu.Lock()
+	f.replaceBlockingChatForRepairReqs = append(f.replaceBlockingChatForRepairReqs, struct {
+		sessionID      string
+		agentSessionID string
+		reason         string
+	}{sessionID: sessionID, agentSessionID: agentSessionID, reason: reason})
+	fn := f.replaceBlockingChatForRepairFunc
+	f.mu.Unlock()
+
+	if fn != nil {
+		return fn(ctx, sessionID, agentSessionID, reason)
+	}
+	return session.ReclaimRepairChatResult{}, nil
+}
+
+func (*dbWritingChatLifecycle) ReplaceBlockingChatForRepair(context.Context, string, string, string) (session.ReclaimRepairChatResult, error) {
 	return session.ReclaimRepairChatResult{}, nil
 }
 
@@ -1349,6 +1376,7 @@ func newChatRunTestServer(lc *fakeChatLifecycle, sessions ...*models.Session) *H
 	srv.agentLogsDir = "/tmp/agent-logs"
 	srv.lifecycle = lc
 	srv.displayTracker = status.NewDisplayTracker()
+	srv.chatTracker = status.NewTracker()
 	return srv
 }
 
@@ -1580,6 +1608,163 @@ func TestStartChatRun_ConcurrentSecondReturnsAlreadyExists(t *testing.T) {
 	}
 }
 
+func TestHostServiceStartChatRun_ReplacesActiveRunGuardForRepair(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{}
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		if lc.startCalls == 1 {
+			return "agent-blocking", nil
+		}
+		return "agent-repair", nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Command: "/boss-repair", Title: "Repair: old",
+	}); err != nil {
+		t.Fatalf("first StartChatRun: %v", err)
+	}
+	srv.runMu.Lock()
+	oldDone := srv.runCompletion["agent-blocking"].done
+	srv.runMu.Unlock()
+	srv.agentClients["claude"].(*fakeAgentClient).mu.Lock()
+	srv.agentClients["claude"].(*fakeAgentClient).running["agent-blocking"] = true
+	srv.agentClients["claude"].(*fakeAgentClient).mu.Unlock()
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-blocking", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if resp.GetAgentSessionId() != "agent-repair" {
+		t.Fatalf("AgentSessionId = %q, want agent-repair", resp.GetAgentSessionId())
+	}
+	if lc.startCalls != 2 {
+		t.Fatalf("StartTmuxChat calls = %d, want 2", lc.startCalls)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 1 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 1", len(lc.replaceBlockingChatForRepairReqs))
+	}
+	got := lc.replaceBlockingChatForRepairReqs[0]
+	if got.sessionID != "sess-1" || got.agentSessionID != "agent-blocking" || got.reason != reason {
+		t.Fatalf("ReplaceBlockingChatForRepair req = %+v, want sess-1 / agent-blocking / %q", got, reason)
+	}
+
+	srv.runMu.Lock()
+	active := srv.activeRuns["sess-1"]
+	_, oldCompletion := srv.runCompletion["agent-blocking"]
+	_, oldToken := srv.runHookTokens["agent-blocking"]
+	_, oldSession := srv.runSessionByID["agent-blocking"]
+	srv.runMu.Unlock()
+	if active.agentSessionID != "agent-repair" {
+		t.Fatalf("activeRuns[sess-1] = %+v, want agent-repair", active)
+	}
+	if oldCompletion || oldToken || oldSession {
+		t.Fatalf("old run state still present: completion=%v token=%v session=%v", oldCompletion, oldToken, oldSession)
+	}
+	select {
+	case res := <-oldDone:
+		if res.exitError != "chat run replaced by newer repair attempt" {
+			t.Fatalf("old run exitError = %q, want replacement notice", res.exitError)
+		}
+	default:
+		t.Fatal("old run completion channel was not signaled before cleanup")
+	}
+}
+
+func TestHostServiceStartChatRun_RejectsNonRepairReplaceExistingChat(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{}
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		if lc.startCalls == 1 {
+			return "agent-blocking", nil
+		}
+		return "agent-repair", nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Command: "/boss-repair", Title: "Repair: old",
+	}); err != nil {
+		t.Fatalf("first StartChatRun: %v", err)
+	}
+	srv.agentClients["claude"].(*fakeAgentClient).mu.Lock()
+	srv.agentClients["claude"].(*fakeAgentClient).running["agent-blocking"] = true
+	srv.agentClients["claude"].(*fakeAgentClient).mu.Unlock()
+
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "boss-run",
+		Title:                 "Run: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+	})
+	if grpcstatus.Code(err) != codes.InvalidArgument {
+		t.Fatalf("StartChatRun code = %v, want InvalidArgument (err=%v)", grpcstatus.Code(err), err)
+	}
+	if lc.startCalls != 1 {
+		t.Fatalf("StartTmuxChat calls = %d, want 1", lc.startCalls)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 0 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 0", len(lc.replaceBlockingChatForRepairReqs))
+	}
+}
+
+func TestHostServiceStartChatRun_ActiveRunReplacementDoesNotReplaceAgainOnLifecycleAlreadyExists(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{}
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		if lc.startCalls == 1 {
+			return "agent-blocking", nil
+		}
+		return "agent-lifecycle", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	if _, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId: "sess-1", Command: "/boss-repair", Title: "Repair: old",
+	}); err != nil {
+		t.Fatalf("first StartChatRun: %v", err)
+	}
+	srv.agentClients["claude"].(*fakeAgentClient).mu.Lock()
+	srv.agentClients["claude"].(*fakeAgentClient).running["agent-blocking"] = true
+	srv.agentClients["claude"].(*fakeAgentClient).mu.Unlock()
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-blocking", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists", grpcstatus.Code(err))
+	}
+	if resp == nil || resp.GetAgentSessionId() != "agent-lifecycle" {
+		t.Fatalf("AgentSessionId = %v, want agent-lifecycle echoed alongside AlreadyExists", resp)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 1 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 1", len(lc.replaceBlockingChatForRepairReqs))
+	}
+	if lc.replaceBlockingChatForRepairReqs[0].agentSessionID != "agent-blocking" {
+		t.Fatalf("ReplaceBlockingChatForRepair req = %+v, want agent-blocking only", lc.replaceBlockingChatForRepairReqs[0])
+	}
+}
+
 // TestStartChatRun_LifecycleAlreadyExistsPropagated verifies that when
 // Lifecycle.StartTmuxChat itself returns AlreadyExists (eg. tmux from a
 // previous daemon session is still alive), the host RPC echoes the
@@ -1616,6 +1801,175 @@ func TestStartChatRun_LifecycleAlreadyExistsPropagated(t *testing.T) {
 	}
 }
 
+func TestHostServiceStartChatRun_ReplacesBlockingChatForRepair(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{}
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		if lc.startCalls == 1 {
+			return "agent-finalize", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		}
+		return "agent-repair", nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-finalize", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if resp.GetAgentSessionId() != "agent-repair" {
+		t.Fatalf("AgentSessionId = %q, want agent-repair", resp.GetAgentSessionId())
+	}
+	if lc.startCalls != 2 {
+		t.Fatalf("StartTmuxChat calls = %d, want 2", lc.startCalls)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 1 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 1", len(lc.replaceBlockingChatForRepairReqs))
+	}
+	got := lc.replaceBlockingChatForRepairReqs[0]
+	if got.sessionID != "sess-1" || got.agentSessionID != "agent-finalize" || got.reason != reason {
+		t.Fatalf("ReplaceBlockingChatForRepair req = %+v, want sess-1 / agent-finalize / %q", got, reason)
+	}
+	if len(lc.reclaimRepairChatReqs) != 0 {
+		t.Fatalf("ReclaimRepairChat calls = %d, want 0", len(lc.reclaimRepairChatReqs))
+	}
+}
+
+func TestHostServiceStartChatRun_RefusesReplacementAfterNewChatActivity(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+			return "agent-finalize", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		},
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-finalize", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed.Add(time.Minute))
+
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if grpcstatus.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", grpcstatus.Code(err), err)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 0 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 0", len(lc.replaceBlockingChatForRepairReqs))
+	}
+}
+
+func TestHostServiceStartChatRun_RefusesReplacementWhenChatNoLongerIdle(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+			return "agent-finalize", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		},
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-finalize", bossanovav1.ChatStatus_CHAT_STATUS_WORKING, observed)
+
+	_, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if grpcstatus.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition (err=%v)", grpcstatus.Code(err), err)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 0 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 0", len(lc.replaceBlockingChatForRepairReqs))
+	}
+}
+
+func TestHostServiceStartChatRun_ReplacesBlockingChatForRepairFromErrorMessageFallback(t *testing.T) {
+	const reason = "auto-repair replacing idle chat after 6m0s of silence; threshold 5m0s"
+
+	lc := &fakeChatLifecycle{}
+	lc.startFunc = func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+		if lc.startCalls == 1 {
+			return "", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active (agent_session_id=agent-finalize)")
+		}
+		return "agent-repair", nil
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+	observed := time.Now().Add(-6 * time.Minute)
+	srv.chatTracker.Update("agent-finalize", bossanovav1.ChatStatus_CHAT_STATUS_IDLE, observed)
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: reason,
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(observed),
+	})
+	if err != nil {
+		t.Fatalf("StartChatRun: %v", err)
+	}
+	if resp.GetAgentSessionId() != "agent-repair" {
+		t.Fatalf("AgentSessionId = %q, want agent-repair", resp.GetAgentSessionId())
+	}
+	if lc.startCalls != 2 {
+		t.Fatalf("StartTmuxChat calls = %d, want 2", lc.startCalls)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 1 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 1", len(lc.replaceBlockingChatForRepairReqs))
+	}
+	got := lc.replaceBlockingChatForRepairReqs[0]
+	if got.sessionID != "sess-1" || got.agentSessionID != "agent-finalize" || got.reason != reason {
+		t.Fatalf("ReplaceBlockingChatForRepair req = %+v, want sess-1 / agent-finalize / %q", got, reason)
+	}
+}
+
+func TestHostServiceStartChatRun_ReplaceExistingWithoutAgentSessionIDDoesNotReplace(t *testing.T) {
+	lc := &fakeChatLifecycle{
+		startFunc: func(_ context.Context, _ string, _ session.ChatInput, _ string, _ session.HookOpts) (string, error) {
+			return "", grpcstatus.Error(codes.AlreadyExists, "tmux chat already active")
+		},
+	}
+	srv := newChatRunTestServer(lc, &models.Session{ID: "sess-1", WorktreePath: "/tmp/wt"})
+
+	resp, err := srv.StartChatRun(t.Context(), &bossanovav1.StartChatRunHostRequest{
+		SessionId:             "sess-1",
+		Command:               "/boss-repair",
+		Title:                 "Repair: Improve conflict detection",
+		ReplaceExistingChat:   true,
+		ReplaceExistingReason: "replace stale repair chat",
+		ReplaceExistingObservedLastChatActivityAt: timestamppb.New(time.Now().Add(-6 * time.Minute)),
+	})
+	if grpcstatus.Code(err) != codes.AlreadyExists {
+		t.Fatalf("code = %v, want AlreadyExists", grpcstatus.Code(err))
+	}
+	if resp != nil {
+		t.Fatalf("response = %v, want nil", resp)
+	}
+	if lc.startCalls != 1 {
+		t.Fatalf("StartTmuxChat calls = %d, want 1", lc.startCalls)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 0 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 0", len(lc.replaceBlockingChatForRepairReqs))
+	}
+}
+
 func TestStartChatRun_RepairLifecycleAlreadyExistsDoesNotKillOrRetry(t *testing.T) {
 	const existing = "agent-existing-repair-1234"
 
@@ -1642,6 +1996,9 @@ func TestStartChatRun_RepairLifecycleAlreadyExistsDoesNotKillOrRetry(t *testing.
 	}
 	if lc.killCalls != 0 {
 		t.Fatalf("KillChatTmuxSession calls = %d, want 0", lc.killCalls)
+	}
+	if len(lc.replaceBlockingChatForRepairReqs) != 0 {
+		t.Fatalf("ReplaceBlockingChatForRepair calls = %d, want 0", len(lc.replaceBlockingChatForRepairReqs))
 	}
 }
 

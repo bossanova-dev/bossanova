@@ -87,6 +87,22 @@ func (m *Manager) Login(ctx context.Context) error {
 	return m.store.Save(result.Tokens)
 }
 
+// Refresh refreshes stored credentials using the saved refresh token.
+func (m *Manager) Refresh(ctx context.Context) error {
+	tokens, err := m.store.Load()
+	if err != nil {
+		return err
+	}
+	if tokens.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available; run 'boss login'")
+	}
+	refreshed, err := RefreshAccessToken(ctx, m.config, tokens.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("refresh token: %w", err)
+	}
+	return m.store.Save(refreshed)
+}
+
 // StartLogin initiates the device code flow and returns the device code
 // response without printing to stdout (safe for TUI use).
 func (m *Manager) StartLogin(ctx context.Context) (*DeviceCodeResponse, error) {

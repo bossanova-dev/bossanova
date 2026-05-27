@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"charm.land/bubbles/v2/table"
@@ -55,11 +58,16 @@ func newRemoteClient(cmd *cobra.Command, baseURL string) (client.BossClient, err
 	if err != nil {
 		return nil, fmt.Errorf("auth: %w (run 'boss login' first)", err)
 	}
-	token, err := mgr.AccessToken(context.Background())
+	ctx := context.Background()
+	token, err := mgr.AccessToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("access token: %w (run 'boss login' first)", err)
 	}
-	return client.NewRemote(baseURL, token), nil
+	c := client.NewRemote(baseURL, token)
+	if err := requireActiveCloudAccess(ctx, c); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // launchTUI runs preflight checks, dials the daemon, builds the App, and
@@ -92,7 +100,9 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 	}
 	c, err := newClient(cmd)
 	if err != nil {
-		c, err = waitForDaemon(cmd, err)
+		c, err = handleClientStartupError(cmd, err, func() (client.BossClient, error) {
+			return waitForDaemon(cmd, err)
+		})
 		if err != nil {
 			if views.IsPreflightCancelled(err) {
 				return nil
@@ -108,6 +118,24 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err
+}
+
+func handleClientStartupError(cmd *cobra.Command, err error, wait func() (client.BossClient, error)) (client.BossClient, error) {
+	if isCloudGateError(err) {
+		return nil, err
+	}
+	if remoteURL(cmd) != "" {
+		return nil, err
+	}
+	return wait()
+}
+
+func remoteURL(cmd *cobra.Command) string {
+	if cmd == nil || cmd.Root() == nil {
+		return ""
+	}
+	remote, _ := cmd.Root().Flags().GetString("remote")
+	return remote
 }
 
 // waitForDaemon decides what to do when the initial newClient call fails.
@@ -743,6 +771,222 @@ func runDaemonStatus(_ *cobra.Command) error {
 		fmt.Printf("  service: %s\n", st.ServicePath)
 	}
 	return nil
+}
+
+func runDaemonStart(_ *cobra.Command) error {
+	socketPath, err := client.DefaultSocketPath()
+	if err != nil {
+		return fmt.Errorf("daemon start: %w", err)
+	}
+	if daemon.IsSocketReachable(socketPath) {
+		fmt.Println("Daemon is already running.")
+		return nil
+	}
+	if err := daemon.EnsureRunning(socketPath); err != nil {
+		return fmt.Errorf("start daemon failed: %w", err)
+	}
+	fmt.Println("Daemon started.")
+	return nil
+}
+
+func runDaemonStop(_ *cobra.Command) error {
+	st, err := daemon.GetStatus()
+	if err != nil {
+		return fmt.Errorf("daemon stop: %w", err)
+	}
+	socketPath, _ := client.DefaultSocketPath()
+
+	if !st.Installed {
+		// Not LaunchAgent-managed — reap any standalone bossd processes
+		// auto-started by `boss` (EnsureRunning's fallback) or kicked off
+		// manually. pgrep -x bossd matches the exact program name, so
+		// bossd-plugin-* children (and the boss TUI itself) are skipped.
+		n, err := terminateBossdProcesses()
+		if err != nil {
+			return fmt.Errorf("stop standalone bossd failed: %w", err)
+		}
+		if n == 0 {
+			fmt.Println("Daemon is not installed and no standalone bossd is running.")
+			return nil
+		}
+		if socketPath != "" && !waitForSocketGone(socketPath) {
+			return fmt.Errorf("timed out waiting for standalone bossd to stop")
+		}
+		fmt.Printf("Stopped %d standalone bossd process(es).\n", n)
+		return nil
+	}
+	if !st.Running {
+		n, err := terminateBossdProcesses()
+		if err != nil {
+			return fmt.Errorf("stop standalone bossd failed: %w", err)
+		}
+		if n > 0 {
+			if socketPath != "" && !waitForSocketGone(socketPath) {
+				return fmt.Errorf("timed out waiting for standalone bossd to stop")
+			}
+			fmt.Printf("Stopped %d standalone bossd process(es).\n", n)
+			return nil
+		}
+		fmt.Println("Daemon is already stopped.")
+		return nil
+	}
+	if err := daemon.Stop(); err != nil {
+		return fmt.Errorf("stop daemon failed: %w", err)
+	}
+	// Confirm the socket actually went away — bootout returns before the
+	// process has fully exited on busy systems, so polling avoids misleading
+	// "stopped" output while the old bossd is still draining.
+	if socketPath != "" && !waitForSocketGone(socketPath) {
+		return fmt.Errorf("timed out waiting for daemon socket to stop")
+	}
+	fmt.Println("Daemon stopped.")
+	return nil
+}
+
+func runDaemonRestart(_ *cobra.Command) error {
+	st, err := daemon.GetStatus()
+	if err != nil {
+		return fmt.Errorf("daemon restart: %w", err)
+	}
+	socketPath, err := restartSocketPath(client.DefaultSocketPath())
+	if err != nil {
+		return err
+	}
+
+	if !st.Installed {
+		// Standalone path: SIGTERM any running bossds, then re-spawn via
+		// EnsureRunning's fallback. Useful for the "duplicate bossd
+		// processes" cleanup case where the user has no LaunchAgent set up.
+		n, err := terminateBossdProcesses()
+		if err != nil {
+			return fmt.Errorf("restart standalone bossd failed: %w", err)
+		}
+		if socketPath != "" && !waitForSocketGone(socketPath) {
+			return fmt.Errorf("timed out waiting for standalone bossd to stop")
+		}
+		if err := daemon.EnsureRunning(socketPath); err != nil {
+			return fmt.Errorf("restart standalone bossd failed: %w", err)
+		}
+		if n > 0 {
+			fmt.Printf("Restarted standalone bossd (reaped %d existing process(es)).\n", n)
+		} else {
+			fmt.Println("Started standalone bossd.")
+		}
+		return nil
+	}
+	if err := daemon.Restart(); err != nil {
+		return fmt.Errorf("restart daemon failed: %w", err)
+	}
+	// Wait for the new bossd to come up so the next command doesn't race.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if daemon.IsSocketReachable(socketPath) {
+			fmt.Println("Daemon restarted.")
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon restarted but socket did not become reachable; check 'boss daemon status'")
+}
+
+func restartSocketPath(socketPath string, err error) (string, error) {
+	if err != nil {
+		return "", fmt.Errorf("daemon restart: %w", err)
+	}
+	if socketPath == "" {
+		return "", fmt.Errorf("daemon restart: could not resolve daemon socket path")
+	}
+	return socketPath, nil
+}
+
+// waitForSocketGone blocks until the unix socket at path stops accepting
+// connections or the timeout elapses. Used after stop/restart so we don't
+// print "stopped" while the old bossd is still draining.
+func waitForSocketGone(path string) bool {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !daemon.IsSocketReachable(path) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
+// terminateBossdProcesses SIGTERMs every running `bossd` process (exact name
+// match — does not touch `bossd-plugin-*` children, which their parent will
+// reap on its way down). Returns the number of processes signalled. Safe to
+// call when nothing is running.
+func terminateBossdProcesses() (int, error) {
+	pids, err := findBossdPIDs()
+	if err != nil {
+		return 0, err
+	}
+	return signalBossdProcesses(pids, func(pid int) (processSignaler, error) {
+		return os.FindProcess(pid)
+	})
+}
+
+type processSignaler interface {
+	Signal(os.Signal) error
+}
+
+func signalBossdProcesses(pids []int, findProcess func(int) (processSignaler, error)) (int, error) {
+	signalled := 0
+	var errs []error
+	for _, pid := range pids {
+		p, err := findProcess(pid)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("find bossd pid %d: %w", pid, err))
+			continue
+		}
+		if err := p.Signal(syscall.SIGTERM); err != nil {
+			if errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone) {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("signal bossd pid %d: %w", pid, err))
+			continue
+		}
+		signalled++
+	}
+	return signalled, errors.Join(errs...)
+}
+
+// findBossdPIDs returns PIDs of running processes owned by this effective user
+// whose program name is exactly "bossd". Uses pgrep, which is available on
+// macOS and Linux.
+func findBossdPIDs() ([]int, error) {
+	out, err := exec.Command("pgrep", bossdPgrepArgs()...).Output()
+	if err != nil {
+		// pgrep exits 1 when there are no matches — treat as empty result.
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("pgrep bossd: %w", err)
+	}
+	return parsePgrepOutput(string(out)), nil
+}
+
+func bossdPgrepArgs() []string {
+	return []string{"-u", strconv.Itoa(os.Geteuid()), "-x", "bossd"}
+}
+
+// parsePgrepOutput converts pgrep's newline-separated PID output into ints.
+// Malformed lines are skipped silently — pgrep can legitimately emit blank
+// trailing lines, and any non-numeric line is not a usable PID anyway.
+func parsePgrepOutput(s string) []int {
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var pid int
+		if _, err := fmt.Sscanf(line, "%d", &pid); err == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // resolveSessionID resolves a (possibly prefix) session ID to a full session ID.

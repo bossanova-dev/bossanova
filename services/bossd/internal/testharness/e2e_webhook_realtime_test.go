@@ -137,6 +137,35 @@ func TestE2E_PullRequestClosed_UnmergedRealtime(t *testing.T) {
 	h.WaitForSessionState(t, sessionID, pb.SessionState_SESSION_STATE_CLOSED, 200*time.Millisecond)
 }
 
+func TestE2E_PullRequestClosed_DraftUnmergedRealtime(t *testing.T) {
+	h := New(t)
+	repoURL := "https://github.com/IKHOR/wondercanvas-mono"
+	repoID := h.SeedRepo(t, repoURL)
+	sessionID := h.SeedSession(t, repoID, 203, pb.SessionState_SESSION_STATE_GREEN_DRAFT)
+	h.Provider.SetPRStatus(203, &vcs.PRStatus{State: vcs.PRStateClosed, Draft: true})
+
+	h.PostGitHubWebhook(t, "pull_request", fixture(t, "pull_request_closed_draft_203.json"), 203, repoURL)
+
+	h.WaitForSessionState(t, sessionID, pb.SessionState_SESSION_STATE_CLOSED, 200*time.Millisecond)
+	deadline := time.After(200 * time.Millisecond)
+	for {
+		entry := h.DisplayTracker.Get(sessionID)
+		if entry != nil {
+			got := pb.DisplayStatus(entry.Status)
+			if got != pb.DisplayStatus_DISPLAY_STATUS_CLOSED {
+				t.Fatalf("display status = %v, want CLOSED", got)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for closed display status")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 func TestE2E_PullRequestReview_ChangesRequestedRealtime(t *testing.T) {
 	h := New(t)
 	repoURL := "https://github.com/recurser/bossanova"

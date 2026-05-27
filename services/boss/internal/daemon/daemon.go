@@ -59,6 +59,13 @@ func Restart() error {
 	return platformRestart()
 }
 
+// Stop asks the platform service manager to terminate the running daemon.
+// It is safe to call when the daemon is already stopped — the platform
+// implementation swallows "not loaded" errors.
+func Stop() error {
+	return platformStop()
+}
+
 // GetStatus returns the current daemon status.
 func GetStatus() (*Status, error) {
 	return platformGetStatus()

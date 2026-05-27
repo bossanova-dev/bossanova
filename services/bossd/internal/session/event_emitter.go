@@ -53,6 +53,13 @@ func (e *SessionEventEmitter) EmitForPR(
 		return fmt.Errorf("lookup sessions for %s#%d: %w", repoOriginURL, prNumber, err)
 	}
 
+	e.logger.Info().
+		Str("repo_origin_url", repoOriginURL).
+		Int("pr_number", prNumber).
+		Int("sessions_matched", len(sessions)).
+		Int("event_count", len(events)).
+		Msg("matched sessions for webhook event")
+
 	for _, sess := range sessions {
 		for _, ev := range events {
 			select {

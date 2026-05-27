@@ -50,6 +50,11 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus: DisplayStatusConflict,
 		},
 		{
+			name:       "conflict (not rebaseable)",
+			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true), Rebaseable: boolPtr(false)},
+			wantStatus: DisplayStatusConflict,
+		},
+		{
 			name: "all checks failed",
 			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
 			checks: []CheckResult{
@@ -128,6 +133,14 @@ func TestComputeDisplayStatus(t *testing.T) {
 			},
 			reviews: []ReviewComment{
 				{Author: "alice", State: ReviewStateChangesRequested},
+			},
+			wantStatus: DisplayStatusRejected,
+		},
+		{
+			name: "review required decision blocks passing",
+			pr:   &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true), LatestReviewState: ReviewStateChangesRequested},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
 			},
 			wantStatus: DisplayStatusRejected,
 		},

@@ -1,9 +1,9 @@
 .PHONY: all build build-all build-docs clean copy-skills deps format generate lint \
-	lint-check-version lint-docs \
+	lint-check-version lint-docs lint-scripts \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
 	plugins plugins-all readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-race \
-	test-bosso-scale test-docs test-integration-bossd test-public-mirror test-readme
+	test-bosso-scale test-docs test-integration-bossd test-public-mirror test-readme test-scripts
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all:
@@ -30,8 +30,8 @@ PLUGIN_BINS     := $(notdir $(PLUGIN_MODULES))
 MUTATE_DIR := .mutate
 
 # README tour recordings and generated GIFs.
-README_TOUR_DIR := services/marketing/public/screenshots/tour
-README_TOUR_GIF_DIR := $(README_TOUR_DIR)/gifs
+README_TOUR_CAST_DIR := services/docs/static/img/screenshots/tour
+README_TOUR_GIF_DIR := services/marketing/public/screenshots/tour/gifs
 
 # Suppress clang deployment-version warnings from CGO dependencies
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
@@ -203,6 +203,7 @@ $(BIN_DIR)/bossd-plugin-claude: copy-skills
 
 ## test: Run tests across all modules (generates protos first if needed)
 test: $(GEN_STAMP) copy-skills
+	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-public-mirror
 	@for mod in $(MODULES); do \
@@ -269,6 +270,7 @@ lint-check-version:
 ## lint: Run golangci-lint and buf lint (generates protos first if needed)
 lint: lint-check-version $(GEN_STAMP)
 	buf lint
+	$(MAKE) lint-scripts
 	@for mod in $(MODULES); do \
 		echo "==> Linting $$mod"; \
 		(cd $$mod && golangci-lint run ./...); \
@@ -303,7 +305,12 @@ readme-gifs:
 	fi
 	@mkdir -p "$(README_TOUR_GIF_DIR)"
 	@set -e; \
-	for cast in "$(README_TOUR_DIR)"/*.cast; do \
+	casts=$$(find "$(README_TOUR_CAST_DIR)" -maxdepth 1 -name '*.cast' -type f | sort); \
+	if [ -z "$$casts" ]; then \
+		echo "No asciinema casts found in $(README_TOUR_CAST_DIR)"; \
+		exit 1; \
+	fi; \
+	for cast in $$casts; do \
 		name=$$(basename "$$cast" .cast); \
 		echo "==> $$name.gif"; \
 		agg \
@@ -321,8 +328,14 @@ test-public-mirror:
 test-docs:
 	$(MAKE) -C services/docs test
 
+test-scripts:
+	$(MAKE) -C scripts test
+
 lint-docs:
 	$(MAKE) -C services/docs lint
+
+lint-scripts:
+	$(MAKE) -C scripts lint
 
 build-docs:
 	$(MAKE) -C services/docs build
@@ -382,6 +395,7 @@ format: lint-check-version
 	@if [ -d services/docs ]; then \
 		$(MAKE) -C services/docs format; \
 	fi
+	$(MAKE) -C scripts format
 	@if command -v pnpm >/dev/null 2>&1 && [ -f package.json ]; then \
 		pnpm run format:docs; \
 	fi

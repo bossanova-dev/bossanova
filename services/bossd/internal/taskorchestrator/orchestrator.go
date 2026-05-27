@@ -50,6 +50,7 @@ type queuedTask struct {
 	task       *bossanovav1.TaskItem
 	repo       repoInfo
 	pluginName string
+	mapping    *models.TaskMapping
 }
 
 // Orchestrator polls task source plugins for new tasks and routes
@@ -338,6 +339,36 @@ func (o *Orchestrator) enqueue(ctx context.Context, task *bossanovav1.TaskItem, 
 	o.routeTask(ctx, task, repo, pluginName)
 }
 
+// enqueueMappedCreateSession routes a CREATE_SESSION task that already has a
+// task mapping, such as an AUTO_MERGE task that falls back to a repair session.
+func (o *Orchestrator) enqueueMappedCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
+	o.mu.Lock()
+	if o.active[repo.id] {
+		for _, q := range o.queues[repo.id] {
+			if q.task.GetExternalId() == task.GetExternalId() {
+				o.logger.Debug().
+					Str("repo", repo.displayName).
+					Str("external_id", task.GetExternalId()).
+					Msg("mapped task already queued, skipping duplicate")
+				o.mu.Unlock()
+				return
+			}
+		}
+		o.queues[repo.id] = append(o.queues[repo.id], queuedTask{task: task, repo: repo, mapping: mapping})
+		o.logger.Debug().
+			Str("repo", repo.displayName).
+			Str("external_id", task.GetExternalId()).
+			Int("queue_depth", len(o.queues[repo.id])).
+			Msg("mapped task queued (repo busy)")
+		o.mu.Unlock()
+		return
+	}
+	o.active[repo.id] = true
+	o.mu.Unlock()
+
+	o.handleCreateSession(ctx, task, repo, mapping)
+}
+
 // dequeueNext processes the next queued task for a repo, if any.
 // Called after a task completes (either immediately or via callback).
 func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
@@ -352,6 +383,10 @@ func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
 	o.queues[repoID] = queue[1:]
 	o.mu.Unlock()
 
+	if next.mapping != nil {
+		o.handleCreateSession(ctx, next.task, next.repo, next.mapping)
+		return
+	}
 	o.routeTask(ctx, next.task, next.repo, next.pluginName)
 }
 
@@ -709,6 +744,14 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 	}
 
 	if err := o.provider.MergePR(ctx, repo.originURL, prNumber, strategy); err != nil {
+		if shouldRepairRebaseMergeFailure(strategy, err) {
+			o.logger.Info().Err(err).
+				Int("pr", prNumber).
+				Str("repo", repo.displayName).
+				Msg("auto-merge rebase failed; queueing repair session")
+			o.enqueueMappedCreateSession(ctx, rebaseRepairTask(task, repo, err), repo, mapping)
+			return
+		}
 		o.logger.Error().Err(err).
 			Int("pr", prNumber).
 			Str("repo", repo.displayName).
@@ -824,6 +867,57 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 		Str("external_id", task.GetExternalId()).
 		Str("title", task.GetTitle()).
 		Msg("session created for task")
+}
+
+func shouldRepairRebaseMergeFailure(strategy string, err error) bool {
+	if err == nil || strategy != "rebase" {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "can't be rebased") ||
+		strings.Contains(msg, "cannot be rebased")
+}
+
+func rebaseRepairTask(task *bossanovav1.TaskItem, repo repoInfo, mergeErr error) *bossanovav1.TaskItem {
+	baseBranch := repo.baseBranch
+	if baseBranch == "" {
+		baseBranch = task.GetBaseBranch()
+	}
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+
+	plan := strings.TrimSpace(task.GetPlan())
+	if plan != "" {
+		plan += "\n\n"
+	}
+	plan += fmt.Sprintf(`Auto-merge tried to merge this Dependabot PR with GitHub's rebase strategy and failed:
+
+%s
+
+Repair objective:
+- Rebase the existing Dependabot branch onto origin/%s.
+- Resolve any conflicts from the rebase.
+- Run the relevant checks for the touched package/workspace.
+- Push the rebased branch back to origin.
+- Do not merge the PR manually; leave it clean and passing so Dependabot auto-merge can retry.`, mergeErr.Error(), baseBranch)
+
+	labels := append([]string(nil), task.GetLabels()...)
+	if !slices.Contains(labels, "dependabot") {
+		labels = append(labels, "dependabot")
+	}
+
+	return &bossanovav1.TaskItem{
+		ExternalId:     task.GetExternalId(),
+		Title:          "Repair rebase: " + task.GetTitle(),
+		Plan:           plan,
+		RepoOriginUrl:  task.GetRepoOriginUrl(),
+		BaseBranch:     baseBranch,
+		Priority:       task.GetPriority(),
+		Labels:         labels,
+		Action:         bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+		ExistingBranch: task.GetExistingBranch(),
+	}
 }
 
 // handleNotifyUser logs the task for user notification. In the future

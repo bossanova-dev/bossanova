@@ -222,6 +222,30 @@ Show bossd daemon status.
 boss daemon status
 ```
 
+### `boss daemon start`
+
+Start the bossd daemon. No-op if it's already running. Falls back to spawning bossd directly if it isn't installed as a LaunchAgent.
+
+```bash
+boss daemon start
+```
+
+### `boss daemon stop`
+
+Stop the bossd daemon via the platform service manager. Idempotent — quietly succeeds if the daemon is already stopped or not installed. Does not reap orphan bossd processes started manually outside the LaunchAgent.
+
+```bash
+boss daemon stop
+```
+
+### `boss daemon restart`
+
+Restart the bossd daemon via the platform service manager. Errors out if the daemon isn't installed.
+
+```bash
+boss daemon restart
+```
+
 ---
 
 ## Settings & Auth

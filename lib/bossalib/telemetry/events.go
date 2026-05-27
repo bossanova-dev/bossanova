@@ -17,15 +17,18 @@ const (
 type Event string
 
 const (
-	EventCLICommandInvoked  Event = "cli_command_invoked"
-	EventDaemonStarted      Event = "daemon_started"
-	EventSessionCreated     Event = "session_created"
-	EventChatCreated        Event = "chat_created"
-	EventChatAttached       Event = "chat_attached"
-	EventAuthChanged        Event = "auth_changed"
-	EventRepairStarted      Event = "repair_started"
-	EventRepairCompleted    Event = "repair_completed"
-	EventBugReportSubmitted Event = "bug_report_submitted"
+	EventCLICommandInvoked     Event = "cli_command_invoked"
+	EventDaemonStarted         Event = "daemon_started"
+	EventSessionCreated        Event = "session_created"
+	EventChatCreated           Event = "chat_created"
+	EventChatAttached          Event = "chat_attached"
+	EventAuthChanged           Event = "auth_changed"
+	EventRepairStarted         Event = "repair_started"
+	EventRepairCompleted       Event = "repair_completed"
+	EventBugReportSubmitted    Event = "bug_report_submitted"
+	EventCloudAccessDenied     Event = "cloud_access_denied"
+	EventCloudCheckoutStarted  Event = "cloud_checkout_started"
+	EventCloudCheckoutReturned Event = "cloud_checkout_returned"
 )
 
 func LocalDistinctID(value string) string {
@@ -57,15 +60,18 @@ func prefixedHashID(prefix, value string) string {
 }
 
 var allowedEvents = map[Event]struct{}{
-	EventCLICommandInvoked:  {},
-	EventDaemonStarted:      {},
-	EventSessionCreated:     {},
-	EventChatCreated:        {},
-	EventChatAttached:       {},
-	EventAuthChanged:        {},
-	EventRepairStarted:      {},
-	EventRepairCompleted:    {},
-	EventBugReportSubmitted: {},
+	EventCLICommandInvoked:     {},
+	EventDaemonStarted:         {},
+	EventSessionCreated:        {},
+	EventChatCreated:           {},
+	EventChatAttached:          {},
+	EventAuthChanged:           {},
+	EventRepairStarted:         {},
+	EventRepairCompleted:       {},
+	EventBugReportSubmitted:    {},
+	EventCloudAccessDenied:     {},
+	EventCloudCheckoutStarted:  {},
+	EventCloudCheckoutReturned: {},
 }
 
 func IsAllowed(event Event) bool {

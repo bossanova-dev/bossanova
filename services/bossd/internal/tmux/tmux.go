@@ -197,8 +197,11 @@ func (c *Client) HasSessionStatus(ctx context.Context, name string) (bool, error
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
-		if msg == "" || strings.Contains(msg, "can't find session") {
+		if strings.Contains(msg, "can't find session") || strings.Contains(msg, "no server running") {
 			return false, nil
+		}
+		if msg == "" {
+			return false, fmt.Errorf("tmux has-session %q: %w", name, err)
 		}
 		return false, fmt.Errorf("tmux has-session %q: %w (stderr: %s)", name, err, msg)
 	}
@@ -212,8 +215,14 @@ func (c *Client) KillSession(ctx context.Context, name string) error {
 	err := cmd.Run()
 	if err != nil {
 		// Check if session doesn't exist by trying has-session.
-		// If has-session fails, the session is already gone (success).
-		if !c.HasSession(ctx, name) {
+		// A definite missing session is already gone (success); command or
+		// tmux availability errors must surface so callers do not assume kill
+		// succeeded without liveness evidence.
+		exists, statusErr := c.HasSessionStatus(ctx, name)
+		if statusErr != nil {
+			return fmt.Errorf("failed to kill tmux session %q: verify tmux session liveness: %w", name, statusErr)
+		}
+		if !exists {
 			return nil
 		}
 		return fmt.Errorf("failed to kill tmux session %q: %w", name, err)

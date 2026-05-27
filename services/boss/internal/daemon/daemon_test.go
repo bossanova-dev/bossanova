@@ -63,6 +63,17 @@ func TestRestartSkipsServiceManagerWhenEnvSet(t *testing.T) {
 	}
 }
 
+// TestStopSkipsServiceManagerWhenEnvSet mirrors the Restart test: when the
+// skip-launchctl env is set, Stop must be a no-op rather than shelling out
+// to launchctl/systemctl. Without the env handling, this test would hit the
+// real service manager and either fail or worse, stop a real daemon.
+func TestStopSkipsServiceManagerWhenEnvSet(t *testing.T) {
+	t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+	if err := Stop(); err != nil {
+		t.Fatalf("Stop with skip env: %v", err)
+	}
+}
+
 // TestResolveBossdPath_PrefersExecutableDir verifies that ResolveBossdPath
 // returns the bossd binary that lives next to the running executable,
 // even when a different bossd is also on PATH.

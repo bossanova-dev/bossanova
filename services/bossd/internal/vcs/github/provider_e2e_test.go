@@ -144,12 +144,14 @@ func TestE2E_GitHub_GetPRStatus_AllStates(t *testing.T) {
 		wantState vcs.PRState
 		wantDraft bool
 		// nil = Mergeable unset (UNKNOWN); true/false = expected value.
-		wantMergeable *bool
+		wantMergeable  *bool
+		wantRebaseable *bool
 	}{
-		{"draft", "pr_status_draft.json", vcs.PRStateOpen, true, nil},
-		{"open-checks-running", "pr_status_open_checks_running.json", vcs.PRStateOpen, false, nil},
-		{"mergeable", "pr_status_mergeable.json", vcs.PRStateOpen, false, ptrBool(true)},
-		{"conflict", "pr_status_conflict.json", vcs.PRStateOpen, false, ptrBool(false)},
+		{"draft", "pr_status_draft.json", vcs.PRStateOpen, true, nil, nil},
+		{"open-checks-running", "pr_status_open_checks_running.json", vcs.PRStateOpen, false, nil, nil},
+		{"mergeable", "pr_status_mergeable.json", vcs.PRStateOpen, false, ptrBool(true), ptrBool(true)},
+		{"rebase-conflict", "pr_status_rebase_conflict.json", vcs.PRStateOpen, false, ptrBool(true), ptrBool(false)},
+		{"conflict", "pr_status_conflict.json", vcs.PRStateOpen, false, ptrBool(false), nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,6 +160,12 @@ func TestE2E_GitHub_GetPRStatus_AllStates(t *testing.T) {
 				match:  argsStartWith("pr", "view"),
 				stdout: fixture(t, tc.fixture),
 			})
+			if tc.wantMergeable != nil && *tc.wantMergeable {
+				f.expect(ghResponder{
+					match:  argsStartWith("api", "repos/owner/repo/pulls/42"),
+					stdout: fmt.Sprintf(`{"rebaseable":%t}`, *tc.wantRebaseable),
+				})
+			}
 			p := newProvider(f)
 
 			status, err := p.GetPRStatus(context.Background(), testRepo, 42)
@@ -179,6 +187,17 @@ func TestE2E_GitHub_GetPRStatus_AllStates(t *testing.T) {
 					t.Errorf("Mergeable: got nil, want %v", *tc.wantMergeable)
 				} else if *status.Mergeable != *tc.wantMergeable {
 					t.Errorf("Mergeable: got %v, want %v", *status.Mergeable, *tc.wantMergeable)
+				}
+			}
+			if tc.wantRebaseable == nil {
+				if status.Rebaseable != nil {
+					t.Errorf("Rebaseable: got %v, want nil", *status.Rebaseable)
+				}
+			} else {
+				if status.Rebaseable == nil {
+					t.Errorf("Rebaseable: got nil, want %v", *tc.wantRebaseable)
+				} else if *status.Rebaseable != *tc.wantRebaseable {
+					t.Errorf("Rebaseable: got %v, want %v", *status.Rebaseable, *tc.wantRebaseable)
 				}
 			}
 		})

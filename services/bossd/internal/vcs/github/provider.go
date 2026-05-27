@@ -251,21 +251,22 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 	out, err := p.runGH(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName,headRefOid,reviews",
+		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName,headRefOid,reviewDecision,reviews",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get PR status: %w", err)
 	}
 
 	var raw struct {
-		State       string `json:"state"`
-		Mergeable   string `json:"mergeable"`
-		IsDraft     bool   `json:"isDraft"`
-		Title       string `json:"title"`
-		HeadRefName string `json:"headRefName"`
-		BaseRefName string `json:"baseRefName"`
-		HeadRefOid  string `json:"headRefOid"`
-		Reviews     []struct {
+		State          string `json:"state"`
+		Mergeable      string `json:"mergeable"`
+		IsDraft        bool   `json:"isDraft"`
+		Title          string `json:"title"`
+		HeadRefName    string `json:"headRefName"`
+		BaseRefName    string `json:"baseRefName"`
+		HeadRefOid     string `json:"headRefOid"`
+		ReviewDecision string `json:"reviewDecision"`
+		Reviews        []struct {
 			State string `json:"state"`
 		} `json:"reviews"`
 	}
@@ -286,14 +287,43 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 		m := raw.Mergeable == "MERGEABLE"
 		status.Mergeable = &m
 	}
-	for _, review := range raw.Reviews {
-		state := parseReviewState(review.State)
-		if state != vcs.ReviewStateUnspecified {
-			status.LatestReviewState = state
+	if status.Mergeable != nil && *status.Mergeable {
+		rebaseable, err := p.getPRRebaseable(ctx, repoPath, prID)
+		if err != nil {
+			p.logger.Warn().Err(err).Int("pr", prID).Msg("failed to fetch PR rebaseability")
+		} else {
+			status.Rebaseable = rebaseable
+		}
+	}
+	status.LatestReviewState = parseReviewDecision(raw.ReviewDecision)
+	if status.LatestReviewState == vcs.ReviewStateUnspecified {
+		for _, review := range raw.Reviews {
+			state := parseReviewState(review.State)
+			if state != vcs.ReviewStateUnspecified {
+				status.LatestReviewState = state
+			}
 		}
 	}
 
 	return status, nil
+}
+
+func (p *Provider) getPRRebaseable(ctx context.Context, repoPath string, prID int) (*bool, error) {
+	nwo := repoFlag(repoPath)
+	if _, _, ok := splitNWO(nwo); !ok {
+		return nil, fmt.Errorf("invalid GitHub repo: %s", nwo)
+	}
+	out, err := p.runGH(ctx, "api", fmt.Sprintf("repos/%s/pulls/%d", nwo, prID))
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Rebaseable *bool `json:"rebaseable"`
+	}
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parse PR rebaseability: %w", err)
+	}
+	return raw.Rebaseable, nil
 }
 
 // GetCheckResults returns CI check results for a pull request.
@@ -663,6 +693,17 @@ func (p *Provider) UpdatePRTitle(ctx context.Context, repoPath string, prID int,
 		Msg("updated PR title")
 
 	return nil
+}
+
+func parseReviewDecision(s string) vcs.ReviewState {
+	switch strings.ToUpper(s) {
+	case "APPROVED":
+		return vcs.ReviewStateApproved
+	case "CHANGES_REQUESTED":
+		return vcs.ReviewStateChangesRequested
+	default:
+		return vcs.ReviewStateUnspecified
+	}
 }
 
 // parseReviewState converts a GitHub API review state string to vcs.ReviewState.

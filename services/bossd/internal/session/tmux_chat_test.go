@@ -634,6 +634,136 @@ func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
 	}
 }
 
+func TestReplaceBlockingChatForRepair_KillsTmuxAndMarksRow(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "agent-blocking-finalize"
+	tmuxName := "boss-sess-1-finalize"
+	reason := "auto-repair replacing idle chat after plugin idle gate"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-blocking-finalize",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "$boss-finalize",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+
+	res, err := h.lc.ReplaceBlockingChatForRepair(ctx, "sess-1", agentSessionID, reason)
+	if err != nil {
+		t.Fatalf("ReplaceBlockingChatForRepair: %v", err)
+	}
+	if !res.Reclaimed {
+		t.Fatal("expected Reclaimed=true")
+	}
+	if res.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %q, want %q", res.TmuxSessionName, tmuxName)
+	}
+
+	call := h.findCall("kill-session")
+	if call == nil {
+		t.Fatal("expected tmux kill-session")
+	}
+	if got, want := call.args, []string{"-t", tmuxName}; !slices.Equal(got, want) {
+		t.Fatalf("kill-session args = %q, want %q", got, want)
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName != nil {
+		t.Fatalf("TmuxSessionName = %q, want nil", *chat.TmuxSessionName)
+	}
+	if chat.StartError == nil {
+		t.Fatal("StartError = nil, want replacement reason")
+	}
+	if !strings.Contains(*chat.StartError, "auto-repair replacing idle chat") {
+		t.Fatalf("StartError = %q, want replacement reason", *chat.StartError)
+	}
+}
+
+func TestReplaceBlockingChatForRepair_RefusesLiveRecentRepairChat(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "repair-replace-recent-agent"
+	tmuxName := "boss-repair-replace-recent"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-repair-replace-recent",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "Repair: recent repair",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+	writeRepairChatLogAt(t, h, agentSessionID, time.Now())
+
+	_, err := h.lc.ReplaceBlockingChatForRepair(ctx, "sess-1", agentSessionID, "auto-repair replacing idle chat")
+	if !errors.Is(err, ErrRepairChatActive) {
+		t.Fatalf("ReplaceBlockingChatForRepair error = %v, want ErrRepairChatActive", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Fatalf("tmux session %q was killed without durable stale evidence", tmuxName)
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
+	}
+	if chat.StartError != nil {
+		t.Fatalf("StartError = %q, want nil", *chat.StartError)
+	}
+}
+
+func TestReplaceBlockingChatForRepair_RejectsDifferentSession(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	agentSessionID := "agent-blocking-finalize"
+	tmuxName := "boss-other-session-finalize"
+
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"other-session": {{
+			ID:              "chat-blocking-finalize",
+			SessionID:       "other-session",
+			AgentSessionID:  agentSessionID,
+			AgentName:       "codex",
+			Title:           "$boss-finalize",
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+
+	_, err := h.lc.ReplaceBlockingChatForRepair(ctx, "sess-1", agentSessionID, "auto-repair replacing idle chat")
+	if !errors.Is(err, ErrRepairChatSessionMismatch) {
+		t.Fatalf("error = %v, want ErrRepairChatSessionMismatch", err)
+	}
+	if h.findCall("kill-session") != nil {
+		t.Fatalf("tmux session %q was killed for a different session", tmuxName)
+	}
+	if len(h.chats.markStartFailedCalls) != 0 {
+		t.Fatalf("MarkStartFailed calls = %d, want 0", len(h.chats.markStartFailedCalls))
+	}
+
+	chat, err := h.chats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		t.Fatalf("GetByAgentSessionID: %v", err)
+	}
+	if chat.TmuxSessionName == nil || *chat.TmuxSessionName != tmuxName {
+		t.Fatalf("TmuxSessionName = %v, want %q", chat.TmuxSessionName, tmuxName)
+	}
+	if chat.StartError != nil {
+		t.Fatalf("StartError = %q, want nil", *chat.StartError)
+	}
+}
+
 func TestReclaimRepairChat_RefusesLiveRecentRepairChat(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)

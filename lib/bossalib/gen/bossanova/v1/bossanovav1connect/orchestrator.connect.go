@@ -96,6 +96,18 @@ const (
 	// OrchestratorServiceDisconnectGitHubAppRepoProcedure is the fully-qualified name of the
 	// OrchestratorService's DisconnectGitHubAppRepo RPC.
 	OrchestratorServiceDisconnectGitHubAppRepoProcedure = "/bossanova.v1.OrchestratorService/DisconnectGitHubAppRepo"
+	// OrchestratorServiceGetCloudAccessStatusProcedure is the fully-qualified name of the
+	// OrchestratorService's GetCloudAccessStatus RPC.
+	OrchestratorServiceGetCloudAccessStatusProcedure = "/bossanova.v1.OrchestratorService/GetCloudAccessStatus"
+	// OrchestratorServiceCreateCheckoutSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateCheckoutSession RPC.
+	OrchestratorServiceCreateCheckoutSessionProcedure = "/bossanova.v1.OrchestratorService/CreateCheckoutSession"
+	// OrchestratorServiceCreateBillingPortalSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's CreateBillingPortalSession RPC.
+	OrchestratorServiceCreateBillingPortalSessionProcedure = "/bossanova.v1.OrchestratorService/CreateBillingPortalSession"
+	// OrchestratorServiceRefreshCloudEntitlementsProcedure is the fully-qualified name of the
+	// OrchestratorService's RefreshCloudEntitlements RPC.
+	OrchestratorServiceRefreshCloudEntitlementsProcedure = "/bossanova.v1.OrchestratorService/RefreshCloudEntitlements"
 	// OrchestratorServiceReportBugProcedure is the fully-qualified name of the OrchestratorService's
 	// ReportBug RPC.
 	OrchestratorServiceReportBugProcedure = "/bossanova.v1.OrchestratorService/ReportBug"
@@ -155,6 +167,11 @@ type OrchestratorServiceClient interface {
 	CompleteGitHubAppSetup(context.Context, *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error)
 	ListGitHubAppRepos(context.Context, *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error)
 	DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error)
+	// Cloud billing and access. User-authenticated.
+	GetCloudAccessStatus(context.Context, *connect.Request[v1.GetCloudAccessStatusRequest]) (*connect.Response[v1.GetCloudAccessStatusResponse], error)
+	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
+	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
+	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
 	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -297,6 +314,30 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("DisconnectGitHubAppRepo")),
 			connect.WithClientOptions(opts...),
 		),
+		getCloudAccessStatus: connect.NewClient[v1.GetCloudAccessStatusRequest, v1.GetCloudAccessStatusResponse](
+			httpClient,
+			baseURL+OrchestratorServiceGetCloudAccessStatusProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("GetCloudAccessStatus")),
+			connect.WithClientOptions(opts...),
+		),
+		createCheckoutSession: connect.NewClient[v1.CreateCheckoutSessionRequest, v1.CreateCheckoutSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateCheckoutSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateCheckoutSession")),
+			connect.WithClientOptions(opts...),
+		),
+		createBillingPortalSession: connect.NewClient[v1.CreateBillingPortalSessionRequest, v1.CreateBillingPortalSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceCreateBillingPortalSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("CreateBillingPortalSession")),
+			connect.WithClientOptions(opts...),
+		),
+		refreshCloudEntitlements: connect.NewClient[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceRefreshCloudEntitlementsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("RefreshCloudEntitlements")),
+			connect.WithClientOptions(opts...),
+		),
 		reportBug: connect.NewClient[v1.ReportBugRequest, v1.ReportBugResponse](
 			httpClient,
 			baseURL+OrchestratorServiceReportBugProcedure,
@@ -308,28 +349,32 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 
 // orchestratorServiceClient implements OrchestratorServiceClient.
 type orchestratorServiceClient struct {
-	registerDaemon          *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
-	daemonStream            *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
-	listDaemons             *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
-	transferSession         *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
-	proxyListSessions       *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
-	proxyGetSession         *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
-	proxyAttachSession      *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
-	proxyStopSession        *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
-	proxyPauseSession       *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
-	proxyResumeSession      *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
-	proxyWakeChat           *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
-	proxyStreamChats        *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
-	issueAttachToken        *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
-	terminalStream          *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
-	createWebhookConfig     *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
-	listWebhookConfigs      *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
-	deleteWebhookConfig     *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
-	getGitHubAppInstallURL  *connect.Client[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse]
-	completeGitHubAppSetup  *connect.Client[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse]
-	listGitHubAppRepos      *connect.Client[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse]
-	disconnectGitHubAppRepo *connect.Client[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse]
-	reportBug               *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
+	registerDaemon             *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
+	daemonStream               *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
+	listDaemons                *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
+	transferSession            *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
+	proxyListSessions          *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
+	proxyGetSession            *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
+	proxyAttachSession         *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
+	proxyStopSession           *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
+	proxyPauseSession          *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
+	proxyResumeSession         *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
+	proxyWakeChat              *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
+	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
+	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
+	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
+	createWebhookConfig        *connect.Client[v1.CreateWebhookConfigRequest, v1.CreateWebhookConfigResponse]
+	listWebhookConfigs         *connect.Client[v1.ListWebhookConfigsRequest, v1.ListWebhookConfigsResponse]
+	deleteWebhookConfig        *connect.Client[v1.DeleteWebhookConfigRequest, v1.DeleteWebhookConfigResponse]
+	getGitHubAppInstallURL     *connect.Client[v1.GetGitHubAppInstallURLRequest, v1.GetGitHubAppInstallURLResponse]
+	completeGitHubAppSetup     *connect.Client[v1.CompleteGitHubAppSetupRequest, v1.CompleteGitHubAppSetupResponse]
+	listGitHubAppRepos         *connect.Client[v1.ListGitHubAppReposRequest, v1.ListGitHubAppReposResponse]
+	disconnectGitHubAppRepo    *connect.Client[v1.DisconnectGitHubAppRepoRequest, v1.DisconnectGitHubAppRepoResponse]
+	getCloudAccessStatus       *connect.Client[v1.GetCloudAccessStatusRequest, v1.GetCloudAccessStatusResponse]
+	createCheckoutSession      *connect.Client[v1.CreateCheckoutSessionRequest, v1.CreateCheckoutSessionResponse]
+	createBillingPortalSession *connect.Client[v1.CreateBillingPortalSessionRequest, v1.CreateBillingPortalSessionResponse]
+	refreshCloudEntitlements   *connect.Client[v1.RefreshCloudEntitlementsRequest, v1.RefreshCloudEntitlementsResponse]
+	reportBug                  *connect.Client[v1.ReportBugRequest, v1.ReportBugResponse]
 }
 
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
@@ -437,6 +482,26 @@ func (c *orchestratorServiceClient) DisconnectGitHubAppRepo(ctx context.Context,
 	return c.disconnectGitHubAppRepo.CallUnary(ctx, req)
 }
 
+// GetCloudAccessStatus calls bossanova.v1.OrchestratorService.GetCloudAccessStatus.
+func (c *orchestratorServiceClient) GetCloudAccessStatus(ctx context.Context, req *connect.Request[v1.GetCloudAccessStatusRequest]) (*connect.Response[v1.GetCloudAccessStatusResponse], error) {
+	return c.getCloudAccessStatus.CallUnary(ctx, req)
+}
+
+// CreateCheckoutSession calls bossanova.v1.OrchestratorService.CreateCheckoutSession.
+func (c *orchestratorServiceClient) CreateCheckoutSession(ctx context.Context, req *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error) {
+	return c.createCheckoutSession.CallUnary(ctx, req)
+}
+
+// CreateBillingPortalSession calls bossanova.v1.OrchestratorService.CreateBillingPortalSession.
+func (c *orchestratorServiceClient) CreateBillingPortalSession(ctx context.Context, req *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error) {
+	return c.createBillingPortalSession.CallUnary(ctx, req)
+}
+
+// RefreshCloudEntitlements calls bossanova.v1.OrchestratorService.RefreshCloudEntitlements.
+func (c *orchestratorServiceClient) RefreshCloudEntitlements(ctx context.Context, req *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error) {
+	return c.refreshCloudEntitlements.CallUnary(ctx, req)
+}
+
 // ReportBug calls bossanova.v1.OrchestratorService.ReportBug.
 func (c *orchestratorServiceClient) ReportBug(ctx context.Context, req *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {
 	return c.reportBug.CallUnary(ctx, req)
@@ -496,6 +561,11 @@ type OrchestratorServiceHandler interface {
 	CompleteGitHubAppSetup(context.Context, *connect.Request[v1.CompleteGitHubAppSetupRequest]) (*connect.Response[v1.CompleteGitHubAppSetupResponse], error)
 	ListGitHubAppRepos(context.Context, *connect.Request[v1.ListGitHubAppReposRequest]) (*connect.Response[v1.ListGitHubAppReposResponse], error)
 	DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error)
+	// Cloud billing and access. User-authenticated.
+	GetCloudAccessStatus(context.Context, *connect.Request[v1.GetCloudAccessStatusRequest]) (*connect.Response[v1.GetCloudAccessStatusResponse], error)
+	CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error)
+	CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error)
+	RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error)
 	// Bug reporting (easter-egg ctrl+b in TUI). Unauthenticated; optionally
 	// resolves the caller's identity when a bearer token is present.
 	ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error)
@@ -634,6 +704,30 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("DisconnectGitHubAppRepo")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceGetCloudAccessStatusHandler := connect.NewUnaryHandler(
+		OrchestratorServiceGetCloudAccessStatusProcedure,
+		svc.GetCloudAccessStatus,
+		connect.WithSchema(orchestratorServiceMethods.ByName("GetCloudAccessStatus")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceCreateCheckoutSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateCheckoutSessionProcedure,
+		svc.CreateCheckoutSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateCheckoutSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceCreateBillingPortalSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceCreateBillingPortalSessionProcedure,
+		svc.CreateBillingPortalSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("CreateBillingPortalSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceRefreshCloudEntitlementsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceRefreshCloudEntitlementsProcedure,
+		svc.RefreshCloudEntitlements,
+		connect.WithSchema(orchestratorServiceMethods.ByName("RefreshCloudEntitlements")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceReportBugHandler := connect.NewUnaryHandler(
 		OrchestratorServiceReportBugProcedure,
 		svc.ReportBug,
@@ -684,6 +778,14 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceListGitHubAppReposHandler.ServeHTTP(w, r)
 		case OrchestratorServiceDisconnectGitHubAppRepoProcedure:
 			orchestratorServiceDisconnectGitHubAppRepoHandler.ServeHTTP(w, r)
+		case OrchestratorServiceGetCloudAccessStatusProcedure:
+			orchestratorServiceGetCloudAccessStatusHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateCheckoutSessionProcedure:
+			orchestratorServiceCreateCheckoutSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceCreateBillingPortalSessionProcedure:
+			orchestratorServiceCreateBillingPortalSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceRefreshCloudEntitlementsProcedure:
+			orchestratorServiceRefreshCloudEntitlementsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceReportBugProcedure:
 			orchestratorServiceReportBugHandler.ServeHTTP(w, r)
 		default:
@@ -777,6 +879,22 @@ func (UnimplementedOrchestratorServiceHandler) ListGitHubAppRepos(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) DisconnectGitHubAppRepo(context.Context, *connect.Request[v1.DisconnectGitHubAppRepoRequest]) (*connect.Response[v1.DisconnectGitHubAppRepoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.DisconnectGitHubAppRepo is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) GetCloudAccessStatus(context.Context, *connect.Request[v1.GetCloudAccessStatusRequest]) (*connect.Response[v1.GetCloudAccessStatusResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.GetCloudAccessStatus is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CreateCheckoutSession(context.Context, *connect.Request[v1.CreateCheckoutSessionRequest]) (*connect.Response[v1.CreateCheckoutSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateCheckoutSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) CreateBillingPortalSession(context.Context, *connect.Request[v1.CreateBillingPortalSessionRequest]) (*connect.Response[v1.CreateBillingPortalSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.CreateBillingPortalSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) RefreshCloudEntitlements(context.Context, *connect.Request[v1.RefreshCloudEntitlementsRequest]) (*connect.Response[v1.RefreshCloudEntitlementsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RefreshCloudEntitlements is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ReportBug(context.Context, *connect.Request[v1.ReportBugRequest]) (*connect.Response[v1.ReportBugResponse], error) {

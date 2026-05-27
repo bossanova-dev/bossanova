@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -53,6 +55,32 @@ func TestSessionEventEmitter_EmitsOnePerSessionPerEvent(t *testing.T) {
 	}
 	if len(wantSessionIDs) != 0 {
 		t.Fatalf("missing session IDs: %v", wantSessionIDs)
+	}
+}
+
+func TestSessionEventEmitterLogsMatchedSessions(t *testing.T) {
+	ctx := context.Background()
+	lookup := fakeSessionLookup{
+		sessions: []SessionForPR{{ID: "s1"}, {ID: "s2"}},
+	}
+	ch := make(chan SessionEvent, 4)
+	var logs bytes.Buffer
+	emitter := NewSessionEventEmitter(lookup, ch, zerolog.New(&logs))
+
+	if err := emitter.EmitForPR(ctx, "https://github.com/owner/repo", 42, []vcs.Event{vcs.PRClosed{PRID: 42}}); err != nil {
+		t.Fatalf("EmitForPR returned error: %v", err)
+	}
+
+	got := logs.String()
+	for _, want := range []string{
+		`"repo_origin_url":"https://github.com/owner/repo"`,
+		`"pr_number":42`,
+		`"sessions_matched":2`,
+		`"event_count":1`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log output missing %s: %s", want, got)
+		}
 	}
 }
 

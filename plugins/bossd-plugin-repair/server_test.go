@@ -166,6 +166,14 @@ func (m *mockHostClient) snapshot() (startCalls, waitCalls, fireCalls int, setRe
 	return m.startCalls, m.waitCalls, m.fireEventCalls, out
 }
 
+func (m *mockHostClient) startRequestsSnapshot() []*bossanovav1.StartChatRunHostRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*bossanovav1.StartChatRunHostRequest, len(m.startReqs))
+	copy(out, m.startReqs)
+	return out
+}
+
 func newTestMonitor(mock *mockHostClient) *repairMonitor {
 	rm := newRepairMonitor(mock, zerolog.Nop())
 	rm.stopped = false
@@ -197,7 +205,7 @@ func TestRepairSession_HappyPath(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "session-name",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
 	require.Equal(t, 1, startCalls, "StartChatRun called once")
@@ -228,7 +236,7 @@ func TestRepairSession_AlreadyExists(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	_, waitCalls, fireCalls, setRepair := mock.snapshot()
 	assert.Equal(t, 0, waitCalls, "WaitChatRun must not be called when StartChatRun returned AlreadyExists")
@@ -256,7 +264,7 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimRefusedSoftSkips(t *testing.T)
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{})
 
 	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
 	require.Equal(t, 1, startCalls)
@@ -292,7 +300,7 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimSuccessRetriesOnce(t *testing.
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{})
 
 	startCalls, waitCalls, _, setRepair := mock.snapshot()
 	require.Equal(t, 2, startCalls)
@@ -317,7 +325,7 @@ func TestRepairSession_RecordsOutcomeOnRunnerFailure(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	require.Len(t, mock.recordOutcomeReqs, 1, "runner failure must be recorded once")
 	got := mock.recordOutcomeReqs[0]
@@ -345,7 +353,7 @@ func TestRepairSession_RecordsOutcomeOnAgentExitError(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	require.Len(t, mock.recordOutcomeReqs, 1, "exit-error path must be recorded")
 	got := mock.recordOutcomeReqs[0]
@@ -370,7 +378,7 @@ func TestRepairSession_RunReturnsExitError(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	_, _, fireCalls, setRepair := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "no FIX_COMPLETE on failed run")
@@ -395,7 +403,7 @@ func TestRepairSession_WaitChatRunTimeoutDoesNotRecordAttemptedHead(t *testing.T
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	rm.mu.Lock()
 	lastAttemptCommit := rm.lastAttemptCommit["s1"]
@@ -417,7 +425,7 @@ func TestRepairSession_NotInFixingChecks(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	_, _, fireCalls, _ := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "FIX_COMPLETE only fires in FIXING_CHECKS")
@@ -430,7 +438,7 @@ func TestRepairSession_WaitErrorSkipsFireEvent(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123")
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
 
 	_, _, fireCalls, _ := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "no FIX_COMPLETE when WaitChatRun errored")
@@ -969,6 +977,63 @@ func TestMaybeRepair_FiresWhenChatActiveButQuietPastThreshold(t *testing.T) {
 		c, _, _, _ := mock.snapshot()
 		return c > 0
 	}, "StartChatRun should fire when chat has been idle past threshold")
+}
+
+func TestMaybeRepair_RequestsReplacementWhenActiveChatIdlePastThreshold(t *testing.T) {
+	mock := newTestMock()
+	agentSessionID := "agent-finalize"
+	stale := timestamppb.New(time.Now().Add(-10 * time.Minute))
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                 "s1",
+			Title:              "Improve conflict detection",
+			State:              bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			AgentSessionId:     &agentSessionID,
+			HasActiveChat:      true,
+			LastChatActivityAt: stale,
+		},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{IdleRepairThresholdMinutes: 5}
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false)
+
+	waitFor(t, func() bool {
+		reqs := mock.startRequestsSnapshot()
+		return len(reqs) == 1
+	}, "StartChatRun called")
+
+	reqs := mock.startRequestsSnapshot()
+	require.Len(t, reqs, 1)
+	require.True(t, reqs[0].GetReplaceExistingChat())
+	require.Contains(t, reqs[0].GetReplaceExistingReason(), "auto-repair replacing idle chat")
+	require.Equal(t, stale.AsTime(), reqs[0].GetReplaceExistingObservedLastChatActivityAt().AsTime())
+	require.Equal(t, "Repair: Improve conflict detection", reqs[0].GetTitle())
+}
+
+func TestMaybeRepair_DoesNotRequestReplacementWhenActiveChatRecent(t *testing.T) {
+	mock := newTestMock()
+	agentSessionID := "agent-finalize"
+	recent := timestamppb.New(time.Now().Add(-2 * time.Second))
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                 "s1",
+			Title:              "Improve conflict detection",
+			State:              bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			AgentSessionId:     &agentSessionID,
+			HasActiveChat:      true,
+			LastChatActivityAt: recent,
+		},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{IdleRepairThresholdMinutes: 5}
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	require.Zero(t, startCalls)
+	require.Empty(t, mock.startRequestsSnapshot())
 }
 
 func TestMaybeRepair_RespectsCustomIdleThreshold(t *testing.T) {

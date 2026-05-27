@@ -281,6 +281,35 @@ func (c *RemoteClient) NotifyAuthChange(_ context.Context, _ string) error {
 	return nil // no-op in remote mode
 }
 
+// --- Cloud Billing ---
+
+func (c *RemoteClient) GetCloudAccessStatus(ctx context.Context) (*pb.CloudAccessStatus, error) {
+	resp, err := c.rpc.GetCloudAccessStatus(ctx, connect.NewRequest(&pb.GetCloudAccessStatusRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetStatus(), nil
+}
+
+func (c *RemoteClient) CreateCheckoutSession(ctx context.Context, returnURL, cancelURL string) (string, error) {
+	resp, err := c.rpc.CreateCheckoutSession(ctx, connect.NewRequest(&pb.CreateCheckoutSessionRequest{
+		ReturnUrl: returnURL,
+		CancelUrl: cancelURL,
+	}))
+	if err != nil {
+		return "", err
+	}
+	return resp.Msg.GetUrl(), nil
+}
+
+func (c *RemoteClient) RefreshCloudEntitlements(ctx context.Context) (*pb.CloudAccessStatus, error) {
+	resp, err := c.rpc.RefreshCloudEntitlements(ctx, connect.NewRequest(&pb.RefreshCloudEntitlementsRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetStatus(), nil
+}
+
 // --- Cron Jobs (local only) ---
 
 func (c *RemoteClient) CreateCronJob(_ context.Context, _ *pb.CreateCronJobRequest) (*pb.CronJob, error) {

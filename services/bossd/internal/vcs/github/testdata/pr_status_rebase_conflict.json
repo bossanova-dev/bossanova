@@ -1,0 +1,10 @@
+{
+  "state": "OPEN",
+  "mergeable": "MERGEABLE",
+  "isDraft": false,
+  "title": "Add dark mode support",
+  "headRefName": "feature/dark-mode",
+  "baseRefName": "main",
+  "headRefOid": "abc123def456",
+  "reviews": []
+}

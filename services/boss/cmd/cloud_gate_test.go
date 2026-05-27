@@ -1,0 +1,415 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"connectrpc.com/connect"
+	"github.com/recurser/boss/internal/client"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
+	"github.com/spf13/cobra"
+)
+
+type fakeCloudAccessClient struct {
+	status      *pb.CloudAccessStatus
+	statusErr   error
+	checkoutErr error
+	checkoutURL string
+	statusCalls int
+	checkouts   int
+}
+
+func (f *fakeCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudAccessStatus, error) {
+	f.statusCalls++
+	if f.statusErr != nil {
+		return nil, f.statusErr
+	}
+	return f.status, nil
+}
+
+func (f *fakeCloudAccessClient) CreateCheckoutSession(context.Context, string, string) (string, error) {
+	f.checkouts++
+	if f.checkoutErr != nil {
+		return "", f.checkoutErr
+	}
+	return f.checkoutURL, nil
+}
+
+func (f *fakeCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.CloudAccessStatus, error) {
+	return f.status, nil
+}
+
+func TestLoginCloudGate(t *testing.T) {
+	t.Run("unpaid status opens checkout and leaves local sessions available", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{
+			status: &pb.CloudAccessStatus{
+				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			},
+			checkoutURL: "https://billing.example.test/checkout",
+		}
+
+		var opened string
+		origOpen := openCloudCheckoutURL
+		openCloudCheckoutURL = func(url string) error {
+			opened = url
+			return nil
+		}
+		defer func() { openCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		runLoginCloudGate(context.Background(), fake, &out)
+
+		if opened != fake.checkoutURL {
+			t.Fatalf("opened URL = %q, want %q", opened, fake.checkoutURL)
+		}
+		if fake.checkouts != 1 {
+			t.Fatalf("checkout calls = %d, want 1", fake.checkouts)
+		}
+		assertCloudGateMessage(t, out.String())
+	})
+
+	t.Run("declined checkout keeps local sessions available", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{
+			status: &pb.CloudAccessStatus{
+				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_CANCELED,
+			},
+			checkoutURL: "https://billing.example.test/retry",
+		}
+
+		origOpen := openCloudCheckoutURL
+		openCloudCheckoutURL = func(string) error {
+			return errors.New("browser declined")
+		}
+		defer func() { openCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		runLoginCloudGate(context.Background(), fake, &out)
+
+		assertCloudGateMessage(t, out.String())
+	})
+
+	t.Run("active status does not show gate", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{
+			status: &pb.CloudAccessStatus{
+				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE,
+			},
+			checkoutURL: "https://billing.example.test/checkout",
+		}
+
+		opened := false
+		origOpen := openCloudCheckoutURL
+		openCloudCheckoutURL = func(string) error {
+			opened = true
+			return nil
+		}
+		defer func() { openCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		runLoginCloudGate(context.Background(), fake, &out)
+
+		if opened {
+			t.Fatal("checkout opened for active access")
+		}
+		if fake.checkouts != 0 {
+			t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+		}
+		if strings.Contains(out.String(), "Bossanova Cloud requires an active subscription.") {
+			t.Fatalf("gate message shown for active access: %q", out.String())
+		}
+	})
+
+	t.Run("status lookup failure leaves local sessions available without checkout", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{
+			statusErr:   errors.New("billing unavailable"),
+			checkoutURL: "https://billing.example.test/checkout",
+		}
+
+		opened := false
+		origOpen := openCloudCheckoutURL
+		openCloudCheckoutURL = func(string) error {
+			opened = true
+			return nil
+		}
+		defer func() { openCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		runLoginCloudGate(context.Background(), fake, &out)
+
+		if opened {
+			t.Fatal("checkout opened after status lookup failure")
+		}
+		if fake.checkouts != 0 {
+			t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+		}
+		if !strings.Contains(out.String(), "Cloud access status unavailable") {
+			t.Fatalf("output %q missing cloud status warning", out.String())
+		}
+		assertCloudGateMessage(t, out.String())
+	})
+
+	t.Run("checkout failure leaves local sessions available without opening browser", func(t *testing.T) {
+		fake := &fakeCloudAccessClient{
+			status: &pb.CloudAccessStatus{
+				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			},
+			checkoutErr: errors.New("checkout unavailable"),
+		}
+
+		opened := false
+		origOpen := openCloudCheckoutURL
+		openCloudCheckoutURL = func(string) error {
+			opened = true
+			return nil
+		}
+		defer func() { openCloudCheckoutURL = origOpen }()
+
+		var out bytes.Buffer
+		runLoginCloudGate(context.Background(), fake, &out)
+
+		if opened {
+			t.Fatal("checkout opened after checkout session failure")
+		}
+		if fake.checkouts != 1 {
+			t.Fatalf("checkout calls = %d, want 1", fake.checkouts)
+		}
+		if !strings.Contains(out.String(), "Cloud checkout unavailable") {
+			t.Fatalf("output %q missing checkout warning", out.String())
+		}
+		assertCloudGateMessage(t, out.String())
+	})
+}
+
+func TestLoginCloudGateCapturesBillingTelemetry(t *testing.T) {
+	enableCommandTelemetryForTest(t)
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State:       pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+			WorkosOrgId: "org_123",
+			AccountId:   "acct_internal",
+			Message:     "Choose a plan.",
+		},
+		checkoutURL: "https://billing.example.test/checkout?session_id=cs_secret",
+	}
+	rec := &fakeTelemetry{}
+
+	origOpen := openCloudCheckoutURL
+	openCloudCheckoutURL = func(string) error {
+		return nil
+	}
+	defer func() { openCloudCheckoutURL = origOpen }()
+
+	var out bytes.Buffer
+	checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
+
+	if len(rec.events) != 2 {
+		t.Fatalf("events = %d, want 2", len(rec.events))
+	}
+	if rec.events[0] != telemetry.EventCloudAccessDenied {
+		t.Fatalf("event[0] = %q, want %q", rec.events[0], telemetry.EventCloudAccessDenied)
+	}
+	if rec.events[1] != telemetry.EventCloudCheckoutStarted {
+		t.Fatalf("event[1] = %q, want %q", rec.events[1], telemetry.EventCloudCheckoutStarted)
+	}
+	wantProps := map[string]any{
+		"product_area":       "billing",
+		"cloud_access_state": "needs_subscription",
+		"workos_org_id":      "org_123",
+		"entry_point":        "cli_login",
+		"denial_reason":      "subscription_required",
+	}
+	for _, props := range rec.props {
+		for key, want := range wantProps {
+			if got := props[key]; got != want {
+				t.Fatalf("prop %q = %v, want %v in %v", key, got, want, props)
+			}
+		}
+		for _, forbidden := range []string{"account_id", "message", "checkout_url", "session_id", "access_token", "refresh_token"} {
+			if _, ok := props[forbidden]; ok {
+				t.Fatalf("forbidden prop %q present in %v", forbidden, props)
+			}
+		}
+	}
+}
+
+func TestLoginCloudGateAllowsBillingUnavailable(t *testing.T) {
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE,
+		},
+	}
+
+	var out bytes.Buffer
+	if !checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, nil) {
+		t.Fatal("billing unavailable gate returned false, want true")
+	}
+	if fake.checkouts != 0 {
+		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+	}
+}
+
+func TestLoginCloudGateAllowsUnavailableStatusError(t *testing.T) {
+	fake := &fakeCloudAccessClient{
+		statusErr:   connect.NewError(connect.CodeUnavailable, errors.New("billing unavailable")),
+		checkoutURL: "https://billing.example.test/checkout",
+	}
+
+	var out bytes.Buffer
+	if !checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, nil) {
+		t.Fatal("unavailable status error gate returned false, want true")
+	}
+	if fake.checkouts != 0 {
+		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+	}
+	if strings.Contains(out.String(), cloudGateMessage) {
+		t.Fatalf("gate message shown for unavailable status error: %q", out.String())
+	}
+}
+
+func TestLoginCloudGateSkipsCheckoutWhenEntitlementPending(t *testing.T) {
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+		},
+	}
+
+	var out bytes.Buffer
+	if checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, nil) {
+		t.Fatal("pending entitlement gate returned true, want false")
+	}
+	if fake.checkouts != 0 {
+		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
+	}
+	assertCloudGateMessage(t, out.String())
+}
+
+func TestRemoteCloudAccess(t *testing.T) {
+	fake := &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PAST_DUE,
+		},
+	}
+
+	err := requireActiveCloudAccess(context.Background(), fake)
+	if err == nil {
+		t.Fatal("expected inactive cloud access error")
+	}
+	assertCloudGateMessage(t, err.Error())
+
+	fake.status = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE,
+	}
+	if err := requireActiveCloudAccess(context.Background(), fake); err != nil {
+		t.Fatalf("active cloud access returned error: %v", err)
+	}
+
+	fake.status = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE,
+	}
+	if err := requireActiveCloudAccess(context.Background(), fake); err != nil {
+		t.Fatalf("billing unavailable cloud access returned error: %v", err)
+	}
+
+	fake.statusErr = connect.NewError(connect.CodeUnavailable, errors.New("billing unavailable"))
+	if err := requireActiveCloudAccess(context.Background(), fake); err != nil {
+		t.Fatalf("unavailable cloud access status returned error: %v", err)
+	}
+}
+
+func TestCloudURLUsesCloudOverride(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_URL", "https://cloud.example.test")
+	t.Setenv("BOSS_REPORT_URL", "https://reports.example.test")
+
+	if got := cloudURL(nil); got != "https://cloud.example.test" {
+		t.Fatalf("cloudURL() = %q, want cloud override", got)
+	}
+}
+
+func TestRemoteCloudAccessBypassesDaemonPreflight(t *testing.T) {
+	err := requireActiveCloudAccess(context.Background(), &fakeCloudAccessClient{
+		status: &pb.CloudAccessStatus{
+			State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected inactive cloud access error")
+	}
+
+	waitCalled := false
+	_, gotErr := handleClientStartupError(nil, err, func() (client.BossClient, error) {
+		waitCalled = true
+		return nil, errors.New("daemon preflight")
+	})
+	if waitCalled {
+		t.Fatal("daemon preflight fallback was invoked for cloud access denial")
+	}
+	if gotErr == nil {
+		t.Fatal("expected cloud access error")
+	}
+	assertCloudGateMessage(t, gotErr.Error())
+}
+
+func TestRemoteCloudAccessStatusErrorBypassesDaemonPreflight(t *testing.T) {
+	err := requireActiveCloudAccess(context.Background(), &fakeCloudAccessClient{
+		statusErr: errors.New("status rpc unavailable"),
+	})
+	if err == nil {
+		t.Fatal("expected cloud access status error")
+	}
+
+	waitCalled := false
+	_, gotErr := handleClientStartupError(nil, err, func() (client.BossClient, error) {
+		waitCalled = true
+		return nil, errors.New("daemon preflight")
+	})
+	if waitCalled {
+		t.Fatal("daemon preflight fallback was invoked for cloud status error")
+	}
+	if gotErr == nil {
+		t.Fatal("expected cloud status error")
+	}
+	if !strings.Contains(gotErr.Error(), "Bossanova Cloud status unavailable: status rpc unavailable") {
+		t.Fatalf("error = %q", gotErr.Error())
+	}
+	if !strings.Contains(gotErr.Error(), "Local sessions are still available.") {
+		t.Fatalf("error = %q missing local fallback", gotErr.Error())
+	}
+}
+
+func TestRemoteStartupErrorBypassesDaemonPreflight(t *testing.T) {
+	startupErr := errors.New("auth: no stored credentials")
+	waitCalled := false
+
+	_, gotErr := handleClientStartupError(remoteTestCommand(t), startupErr, func() (client.BossClient, error) {
+		waitCalled = true
+		return nil, errors.New("daemon preflight")
+	})
+	if waitCalled {
+		t.Fatal("daemon preflight fallback was invoked for remote startup error")
+	}
+	if !errors.Is(gotErr, startupErr) {
+		t.Fatalf("error = %v, want %v", gotErr, startupErr)
+	}
+}
+
+func remoteTestCommand(t *testing.T) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "boss"}
+	cmd.Flags().String("remote", "https://orchestrator.example.test", "")
+	return cmd
+}
+
+func assertCloudGateMessage(t *testing.T, got string) {
+	t.Helper()
+	for _, want := range []string{
+		"Bossanova Cloud requires an active subscription.",
+		"Local sessions are still available.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output %q missing %q", got, want)
+		}
+	}
+}

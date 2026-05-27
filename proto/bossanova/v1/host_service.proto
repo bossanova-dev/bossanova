@@ -5,6 +5,7 @@ package bossanova.v1;
 option go_package = "github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1";
 
 import "bossanova/v1/models.proto";
+import "google/protobuf/timestamp.proto";
 
 // HostService is served by the daemon and called by plugins to access VCS data.
 // This enables the bidirectional gRPC pattern where the plugin can query the
@@ -214,6 +215,19 @@ message StartChatRunHostRequest {
   // The daemon formats it using the loaded AgentRunner plugin's command_prefix.
   // Mutually exclusive with prompt.
   string command = 4;
+
+  // When true, bossd may replace an existing live chat in the same session
+  // before starting this run. Used by auto-repair only after its idle gate
+  // has already decided the existing chat is safe to interrupt.
+  bool replace_existing_chat = 5;
+
+  // Durable reason written to the replaced chat row.
+  string replace_existing_reason = 6;
+
+  // Last chat activity observed by the repair plugin when it decided the
+  // blocking chat was idle. bossd refuses replacement if the current blocking
+  // chat has produced newer output since that snapshot.
+  google.protobuf.Timestamp replace_existing_observed_last_chat_activity_at = 7;
 }
 
 message StartChatRunHostResponse {

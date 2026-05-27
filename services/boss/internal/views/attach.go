@@ -255,8 +255,15 @@ func (m AttachModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.returned = true
 		m.agentErr = msg.err
-		// Auto-detach back to home screen.
-		m.detach = true
+		// Clean exits auto-bounce back to the chat picker so the user
+		// doesn't have to press esc to dismiss an empty "session ended"
+		// screen. Error exits hold the screen so the failure is readable
+		// — otherwise an immediately-failing tmux attach (e.g. session
+		// torn down by another bossd) looks like the chat just refuses
+		// to open, with no clue why.
+		if msg.err == nil {
+			m.detach = true
+		}
 		// Best-effort: update chat title from JSONL and report stopped status.
 		return m, tea.Batch(m.updateChatTitle(), m.reportStopped())
 

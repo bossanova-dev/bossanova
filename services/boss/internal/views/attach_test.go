@@ -156,6 +156,46 @@ func TestAttach_StartExecCompletesLaunch(t *testing.T) {
 	}
 }
 
+// TestAttach_AgentFinishedCleanExitAutoDetaches verifies that when the
+// agent process exits cleanly (no error), the model auto-detaches so the
+// user lands back on the chat picker without an extra esc press.
+func TestAttach_AgentFinishedCleanExitAutoDetaches(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+
+	updated, _ := m.Update(agentFinishedMsg{err: nil, detached: false})
+	got := updated.(AttachModel)
+
+	if !got.detach {
+		t.Fatal("detach = false after clean agent exit, want true (auto-detach to chat picker)")
+	}
+	if !got.returned {
+		t.Fatal("returned = false after clean agent exit, want true")
+	}
+}
+
+// TestAttach_AgentFinishedErrorHoldsScreen verifies that when the agent
+// process exits with an error (e.g. tmux attach failed because the
+// session was torn down), the model leaves detach = false so View()
+// renders the "exited with error" screen. Without this, the user would
+// be auto-bounced back to the chat picker and never see the failure.
+func TestAttach_AgentFinishedErrorHoldsScreen(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+
+	failure := &exec.ExitError{}
+	updated, _ := m.Update(agentFinishedMsg{err: failure, detached: false})
+	got := updated.(AttachModel)
+
+	if got.detach {
+		t.Fatal("detach = true after agent error exit, want false (so View renders the error and the user can read it before pressing esc)")
+	}
+	if !got.returned {
+		t.Fatal("returned = false after agent error exit, want true")
+	}
+	if got.agentErr != failure {
+		t.Fatalf("agentErr = %v, want %v", got.agentErr, failure)
+	}
+}
+
 // TestAttach_StartExecAfterDetachIsNoop verifies that if the user has
 // already pressed esc (m.detach = true) while we were waiting on the
 // launching-display tick, the eventual startExecMsg does not relaunch

@@ -52,6 +52,7 @@ const (
 type PRStatus struct {
 	State             PRState
 	Mergeable         *bool
+	Rebaseable        *bool
 	Draft             bool
 	Title             string
 	HeadBranch        string

@@ -379,6 +379,20 @@ func (c *LocalClient) NotifyAuthChange(ctx context.Context, action string) error
 	return err
 }
 
+// --- Cloud Billing (remote only) ---
+
+func (c *LocalClient) GetCloudAccessStatus(_ context.Context) (*pb.CloudAccessStatus, error) {
+	return nil, errLocalOnly("cloud billing")
+}
+
+func (c *LocalClient) CreateCheckoutSession(_ context.Context, _, _ string) (string, error) {
+	return "", errLocalOnly("cloud billing")
+}
+
+func (c *LocalClient) RefreshCloudEntitlements(_ context.Context) (*pb.CloudAccessStatus, error) {
+	return nil, errLocalOnly("cloud billing")
+}
+
 // --- Cron Jobs ---
 
 func (c *LocalClient) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {

@@ -471,7 +471,7 @@ func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessi
 		}
 		tmuxAlive, tmuxErr := l.tmux.HasSessionStatus(ctx, result.TmuxSessionName)
 		if tmuxErr != nil {
-			return ReclaimRepairChatResult{}, fmt.Errorf("%w: cannot verify tmux session %s liveness: %v", ErrRepairChatActive, result.TmuxSessionName, tmuxErr)
+			return ReclaimRepairChatResult{}, fmt.Errorf("%w: cannot verify tmux session %s liveness: %w", ErrRepairChatActive, result.TmuxSessionName, tmuxErr)
 		}
 		if tmuxAlive {
 			stale, staleReason, staleErr := l.repairChatStaleForReclaim(chat)
@@ -489,6 +489,67 @@ func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessi
 				Msg("repair chat is stale enough to reclaim")
 			if err := l.tmux.KillSession(ctx, result.TmuxSessionName); err != nil {
 				return ReclaimRepairChatResult{}, fmt.Errorf("kill repair tmux session %s: %w", result.TmuxSessionName, err)
+			}
+		}
+	}
+	if err := l.agentChats.MarkStartFailed(ctx, agentSessionID, reason); err != nil {
+		return ReclaimRepairChatResult{}, err
+	}
+	return result, nil
+}
+
+func (l *Lifecycle) ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {
+	if sessionID == "" {
+		return ReclaimRepairChatResult{}, fmt.Errorf("session_id is required")
+	}
+	if agentSessionID == "" {
+		return ReclaimRepairChatResult{}, fmt.Errorf("agent_session_id is required")
+	}
+	if l.agentChats == nil {
+		return ReclaimRepairChatResult{}, fmt.Errorf("agent chat store not configured")
+	}
+
+	chat, err := l.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil {
+		return ReclaimRepairChatResult{}, err
+	}
+	if chat == nil {
+		return ReclaimRepairChatResult{}, fmt.Errorf("agent chat not found for agent_session_id %q", agentSessionID)
+	}
+	if chat.SessionID != sessionID {
+		return ReclaimRepairChatResult{}, fmt.Errorf("%w: chat session %s requested session %s", ErrRepairChatSessionMismatch, chat.SessionID, sessionID)
+	}
+
+	result := ReclaimRepairChatResult{Reclaimed: true}
+	if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
+		result.TmuxSessionName = *chat.TmuxSessionName
+		if l.tmux == nil {
+			return ReclaimRepairChatResult{}, fmt.Errorf("%w: tmux client not configured; cannot verify blocking chat %s is dead", ErrRepairChatActive, result.TmuxSessionName)
+		}
+		tmuxAlive, tmuxErr := l.tmux.HasSessionStatus(ctx, result.TmuxSessionName)
+		if tmuxErr != nil {
+			return ReclaimRepairChatResult{}, fmt.Errorf("%w: cannot verify tmux session %s liveness: %w", ErrRepairChatActive, result.TmuxSessionName, tmuxErr)
+		}
+		if tmuxAlive {
+			killReason := reason
+			if IsRepairChatTitle(chat.Title) {
+				stale, staleReason, staleErr := l.repairChatStaleForReclaim(chat)
+				if staleErr != nil {
+					return ReclaimRepairChatResult{}, staleErr
+				}
+				if !stale {
+					return ReclaimRepairChatResult{}, fmt.Errorf("%w: %s", ErrRepairChatActive, staleReason)
+				}
+				killReason = staleReason
+			}
+			l.logger.Info().
+				Str("session", sessionID).
+				Str("agentSessionID", agentSessionID).
+				Str("tmuxSession", result.TmuxSessionName).
+				Str("reason", killReason).
+				Msg("replacing idle blocking chat for repair")
+			if err := l.tmux.KillSession(ctx, result.TmuxSessionName); err != nil {
+				return ReclaimRepairChatResult{}, fmt.Errorf("kill blocking tmux session %s: %w", result.TmuxSessionName, err)
 			}
 		}
 	}

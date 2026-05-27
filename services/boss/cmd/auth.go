@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/telemetry"
 )
 
 func loginCmd() *cobra.Command {
@@ -46,6 +51,37 @@ func authStatusCmd() *cobra.Command {
 // `boss login` uses when BOSS_WORKOS_CLIENT_ID is unset. WorkOS client IDs
 // are public; the secret is held by WorkOS. Override for staging.
 const defaultWorkOSClientID = "client_01KP805YXXAMZSN2YB4NGXS9XB"
+const defaultCloudURL = "https://orchestrator.bossanova.dev"
+
+const cloudGateMessage = "Bossanova Cloud requires an active subscription.\nLocal sessions are still available."
+
+type cloudAccessClient interface {
+	GetCloudAccessStatus(ctx context.Context) (*pb.CloudAccessStatus, error)
+	CreateCheckoutSession(ctx context.Context, returnURL, cancelURL string) (string, error)
+	RefreshCloudEntitlements(ctx context.Context) (*pb.CloudAccessStatus, error)
+}
+
+var openCloudCheckoutURL = auth.OpenBrowser
+
+type cloudGateError struct {
+	status *pb.CloudAccessStatus
+	err    error
+}
+
+func (e *cloudGateError) Error() string {
+	if e != nil && e.err != nil {
+		return fmt.Sprintf("Bossanova Cloud status unavailable: %v\nLocal sessions are still available.", e.err)
+	}
+	if e != nil && e.status.GetMessage() != "" {
+		return cloudGateMessage + "\n" + e.status.GetMessage()
+	}
+	return cloudGateMessage
+}
+
+func isCloudGateError(err error) bool {
+	var gateErr *cloudGateError
+	return errors.As(err, &gateErr)
+}
 
 func authConfig() auth.Config {
 	return auth.Config{
@@ -121,12 +157,195 @@ func runLogin(cmd *cobra.Command) error {
 	// Notify daemon so it can connect upstream immediately.
 	notifyDaemonAuthChange("login")
 
+	token, err := mgr.AccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("access token: %w", err)
+	}
+	cloud := client.NewRemote(cloudURL(cmd), token)
+	active := checkLoginCloudGateWithTelemetry(ctx, cloud, os.Stdout, commandTelemetryClient(cmd))
+	if !active {
+		return nil
+	}
+
 	if status.Email != "" {
 		fmt.Printf("Logged in as %s\n", status.Email)
 	} else {
 		fmt.Println("Login successful!")
 	}
 	return nil
+}
+
+func cloudURL(cmd *cobra.Command) string {
+	if cmd != nil && cmd.Root() != nil {
+		if remote, err := cmd.Root().Flags().GetString("remote"); err == nil && remote != "" {
+			return remote
+		}
+	}
+	return envOr("BOSS_CLOUD_URL", defaultCloudURL)
+}
+
+func runLoginCloudGate(ctx context.Context, c cloudAccessClient, out io.Writer) {
+	checkLoginCloudGate(ctx, c, out)
+}
+
+func checkLoginCloudGate(ctx context.Context, c cloudAccessClient, out io.Writer) bool {
+	return checkLoginCloudGateWithTelemetry(ctx, c, out, nil)
+}
+
+func checkLoginCloudGateWithTelemetry(
+	ctx context.Context,
+	c cloudAccessClient,
+	out io.Writer,
+	telemetryClient telemetry.Client,
+) bool {
+	status, err := c.GetCloudAccessStatus(ctx)
+	if err != nil {
+		if connect.CodeOf(err) == connect.CodeUnavailable {
+			return true
+		}
+		captureLoginCloudBillingEvent(
+			ctx,
+			telemetryClient,
+			telemetry.EventCloudAccessDenied,
+			nil,
+			"cli_login",
+			"billing_unavailable",
+		)
+		_, _ = fmt.Fprintf(out, "Cloud access status unavailable: %v\n", err)
+		_, _ = fmt.Fprintln(out, cloudGateMessage)
+		return false
+	}
+	if cloudAccessActive(status) {
+		return true
+	}
+	if status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE {
+		return true
+	}
+
+	denialReason := cloudAccessDenialReason(status)
+	captureLoginCloudBillingEvent(
+		ctx,
+		telemetryClient,
+		telemetry.EventCloudAccessDenied,
+		status,
+		"cli_login",
+		denialReason,
+	)
+	if status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH {
+		_, _ = fmt.Fprintln(out, cloudGateMessage)
+		return false
+	}
+	checkoutURL, err := c.CreateCheckoutSession(ctx, cloudReturnURL(), cloudCancelURL())
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "Cloud checkout unavailable: %v\n", err)
+		_, _ = fmt.Fprintln(out, cloudGateMessage)
+		return false
+	}
+	captureLoginCloudBillingEvent(
+		ctx,
+		telemetryClient,
+		telemetry.EventCloudCheckoutStarted,
+		status,
+		"cli_login",
+		denialReason,
+	)
+	if checkoutURL != "" {
+		if err := openCloudCheckoutURL(checkoutURL); err != nil {
+			_, _ = fmt.Fprintf(out, "Open checkout: %s\n", checkoutURL)
+		}
+	}
+	_, _ = fmt.Fprintln(out, cloudGateMessage)
+	return false
+}
+
+func captureLoginCloudBillingEvent(
+	ctx context.Context,
+	client telemetry.Client,
+	event telemetry.Event,
+	status *pb.CloudAccessStatus,
+	entryPoint string,
+	denialReason string,
+) {
+	if client == nil {
+		return
+	}
+	if !commandTelemetryEnabled() {
+		return
+	}
+	props := map[string]any{
+		"product_area":       "billing",
+		"cloud_access_state": cloudAccessStateAnalyticsName(status),
+		"entry_point":        entryPoint,
+		"denial_reason":      denialReason,
+	}
+	if status.GetWorkosOrgId() != "" {
+		props["workos_org_id"] = status.GetWorkosOrgId()
+	}
+	client.Capture(ctx, event, commandDistinctID(), props)
+}
+
+func cloudAccessStateAnalyticsName(status *pb.CloudAccessStatus) string {
+	switch status.GetState() {
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE:
+		return "active"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION:
+		return "needs_subscription"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH:
+		return "pending_entitlement_refresh"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_PAST_DUE:
+		return "past_due"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_CANCELED:
+		return "canceled"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE:
+		return "billing_unavailable"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED:
+		return "unspecified"
+	default:
+		return "unknown"
+	}
+}
+
+func cloudAccessDenialReason(status *pb.CloudAccessStatus) string {
+	switch status.GetState() {
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION:
+		return "subscription_required"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_PAST_DUE:
+		return "past_due"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_CANCELED:
+		return "subscription_canceled"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE:
+		return "billing_unavailable"
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH:
+		return "entitlement_pending"
+	default:
+		return "access_unavailable"
+	}
+}
+
+func requireActiveCloudAccess(ctx context.Context, c cloudAccessClient) error {
+	status, err := c.GetCloudAccessStatus(ctx)
+	if err != nil {
+		if connect.CodeOf(err) == connect.CodeUnavailable {
+			return nil
+		}
+		return &cloudGateError{err: err}
+	}
+	if cloudAccessActive(status) || status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE {
+		return nil
+	}
+	return &cloudGateError{status: status}
+}
+
+func cloudAccessActive(status *pb.CloudAccessStatus) bool {
+	return status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE
+}
+
+func cloudReturnURL() string {
+	return envOr("BOSS_CLOUD_RETURN_URL", "https://app.bossanova.dev/subscribe/success")
+}
+
+func cloudCancelURL() string {
+	return envOr("BOSS_CLOUD_CANCEL_URL", "https://app.bossanova.dev/subscribe/canceled")
 }
 
 func runLogout(cmd *cobra.Command) error {

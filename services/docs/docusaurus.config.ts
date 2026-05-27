@@ -112,7 +112,7 @@ const config: Config = {
           target: '_self',
         },
         {
-          href: 'https://bossanova.dev/quick-start',
+          href: 'https://docs.bossanova.dev/quick-start',
           label: 'Try Now',
           position: 'right',
           className: 'navbar__link--cta',

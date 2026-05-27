@@ -5,6 +5,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -185,6 +186,35 @@ func platformRestart() error {
 		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// platformStop bootouts the LaunchAgent so the running bossd terminates but
+// the plist is left in place. A subsequent `start` (or restart) re-bootstraps
+// it. bootout exits non-zero when the agent isn't loaded; we treat that as
+// the desired end state and return nil.
+func platformStop() error {
+	if skipLaunchctl() {
+		return nil
+	}
+
+	plistPath, err := platformServicePath()
+	if err != nil {
+		return err
+	}
+
+	target := "gui/" + strconv.Itoa(os.Getuid())
+	out, err := exec.Command("launchctl", "bootout", target, plistPath).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// launchctl exits 113 when the specified service isn't loaded. Treat as a
+	// no-op so `stop` is idempotent. Match on exit code rather than message
+	// text, which varies across macOS versions and locales.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 113 {
+		return nil
+	}
+	return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
 }
 
 // platformGetStatus returns the current daemon status.

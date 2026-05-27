@@ -197,6 +197,7 @@ func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prN
 	p.logger.Info().
 		Str("repo_origin_url", repoOriginURL).
 		Int("pr_number", prNumber).
+		Strs("session_ids", refreshedSessions).
 		Int("sessions_refreshed", refreshed).
 		Msg("display poller: refresh pr")
 	return nil
@@ -247,6 +248,14 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 		return
 	}
 
+	p.logger.Info().
+		Str("session_id", sessionID).
+		Str("repo_origin_url", repoPath).
+		Int("pr_number", prNumber).
+		Str("pr_state", prStateString(prStatus.State)).
+		Bool("pr_draft", prStatus.Draft).
+		Msg("display poller: fetched PR status")
+
 	if prStatus.State == vcs.PRStateMerged || prStatus.State == vcs.PRStateClosed {
 		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
 		info.HeadSHA = prStatus.HeadSHA
@@ -287,6 +296,19 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 	info.HeadSHA = prStatus.HeadSHA
 	p.tracker.Set(sessionID, info)
 	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
+}
+
+func prStateString(state vcs.PRState) string {
+	switch state {
+	case vcs.PRStateOpen:
+		return "open"
+	case vcs.PRStateClosed:
+		return "closed"
+	case vcs.PRStateMerged:
+		return "merged"
+	default:
+		return "unknown"
+	}
 }
 
 func (p *DisplayPoller) persistSnapshot(ctx context.Context, sessionID string, prStatus *vcs.PRStatus, checks []vcs.CheckResult, info vcs.DisplayInfo) {

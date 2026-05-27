@@ -1716,7 +1716,7 @@ func TestE2E_CreateSession_LinearBranchDuplicateReturnsExistingSession(t *testin
 	defer h.Close()
 
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
-		DisplayName:       "wondercanvas",
+		DisplayName:       "agenticboost",
 		LocalPath:         testharness.TempRepoDir(t),
 		DefaultBaseBranch: "dev",
 		WorktreeBaseDir:   t.TempDir(),
@@ -1761,7 +1761,7 @@ func TestE2E_CreateSession_LinearBranchDuplicateWhileStartingReturnsAlreadyExist
 	defer h.Close()
 
 	repoResp, err := h.Client.RegisterRepo(ctx, connect.NewRequest(&pb.RegisterRepoRequest{
-		DisplayName:       "wondercanvas",
+		DisplayName:       "agenticboost",
 		LocalPath:         testharness.TempRepoDir(t),
 		DefaultBaseBranch: "dev",
 		WorktreeBaseDir:   t.TempDir(),

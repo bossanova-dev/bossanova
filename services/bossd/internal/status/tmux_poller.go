@@ -152,6 +152,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 
 		p.mu.Lock()
 		prev, hasPrev := p.prevCaptures[agentSessionID]
+		captureChanged := !hasPrev || content != prev.content || prev.at.IsZero()
 
 		var status pb.ChatStatus
 		switch {
@@ -164,7 +165,7 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			// flash IDLE when the old question capture is already past the
 			// idle threshold.
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
-		case !hasPrev || content != prev.content:
+		case captureChanged:
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
 		case now.Sub(prev.at) > IdleThreshold:
 			status = pb.ChatStatus_CHAT_STATUS_IDLE
@@ -173,13 +174,17 @@ func (p *TmuxStatusPoller) pollOnce(ctx context.Context) {
 			status = pb.ChatStatus_CHAT_STATUS_WORKING
 		}
 
-		// Update capture entry: only update timestamp when content changed.
-		if !hasPrev || content != prev.content {
+		// LastOutputAt is the last pane content change time; ReceivedAt in the
+		// tracker remains the fresh heartbeat time.
+		lastOutputAt := now
+		if captureChanged {
 			p.prevCaptures[agentSessionID] = captureEntry{content: content, at: now}
+		} else {
+			lastOutputAt = prev.at
 		}
 		p.mu.Unlock()
 
-		p.tracker.Update(agentSessionID, status, now)
+		p.tracker.Update(agentSessionID, status, lastOutputAt)
 	}
 }
 

@@ -558,6 +558,61 @@ func TestRouteTask_AutoMerge_StoresActionableFailureDetail(t *testing.T) {
 	}
 }
 
+func TestRouteTask_AutoMerge_RebaseFailureCreatesRepairSession(t *testing.T) {
+	var capturedOpts CreateSessionOpts
+	var updatedStatus models.TaskMappingStatus
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				return errors.New("merge PR: gh pr merge 426 --repo recurser/bossanova --rebase --delete-branch: exit status 1: GraphQL: This branch can't be rebased (mergePullRequest)")
+			},
+		}
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, opts CreateSessionOpts) (*models.Session, error) {
+				capturedOpts = opts
+				return &models.Session{ID: "repair-session"}, nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					updatedStatus = *params.Status
+				}
+				return &models.TaskMapping{}, nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId:     "dependabot:pr:git@github.com:recurser/bossanova.git:426",
+		Title:          "chore(web)(deps-dev): bump @types/react",
+		Plan:           "Original dependabot plan.",
+		Action:         bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+		ExistingBranch: "dependabot/npm_and_yarn/services/web/types/react-19.2.15",
+		Labels:         []string{"dependabot"},
+	}, repoInfo{
+		id:            "r1",
+		originURL:     "git@github.com:recurser/bossanova.git",
+		baseBranch:    "main",
+		mergeStrategy: "rebase",
+	}, "dependabot")
+
+	if capturedOpts.HeadBranch != "dependabot/npm_and_yarn/services/web/types/react-19.2.15" {
+		t.Fatalf("HeadBranch = %q, want existing Dependabot branch", capturedOpts.HeadBranch)
+	}
+	if !strings.Contains(capturedOpts.Plan, "rebase") {
+		t.Fatalf("repair plan should explicitly mention rebase, got %q", capturedOpts.Plan)
+	}
+	if !strings.Contains(capturedOpts.Plan, "gh pr merge") {
+		t.Fatalf("repair plan should include failed merge command context, got %q", capturedOpts.Plan)
+	}
+	if updatedStatus != models.TaskMappingStatusInProgress {
+		t.Fatalf("status = %d, want InProgress", updatedStatus)
+	}
+}
+
 func TestUpdateMappingStatus_ClearsLastErrorForNonFailedStatus(t *testing.T) {
 	tests := []struct {
 		name string
@@ -2585,5 +2640,74 @@ func TestEnqueue_AutoMergeDoesNotDequeueQueuedSession(t *testing.T) {
 	}
 	if o.queues[repo.id][0].task.GetExternalId() != "linear:issue:LIN-1" {
 		t.Fatalf("queued task changed; got %q", o.queues[repo.id][0].task.GetExternalId())
+	}
+}
+
+func TestAutoMergeRebaseRepairQueuesBehindActiveSession(t *testing.T) {
+	t.Parallel()
+
+	var createCalls atomic.Int32
+	o := newTestOrchestrator(func(o *Orchestrator) {
+		o.provider = &mockProvider{
+			mergeFn: func(_ context.Context, _ string, _ int) error {
+				return errors.New("pull request can't be rebased")
+			},
+		}
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, _ CreateSessionOpts) (*models.Session, error) {
+				createCalls.Add(1)
+				return &models.Session{ID: "repair-session"}, nil
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{mappings: map[string]*models.TaskMapping{}}
+	})
+
+	repo := repoInfo{
+		id:            "repo-1",
+		displayName:   "test-repo",
+		originURL:     "https://github.com/org/repo",
+		baseBranch:    "main",
+		mergeStrategy: "rebase",
+	}
+
+	o.mu.Lock()
+	o.active[repo.id] = true
+	o.activeMapping[repo.id] = "session-in-flight"
+	o.mu.Unlock()
+
+	o.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:https://github.com/org/repo:2222",
+		Title:      "Bump foo",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE,
+	}, repo, "dependabot")
+
+	if createCalls.Load() != 0 {
+		t.Fatalf("repair session started while another CREATE_SESSION held the slot; got %d starts", createCalls.Load())
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.active[repo.id] {
+		t.Fatal("CREATE_SESSION slot was released by queued rebase repair")
+	}
+	if o.activeMapping[repo.id] != "session-in-flight" {
+		t.Fatalf("activeMapping unexpectedly changed to %q", o.activeMapping[repo.id])
+	}
+	if len(o.queues[repo.id]) != 1 {
+		t.Fatalf("expected one queued rebase repair task; got %d", len(o.queues[repo.id]))
+	}
+
+	queued := o.queues[repo.id][0]
+	if queued.mapping == nil {
+		t.Fatal("queued repair task lost its existing task mapping")
+	}
+	if queued.mapping.ExternalID != "dependabot:pr:https://github.com/org/repo:2222" {
+		t.Fatalf("queued repair mapping external ID = %q", queued.mapping.ExternalID)
+	}
+	if queued.task.GetAction() != bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION {
+		t.Fatalf("queued repair action = %s", queued.task.GetAction())
+	}
+	if !strings.HasPrefix(queued.task.GetTitle(), "Repair rebase: ") {
+		t.Fatalf("queued repair title = %q", queued.task.GetTitle())
 	}
 }

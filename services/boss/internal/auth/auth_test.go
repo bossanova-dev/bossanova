@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -180,6 +181,72 @@ func TestManager_AccessToken_ExpiredWithRefresh(t *testing.T) {
 	}
 	if store.tokens.RefreshToken != "new-refresh-token" {
 		t.Errorf("refresh token not updated: got %q", store.tokens.RefreshToken)
+	}
+}
+
+func TestManager_Refresh(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.FormValue("grant_type") != "refresh_token" {
+			http.Error(w, "bad grant_type", 400)
+			return
+		}
+		if r.FormValue("refresh_token") != "my-refresh" {
+			http.Error(w, "bad refresh token", 400)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "fresh-access-token",
+			"refresh_token": "fresh-refresh-token",
+			"expires_in":    3600,
+			"user":          map[string]string{"id": "user_01", "email": "refresh@example.com"},
+		})
+	}))
+	defer srv.Close()
+
+	origBase := workosAPIBase
+	defer func() { workosAPIBase = origBase }()
+	workosAPIBase = srv.URL
+
+	store := &mockTokenStore{
+		tokens: &Tokens{
+			AccessToken:  "old-access-token",
+			RefreshToken: "my-refresh",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		},
+	}
+	mgr := NewManager(store, Config{ClientID: "test-client"})
+
+	if err := mgr.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+	if !store.saveCalled {
+		t.Fatal("expected Save to be called with refreshed tokens")
+	}
+	if store.tokens.AccessToken != "fresh-access-token" {
+		t.Fatalf("access token = %q, want %q", store.tokens.AccessToken, "fresh-access-token")
+	}
+	if store.tokens.RefreshToken != "fresh-refresh-token" {
+		t.Fatalf("refresh token = %q, want %q", store.tokens.RefreshToken, "fresh-refresh-token")
+	}
+}
+
+func TestManager_Refresh_NoRefreshToken(t *testing.T) {
+	store := &mockTokenStore{
+		tokens: &Tokens{
+			AccessToken: "access-token",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		},
+	}
+	mgr := NewManager(store, Config{})
+
+	err := mgr.Refresh(context.Background())
+	if err == nil {
+		t.Fatal("expected error for missing refresh token")
+	}
+	if !strings.Contains(err.Error(), "no refresh token available; run 'boss login'") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 

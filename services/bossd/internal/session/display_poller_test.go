@@ -1,8 +1,10 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -530,6 +532,68 @@ func TestRefreshPRTargetsOnlyMatchingSessions(t *testing.T) {
 	}
 	if len(vp.getPRStatusPRNumbers) != 1 || vp.getPRStatusPRNumbers[0] != 42 {
 		t.Fatalf("GetPRStatus PR numbers = %v, want [42]", vp.getPRStatusPRNumbers)
+	}
+}
+
+func TestRefreshPRClosedDraftOverwritesPreviousDraftStatus(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/IKHOR/wondercanvas-mono"}
+	sessions.sessions["sess-203"] = &models.Session{ID: "sess-203", RepoID: "repo-1", PRNumber: intPtr(203)}
+	tracker.Set("sess-203", vcs.DisplayInfo{Status: vcs.DisplayStatusDraft})
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, Draft: true, HeadSHA: "closed-sha"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "git@github.com:IKHOR/wondercanvas-mono.git", 203); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	entry := tracker.Get("sess-203")
+	if entry == nil {
+		t.Fatal("expected tracker entry for sess-203, got nil")
+	}
+	if entry.Status != vcs.DisplayStatusClosed {
+		t.Fatalf("display status = %v, want Closed", entry.Status)
+	}
+	if entry.HeadSHA != "closed-sha" {
+		t.Fatalf("HeadSHA = %q, want closed-sha", entry.HeadSHA)
+	}
+}
+
+func TestRefreshPRLogsFetchedClosedDraftStatus(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	var logs bytes.Buffer
+	logger := zerolog.New(&logs)
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", PRNumber: intPtr(42)}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, Draft: true}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
+
+	got := logs.String()
+	for _, want := range []string{
+		`"session_id":"sess-1"`,
+		`"repo_origin_url":"owner/repo"`,
+		`"pr_number":42`,
+		`"pr_state":"closed"`,
+		`"pr_draft":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log output missing %s: %s", want, got)
+		}
 	}
 }
 

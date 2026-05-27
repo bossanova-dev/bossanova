@@ -46,8 +46,9 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		return DisplayInfo{Status: DisplayStatusDraft}
 	}
 
-	// Conflict detection.
-	if pr.Mergeable != nil && !*pr.Mergeable {
+	// Conflict detection. GitHub can report a PR as generally mergeable while
+	// also marking it as not rebaseable, which blocks rebase-and-merge.
+	if (pr.Mergeable != nil && !*pr.Mergeable) || (pr.Rebaseable != nil && !*pr.Rebaseable) {
 		return DisplayInfo{Status: DisplayStatusConflict}
 	}
 
@@ -91,6 +92,13 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 	}
 	hasChangesRequested := false
 	hasApproval := false
+	switch pr.LatestReviewState {
+	case ReviewStateChangesRequested:
+		hasChangesRequested = true
+	case ReviewStateApproved:
+		hasApproval = true
+	case ReviewStateUnspecified, ReviewStateCommented, ReviewStateDismissed:
+	}
 	for _, state := range latestByAuthor {
 		if state == ReviewStateChangesRequested {
 			hasChangesRequested = true

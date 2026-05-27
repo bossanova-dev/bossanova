@@ -455,6 +455,50 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 	}
 }
 
+func TestTmuxStatusPoller_RegisterChatEmptyPaneSeedsLastOutputAt(t *testing.T) {
+	tracker := NewTracker()
+	tmuxName := "boss-test-empty"
+	agentSessionID := "claude-empty"
+
+	chatStore := &mockChatStore{
+		chats: map[string]*models.AgentChat{
+			agentSessionID: {AgentSessionID: agentSessionID, AgentName: "claude", TmuxSessionName: &tmuxName},
+		},
+	}
+
+	factory := &mockTmuxFactory{
+		sessions: map[string]bool{tmuxName: true},
+		captures: map[string]string{tmuxName: ""},
+	}
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(factory.factory))
+
+	poller := NewTmuxStatusPoller(tracker, chatStore, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
+	poller.RegisterChat(agentSessionID)
+	poller.pollOnce(context.Background())
+
+	entry := tracker.Get(agentSessionID)
+	if entry == nil {
+		t.Fatal("expected entry after poll")
+		return
+	}
+	if entry.Status != pb.ChatStatus_CHAT_STATUS_WORKING {
+		t.Errorf("expected WORKING, got %v", entry.Status)
+	}
+	if entry.LastOutputAt.IsZero() {
+		t.Fatal("LastOutputAt is zero")
+	}
+
+	poller.mu.Lock()
+	prev := poller.prevCaptures[agentSessionID]
+	poller.mu.Unlock()
+	if prev.at.IsZero() {
+		t.Fatal("prev capture timestamp is zero")
+	}
+	if !entry.LastOutputAt.Equal(prev.at) {
+		t.Errorf("LastOutputAt = %v, want seeded capture time %v", entry.LastOutputAt, prev.at)
+	}
+}
+
 func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	tracker := NewTracker()
 	tmuxName := "boss-test-chat3"
@@ -478,10 +522,11 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	// Simulate a previous capture that happened >5s ago with same content.
 	// The content must match exactly what CapturePane returns (cat outputs
 	// the file bytes verbatim, no trailing newline added).
+	lastOutputAt := time.Now().Add(-10 * time.Second)
 	poller.mu.Lock()
 	poller.prevCaptures[agentSessionID] = captureEntry{
 		content: content,
-		at:      time.Now().Add(-10 * time.Second),
+		at:      lastOutputAt,
 	}
 	poller.mu.Unlock()
 
@@ -494,6 +539,9 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 	}
 	if entry.Status != pb.ChatStatus_CHAT_STATUS_IDLE {
 		t.Errorf("expected IDLE, got %v", entry.Status)
+	}
+	if !entry.LastOutputAt.Equal(lastOutputAt) {
+		t.Errorf("LastOutputAt = %v, want previous capture time %v", entry.LastOutputAt, lastOutputAt)
 	}
 }
 

@@ -173,6 +173,21 @@ func platformRestart() error {
 	return nil
 }
 
+// platformStop tells systemd to stop the user-scoped bossd unit. `systemctl
+// stop` is already idempotent (returns 0 when the unit is inactive), so no
+// extra suppression is needed.
+func platformStop() error {
+	if skipLaunchctl() {
+		return nil
+	}
+
+	cmd := exec.Command("systemctl", "--user", "stop", ServiceName)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl --user stop %s: %w: %s", ServiceName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // platformGetStatus returns the current daemon status via systemctl.
 func platformGetStatus() (*Status, error) {
 	unitPath, err := platformServicePath()

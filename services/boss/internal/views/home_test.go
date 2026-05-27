@@ -87,7 +87,7 @@ func TestHomeBuildTableRows_RendersRepairWarningUnderName(t *testing.T) {
 		sessions: []*pb.Session{
 			{
 				Id:                     "sess-1",
-				RepoDisplayName:        "wondercanvas",
+				RepoDisplayName:        "agenticboost",
 				Title:                  "[WON-462] Restore SSE no-config guard",
 				DisplayLabel:           "? question",
 				DisplayIntent:          pb.DisplayIntent_DISPLAY_INTENT_WARNING,
@@ -119,7 +119,7 @@ func TestHomeBuildTableRows_RendersAttentionWarningUnderName(t *testing.T) {
 		sessions: []*pb.Session{
 			{
 				Id:              "sess-1",
-				RepoDisplayName: "wondercanvas",
+				RepoDisplayName: "agenticboost",
 				Title:           "[WON-832] Improve cache eviction behaviour",
 				DisplayLabel:    "working",
 				DisplayIntent:   pb.DisplayIntent_DISPLAY_INTENT_SUCCESS,

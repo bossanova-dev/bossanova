@@ -153,6 +153,27 @@ func TestParseReviewState(t *testing.T) {
 	}
 }
 
+func TestParseReviewDecision(t *testing.T) {
+	tests := []struct {
+		input string
+		want  vcs.ReviewState
+	}{
+		{"APPROVED", vcs.ReviewStateApproved},
+		{"CHANGES_REQUESTED", vcs.ReviewStateChangesRequested},
+		{"REVIEW_REQUIRED", vcs.ReviewStateUnspecified},
+		{"", vcs.ReviewStateUnspecified},
+		{"unknown", vcs.ReviewStateUnspecified},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := parseReviewDecision(tt.input); got != tt.want {
+				t.Errorf("parseReviewDecision(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsRepoNotReady(t *testing.T) {
 	tests := []struct {
 		name string
@@ -361,6 +382,32 @@ func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
 	}
 	if got := slept.Load(); got != 1 {
 		t.Errorf("got %d sleeps, want 1", got)
+	}
+}
+
+func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
+	var viewArgs []string
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+			viewArgs = append([]string(nil), args...)
+			return `{"state":"OPEN","mergeable":"MERGEABLE","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[]}`, nil
+		}
+		if len(args) >= 2 && args[0] == "api" {
+			return `{"rebaseable":true}`, nil
+		}
+		return "", fmt.Errorf("unexpected gh args: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRStatus: %v", err)
+	}
+	if status.LatestReviewState != vcs.ReviewStateUnspecified {
+		t.Fatalf("LatestReviewState = %v, want ReviewStateUnspecified", status.LatestReviewState)
+	}
+	if !strings.Contains(strings.Join(viewArgs, " "), "reviewDecision") {
+		t.Fatalf("gh pr view args = %v, want reviewDecision field", viewArgs)
 	}
 }
 

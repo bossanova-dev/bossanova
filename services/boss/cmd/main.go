@@ -352,6 +352,27 @@ func daemonCmd() *cobra.Command {
 				return runDaemonStatus(cmd)
 			},
 		},
+		&cobra.Command{
+			Use:   "start",
+			Short: "Start the bossd daemon",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonStart(cmd)
+			},
+		},
+		&cobra.Command{
+			Use:   "stop",
+			Short: "Stop the bossd daemon",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonStop(cmd)
+			},
+		},
+		&cobra.Command{
+			Use:   "restart",
+			Short: "Restart the bossd daemon",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return runDaemonRestart(cmd)
+			},
+		},
 	)
 
 	return d

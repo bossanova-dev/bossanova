@@ -104,6 +104,7 @@ hardcoded default.
 | Variable                     | Notes                                                                                                                               |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `BOSS_WORKOS_CLIENT_ID`      | WorkOS client used by `boss login`; override when pointing at a staging orchestrator                                                |
+| `BOSS_CLOUD_URL`             | overrides the authenticated cloud orchestrator URL used by `boss login` and remote CLI calls                                        |
 | `BOSS_SKIP_SKILLS`           | any non-empty value suppresses the first-run skill-install prompt (persistent equivalent: `skills_declined` in `settings.json`)     |
 | `BOSS_SOCKET`                | overrides the path to the local `bossd` Unix-domain socket                                                                          |
 | `BOSS_DAEMON_SKIP_LAUNCHCTL` | any non-empty value skips `launchctl` calls in `boss daemon install`/`uninstall`/`status`                                           |

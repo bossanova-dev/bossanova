@@ -582,11 +582,29 @@ func TestHasSessionStatusDistinguishesTmuxErrors(t *testing.T) {
 		t.Fatal("missing HasSessionStatus exists = true, want false")
 	}
 
+	noServer := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"no server running on /tmp/tmux-501/default\" >&2; exit 1")
+	}))
+	exists, err = noServer.HasSessionStatus(ctx, "missing")
+	if err != nil {
+		t.Fatalf("no-server HasSessionStatus error = %v, want nil", err)
+	}
+	if exists {
+		t.Fatal("no-server HasSessionStatus exists = true, want false")
+	}
+
 	unavailable := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \"error connecting to /tmp/tmux/default\" >&2; exit 1")
 	}))
 	if _, err := unavailable.HasSessionStatus(ctx, "maybe-live"); err == nil {
 		t.Fatal("tmux command error returned nil error")
+	}
+
+	silentFailure := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "false")
+	}))
+	if _, err := silentFailure.HasSessionStatus(ctx, "maybe-live"); err == nil {
+		t.Fatal("empty-stderr tmux command failure returned nil error")
 	}
 }
 
@@ -606,32 +624,71 @@ func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
 }
 
 func TestKillSession_NotExist(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+	}{
+		{name: "missing session", stderr: "can't find session: test-session"},
+		{name: "no tmux server", stderr: "no server running on /tmp/tmux-501/default"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockCommandFactory{}
+			c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				mock.calls = append(mock.calls, append([]string{name}, args...))
+				// Simulate tmux error for non-existent session.
+				// Both kill-session and has-session should fail.
+				return exec.CommandContext(ctx, "sh", "-c", "printf '%s' \""+tt.stderr+"\" >&2; exit 1")
+			}))
+			ctx := context.Background()
+
+			// Should not return an error for non-existent session (idempotent).
+			err := c.KillSession(ctx, "test-session")
+			if err != nil {
+				t.Fatalf("expected no error for non-existent session, got: %v", err)
+			}
+
+			// Should have called both kill-session and has-session.
+			if len(mock.calls) != 2 {
+				t.Fatalf("expected 2 calls, got %d", len(mock.calls))
+			}
+
+			expectedKill := []string{"tmux", "kill-session", "-t", "test-session"}
+			if !equalSlices(mock.calls[0], expectedKill) {
+				t.Errorf("expected first call to be %v, got %v", expectedKill, mock.calls[0])
+			}
+
+			expectedHas := []string{"tmux", "has-session", "-t", "test-session"}
+			if !equalSlices(mock.calls[1], expectedHas) {
+				t.Errorf("expected second call to be %v, got %v", expectedHas, mock.calls[1])
+			}
+		})
+	}
+}
+
+func TestKillSession_ReturnsLivenessErrorWhenFallbackCannotVerify(t *testing.T) {
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		mock.calls = append(mock.calls, append([]string{name}, args...))
-		// Simulate tmux error for non-existent session.
-		// Both kill-session and has-session should fail.
-		cmd := exec.CommandContext(ctx, "sh", "-c", "exit 1")
-		return cmd
+		return exec.CommandContext(ctx, "false")
 	}))
 	ctx := context.Background()
 
-	// Should not return an error for non-existent session (idempotent).
 	err := c.KillSession(ctx, "test-session")
-	if err != nil {
-		t.Fatalf("expected no error for non-existent session, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error when kill-session and fallback has-session fail without definite missing evidence")
+	}
+	if !strings.Contains(err.Error(), "verify tmux session") {
+		t.Fatalf("error = %v, want liveness verification context", err)
 	}
 
-	// Should have called both kill-session and has-session.
 	if len(mock.calls) != 2 {
 		t.Fatalf("expected 2 calls, got %d", len(mock.calls))
 	}
-
 	expectedKill := []string{"tmux", "kill-session", "-t", "test-session"}
 	if !equalSlices(mock.calls[0], expectedKill) {
 		t.Errorf("expected first call to be %v, got %v", expectedKill, mock.calls[0])
 	}
-
 	expectedHas := []string{"tmux", "has-session", "-t", "test-session"}
 	if !equalSlices(mock.calls[1], expectedHas) {
 		t.Errorf("expected second call to be %v, got %v", expectedHas, mock.calls[1])

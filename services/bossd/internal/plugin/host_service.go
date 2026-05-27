@@ -63,6 +63,7 @@ type ChatLifecycle interface {
 	// error.
 	StartTmuxChat(ctx context.Context, sessionID string, input session.ChatInput, title string, hookOpts session.HookOpts) (string, error)
 	ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
+	ReplaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string) (session.ReclaimRepairChatResult, error)
 }
 
 // HostServiceServer implements the HostService gRPC server on the daemon
@@ -1259,6 +1260,9 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	if req.GetTitle() == "" {
 		return nil, grpcstatus.Error(codes.InvalidArgument, "title is required")
 	}
+	if req.GetReplaceExistingChat() && !isAuthorizedRepairReplacement(req) {
+		return nil, grpcstatus.Error(codes.InvalidArgument, "replace_existing_chat is only allowed for boss-repair commands with a repair title and reason")
+	}
 
 	sess, err := s.sessionStore.Get(ctx, sessionID)
 	if err != nil {
@@ -1273,12 +1277,24 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// case (chat row + tmux still around after a daemon restart); this
 	// activeRuns check covers the in-process race window where a second
 	// caller arrives before the first has finished spawning.
+	replacedActiveRun := false
 	s.runMu.Lock()
 	if existing, ok := s.activeRuns[sessionID]; ok && s.isAgentRunning(existing.agentName, existing.agentSessionID) {
+		if req.GetReplaceExistingChat() {
+			blockingAgentSessionID := existing.agentSessionID
+			s.runMu.Unlock()
+			if err := s.replaceBlockingChatForRepair(ctx, sessionID, blockingAgentSessionID, req.GetReplaceExistingReason(), req.GetReplaceExistingObservedLastChatActivityAt()); err != nil {
+				return nil, err
+			}
+			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
+			replacedActiveRun = true
+		} else {
+			s.runMu.Unlock()
+			return nil, grpcstatus.Errorf(codes.AlreadyExists, "chat run already active for session %s", sessionID)
+		}
+	} else {
 		s.runMu.Unlock()
-		return nil, grpcstatus.Errorf(codes.AlreadyExists, "chat run already active for session %s", sessionID)
 	}
-	s.runMu.Unlock()
 
 	token, err := newRunHookToken()
 	if err != nil {
@@ -1297,6 +1313,19 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// rather than a stuck session, but no current path reaches that gap.
 	input := session.ChatInput{Prompt: req.GetPrompt(), Command: req.GetCommand()}
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), session.HookOpts{Token: token})
+	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
+		blockingAgentSessionID := agentSessionID
+		if blockingAgentSessionID == "" {
+			blockingAgentSessionID = parseAlreadyExistsAgentSessionID(grpcstatus.Convert(err).Message())
+		}
+		if blockingAgentSessionID != "" {
+			if replaceErr := s.replaceBlockingChatForRepair(ctx, sessionID, blockingAgentSessionID, req.GetReplaceExistingReason(), req.GetReplaceExistingObservedLastChatActivityAt()); replaceErr != nil {
+				return nil, replaceErr
+			}
+			s.signalAndCleanupReplacedRun(blockingAgentSessionID)
+			agentSessionID, err = s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), session.HookOpts{Token: token})
+		}
+	}
 	if err != nil {
 		// Pass typed gRPC errors (AlreadyExists, FailedPrecondition,
 		// Internal) through unchanged. Wrap untyped errors as Internal
@@ -1339,6 +1368,72 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	_ = s.registerRunWithCompletionMode(sessionID, agentSessionID, token, chatRunCompletionExplicit)
 
 	return &bossanovav1.StartChatRunHostResponse{AgentSessionId: agentSessionID}, nil
+}
+
+func (s *HostServiceServer) replaceBlockingChatForRepair(ctx context.Context, sessionID, agentSessionID, reason string, observedLastActivityAt *timestamppb.Timestamp) error {
+	if reason == "" {
+		reason = "repair replacing existing chat"
+	}
+	if err := s.revalidateReplacementChatActivity(agentSessionID, observedLastActivityAt); err != nil {
+		return err
+	}
+	if _, err := s.lifecycle.ReplaceBlockingChatForRepair(ctx, sessionID, agentSessionID, reason); err != nil {
+		switch {
+		case errors.Is(err, session.ErrRepairChatNotReclaimable),
+			errors.Is(err, session.ErrRepairChatSessionMismatch),
+			errors.Is(err, session.ErrRepairChatActive):
+			return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: %v", err)
+		default:
+			return grpcstatus.Errorf(codes.Internal, "replace blocking repair chat: %v", err)
+		}
+	}
+	return nil
+}
+
+func isAuthorizedRepairReplacement(req *bossanovav1.StartChatRunHostRequest) bool {
+	return strings.TrimPrefix(req.GetCommand(), "/") == "boss-repair" &&
+		strings.HasPrefix(req.GetTitle(), "Repair: ") &&
+		strings.TrimSpace(req.GetReplaceExistingReason()) != "" &&
+		req.GetReplaceExistingObservedLastChatActivityAt() != nil
+}
+
+func (s *HostServiceServer) revalidateReplacementChatActivity(agentSessionID string, observedLastActivityAt *timestamppb.Timestamp) error {
+	if observedLastActivityAt == nil {
+		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: observed last chat activity is required")
+	}
+	if s.chatTracker == nil {
+		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: chat tracker not configured")
+	}
+	observed := observedLastActivityAt.AsTime()
+	if observed.IsZero() {
+		return grpcstatus.Error(codes.FailedPrecondition, "replace blocking repair chat: observed last chat activity is required")
+	}
+	current := s.chatTracker.Get(agentSessionID)
+	if current == nil {
+		return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: cannot verify current activity for agent_session_id %s", agentSessionID)
+	}
+	if current.LastOutputAt.After(observed) {
+		return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: chat %s produced output after idle snapshot", agentSessionID)
+	}
+	if current.Status != bossanovav1.ChatStatus_CHAT_STATUS_IDLE {
+		return grpcstatus.Errorf(codes.FailedPrecondition, "replace blocking repair chat: chat %s is no longer idle", agentSessionID)
+	}
+	return nil
+}
+
+func parseAlreadyExistsAgentSessionID(msg string) string {
+	const marker = "agent_session_id="
+	idx := strings.Index(msg, marker)
+	if idx == -1 {
+		return ""
+	}
+	rest := strings.TrimSpace(msg[idx+len(marker):])
+	for i, r := range rest {
+		if r == ')' || r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' {
+			return rest[:i]
+		}
+	}
+	return rest
 }
 
 // WaitChatRun blocks until the agent run identified by agent_session_id
@@ -1484,6 +1579,19 @@ func (s *HostServiceServer) cleanupRun(agentSessionID string) {
 	if sessionID != "" && s.displayTracker != nil {
 		s.displayTracker.SetRepairing(sessionID, false)
 	}
+}
+
+func (s *HostServiceServer) signalAndCleanupReplacedRun(agentSessionID string) {
+	s.runMu.Lock()
+	if run, ok := s.runCompletion[agentSessionID]; ok {
+		select {
+		case run.done <- completionResult{exitError: "chat run replaced by newer repair attempt"}:
+		default:
+		}
+	}
+	s.runMu.Unlock()
+
+	s.cleanupRun(agentSessionID)
 }
 
 func hostServiceStartChatRunHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

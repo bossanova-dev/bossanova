@@ -219,6 +219,10 @@ func (p *Provider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*v
 			return &vcs.PRInfo{Number: number, URL: prURL}, nil
 		}
 
+		if isPRAlreadyExists(err) {
+			return nil, fmt.Errorf("create PR: %w: %v", vcs.ErrPRAlreadyExists, err)
+		}
+
 		if !isRepoNotReady(err) {
 			return nil, fmt.Errorf("create PR: %w", err)
 		}
@@ -251,22 +255,23 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 	out, err := p.runGH(ctx,
 		"pr", "view", strconv.Itoa(prID),
 		"--repo", repoFlag(repoPath),
-		"--json", "state,mergeable,isDraft,title,headRefName,baseRefName,headRefOid,reviewDecision,reviews",
+		"--json", "state,mergeable,mergeStateStatus,isDraft,title,headRefName,baseRefName,headRefOid,reviewDecision,reviews",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get PR status: %w", err)
 	}
 
 	var raw struct {
-		State          string `json:"state"`
-		Mergeable      string `json:"mergeable"`
-		IsDraft        bool   `json:"isDraft"`
-		Title          string `json:"title"`
-		HeadRefName    string `json:"headRefName"`
-		BaseRefName    string `json:"baseRefName"`
-		HeadRefOid     string `json:"headRefOid"`
-		ReviewDecision string `json:"reviewDecision"`
-		Reviews        []struct {
+		State            string `json:"state"`
+		Mergeable        string `json:"mergeable"`
+		MergeStateStatus string `json:"mergeStateStatus"`
+		IsDraft          bool   `json:"isDraft"`
+		Title            string `json:"title"`
+		HeadRefName      string `json:"headRefName"`
+		BaseRefName      string `json:"baseRefName"`
+		HeadRefOid       string `json:"headRefOid"`
+		ReviewDecision   string `json:"reviewDecision"`
+		Reviews          []struct {
 			State string `json:"state"`
 		} `json:"reviews"`
 	}
@@ -282,33 +287,49 @@ func (p *Provider) GetPRStatus(ctx context.Context, repoPath string, prID int) (
 		BaseBranch: raw.BaseRefName,
 		HeadSHA:    raw.HeadRefOid,
 	}
+	status.MergeStateStatus = parseMergeStateStatus(raw.MergeStateStatus)
 
 	if raw.Mergeable != "" && raw.Mergeable != "UNKNOWN" {
 		m := raw.Mergeable == "MERGEABLE"
 		status.Mergeable = &m
 	}
-	if status.Mergeable != nil && *status.Mergeable {
-		rebaseable, err := p.getPRRebaseable(ctx, repoPath, prID)
+	if status.State == vcs.PRStateOpen && !status.Draft && (status.Mergeable == nil || *status.Mergeable) {
+		rest, err := p.getPRMergeability(ctx, repoPath, prID)
 		if err != nil {
-			p.logger.Warn().Err(err).Int("pr", prID).Msg("failed to fetch PR rebaseability")
+			p.logger.Warn().Err(err).Int("pr", prID).Msg("failed to fetch PR mergeability")
 		} else {
-			status.Rebaseable = rebaseable
+			if rest.Mergeable != nil {
+				status.Mergeable = rest.Mergeable
+			}
+			if rest.MergeStateStatus != "" {
+				status.MergeStateStatus = parseMergeStateStatus(rest.MergeStateStatus)
+			}
+			status.Rebaseable = rest.Rebaseable
 		}
 	}
-	status.LatestReviewState = parseReviewDecision(raw.ReviewDecision)
-	if status.LatestReviewState == vcs.ReviewStateUnspecified {
-		for _, review := range raw.Reviews {
-			state := parseReviewState(review.State)
-			if state != vcs.ReviewStateUnspecified {
-				status.LatestReviewState = state
-			}
+	status.ReviewDecisionState = parseReviewDecision(raw.ReviewDecision)
+	status.LatestReviewState = status.ReviewDecisionState
+	for _, review := range raw.Reviews {
+		state := parseReviewState(review.State)
+		if state != vcs.ReviewStateUnspecified {
+			status.LatestReviewState = state
 		}
+	}
+	if status.ReviewDecisionState == vcs.ReviewStateApproved ||
+		status.ReviewDecisionState == vcs.ReviewStateChangesRequested {
+		status.LatestReviewState = status.ReviewDecisionState
 	}
 
 	return status, nil
 }
 
-func (p *Provider) getPRRebaseable(ctx context.Context, repoPath string, prID int) (*bool, error) {
+type pullRequestMergeability struct {
+	Mergeable        *bool  `json:"mergeable"`
+	MergeStateStatus string `json:"mergeable_state"`
+	Rebaseable       *bool  `json:"rebaseable"`
+}
+
+func (p *Provider) getPRMergeability(ctx context.Context, repoPath string, prID int) (*pullRequestMergeability, error) {
 	nwo := repoFlag(repoPath)
 	if _, _, ok := splitNWO(nwo); !ok {
 		return nil, fmt.Errorf("invalid GitHub repo: %s", nwo)
@@ -317,13 +338,11 @@ func (p *Provider) getPRRebaseable(ctx context.Context, repoPath string, prID in
 	if err != nil {
 		return nil, err
 	}
-	var raw struct {
-		Rebaseable *bool `json:"rebaseable"`
-	}
+	var raw pullRequestMergeability
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return nil, fmt.Errorf("parse PR rebaseability: %w", err)
+		return nil, fmt.Errorf("parse PR mergeability: %w", err)
 	}
-	return raw.Rebaseable, nil
+	return &raw, nil
 }
 
 // GetCheckResults returns CI check results for a pull request.
@@ -701,8 +720,33 @@ func parseReviewDecision(s string) vcs.ReviewState {
 		return vcs.ReviewStateApproved
 	case "CHANGES_REQUESTED":
 		return vcs.ReviewStateChangesRequested
+	case "REVIEW_REQUIRED":
+		return vcs.ReviewStateRequired
 	default:
 		return vcs.ReviewStateUnspecified
+	}
+}
+
+func parseMergeStateStatus(s string) vcs.MergeStateStatus {
+	switch strings.ToUpper(s) {
+	case "CLEAN":
+		return vcs.MergeStateStatusClean
+	case "BLOCKED":
+		return vcs.MergeStateStatusBlocked
+	case "BEHIND":
+		return vcs.MergeStateStatusBehind
+	case "DIRTY":
+		return vcs.MergeStateStatusDirty
+	case "DRAFT":
+		return vcs.MergeStateStatusDraft
+	case "HAS_HOOKS":
+		return vcs.MergeStateStatusHasHooks
+	case "UNKNOWN":
+		return vcs.MergeStateStatusUnknown
+	case "UNSTABLE":
+		return vcs.MergeStateStatusUnstable
+	default:
+		return vcs.MergeStateStatusUnspecified
 	}
 }
 
@@ -717,6 +761,8 @@ func parseReviewState(s string) vcs.ReviewState {
 		return vcs.ReviewStateCommented
 	case "DISMISSED":
 		return vcs.ReviewStateDismissed
+	case "PENDING":
+		return vcs.ReviewStateUnspecified
 	default:
 		return vcs.ReviewStateCommented
 	}
@@ -733,6 +779,16 @@ func isRepoNotReady(err error) bool {
 	return strings.Contains(msg, "Head sha can't be blank") ||
 		strings.Contains(msg, "Base sha can't be blank") ||
 		strings.Contains(msg, "No commits between")
+}
+
+// isPRAlreadyExists returns true when the gh CLI error indicates GitHub
+// already has an open pull request for the requested head/base pair.
+func isPRAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "a pull request for branch") &&
+		strings.Contains(err.Error(), "already exists")
 }
 
 // defaultRunGH executes a gh CLI command and returns stdout.

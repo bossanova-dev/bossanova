@@ -116,3 +116,42 @@ func TestUpdateRepairDiagnostics_RoundTripsAttemptIdentity(t *testing.T) {
 		t.Fatalf("LastRepairDisplayStatus=%d, want 4", got.LastRepairDisplayStatus)
 	}
 }
+
+func TestUpdateRepairDiagnosticsPersistsReviewFingerprint(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "Repair review fingerprint test",
+		WorktreePath: "/tmp/wt/repair-review-fingerprint",
+		BranchName:   "feat/repair-review-fingerprint",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	reviewFingerprint := "review-fp-1"
+	err = sessionStore.UpdateRepairDiagnostics(ctx, UpdateRepairDiagnosticsParams{
+		SessionID:         sess.ID,
+		StartedAt:         time.Unix(1779238800, 0),
+		HeadSHA:           "abc123",
+		DisplayStatus:     5,
+		ReviewFingerprint: &reviewFingerprint,
+	})
+	if err != nil {
+		t.Fatalf("UpdateRepairDiagnostics: %v", err)
+	}
+
+	got, err := sessionStore.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.LastRepairReviewFingerprint != "review-fp-1" {
+		t.Fatalf("LastRepairReviewFingerprint=%q, want review-fp-1", got.LastRepairReviewFingerprint)
+	}
+}

@@ -14,6 +14,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/daemon"
@@ -26,6 +27,12 @@ const (
 	pollInterval        = 2 * time.Second
 	upgradeCheckTimeout = 5 * time.Second
 	upgradeCacheTTL     = 24 * time.Hour
+
+	// pollFailureThreshold is how many consecutive failed session polls must
+	// occur before the TUI shows the "Cannot connect to daemon" screen. At a 2s
+	// poll interval this tolerates ~6s of transient unreachability (e.g. the
+	// daemon momentarily busy) without flashing the error view.
+	pollFailureThreshold = 3
 )
 
 // upgradeNow is the clock source used by the upgrade-check goroutine. Tests
@@ -70,6 +77,25 @@ type authStatusMsg struct {
 	email    string
 }
 
+type CloudAccessClient interface {
+	GetCloudAccessStatus(ctx context.Context) (*pb.CloudAccessStatus, error)
+	CreateCheckoutSession(ctx context.Context, returnURL, cancelURL string) (string, error)
+	CreateBillingPortalSession(ctx context.Context, returnURL string) (string, error)
+	RefreshCloudEntitlements(ctx context.Context) (*pb.CloudAccessStatus, error)
+}
+
+type cloudAccessMsg struct {
+	status *pb.CloudAccessStatus
+	err    error
+}
+
+type homeCloudCheckoutMsg struct {
+	url string
+	err error
+}
+
+type startSubscriptionFlowMsg struct{}
+
 type upgradeCheckMsg struct {
 	current   string
 	latest    string
@@ -98,10 +124,18 @@ type HomeModel struct {
 	availableAgents []client.AgentInfo
 	table           table.Model
 	err             error
+	status          string
 	loading         bool
 	width           int
 	height          int
 	repoCount       int // number of registered repos (for empty state guidance)
+
+	// pollFailures counts consecutive failed session polls. The "Cannot
+	// connect to daemon" screen is only shown once it reaches
+	// pollFailureThreshold, so a single transient blip (e.g. the daemon briefly
+	// busy) keeps the last-good session list on screen instead of flashing the
+	// error view every 2s. Reset to 0 on any successful poll.
+	pollFailures int
 
 	// Navigation
 	highlightSessionID string // session to auto-highlight after returning from chat picker
@@ -119,10 +153,18 @@ type HomeModel struct {
 	archivingSessionID string
 
 	// Auth
-	authMgr          *auth.Manager // nil means auth not configured
-	loggedIn         bool
-	loggedInEmail    string
-	logoutConfirming bool
+	authMgr              *auth.Manager // nil means auth not configured
+	loggedIn             bool
+	loggedInEmail        string
+	logoutConfirming     bool
+	cloudAccess          CloudAccessClient
+	cloudStatus          *pb.CloudAccessStatus
+	cloudErr             error
+	cloudChecking        bool
+	checkoutReturnURL    string
+	checkoutCancelURL    string
+	cloudCheckoutStatus  string
+	cloudCheckoutPolling bool
 
 	// Upgrade banner / restart prompt
 	upgradeAvailable bool
@@ -146,6 +188,16 @@ func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manage
 		table:           newBossTable(nil, nil, 0),
 		upgradeChecking: true,
 	}
+}
+
+func (h *HomeModel) SetCloudAccessClient(c CloudAccessClient) {
+	h.SetCloudSubscription(c, h.checkoutReturnURL, h.checkoutCancelURL)
+}
+
+func (h *HomeModel) SetCloudSubscription(c CloudAccessClient, returnURL, cancelURL string) {
+	h.cloudAccess = c
+	h.checkoutReturnURL = returnURL
+	h.checkoutCancelURL = cancelURL
 }
 
 // DaemonStatuses returns the per-session daemon heartbeat statuses, keyed by
@@ -363,7 +415,7 @@ func checkUpgradeCmdForVersion(ctx context.Context, current string, check upgrad
 	}
 }
 
-func runUpgradeCmd(executable string) tea.Cmd {
+var runUpgradeCmd = func(executable string) tea.Cmd {
 	return tea.ExecProcess(
 		exec.Command(executable, "upgrade", "--yes", "--no-restart"),
 		func(err error) tea.Msg { return upgradeRunMsg{err: err} },
@@ -563,7 +615,61 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case authStatusMsg:
 		h.loggedIn = msg.loggedIn
 		h.loggedInEmail = msg.email
+		if !h.loggedIn {
+			h.cloudStatus = nil
+			h.cloudErr = nil
+			h.cloudCheckoutStatus = ""
+			h.cloudCheckoutPolling = false
+			h.cloudChecking = false
+			return h, nil
+		}
+		if h.cloudAccess != nil && h.cloudStatus == nil && !h.cloudChecking {
+			h.cloudChecking = true
+			return h, fetchCloudAccessStatus(h.cloudAccess, h.ctx)
+		}
 		return h, nil
+
+	case cloudAccessMsg:
+		h.cloudChecking = false
+		h.cloudStatus = msg.status
+		h.cloudErr = msg.err
+		if subscriptionIsActive(msg.status) {
+			h.cloudCheckoutPolling = false
+			h.cloudCheckoutStatus = ""
+		}
+		if msg.status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE {
+			h.cloudCheckoutPolling = false
+		}
+		return h, nil
+
+	case homeCloudCheckoutMsg:
+		if msg.err != nil {
+			if checkoutActivationPending(msg.err) {
+				h.cloudStatus = &pb.CloudAccessStatus{
+					State:   pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+					Message: "Your subscription is being activated.",
+				}
+				h.cloudErr = nil
+				h.cloudCheckoutStatus = ""
+				h.cloudCheckoutPolling = true
+				h.cloudChecking = true
+				return h, refreshCloudAccessStatus(h.cloudAccess, h.ctx)
+			}
+			if msg.url != "" {
+				h.cloudCheckoutStatus = "Open this billing URL: " + msg.url
+				h.cloudCheckoutPolling = true
+				h.cloudChecking = true
+				return h, refreshCloudAccessStatus(h.cloudAccess, h.ctx)
+			} else {
+				h.cloudCheckoutStatus = "Cloud checkout unavailable. Local sessions are still available."
+				h.cloudCheckoutPolling = false
+			}
+			return h, nil
+		}
+		h.cloudCheckoutStatus = "Opened Bossanova Cloud subscription checkout."
+		h.cloudCheckoutPolling = true
+		h.cloudChecking = true
+		return h, refreshCloudAccessStatus(h.cloudAccess, h.ctx)
 
 	case upgradeCheckMsg:
 		h.upgradeChecking = false
@@ -598,10 +704,24 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionListMsg:
 		h.loading = false
+		if msg.err != nil {
+			// Debounce transient poll failures: keep the last-good session list
+			// on screen and only surface the "Cannot connect to daemon" view
+			// after several consecutive failures. This stops the constant
+			// flashing when the daemon is briefly unreachable (e.g. busy).
+			h.pollFailures++
+			if h.pollFailures >= pollFailureThreshold {
+				h.err = msg.err
+			}
+			h.buildTableRows()
+			return h, nil
+		}
+		// Successful poll: clear the failure streak and any error screen.
+		h.pollFailures = 0
+		h.err = nil
 		h.sessions = msg.sessions
 		h.daemonStatuses = msg.daemonStatuses
 		h.availableAgents = msg.availableAgents
-		h.err = msg.err
 		h.applyMergedOptimisticOverride()
 		h.buildTableRows()
 		if h.highlightSessionID != "" {
@@ -660,6 +780,10 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if h.authMgr != nil {
 			cmds = append(cmds, fetchAuthStatus(h.authMgr))
 		}
+		if h.loggedIn && h.cloudAccess != nil && (cloudAccessPending(h.cloudStatus) || h.cloudCheckoutPolling) {
+			h.cloudChecking = true
+			cmds = append(cmds, refreshCloudAccessStatus(h.cloudAccess, h.ctx))
+		}
 		return h, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
@@ -677,6 +801,9 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.restartPrompt = false
 				return h, nil
 			}
+		}
+		if msg.String() == "u" && h.canOpenCloudSubscription() && !h.upgradeAvailable {
+			return h, func() tea.Msg { return startSubscriptionFlowMsg{} }
 		}
 		if h.upgradeAvailable {
 			switch msg.String() {
@@ -703,7 +830,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 		}
-
 		switch msg.String() {
 		case "n":
 			if h.repoCount == 0 {
@@ -890,6 +1016,70 @@ func (h HomeModel) loginAction() string {
 	return "[l]ogin"
 }
 
+// cloudAction intentionally returns no action-bar entry. When the Cloud
+// subscription is inactive, Home stays quiet: it shows a one-line reminder
+// (see cloudGateLine) instead of a permanent [b]illing menu item. Re-entry to
+// billing stays in the login/subscription flow.
+func (h HomeModel) cloudAction() string {
+	return ""
+}
+
+func (h HomeModel) canOpenCloudSubscription() bool {
+	return h.loggedIn && h.cloudAccess != nil && (subscriptionNeedsCheckout(h.cloudStatus) || cloudAccessPending(h.cloudStatus))
+}
+
+func checkoutActivationPending(err error) bool {
+	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "being activated")
+}
+
+func (h HomeModel) cloudGateLine() string {
+	if !h.loggedIn || h.cloudAccess == nil {
+		return ""
+	}
+	if h.cloudErr != nil || h.cloudStatus.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE {
+		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+			"Cloud billing unavailable. Local sessions are still available.",
+		)
+	}
+	if h.cloudChecking && h.cloudStatus == nil {
+		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render("Checking Bossanova Cloud access...")
+	}
+	switch h.cloudStatus.GetState() {
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		pb.CloudAccessState_CLOUD_ACCESS_STATE_PAST_DUE,
+		pb.CloudAccessState_CLOUD_ACCESS_STATE_CANCELED:
+		if h.upgradeAvailable {
+			return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+				"Bossanova Cloud requires a subscription. Local sessions are still available. Upgrade boss first, then subscribe.",
+			)
+		}
+		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+			"Bossanova Cloud requires a subscription. Local sessions are still available. Type u to s[u]bscribe.",
+		)
+	case pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH:
+		if h.upgradeAvailable {
+			return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+				"Bossanova Cloud setup has not completed yet. Upgrade boss first, then subscribe.",
+			)
+		}
+		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
+			"Bossanova Cloud setup has not completed yet. Type u to s[u]bscribe.",
+		)
+	default:
+		return ""
+	}
+}
+
+func (h HomeModel) cloudCheckoutStatusLine() string {
+	if !h.loggedIn || h.cloudAccess == nil || h.cloudCheckoutStatus == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().Padding(0, 2).Foreground(colorSuccess).Render(h.cloudCheckoutStatus)
+}
+
 func (h HomeModel) View() tea.View {
 	if h.err != nil {
 		return tea.NewView(
@@ -909,11 +1099,15 @@ func (h HomeModel) View() tea.View {
 
 	if len(h.sessions) == 0 {
 		var content string
+		discovery := cloudDiscoveryLine(h.loggedIn, h.authMgr != nil)
 		if h.repoCount == 0 {
 			// No repos configured - show welcome message with setup instructions
 			actions := []string{"[r]epos", "[s]ettings"}
 			if la := h.loginAction(); la != "" {
 				actions = append(actions, la)
+			}
+			if ca := h.cloudAction(); ca != "" {
+				actions = append(actions, ca)
 			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"Welcome to Bossanova!\n\n"+
@@ -927,11 +1121,23 @@ func (h HomeModel) View() tea.View {
 			if la := h.loginAction(); la != "" {
 				actions = append(actions, la)
 			}
+			if ca := h.cloudAction(); ca != "" {
+				actions = append(actions, ca)
+			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"You have no active sessions.\n\n"+
 					lipgloss.NewStyle().Bold(true).Render("Press 'n' to create a new session."),
 			) + "\n" +
 				actionBar(actions, []string{"[q]uit"})
+		}
+		if discovery != "" {
+			content += "\n\n" + discovery
+		}
+		if gate := h.cloudGateLine(); gate != "" {
+			content += "\n" + gate
+		}
+		if checkoutStatus := h.cloudCheckoutStatusLine(); checkoutStatus != "" {
+			content += "\n" + checkoutStatus
 		}
 		return tea.NewView(h.withUpgradeStatus(content))
 	}
@@ -940,6 +1146,10 @@ func (h HomeModel) View() tea.View {
 
 	if len(h.sessions) > 0 {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(h.table.View()))
+		b.WriteString("\n")
+	}
+	if h.status != "" {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorSuccess).Render(h.status))
 		b.WriteString("\n")
 	}
 
@@ -965,11 +1175,26 @@ func (h HomeModel) View() tea.View {
 		if la := h.loginAction(); la != "" {
 			navActions = append(navActions, la)
 		}
+		if ca := h.cloudAction(); ca != "" {
+			navActions = append(navActions, ca)
+		}
+		sessionActions := []string{"[enter] select", "[a]rchive"}
 		b.WriteString(actionBar(
-			[]string{"[enter] select", "[a]rchive"},
+			sessionActions,
 			navActions,
 			[]string{"[q]uit"},
 		))
+		if discovery := cloudDiscoveryLine(h.loggedIn, h.authMgr != nil); discovery != "" {
+			b.WriteString(discovery)
+		}
+		if gate := h.cloudGateLine(); gate != "" {
+			b.WriteString("\n")
+			b.WriteString(gate)
+		}
+		if checkoutStatus := h.cloudCheckoutStatusLine(); checkoutStatus != "" {
+			b.WriteString("\n")
+			b.WriteString(checkoutStatus)
+		}
 	}
 
 	return tea.NewView(h.withUpgradeStatus(b.String()))
@@ -1032,4 +1257,22 @@ func fetchAuthStatus(mgr *auth.Manager) tea.Cmd {
 		status := mgr.Status()
 		return authStatusMsg{loggedIn: status.LoggedIn, email: status.Email}
 	}
+}
+
+func fetchCloudAccessStatus(c CloudAccessClient, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		status, err := c.GetCloudAccessStatus(ctx)
+		return cloudAccessMsg{status: status, err: err}
+	}
+}
+
+func refreshCloudAccessStatus(c CloudAccessClient, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		status, err := c.RefreshCloudEntitlements(ctx)
+		return cloudAccessMsg{status: status, err: err}
+	}
+}
+
+func cloudAccessPending(status *pb.CloudAccessStatus) bool {
+	return status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH
 }

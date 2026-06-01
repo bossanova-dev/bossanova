@@ -83,12 +83,13 @@ type Session struct {
 	// fail → succeed → fail sequences. LastRepairStartedAt is the
 	// "an attempt has been recorded" sentinel; it stays nil until the
 	// repair plugin runs for the first time on this session.
-	LastRepairStartedAt     *time.Time
-	LastRepairRunnerError   string
-	LastRepairExitError     string
-	LastRepairAttemptCount  int
-	LastRepairHeadSHA       string
-	LastRepairDisplayStatus int32
+	LastRepairStartedAt         *time.Time
+	LastRepairRunnerError       string
+	LastRepairExitError         string
+	LastRepairAttemptCount      int
+	LastRepairHeadSHA           string
+	LastRepairDisplayStatus     int32
+	LastRepairReviewFingerprint string
 }
 
 // Attempt represents a fix attempt within a session.

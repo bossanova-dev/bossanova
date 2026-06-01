@@ -26,7 +26,7 @@ func maybeWarnCredentialsUnreadable(err error) {
 		return
 	}
 	migrationHintOnce.Do(func() {
-		_, _ = fmt.Fprintln(migrationHintOut, "warning: stored credentials can't be decrypted with the current keyring passphrase — run 'boss logout && boss login' to reset.")
+		_, _ = fmt.Fprintln(migrationHintOut, "\nwarning: stored credentials can't be decrypted with the current keyring passphrase — run 'boss logout && boss login' to reset.")
 	})
 }
 

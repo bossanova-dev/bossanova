@@ -231,6 +231,7 @@ func sessionToProto(s *models.Session) *pb.Session {
 	return &pb.Session{
 		Id:             s.ID,
 		State:          pb.SessionState(s.State),
+		BlockedReason:  s.BlockedReason,
 		DisplayLabel:   s.DisplayLabel,
 		DisplayIntent:  pb.DisplayIntent(s.DisplayIntent),
 		DisplaySpinner: s.DisplaySpinner,

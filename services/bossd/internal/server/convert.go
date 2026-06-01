@@ -124,6 +124,7 @@ func SessionToProto(s *models.Session) *pb.Session {
 	p.LastRepairAttemptCount = int32(s.LastRepairAttemptCount)
 	p.LastRepairHeadSha = protoString(s.LastRepairHeadSHA)
 	p.LastRepairDisplayStatus = pb.DisplayStatus(s.LastRepairDisplayStatus)
+	p.LastRepairReviewFingerprint = s.LastRepairReviewFingerprint
 	if s.LastRepairStartedAt != nil {
 		p.LastRepairStartedAt = timestamppb.New(*s.LastRepairStartedAt)
 	}

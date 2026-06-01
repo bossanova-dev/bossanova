@@ -50,9 +50,23 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus: DisplayStatusConflict,
 		},
 		{
-			name:       "conflict (not rebaseable)",
+			name:       "rebase-only block is not a strategy-independent conflict",
 			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true), Rebaseable: boolPtr(false)},
-			wantStatus: DisplayStatusConflict,
+			wantStatus: DisplayStatusIdle,
+		},
+		{
+			name: "review required block is not a conflict",
+			pr: &PRStatus{
+				State:             PRStateOpen,
+				Mergeable:         boolPtr(true),
+				Rebaseable:        boolPtr(false),
+				MergeStateStatus:  MergeStateStatusBlocked,
+				LatestReviewState: ReviewStateRequired,
+			},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			wantStatus: DisplayStatusReview,
 		},
 		{
 			name: "all checks failed",
@@ -201,6 +215,23 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus: DisplayStatusApproved,
 		},
 		{
+			name: "review required block overrides partial approval",
+			pr: &PRStatus{
+				State:               PRStateOpen,
+				Mergeable:           boolPtr(true),
+				MergeStateStatus:    MergeStateStatusBlocked,
+				LatestReviewState:   ReviewStateApproved,
+				ReviewDecisionState: ReviewStateRequired,
+			},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateApproved},
+			},
+			wantStatus: DisplayStatusReview,
+		},
+		{
 			name:       "open PR, no checks = idle",
 			pr:         &PRStatus{State: PRStateOpen, Mergeable: boolPtr(true)},
 			wantStatus: DisplayStatusIdle,
@@ -263,6 +294,63 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus:              DisplayStatusChecking,
 			wantHasFailure:          true,
 			wantHasChangesRequested: true,
+		},
+		{
+			name: "failing checks override review required",
+			pr: &PRStatus{
+				State:             PRStateOpen,
+				Mergeable:         boolPtr(true),
+				Rebaseable:        boolPtr(false),
+				MergeStateStatus:  MergeStateStatusBlocked,
+				LatestReviewState: ReviewStateRequired,
+			},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionFailure)},
+			},
+			wantStatus: DisplayStatusFailing,
+		},
+		{
+			name: "running checks override review required",
+			pr: &PRStatus{
+				State:             PRStateOpen,
+				Mergeable:         boolPtr(true),
+				Rebaseable:        boolPtr(false),
+				MergeStateStatus:  MergeStateStatusBlocked,
+				LatestReviewState: ReviewStateRequired,
+			},
+			checks: []CheckResult{
+				{Status: CheckStatusInProgress},
+			},
+			wantStatus: DisplayStatusChecking,
+		},
+		{
+			name: "changes requested overrides review required",
+			pr: &PRStatus{
+				State:             PRStateOpen,
+				Mergeable:         boolPtr(true),
+				Rebaseable:        boolPtr(false),
+				MergeStateStatus:  MergeStateStatusBlocked,
+				LatestReviewState: ReviewStateRequired,
+			},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			reviews: []ReviewComment{
+				{Author: "alice", State: ReviewStateChangesRequested},
+			},
+			wantStatus: DisplayStatusRejected,
+		},
+		{
+			name: "unknown mergeability does not show review",
+			pr: &PRStatus{
+				State:             PRStateOpen,
+				MergeStateStatus:  MergeStateStatusBlocked,
+				LatestReviewState: ReviewStateRequired,
+			},
+			checks: []CheckResult{
+				{Status: CheckStatusCompleted, Conclusion: conclusionPtr(CheckConclusionSuccess)},
+			},
+			wantStatus: DisplayStatusChecking,
 		},
 		{
 			name: "mergeable unknown with passing checks = checking (not passing)",

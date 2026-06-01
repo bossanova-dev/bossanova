@@ -155,6 +155,91 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+// TestCreate_RemovesStaleWorktreeDir verifies that Create self-heals when a
+// leftover directory occupies the target path (e.g. from an orphaned prior
+// session). Without the cleanup, `git worktree add` fails with "already exists"
+// and wedges the branch forever (the dependabot repair loop).
+func TestCreate_RemovesStaleWorktreeDir(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	// Pre-create a stale, non-empty directory at the exact path Create will use.
+	stalePath := filepath.Join(wtBase, "my-repo", "test-session")
+	if err := os.MkdirAll(stalePath, 0o755); err != nil {
+		t.Fatalf("mkdir stale: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stalePath, "leftover.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		BaseBranch:      "main",
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+	})
+	if err != nil {
+		t.Fatalf("Create over stale dir: %v", err)
+	}
+	if result.WorktreePath != stalePath {
+		t.Fatalf("worktree path = %q, want %q", result.WorktreePath, stalePath)
+	}
+	// The stale file must be gone (the dir was recreated as a fresh worktree).
+	if _, err := os.Stat(filepath.Join(stalePath, "leftover.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale file still present (err=%v)", err)
+	}
+}
+
+// TestCreateFromExistingBranch_RemovesStaleWorktreeDir verifies the same
+// self-heal for the existing-branch (PR / dependabot) path.
+func TestCreateFromExistingBranch_RemovesStaleWorktreeDir(t *testing.T) {
+	repoDir := initTestRepo(t)
+	for _, args := range [][]string{
+		{"checkout", "-b", "feature"},
+		{"commit", "--allow-empty", "-m", "feature"},
+		{"push", "origin", "feature"},
+		{"checkout", "main"},
+		{"branch", "-D", "feature"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	stalePath := filepath.Join(wtBase, "my-repo", "feature")
+	if err := os.MkdirAll(stalePath, 0o755); err != nil {
+		t.Fatalf("mkdir stale: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stalePath, "leftover.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+
+	result, err := mgr.CreateFromExistingBranch(ctx, CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      "feature",
+	})
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch over stale dir: %v", err)
+	}
+	if result.WorktreePath != stalePath {
+		t.Fatalf("worktree path = %q, want %q", result.WorktreePath, stalePath)
+	}
+	if _, err := os.Stat(filepath.Join(stalePath, "leftover.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale file still present (err=%v)", err)
+	}
+}
+
 func TestCreateWithSetupScript(t *testing.T) {
 	repoDir := initTestRepo(t)
 	wtBase := filepath.Join(t.TempDir(), "worktrees")
@@ -636,6 +721,29 @@ func TestEmptyTrash(t *testing.T) {
 	}
 	if strings.Contains(out, "trash-test") {
 		t.Errorf("branch should be deleted after empty trash, got: %q", out)
+	}
+}
+
+func TestEmptyCommitBypassesCommitHooks(t *testing.T) {
+	repoDir := initTestRepo(t)
+	hookPath := filepath.Join(repoDir, ".git", "hooks", "commit-msg")
+	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write commit-msg hook: %v", err)
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	if err := mgr.EmptyCommit(ctx, repoDir, "chore: [skip ci] create pull request"); err != nil {
+		t.Fatalf("EmptyCommit: %v", err)
+	}
+
+	subject, err := runGit(ctx, repoDir, "log", "-1", "--format=%s")
+	if err != nil {
+		t.Fatalf("read commit subject: %v", err)
+	}
+	if subject != "chore: [skip ci] create pull request" {
+		t.Errorf("commit subject = %q, want %q", subject, "chore: [skip ci] create pull request")
 	}
 }
 

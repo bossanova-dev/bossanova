@@ -389,6 +389,10 @@ func (c *LocalClient) CreateCheckoutSession(_ context.Context, _, _ string) (str
 	return "", errLocalOnly("cloud billing")
 }
 
+func (c *LocalClient) CreateBillingPortalSession(_ context.Context, _ string) (string, error) {
+	return "", errLocalOnly("cloud billing")
+}
+
 func (c *LocalClient) RefreshCloudEntitlements(_ context.Context) (*pb.CloudAccessStatus, error) {
 	return nil, errLocalOnly("cloud billing")
 }

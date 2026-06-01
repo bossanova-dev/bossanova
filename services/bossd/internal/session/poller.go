@@ -12,6 +12,7 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/mergepolicy"
 )
 
 // DefaultPollInterval is the default interval between CI check polls.
@@ -242,7 +243,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 	}
 
 	// Check for merge conflicts.
-	if prStatus.Mergeable != nil && !*prStatus.Mergeable {
+	if p.hasConflictBlock(ctx, repo, prStatus) {
 		emitIf(machine.ConflictDetected, vcs.ConflictDetected{PRID: prID})
 		return
 	}
@@ -276,7 +277,7 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 		}
 	}
 
-	if prStatus.LatestReviewState != vcs.ReviewStateUnspecified &&
+	if reviewSubmittedState(prStatus.LatestReviewState) &&
 		prStatus.LatestReviewState != vcs.ReviewState(sess.LastObservedReviewState) {
 		event := vcs.ReviewSubmitted{PRID: prID, State: prStatus.LatestReviewState}
 		if prStatus.LatestReviewState == vcs.ReviewStateChangesRequested {
@@ -288,6 +289,31 @@ func (p *Poller) checkSession(ctx context.Context, ch chan<- SessionEvent, repo 
 			event.Comments = comments
 		}
 		emitIf(machine.ReviewSubmitted, event)
+	}
+}
+
+func (p *Poller) hasConflictBlock(ctx context.Context, repo *models.Repo, prStatus *vcs.PRStatus) bool {
+	if prStatus.HasConflictBlock() {
+		return true
+	}
+	if !prStatus.HasRebaseConflictBlock() {
+		return false
+	}
+
+	strategy, err := mergepolicy.ResolveStrategy(ctx, p.provider, repo.OriginURL, string(repo.MergeStrategy))
+	if err != nil {
+		p.logger.Warn().Err(err).Str("repo", repo.ID).Msg("poller: resolve merge strategy")
+		return false
+	}
+	return strategy == string(models.MergeStrategyRebase)
+}
+
+func reviewSubmittedState(state vcs.ReviewState) bool {
+	switch state {
+	case vcs.ReviewStateApproved, vcs.ReviewStateChangesRequested, vcs.ReviewStateCommented, vcs.ReviewStateDismissed:
+		return true
+	default:
+		return false
 	}
 }
 

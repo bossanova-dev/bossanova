@@ -7,6 +7,10 @@ import "errors"
 // --allow-empty initial commit with no real content).
 var ErrRepoNotReady = errors.New("repository is not ready for pull requests: push at least one commit with content before creating a session")
 
+// ErrPRAlreadyExists is returned when the remote already has an open pull
+// request for the requested head/base branch pair.
+var ErrPRAlreadyExists = errors.New("pull request already exists")
+
 // PRState represents the state of a pull/merge request.
 type PRState int
 
@@ -46,19 +50,73 @@ const (
 	ReviewStateChangesRequested
 	ReviewStateCommented
 	ReviewStateDismissed
+	ReviewStateRequired
+)
+
+// MergeStateStatus represents GitHub's mergeStateStatus value for a PR.
+type MergeStateStatus int
+
+const (
+	MergeStateStatusUnspecified MergeStateStatus = iota
+	MergeStateStatusClean
+	MergeStateStatusBlocked
+	MergeStateStatusBehind
+	MergeStateStatusDirty
+	MergeStateStatusDraft
+	MergeStateStatusHasHooks
+	MergeStateStatusUnknown
+	MergeStateStatusUnstable
 )
 
 // PRStatus represents the current status of a pull/merge request.
 type PRStatus struct {
-	State             PRState
-	Mergeable         *bool
-	Rebaseable        *bool
-	Draft             bool
-	Title             string
-	HeadBranch        string
-	BaseBranch        string
-	HeadSHA           string
-	LatestReviewState ReviewState
+	State               PRState
+	Mergeable           *bool
+	Rebaseable          *bool
+	MergeStateStatus    MergeStateStatus
+	Draft               bool
+	Title               string
+	HeadBranch          string
+	BaseBranch          string
+	HeadSHA             string
+	LatestReviewState   ReviewState
+	ReviewDecisionState ReviewState
+}
+
+// IsReviewRequiredBlock reports GitHub's "blocked only because approval is
+// required" state. GitHub can mark these PRs rebaseable:false even though no
+// code conflict exists.
+func (pr *PRStatus) IsReviewRequiredBlock() bool {
+	if pr == nil {
+		return false
+	}
+
+	reviewState := pr.ReviewDecisionState
+	if reviewState == ReviewStateUnspecified {
+		reviewState = pr.LatestReviewState
+	}
+
+	return pr.Mergeable != nil &&
+		*pr.Mergeable &&
+		pr.MergeStateStatus == MergeStateStatusBlocked &&
+		reviewState == ReviewStateRequired
+}
+
+// HasConflictBlock reports strategy-independent PR states that should trigger
+// conflict repair.
+func (pr *PRStatus) HasConflictBlock() bool {
+	if pr == nil {
+		return false
+	}
+	return pr.Mergeable != nil && !*pr.Mergeable
+}
+
+// HasRebaseConflictBlock reports PR states that only block rebase-and-merge.
+func (pr *PRStatus) HasRebaseConflictBlock() bool {
+	if pr == nil {
+		return false
+	}
+	return pr.Rebaseable != nil && !*pr.Rebaseable && !pr.IsReviewRequiredBlock()
 }
 
 // CheckResult represents the result of a single CI check.

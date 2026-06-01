@@ -128,6 +128,78 @@ func writeRepairChatLogAt(t *testing.T, h *startTmuxChatHarness, agentSessionID 
 	}
 }
 
+func ptr[T any](v T) *T {
+	return &v
+}
+
+func TestRepairChatStaleForReclaim_DefaultThresholdAndFailClosedCases(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name          string
+		withTmuxName  bool
+		withLogAt     *time.Time
+		wantStale     bool
+		wantReasonHas string
+	}{
+		{
+			name:          "idle for nineteen minutes fifty nine seconds is not reclaimable",
+			withTmuxName:  true,
+			withLogAt:     ptr(now.Add(-(19*time.Minute + 59*time.Second))),
+			wantStale:     false,
+			wantReasonHas: "threshold is 20m0s",
+		},
+		{
+			name:          "idle for twenty minutes is reclaimable",
+			withTmuxName:  true,
+			withLogAt:     ptr(now.Add(-20 * time.Minute)),
+			wantStale:     true,
+			wantReasonHas: "threshold is 20m0s",
+		},
+		{
+			name:          "missing log is not reclaimable",
+			withTmuxName:  true,
+			wantStale:     false,
+			wantReasonHas: "agent log for repair-agent-boundary is missing",
+		},
+		{
+			name:          "chat without live tmux pointer is reclaimable immediately",
+			wantStale:     true,
+			wantReasonHas: "repair chat has no live tmux pointer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newStartTmuxChatHarness(t)
+			agentSessionID := "repair-agent-boundary"
+			var tmuxName *string
+			if tt.withTmuxName {
+				tmuxName = ptr("boss-repair-boundary")
+			}
+			chat := &models.AgentChat{
+				AgentSessionID:  agentSessionID,
+				Title:           "Repair: boundary",
+				TmuxSessionName: tmuxName,
+			}
+			if tt.withLogAt != nil {
+				writeRepairChatLogAt(t, h, agentSessionID, *tt.withLogAt)
+			}
+
+			stale, reason, err := RepairChatStaleForReclaim(h.logsDir, chat, now)
+			if err != nil {
+				t.Fatalf("RepairChatStaleForReclaim error = %v", err)
+			}
+			if stale != tt.wantStale {
+				t.Fatalf("stale = %v, want %v; reason=%q", stale, tt.wantStale, reason)
+			}
+			if !strings.Contains(reason, tt.wantReasonHas) {
+				t.Fatalf("reason = %q, want substring %q", reason, tt.wantReasonHas)
+			}
+		})
+	}
+}
+
 func TestKillChatTmuxSession_KillsLiveTmuxThenClearsChatPointer(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	tmuxName := "bossd-agent-run-existing"

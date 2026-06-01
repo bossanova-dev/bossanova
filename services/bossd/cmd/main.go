@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -191,6 +192,25 @@ func run(opts runOpts) error {
 		}
 		dbPath = p
 	}
+
+	// --- Singleton guard ---
+	//
+	// Acquire an exclusive flock before opening the DB or binding the socket so
+	// only one bossd owns them at a time. Without this, a second bossd (e.g. a
+	// stray `make dev` or a TUI auto-start after a transient blip) would steal
+	// the socket and contend over the SQLite DB, which surfaces as the TUI
+	// flashing "Cannot connect to daemon". The lock lives in the data dir
+	// (alongside the DB/socket) and auto-releases on process exit.
+	lockPath := filepath.Join(filepath.Dir(dbPath), server.LockFileName)
+	lockFile, err := server.AcquireSingletonLock(lockPath)
+	if err != nil {
+		if errors.Is(err, server.ErrDaemonAlreadyRunning) {
+			log.Info().Str("lock", lockPath).Msg("another bossd is already running; exiting")
+			return nil
+		}
+		return fmt.Errorf("acquire singleton lock: %w", err)
+	}
+	defer func() { _ = lockFile.Close() }()
 
 	database, err := db.Open(dbPath)
 	if err != nil {

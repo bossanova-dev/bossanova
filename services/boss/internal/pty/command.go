@@ -190,28 +190,7 @@ func (c *PTYCommand) Run() error {
 					data, pending = stripTerminalQueryReplies(buf[:n], pending)
 
 					if len(data) > 0 {
-						// Check for raw detach bytes (Ctrl+X or Ctrl+]).
-						detached := false
-						for _, b := range data {
-							if b == detachByteCtrlX || b == detachByte {
-								detached = true
-								break
-							}
-						}
-
-						// Check for any of the encoded forms (kitty CSI-u or
-						// xterm modifyOtherKeys=2). Claude Code enables one of
-						// these on attach, so the raw byte path above won't
-						// fire on a real terminal.
-						if !detached {
-							for _, seq := range detachSequences {
-								if bytes.Contains(data, seq) {
-									detached = true
-									break
-								}
-							}
-						}
-						if detached {
+						if containsDetachSequence(data) {
 							close(detachCh)
 							return
 						}
@@ -246,6 +225,22 @@ func (c *PTYCommand) Run() error {
 		c.Detached = true
 		return nil
 	}
+}
+
+func containsDetachSequence(data []byte) bool {
+	for _, b := range data {
+		if b == detachByteCtrlX || b == detachByte {
+			return true
+		}
+	}
+
+	for _, seq := range detachSequences {
+		if bytes.Contains(data, seq) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // fdSet sets a file descriptor in a syscall.FdSet.

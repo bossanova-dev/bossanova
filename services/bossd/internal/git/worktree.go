@@ -59,6 +59,11 @@ type WorktreeManager interface {
 	// Archive removes the worktree directory but keeps the branch alive.
 	Archive(ctx context.Context, worktreePath string) error
 
+	// PurgeWorktree removes any worktree (registration + on-disk directory) for
+	// branch under worktreeBaseDir without deleting the branch. Best-effort
+	// cleanup after a failed session start; safe when nothing exists.
+	PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string)
+
 	// Resurrect re-creates a worktree from an existing branch and runs the
 	// setup script if present.
 	Resurrect(ctx context.Context, opts ResurrectOpts) error
@@ -315,6 +320,50 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 	return err == nil
 }
 
+// clearStaleWorktree removes a leftover worktree at wtPath so a fresh
+// `git worktree add` can succeed. A directory can be left behind when a prior
+// session was orphaned (daemon crash/restart, or a duplicate daemon stealing
+// the socket) — `git worktree prune` alone does not remove an on-disk
+// directory, so every subsequent attempt would fail with
+// "fatal: '<path>' already exists" and wedge the branch forever (the dependabot
+// repair-session loop). This is a no-op when nothing is on disk.
+//
+// Safe to call unconditionally: the server short-circuits to the existing
+// session for a branch before reaching worktree creation, so reaching here
+// means no live session owns wtPath. All steps are best-effort.
+func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath string) {
+	if _, err := os.Stat(wtPath); err != nil {
+		return // nothing on disk
+	}
+
+	m.logger.Warn().
+		Str("path", wtPath).
+		Msg("clearing stale worktree directory before create")
+
+	// Drop any git registration for the path (handles a registered worktree),
+	// then prune dangling refs, then remove whatever directory remains
+	// (handles a directory left with no registration).
+	if _, err := runGit(ctx, repoPath, "worktree", "remove", "--force", wtPath); err != nil {
+		m.logger.Debug().Err(err).Msg("worktree remove (best effort)")
+	}
+	if _, err := runGit(ctx, repoPath, "worktree", "prune"); err != nil {
+		m.logger.Debug().Err(err).Msg("worktree prune (best effort)")
+	}
+	if err := os.RemoveAll(wtPath); err != nil {
+		m.logger.Warn().Err(err).Str("path", wtPath).Msg("remove stale worktree dir (best effort)")
+	}
+}
+
+// PurgeWorktree removes any worktree (git registration + on-disk directory) for
+// the given branch under worktreeBaseDir, WITHOUT deleting the branch. Used to
+// clean up after a failed session start so a leftover directory can't wedge
+// future attempts (notably the dependabot repair loop). Best-effort and safe
+// when nothing exists. Path derivation matches Create/CreateFromExistingBranch.
+func (m *Manager) PurgeWorktree(ctx context.Context, repoPath, repoName, worktreeBaseDir, branch string) {
+	wtPath := filepath.Join(worktreeBaseDir, sanitizeDirName(repoName), branch)
+	m.clearStaleWorktree(ctx, repoPath, wtPath)
+}
+
 // Create creates a new git worktree with a fresh branch based on baseBranch.
 func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, error) {
 	branch := opts.BranchName
@@ -368,6 +417,10 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	); err != nil {
 		return nil, fmt.Errorf("fetch base branch: %w", err)
 	}
+
+	// Clear any stale worktree left at this path by an orphaned prior session
+	// so the add below doesn't fail with "already exists".
+	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
 
 	// git worktree add -b <branch> <path> origin/<baseBranch>
 	if _, err := runGit(ctx, opts.RepoPath,
@@ -497,7 +550,7 @@ func (m *Manager) EmptyTrash(ctx context.Context, repoPath string, branches []st
 
 // Push pushes the given branch to the "origin" remote.
 func (m *Manager) EmptyCommit(ctx context.Context, worktreePath, message string) error {
-	if _, err := runGit(ctx, worktreePath, "commit", "--allow-empty", "-m", message); err != nil {
+	if _, err := runGit(ctx, worktreePath, "commit", "--allow-empty", "--no-verify", "-m", message); err != nil {
 		return fmt.Errorf("empty commit: %w", err)
 	}
 	return nil
@@ -880,6 +933,10 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 	); err != nil {
 		return nil, fmt.Errorf("fetch branch: %w", err)
 	}
+
+	// Clear any stale worktree left at this path by an orphaned prior session
+	// so the add below doesn't fail with "already exists".
+	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
 
 	// Create worktree from the fetched branch.
 	// git worktree add <path> <branch> — checks out existing branch.

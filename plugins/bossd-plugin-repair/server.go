@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -200,19 +203,20 @@ type repairMonitor struct {
 	host   hostClient
 	logger zerolog.Logger
 
-	mu                       sync.Mutex
-	ctx                      context.Context      // Workflow context
-	cancel                   context.CancelFunc   // Cancel function for the workflow
-	stopped                  bool                 // True after CancelWorkflow until next StartWorkflow
-	paused                   bool                 // True after PauseWorkflow until ResumeWorkflow
-	config                   *repairConfig        // Parsed config from StartWorkflowRequest
-	repairing                map[string]bool      // Sessions currently being repaired
-	cooldowns                map[string]time.Time // Last repair attempt time per session
-	lastAttemptCommit        map[string]string    // Head SHA of last repair attempt per session
-	lastAttemptDisplayStatus map[string]bossanovav1.DisplayStatus
-	testSweepInterval        time.Duration // Override sweep interval for tests
-	testStuckTimeout         time.Duration // Override stuck timeout for tests
-	testForceAdvanceTimeout  time.Duration // Override force-advance timeout for tests
+	mu                           sync.Mutex
+	ctx                          context.Context      // Workflow context
+	cancel                       context.CancelFunc   // Cancel function for the workflow
+	stopped                      bool                 // True after CancelWorkflow until next StartWorkflow
+	paused                       bool                 // True after PauseWorkflow until ResumeWorkflow
+	config                       *repairConfig        // Parsed config from StartWorkflowRequest
+	repairing                    map[string]bool      // Sessions currently being repaired
+	cooldowns                    map[string]time.Time // Last repair attempt time per session
+	lastAttemptCommit            map[string]string    // Head SHA of last repair attempt per session
+	lastAttemptDisplayStatus     map[string]bossanovav1.DisplayStatus
+	lastAttemptReviewFingerprint map[string]string
+	testSweepInterval            time.Duration // Override sweep interval for tests
+	testStuckTimeout             time.Duration // Override stuck timeout for tests
+	testForceAdvanceTimeout      time.Duration // Override force-advance timeout for tests
 
 	// wg tracks every goroutine the monitor launches (repair sessions and
 	// the two sweep loops). Shutdown cancels ctx and Waits on wg with a
@@ -223,15 +227,16 @@ type repairMonitor struct {
 func newRepairMonitor(host hostClient, logger zerolog.Logger) *repairMonitor {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &repairMonitor{
-		host:                     host,
-		logger:                   logger,
-		ctx:                      ctx,
-		cancel:                   cancel,
-		stopped:                  true, // Reject notifications until StartWorkflow sets config.
-		repairing:                make(map[string]bool),
-		cooldowns:                make(map[string]time.Time),
-		lastAttemptCommit:        make(map[string]string),
-		lastAttemptDisplayStatus: make(map[string]bossanovav1.DisplayStatus),
+		host:                         host,
+		logger:                       logger,
+		ctx:                          ctx,
+		cancel:                       cancel,
+		stopped:                      true, // Reject notifications until StartWorkflow sets config.
+		repairing:                    make(map[string]bool),
+		cooldowns:                    make(map[string]time.Time),
+		lastAttemptCommit:            make(map[string]string),
+		lastAttemptDisplayStatus:     make(map[string]bossanovav1.DisplayStatus),
+		lastAttemptReviewFingerprint: make(map[string]string),
 	}
 }
 
@@ -534,17 +539,30 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	repoName := info.RepoName
 	sessionTitle := info.SessionTitle
 	headSHA := info.HeadSHA
+	reviewFP, reviewFPOk := m.currentReviewFingerprint(repairCtx, info, displayStatus)
 	if headSHA != "" &&
 		info.LastRepairHeadSHA == headSHA &&
 		info.LastRepairDisplayStatus == displayStatus &&
 		info.LastRepairRunnerError == "" &&
 		!isInteractiveChatIncomplete(info.LastRepairExitError) {
+		if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED ||
+			!reviewFPOk ||
+			info.LastRepairReviewFingerprint == reviewFP {
+			m.logger.Info().
+				Str("session_id", sessionID).
+				Str("head_sha", headSHA).
+				Int32("display_status", int32(displayStatus)).
+				Str("review_fingerprint", reviewFP).
+				Bool("review_fingerprint_available", reviewFPOk).
+				Msg("already attempted repair on this input according to persisted diagnostics, skipping")
+			return
+		}
 		m.logger.Info().
 			Str("session_id", sessionID).
 			Str("head_sha", headSHA).
-			Int32("display_status", int32(displayStatus)).
-			Msg("already attempted repair on this commit according to persisted diagnostics, skipping")
-		return
+			Str("old_review_fingerprint", info.LastRepairReviewFingerprint).
+			Str("new_review_fingerprint", reviewFP).
+			Msg("new review feedback on same rejected head; allowing repair")
 	}
 
 	// Authoritative exponential-backoff gate. Sourced from persisted
@@ -587,13 +605,19 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		return
 	}
 	if headSHA != "" && m.lastAttemptCommit[sessionID] == headSHA && m.lastAttemptDisplayStatus[sessionID] == displayStatus {
-		m.mu.Unlock()
-		m.logger.Info().
-			Str("session_id", sessionID).
-			Str("head_sha", headSHA).
-			Int32("display_status", int32(displayStatus)).
-			Msg("already attempted repair on this commit, skipping")
-		return
+		if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED ||
+			!reviewFPOk ||
+			m.lastAttemptReviewFingerprint[sessionID] == reviewFP {
+			m.mu.Unlock()
+			m.logger.Info().
+				Str("session_id", sessionID).
+				Str("head_sha", headSHA).
+				Int32("display_status", int32(displayStatus)).
+				Str("review_fingerprint", reviewFP).
+				Bool("review_fingerprint_available", reviewFPOk).
+				Msg("already attempted repair on this input, skipping")
+			return
+		}
 	}
 	m.repairing[sessionID] = true
 	repairCtx = m.ctx // Re-capture in case StartWorkflow replaced the context.
@@ -605,7 +629,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// context so Shutdown can wait for it without aborting writes.
 	go func() {
 		defer m.wg.Done()
-		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt)
+		m.repairSession(repairCtx, sessionID, repoName, sessionTitle, displayStatus, hasFailures, headSHA, replaceExistingReason, replaceExistingObservedLastChatActivityAt, reviewFP, reviewFPOk)
 	}()
 }
 
@@ -613,16 +637,19 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 // to make its decisions. Decoupling from the proto session type keeps the
 // idle-gate logic isolated and easy to test.
 type sessionInfo struct {
-	Repairable              bool
-	HasActiveChat           bool
-	LastChatActivityAt      time.Time // zero if no live chat or unknown
-	RepoName                string
-	SessionTitle            string
-	HeadSHA                 string
-	LastRepairHeadSHA       string
-	LastRepairDisplayStatus bossanovav1.DisplayStatus
-	LastRepairRunnerError   string
-	LastRepairExitError     string
+	Repairable                  bool
+	HasActiveChat               bool
+	LastChatActivityAt          time.Time // zero if no live chat or unknown
+	RepoName                    string
+	SessionTitle                string
+	HeadSHA                     string
+	LastRepairHeadSHA           string
+	LastRepairDisplayStatus     bossanovav1.DisplayStatus
+	LastRepairRunnerError       string
+	LastRepairExitError         string
+	LastRepairReviewFingerprint string
+	RepoOriginURL               string
+	PRNumber                    int32
 	// LastRepairStartedAt and LastRepairAttemptCount are sourced from
 	// the daemon-persisted last_repair_* columns so the cooldown gate
 	// survives daemon restarts and plugin reloads. The previous
@@ -632,6 +659,56 @@ type sessionInfo struct {
 	// reached 321×.
 	LastRepairStartedAt    time.Time
 	LastRepairAttemptCount int32
+}
+
+type reviewFingerprintComment struct {
+	Path    string `json:"path"`
+	HasPath bool   `json:"has_path"`
+	Line    int32  `json:"line"`
+	HasLine bool   `json:"has_line"`
+	Author  string `json:"author"`
+	State   int32  `json:"state"`
+	Body    string `json:"body"`
+}
+
+func reviewFingerprint(comments []*bossanovav1.ReviewComment) (string, error) {
+	if len(comments) == 0 {
+		return "", nil
+	}
+	parts := make([]string, 0, len(comments))
+	for _, c := range comments {
+		if c == nil {
+			continue
+		}
+		comment := reviewFingerprintComment{
+			HasPath: c.Path != nil,
+			HasLine: c.Line != nil,
+			Author:  c.GetAuthor(),
+			State:   int32(c.GetState()),
+			Body:    c.GetBody(),
+		}
+		if comment.HasPath {
+			comment.Path = c.GetPath()
+		}
+		if comment.HasLine {
+			comment.Line = c.GetLine()
+		}
+		encoded, err := json.Marshal(comment)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, string(encoded))
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	sort.Strings(parts)
+	payload, err := json.Marshal(parts)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // lookupSession resolves the daemon's view of the session and returns the
@@ -656,15 +733,18 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 			continue
 		}
 		info := sessionInfo{
-			HasActiveChat:           sess.GetHasActiveChat(),
-			RepoName:                sess.GetRepoDisplayName(),
-			SessionTitle:            sess.GetTitle(),
-			HeadSHA:                 sess.GetPrDisplayHeadSha(),
-			LastRepairHeadSHA:       sess.GetLastRepairHeadSha(),
-			LastRepairDisplayStatus: sess.GetLastRepairDisplayStatus(),
-			LastRepairRunnerError:   sess.GetLastRepairRunnerError(),
-			LastRepairExitError:     sess.GetLastRepairExitError(),
-			LastRepairAttemptCount:  sess.GetLastRepairAttemptCount(),
+			HasActiveChat:               sess.GetHasActiveChat(),
+			RepoName:                    sess.GetRepoDisplayName(),
+			SessionTitle:                sess.GetTitle(),
+			HeadSHA:                     sess.GetPrDisplayHeadSha(),
+			LastRepairHeadSHA:           sess.GetLastRepairHeadSha(),
+			LastRepairDisplayStatus:     sess.GetLastRepairDisplayStatus(),
+			LastRepairRunnerError:       sess.GetLastRepairRunnerError(),
+			LastRepairExitError:         sess.GetLastRepairExitError(),
+			LastRepairReviewFingerprint: sess.GetLastRepairReviewFingerprint(),
+			RepoOriginURL:               sess.GetRepoOriginUrl(),
+			PRNumber:                    sess.GetPrNumber(),
+			LastRepairAttemptCount:      sess.GetLastRepairAttemptCount(),
 		}
 		if ts := sess.GetLastChatActivityAt(); ts != nil {
 			info.LastChatActivityAt = ts.AsTime()
@@ -691,6 +771,39 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 		Str("session_id", sessionID).
 		Msg("session not found, assuming not repairable")
 	return sessionInfo{}
+}
+
+func (m *repairMonitor) currentReviewFingerprint(ctx context.Context, info sessionInfo, displayStatus bossanovav1.DisplayStatus) (string, bool) {
+	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED {
+		return "", true
+	}
+	if info.RepoOriginURL == "" || info.PRNumber == 0 {
+		m.logger.Warn().
+			Str("repo", info.RepoName).
+			Str("session_name", info.SessionTitle).
+			Msg("rejected session missing repo origin or PR number; using legacy duplicate-repair guard")
+		return "", false
+	}
+	resp, err := m.host.GetReviewComments(ctx, &bossanovav1.GetReviewCommentsRequest{
+		RepoOriginUrl: info.RepoOriginURL,
+		PrNumber:      info.PRNumber,
+	})
+	if err != nil {
+		m.logger.Warn().Err(err).
+			Str("repo", info.RepoName).
+			Int32("pr_number", info.PRNumber).
+			Msg("failed to fetch review comments; using legacy duplicate-repair guard")
+		return "", false
+	}
+	fingerprint, err := reviewFingerprint(resp.GetComments())
+	if err != nil {
+		m.logger.Warn().Err(err).
+			Str("repo", info.RepoName).
+			Int32("pr_number", info.PRNumber).
+			Msg("failed to compute review fingerprint; using legacy duplicate-repair guard")
+		return "", false
+	}
+	return fingerprint, true
 }
 
 // isRepairableState answers "is it safe and meaningful to run /boss-repair
@@ -907,6 +1020,8 @@ func (m *repairMonitor) repairSession(
 	headSHA string,
 	replaceExistingReason string,
 	replaceExistingObservedLastChatActivityAt time.Time,
+	reviewFingerprint string,
+	reviewFingerprintAvailable bool,
 ) {
 	log := m.logger.With().
 		Str("session_id", sessionID).
@@ -934,6 +1049,9 @@ func (m *repairMonitor) repairSession(
 		if attemptRan && headSHA != "" {
 			m.lastAttemptCommit[sessionID] = headSHA
 			m.lastAttemptDisplayStatus[sessionID] = displayStatus
+			if reviewFingerprintAvailable {
+				m.lastAttemptReviewFingerprint[sessionID] = reviewFingerprint
+			}
 		}
 		m.mu.Unlock()
 
@@ -946,7 +1064,7 @@ func (m *repairMonitor) repairSession(
 			func() {
 				outcomeCtx, outcomeCancel := context.WithTimeout(context.Background(), repairCleanupTimeout)
 				defer outcomeCancel()
-				if _, err := m.host.RecordRepairOutcome(outcomeCtx, &bossanovav1.RecordRepairOutcomeRequest{
+				req := &bossanovav1.RecordRepairOutcomeRequest{
 					SessionId:      sessionID,
 					StartedAtUnix:  startedAt.Unix(),
 					RunnerError:    outcomeRunnerError,
@@ -954,7 +1072,11 @@ func (m *repairMonitor) repairSession(
 					AgentSessionId: outcomeAgentSessionID,
 					HeadSha:        headSHA,
 					DisplayStatus:  displayStatus,
-				}); err != nil {
+				}
+				if reviewFingerprintAvailable {
+					req.ReviewFingerprint = &reviewFingerprint
+				}
+				if _, err := m.host.RecordRepairOutcome(outcomeCtx, req); err != nil {
 					log.Warn().Err(err).Msg("failed to record repair outcome")
 				}
 			}()

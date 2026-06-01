@@ -908,7 +908,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				idx := m.prTable.Cursor()
 				if idx >= 0 && idx < len(m.prsFiltered) {
-					return m, m.startCreating()
+					cmd := m.startCreating()
+					return m, cmd
 				}
 				return m, nil
 			}
@@ -929,7 +930,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					idx := m.issueTable.Cursor()
 					if idx >= 0 && idx < len(m.issuesFiltered) {
 						m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
-						return m, m.startCreating()
+						cmd := m.startCreating()
+						return m, cmd
 					}
 					return m, nil
 				case "esc":
@@ -968,7 +970,8 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				idx := m.issueTable.Cursor()
 				if idx >= 0 && idx < len(m.issuesFiltered) {
 					m.selectedIssue = m.trackerIssues[m.issuesFiltered[idx]]
-					return m, m.startCreating()
+					cmd := m.startCreating()
+					return m, cmd
 				}
 				return m, nil
 			}
@@ -1044,7 +1047,8 @@ func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 
 func (m *NewSessionModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 	// Title input or plan input completed — proceed to create.
-	return *m, m.startCreating()
+	cmd := m.startCreating()
+	return *m, cmd
 }
 
 func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1052,7 +1056,8 @@ func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.
 	case "y", "Y", "enter":
 		m.confirmingOverwrite = false
 		m.forceBranch = true
-		return m, m.startCreating()
+		cmd := m.startCreating()
+		return m, cmd
 	case "n", "N", "esc":
 		m.confirmingOverwrite = false
 		m.forceBranch = false

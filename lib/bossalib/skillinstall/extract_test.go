@@ -9,22 +9,27 @@ import (
 
 func testFS() fstest.MapFS {
 	return fstest.MapFS{
-		"skills/boss/SKILL.md":           {Data: []byte("# Boss CLI Reference\nAll commands.")},
-		"skills/boss-test/SKILL.md":      {Data: []byte("# Test Skill\nDo the thing.")},
-		"skills/boss-other/SKILL.md":     {Data: []byte("# Other Skill\nDo other thing.")},
-		"skills/boss-finalize/add-pr.sh": {Data: []byte("#!/bin/sh\necho ok")},
-		"skills/boss-finalize/SKILL.md":  {Data: []byte("# Finalize\nLand it.")},
+		"skills/boss/SKILL.md":                                      {Data: []byte("# Boss CLI Reference\nAll commands.")},
+		"skills/boss-test/SKILL.md":                                 {Data: []byte("# Test Skill\nDo the thing.")},
+		"skills/boss-other/SKILL.md":                                {Data: []byte("# Other Skill\nDo other thing.")},
+		"skills/boss-finalize/add-pr.sh":                            {Data: []byte("#!/bin/sh\necho ok")},
+		"skills/boss-finalize/SKILL.md":                             {Data: []byte("# Finalize\nLand it.")},
+		"skills/boss-repair/SKILL.md":                               {Data: []byte("# Repair\nFix it.")},
+		"skills/boss-repair/scripts/review-feedback-probe.js":       {Data: []byte("#!/usr/bin/env node\nconsole.log('pending')")},
+		"skills/boss-repair/scripts/review-feedback-probe.test.txt": {Data: []byte("fixture")},
 	}
 }
 
 func changedFS() fstest.MapFS {
 	return fstest.MapFS{
-		"skills/boss/SKILL.md":           {Data: []byte("# Boss CLI Reference\nAll commands.")},
-		"skills/boss-test/SKILL.md":      {Data: []byte("# Test Skill\nDo the changed thing.")},
-		"skills/boss-other/SKILL.md":     {Data: []byte("# Other Skill\nDo other thing.")},
-		"skills/boss-new/SKILL.md":       {Data: []byte("# New Skill\nDo new thing.")},
-		"skills/boss-finalize/add-pr.sh": {Data: []byte("#!/bin/sh\necho ok")},
-		"skills/boss-finalize/SKILL.md":  {Data: []byte("# Finalize\nLand it.")},
+		"skills/boss/SKILL.md":                                {Data: []byte("# Boss CLI Reference\nAll commands.")},
+		"skills/boss-test/SKILL.md":                           {Data: []byte("# Test Skill\nDo the changed thing.")},
+		"skills/boss-other/SKILL.md":                          {Data: []byte("# Other Skill\nDo other thing.")},
+		"skills/boss-new/SKILL.md":                            {Data: []byte("# New Skill\nDo new thing.")},
+		"skills/boss-finalize/add-pr.sh":                      {Data: []byte("#!/bin/sh\necho ok")},
+		"skills/boss-finalize/SKILL.md":                       {Data: []byte("# Finalize\nLand it.")},
+		"skills/boss-repair/SKILL.md":                         {Data: []byte("# Repair\nFix it.")},
+		"skills/boss-repair/scripts/review-feedback-probe.js": {Data: []byte("#!/usr/bin/env node\nconsole.log('changed')")},
 	}
 }
 
@@ -44,6 +49,9 @@ func TestExtract(t *testing.T) {
 		{"bossanova/boss-other/SKILL.md", "# Other Skill\nDo other thing."},
 		{"bossanova/boss-finalize/SKILL.md", "# Finalize\nLand it."},
 		{"bossanova/boss-finalize/add-pr.sh", "#!/bin/sh\necho ok"},
+		{"bossanova/boss-repair/SKILL.md", "# Repair\nFix it."},
+		{"bossanova/boss-repair/scripts/review-feedback-probe.js", "#!/usr/bin/env node\nconsole.log('pending')"},
+		{"bossanova/boss-repair/scripts/review-feedback-probe.test.txt", "fixture"},
 	}
 
 	for _, tt := range tests {
@@ -187,30 +195,42 @@ func TestExtractRemovesStaleSkills(t *testing.T) {
 	}
 }
 
-func TestExtractShellScriptPermissions(t *testing.T) {
+func TestExtractScriptPermissions(t *testing.T) {
 	dest := t.TempDir()
 	if err := Extract(dest, testFS()); err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
 
-	// Shell scripts should be executable.
-	shPath := filepath.Join(dest, "bossanova", "boss-finalize", "add-pr.sh")
-	info, err := os.Stat(shPath)
-	if err != nil {
-		t.Fatalf("Stat(%s): %v", shPath, err)
-	}
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Errorf("expected .sh file to be executable, got mode %o", info.Mode().Perm())
+	for _, rel := range []string{
+		"bossanova/boss-finalize/add-pr.sh",
+		"bossanova/boss-repair/scripts/review-feedback-probe.js",
+	} {
+		path := filepath.Join(dest, rel)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("Stat(%s): %v", path, err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Errorf("expected %s to be executable, got mode %o", rel, info.Mode().Perm())
+		}
 	}
 
-	// Markdown files should NOT be executable.
 	mdPath := filepath.Join(dest, "bossanova", "boss-test", "SKILL.md")
-	info, err = os.Stat(mdPath)
+	info, err := os.Stat(mdPath)
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", mdPath, err)
 	}
 	if info.Mode().Perm()&0o111 != 0 {
 		t.Errorf("expected .md file to not be executable, got mode %o", info.Mode().Perm())
+	}
+
+	fixturePath := filepath.Join(dest, "bossanova", "boss-repair", "scripts", "review-feedback-probe.test.txt")
+	info, err = os.Stat(fixturePath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", fixturePath, err)
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		t.Errorf("expected non-script fixture to not be executable, got mode %o", info.Mode().Perm())
 	}
 }
 
@@ -334,6 +354,25 @@ func TestNeedsUpdateDetectsInstalledContentDrift(t *testing.T) {
 	}
 	if !needs {
 		t.Fatal("NeedsUpdate = false, want true for installed content drift")
+	}
+}
+
+func TestNeedsUpdateDetectsInstalledScriptDrift(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	path := filepath.Join(dest, Namespace, "boss-repair", "scripts", "review-feedback-probe.js")
+	if err := os.WriteFile(path, []byte("#!/usr/bin/env node\nconsole.log('local edit')"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for installed script drift")
 	}
 }
 

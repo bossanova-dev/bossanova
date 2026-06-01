@@ -403,6 +403,16 @@ message CloudAccessStatus {
   string workos_org_id = 3;
   string message = 4;
   bool can_retry = 5;
+
+  // True when the client should call CreateCheckoutSession to open Stripe Checkout.
+  bool can_create_checkout = 6;
+
+  // True when checkout has already been started and the client should poll
+  // RefreshCloudEntitlements instead of creating another checkout.
+  bool checkout_started = 7;
+
+  // Short machine-readable reason for inactive cloud access.
+  string denial_reason = 8;
 }
 
 message GetCloudAccessStatusRequest {}

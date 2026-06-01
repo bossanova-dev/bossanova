@@ -628,7 +628,7 @@ func (c *StreamClient) Run(ctx context.Context) {
 			authFailed := connect.CodeOf(err) == connect.CodeUnauthenticated
 			rotated := false
 			if authFailed {
-				rotated = c.tryReRegister(ctx)
+				rotated = c.tryReRegister(ctx, authStuck)
 			}
 			// Reduce log spam on a sustained auth loop: log the first
 			// failure (and any change in error code or rotation outcome)
@@ -828,7 +828,7 @@ func (c *StreamClient) handleCommand(ctx context.Context, cmd *pb.OrchestratorCo
 // Returns true iff the opener was updated. Safe to call when
 // ReRegister is nil (returns false without work) or when the opener
 // does not implement sessionTokenHolder (logs + returns false).
-func (c *StreamClient) tryReRegister(ctx context.Context) bool {
+func (c *StreamClient) tryReRegister(ctx context.Context, suppressFailureWarn bool) bool {
 	if c.reRegister == nil {
 		return false
 	}
@@ -839,7 +839,11 @@ func (c *StreamClient) tryReRegister(ctx context.Context) bool {
 	}
 	tok, err := c.reRegister(ctx)
 	if err != nil {
-		c.logger.Warn().Err(err).Msg("stream: re-register failed after auth rejection")
+		if suppressFailureWarn {
+			c.logger.Debug().Err(err).Msg("stream: re-register still failing after auth rejection")
+		} else {
+			c.logger.Warn().Err(err).Msg("stream: re-register failed after auth rejection")
+		}
 		return false
 	}
 	if tok == "" {

@@ -31,6 +31,9 @@ func TestManagerStatus_PrintsMigrationHintOnCredentialsUnreadable(t *testing.T) 
 	if !strings.Contains(buf.String(), "run 'boss logout && boss login' to reset") {
 		t.Fatalf("expected re-login hint in output, got: %q", buf.String())
 	}
+	if !strings.HasPrefix(buf.String(), "\nwarning:") {
+		t.Fatalf("expected hint to start on a new terminal line, got: %q", buf.String())
+	}
 }
 
 func TestManagerAccessToken_PrintsMigrationHintOnCredentialsUnreadable(t *testing.T) {

@@ -712,6 +712,7 @@ const (
 	DisplayStatus_DISPLAY_STATUS_CLOSED      DisplayStatus = 8
 	DisplayStatus_DISPLAY_STATUS_DRAFT       DisplayStatus = 9
 	DisplayStatus_DISPLAY_STATUS_APPROVED    DisplayStatus = 10
+	DisplayStatus_DISPLAY_STATUS_REVIEW      DisplayStatus = 11
 )
 
 // Enum value maps for DisplayStatus.
@@ -728,6 +729,7 @@ var (
 		8:  "DISPLAY_STATUS_CLOSED",
 		9:  "DISPLAY_STATUS_DRAFT",
 		10: "DISPLAY_STATUS_APPROVED",
+		11: "DISPLAY_STATUS_REVIEW",
 	}
 	DisplayStatus_value = map[string]int32{
 		"DISPLAY_STATUS_UNSPECIFIED": 0,
@@ -741,6 +743,7 @@ var (
 		"DISPLAY_STATUS_CLOSED":      8,
 		"DISPLAY_STATUS_DRAFT":       9,
 		"DISPLAY_STATUS_APPROVED":    10,
+		"DISPLAY_STATUS_REVIEW":      11,
 	}
 )
 
@@ -1246,8 +1249,11 @@ type Session struct {
 	LastChatActivityAt *timestamppb.Timestamp `protobuf:"bytes,43,opt,name=last_chat_activity_at,json=lastChatActivityAt,proto3,oneof" json:"last_chat_activity_at,omitempty"`
 	// Denormalized repo origin URL, populated server-side for webhook routing.
 	RepoOriginUrl string `protobuf:"bytes,46,opt,name=repo_origin_url,json=repoOriginUrl,proto3" json:"repo_origin_url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Fingerprint of review feedback targeted by the last repair run.
+	// Empty for non-review-triggered repairs and for legacy rows.
+	LastRepairReviewFingerprint string `protobuf:"bytes,47,opt,name=last_repair_review_fingerprint,json=lastRepairReviewFingerprint,proto3" json:"last_repair_review_fingerprint,omitempty"`
+	unknownFields               protoimpl.UnknownFields
+	sizeCache                   protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1598,6 +1604,13 @@ func (x *Session) GetLastChatActivityAt() *timestamppb.Timestamp {
 func (x *Session) GetRepoOriginUrl() string {
 	if x != nil {
 		return x.RepoOriginUrl
+	}
+	return ""
+}
+
+func (x *Session) GetLastRepairReviewFingerprint() string {
+	if x != nil {
+		return x.LastRepairReviewFingerprint
 	}
 	return ""
 }
@@ -3039,7 +3052,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\xb9\x13\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\xfe\x13\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -3096,7 +3109,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x1alast_repair_display_status\x18- \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\x17lastRepairDisplayStatus\x12R\n" +
 	"\x15last_chat_activity_at\x18+ \x01(\v2\x1a.google.protobuf.TimestampH\n" +
 	"R\x12lastChatActivityAt\x88\x01\x01\x12&\n" +
-	"\x0frepo_origin_url\x18. \x01(\tR\rrepoOriginUrlB\x13\n" +
+	"\x0frepo_origin_url\x18. \x01(\tR\rrepoOriginUrl\x12C\n" +
+	"\x1elast_repair_review_fingerprint\x18/ \x01(\tR\x1blastRepairReviewFingerprintB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +
@@ -3325,7 +3339,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"%ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS\x10\x01\x12)\n" +
 	"%ATTENTION_REASON_AWAITING_HUMAN_INPUT\x10\x02\x12%\n" +
 	"!ATTENTION_REASON_REVIEW_REQUESTED\x10\x03\x120\n" +
-	",ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE\x10\x04*\xc4\x02\n" +
+	",ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE\x10\x04*\xdf\x02\n" +
 	"\rDisplayStatus\x12\x1e\n" +
 	"\x1aDISPLAY_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13DISPLAY_STATUS_IDLE\x10\x01\x12\x1b\n" +
@@ -3338,7 +3352,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x15DISPLAY_STATUS_CLOSED\x10\b\x12\x18\n" +
 	"\x14DISPLAY_STATUS_DRAFT\x10\t\x12\x1b\n" +
 	"\x17DISPLAY_STATUS_APPROVED\x10\n" +
-	"*\xe1\x01\n" +
+	"\x12\x19\n" +
+	"\x15DISPLAY_STATUS_REVIEW\x10\v*\xe1\x01\n" +
 	"\x0eWorkflowStatus\x12\x1f\n" +
 	"\x1bWORKFLOW_STATUS_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17WORKFLOW_STATUS_PENDING\x10\x01\x12\x1b\n" +

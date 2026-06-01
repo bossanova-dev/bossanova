@@ -224,6 +224,10 @@ message Session {
 
   // Denormalized repo origin URL, populated server-side for webhook routing.
   string repo_origin_url = 46;
+
+  // Fingerprint of review feedback targeted by the last repair run.
+  // Empty for non-review-triggered repairs and for legacy rows.
+  string last_repair_review_fingerprint = 47;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display
@@ -384,6 +388,7 @@ enum DisplayStatus {
   DISPLAY_STATUS_CLOSED = 8;
   DISPLAY_STATUS_DRAFT = 9;
   DISPLAY_STATUS_APPROVED = 10;
+  DISPLAY_STATUS_REVIEW = 11;
 }
 
 // WorkflowStatus represents the lifecycle state of an autopilot workflow.

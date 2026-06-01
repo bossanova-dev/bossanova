@@ -192,30 +192,22 @@ Before running local checks, discover this repo's commands from project instruct
 
 **Resolution**:
 
-1. List all unresolved review threads:
+1. List all unresolved review threads and inline review comments.
+
+   Do not rely on `gh pr view --comments` or `gh pr view --json comments` for this step. Those only cover PR conversation comments and can miss inline review comments with URLs like `#discussion_r...`.
+
+   First, run the review feedback probe from this skill directory. This script uses both required GitHub APIs and prints a compact summary, so a blank result cannot be mistaken for "no comments."
 
    ```bash
-   gh api graphql -f query='
-   {
-     repository(owner: "OWNER", name: "REPO") {
-       pullRequest(number: PR_NUM) {
-         reviewThreads(first: 50) {
-           nodes {
-             id
-             isResolved
-             comments(first: 5) {
-               nodes {
-                 body
-                 path
-                 author { login }
-               }
-             }
-           }
-         }
-       }
-     }
-   }'
+   node scripts/review-feedback-probe.js
    ```
+
+   Probe interpretation rules:
+   - `probe_status=failed`: the probe failed. Fix the command or auth issue; do not report "no review feedback."
+   - `probe_status=suspicious_zero`: `latestReviews` contains `COMMENTED`, but both probes found zero comments. Retry with the explicit repo and PR number before concluding there is no review feedback.
+   - Empty stdout from any wrapped/batched command is a probe failure, not a zero-comment result.
+   - REST and GraphQL should agree on comment presence. If REST finds inline comments but GraphQL returns zero threads, use the REST comments as evidence of feedback and retry GraphQL before resolving thread state.
+   - Only conclude "no review feedback" when the probe prints `probe_status=ok`, `inline_comments=0`, `review_threads=0`, and there is no `COMMENTED` latest review.
 
 2. For each unresolved thread, triage into one of three categories:
 

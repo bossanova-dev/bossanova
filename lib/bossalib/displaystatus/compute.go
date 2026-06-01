@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sessionreason"
 )
 
 // Input bundles the inputs used by Compute.
@@ -20,7 +21,7 @@ import (
 // Workflow status, leg, and max-legs are read from the Session's
 // WorkflowDisplay* fields populated by Phase 1.
 type Input struct {
-	// Session carries DisplayStatus, DisplayIsRepairing, the
+	// Session carries BlockedReason, DisplayStatus, DisplayIsRepairing, the
 	// DisplayHas{Failures,ChangesRequested} flags, and the WorkflowDisplay*
 	// fields. May be nil — Compute treats a nil Session like one with all
 	// fields zero-valued.
@@ -40,23 +41,27 @@ type Output struct {
 	Spinner bool
 }
 
-// Compute runs the 7-branch precedence cascade that determines a session's
+// Compute runs the 8-branch precedence cascade that determines a session's
 // display status. The algorithm is intentionally identical to the legacy
 // renderPRDisplayStatus — every label, intent, and spinner flag matches.
 //
 // Precedence (highest first):
 //  1. ChatStatus QUESTION → "? question" / WARNING / no spinner
-//  2. ChatStatus WORKING  → "working"    / SUCCESS / spinner
-//  3. Active workflow     → "running L/M", "pending", "paused L/M",
+//  2. Draft PR failure    → "? PR failed" / WARNING / no spinner
+//  3. ChatStatus WORKING  → "working"    / SUCCESS / spinner
+//  4. Active workflow     → "running L/M", "pending", "paused L/M",
 //     "failed L/M", "cancelled" with matching intents
-//  4. DisplayIsRepairing  → "repairing" / WARNING / spinner
-//  5. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ passing",
+//  5. DisplayIsRepairing  → "repairing" / WARNING / spinner
+//  6. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ review", "✓ passing",
 //     "⨯ failing", "⨯ conflict", "⨯ rejected", "draft", "checking"
-//  6. ChatStatus IDLE     → "idle" / WARNING
-//  7. default             → "stopped" / MUTED
+//  7. ChatStatus IDLE     → "idle" / WARNING
+//  8. default             → "stopped" / MUTED
 func Compute(in Input) Output {
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION {
 		return Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	}
+	if in.Session != nil && sessionreason.IsDraftPRCreationFailure(in.Session.BlockedReason) {
+		return Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		intent := pb.DisplayIntent_DISPLAY_INTENT_SUCCESS
@@ -148,6 +153,8 @@ func prOutput(sess *pb.Session) (Output, bool) {
 		return Output{Label: "✓ approved", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
 		return Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}, true
+	case pb.DisplayStatus_DISPLAY_STATUS_REVIEW:
+		return Output{Label: "✓ review", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_FAILING:
 		return Output{Label: "⨯ failing", Intent: pb.DisplayIntent_DISPLAY_INTENT_DANGER}, true
 	case pb.DisplayStatus_DISPLAY_STATUS_CONFLICT:

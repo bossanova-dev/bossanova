@@ -285,6 +285,9 @@ message RecordRepairOutcomeRequest {
   // rerunning the same agent repair forever after a non-zero agent exit.
   string head_sha = 6;
   DisplayStatus display_status = 7;
+  // Fingerprint of review feedback this repair attempt targeted.
+  // Empty for non-review-triggered repairs.
+  optional string review_fingerprint = 8;
 }
 
 message RecordRepairOutcomeResponse {}

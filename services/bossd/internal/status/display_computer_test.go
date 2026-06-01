@@ -142,6 +142,13 @@ func TestRecompute_Matrix(t *testing.T) {
 			wantSpinner: false,
 		},
 		{
+			name:        "PR conflict",
+			display:     &DisplayEntry{Status: vcs.DisplayStatusConflict},
+			wantLabel:   "⨯ conflict",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_DANGER,
+			wantSpinner: false,
+		},
+		{
 			name:        "PR checking with failures bumps intent to danger",
 			display:     &DisplayEntry{Status: vcs.DisplayStatusChecking, HasFailures: true},
 			wantLabel:   "checking",
@@ -239,6 +246,46 @@ func TestRecompute_Matrix(t *testing.T) {
 				t.Errorf("DisplaySpinner = %v, want %v", got.DisplaySpinner, tc.wantSpinner)
 			}
 		})
+	}
+}
+
+func TestRecompute_DraftPRFailureHydratesBlockedReason(t *testing.T) {
+	sessions, workflows, chats, repos := newTestDB(t)
+	repoID := mustRepo(t, repos)
+	sessID := mustSession(t, sessions, repoID)
+
+	reason := "draft PR creation failed: gh pr create: authentication required"
+	blockedReason := &reason
+	if _, err := sessions.Update(context.Background(), sessID, db.UpdateSessionParams{
+		BlockedReason: &blockedReason,
+	}); err != nil {
+		t.Fatalf("update blocked reason: %v", err)
+	}
+
+	c := NewDisplayStatusComputer(
+		sessions,
+		NewDisplayTracker(),
+		&fakeChatReader{entries: map[string]*Entry{}},
+		chats,
+		workflows,
+		zerolog.Nop(),
+	)
+	if err := c.Recompute(context.Background(), sessID); err != nil {
+		t.Fatalf("recompute: %v", err)
+	}
+
+	got, err := sessions.Get(context.Background(), sessID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.DisplayLabel != "? PR failed" {
+		t.Errorf("DisplayLabel = %q, want %q", got.DisplayLabel, "? PR failed")
+	}
+	if pb.DisplayIntent(got.DisplayIntent) != pb.DisplayIntent_DISPLAY_INTENT_WARNING {
+		t.Errorf("DisplayIntent = %v, want %v", pb.DisplayIntent(got.DisplayIntent), pb.DisplayIntent_DISPLAY_INTENT_WARNING)
+	}
+	if got.DisplaySpinner {
+		t.Errorf("DisplaySpinner = true, want false")
 	}
 }
 

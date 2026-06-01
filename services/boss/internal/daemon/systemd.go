@@ -235,6 +235,14 @@ func platformGetStatus() (*Status, error) {
 
 // platformEnsureRunning attempts to start the daemon if it's not reachable.
 func platformEnsureRunning(socketPath string) error {
+	// Re-probe: a daemon may have come up (or another caller started one) since
+	// EnsureRunning's initial check. Spawning a duplicate bossd here is the root
+	// cause of the socket-stealing storm, so never start one if the socket is
+	// already being served.
+	if isSocketReachable(socketPath) {
+		return nil
+	}
+
 	// Try the systemd service first (if installed).
 	st, err := platformGetStatus()
 	if err == nil && st.Installed && !st.Running {
@@ -249,6 +257,11 @@ func platformEnsureRunning(socketPath string) error {
 	bossdPath, err := ResolveBossdPath()
 	if err != nil {
 		return fmt.Errorf("cannot auto-start daemon because start failed: %w", err)
+	}
+
+	// Final guard before spawning: don't race a daemon that just came up.
+	if isSocketReachable(socketPath) {
+		return nil
 	}
 
 	cmd := exec.Command(bossdPath)

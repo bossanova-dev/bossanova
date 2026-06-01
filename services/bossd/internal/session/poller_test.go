@@ -534,12 +534,74 @@ func TestPollerSkipsNonPollableStates(t *testing.T) {
 // from FixingChecks would self-transition and inflate AttemptCount on
 // every poll cycle.
 func TestPollerEmitsConflictDetectedFromPollableStates(t *testing.T) {
-	pollableNonAwaiting := []machine.State{
-		machine.GreenDraft,
-		machine.ReadyForReview,
+	tests := []struct {
+		name              string
+		state             machine.State
+		repoMergeStrategy models.MergeStrategy
+		setup             func(*mockVCSProvider)
+	}{
+		{
+			name:  "GreenDraft mergeable false",
+			state: machine.GreenDraft,
+			setup: func(vp *mockVCSProvider) {
+				mergeable := false
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable}
+			},
+		},
+		{
+			name:  "ReadyForReview mergeable false",
+			state: machine.ReadyForReview,
+			setup: func(vp *mockVCSProvider) {
+				mergeable := false
+				vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable}
+			},
+		},
+		{
+			name:              "GreenDraft rebaseable false with rebase strategy",
+			state:             machine.GreenDraft,
+			repoMergeStrategy: models.MergeStrategyRebase,
+			setup: func(vp *mockVCSProvider) {
+				mergeable := true
+				rebaseable := false
+				vp.nextPRStatus = &vcs.PRStatus{
+					State:      vcs.PRStateOpen,
+					Mergeable:  &mergeable,
+					Rebaseable: &rebaseable,
+				}
+			},
+		},
+		{
+			name:              "ReadyForReview rebaseable false with rebase strategy",
+			state:             machine.ReadyForReview,
+			repoMergeStrategy: models.MergeStrategyRebase,
+			setup: func(vp *mockVCSProvider) {
+				mergeable := true
+				rebaseable := false
+				vp.nextPRStatus = &vcs.PRStatus{
+					State:      vcs.PRStateOpen,
+					Mergeable:  &mergeable,
+					Rebaseable: &rebaseable,
+				}
+			},
+		},
+		{
+			name:              "ReadyForReview rebaseable false with resolved rebase strategy",
+			state:             machine.ReadyForReview,
+			repoMergeStrategy: models.MergeStrategyMerge,
+			setup: func(vp *mockVCSProvider) {
+				mergeable := true
+				rebaseable := false
+				vp.nextPRStatus = &vcs.PRStatus{
+					State:      vcs.PRStateOpen,
+					Mergeable:  &mergeable,
+					Rebaseable: &rebaseable,
+				}
+				vp.allowedStrategies = []string{"rebase"}
+			},
+		},
 	}
-	for _, st := range pollableNonAwaiting {
-		t.Run(st.String(), func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 
@@ -549,15 +611,18 @@ func TestPollerEmitsConflictDetectedFromPollableStates(t *testing.T) {
 			logger := zerolog.Nop()
 
 			prNum := 42
-			repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+			repos.repos["repo-1"] = &models.Repo{
+				ID:            "repo-1",
+				OriginURL:     "owner/repo",
+				MergeStrategy: tt.repoMergeStrategy,
+			}
 			sessions.sessions["sess-1"] = &models.Session{
 				ID:       "sess-1",
 				RepoID:   "repo-1",
-				State:    st,
+				State:    tt.state,
 				PRNumber: &prNum,
 			}
-			mergeable := false
-			vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: &mergeable}
+			tt.setup(vp)
 
 			poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
 			ch := poller.Run(ctx)
@@ -565,12 +630,59 @@ func TestPollerEmitsConflictDetectedFromPollableStates(t *testing.T) {
 			select {
 			case ev := <-ch:
 				if _, ok := ev.Event.(vcs.ConflictDetected); !ok {
-					t.Errorf("event type from %s = %T, want ConflictDetected", st, ev.Event)
+					t.Errorf("event type from %s = %T, want ConflictDetected", tt.state, ev.Event)
 				}
 			case <-ctx.Done():
-				t.Fatalf("timed out waiting for ConflictDetected from %s", st)
+				t.Fatalf("timed out waiting for ConflictDetected from %s", tt.state)
 			}
 		})
+	}
+}
+
+func TestPollerTreatsRebaseOnlyBlockAsConflictOnlyForRebaseStrategy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	prNum := 42
+	repos.repos["repo-1"] = &models.Repo{
+		ID:            "repo-1",
+		OriginURL:     "owner/repo",
+		MergeStrategy: models.MergeStrategyMerge,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		State:    machine.AwaitingChecks,
+		PRNumber: &prNum,
+	}
+
+	mergeable := true
+	rebaseable := false
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:      vcs.PRStateOpen,
+		Mergeable:  &mergeable,
+		Rebaseable: &rebaseable,
+	}
+	success := vcs.CheckConclusionSuccess
+	vp.nextCheckResults = []vcs.CheckResult{
+		{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+	}
+
+	poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
+	ch := poller.Run(ctx)
+
+	select {
+	case ev := <-ch:
+		if _, ok := ev.Event.(vcs.ChecksPassed); !ok {
+			t.Errorf("event type = %T, want ChecksPassed", ev.Event)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for ChecksPassed")
 	}
 }
 
@@ -613,6 +725,38 @@ func TestPollerSkipsEventsNotPermittedByState(t *testing.T) {
 				}
 			},
 			eventDesc: "ChecksPassed (not permitted from ReadyForReview)",
+		},
+		{
+			name:  "GreenDraft+review-required block does not emit ConflictDetected",
+			state: machine.GreenDraft,
+			setupVCS: func(vp *mockVCSProvider) {
+				mergeable := true
+				rebaseable := false
+				vp.nextPRStatus = &vcs.PRStatus{
+					State:             vcs.PRStateOpen,
+					Mergeable:         &mergeable,
+					Rebaseable:        &rebaseable,
+					MergeStateStatus:  vcs.MergeStateStatusBlocked,
+					LatestReviewState: vcs.ReviewStateRequired,
+				}
+			},
+			eventDesc: "ConflictDetected for review-only branch protection",
+		},
+		{
+			name:  "ReadyForReview+review-required block does not emit ConflictDetected",
+			state: machine.ReadyForReview,
+			setupVCS: func(vp *mockVCSProvider) {
+				mergeable := true
+				rebaseable := false
+				vp.nextPRStatus = &vcs.PRStatus{
+					State:             vcs.PRStateOpen,
+					Mergeable:         &mergeable,
+					Rebaseable:        &rebaseable,
+					MergeStateStatus:  vcs.MergeStateStatusBlocked,
+					LatestReviewState: vcs.ReviewStateRequired,
+				}
+			},
+			eventDesc: "ConflictDetected for review-only branch protection",
 		},
 		{
 			name:  "FixingChecks+conflict does not re-emit ConflictDetected",

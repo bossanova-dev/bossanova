@@ -50,6 +50,8 @@ func styledPRStatus(sess *pb.Session, sp spinner.Model) string {
 		return styleStatusSuccess.Render("✓ approved")
 	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
 		return styleStatusSuccess.Render("✓ passing")
+	case pb.DisplayStatus_DISPLAY_STATUS_REVIEW:
+		return styleStatusSuccess.Render("✓ review")
 	case pb.DisplayStatus_DISPLAY_STATUS_FAILING:
 		return styleStatusDanger.Render("⨯ failing")
 	case pb.DisplayStatus_DISPLAY_STATUS_CONFLICT:

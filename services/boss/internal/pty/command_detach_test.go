@@ -9,12 +9,39 @@ import (
 	"golang.org/x/term"
 )
 
+func TestContainsDetachSequence(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"raw_ctrl_x", []byte{0x18}, true},
+		{"raw_ctrl_rbracket", []byte{0x1d}, true},
+		{"kitty_ctrl_x", []byte("\x1b[120;5u"), true},
+		{"kitty_ctrl_rbracket", []byte("\x1b[93;5u"), true},
+		{"modifyOtherKeys_ctrl_x", []byte("\x1b[27;5;120~"), true},
+		{"modifyOtherKeys_ctrl_rbracket", []byte("\x1b[27;5;93~"), true},
+		{"wrapped_sequence", []byte("before\x1b[120;5uafter"), true},
+		{"ordinary_input", []byte("hello world"), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := containsDetachSequence(tc.data); got != tc.want {
+				t.Fatalf("containsDetachSequence(%q) = %v, want %v", tc.data, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPTYCommandDetectsDetach runs PTYCommand under a fake stdin/stdout PTY
-// pair and verifies that each detach key encoding (raw Ctrl-X, kitty CSI u,
-// xterm modifyOtherKeys=2) causes the command to return with Detached=true.
+// pair and verifies that terminal-encoded detach keys cause the command to
+// return with Detached=true.
 // Claude Code enables modifyOtherKeys=2 on attach, so the encoded forms are
 // what arrive in practice — the raw 0x18 byte rarely shows up on a real
-// terminal once an inner TUI is running.
+// terminal once an inner TUI is running. Raw control bytes are covered above;
+// keeping them out of this PTY integration test avoids Linux line-discipline
+// timing flakes under -race.
 func TestPTYCommandDetectsDetach(t *testing.T) {
 	if _, err := exec.LookPath("cat"); err != nil {
 		t.Skip("cat not available")
@@ -24,8 +51,6 @@ func TestPTYCommandDetectsDetach(t *testing.T) {
 		name  string
 		bytes []byte
 	}{
-		{"raw_ctrl_x", []byte{0x18}},
-		{"raw_ctrl_rbracket", []byte{0x1d}},
 		{"kitty_ctrl_x", []byte("\x1b[120;5u")},
 		{"kitty_ctrl_rbracket", []byte("\x1b[93;5u")},
 		{"modifyOtherKeys_ctrl_x", []byte("\x1b[27;5;120~")},

@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -41,6 +42,8 @@ type loginErrorMsg struct {
 // loginAutoReturnMsg signals the success screen should auto-return to home.
 type loginAutoReturnMsg struct{}
 
+type loginCompleteHook func(context.Context)
+
 // LoginModel handles the interactive device code login flow.
 type LoginModel struct {
 	mgr       *auth.Manager
@@ -56,6 +59,13 @@ type LoginModel struct {
 	cancelled bool
 	done      bool
 	width     int
+	afterAuth loginCompleteHook
+
+	cloudAccess       CloudAccessClient
+	checkoutReturnURL string
+	checkoutCancelURL string
+	subscriptionURL   string
+	subscription      subscriptionState
 }
 
 // NewLoginModel creates a new login model that will start the device code flow.
@@ -69,6 +79,10 @@ func NewLoginModel(mgr *auth.Manager, c client.BossClient, parentCtx context.Con
 		spinner: newStatusSpinner(),
 		phase:   loginPhaseRequesting,
 	}
+}
+
+func (m *LoginModel) SetAfterAuth(hook loginCompleteHook) {
+	m.afterAuth = hook
 }
 
 // Cancelled returns true if the user cancelled the login flow.
@@ -91,9 +105,43 @@ func (m LoginModel) requestDeviceCode() tea.Cmd {
 func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.subscription.phase != subscriptionPhaseIdle {
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				if m.cancel != nil {
+					m.cancel()
+				}
+				m.cancelled = true
+				m.done = true
+				return m, nil
+			case "o":
+				if m.subscription.checkoutURL != "" {
+					return m, m.subscriptionOpenBrowser(m.subscription.checkoutURL, m.subscription.attempt)
+				}
+				if m.subscription.phase == subscriptionPhaseWaiting ||
+					m.subscription.phase == subscriptionPhaseTimedOut ||
+					m.subscription.phase == subscriptionPhaseError {
+					updated, cmd := m.startSubscriptionAttempt()
+					return updated, cmd
+				}
+			case "enter":
+				if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutURL != "" {
+					return m, m.subscriptionOpenBrowser(m.subscription.checkoutURL, m.subscription.attempt)
+				}
+				if m.subscription.phase == subscriptionPhaseWaiting ||
+					m.subscription.phase == subscriptionPhaseTimedOut ||
+					m.subscription.phase == subscriptionPhaseError {
+					updated, cmd := m.startSubscriptionAttempt()
+					return updated, cmd
+				}
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "esc":
-			m.cancel()
+			if m.cancel != nil {
+				m.cancel()
+			}
 			m.cancelled = true
 			return m, nil
 		}
@@ -136,16 +184,50 @@ func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginCompleteMsg:
 		m.phase = loginPhaseSuccess
 		m.email = msg.email
-		// Notify daemon of login (best-effort, non-blocking).
-		notifyCmd := func() tea.Msg {
+		cmds := []tea.Cmd{func() tea.Msg {
 			if m.client != nil {
 				_ = m.client.NotifyAuthChange(m.ctx, "login")
 			}
 			return nil
+		}}
+		if m.afterAuth != nil {
+			cmds = append(cmds, func() tea.Msg {
+				m.afterAuth(m.ctx)
+				return nil
+			})
 		}
-		return m, tea.Batch(notifyCmd, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
+		if m.cloudAccess != nil {
+			updated, cmd := m.startSubscriptionAttempt()
+			m = updated
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+		cmds = append(cmds, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
 			return loginAutoReturnMsg{}
 		}))
+		return m, tea.Batch(cmds...)
+
+	case subscriptionAccessMsg:
+		return m.updateSubscriptionAccess(msg)
+
+	case subscriptionCheckoutMsg:
+		return m.updateSubscriptionCheckout(msg)
+
+	case subscriptionBrowserOpenedMsg:
+		return m.updateSubscriptionBrowserOpened(msg), nil
+
+	case subscriptionPollTickMsg:
+		return m.updateSubscriptionPollTick(msg)
+
+	case subscriptionTimeoutMsg:
+		if msg.attempt != m.subscription.attempt || m.subscription.phase != subscriptionPhaseWaiting {
+			return m, nil
+		}
+		m.subscription.phase = subscriptionPhaseTimedOut
+		m.subscription.err = errors.New("subscription activation is taking longer than expected")
+		return m, nil
 
 	case loginErrorMsg:
 		// If context was cancelled (user pressed esc), treat as cancellation.
@@ -171,6 +253,10 @@ func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m LoginModel) View() tea.View {
+	if m.subscription.phase != subscriptionPhaseIdle {
+		return tea.NewView(m.subscriptionView())
+	}
+
 	padding := lipgloss.NewStyle().Padding(0, 2)
 
 	var content string

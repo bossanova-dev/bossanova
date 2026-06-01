@@ -16,6 +16,7 @@ const (
 	DisplayStatusClosed      DisplayStatus = 8
 	DisplayStatusDraft       DisplayStatus = 9
 	DisplayStatusApproved    DisplayStatus = 10
+	DisplayStatusReview      DisplayStatus = 11
 )
 
 // DisplayInfo holds the computed display status and metadata for a session.
@@ -27,7 +28,7 @@ type DisplayInfo struct {
 }
 
 // ComputeDisplayStatus derives a unified display status from PR state, CI checks,
-// and review comments. Priority: Merged > Closed > Conflict > Failing > Checking > Rejected > Approved > Passing > Idle.
+// and review comments. Priority: Merged > Closed > Draft > Conflict > Failing > Checking > Rejected > Review > Approved > Passing > Idle.
 func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewComment) DisplayInfo {
 	if pr == nil {
 		return DisplayInfo{Status: DisplayStatusIdle}
@@ -46,9 +47,12 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		return DisplayInfo{Status: DisplayStatusDraft}
 	}
 
+	reviewRequiredBlock := pr.IsReviewRequiredBlock()
+
 	// Conflict detection. GitHub can report a PR as generally mergeable while
-	// also marking it as not rebaseable, which blocks rebase-and-merge.
-	if (pr.Mergeable != nil && !*pr.Mergeable) || (pr.Rebaseable != nil && !*pr.Rebaseable) {
+	// also marking it as not rebaseable, which blocks rebase-and-merge. A
+	// BLOCKED + REVIEW_REQUIRED gate is not a conflict; it is waiting on approval.
+	if pr.HasConflictBlock() {
 		return DisplayInfo{Status: DisplayStatusConflict}
 	}
 
@@ -97,7 +101,7 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 		hasChangesRequested = true
 	case ReviewStateApproved:
 		hasApproval = true
-	case ReviewStateUnspecified, ReviewStateCommented, ReviewStateDismissed:
+	case ReviewStateUnspecified, ReviewStateCommented, ReviewStateDismissed, ReviewStateRequired:
 	}
 	for _, state := range latestByAuthor {
 		if state == ReviewStateChangesRequested {
@@ -120,6 +124,10 @@ func ComputeDisplayStatus(pr *PRStatus, checks []CheckResult, reviews []ReviewCo
 
 	// When mergeable is unknown we can't confirm passing/approved — show "checking".
 	mergeableUnknown := pr.Mergeable == nil
+
+	if reviewRequiredBlock && !mergeableUnknown {
+		return DisplayInfo{Status: DisplayStatusReview}
+	}
 
 	if hasApproval && !mergeableUnknown {
 		return DisplayInfo{Status: DisplayStatusApproved}

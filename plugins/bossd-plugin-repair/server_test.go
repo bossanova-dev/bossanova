@@ -61,6 +61,9 @@ type mockHostClient struct {
 	setRepairStatusReqs []*bossanovav1.SetRepairStatusRequest
 
 	recordOutcomeReqs []*bossanovav1.RecordRepairOutcomeRequest
+
+	reviewCommentsResp *bossanovav1.GetReviewCommentsResponse
+	reviewCommentsErr  error
 }
 
 var _ hostClient = (*mockHostClient)(nil)
@@ -84,7 +87,15 @@ func (m *mockHostClient) ListSessions(_ context.Context) (*bossanovav1.HostServi
 }
 
 func (m *mockHostClient) GetReviewComments(_ context.Context, _ *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
-	return nil, errors.New("not implemented in mock")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reviewCommentsErr != nil {
+		return nil, m.reviewCommentsErr
+	}
+	if m.reviewCommentsResp != nil {
+		return m.reviewCommentsResp, nil
+	}
+	return &bossanovav1.GetReviewCommentsResponse{}, nil
 }
 
 func (m *mockHostClient) FireSessionEvent(_ context.Context, req *bossanovav1.FireSessionEventRequest) (*bossanovav1.FireSessionEventResponse, error) {
@@ -205,7 +216,7 @@ func TestRepairSession_HappyPath(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "session-name",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
 	require.Equal(t, 1, startCalls, "StartChatRun called once")
@@ -236,7 +247,7 @@ func TestRepairSession_AlreadyExists(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	_, waitCalls, fireCalls, setRepair := mock.snapshot()
 	assert.Equal(t, 0, waitCalls, "WaitChatRun must not be called when StartChatRun returned AlreadyExists")
@@ -264,7 +275,7 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimRefusedSoftSkips(t *testing.T)
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", true)
 
 	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
 	require.Equal(t, 1, startCalls)
@@ -300,7 +311,7 @@ func TestRepairSession_AlreadyExistsAgentIDReclaimSuccessRetriesOnce(t *testing.
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", true)
 
 	startCalls, waitCalls, _, setRepair := mock.snapshot()
 	require.Equal(t, 2, startCalls)
@@ -325,7 +336,7 @@ func TestRepairSession_RecordsOutcomeOnRunnerFailure(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	require.Len(t, mock.recordOutcomeReqs, 1, "runner failure must be recorded once")
 	got := mock.recordOutcomeReqs[0]
@@ -353,7 +364,7 @@ func TestRepairSession_RecordsOutcomeOnAgentExitError(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	require.Len(t, mock.recordOutcomeReqs, 1, "exit-error path must be recorded")
 	got := mock.recordOutcomeReqs[0]
@@ -378,7 +389,7 @@ func TestRepairSession_RunReturnsExitError(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	_, _, fireCalls, setRepair := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "no FIX_COMPLETE on failed run")
@@ -403,7 +414,7 @@ func TestRepairSession_WaitChatRunTimeoutDoesNotRecordAttemptedHead(t *testing.T
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	rm.mu.Lock()
 	lastAttemptCommit := rm.lastAttemptCommit["s1"]
@@ -425,7 +436,7 @@ func TestRepairSession_NotInFixingChecks(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	_, _, fireCalls, _ := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "FIX_COMPLETE only fires in FIXING_CHECKS")
@@ -438,7 +449,7 @@ func TestRepairSession_WaitErrorSkipsFireEvent(t *testing.T) {
 	rm.repairing["s1"] = true
 
 	rm.repairSession(t.Context(), "s1", "repo", "title",
-		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{})
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
 
 	_, _, fireCalls, _ := mock.snapshot()
 	assert.Equal(t, 0, fireCalls, "no FIX_COMPLETE when WaitChatRun errored")
@@ -450,6 +461,68 @@ func TestRepairSession_WaitErrorSkipsFireEvent(t *testing.T) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	assert.Equal(t, "", rm.lastAttemptCommit["s1"], "lastAttemptCommit must NOT be set when WaitChatRun errored")
+}
+
+func TestRepairSession_DoesNotPersistUnavailableReviewFingerprint(t *testing.T) {
+	mock := newTestMock()
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+
+	rm.repairSession(t.Context(), "s1", "repo", "title",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "", false)
+
+	require.Len(t, mock.recordOutcomeReqs, 1)
+	assert.Nil(t, mock.recordOutcomeReqs[0].ReviewFingerprint, "unavailable fingerprint must not be persisted as an empty fingerprint")
+}
+
+func TestReviewFingerprintStableAcrossCommentOrder(t *testing.T) {
+	path := "proxy.go"
+	line := int32(164)
+	comments := []*bossanovav1.ReviewComment{
+		{Author: "bot", Body: "first", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+		{Author: "bot", Body: "second"},
+	}
+	reversed := []*bossanovav1.ReviewComment{comments[1], comments[0]}
+
+	want, err := reviewFingerprint(comments)
+	require.NoError(t, err)
+	got, err := reviewFingerprint(reversed)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestReviewFingerprintChangesWhenFeedbackChanges(t *testing.T) {
+	path := "proxy.go"
+	line := int32(164)
+	before, err := reviewFingerprint([]*bossanovav1.ReviewComment{
+		{Author: "bot", Body: "old", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+	})
+	require.NoError(t, err)
+	after, err := reviewFingerprint([]*bossanovav1.ReviewComment{
+		{Author: "bot", Body: "new", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, before, after)
+}
+
+func TestReviewFingerprintEmptyForNoComments(t *testing.T) {
+	got, err := reviewFingerprint(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "", got)
+}
+
+func TestReviewFingerprintDistinguishesOptionalFieldPresence(t *testing.T) {
+	path := "proxy.go"
+	emptyPath := ""
+	withMissingPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same"}})
+	require.NoError(t, err)
+	withEmptyPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same", Path: &emptyPath}})
+	require.NoError(t, err)
+	withPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same", Path: &path}})
+	require.NoError(t, err)
+
+	assert.NotEqual(t, withMissingPath, withEmptyPath)
+	assert.NotEqual(t, withEmptyPath, withPath)
 }
 
 // --- maybeRepair filtering tests ---
@@ -633,6 +706,97 @@ func TestMaybeRepair_SkipsPersistedSameHeadStatusAfterAgentRun(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	startCalls, _, _, _ := mock.snapshot()
 	assert.Equal(t, 0, startCalls, "persisted same-head/status agent exit must not retry forever")
+}
+
+func TestMaybeRepair_RejectedAllowsSameHeadWhenReviewFingerprintChanges(t *testing.T) {
+	path := "proxy.go"
+	line := int32(164)
+	prNumber := int32(399)
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                          "s1",
+			State:                       bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			PrDisplayHeadSha:            "abc123",
+			LastRepairHeadSha:           "abc123",
+			LastRepairDisplayStatus:     bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED,
+			LastRepairExitError:         "exit status 1",
+			LastRepairReviewFingerprint: "old-fingerprint",
+			RepoOriginUrl:               "git@github.com:recurser/bossanova.git",
+			PrNumber:                    &prNumber,
+		},
+	}
+	mock.reviewCommentsResp = &bossanovav1.GetReviewCommentsResponse{
+		Comments: []*bossanovav1.ReviewComment{
+			{Author: "reviewer", Body: "new feedback", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+		},
+	}
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false)
+
+	waitFor(t, func() bool {
+		c, _, _, _ := mock.snapshot()
+		return c > 0
+	}, "StartChatRun called when same rejected head has changed review feedback")
+}
+
+func TestMaybeRepair_RejectedSkipsSameHeadWhenReviewFingerprintMatches(t *testing.T) {
+	path := "proxy.go"
+	line := int32(164)
+	prNumber := int32(399)
+	comments := []*bossanovav1.ReviewComment{
+		{Author: "reviewer", Body: "same feedback", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+	}
+	fp, err := reviewFingerprint(comments)
+	require.NoError(t, err)
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                          "s1",
+			State:                       bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			PrDisplayHeadSha:            "abc123",
+			LastRepairHeadSha:           "abc123",
+			LastRepairDisplayStatus:     bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED,
+			LastRepairExitError:         "exit status 1",
+			LastRepairReviewFingerprint: fp,
+			RepoOriginUrl:               "git@github.com:recurser/bossanova.git",
+			PrNumber:                    &prNumber,
+		},
+	}
+	mock.reviewCommentsResp = &bossanovav1.GetReviewCommentsResponse{Comments: comments}
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	assert.Equal(t, 0, startCalls, "same rejected head with same review fingerprint must not retry")
+}
+
+func TestMaybeRepair_RejectedSkipsSameHeadWhenReviewFingerprintUnavailable(t *testing.T) {
+	prNumber := int32(399)
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{
+			Id:                      "s1",
+			State:                   bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			PrDisplayHeadSha:        "abc123",
+			LastRepairHeadSha:       "abc123",
+			LastRepairDisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED,
+			LastRepairExitError:     "exit status 1",
+			RepoOriginUrl:           "git@github.com:recurser/bossanova.git",
+			PrNumber:                &prNumber,
+		},
+	}
+	mock.reviewCommentsErr = errors.New("github unavailable")
+	rm := newTestMonitor(mock)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false)
+
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	assert.Equal(t, 0, startCalls, "same rejected head must not retry when review fingerprint is unavailable")
 }
 
 func TestMaybeRepair_AllowsPersistedRunnerFailureSameHeadStatus(t *testing.T) {

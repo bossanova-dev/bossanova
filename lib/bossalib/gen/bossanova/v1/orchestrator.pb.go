@@ -2532,12 +2532,19 @@ func (x *GitHubAppRepoStatus) GetLastError() string {
 }
 
 type CloudAccessStatus struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	State         CloudAccessState       `protobuf:"varint,1,opt,name=state,proto3,enum=bossanova.v1.CloudAccessState" json:"state,omitempty"`
-	AccountId     string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	WorkosOrgId   string                 `protobuf:"bytes,3,opt,name=workos_org_id,json=workosOrgId,proto3" json:"workos_org_id,omitempty"`
-	Message       string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	CanRetry      bool                   `protobuf:"varint,5,opt,name=can_retry,json=canRetry,proto3" json:"can_retry,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	State       CloudAccessState       `protobuf:"varint,1,opt,name=state,proto3,enum=bossanova.v1.CloudAccessState" json:"state,omitempty"`
+	AccountId   string                 `protobuf:"bytes,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	WorkosOrgId string                 `protobuf:"bytes,3,opt,name=workos_org_id,json=workosOrgId,proto3" json:"workos_org_id,omitempty"`
+	Message     string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	CanRetry    bool                   `protobuf:"varint,5,opt,name=can_retry,json=canRetry,proto3" json:"can_retry,omitempty"`
+	// True when the client should call CreateCheckoutSession to open Stripe Checkout.
+	CanCreateCheckout bool `protobuf:"varint,6,opt,name=can_create_checkout,json=canCreateCheckout,proto3" json:"can_create_checkout,omitempty"`
+	// True when checkout has already been started and the client should poll
+	// RefreshCloudEntitlements instead of creating another checkout.
+	CheckoutStarted bool `protobuf:"varint,7,opt,name=checkout_started,json=checkoutStarted,proto3" json:"checkout_started,omitempty"`
+	// Short machine-readable reason for inactive cloud access.
+	DenialReason  string `protobuf:"bytes,8,opt,name=denial_reason,json=denialReason,proto3" json:"denial_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2605,6 +2612,27 @@ func (x *CloudAccessStatus) GetCanRetry() bool {
 		return x.CanRetry
 	}
 	return false
+}
+
+func (x *CloudAccessStatus) GetCanCreateCheckout() bool {
+	if x != nil {
+		return x.CanCreateCheckout
+	}
+	return false
+}
+
+func (x *CloudAccessStatus) GetCheckoutStarted() bool {
+	if x != nil {
+		return x.CheckoutStarted
+	}
+	return false
+}
+
+func (x *CloudAccessStatus) GetDenialReason() string {
+	if x != nil {
+		return x.DenialReason
+	}
+	return ""
 }
 
 type GetCloudAccessStatusRequest struct {
@@ -3496,14 +3524,17 @@ const file_bossanova_v1_orchestrator_proto_rawDesc = "" +
 	"\x10last_delivery_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x0elastDeliveryAt\x120\n" +
 	"\x14last_delivery_status\x18\b \x01(\tR\x12lastDeliveryStatus\x12\x1d\n" +
 	"\n" +
-	"last_error\x18\t \x01(\tR\tlastError\"\xc3\x01\n" +
+	"last_error\x18\t \x01(\tR\tlastError\"\xc3\x02\n" +
 	"\x11CloudAccessStatus\x124\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1e.bossanova.v1.CloudAccessStateR\x05state\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x02 \x01(\tR\taccountId\x12\"\n" +
 	"\rworkos_org_id\x18\x03 \x01(\tR\vworkosOrgId\x12\x18\n" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12\x1b\n" +
-	"\tcan_retry\x18\x05 \x01(\bR\bcanRetry\"\x1d\n" +
+	"\tcan_retry\x18\x05 \x01(\bR\bcanRetry\x12.\n" +
+	"\x13can_create_checkout\x18\x06 \x01(\bR\x11canCreateCheckout\x12)\n" +
+	"\x10checkout_started\x18\a \x01(\bR\x0fcheckoutStarted\x12#\n" +
+	"\rdenial_reason\x18\b \x01(\tR\fdenialReason\"\x1d\n" +
 	"\x1bGetCloudAccessStatusRequest\"W\n" +
 	"\x1cGetCloudAccessStatusResponse\x127\n" +
 	"\x06status\x18\x01 \x01(\v2\x1f.bossanova.v1.CloudAccessStatusR\x06status\"\\\n" +

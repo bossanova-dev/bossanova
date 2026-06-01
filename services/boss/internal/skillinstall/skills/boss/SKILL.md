@@ -337,6 +337,21 @@ boss session checks abc123 --limit 10
 
 ---
 
+## Plugins
+
+### `boss plugin list`
+
+List plugins the daemon attempted to load during this run.
+
+Alias: `boss plugin ls`
+
+```bash
+boss plugin list
+boss plugin ls
+```
+
+---
+
 ## Other
 
 ### `boss version`
@@ -345,4 +360,20 @@ Print version information.
 
 ```bash
 boss version
+```
+
+### `boss upgrade`
+
+Check for and install Bossanova upgrades.
+
+- `--check` — Check for an upgrade without installing
+- `--yes` — Install without interactive confirmation
+- `--version <tag>` — Install a specific stable release tag
+- `--no-restart` — Do not restart the daemon after upgrade
+
+```bash
+boss upgrade --check
+boss upgrade --yes
+boss upgrade --version v1.2.4 --yes
+boss upgrade --yes --no-restart
 ```

@@ -61,6 +61,85 @@ func TestDisplayPoller_PollsSessionWithPR(t *testing.T) {
 	}
 }
 
+func TestDisplayPoller_ShowsRebaseConflictOnlyForRebaseStrategy(t *testing.T) {
+	ctx := context.Background()
+	success := vcs.CheckConclusionSuccess
+
+	tests := []struct {
+		name          string
+		mergeStrategy models.MergeStrategy
+		prStatus      *vcs.PRStatus
+		wantStatus    vcs.DisplayStatus
+	}{
+		{
+			name:          "rebase strategy",
+			mergeStrategy: models.MergeStrategyRebase,
+			wantStatus:    vcs.DisplayStatusConflict,
+		},
+		{
+			name:          "merge strategy",
+			mergeStrategy: models.MergeStrategyMerge,
+			wantStatus:    vcs.DisplayStatusPassing,
+		},
+		{
+			name:          "review required block",
+			mergeStrategy: models.MergeStrategyRebase,
+			prStatus: &vcs.PRStatus{
+				State:               vcs.PRStateOpen,
+				Mergeable:           boolPtr(true),
+				Rebaseable:          boolPtr(false),
+				MergeStateStatus:    vcs.MergeStateStatusBlocked,
+				ReviewDecisionState: vcs.ReviewStateRequired,
+			},
+			wantStatus: vcs.DisplayStatusReview,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessions := newMockSessionStore()
+			repos := newMockRepoStore()
+			vp := newMockVCSProvider()
+			tracker := status.NewDisplayTracker()
+			logger := zerolog.Nop()
+
+			prNum := 42
+			repos.repos["repo-1"] = &models.Repo{
+				ID:            "repo-1",
+				OriginURL:     "owner/repo",
+				MergeStrategy: tt.mergeStrategy,
+			}
+			sessions.sessions["sess-1"] = &models.Session{
+				ID:       "sess-1",
+				RepoID:   "repo-1",
+				PRNumber: &prNum,
+			}
+			vp.nextPRStatus = tt.prStatus
+			if vp.nextPRStatus == nil {
+				vp.nextPRStatus = &vcs.PRStatus{
+					State:      vcs.PRStateOpen,
+					Mergeable:  boolPtr(true),
+					Rebaseable: boolPtr(false),
+				}
+			}
+			vp.nextCheckResults = []vcs.CheckResult{
+				{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+			}
+
+			poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+			poller.poll(ctx)
+
+			e := tracker.Get("sess-1")
+			if e == nil {
+				t.Fatal("expected tracker entry for sess-1, got nil")
+			}
+			if e.Status != tt.wantStatus {
+				t.Fatalf("Status = %d, want %d", e.Status, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestDisplayPoller_SkipsSessionWithoutPR(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

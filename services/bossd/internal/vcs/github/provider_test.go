@@ -141,6 +141,7 @@ func TestParseReviewState(t *testing.T) {
 		{"CHANGES_REQUESTED", vcs.ReviewStateChangesRequested},
 		{"COMMENTED", vcs.ReviewStateCommented},
 		{"DISMISSED", vcs.ReviewStateDismissed},
+		{"PENDING", vcs.ReviewStateUnspecified},
 		{"unknown", vcs.ReviewStateCommented},
 	}
 
@@ -160,7 +161,7 @@ func TestParseReviewDecision(t *testing.T) {
 	}{
 		{"APPROVED", vcs.ReviewStateApproved},
 		{"CHANGES_REQUESTED", vcs.ReviewStateChangesRequested},
-		{"REVIEW_REQUIRED", vcs.ReviewStateUnspecified},
+		{"REVIEW_REQUIRED", vcs.ReviewStateRequired},
 		{"", vcs.ReviewStateUnspecified},
 		{"unknown", vcs.ReviewStateUnspecified},
 	}
@@ -218,6 +219,34 @@ func TestIsRepoNotReady(t *testing.T) {
 				t.Errorf("isRepoNotReady(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsPRAlreadyExists(t *testing.T) {
+	err := fmt.Errorf(`gh pr create: exit status 1: pull request create failed: GraphQL: a pull request for branch "owner:feature" into branch "main" already exists`)
+	if !isPRAlreadyExists(err) {
+		t.Fatal("expected duplicate PR error")
+	}
+}
+
+func TestIsPRAlreadyExistsFalseForOtherErrors(t *testing.T) {
+	err := fmt.Errorf("gh pr create: exit status 1: authentication failed")
+	if isPRAlreadyExists(err) {
+		t.Fatal("expected auth error not to be duplicate PR error")
+	}
+}
+
+func TestCreateDraftPRReturnsErrPRAlreadyExistsForDuplicatePR(t *testing.T) {
+	p := New(zerolog.Nop(),
+		WithRunGH(func(_ context.Context, _ ...string) (string, error) {
+			return "", errors.New(`gh pr create: exit status 1: pull request create failed: GraphQL: a pull request for branch "owner:feature" into branch "main" already exists`)
+		}),
+		WithSleepFunc(func(time.Duration) {}),
+	)
+
+	_, err := p.CreateDraftPR(context.Background(), testPROpts())
+	if !errors.Is(err, vcs.ErrPRAlreadyExists) {
+		t.Fatalf("error = %v, want ErrPRAlreadyExists", err)
 	}
 }
 
@@ -390,7 +419,147 @@ func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
 			viewArgs = append([]string(nil), args...)
-			return `{"state":"OPEN","mergeable":"MERGEABLE","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[]}`, nil
+			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[]}`, nil
+		}
+		if len(args) >= 2 && args[0] == "api" {
+			return `{"rebaseable":false}`, nil
+		}
+		return "", fmt.Errorf("unexpected gh args: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRStatus: %v", err)
+	}
+	if status.LatestReviewState != vcs.ReviewStateRequired {
+		t.Fatalf("LatestReviewState = %v, want ReviewStateRequired", status.LatestReviewState)
+	}
+	if status.ReviewDecisionState != vcs.ReviewStateRequired {
+		t.Fatalf("ReviewDecisionState = %v, want ReviewStateRequired", status.ReviewDecisionState)
+	}
+	if status.MergeStateStatus != vcs.MergeStateStatusBlocked {
+		t.Fatalf("MergeStateStatus = %v, want MergeStateStatusBlocked", status.MergeStateStatus)
+	}
+	if status.Rebaseable == nil || *status.Rebaseable {
+		t.Fatalf("Rebaseable = %v, want false", status.Rebaseable)
+	}
+	if !strings.Contains(strings.Join(viewArgs, " "), "reviewDecision") {
+		t.Fatalf("gh pr view args = %v, want reviewDecision field", viewArgs)
+	}
+	if !strings.Contains(strings.Join(viewArgs, " "), "mergeStateStatus") {
+		t.Fatalf("gh pr view args = %v, want mergeStateStatus field", viewArgs)
+	}
+}
+
+func TestGetPRStatus_RestMergeabilityMapsRebaseConflict(t *testing.T) {
+	apiCalled := false
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+			return `{"state":"OPEN","mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","isDraft":false,"title":"Rebase blocked","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"","reviews":[]}`, nil
+		}
+		if len(args) >= 2 && args[0] == "api" && args[1] == "repos/owner/repo/pulls/42" {
+			apiCalled = true
+			return `{"mergeable":true,"mergeable_state":"clean","rebaseable":false}`, nil
+		}
+		return "", fmt.Errorf("unexpected gh args: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRStatus: %v", err)
+	}
+	if !apiCalled {
+		t.Fatal("expected REST pull request payload to be fetched")
+	}
+	if status.Mergeable == nil || !*status.Mergeable {
+		t.Fatalf("Mergeable = %v, want true", status.Mergeable)
+	}
+	if status.Rebaseable == nil || *status.Rebaseable {
+		t.Fatalf("Rebaseable = %v, want false", status.Rebaseable)
+	}
+	if status.MergeStateStatus != vcs.MergeStateStatusClean {
+		t.Fatalf("MergeStateStatus = %v, want MergeStateStatusClean", status.MergeStateStatus)
+	}
+}
+
+func TestGetPRStatus_ReviewRequiredDoesNotSuppressCommentedReview(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"REVIEW_REQUIRED","reviews":[{"state":"COMMENTED"}]}`, nil
+		}
+		if len(args) >= 2 && args[0] == "api" {
+			return `{"rebaseable":false}`, nil
+		}
+		return "", fmt.Errorf("unexpected gh args: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRStatus: %v", err)
+	}
+	if status.ReviewDecisionState != vcs.ReviewStateRequired {
+		t.Fatalf("ReviewDecisionState = %v, want ReviewStateRequired", status.ReviewDecisionState)
+	}
+	if status.LatestReviewState != vcs.ReviewStateCommented {
+		t.Fatalf("LatestReviewState = %v, want ReviewStateCommented", status.LatestReviewState)
+	}
+}
+
+func TestGetPRStatus_PendingReviewDoesNotSuppressChangesRequestedDecision(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"CHANGES_REQUESTED","reviews":[{"state":"CHANGES_REQUESTED"},{"state":"PENDING"}]}`, nil
+		}
+		if len(args) >= 2 && args[0] == "api" {
+			return `{"rebaseable":false}`, nil
+		}
+		return "", fmt.Errorf("unexpected gh args: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRStatus: %v", err)
+	}
+	if status.ReviewDecisionState != vcs.ReviewStateChangesRequested {
+		t.Fatalf("ReviewDecisionState = %v, want ReviewStateChangesRequested", status.ReviewDecisionState)
+	}
+	if status.LatestReviewState != vcs.ReviewStateChangesRequested {
+		t.Fatalf("LatestReviewState = %v, want ReviewStateChangesRequested", status.LatestReviewState)
+	}
+}
+
+func TestGetPRStatus_CommentedReviewDoesNotSuppressChangesRequestedDecision(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"BLOCKED","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"CHANGES_REQUESTED","reviews":[{"state":"CHANGES_REQUESTED"},{"state":"COMMENTED"},{"state":"DISMISSED"}]}`, nil
+		}
+		if len(args) >= 2 && args[0] == "api" {
+			return `{"rebaseable":false}`, nil
+		}
+		return "", fmt.Errorf("unexpected gh args: %v", args)
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPRStatus: %v", err)
+	}
+	if status.ReviewDecisionState != vcs.ReviewStateChangesRequested {
+		t.Fatalf("ReviewDecisionState = %v, want ReviewStateChangesRequested", status.ReviewDecisionState)
+	}
+	if status.LatestReviewState != vcs.ReviewStateChangesRequested {
+		t.Fatalf("LatestReviewState = %v, want ReviewStateChangesRequested", status.LatestReviewState)
+	}
+}
+
+func TestGetPRStatus_CommentedReviewDoesNotSuppressApprovedDecision(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+			return `{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,"title":"Review gated","headRefName":"feature","baseRefName":"main","headRefOid":"abc123","reviewDecision":"APPROVED","reviews":[{"state":"APPROVED"},{"state":"COMMENTED"},{"state":"DISMISSED"}]}`, nil
 		}
 		if len(args) >= 2 && args[0] == "api" {
 			return `{"rebaseable":true}`, nil
@@ -403,11 +572,11 @@ func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPRStatus: %v", err)
 	}
-	if status.LatestReviewState != vcs.ReviewStateUnspecified {
-		t.Fatalf("LatestReviewState = %v, want ReviewStateUnspecified", status.LatestReviewState)
+	if status.ReviewDecisionState != vcs.ReviewStateApproved {
+		t.Fatalf("ReviewDecisionState = %v, want ReviewStateApproved", status.ReviewDecisionState)
 	}
-	if !strings.Contains(strings.Join(viewArgs, " "), "reviewDecision") {
-		t.Fatalf("gh pr view args = %v, want reviewDecision field", viewArgs)
+	if status.LatestReviewState != vcs.ReviewStateApproved {
+		t.Fatalf("LatestReviewState = %v, want ReviewStateApproved", status.LatestReviewState)
 	}
 }
 

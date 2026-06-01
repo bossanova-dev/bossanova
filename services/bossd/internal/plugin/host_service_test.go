@@ -192,7 +192,8 @@ func TestHostServiceGetPRStatus(t *testing.T) {
 // them shows up immediately rather than silently returning zero values.
 type fakeSessionStore struct {
 	db.SessionStore
-	sessions map[string]*models.Session
+	sessions                map[string]*models.Session
+	updateRepairDiagnostics *db.UpdateRepairDiagnosticsParams
 }
 
 func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, error) {
@@ -200,6 +201,16 @@ func (f *fakeSessionStore) Get(_ context.Context, id string) (*models.Session, e
 		return s, nil
 	}
 	return nil, errors.New("session not found")
+}
+
+func (f *fakeSessionStore) UpdateRepairDiagnostics(_ context.Context, params db.UpdateRepairDiagnosticsParams) error {
+	f.updateRepairDiagnostics = &params
+	if s, ok := f.sessions[params.SessionID]; ok {
+		if params.ReviewFingerprint != nil {
+			s.LastRepairReviewFingerprint = *params.ReviewFingerprint
+		}
+	}
+	return nil
 }
 
 // fakeAgentClient records StartRun calls and lets tests script IsRunning /
@@ -587,6 +598,44 @@ func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) 
 	return f.chatsBySession[sessionID], nil
 }
 
+func TestListSessions_PopulatesPRMetadata(t *testing.T) {
+	repoID := "repo-1"
+	sessID := "sess-1"
+	repoOriginURL := "https://github.com/owner/repo"
+	prNumber := 42
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo", OriginURL: repoOriginURL}},
+	}
+	srv.sessionStore = &fakeSessionStoreWithListActive{
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {{ID: sessID, RepoID: repoID, Title: "my session", PRNumber: &prNumber}},
+		},
+	}
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.agentChats = &fakeAgentChatStore{}
+
+	resp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	sessions := resp.GetSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if got := s.GetRepoOriginUrl(); got != repoOriginURL {
+		t.Fatalf("RepoOriginUrl=%q, want %q", got, repoOriginURL)
+	}
+	if s.PrNumber == nil {
+		t.Fatal("PrNumber=nil, want 42")
+	}
+	if got := s.GetPrNumber(); got != int32(prNumber) {
+		t.Fatalf("PrNumber=%d, want %d", got, prNumber)
+	}
+}
+
 // TestListSessions_PopulatesLastChatActivityAt verifies that ListSessions sets
 // LastChatActivityAt to the maximum LastOutputAt across all live chat tracker
 // entries for a session, and that HasActiveChat remains true.
@@ -609,7 +658,7 @@ func TestListSessions_PopulatesLastChatActivityAt(t *testing.T) {
 	}
 	srv.sessionStore = &fakeSessionStoreWithListActive{
 		sessionsByRepo: map[string][]*models.Session{
-			repoID: {{ID: sessID, RepoID: repoID, Title: "my session"}},
+			repoID: {{ID: sessID, RepoID: repoID, Title: "my session", LastRepairReviewFingerprint: "review-fp-1"}},
 		},
 	}
 	srv.displayTracker = status.NewDisplayTracker()
@@ -640,10 +689,60 @@ func TestListSessions_PopulatesLastChatActivityAt(t *testing.T) {
 	if s.GetLastChatActivityAt() == nil {
 		t.Fatal("LastChatActivityAt should be populated")
 	}
+	if got := s.GetLastRepairReviewFingerprint(); got != "review-fp-1" {
+		t.Fatalf("LastRepairReviewFingerprint=%q, want review-fp-1", got)
+	}
 	gotTime := s.GetLastChatActivityAt().AsTime()
 	// 1ms tolerance for any rounding through timestamppb.
 	if gotTime.Sub(newerTime).Abs() > time.Millisecond {
 		t.Errorf("LastChatActivityAt = %v, want %v (the newer time)", gotTime, newerTime)
+	}
+}
+
+func TestRecordRepairOutcomePersistsReviewFingerprint(t *testing.T) {
+	repoID := "repo-1"
+	store := &fakeSessionStore{sessions: map[string]*models.Session{
+		"sess-1": {ID: "sess-1", RepoID: repoID},
+	}}
+	sessionStore := &fakeSessionStoreWithListActive{
+		fakeSessionStore: *store,
+		sessionsByRepo: map[string][]*models.Session{
+			repoID: {store.sessions["sess-1"]},
+		},
+	}
+
+	srv := NewHostServiceServer(&mockVCSProvider{})
+	srv.repoStore = &fakeRepoStore{
+		repos: []*models.Repo{{ID: repoID, DisplayName: "Test Repo"}},
+	}
+	srv.sessionStore = sessionStore
+	srv.displayTracker = status.NewDisplayTracker()
+	srv.agentChats = &fakeAgentChatStore{}
+
+	reviewFingerprint := "review-fp-2"
+	_, err := srv.RecordRepairOutcome(t.Context(), &bossanovav1.RecordRepairOutcomeRequest{
+		SessionId:         "sess-1",
+		StartedAtUnix:     1779238800,
+		HeadSha:           "abc123",
+		DisplayStatus:     bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED,
+		ReviewFingerprint: &reviewFingerprint,
+	})
+	if err != nil {
+		t.Fatalf("RecordRepairOutcome: %v", err)
+	}
+	if sessionStore.updateRepairDiagnostics == nil {
+		t.Fatal("UpdateRepairDiagnostics was not called")
+	}
+	if got := sessionStore.updateRepairDiagnostics.ReviewFingerprint; got == nil || *got != "review-fp-2" {
+		t.Fatalf("ReviewFingerprint=%v, want review-fp-2", got)
+	}
+
+	listResp, err := srv.ListSessions(t.Context(), &bossanovav1.HostServiceListSessionsRequest{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if got := listResp.GetSessions()[0].GetLastRepairReviewFingerprint(); got != "review-fp-2" {
+		t.Fatalf("LastRepairReviewFingerprint=%q, want review-fp-2", got)
 	}
 }
 

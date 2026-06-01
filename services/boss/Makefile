@@ -7,15 +7,24 @@ all: clean format build test
 export MACOSX_DEPLOYMENT_TARGET ?= $(shell sw_vers -productVersion 2>/dev/null)
 
 BIN := ../../bin/boss
+PRETTIER := ../../node_modules/.bin/prettier
 
 LDFLAGS := -s -w \
 	-X github.com/recurser/bossalib/buildinfo.Version=$(or $(VERSION),dev) \
 	-X github.com/recurser/bossalib/buildinfo.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown) \
 	-X github.com/recurser/bossalib/buildinfo.Date=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-## format: Format Go source files and run golangci-lint (catches typecheck errors locally)
+## format: Format Go and JS/TS source files, then run golangci-lint (catches typecheck errors locally)
 format:
 	gofmt -w .
+	@files=$$(find . -type f \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \) -not -path './node_modules/*' -print); \
+	if [ -n "$$files" ]; then \
+		if [ ! -x "$(PRETTIER)" ]; then \
+			echo "prettier not found at $(PRETTIER); run npm install from the repo root" >&2; \
+			exit 1; \
+		fi; \
+		find . -type f \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \) -not -path './node_modules/*' -exec "$(PRETTIER)" --write {} +; \
+	fi
 	golangci-lint run ./...
 
 # Race detector is opt-in locally (slow). CI sets RACE=1; locally use `RACE=1 make test`.

@@ -302,6 +302,16 @@ func (c *RemoteClient) CreateCheckoutSession(ctx context.Context, returnURL, can
 	return resp.Msg.GetUrl(), nil
 }
 
+func (c *RemoteClient) CreateBillingPortalSession(ctx context.Context, returnURL string) (string, error) {
+	resp, err := c.rpc.CreateBillingPortalSession(ctx, connect.NewRequest(&pb.CreateBillingPortalSessionRequest{
+		ReturnUrl: returnURL,
+	}))
+	if err != nil {
+		return "", err
+	}
+	return resp.Msg.GetUrl(), nil
+}
+
 func (c *RemoteClient) RefreshCloudEntitlements(ctx context.Context) (*pb.CloudAccessStatus, error) {
 	resp, err := c.rpc.RefreshCloudEntitlements(ctx, connect.NewRequest(&pb.RefreshCloudEntitlementsRequest{}))
 	if err != nil {

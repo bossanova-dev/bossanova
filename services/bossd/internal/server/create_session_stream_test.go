@@ -342,11 +342,12 @@ func (w *setupStreamWorktree) Archive(context.Context, string) error { return ni
 func (w *setupStreamWorktree) Resurrect(context.Context, gitpkg.ResurrectOpts) error {
 	return nil
 }
-func (w *setupStreamWorktree) EmptyTrash(context.Context, string, []string) error { return nil }
-func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error  { return nil }
-func (w *setupStreamWorktree) Push(context.Context, string, string) error         { return nil }
-func (w *setupStreamWorktree) Status(context.Context, string) (string, error)     { return "", nil }
-func (w *setupStreamWorktree) Clone(context.Context, string, string) error        { return nil }
+func (w *setupStreamWorktree) EmptyTrash(context.Context, string, []string) error            { return nil }
+func (w *setupStreamWorktree) PurgeWorktree(context.Context, string, string, string, string) {}
+func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error             { return nil }
+func (w *setupStreamWorktree) Push(context.Context, string, string) error                    { return nil }
+func (w *setupStreamWorktree) Status(context.Context, string) (string, error)                { return "", nil }
+func (w *setupStreamWorktree) Clone(context.Context, string, string) error                   { return nil }
 func (w *setupStreamWorktree) DetectOriginURL(context.Context, string) (string, error) {
 	return "", nil
 }

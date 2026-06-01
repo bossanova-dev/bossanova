@@ -36,6 +36,14 @@ func TestCleanupFailedCreateSessionDoesNotTrashBranchWithoutWorktree(t *testing.
 	if worktrees.emptyTrashCalls != 0 {
 		t.Fatalf("EmptyTrash calls = %d, want 0", worktrees.emptyTrashCalls)
 	}
+	// The leftover worktree directory must still be purged (without deleting the
+	// branch) so a stale dir can't wedge the branch on the next attempt.
+	if worktrees.purgeCalls != 1 {
+		t.Fatalf("PurgeWorktree calls = %d, want 1", worktrees.purgeCalls)
+	}
+	if got, want := worktrees.purgeBranch, "user-branch"; got != want {
+		t.Fatalf("PurgeWorktree branch = %q, want %q", got, want)
+	}
 	if !sessions.deleted["sess-1"] {
 		t.Fatal("session was not deleted")
 	}
@@ -74,6 +82,10 @@ func TestCleanupFailedCreateSessionTrashesBranchWithWorktree(t *testing.T) {
 	}
 	if got, want := worktrees.branches[0], "owned-branch"; got != want {
 		t.Fatalf("EmptyTrash branch = %q, want %q", got, want)
+	}
+	// The directory is also purged on the worktree-created path.
+	if worktrees.purgeCalls != 1 {
+		t.Fatalf("PurgeWorktree calls = %d, want 1", worktrees.purgeCalls)
 	}
 	if !sessions.deleted["sess-1"] {
 		t.Fatal("session was not deleted")
@@ -165,6 +177,10 @@ type cleanupWorktreeManager struct {
 	emptyTrashCalls int
 	repoPath        string
 	branches        []string
+
+	purgeCalls   int
+	purgeBranch  string
+	purgeRepoDir string
 }
 
 func (m *cleanupWorktreeManager) Create(context.Context, gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -184,6 +200,11 @@ func (m *cleanupWorktreeManager) EmptyTrash(_ context.Context, repoPath string, 
 	m.repoPath = repoPath
 	m.branches = append([]string(nil), branches...)
 	return nil
+}
+func (m *cleanupWorktreeManager) PurgeWorktree(_ context.Context, repoPath, _, _, branch string) {
+	m.purgeCalls++
+	m.purgeRepoDir = repoPath
+	m.purgeBranch = branch
 }
 func (m *cleanupWorktreeManager) EmptyCommit(context.Context, string, string) error {
 	panic("not used")

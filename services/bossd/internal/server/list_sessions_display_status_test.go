@@ -107,6 +107,78 @@ func TestListSessions_RecomputedDisplayCompositeKeepsChatPrecedence(t *testing.T
 	}
 }
 
+func TestListSessions_CheckingCompositeOverridesLiveReviewStatus(t *testing.T) {
+	sess := &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		Title:          "Fix status mismatch",
+		State:          machine.ImplementingPlan,
+		DisplayLabel:   "checking",
+		DisplayIntent:  int32(pb.DisplayIntent_DISPLAY_INTENT_WARNING),
+		DisplaySpinner: true,
+		CreatedAt:      time.Now(),
+	}
+	displayTracker := status.NewDisplayTracker()
+	displayTracker.Set(sess.ID, vcs.DisplayInfo{
+		Status: vcs.DisplayStatusReview,
+	})
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{sess}, nil, displayTracker, status.NewTracker())
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	got := onlySession(t, resp.Msg.Sessions)
+
+	if got.DisplayStatus != pb.DisplayStatus_DISPLAY_STATUS_REVIEW {
+		t.Fatalf("DisplayStatus = %v, want REVIEW", got.DisplayStatus)
+	}
+	if got.DisplayLabel != "checking" {
+		t.Fatalf("DisplayLabel = %q, want %q", got.DisplayLabel, "checking")
+	}
+	if !got.DisplaySpinner {
+		t.Fatalf("DisplaySpinner = false, want true")
+	}
+	if got.DisplayIntent != pb.DisplayIntent_DISPLAY_INTENT_WARNING {
+		t.Fatalf("DisplayIntent = %v, want WARNING", got.DisplayIntent)
+	}
+}
+
+func TestListSessions_RepairingOverridesCheckingCompositeReviewGuard(t *testing.T) {
+	sess := &models.Session{
+		ID:             "sess-1",
+		RepoID:         "repo-1",
+		Title:          "Fix status mismatch",
+		State:          machine.ImplementingPlan,
+		DisplayLabel:   "checking",
+		DisplayIntent:  int32(pb.DisplayIntent_DISPLAY_INTENT_WARNING),
+		DisplaySpinner: true,
+		CreatedAt:      time.Now(),
+	}
+	displayTracker := status.NewDisplayTracker()
+	displayTracker.Set(sess.ID, vcs.DisplayInfo{
+		Status: vcs.DisplayStatusReview,
+	})
+	displayTracker.SetRepairing(sess.ID, true)
+	s := newListSessionsDisplayStatusTestServer([]*models.Session{sess}, nil, displayTracker, status.NewTracker())
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	got := onlySession(t, resp.Msg.Sessions)
+
+	if got.DisplayLabel != "repairing" {
+		t.Fatalf("DisplayLabel = %q, want %q", got.DisplayLabel, "repairing")
+	}
+	if !got.DisplaySpinner {
+		t.Fatalf("DisplaySpinner = false, want true")
+	}
+	if got.DisplayIntent != pb.DisplayIntent_DISPLAY_INTENT_WARNING {
+		t.Fatalf("DisplayIntent = %v, want WARNING", got.DisplayIntent)
+	}
+}
+
 func TestListSessions_KeepsPersistedDisplayCompositeWhenChatStatusLookupFails(t *testing.T) {
 	sess := &models.Session{
 		ID:             "sess-1",

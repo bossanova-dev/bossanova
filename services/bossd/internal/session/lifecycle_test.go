@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -36,6 +37,8 @@ var (
 type mockSessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*models.Session
+
+	updateHook func(id string, params db.UpdateSessionParams) error
 }
 
 func newMockSessionStore() *mockSessionStore {
@@ -110,6 +113,11 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	s, ok := m.sessions[id]
 	if !ok {
 		return nil, fmt.Errorf("session %s not found", id)
+	}
+	if m.updateHook != nil {
+		if err := m.updateHook(id, params); err != nil {
+			return nil, err
+		}
 	}
 	if params.State != nil {
 		s.State = machine.State(*params.State)
@@ -465,10 +473,11 @@ type mockWorktreeManager struct {
 	pushed                      []string
 	pushErr                     error    // if set, Push returns this error
 	emptyCommits                []string // worktree paths on which EmptyCommit was invoked
-	originURL                   string   // returned by DetectOriginURL
-	statusOut                   string   // returned by Status
-	statusErr                   error    // if set, Status returns this error
-	worktreePath                string   // override for Create's returned WorktreePath; empty uses the historical fixed path
+	emptyCommitCalls            int
+	originURL                   string // returned by DetectOriginURL
+	statusOut                   string // returned by Status
+	statusErr                   error  // if set, Status returns this error
+	worktreePath                string // override for Create's returned WorktreePath; empty uses the historical fixed path
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -488,12 +497,15 @@ func (m *mockWorktreeManager) Archive(_ context.Context, path string) error {
 	return m.archiveErr
 }
 
+func (m *mockWorktreeManager) PurgeWorktree(_ context.Context, _, _, _, _ string) {}
+
 func (m *mockWorktreeManager) Resurrect(_ context.Context, opts gitpkg.ResurrectOpts) error {
 	m.resurrected = append(m.resurrected, opts)
 	return nil
 }
 
 func (m *mockWorktreeManager) EmptyCommit(_ context.Context, worktreePath, _ string) error {
+	m.emptyCommitCalls++
 	m.emptyCommits = append(m.emptyCommits, worktreePath)
 	return nil
 }
@@ -636,6 +648,7 @@ func (m *mockAgentRunner) IsRunningByAgent(_, agentSessionID string) bool {
 
 type mockVCSProvider struct {
 	createPRCalls      []vcs.CreatePROpts
+	listOpenPRCalls    []string
 	markReadyCalls     []int
 	mergePRCalls       []int
 	nextPRInfo         *vcs.PRInfo
@@ -643,6 +656,7 @@ type mockVCSProvider struct {
 	nextCheckResults   []vcs.CheckResult
 	nextReviewComments []vcs.ReviewComment
 	nextOpenPRs        []vcs.PRSummary
+	allowedStrategies  []string
 	createPRErr        error
 	checkResultsErr    error
 	reviewCommentsErr  error
@@ -695,7 +709,8 @@ func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) 
 	return m.nextReviewComments, m.reviewCommentsErr
 }
 
-func (m *mockVCSProvider) ListOpenPRs(_ context.Context, _ string) ([]vcs.PRSummary, error) {
+func (m *mockVCSProvider) ListOpenPRs(_ context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	m.listOpenPRCalls = append(m.listOpenPRCalls, repoPath)
 	return m.nextOpenPRs, nil
 }
 
@@ -717,6 +732,9 @@ func (m *mockVCSProvider) GetPRMergeCommit(_ context.Context, _ string, prID int
 }
 
 func (m *mockVCSProvider) GetAllowedMergeStrategies(_ context.Context, _ string) ([]string, error) {
+	if m.allowedStrategies != nil {
+		return m.allowedStrategies, nil
+	}
 	return []string{"merge", "squash", "rebase"}, nil
 }
 
@@ -790,6 +808,66 @@ func TestStartSession(t *testing.T) {
 	}
 	if sess.AgentSessionID == nil || *sess.AgentSessionID != "claude-123" {
 		t.Errorf("claude session id = %v, want claude-123", sess.AgentSessionID)
+	}
+}
+
+func TestStartSession_DuplicatePRErrorAttachesExistingPRAndClearsBlockedReason(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		OriginURL:         "git@github.com:owner/repo.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	reason := "draft PR creation failed: create draft PR: " + vcs.ErrPRAlreadyExists.Error()
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		Title:         "Test Session",
+		Plan:          "Do something",
+		BaseBranch:    "main",
+		State:         machine.CreatingWorktree,
+		BlockedReason: &reason,
+	}
+	vp.createPRErr = vcs.ErrPRAlreadyExists
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     77,
+			Title:      "Test Session",
+			HeadBranch: "test-session",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.PRNumber == nil || *sess.PRNumber != 77 {
+		t.Fatalf("PRNumber = %v, want 77", sess.PRNumber)
+	}
+	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/77" {
+		t.Fatalf("PRURL = %v, want https://github.com/owner/repo/pull/77", sess.PRURL)
+	}
+	if sess.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil", *sess.BlockedReason)
+	}
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	if len(vp.listOpenPRCalls) != 1 || vp.listOpenPRCalls[0] != "git@github.com:owner/repo.git" {
+		t.Fatalf("ListOpenPRs calls = %v, want [git@github.com:owner/repo.git]", vp.listOpenPRCalls)
 	}
 }
 
@@ -1118,6 +1196,92 @@ func TestSubmitPR(t *testing.T) {
 	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Errorf("PR URL = %v, want https://github.com/owner/repo/pull/42", sess.PRURL)
 	}
+}
+
+func TestSubmitPR_ClearsOnlyDraftPRBlockedReasonAfterCreate(t *testing.T) {
+	t.Run("draft PR blocked reason is cleared", func(t *testing.T) {
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{}
+		cr := newMockAgentRunner()
+		vp := newMockVCSProvider()
+		logger := zerolog.Nop()
+
+		repos.repos["repo-1"] = &models.Repo{
+			ID:        "repo-1",
+			LocalPath: "/tmp/repo",
+			OriginURL: "owner/repo",
+		}
+		reason := "draft PR creation failed: create draft PR: GraphQL: Head sha can't be blank"
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:            "sess-1",
+			RepoID:        "repo-1",
+			Title:         "Test Session",
+			Plan:          "Do something",
+			WorktreePath:  "/tmp/worktrees/test-repo/test-session",
+			BranchName:    "test-session",
+			BaseBranch:    "main",
+			State:         machine.ImplementingPlan,
+			BlockedReason: &reason,
+		}
+
+		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+		if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
+			t.Fatalf("SubmitPR: %v", err)
+		}
+
+		sess := sessions.sessions["sess-1"]
+		if sess.PRNumber == nil || *sess.PRNumber != 42 {
+			t.Fatalf("PRNumber = %v, want 42", sess.PRNumber)
+		}
+		if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
+			t.Fatalf("PRURL = %v, want https://github.com/owner/repo/pull/42", sess.PRURL)
+		}
+		if sess.BlockedReason != nil {
+			t.Fatalf("BlockedReason = %q, want nil", *sess.BlockedReason)
+		}
+	})
+
+	t.Run("non-draft blocked reason is preserved", func(t *testing.T) {
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		wt := &mockWorktreeManager{}
+		cr := newMockAgentRunner()
+		vp := newMockVCSProvider()
+		logger := zerolog.Nop()
+
+		repos.repos["repo-1"] = &models.Repo{
+			ID:        "repo-1",
+			LocalPath: "/tmp/repo",
+			OriginURL: "owner/repo",
+		}
+		reason := "manual hold"
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:            "sess-1",
+			RepoID:        "repo-1",
+			Title:         "Test Session",
+			Plan:          "Do something",
+			WorktreePath:  "/tmp/worktrees/test-repo/test-session",
+			BranchName:    "test-session",
+			BaseBranch:    "main",
+			State:         machine.ImplementingPlan,
+			BlockedReason: &reason,
+		}
+
+		lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+		if err := lc.SubmitPR(ctx, "sess-1"); err != nil {
+			t.Fatalf("SubmitPR: %v", err)
+		}
+
+		sess := sessions.sessions["sess-1"]
+		if sess.BlockedReason == nil || *sess.BlockedReason != reason {
+			t.Fatalf("BlockedReason = %v, want %q", sess.BlockedReason, reason)
+		}
+	})
 }
 
 func TestSubmitPR_ExistingPRStillPushesImplementationCommits(t *testing.T) {
@@ -1697,6 +1861,60 @@ func TestStartSession_DeferPRFalse_CreatesDraftPR(t *testing.T) {
 	}
 }
 
+func TestStartSession_CreateDraftPRFailureStoresBlockedReason(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	session := &models.Session{
+		ID:         "sess-1",
+		RepoID:     repo.ID,
+		Title:      "Open a PR",
+		Plan:       "Do useful work",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.createPRErr = errors.New("gh pr create: GraphQL: Head sha can't be blank")
+
+	if err := lifecycle.StartSession(ctx, session.ID, StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession returned error: %v", err)
+	}
+
+	updated := sessions.sessions[session.ID]
+	if updated.PRNumber != nil {
+		t.Fatalf("PRNumber = %v, want nil", *updated.PRNumber)
+	}
+	if updated.PRURL != nil {
+		t.Fatalf("PRURL = %v, want nil", *updated.PRURL)
+	}
+	if updated.BlockedReason == nil {
+		t.Fatal("BlockedReason = nil, want draft PR failure")
+	}
+	wantReason := "draft PR creation failed: create draft PR: gh pr create: GraphQL: Head sha can't be blank"
+	if !strings.Contains(*updated.BlockedReason, wantReason) {
+		t.Fatalf("BlockedReason = %q, want to contain %q", *updated.BlockedReason, wantReason)
+	}
+	if updated.State != machine.ImplementingPlan {
+		t.Fatalf("State = %v, want ImplementingPlan", updated.State)
+	}
+}
+
 // TestStartSession_DeferPRTrue_SkipsDraftPR verifies the cron-session path:
 // DeferPR=true must suppress the up-front PR creation so the finalize path
 // can later call EnsurePR based on the session's outcome.
@@ -1964,6 +2182,270 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 			t.Errorf("second EnsurePR call re-created PR: got %d calls, want %d", len(vp.createPRCalls), prevPRCalls)
 		}
 	})
+}
+
+func TestEnsurePR_RetriesDraftPRWithoutEmptyCommitAndClearsBlockedReason(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	reason := "draft PR creation failed: create PR: GraphQL: Head sha can't be blank"
+	session := &models.Session{
+		ID:            "sess-1",
+		RepoID:        repo.ID,
+		Title:         "Open a PR",
+		Plan:          "Do useful work",
+		WorktreePath:  "/tmp/worktrees/repo/open-a-pr",
+		BranchName:    "open-a-pr",
+		BaseBranch:    "main",
+		State:         machine.ImplementingPlan,
+		BlockedReason: &reason,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.nextPRInfo = &vcs.PRInfo{
+		Number: 77,
+		URL:    "https://github.com/owner/repo/pull/77",
+	}
+
+	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+		t.Fatalf("EnsurePR returned error: %v", err)
+	}
+
+	updated := sessions.sessions[session.ID]
+	if updated.PRNumber == nil || *updated.PRNumber != 77 {
+		t.Fatalf("PRNumber = %v, want 77", updated.PRNumber)
+	}
+	if updated.PRURL == nil || *updated.PRURL != "https://github.com/owner/repo/pull/77" {
+		t.Fatalf("PRURL = %v, want expected PR URL", updated.PRURL)
+	}
+	if updated.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil", *updated.BlockedReason)
+	}
+	if worktrees.emptyCommitCalls != 0 {
+		t.Fatalf("emptyCommitCalls = %d, want 0", worktrees.emptyCommitCalls)
+	}
+	if len(provider.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(provider.createPRCalls))
+	}
+}
+
+func TestEnsurePR_ClearBlockedReasonFailureKeepsAttachedPR(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	reason := "draft PR creation failed: create PR: GraphQL: Head sha can't be blank"
+	session := &models.Session{
+		ID:            "sess-1",
+		RepoID:        repo.ID,
+		Title:         "Open a PR",
+		Plan:          "Do useful work",
+		WorktreePath:  "/tmp/worktrees/repo/open-a-pr",
+		BranchName:    "open-a-pr",
+		BaseBranch:    "main",
+		State:         machine.ImplementingPlan,
+		BlockedReason: &reason,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.nextPRInfo = &vcs.PRInfo{
+		Number: 77,
+		URL:    "https://github.com/owner/repo/pull/77",
+	}
+
+	clearAttempts := 0
+	sessions.updateHook = func(_ string, params db.UpdateSessionParams) error {
+		if params.BlockedReason != nil && *params.BlockedReason == nil {
+			clearAttempts++
+			return errors.New("clear failed")
+		}
+		return nil
+	}
+
+	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+		t.Fatalf("EnsurePR returned error: %v", err)
+	}
+
+	updated := sessions.sessions[session.ID]
+	if updated.PRNumber == nil || *updated.PRNumber != 77 {
+		t.Fatalf("PRNumber = %v, want 77", updated.PRNumber)
+	}
+	if updated.PRURL == nil || *updated.PRURL != "https://github.com/owner/repo/pull/77" {
+		t.Fatalf("PRURL = %v, want expected PR URL", updated.PRURL)
+	}
+	if updated.BlockedReason == nil || *updated.BlockedReason != reason {
+		t.Fatalf("BlockedReason = %v, want original reason", updated.BlockedReason)
+	}
+	if clearAttempts != 1 {
+		t.Fatalf("clear attempts = %d, want 1", clearAttempts)
+	}
+	if len(provider.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(provider.createPRCalls))
+	}
+}
+
+func TestEnsurePR_AttachesExistingPROnDuplicateError(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	reason := "draft PR creation failed: create PR: GraphQL: Head sha can't be blank"
+	session := &models.Session{
+		ID:            "sess-1",
+		RepoID:        repo.ID,
+		Title:         "Open a PR",
+		Plan:          "Do useful work",
+		WorktreePath:  "/tmp/worktrees/repo/open-a-pr",
+		BranchName:    "open-a-pr",
+		BaseBranch:    "main",
+		State:         machine.ImplementingPlan,
+		BlockedReason: &reason,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.createPRErr = vcs.ErrPRAlreadyExists
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     42,
+			Title:      "Open a PR",
+			HeadBranch: "open-a-pr",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+		t.Fatalf("EnsurePR returned error: %v", err)
+	}
+
+	updated := sessions.sessions[session.ID]
+	if updated.PRNumber == nil || *updated.PRNumber != 42 {
+		t.Fatalf("PRNumber = %v, want 42", updated.PRNumber)
+	}
+	if updated.PRURL == nil || *updated.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %v, want https://github.com/owner/repo/pull/42", updated.PRURL)
+	}
+	if updated.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil", *updated.BlockedReason)
+	}
+	if len(provider.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(provider.createPRCalls))
+	}
+}
+
+func TestEnsurePR_AttachExistingPRReturnsClearBlockedReasonFailure(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	reason := "draft PR creation failed: create PR: GraphQL: Head sha can't be blank"
+	session := &models.Session{
+		ID:            "sess-1",
+		RepoID:        repo.ID,
+		Title:         "Open a PR",
+		Plan:          "Do useful work",
+		WorktreePath:  "/tmp/worktrees/repo/open-a-pr",
+		BranchName:    "open-a-pr",
+		BaseBranch:    "main",
+		State:         machine.ImplementingPlan,
+		BlockedReason: &reason,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.createPRErr = vcs.ErrPRAlreadyExists
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     42,
+			Title:      "Open a PR",
+			HeadBranch: "open-a-pr",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	clearErr := errors.New("clear failed")
+	clearAttempts := 0
+	sessions.updateHook = func(_ string, params db.UpdateSessionParams) error {
+		if params.BlockedReason != nil && *params.BlockedReason == nil {
+			clearAttempts++
+			return clearErr
+		}
+		return nil
+	}
+
+	err := lifecycle.EnsurePR(ctx, session.ID)
+	if !errors.Is(err, clearErr) {
+		t.Fatalf("EnsurePR error = %v, want clear failure", err)
+	}
+
+	updated := sessions.sessions[session.ID]
+	if updated.PRNumber == nil || *updated.PRNumber != 42 {
+		t.Fatalf("PRNumber = %v, want 42", updated.PRNumber)
+	}
+	if updated.PRURL == nil || *updated.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %v, want https://github.com/owner/repo/pull/42", updated.PRURL)
+	}
+	if clearAttempts != 1 {
+		t.Fatalf("clear attempts = %d, want 1", clearAttempts)
+	}
+	if len(provider.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(provider.createPRCalls))
+	}
 }
 
 // --- Cron tmux helpers ---

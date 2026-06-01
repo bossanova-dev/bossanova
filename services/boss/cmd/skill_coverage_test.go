@@ -72,10 +72,10 @@ func TestSkillCoversAllCommands(t *testing.T) {
 	}
 }
 
-// readSkillContent reads the canonical boss SKILL.md from the repository's
-// .claude/skills/ source tree, walking up from this test file's location to
-// locate the repo root. This avoids depending on `make copy-skills` having
-// populated the embedded FS before `go test` compiles the test binary.
+// readSkillContent reads the canonical boss SKILL.md from the embedded skill
+// source tree, walking up from this test file's location to locate the repo
+// root. This avoids depending on `make copy-skills` having populated mirror
+// copies before `go test` compiles the test binary.
 func readSkillContent(t *testing.T) string {
 	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
@@ -84,7 +84,7 @@ func readSkillContent(t *testing.T) string {
 	}
 	dir := filepath.Dir(thisFile)
 	for {
-		candidate := filepath.Join(dir, ".claude", "skills", "boss", "SKILL.md")
+		candidate := filepath.Join(dir, "services", "boss", "internal", "skillinstall", "skills", "boss", "SKILL.md")
 		if _, err := os.Stat(candidate); err == nil {
 			data, err := os.ReadFile(candidate)
 			if err != nil {
@@ -94,7 +94,7 @@ func readSkillContent(t *testing.T) string {
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf("could not locate .claude/skills/boss/SKILL.md walking up from %s", filepath.Dir(thisFile))
+			t.Fatalf("could not locate services/boss/internal/skillinstall/skills/boss/SKILL.md walking up from %s", filepath.Dir(thisFile))
 		}
 		dir = parent
 	}

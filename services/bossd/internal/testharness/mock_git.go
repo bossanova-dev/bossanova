@@ -24,6 +24,7 @@ type MockWorktreeManager struct {
 	ResurrectCalls                []gitpkg.ResurrectOpts
 	PushCalls                     []pushCall
 	EmptyTrashCalls               []emptyTrashCall
+	PurgeWorktreeCalls            []purgeWorktreeCall
 
 	// CreateFunc overrides the default Create behavior when set.
 	CreateFunc func(ctx context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error)
@@ -88,6 +89,13 @@ type pushCall struct {
 type emptyTrashCall struct {
 	RepoPath string
 	Branches []string
+}
+
+type purgeWorktreeCall struct {
+	RepoPath        string
+	RepoName        string
+	WorktreeBaseDir string
+	Branch          string
 }
 
 // NewMockWorktreeManager creates a mock worktree manager with sensible defaults.
@@ -188,6 +196,17 @@ func (m *MockWorktreeManager) EmptyTrash(ctx context.Context, repoPath string, b
 	m.EmptyTrashCalls = append(m.EmptyTrashCalls, emptyTrashCall{RepoPath: repoPath, Branches: branches})
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *MockWorktreeManager) PurgeWorktree(_ context.Context, repoPath, repoName, worktreeBaseDir, branch string) {
+	m.mu.Lock()
+	m.PurgeWorktreeCalls = append(m.PurgeWorktreeCalls, purgeWorktreeCall{
+		RepoPath:        repoPath,
+		RepoName:        repoName,
+		WorktreeBaseDir: worktreeBaseDir,
+		Branch:          branch,
+	})
+	m.mu.Unlock()
 }
 
 func (m *MockWorktreeManager) EmptyCommit(_ context.Context, _, _ string) error {

@@ -398,7 +398,7 @@ func TestNewSession_FormPasteDelegatesToForm(t *testing.T) {
 
 func TestNewSession_HandleFormCompletedReturnsValueType(t *testing.T) {
 	// Regression test: handleFormCompleted has a pointer receiver and must
-	// return *m (dereferenced), not m (which would be *NewSessionModel).
+	// return the mutated value, not m before startCreating updates its phase.
 	sc := &stubClient{
 		repos:   oneRepo(),
 		created: &pb.Session{Id: "sess-1", Title: "test", BranchName: "boss/test"},
@@ -411,8 +411,14 @@ func TestNewSession_HandleFormCompletedReturnsValueType(t *testing.T) {
 	m.buildForm()
 	m.fd.title = "test title"
 
-	result, _ := m.handleFormCompleted()
-	assertValueType(t, result)
+	result, cmd := m.handleFormCompleted()
+	updated := assertValueType(t, result)
+	if cmd == nil {
+		t.Fatal("handleFormCompleted returned nil cmd")
+	}
+	if updated.phase != newSessionPhaseCreating {
+		t.Fatalf("phase = %d, want newSessionPhaseCreating (%d)", updated.phase, newSessionPhaseCreating)
+	}
 }
 
 func TestNewSession_CreateSessionReceivesTitle(t *testing.T) {
@@ -559,6 +565,58 @@ func TestNewSession_ConfirmOverwrite_EscGoesBackToForm(t *testing.T) {
 	}
 	if m.fd == nil || m.fd.title != "my feature" {
 		t.Fatalf("fd.title = %q, want %q — title should be preserved", m.fd.title, "my feature")
+	}
+}
+
+func TestNewSession_ConfirmOverwrite_EnterRetriesLinearTicketWithForce(t *testing.T) {
+	sc := &stubClient{
+		repos:   oneRepo(),
+		created: &pb.Session{Id: "sess-1", Title: "test", BranchName: "WON-123-test"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	branch := "WON-123-test"
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseForm
+	m.selectedIssue = &pb.TrackerIssue{
+		ExternalId: "WON-123",
+		Title:      "Test branch overwrite",
+		BranchName: branch,
+	}
+	m.confirmingOverwrite = true
+
+	result, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	updated := assertValueType(t, result)
+	if cmd == nil {
+		t.Fatal("confirm overwrite returned nil cmd")
+	}
+	if updated.confirmingOverwrite {
+		t.Fatal("confirmingOverwrite = true after Enter")
+	}
+	if !updated.forceBranch {
+		t.Fatal("forceBranch = false after Enter")
+	}
+	if updated.phase != newSessionPhaseCreating {
+		t.Fatalf("phase = %d, want newSessionPhaseCreating (%d)", updated.phase, newSessionPhaseCreating)
+	}
+
+	msg := cmd()
+	streamMsg, ok := msg.(createSessionStreamMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want createSessionStreamMsg", msg)
+	}
+	if streamMsg.err != nil {
+		t.Fatalf("unexpected create error: %v", streamMsg.err)
+	}
+	if sc.createReq == nil {
+		t.Fatal("CreateSession was not called")
+	}
+	if !sc.createReq.ForceBranch {
+		t.Fatal("CreateSession.ForceBranch = false, want true")
+	}
+	if sc.createReq.BranchName == nil || *sc.createReq.BranchName != branch {
+		t.Fatalf("CreateSession.BranchName = %v, want %q", sc.createReq.BranchName, branch)
 	}
 }
 

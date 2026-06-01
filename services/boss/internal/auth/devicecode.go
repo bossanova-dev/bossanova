@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -243,15 +244,43 @@ func OpenBrowser(url string) error {
 	return openBrowserFn(url)
 }
 
-func openBrowserDefault(url string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("open", url).Start()
-	case "linux":
-		return exec.Command("xdg-open", url).Start()
-	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	default:
-		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+func openBrowserDefault(rawURL string) error {
+	cmd, err := openBrowserCommand(rawURL, runtime.GOOS, isWSL(), exec.LookPath)
+	if err != nil {
+		return err
 	}
+	return cmd.Start()
+}
+
+func openBrowserCommand(rawURL, goos string, wsl bool, lookPath func(string) (string, error)) (*exec.Cmd, error) {
+	switch goos {
+	case "darwin":
+		return exec.Command("open", rawURL), nil
+	case "linux":
+		if wsl {
+			if _, err := lookPath("wslview"); err == nil {
+				return exec.Command("wslview", rawURL), nil
+			}
+			if _, err := lookPath("cmd.exe"); err == nil {
+				return exec.Command("cmd.exe", "/c", "start", "", quoteCmdURL(rawURL)), nil
+			}
+		}
+		return exec.Command("xdg-open", rawURL), nil
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL), nil
+	default:
+		return nil, fmt.Errorf("unsupported platform: %s", goos)
+	}
+}
+
+func quoteCmdURL(rawURL string) string {
+	return `"` + strings.ReplaceAll(rawURL, `"`, `%22`) + `"`
+}
+
+func isWSL() bool {
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(data)), "microsoft")
 }

@@ -192,6 +192,15 @@ func New(cfg Config) *Server {
 // firing Shutdown before the serving goroutine had written s.srv would
 // observe a nil pointer (or worse, race the write under -race).
 func (s *Server) Listen(socketPath string) error {
+	// Defense in depth behind the singleton flock: if the socket is still being
+	// served by a live daemon, refuse to start rather than os.Remove + rebind
+	// (which would steal the socket from the running instance). The flock guard
+	// in cmd/run should already prevent reaching here, but a socket left by a
+	// process that crashed without releasing its lock would otherwise be stolen.
+	if socketIsServing(socketPath) {
+		return fmt.Errorf("socket %s is already served by a running daemon", socketPath)
+	}
+
 	// Remove stale socket file from previous run.
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale socket: %w", err)
@@ -701,9 +710,21 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 
 func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID string) {
 	if failedSess, getErr := s.sessions.Get(ctx, sessionID); getErr == nil {
-		if failedSess.RepoID != "" && failedSess.BranchName != "" && failedSess.WorktreePath != "" {
+		if failedSess.RepoID != "" && failedSess.BranchName != "" {
 			if repo, repoErr := s.repos.Get(ctx, failedSess.RepoID); repoErr == nil {
-				_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{failedSess.BranchName})
+				// Only delete the branch (remote + local) when a worktree was
+				// actually created. This preserves the property that a
+				// worktree-creation failure (WorktreePath == "") never deletes
+				// the branch — critical for dependabot PR head branches, which
+				// EmptyTrash would otherwise `git push origin --delete`.
+				if failedSess.WorktreePath != "" {
+					_ = s.worktrees.EmptyTrash(ctx, repo.LocalPath, []string{failedSess.BranchName})
+				}
+				// Always remove any leftover worktree directory — including when
+				// creation failed before WorktreePath was recorded — so a stale
+				// directory can't wedge the branch on the next attempt (the
+				// dependabot repair loop). Does NOT delete the branch.
+				s.worktrees.PurgeWorktree(ctx, repo.LocalPath, repo.DisplayName, repo.WorktreeBaseDir, failedSess.BranchName)
 			}
 		}
 	}
@@ -1044,6 +1065,9 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		if !ok || (!hasDisplayEntry && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED) {
 			continue
 		}
+		if shouldKeepCheckingCompositeOverReview(p, chatStatus) {
+			continue
+		}
 		out := displaystatus.Compute(displaystatus.Input{
 			Session:    p,
 			ChatStatus: chatStatus,
@@ -1054,6 +1078,21 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	}
 
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
+}
+
+func shouldKeepCheckingCompositeOverReview(sess *pb.Session, chatStatus pb.ChatStatus) bool {
+	if sess == nil {
+		return false
+	}
+	if chatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION || chatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
+		return false
+	}
+	// Keep the visible list/status-view label consistent when a review-required
+	// PR axis arrives while the persisted composite is still actively checking.
+	return sess.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_REVIEW &&
+		!sess.GetDisplayIsRepairing() &&
+		sess.GetDisplayLabel() == "checking" &&
+		sess.GetDisplaySpinner()
 }
 
 func (s *Server) AttachSession(ctx context.Context, req *connect.Request[pb.AttachSessionRequest], stream *connect.ServerStream[pb.AttachSessionResponse]) error {

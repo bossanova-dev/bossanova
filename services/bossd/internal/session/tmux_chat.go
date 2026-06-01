@@ -23,7 +23,7 @@ import (
 
 const (
 	defaultAgentCommandPrefix      = "/"
-	repairChatReclaimIdleThreshold = 30 * time.Minute
+	repairChatReclaimIdleThreshold = 20 * time.Minute
 )
 
 var (

@@ -1,10 +1,12 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -170,6 +172,34 @@ func TestStreamClient_ReRegistersOnStaleSessionToken(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("streamClient.Run did not return within 5s of cancel")
+	}
+}
+
+func TestStreamClient_ReRegisterFailureWarnsOnceWhenAuthStuck(t *testing.T) {
+	var logs bytes.Buffer
+	client := &StreamClient{
+		opener: &connectOpener{
+			sessionToken: NewSessionTokenHolder("stale"),
+		},
+		reRegister: func(context.Context) (string, error) {
+			return "", errors.New("permission_denied: Your subscription is being activated.")
+		},
+		logger: zerolog.New(&logs),
+	}
+
+	if client.tryReRegister(context.Background(), false) {
+		t.Fatal("first failed re-register returned rotated=true")
+	}
+	if client.tryReRegister(context.Background(), true) {
+		t.Fatal("repeated failed re-register returned rotated=true")
+	}
+
+	output := logs.String()
+	if got := strings.Count(output, "stream: re-register failed after auth rejection"); got != 1 {
+		t.Fatalf("warn log count = %d, want 1; logs=%s", got, output)
+	}
+	if got := strings.Count(output, "stream: re-register still failing after auth rejection"); got != 1 {
+		t.Fatalf("debug log count = %d, want 1; logs=%s", got, output)
 	}
 }
 

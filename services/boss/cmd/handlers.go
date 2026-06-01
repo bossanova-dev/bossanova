@@ -110,8 +110,16 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 			return err
 		}
 	}
-	app := views.NewApp(c, newOptionalAuthManager(cmd))
+	authMgr := newOptionalAuthManager(cmd)
+	app := views.NewApp(c, authMgr)
 	app.WithTelemetry(commandTelemetryClient(cmd))
+	if authMgr != nil {
+		if cloud := cloudURL(cmd); cloud != "" {
+			app.WithCloudAccessClient(newAuthCloudAccessClient(authMgr, cloud))
+		}
+		app.WithCheckoutURLs(cloudReturnURL(), cloudCancelURL())
+		app.WithSubscriptionURL(cloudSubscribeURL())
+	}
 	if configure != nil {
 		configure(&app)
 	}

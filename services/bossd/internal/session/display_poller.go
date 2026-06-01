@@ -9,9 +9,11 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -183,7 +185,7 @@ func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prN
 		if entry := p.tracker.Get(sess.ID); entry != nil && entry.Status == vcs.DisplayStatusMerged {
 			continue
 		}
-		p.pollSession(ctx, repo.OriginURL, sess.ID, *sess.PRNumber)
+		p.pollSession(ctx, repo, sess.ID, *sess.PRNumber)
 		refreshed++
 		refreshedSessions = append(refreshedSessions, sess.ID)
 	}
@@ -233,7 +235,7 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 			if !p.shouldPollSession(sess.ID, repo.OriginURL, now) {
 				continue
 			}
-			p.pollSession(ctx, repo.OriginURL, sess.ID, *sess.PRNumber)
+			p.pollSession(ctx, repo, sess.ID, *sess.PRNumber)
 		}
 	}
 	p.pruneLastPoll(activeSessions)
@@ -241,7 +243,8 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 
 // pollSession fetches PR status, checks, and reviews for a single session
 // and updates the tracker with the computed display status.
-func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID string, prNumber int) {
+func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sessionID string, prNumber int) {
+	repoPath := repo.OriginURL
 	prStatus, err := p.provider.GetPRStatus(ctx, repoPath, prNumber)
 	if err != nil {
 		p.logger.Warn().Err(err).Str("session", sessionID).Msg("display poller: get PR status")
@@ -293,9 +296,28 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repoPath, sessionID str
 	}
 
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
+	if p.hasDisplayConflictBlock(ctx, repo, prStatus) {
+		info.Status = vcs.DisplayStatusConflict
+	}
 	info.HeadSHA = prStatus.HeadSHA
 	p.tracker.Set(sessionID, info)
 	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
+}
+
+func (p *DisplayPoller) hasDisplayConflictBlock(ctx context.Context, repo *models.Repo, prStatus *vcs.PRStatus) bool {
+	if prStatus.HasConflictBlock() {
+		return true
+	}
+	if !prStatus.HasRebaseConflictBlock() {
+		return false
+	}
+
+	strategy, err := mergepolicy.ResolveStrategy(ctx, p.provider, repo.OriginURL, string(repo.MergeStrategy))
+	if err != nil {
+		p.logger.Warn().Err(err).Str("repo", repo.ID).Msg("display poller: resolve merge strategy")
+		return false
+	}
+	return strategy == string(models.MergeStrategyRebase)
 }
 
 func prStateString(state vcs.PRState) string {

@@ -5,14 +5,17 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -528,10 +531,11 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// finalize path calls EnsurePR once the run actually produces commits.
 	if session.PRNumber == nil && !opts.DeferPR {
 		if err := l.createDraftPR(ctx, sessionID, result.WorktreePath, result.BranchName, session, repo); err != nil {
+			l.setDraftPRBlockedReason(ctx, sessionID, err)
 			l.logger.Warn().Err(err).
 				Str("session", sessionID).
 				Str("branch", result.BranchName).
-				Msg("draft PR creation failed during session start; PR will be created on submit")
+				Msg("draft PR creation failed during session start; branch is preserved and retryable")
 		}
 	}
 
@@ -683,27 +687,8 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		Str("session", sessionID).
 		Msg("creating draft PR")
 
-	// Create a draft PR via the VCS provider.
-	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
-		RepoPath:   repo.OriginURL,
-		HeadBranch: session.BranchName,
-		BaseBranch: session.BaseBranch,
-		Title:      session.Title,
-		Body:       session.Plan,
-		Draft:      true,
-	})
-	if err != nil {
-		return fmt.Errorf("create draft PR: %w", err)
-	}
-
-	// Update session with PR info.
-	prNumber := &prInfo.Number
-	prURL := &prInfo.URL
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		PRNumber: &prNumber,
-		PRURL:    &prURL,
-	}); err != nil {
-		return fmt.Errorf("update PR info: %w", err)
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+		return err
 	}
 
 	// Fire PROpened → AwaitingChecks.
@@ -718,10 +703,18 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("set awaiting_checks state: %w", err)
 	}
 
+	prNumber := 0
+	if session.PRNumber != nil {
+		prNumber = *session.PRNumber
+	}
+	prURL := ""
+	if session.PRURL != nil {
+		prURL = *session.PRURL
+	}
 	l.logger.Info().
 		Str("session", sessionID).
-		Int("prNumber", prInfo.Number).
-		Str("prURL", prInfo.URL).
+		Int("prNumber", prNumber).
+		Str("prURL", prURL).
 		Msg("draft PR created, awaiting checks")
 
 	return nil
@@ -730,6 +723,44 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 // createDraftPR pushes the branch and creates a draft PR on GitHub,
 // storing the PR number and URL on the session. Used during StartSession
 // to create the PR immediately for any session without an existing one.
+func draftPRBlockedReason(err error) string {
+	return sessionreason.DraftPRCreationFailure(err)
+}
+
+func isDraftPRBlockedReason(reason *string) bool {
+	return sessionreason.IsDraftPRCreationFailure(reason)
+}
+
+func (l *Lifecycle) setDraftPRBlockedReason(ctx context.Context, sessionID string, err error) {
+	if err == nil {
+		return
+	}
+	reason := draftPRBlockedReason(err)
+	reasonPtr := &reason
+	if _, updateErr := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		BlockedReason: &reasonPtr,
+	}); updateErr != nil {
+		l.logger.Warn().Err(updateErr).
+			Str("session", sessionID).
+			Msg("failed to persist draft PR creation error")
+	}
+}
+
+func (l *Lifecycle) clearDraftPRBlockedReason(ctx context.Context, sessionID string, session *models.Session) error {
+	if !isDraftPRBlockedReason(session.BlockedReason) {
+		return nil
+	}
+	var cleared *string
+	updated, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		BlockedReason: &cleared,
+	})
+	if err != nil {
+		return fmt.Errorf("clear draft PR blocked reason: %w", err)
+	}
+	session.BlockedReason = updated.BlockedReason
+	return nil
+}
+
 func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, branchName string, session *models.Session, repo *models.Repo) error {
 	// Ensure origin URL is available before any VCS operations.
 	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
@@ -751,34 +782,101 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 		return fmt.Errorf("push branch: %w", err)
 	}
 
+	session.WorktreePath = worktreePath
+	session.BranchName = branchName
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) error {
 	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
 		RepoPath:   repo.OriginURL,
-		HeadBranch: branchName,
+		HeadBranch: session.BranchName,
 		BaseBranch: session.BaseBranch,
 		Title:      session.Title,
 		Body:       session.Plan,
 		Draft:      true,
 	})
 	if err != nil {
+		if errors.Is(err, vcs.ErrPRAlreadyExists) {
+			if attachErr := l.attachExistingPRForBranch(ctx, sessionID, session, repo); attachErr != nil {
+				return fmt.Errorf("attach existing PR after duplicate create: %w", attachErr)
+			}
+			return nil
+		}
 		return fmt.Errorf("create draft PR: %w", err)
 	}
 
 	prNumber := &prInfo.Number
 	prURL := &prInfo.URL
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+	updated, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		PRNumber: &prNumber,
 		PRURL:    &prURL,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("update PR info: %w", err)
 	}
 
-	l.logger.Info().
-		Str("session", sessionID).
-		Int("prNumber", prInfo.Number).
-		Str("prURL", prInfo.URL).
-		Msg("draft PR created during session setup")
+	session.PRNumber = updated.PRNumber
+	session.PRURL = updated.PRURL
+	if err := l.clearDraftPRBlockedReason(ctx, sessionID, session); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Msg("clear draft PR blocked reason failed after PR creation")
+	}
 
 	return nil
+}
+
+func (l *Lifecycle) attachExistingPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) error {
+	prs, err := l.provider.ListOpenPRs(ctx, repo.OriginURL)
+	if err != nil {
+		return fmt.Errorf("list open PRs: %w", err)
+	}
+
+	for _, pr := range prs {
+		if pr.HeadBranch != session.BranchName || pr.State != vcs.PRStateOpen {
+			continue
+		}
+
+		prURL, err := prURLForRepo(repo.OriginURL, pr.Number)
+		if err != nil {
+			return err
+		}
+		prNumber := pr.Number
+		prNumberPtr := &prNumber
+		prURLPtr := &prURL
+		updated, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+			PRNumber: &prNumberPtr,
+			PRURL:    &prURLPtr,
+		})
+		if err != nil {
+			return fmt.Errorf("update PR info: %w", err)
+		}
+
+		session.PRNumber = updated.PRNumber
+		session.PRURL = updated.PRURL
+		if err := l.clearDraftPRBlockedReason(ctx, sessionID, session); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	return fmt.Errorf("existing PR for branch %q not found", session.BranchName)
+}
+
+func prURLForRepo(originURL string, prNumber int) (string, error) {
+	nwo := vcs.GitHubNWO(originURL)
+	if nwo == "" && strings.Count(originURL, "/") == 1 && !strings.Contains(originURL, "://") {
+		nwo = strings.TrimSuffix(strings.TrimSpace(originURL), ".git")
+	}
+	if nwo == "" {
+		return "", fmt.Errorf("construct PR URL: unsupported origin URL %q", originURL)
+	}
+	return fmt.Sprintf("https://github.com/%s/pull/%d", nwo, prNumber), nil
 }
 
 // EnsurePR pushes the session's branch and creates a draft PR if one does
@@ -817,32 +915,23 @@ func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("push branch: %w", err)
 	}
 
-	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
-		RepoPath:   repo.OriginURL,
-		HeadBranch: session.BranchName,
-		BaseBranch: session.BaseBranch,
-		Title:      session.Title,
-		Body:       session.Plan,
-		Draft:      true,
-	})
-	if err != nil {
-		return fmt.Errorf("create draft PR: %w", err)
-	}
-
-	prNumber := &prInfo.Number
-	prURL := &prInfo.URL
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		PRNumber: &prNumber,
-		PRURL:    &prURL,
-	}); err != nil {
-		return fmt.Errorf("update PR info: %w", err)
+	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+		if errors.Is(err, vcs.ErrPRAlreadyExists) {
+			if attachErr := l.attachExistingPRForBranch(ctx, sessionID, session, repo); attachErr == nil {
+				return nil
+			} else {
+				l.setDraftPRBlockedReason(ctx, sessionID, attachErr)
+				return fmt.Errorf("attach existing PR after duplicate create: %w", attachErr)
+			}
+		}
+		l.setDraftPRBlockedReason(ctx, sessionID, err)
+		return err
 	}
 
 	l.logger.Info().
 		Str("session", sessionID).
-		Int("prNumber", prInfo.Number).
-		Str("prURL", prInfo.URL).
-		Msg("draft PR ensured")
+		Str("branch", session.BranchName).
+		Msg("ensured PR")
 
 	return nil
 }

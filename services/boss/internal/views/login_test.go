@@ -1,8 +1,12 @@
 package views
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 func TestLoginModelPollingUsesSingleSpinnerGap(t *testing.T) {
@@ -21,5 +25,48 @@ func TestLoginModelPollingUsesSingleSpinnerGap(t *testing.T) {
 	}
 	if !strings.Contains(view, spinner+"Waiting for authentication...") {
 		t.Fatalf("polling view missing spinner and waiting text with one gap:\n%q", view)
+	}
+}
+
+func TestLoginModelRunsAfterAuthHookOnSuccess(t *testing.T) {
+	called := false
+	m := LoginModel{ctx: context.Background()}
+	m.SetAfterAuth(func(context.Context) {
+		called = true
+	})
+
+	_, cmd := m.Update(loginCompleteMsg{email: "dev@example.com"})
+	if cmd == nil {
+		t.Fatal("login complete returned nil cmd, want batched post-login commands")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("login complete cmd returned %T, want tea.BatchMsg", msg)
+	}
+	if len(batch) < 2 {
+		t.Fatalf("login complete batch len = %d, want at least 2", len(batch))
+	}
+	batch[1]()
+	if !called {
+		t.Fatal("after-auth hook was not called")
+	}
+}
+
+func TestLoginModelStartsSubscriptionFlowWhenCloudClientConfigured(t *testing.T) {
+	fake := &fakeSubscriptionCloudAccess{
+		statuses:    []*pb.CloudAccessStatus{{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION}},
+		checkoutURL: "https://billing.example.test/checkout",
+	}
+	m := NewLoginModel(nil, nil, context.Background())
+	m.SetCloudSubscription(fake, "https://app.example.test/success?source=cli", "https://app.example.test/canceled?source=cli")
+
+	updated, cmd := m.Update(loginCompleteMsg{email: "dev@example.com"})
+	m = updated.(LoginModel)
+	if cmd == nil {
+		t.Fatal("expected subscription check command")
+	}
+	if m.subscription.phase != subscriptionPhaseChecking {
+		t.Fatalf("subscription phase = %v, want checking", m.subscription.phase)
 	}
 }

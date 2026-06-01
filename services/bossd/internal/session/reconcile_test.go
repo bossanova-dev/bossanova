@@ -165,6 +165,9 @@ func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params 
 	if params.PRURL != nil {
 		s.PRURL = *params.PRURL
 	}
+	if params.BlockedReason != nil {
+		s.BlockedReason = *params.BlockedReason
+	}
 	return s, nil
 }
 
@@ -268,6 +271,59 @@ func TestReconcilePRAssociations_MatchOpenPR(t *testing.T) {
 	}
 	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Fatalf("expected PR URL, got %v", sess.PRURL)
+	}
+}
+
+func TestReconcilePRAssociationsClearsDraftPRBlockedReasonWhenPRAttached(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repo := &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	repos.repos[repo.ID] = repo
+
+	reason := "draft PR creation failed: create PR: GraphQL: Head sha can't be blank"
+	session := &models.Session{
+		ID:            "sess-1",
+		RepoID:        repo.ID,
+		Title:         "Open missing PR",
+		BranchName:    "open-missing-pr",
+		BaseBranch:    "main",
+		State:         machine.ImplementingPlan,
+		BlockedReason: &reason,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.openPRs[repo.OriginURL] = []vcs.PRSummary{
+		{
+			Number:     42,
+			Title:      "Open missing PR",
+			HeadBranch: "open-missing-pr",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	updated, err := ReconcilePRAssociations(ctx, sessions, repos, provider, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("ReconcilePRAssociations returned error: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("updated = %d, want 1", updated)
+	}
+
+	got := sessions.sessions[session.ID]
+	if got.PRNumber == nil || *got.PRNumber != 42 {
+		t.Fatalf("PRNumber = %v, want 42", got.PRNumber)
+	}
+	if got.PRURL == nil || *got.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %v, want https://github.com/owner/repo/pull/42", got.PRURL)
+	}
+	if got.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil", *got.BlockedReason)
 	}
 }
 

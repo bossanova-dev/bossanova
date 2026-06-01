@@ -222,6 +222,21 @@ func embeddedFiles(fsys fs.FS) ([]embeddedFile, error) {
 	return files, nil
 }
 
+func executableSkillFile(path string) bool {
+	if strings.HasSuffix(path, ".sh") {
+		return true
+	}
+	if !strings.Contains(path, "/scripts/") {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx":
+		return true
+	default:
+		return false
+	}
+}
+
 // Extract writes embedded skill files from fsys into dir/bossanova/
 // and creates symlinks from dir/boss-* → bossanova/boss-* so that Claude
 // discovers them as top-level skills.
@@ -266,7 +281,7 @@ func Extract(dir string, fsys fs.FS) error {
 		}
 		// Use 0o755 for scripts so they remain executable after extraction.
 		mode := os.FileMode(0o644)
-		if strings.HasSuffix(path, ".sh") {
+		if executableSkillFile(path) {
 			mode = 0o755
 		}
 		return os.WriteFile(destPath, data, mode)

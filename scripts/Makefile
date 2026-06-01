@@ -5,11 +5,12 @@ all: format lint test
 
 ## format: Format script files with Prettier
 format:
-	cd .. && pnpm exec prettier --write 'scripts/*.mjs'
+	cd .. && pnpm exec prettier --write 'scripts/*.{cjs,mjs}'
 
 ## lint: Check script syntax
 lint:
-	@for file in *.mjs; do \
+	@for file in *.cjs *.mjs; do \
+		[ -e "$$file" ] || continue; \
 		echo "==> Checking scripts/$$file"; \
 		node --check "$$file"; \
 	done
@@ -17,4 +18,3 @@ lint:
 ## test: Run script tests
 test:
 	node --test *.test.mjs
-

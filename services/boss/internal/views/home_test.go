@@ -9,11 +9,66 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/upgrade"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+type fakeHomeCloudAccessClient struct {
+	status      *pb.CloudAccessStatus
+	statusErr   error
+	checkoutURL string
+	checkoutErr error
+	portalURL   string
+	portalErr   error
+	refresh     *pb.CloudAccessStatus
+	refreshErr  error
+	returnURLs  []string
+	cancelURLs  []string
+	statusCalls int
+	checkouts   int
+	portals     int
+	refreshes   int
+}
+
+func (f *fakeHomeCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudAccessStatus, error) {
+	f.statusCalls++
+	if f.statusErr != nil {
+		return nil, f.statusErr
+	}
+	return f.status, nil
+}
+
+func (f *fakeHomeCloudAccessClient) CreateCheckoutSession(_ context.Context, returnURL, cancelURL string) (string, error) {
+	f.checkouts++
+	f.returnURLs = append(f.returnURLs, returnURL)
+	f.cancelURLs = append(f.cancelURLs, cancelURL)
+	if f.checkoutErr != nil {
+		return "", f.checkoutErr
+	}
+	return f.checkoutURL, nil
+}
+
+func (f *fakeHomeCloudAccessClient) CreateBillingPortalSession(context.Context, string) (string, error) {
+	f.portals++
+	if f.portalErr != nil {
+		return "", f.portalErr
+	}
+	return f.portalURL, nil
+}
+
+func (f *fakeHomeCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.CloudAccessStatus, error) {
+	f.refreshes++
+	if f.refreshErr != nil {
+		return nil, f.refreshErr
+	}
+	if f.refresh != nil {
+		return f.refresh, nil
+	}
+	return f.status, nil
+}
 
 func TestRenderAttentionIndicator(t *testing.T) {
 	tests := []struct {
@@ -72,6 +127,332 @@ func TestRenderAttentionIndicator(t *testing.T) {
 				t.Errorf("renderAttentionIndicator() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHomeCloudGateRendersNeedsSubscription(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+
+	model, _ := h.Update(cloudAccessMsg{status: &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+	}})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Bossanova Cloud requires a subscription") {
+		t.Fatalf("expected subscription gate, got: %s", content)
+	}
+	if !strings.Contains(content, "Local sessions are still available") {
+		t.Fatalf("expected local-usable copy, got: %s", content)
+	}
+	if !strings.Contains(content, "Type u to s[u]bscribe.") {
+		t.Fatalf("expected subscribe key hint, got: %s", content)
+	}
+	if strings.Contains(content, "[b]illing") {
+		t.Fatalf("home should not render a permanent billing action, got: %s", content)
+	}
+}
+
+func TestHomeCloudGateActiveIsSilent(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+
+	model, _ := h.Update(cloudAccessMsg{status: &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE,
+	}})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if strings.Contains(content, "Finish Bossanova Cloud setup") {
+		t.Fatalf("active access should not render setup gate, got: %s", content)
+	}
+	if strings.Contains(content, "[b]illing") {
+		t.Fatalf("active access should not render checkout action, got: %s", content)
+	}
+}
+
+func TestHomeCloudGatePendingRefreshCommand(t *testing.T) {
+	fake := &fakeHomeCloudAccessClient{
+		refresh: &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE},
+	}
+	msg := refreshCloudAccessStatus(fake, context.Background())()
+	got, ok := msg.(cloudAccessMsg)
+	if !ok {
+		t.Fatalf("refreshCloudAccessStatus returned %T, want cloudAccessMsg", msg)
+	}
+	if fake.refreshes != 1 {
+		t.Fatalf("refresh calls = %d, want 1", fake.refreshes)
+	}
+	if got.status.GetState() != pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE {
+		t.Fatalf("refresh status = %v, want active", got.status.GetState())
+	}
+}
+
+func TestHomeCloudGateBillingUnavailableIsNonBlocking(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+
+	model, _ := h.Update(cloudAccessMsg{err: errors.New("connection refused")})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Cloud billing unavailable") {
+		t.Fatalf("expected non-blocking billing unavailable status, got: %s", content)
+	}
+	if !strings.Contains(content, "[n]ew session") {
+		t.Fatalf("expected local session actions to remain available, got: %s", content)
+	}
+}
+
+func TestHomeCloudGateDoesNotRenderPermanentBillingAction(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+	}
+
+	content := h.View().Content
+	if strings.Contains(content, "[b]illing") {
+		t.Fatalf("home rendered permanent billing action: %q", content)
+	}
+	if !strings.Contains(content, "Bossanova Cloud requires a subscription") {
+		t.Fatalf("home missing quiet cloud reminder: %q", content)
+	}
+}
+
+func TestHomeCloudGateKeepsLocalSessionsUsable(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.sessions = []*pb.Session{{Id: "sess-1", Title: "local-session"}}
+	h.buildTableRows()
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+	}
+
+	content := h.View().Content
+	if !strings.Contains(content, "[enter] select") {
+		t.Fatalf("home did not keep local session action usable: %q", content)
+	}
+	if strings.Contains(content, "press l") {
+		t.Fatalf("home rendered misleading logout key as billing hint: %q", content)
+	}
+}
+
+func TestHomeCloudGateSubscribeKeyStartsSubscriptionFlow(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+	}
+
+	_, cmd := h.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	if cmd == nil {
+		t.Fatal("key u: got nil cmd, want subscription flow command")
+	}
+	msg := cmd()
+	if _, ok := msg.(startSubscriptionFlowMsg); !ok {
+		t.Fatalf("subscription command returned %T, want startSubscriptionFlowMsg", msg)
+	}
+}
+
+func TestHomeUpgradeKeyWinsWhenUpgradeAvailable(t *testing.T) {
+	oldRunUpgradeCmd := runUpgradeCmd
+	defer func() { runUpgradeCmd = oldRunUpgradeCmd }()
+
+	upgradeRan := false
+	runUpgradeCmd = func(string) tea.Cmd {
+		return func() tea.Msg {
+			upgradeRan = true
+			return upgradeRunMsg{}
+		}
+	}
+
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.upgradeAvailable = true
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		CanCreateCheckout: true,
+	}
+
+	_, cmd := h.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	if cmd == nil {
+		t.Fatal("key u: got nil cmd, want upgrade command")
+	}
+	msg := cmd()
+	if !upgradeRan {
+		t.Fatal("key u did not run upgrade")
+	}
+	if _, ok := msg.(upgradeRunMsg); !ok {
+		t.Fatalf("upgrade command returned %T, want upgradeRunMsg", msg)
+	}
+}
+
+func TestHomeCloudGateExplainsUpgradeBeforeSubscribe(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.upgradeAvailable = true
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		CanCreateCheckout: true,
+	}
+
+	content := h.View().Content
+	if !strings.Contains(content, "Upgrade boss first, then subscribe.") {
+		t.Fatalf("missing upgrade-before-subscribe copy: %q", content)
+	}
+	if strings.Contains(content, "Type u to s[u]bscribe") {
+		t.Fatalf("rendered conflicting u subscribe copy during upgrade: %q", content)
+	}
+}
+
+func TestHomeCloudGateUpgradeKeyWinsOverSubscribeKey(t *testing.T) {
+	oldRunUpgradeCmd := runUpgradeCmd
+	defer func() { runUpgradeCmd = oldRunUpgradeCmd }()
+
+	upgradeRan := false
+	runUpgradeCmd = func(string) tea.Cmd {
+		return func() tea.Msg {
+			upgradeRan = true
+			return upgradeRunMsg{}
+		}
+	}
+
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+	}
+	h.upgradeAvailable = true
+
+	content := h.View().Content
+	if !strings.Contains(content, "u upgrade") {
+		t.Fatalf("home did not render upgrade shortcut: %q", content)
+	}
+	if strings.Contains(content, "Type u to s[u]bscribe.") {
+		t.Fatalf("home rendered conflicting subscription shortcut: %q", content)
+	}
+
+	_, cmd := h.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	if cmd == nil {
+		t.Fatal("key u: got nil cmd, want upgrade command")
+	}
+	msg := cmd()
+	if !upgradeRan {
+		t.Fatal("key u did not run upgrade")
+	}
+	if _, ok := msg.(upgradeRunMsg); !ok {
+		t.Fatalf("upgrade command returned %T, want upgradeRunMsg", msg)
+	}
+}
+
+func TestHomeCloudGatePendingSetupCanStartSubscriptionFlowAgain(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+	}
+
+	content := h.View().Content
+	if !strings.Contains(content, "Bossanova Cloud setup has not completed yet. Type u to s[u]bscribe.") {
+		t.Fatalf("pending setup copy missing: %q", content)
+	}
+
+	_, cmd := h.Update(tea.KeyPressMsg{Code: 'u', Text: "u"})
+	if cmd == nil {
+		t.Fatal("key u: got nil cmd, want subscription flow command")
+	}
+	msg := cmd()
+	if _, ok := msg.(startSubscriptionFlowMsg); !ok {
+		t.Fatalf("subscription command returned %T, want startSubscriptionFlowMsg", msg)
+	}
+}
+
+func TestHomeCloudCheckoutActivationPendingKeepsPolling(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+	}
+
+	updated, cmd := h.Update(homeCloudCheckoutMsg{
+		err: connect.NewError(connect.CodeFailedPrecondition, errors.New("bossanova cloud subscription is being activated")),
+	})
+	h = updated.(HomeModel)
+
+	content := h.View().Content
+	if strings.Contains(content, "Cloud checkout unavailable") {
+		t.Fatalf("pending activation should not render checkout unavailable: %q", content)
+	}
+	if !strings.Contains(content, "Bossanova Cloud setup has not completed yet. Type u to s[u]bscribe.") {
+		t.Fatalf("pending activation copy missing: %q", content)
+	}
+	if !h.cloudCheckoutPolling {
+		t.Fatal("pending activation checkout failure should keep polling")
+	}
+	if cmd == nil {
+		t.Fatal("pending activation checkout failure should refresh entitlements")
+	}
+}
+
+func TestHomeCloudCheckoutStatusClearsWhenLoggedOut(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.cloudCheckoutStatus = "Opened Bossanova Cloud subscription checkout."
+	h.cloudCheckoutPolling = true
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH,
+	}
+
+	updated, _ := h.Update(authStatusMsg{loggedIn: false})
+	h = updated.(HomeModel)
+
+	content := h.View().Content
+	if strings.Contains(content, "Opened Bossanova Cloud subscription checkout.") {
+		t.Fatalf("logged-out home rendered stale checkout status: %q", content)
+	}
+	if h.cloudCheckoutStatus != "" {
+		t.Fatalf("cloudCheckoutStatus = %q, want empty", h.cloudCheckoutStatus)
+	}
+	if h.cloudCheckoutPolling {
+		t.Fatal("logged-out home should stop checkout polling")
 	}
 }
 
@@ -420,9 +801,36 @@ func TestRenderMutedTrackerLink(t *testing.T) {
 	}
 }
 
+func TestHomeDoesNotShowRetryPRActionForDraftPRFailure(t *testing.T) {
+	reason := "draft PR creation failed: gh auth failed"
+	h := HomeModel{
+		ctx:     context.Background(),
+		loading: false,
+		sessions: []*pb.Session{{
+			Id:             "sess-1",
+			Title:          "Add dark mode",
+			BranchName:     "task-branch",
+			RepoOriginUrl:  "https://github.com/example/repo.git",
+			BlockedReason:  &reason,
+			DisplayLabel:   "? PR failed",
+			DisplayIntent:  pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			DisplaySpinner: false,
+		}},
+	}
+	h.buildTableRows()
+
+	content := h.View().Content
+	if strings.Contains(content, "[p] retry PR") {
+		t.Fatalf("view contains retry PR action: %s", content)
+	}
+	if !strings.Contains(content, "? PR failed") {
+		t.Fatalf("view missing draft PR warning %q: %s", "? PR failed", content)
+	}
+}
+
 // TestHomeKeyDispatch_Regression verifies that all home-list keybindings
 // dispatch the correct switchViewMsg, and that adding [c]ron did not break
-// any existing binding (n/p/r/s/t/l).
+// any existing binding (n/r/s/t/l).
 func TestHomeKeyDispatch_Regression(t *testing.T) {
 	// Build a HomeModel with one repo (so [n] is enabled) and auth configured
 	// (so [l] is enabled). We drive Update() directly without a real daemon.
@@ -534,6 +942,34 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 			t.Errorf("key l: view = %v, want %v", svm.view, ViewLogin)
 		}
 	})
+}
+
+func TestHomeViewShowsCloudDiscoveryWithActiveSessions(t *testing.T) {
+	h := HomeModel{
+		ctx:       context.Background(),
+		authMgr:   &auth.Manager{},
+		repoCount: 1,
+		loading:   false,
+		loggedIn:  false,
+		sessions:  []*pb.Session{{Id: "sess-1", Title: "Active work"}},
+	}
+	h.buildTableRows()
+
+	content := h.View().Content
+	for _, want := range []string{"Bossanova Cloud", "[l]ogin to try Bossanova Cloud for free"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("home view missing %q in active-session cloud prompt: %q", want, content)
+		}
+	}
+	menuIdx := strings.Index(content, "[q]uit")
+	promptIdx := strings.Index(content, "[l]ogin to try Bossanova Cloud for free")
+	if menuIdx == -1 || promptIdx == -1 || promptIdx < menuIdx {
+		t.Fatalf("home view should render cloud prompt under bottom menu; got: %q", content)
+	}
+	separator := content[menuIdx:promptIdx]
+	if !strings.Contains(separator, "\n") || strings.Contains(separator, "\n\n") {
+		t.Fatalf("home view should leave one newline between bottom menu and cloud prompt; got: %q", content)
+	}
 }
 
 func TestHomeModelUpdate_BlocksOpeningArchivingSession(t *testing.T) {
@@ -799,6 +1235,44 @@ func TestHomeUpgradeCheckFailureIsSilent(t *testing.T) {
 	}
 	if strings.Contains(content, "offline") {
 		t.Fatalf("passive upgrade check error rendered raw error: %s", content)
+	}
+}
+
+func TestHomePollFailureDebounce(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.width = 100
+
+	// Seed a successful poll with one session (the last-good list).
+	model, _ := h.Update(sessionListMsg{sessions: []*pb.Session{{Id: "s1", Title: "work"}}})
+	h = model.(HomeModel)
+
+	// A single failed poll must NOT show the error screen (debounced).
+	model, _ = h.Update(sessionListMsg{err: errors.New("dial unix: connection refused")})
+	h = model.(HomeModel)
+	if strings.Contains(h.View().Content, "Cannot connect to daemon") {
+		t.Fatal("error screen shown after a single poll failure; want debounced")
+	}
+
+	// Reaching the consecutive-failure threshold surfaces the error screen.
+	for h.pollFailures < pollFailureThreshold {
+		model, _ = h.Update(sessionListMsg{err: errors.New("dial unix: connection refused")})
+		h = model.(HomeModel)
+	}
+	if !strings.Contains(h.View().Content, "Cannot connect to daemon") {
+		t.Fatalf("error screen not shown after %d consecutive failures", pollFailureThreshold)
+	}
+
+	// A successful poll clears both the error and the failure streak.
+	model, _ = h.Update(sessionListMsg{sessions: []*pb.Session{{Id: "s1", Title: "work"}}})
+	h = model.(HomeModel)
+	if h.err != nil {
+		t.Fatalf("err not cleared after successful poll: %v", h.err)
+	}
+	if h.pollFailures != 0 {
+		t.Fatalf("pollFailures = %d, want 0 after success", h.pollFailures)
+	}
+	if strings.Contains(h.View().Content, "Cannot connect to daemon") {
+		t.Fatal("error screen still shown after successful poll")
 	}
 }
 

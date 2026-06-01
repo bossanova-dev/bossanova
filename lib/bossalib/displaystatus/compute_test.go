@@ -1,9 +1,11 @@
 package displaystatus
 
 import (
+	"errors"
 	"testing"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/sessionreason"
 )
 
 func TestCompute(t *testing.T) {
@@ -184,6 +186,14 @@ func TestCompute(t *testing.T) {
 			want: Output{Label: "✓ passing", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
 		},
 		{
+			name: "PR REVIEW success",
+			in: Input{
+				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_REVIEW},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_STOPPED,
+			},
+			want: Output{Label: "✓ review", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS},
+		},
+		{
 			name: "PR FAILING danger",
 			in: Input{
 				Session:    &pb.Session{DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_FAILING},
@@ -290,5 +300,28 @@ func TestCompute(t *testing.T) {
 				t.Errorf("Compute() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestComputeDraftPRFailureShowsWarningWithoutSpinner(t *testing.T) {
+	reason := sessionreason.DraftPRCreationFailure(errors.New("create draft PR: gh pr create: authentication required"))
+	got := Compute(Input{
+		Session: &pb.Session{
+			Id:            "sess-1",
+			Title:         "Open missing PR",
+			State:         pb.SessionState_SESSION_STATE_IMPLEMENTING_PLAN,
+			BranchName:    "open-missing-pr",
+			BlockedReason: &reason,
+		},
+	})
+
+	if got.Label != "? PR failed" {
+		t.Fatalf("Label = %q, want %q", got.Label, "? PR failed")
+	}
+	if got.Intent != pb.DisplayIntent_DISPLAY_INTENT_WARNING {
+		t.Fatalf("Intent = %v, want WARNING", got.Intent)
+	}
+	if got.Spinner {
+		t.Fatal("Spinner = true, want false")
 	}
 }

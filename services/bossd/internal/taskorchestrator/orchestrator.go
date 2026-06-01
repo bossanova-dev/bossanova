@@ -23,6 +23,23 @@ import (
 // DefaultPollInterval is the default interval between task source polls.
 const DefaultPollInterval = 2 * time.Minute
 
+// FailedAutoMergeRetryCooldown is the minimum time between automatic retries of
+// a failed AUTO_MERGE task. The dependabot plugin re-emits a green PR's
+// AUTO_MERGE task every poll, so a transient merge failure is worth retrying —
+// but a persistently failing PR (e.g. a branch GitHub can't rebase whose repair
+// also fails) would otherwise be re-attempted every 2-minute poll, hammering
+// the daemon with git/network/session churn (the runaway repair loop). The
+// cooldown bounds that retry rate.
+const FailedAutoMergeRetryCooldown = 30 * time.Minute
+
+// failedAutoMergeRetryReady reports whether a previously-failed AUTO_MERGE
+// mapping is eligible for another automatic attempt: only once its cooldown has
+// elapsed since the last attempt (TaskMapping.UpdatedAt is bumped when the
+// status is set to Failed).
+func failedAutoMergeRetryReady(existing *models.TaskMapping, now time.Time, cooldown time.Duration) bool {
+	return now.Sub(existing.UpdatedAt) >= cooldown
+}
+
 // TaskSourceProvider returns the currently active task source plugins.
 // This is typically backed by plugin.Host.GetTaskSources().
 type TaskSourceProvider interface {
@@ -262,6 +279,20 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	if err == nil && existing != nil {
 		retryFailedAutoMerge := existing.Status == models.TaskMappingStatusFailed &&
 			task.GetAction() == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE
+
+		// Back off failed AUTO_MERGE retries. Without this a PR that keeps
+		// failing to merge/repair is re-attempted on every poll, which (with a
+		// stale-worktree or unrebaseable branch) becomes a tight loop that
+		// saturates the daemon. Retry only after the cooldown elapses.
+		if retryFailedAutoMerge && !failedAutoMergeRetryReady(existing, time.Now(), FailedAutoMergeRetryCooldown) {
+			o.logger.Info().
+				Str("external_id", externalID).
+				Time("last_attempt", existing.UpdatedAt).
+				Dur("cooldown", FailedAutoMergeRetryCooldown).
+				Msg("failed auto-merge within cooldown; skipping retry")
+			return
+		}
+
 		if existing.Status != models.TaskMappingStatusOrphaned && !retryFailedAutoMerge {
 			o.logger.Info().
 				Str("external_id", externalID).

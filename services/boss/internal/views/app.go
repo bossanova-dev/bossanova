@@ -36,35 +36,66 @@ const (
 
 // App is the root Bubbletea model that manages view routing and shared state.
 type App struct {
-	client          client.BossClient
-	auth            *auth.Manager
-	telemetry       telemetry.Client
-	ctx             context.Context
-	ptyManager      *bosspty.Manager
-	activeView      View
-	home            HomeModel
-	newSession      NewSessionModel
-	chatPicker      ChatPickerModel
-	repoAdd         RepoAddModel
-	repoList        RepoListModel
-	repoSettings    RepoSettingsModel
-	sessionSettings SessionSettingsModel
-	trash           TrashModel
-	settings        SettingsModel
-	attach          AttachModel
-	login           LoginModel
-	bugReport       BugReportModel
-	cronList        CronListModel
-	cronForm        CronFormModel
-	onboarding      OnboardingModel
-	width           int
-	height          int
-	quitting        bool
+	client            client.BossClient
+	auth              *auth.Manager
+	telemetry         telemetry.Client
+	afterAuth         loginCompleteHook
+	cloudAccess       CloudAccessClient
+	checkoutReturnURL string
+	checkoutCancelURL string
+	subscriptionURL   string
+	ctx               context.Context
+	ptyManager        *bosspty.Manager
+	activeView        View
+	home              HomeModel
+	newSession        NewSessionModel
+	chatPicker        ChatPickerModel
+	repoAdd           RepoAddModel
+	repoList          RepoListModel
+	repoSettings      RepoSettingsModel
+	sessionSettings   SessionSettingsModel
+	trash             TrashModel
+	settings          SettingsModel
+	attach            AttachModel
+	login             LoginModel
+	bugReport         BugReportModel
+	cronList          CronListModel
+	cronForm          CronFormModel
+	onboarding        OnboardingModel
+	width             int
+	height            int
+	quitting          bool
 }
 
 // WithTelemetry installs a telemetry client for action-level view events.
 func (a *App) WithTelemetry(client telemetry.Client) *App {
 	a.telemetry = client
+	return a
+}
+
+func (a *App) WithLoginCompleteHook(hook func(context.Context)) *App {
+	a.afterAuth = hook
+	return a
+}
+
+func (a *App) WithCloudAccessClient(c CloudAccessClient) *App {
+	a.cloudAccess = c
+	a.home.SetCloudSubscription(c, a.checkoutReturnURL, a.checkoutCancelURL)
+	return a
+}
+
+// WithCheckoutURLs configures the CLI-tagged Stripe checkout return/cancel URLs
+// that the login model passes into the cloud subscription flow.
+func (a *App) WithCheckoutURLs(returnURL, cancelURL string) *App {
+	a.checkoutReturnURL = returnURL
+	a.checkoutCancelURL = cancelURL
+	a.home.SetCloudSubscription(a.cloudAccess, returnURL, cancelURL)
+	return a
+}
+
+// WithSubscriptionURL configures the CLI-tagged web subscription landing page.
+func (a *App) WithSubscriptionURL(rawURL string) *App {
+	a.subscriptionURL = rawURL
 	return a
 }
 
@@ -246,7 +277,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.trash.height = a.height
 			return a, a.trash.Init()
 		case ViewSettings:
-			a.settings = NewSettingsModel(a.client, a.ctx)
+			a.settings = NewSettingsModel(a.client, a.ctx, a.auth)
 			a.settings.width = a.width
 			return a, a.settings.Init()
 		case ViewAttach:
@@ -256,12 +287,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.attach.Init()
 		case ViewLogin:
 			a.login = NewLoginModel(a.auth, a.client, a.ctx)
+			a.login.SetAfterAuth(a.afterAuth)
+			if a.cloudAccess != nil {
+				a.login.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
+				a.login.SetSubscriptionURL(a.subscriptionURL)
+			}
 			a.login.width = a.width
 			return a, a.login.Init()
 		case ViewHome:
-			a.home = NewHomeModel(a.client, a.ctx, a.auth)
-			a.home.width = a.width
-			a.home.height = a.height
+			a.home = a.newHomeModel()
 			return a, a.home.Init()
 		case ViewCron:
 			a.cronList = NewCronListModel(a.client, a.ctx)
@@ -274,6 +308,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.cronForm.Init()
 		}
 		return a, nil
+	case startSubscriptionFlowMsg:
+		a.login = NewLoginModel(a.auth, a.client, a.ctx)
+		a.login.SetAfterAuth(a.afterAuth)
+		if a.cloudAccess != nil {
+			a.login.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
+			a.login.SetSubscriptionURL(a.subscriptionURL)
+		}
+		a.login.width = a.width
+		a.activeView = ViewLogin
+		updated, cmd := a.login.startSubscriptionAttempt()
+		a.login = updated
+		return a, tea.Batch(cmd, a.login.spinner.Tick)
 	}
 
 	switch a.activeView {
@@ -316,13 +362,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sessionID := a.chatPicker.sessionID
 			merged := a.chatPicker.Merged()
 			a.activeView = ViewHome
-			a.home = NewHomeModel(a.client, a.ctx, a.auth)
+			a.home = a.newHomeModel()
 			a.home.highlightSessionID = sessionID
 			if merged {
 				a.home.mergedOptimisticID = sessionID
 			}
-			a.home.width = a.width
-			a.home.height = a.height
 			return a, a.home.Init()
 		}
 		return a, cmd
@@ -515,11 +559,17 @@ func resumeTickCmd(v View) tea.Cmd {
 func (a *App) switchToHome() tea.Cmd {
 	highlightID := a.home.selectedSessionID()
 	a.activeView = ViewHome
-	a.home = NewHomeModel(a.client, a.ctx, a.auth)
+	a.home = a.newHomeModel()
 	a.home.highlightSessionID = highlightID
-	a.home.width = a.width
-	a.home.height = a.height
 	return a.home.Init()
+}
+
+func (a *App) newHomeModel() HomeModel {
+	home := NewHomeModel(a.client, a.ctx, a.auth)
+	home.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
+	home.width = a.width
+	home.height = a.height
+	return home
 }
 
 func (a App) View() tea.View {

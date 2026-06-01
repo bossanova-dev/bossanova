@@ -44,7 +44,8 @@ func (f *fakeCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.C
 }
 
 func TestLoginCloudGate(t *testing.T) {
-	t.Run("unpaid status opens checkout and leaves local sessions available", func(t *testing.T) {
+	t.Run("unpaid status opens subscription page and leaves local sessions available", func(t *testing.T) {
+		t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
 		fake := &fakeCloudAccessClient{
 			status: &pb.CloudAccessStatus{
 				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
@@ -63,16 +64,17 @@ func TestLoginCloudGate(t *testing.T) {
 		var out bytes.Buffer
 		runLoginCloudGate(context.Background(), fake, &out)
 
-		if opened != fake.checkoutURL {
-			t.Fatalf("opened URL = %q, want %q", opened, fake.checkoutURL)
+		if opened != "https://billing.example.test/subscribe?source=cli" {
+			t.Fatalf("opened URL = %q", opened)
 		}
-		if fake.checkouts != 1 {
-			t.Fatalf("checkout calls = %d, want 1", fake.checkouts)
+		if fake.checkouts != 0 {
+			t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
 		}
 		assertCloudGateMessage(t, out.String())
 	})
 
-	t.Run("declined checkout keeps local sessions available", func(t *testing.T) {
+	t.Run("declined subscription page keeps local sessions available", func(t *testing.T) {
+		t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
 		fake := &fakeCloudAccessClient{
 			status: &pb.CloudAccessStatus{
 				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_CANCELED,
@@ -151,39 +153,10 @@ func TestLoginCloudGate(t *testing.T) {
 		assertCloudGateMessage(t, out.String())
 	})
 
-	t.Run("checkout failure leaves local sessions available without opening browser", func(t *testing.T) {
-		fake := &fakeCloudAccessClient{
-			status: &pb.CloudAccessStatus{
-				State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
-			},
-			checkoutErr: errors.New("checkout unavailable"),
-		}
-
-		opened := false
-		origOpen := openCloudCheckoutURL
-		openCloudCheckoutURL = func(string) error {
-			opened = true
-			return nil
-		}
-		defer func() { openCloudCheckoutURL = origOpen }()
-
-		var out bytes.Buffer
-		runLoginCloudGate(context.Background(), fake, &out)
-
-		if opened {
-			t.Fatal("checkout opened after checkout session failure")
-		}
-		if fake.checkouts != 1 {
-			t.Fatalf("checkout calls = %d, want 1", fake.checkouts)
-		}
-		if !strings.Contains(out.String(), "Cloud checkout unavailable") {
-			t.Fatalf("output %q missing checkout warning", out.String())
-		}
-		assertCloudGateMessage(t, out.String())
-	})
 }
 
 func TestLoginCloudGateCapturesBillingTelemetry(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://billing.example.test/subscribe")
 	enableCommandTelemetryForTest(t)
 	fake := &fakeCloudAccessClient{
 		status: &pb.CloudAccessStatus{
@@ -205,14 +178,11 @@ func TestLoginCloudGateCapturesBillingTelemetry(t *testing.T) {
 	var out bytes.Buffer
 	checkLoginCloudGateWithTelemetry(context.Background(), fake, &out, rec)
 
-	if len(rec.events) != 2 {
-		t.Fatalf("events = %d, want 2", len(rec.events))
+	if len(rec.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(rec.events))
 	}
 	if rec.events[0] != telemetry.EventCloudAccessDenied {
 		t.Fatalf("event[0] = %q, want %q", rec.events[0], telemetry.EventCloudAccessDenied)
-	}
-	if rec.events[1] != telemetry.EventCloudCheckoutStarted {
-		t.Fatalf("event[1] = %q, want %q", rec.events[1], telemetry.EventCloudCheckoutStarted)
 	}
 	wantProps := map[string]any{
 		"product_area":       "billing",
@@ -319,12 +289,106 @@ func TestRemoteCloudAccess(t *testing.T) {
 	}
 }
 
+func TestCloudCheckoutURLsAddCLISource(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_RETURN_URL", "")
+	t.Setenv("BOSS_CLOUD_CANCEL_URL", "")
+
+	if got, want := cloudReturnURL(), "https://app.bossanova.dev/subscribe/success?source=cli"; got != want {
+		t.Fatalf("cloudReturnURL() = %q, want %q", got, want)
+	}
+	if got, want := cloudCancelURL(), "https://app.bossanova.dev/subscribe/canceled?source=cli"; got != want {
+		t.Fatalf("cloudCancelURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudCheckoutURLsPreserveEnvQueryParams(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_RETURN_URL", "https://staging.example.test/subscribe/success?existing=1")
+	t.Setenv("BOSS_CLOUD_CANCEL_URL", "https://staging.example.test/subscribe/canceled?existing=1&source=web")
+
+	if got, want := cloudReturnURL(), "https://staging.example.test/subscribe/success?existing=1&source=cli"; got != want {
+		t.Fatalf("cloudReturnURL() = %q, want %q", got, want)
+	}
+	if got, want := cloudCancelURL(), "https://staging.example.test/subscribe/canceled?existing=1&source=cli"; got != want {
+		t.Fatalf("cloudCancelURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudSubscribeURLAddsCLISource(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got, want := cloudSubscribeURL(), "https://app.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudSubscribeURLPreservesEnvQueryParams(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "https://staging.example.test/subscribe?plan=cloud")
+
+	if got, want := cloudSubscribeURL(), "https://staging.example.test/subscribe?plan=cloud&source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudSubscribeURLUsesLocalWebPort(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "5151")
+
+	if got, want := cloudSubscribeURL(), "http://localhost:5151/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudSubscribeURLDefaultsToLocalWebForLocalCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "http://localhost:8181")
+
+	if got, want := cloudSubscribeURL(), "http://localhost:5151/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	}
+}
+
+func TestCloudSubscribeURLUsesStagingAppForStagingCloud(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_SUBSCRIBE_URL", "")
+	t.Setenv("BOSS_WEB_URL", "")
+	t.Setenv("BOSS_WEB_PORT", "")
+	t.Setenv("BOSS_CLOUD_URL", "https://orchestrator-staging.bossanova.dev")
+
+	if got, want := cloudSubscribeURL(), "https://app-staging.bossanova.dev/subscribe?source=cli"; got != want {
+		t.Fatalf("cloudSubscribeURL() = %q, want %q", got, want)
+	}
+}
+
 func TestCloudURLUsesCloudOverride(t *testing.T) {
 	t.Setenv("BOSS_CLOUD_URL", "https://cloud.example.test")
 	t.Setenv("BOSS_REPORT_URL", "https://reports.example.test")
 
 	if got := cloudURL(nil); got != "https://cloud.example.test" {
 		t.Fatalf("cloudURL() = %q, want cloud override", got)
+	}
+}
+
+func TestCloudURLFallsBackToLocalOrchestrator(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "http://localhost:8181")
+
+	if got := cloudURL(nil); got != "http://localhost:8181" {
+		t.Fatalf("cloudURL() = %q, want local orchestrator fallback", got)
+	}
+}
+
+func TestCloudURLPreservesExplicitEmptyLocalOrchestrator(t *testing.T) {
+	t.Setenv("BOSS_CLOUD_URL", "")
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	if got := cloudURL(nil); got != "" {
+		t.Fatalf("cloudURL() = %q, want explicit local-only override", got)
 	}
 }
 

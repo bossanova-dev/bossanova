@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean copy-skills deps format generate lint \
+.PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format generate lint \
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
 	plugins plugins-all readme-gifs release release-codex-check \
@@ -72,6 +72,12 @@ claude:
 
 codex:
 	codex --dangerously-bypass-approvals-and-sandbox
+
+codex-skills:
+	node scripts/sync-codex-skills.mjs --root .
+
+codex-skills-check:
+	node scripts/sync-codex-skills.mjs --root . --check
 
 ## deps: Install required build/dev tools via Homebrew (macOS)
 deps:
@@ -202,7 +208,7 @@ $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 $(BIN_DIR)/bossd-plugin-claude: copy-skills
 
 ## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP) copy-skills
+test: $(GEN_STAMP) copy-skills codex-skills-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-public-mirror

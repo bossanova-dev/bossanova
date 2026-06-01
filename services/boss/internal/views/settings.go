@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
@@ -51,13 +52,14 @@ type SettingsModel struct {
 	client client.BossClient
 	ctx    context.Context
 
-	settings   config.Settings
-	agents     []client.AgentInfo
-	rows       []settingsRow
-	cursor     int
-	cancel     bool
-	err        error
-	editingRow int // index into rows; -1 = not editing
+	settings          config.Settings
+	agents            []client.AgentInfo
+	rows              []settingsRow
+	cursor            int
+	cancel            bool
+	err               error
+	editingRow        int // index into rows; -1 = not editing
+	showCloudSettings bool
 
 	worktreeDirInput  textinput.Model
 	pollIntervalInput textinput.Model
@@ -70,7 +72,7 @@ type SettingsModel struct {
 // the view loads agents via ListAgents and renders per-agent settings
 // sections. A nil client (legacy callers / tests) renders only the
 // built-in rows.
-func NewSettingsModel(c client.BossClient, ctx context.Context) SettingsModel {
+func NewSettingsModel(c client.BossClient, ctx context.Context, authMgr ...*auth.Manager) SettingsModel {
 	s, _ := config.Load()
 
 	wtIn := textinput.New()
@@ -93,6 +95,7 @@ func NewSettingsModel(c client.BossClient, ctx context.Context) SettingsModel {
 		ctx:               ctx,
 		settings:          s,
 		editingRow:        -1,
+		showCloudSettings: shouldShowCloudSettings(authMgr...),
 		worktreeDirInput:  wtIn,
 		pollIntervalInput: piIn,
 		stringInput:       strIn,
@@ -109,6 +112,14 @@ func NewSettingsModel(c client.BossClient, ctx context.Context) SettingsModel {
 
 	m.rebuildRows()
 	return m
+}
+
+func shouldShowCloudSettings(authMgr ...*auth.Manager) bool {
+	if len(authMgr) == 0 || authMgr[0] == nil {
+		return false
+	}
+	status := authMgr[0].Status()
+	return status == nil || !status.LoggedIn
 }
 
 // rebuildRows reconstructs m.rows from m.settings + m.agents. Called on
@@ -471,7 +482,11 @@ func (m SettingsModel) View() tea.View {
 		m.renderRow(&b, i, row, editing)
 	}
 
-	b.WriteString("\n")
+	if m.showCloudSettings {
+		b.WriteString("\n")
+		b.WriteString(cloudSettingsBlock())
+		b.WriteString("\n")
+	}
 	if editing {
 		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
 	} else {

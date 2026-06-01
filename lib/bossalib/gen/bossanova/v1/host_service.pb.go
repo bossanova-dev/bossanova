@@ -1331,8 +1331,11 @@ type RecordRepairOutcomeRequest struct {
 	// rerunning the same agent repair forever after a non-zero agent exit.
 	HeadSha       string        `protobuf:"bytes,6,opt,name=head_sha,json=headSha,proto3" json:"head_sha,omitempty"`
 	DisplayStatus DisplayStatus `protobuf:"varint,7,opt,name=display_status,json=displayStatus,proto3,enum=bossanova.v1.DisplayStatus" json:"display_status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Fingerprint of review feedback this repair attempt targeted.
+	// Empty for non-review-triggered repairs.
+	ReviewFingerprint *string `protobuf:"bytes,8,opt,name=review_fingerprint,json=reviewFingerprint,proto3,oneof" json:"review_fingerprint,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *RecordRepairOutcomeRequest) Reset() {
@@ -1412,6 +1415,13 @@ func (x *RecordRepairOutcomeRequest) GetDisplayStatus() DisplayStatus {
 		return x.DisplayStatus
 	}
 	return DisplayStatus_DISPLAY_STATUS_UNSPECIFIED
+}
+
+func (x *RecordRepairOutcomeRequest) GetReviewFingerprint() string {
+	if x != nil && x.ReviewFingerprint != nil {
+		return *x.ReviewFingerprint
+	}
+	return ""
 }
 
 type RecordRepairOutcomeResponse struct {
@@ -1526,7 +1536,7 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\"i\n" +
 	"\x1dReclaimRepairChatHostResponse\x12\x1c\n" +
 	"\treclaimed\x18\x01 \x01(\bR\treclaimed\x12*\n" +
-	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\"\xae\x02\n" +
+	"\x11tmux_session_name\x18\x02 \x01(\tR\x0ftmuxSessionName\"\xf9\x02\n" +
 	"\x1aRecordRepairOutcomeRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12&\n" +
@@ -1536,7 +1546,9 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"exit_error\x18\x04 \x01(\tR\texitError\x12(\n" +
 	"\x10agent_session_id\x18\x05 \x01(\tR\x0eagentSessionId\x12\x19\n" +
 	"\bhead_sha\x18\x06 \x01(\tR\aheadSha\x12B\n" +
-	"\x0edisplay_status\x18\a \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\rdisplayStatus\"\x1d\n" +
+	"\x0edisplay_status\x18\a \x01(\x0e2\x1b.bossanova.v1.DisplayStatusR\rdisplayStatus\x122\n" +
+	"\x12review_fingerprint\x18\b \x01(\tH\x00R\x11reviewFingerprint\x88\x01\x01B\x15\n" +
+	"\x13_review_fingerprint\"\x1d\n" +
 	"\x1bRecordRepairOutcomeResponse2\xdb\n" +
 	"\n" +
 	"\vHostService\x12R\n" +
@@ -1657,6 +1669,7 @@ func file_bossanova_v1_host_service_proto_init() {
 		return
 	}
 	file_bossanova_v1_models_proto_init()
+	file_bossanova_v1_host_service_proto_msgTypes[26].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

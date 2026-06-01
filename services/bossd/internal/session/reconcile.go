@@ -41,8 +41,9 @@ func ReconcilePRAssociations(
 		for _, sess := range active {
 			if sess.PRNumber == nil && sess.BranchName != "" {
 				orphaned = append(orphaned, &orphanedSession{
-					id:         sess.ID,
-					branchName: sess.BranchName,
+					id:            sess.ID,
+					branchName:    sess.BranchName,
+					blockedReason: sess.BlockedReason,
 				})
 			}
 		}
@@ -82,10 +83,14 @@ func ReconcilePRAssociations(
 			prNumPtr := &prNum
 			prURL := constructPRURL(repo.OriginURL, pr.Number)
 			prURLPtr := &prURL
-			if _, err := sessions.Update(ctx, o.id, db.UpdateSessionParams{
+
+			updateParams := db.UpdateSessionParams{
 				PRNumber: &prNumPtr,
 				PRURL:    &prURLPtr,
-			}); err != nil {
+			}
+			clearDraftPRBlockedReasonUpdate(o.blockedReason, &updateParams)
+
+			if _, err := sessions.Update(ctx, o.id, updateParams); err != nil {
 				logger.Warn().Err(err).
 					Str("session", o.id).
 					Int("pr", pr.Number).
@@ -108,8 +113,18 @@ func ReconcilePRAssociations(
 // orphanedSession is a lightweight struct for tracking sessions that need PR
 // reconciliation, avoiding carrying the full models.Session around.
 type orphanedSession struct {
-	id         string
-	branchName string
+	id            string
+	branchName    string
+	blockedReason *string
+}
+
+func clearDraftPRBlockedReasonUpdate(reason *string, params *db.UpdateSessionParams) {
+	if !isDraftPRBlockedReason(reason) {
+		return
+	}
+
+	var cleared *string
+	params.BlockedReason = &cleared
 }
 
 // constructPRURL is a package-local alias for vcs.ConstructPRURL.

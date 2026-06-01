@@ -160,10 +160,14 @@ func TestE2E_GitHub_GetPRStatus_AllStates(t *testing.T) {
 				match:  argsStartWith("pr", "view"),
 				stdout: fixture(t, tc.fixture),
 			})
-			if tc.wantMergeable != nil && *tc.wantMergeable {
+			if tc.wantState == vcs.PRStateOpen && !tc.wantDraft && (tc.wantMergeable == nil || *tc.wantMergeable) {
+				stdout := `{"mergeable":null,"rebaseable":null}`
+				if tc.wantRebaseable != nil {
+					stdout = fmt.Sprintf(`{"rebaseable":%t}`, *tc.wantRebaseable)
+				}
 				f.expect(ghResponder{
 					match:  argsStartWith("api", "repos/owner/repo/pulls/42"),
-					stdout: fmt.Sprintf(`{"rebaseable":%t}`, *tc.wantRebaseable),
+					stdout: stdout,
 				})
 			}
 			p := newProvider(f)

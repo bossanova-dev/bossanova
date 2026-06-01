@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -157,14 +159,16 @@ func runLogin(cmd *cobra.Command) error {
 	// Notify daemon so it can connect upstream immediately.
 	notifyDaemonAuthChange("login")
 
-	token, err := mgr.AccessToken(ctx)
-	if err != nil {
-		return fmt.Errorf("access token: %w", err)
-	}
-	cloud := client.NewRemote(cloudURL(cmd), token)
-	active := checkLoginCloudGateWithTelemetry(ctx, cloud, os.Stdout, commandTelemetryClient(cmd))
-	if !active {
-		return nil
+	if cloudURL := cloudURL(cmd); cloudURL != "" {
+		token, err := mgr.AccessToken(ctx)
+		if err != nil {
+			return fmt.Errorf("access token: %w", err)
+		}
+		cloud := client.NewRemote(cloudURL, token)
+		active := checkLoginCloudGateWithTelemetry(ctx, cloud, os.Stdout, commandTelemetryClient(cmd))
+		if !active {
+			return nil
+		}
 	}
 
 	if status.Email != "" {
@@ -181,7 +185,65 @@ func cloudURL(cmd *cobra.Command) string {
 			return remote
 		}
 	}
-	return envOr("BOSS_CLOUD_URL", defaultCloudURL)
+	if cloud := os.Getenv("BOSS_CLOUD_URL"); cloud != "" {
+		return cloud
+	}
+	if cloud, ok := os.LookupEnv("BOSSD_ORCHESTRATOR_URL"); ok {
+		return cloud
+	}
+	return defaultCloudURL
+}
+
+type authCloudAccessClient struct {
+	mgr *auth.Manager
+	url string
+}
+
+func newAuthCloudAccessClient(mgr *auth.Manager, url string) *authCloudAccessClient {
+	return &authCloudAccessClient{mgr: mgr, url: url}
+}
+
+func (c *authCloudAccessClient) remote(ctx context.Context) (*client.RemoteClient, error) {
+	token, err := c.mgr.AccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return nil, errors.New("not logged in")
+	}
+	return client.NewRemote(c.url, token), nil
+}
+
+func (c *authCloudAccessClient) GetCloudAccessStatus(ctx context.Context) (*pb.CloudAccessStatus, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remote.GetCloudAccessStatus(ctx)
+}
+
+func (c *authCloudAccessClient) CreateCheckoutSession(ctx context.Context, returnURL, cancelURL string) (string, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return "", err
+	}
+	return remote.CreateCheckoutSession(ctx, returnURL, cancelURL)
+}
+
+func (c *authCloudAccessClient) CreateBillingPortalSession(ctx context.Context, returnURL string) (string, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return "", err
+	}
+	return remote.CreateBillingPortalSession(ctx, returnURL)
+}
+
+func (c *authCloudAccessClient) RefreshCloudEntitlements(ctx context.Context) (*pb.CloudAccessStatus, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remote.RefreshCloudEntitlements(ctx)
 }
 
 func runLoginCloudGate(ctx context.Context, c cloudAccessClient, out io.Writer) {
@@ -235,23 +297,10 @@ func checkLoginCloudGateWithTelemetry(
 		_, _ = fmt.Fprintln(out, cloudGateMessage)
 		return false
 	}
-	checkoutURL, err := c.CreateCheckoutSession(ctx, cloudReturnURL(), cloudCancelURL())
-	if err != nil {
-		_, _ = fmt.Fprintf(out, "Cloud checkout unavailable: %v\n", err)
-		_, _ = fmt.Fprintln(out, cloudGateMessage)
-		return false
-	}
-	captureLoginCloudBillingEvent(
-		ctx,
-		telemetryClient,
-		telemetry.EventCloudCheckoutStarted,
-		status,
-		"cli_login",
-		denialReason,
-	)
-	if checkoutURL != "" {
-		if err := openCloudCheckoutURL(checkoutURL); err != nil {
-			_, _ = fmt.Fprintf(out, "Open checkout: %s\n", checkoutURL)
+	subscribeURL := cloudSubscribeURL()
+	if subscribeURL != "" {
+		if err := openCloudCheckoutURL(subscribeURL); err != nil {
+			_, _ = fmt.Fprintf(out, "Open subscription page: %s\n", subscribeURL)
 		}
 	}
 	_, _ = fmt.Fprintln(out, cloudGateMessage)
@@ -341,11 +390,47 @@ func cloudAccessActive(status *pb.CloudAccessStatus) bool {
 }
 
 func cloudReturnURL() string {
-	return envOr("BOSS_CLOUD_RETURN_URL", "https://app.bossanova.dev/subscribe/success")
+	return cloudURLWithSource(envOr("BOSS_CLOUD_RETURN_URL", "https://app.bossanova.dev/subscribe/success"), "cli")
 }
 
 func cloudCancelURL() string {
-	return envOr("BOSS_CLOUD_CANCEL_URL", "https://app.bossanova.dev/subscribe/canceled")
+	return cloudURLWithSource(envOr("BOSS_CLOUD_CANCEL_URL", "https://app.bossanova.dev/subscribe/canceled"), "cli")
+}
+
+func cloudSubscribeURL() string {
+	return cloudURLWithSource(envOr("BOSS_CLOUD_SUBSCRIBE_URL", defaultCloudSubscribeURL()), "cli")
+}
+
+func defaultCloudSubscribeURL() string {
+	if web := os.Getenv("BOSS_WEB_URL"); web != "" {
+		return strings.TrimRight(web, "/") + "/subscribe"
+	}
+	if port := os.Getenv("BOSS_WEB_PORT"); port != "" {
+		return "http://localhost:" + port + "/subscribe"
+	}
+	remote := envOr("BOSS_CLOUD_URL", envOr("BOSSD_ORCHESTRATOR_URL", ""))
+	if strings.Contains(remote, "localhost") || strings.Contains(remote, "127.0.0.1") {
+		port := os.Getenv("BOSS_WEB_PORT")
+		if port == "" {
+			port = "5151"
+		}
+		return "http://localhost:" + port + "/subscribe"
+	}
+	if strings.Contains(remote, "orchestrator-staging.bossanova.dev") {
+		return "https://app-staging.bossanova.dev/subscribe"
+	}
+	return "https://app.bossanova.dev/subscribe"
+}
+
+func cloudURLWithSource(rawURL, source string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	values := parsed.Query()
+	values.Set("source", source)
+	parsed.RawQuery = values.Encode()
+	return parsed.String()
 }
 
 func runLogout(cmd *cobra.Command) error {

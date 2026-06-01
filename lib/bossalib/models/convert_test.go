@@ -61,25 +61,26 @@ func TestSessionRoundTrip(t *testing.T) {
 	archived := time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)
 
 	orig := &Session{
-		ID:                "sess-456",
-		RepoID:            "repo-123",
-		Title:             "Fix login bug",
-		Plan:              "Fix the login form validation",
-		WorktreePath:      "/tmp/wt/fix-login",
-		BranchName:        "fix/login-bug",
-		BaseBranch:        "main",
-		State:             machine.Blocked,
-		AgentSessionID:    &agentSessID,
-		AgentName:         "claude",
-		PRNumber:          &prNum,
-		PRURL:             &prURL,
-		LastCheckState:    machine.CheckStateFailed,
-		AutomationEnabled: true,
-		AttemptCount:      3,
-		BlockedReason:     &blocked,
-		ArchivedAt:        &archived,
-		CreatedAt:         time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:         time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC),
+		ID:                          "sess-456",
+		RepoID:                      "repo-123",
+		Title:                       "Fix login bug",
+		Plan:                        "Fix the login form validation",
+		WorktreePath:                "/tmp/wt/fix-login",
+		BranchName:                  "fix/login-bug",
+		BaseBranch:                  "main",
+		State:                       machine.Blocked,
+		AgentSessionID:              &agentSessID,
+		AgentName:                   "claude",
+		PRNumber:                    &prNum,
+		PRURL:                       &prURL,
+		LastCheckState:              machine.CheckStateFailed,
+		AutomationEnabled:           true,
+		AttemptCount:                3,
+		BlockedReason:               &blocked,
+		LastRepairReviewFingerprint: "review-fingerprint-123",
+		ArchivedAt:                  &archived,
+		CreatedAt:                   time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:                   time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC),
 	}
 
 	proto := SessionToProto(orig)
@@ -105,6 +106,9 @@ func TestSessionRoundTrip(t *testing.T) {
 	}
 	if back.BlockedReason == nil || *back.BlockedReason != *orig.BlockedReason {
 		t.Errorf("BlockedReason = %v, want %v", back.BlockedReason, orig.BlockedReason)
+	}
+	if back.LastRepairReviewFingerprint != orig.LastRepairReviewFingerprint {
+		t.Errorf("LastRepairReviewFingerprint = %q, want %q", back.LastRepairReviewFingerprint, orig.LastRepairReviewFingerprint)
 	}
 	if back.ArchivedAt == nil || !back.ArchivedAt.Equal(*orig.ArchivedAt) {
 		t.Errorf("ArchivedAt = %v, want %v", back.ArchivedAt, orig.ArchivedAt)

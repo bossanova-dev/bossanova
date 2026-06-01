@@ -16,11 +16,12 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 | #   | Requirement                     | How to Verify                                                                                                                                                                                           |
 | --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **All quality gates pass**      | Discover and run the repo's quality gates. Prefer a single project-declared aggregate command when it covers build/lint/test; otherwise run the minimal non-duplicative command set. ALL must pass. Fix failures — do NOT dismiss them as "pre-existing" without verifying on the PR base branch. |
-| 2   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
-| 3   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                     |
-| 4   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
-| 5   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready` to mark the PR as ready for review. Do NOT leave the PR as a draft.                                                                        |
-| 6   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                             |
+| 2   | **PR base is current**          | Fetch the PR base and verify `git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD` before rewriting commits, squashing, or pushing. If it fails, rebase onto `origin/$BASE_BRANCH` first.          |
+| 3   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
+| 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                     |
+| 5   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
+| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready` to mark the PR as ready for review. Do NOT leave the PR as a draft.                                                                        |
+| 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                             |
 
 **If you complete without satisfying ALL SIX requirements, you have failed this workflow.**
 
@@ -48,6 +49,37 @@ gh pr view --json number -q .number   # Get PR number
 ```
 
 **IMPORTANT:** Always compare to `origin/$BASE_BRANCH`, not the feature branch or default branch. If GitHub metadata is unavailable, the git fallback infers the most likely base from fetched `origin/*` branches; verify the printed branch before continuing. This shows ALL commits on your branch that aren't in the PR base branch, regardless of whether they're "pushed" to the feature branch.
+
+**Base freshness is mandatory before any commit rewrite:**
+
+```bash
+BASE_TIP=$(git rev-parse "origin/$BASE_BRANCH")
+MERGE_BASE=$(git merge-base HEAD "origin/$BASE_BRANCH")
+BRANCH_OWNED_FILES=$(mktemp)
+git diff --name-only "$MERGE_BASE"..HEAD > "$BRANCH_OWNED_FILES"
+
+if ! git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD; then
+  echo "PR base is not included in HEAD. Rebase before squashing or pushing."
+  git rebase "origin/$BASE_BRANCH"
+  MERGE_BASE=$(git merge-base HEAD "origin/$BASE_BRANCH")
+  git diff --name-only "$MERGE_BASE"..HEAD > "$BRANCH_OWNED_FILES"
+fi
+
+BASE_REVERTS=$(
+  git diff --name-only "$MERGE_BASE".."origin/$BASE_BRANCH" | while IFS= read -r file; do
+    base_blob=$(git rev-parse "$MERGE_BASE:$file" 2>/dev/null || true)
+    head_blob=$(git rev-parse "HEAD:$file" 2>/dev/null || true)
+    base_tip_blob=$(git rev-parse "origin/$BASE_BRANCH:$file" 2>/dev/null || true)
+    if [ -n "$base_blob" ] && [ "$head_blob" = "$base_blob" ] && [ "$base_tip_blob" != "$base_blob" ]; then
+      echo "$file"
+    fi
+  done
+)
+test -z "$BASE_REVERTS" || { echo "HEAD reverts files changed on origin/$BASE_BRANCH:"; echo "$BASE_REVERTS"; exit 1; }
+test "$BASE_TIP" = "$(git rev-parse origin/$BASE_BRANCH)" || { echo "origin/$BASE_BRANCH moved during finalize; restart Step 1"; exit 1; }
+```
+
+**Do NOT use `git reset --soft origin/$BASE_BRANCH` unless `origin/$BASE_BRANCH` is already an ancestor of `HEAD`.** Soft-resetting stale branch history onto a newer base stages reverse diffs for base-only changes and can commit other people's work as reverts.
 
 **Determine your situation:**
 
@@ -141,7 +173,7 @@ git log origin/$BASE_BRANCH..HEAD --oneline
 
 ```bash
 # Run from repo root - automatically detects PR number
-.claude/skills/boss-finalize/add-pr-numbers.sh
+~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh
 ```
 
 **DO NOT skip this step.** Even if the branch is "up to date with origin", the commits still need PR numbers. The script compares against the PR base branch, not the feature branch.
@@ -167,6 +199,9 @@ git log origin/$BASE_BRANCH..HEAD --oneline | grep -v "\[#"
 
 ```bash
 git log origin/$BASE_BRANCH..HEAD --oneline
+MERGE_BASE=$(git merge-base HEAD "origin/$BASE_BRANCH")
+test -n "${BRANCH_OWNED_FILES:-}" || BRANCH_OWNED_FILES=$(mktemp)
+git diff --name-only "$MERGE_BASE"..HEAD > "$BRANCH_OWNED_FILES"
 ```
 
 **Squashing rules:**
@@ -187,13 +222,18 @@ git log origin/$BASE_BRANCH..HEAD --oneline
 ```bash
 git log origin/$BASE_BRANCH..HEAD --oneline          # Clean, logical commits
 git log origin/$BASE_BRANCH..HEAD --oneline | grep -v "\[#"  # All have PR numbers
+test -n "${BRANCH_OWNED_FILES:-}" || { echo "Missing BRANCH_OWNED_FILES; rerun the Step 5 file capture"; exit 1; }
+git diff --name-only origin/$BASE_BRANCH..HEAD       # Only branch-owned/finalize-intended files
+comm -13 <(sort "$BRANCH_OWNED_FILES") <(git diff --name-only origin/$BASE_BRANCH..HEAD | sort)
+# Should return NOTHING - if it returns files, stop before pushing and rebuild from origin/$BASE_BRANCH
 ```
 
 ### Step 6: Push to Remote
 
 ```bash
-git pull --rebase
-git push
+git fetch origin "$BASE_BRANCH"
+git merge-base --is-ancestor "origin/$BASE_BRANCH" HEAD || { echo "origin/$BASE_BRANCH is not in HEAD; rebase before push"; exit 1; }
+git push --force-with-lease
 git status  # Verify "up to date with origin"
 ```
 
@@ -301,6 +341,8 @@ Before saying "done", verify ALL items:
 
 - [ ] Repo quality gates discovered from project instructions, CI, or command files
 - [ ] Minimal non-duplicative gate command set passed
+- [ ] `origin/$BASE_BRANCH` is an ancestor of `HEAD`
+- [ ] No base-only files appear in `git diff origin/$BASE_BRANCH..HEAD`
 - [ ] All commits have `[#PR-NUM]` in message
 - [ ] Commits squashed into logical groups (force-pushed)
 - [ ] Empty "create pull request" commits dropped
@@ -322,7 +364,8 @@ Before saying "done", verify ALL items:
 | Dismissed failure as "pre-existing"  | Failure was fixable    | Verify on the PR base branch before dismissing. Missing generated code or dependencies are NOT pre-existing |
 | Missing dependencies in worktree     | Generate/format fails  | Install the repo's documented dependencies, then re-run the same gate commands                       |
 | Stopped to ask permission to push    | Blocked automation     | Just push — do NOT ask for permission. Force-push is expected and authorized.                        |
-| Commit missing `[#PR-NUM]`           | PR not linked          | Run `.claude/skills/boss-finalize/add-pr-numbers.sh` to fix ALL commits                              |
+| Squashed stale branch onto new base   | PR reverts base changes | Rebase onto `origin/$BASE_BRANCH` first; never soft-reset stale history onto the new base             |
+| Commit missing `[#PR-NUM]`           | PR not linked          | Run `~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh` to fix ALL commits                  |
 | Reported issue but didn't fix        | Commits still broken   | You MUST run the script, not just report that commits need fixing                                    |
 | Compared against feature branch      | Wrong comparison       | Always compare to `origin/$BASE_BRANCH` to find all branch commits                                   |
 | Branch "up to date" so skipped       | Commits still need PR# | Even pushed commits need PR numbers - compare to the PR base branch, not feature branch              |

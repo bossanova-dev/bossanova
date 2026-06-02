@@ -347,7 +347,10 @@ func (w *setupStreamWorktree) PurgeWorktree(context.Context, string, string, str
 func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error             { return nil }
 func (w *setupStreamWorktree) Push(context.Context, string, string) error                    { return nil }
 func (w *setupStreamWorktree) Status(context.Context, string) (string, error)                { return "", nil }
-func (w *setupStreamWorktree) Clone(context.Context, string, string) error                   { return nil }
+func (w *setupStreamWorktree) LatestCommitSubject(context.Context, string) (string, error) {
+	return "", nil
+}
+func (w *setupStreamWorktree) Clone(context.Context, string, string) error { return nil }
 func (w *setupStreamWorktree) DetectOriginURL(context.Context, string) (string, error) {
 	return "", nil
 }

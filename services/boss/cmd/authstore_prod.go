@@ -11,3 +11,7 @@ import "github.com/recurser/boss/internal/auth"
 func resolveE2ETokenStore() auth.TokenStore {
 	return nil
 }
+
+func resolveE2ELoginEmail() string {
+	return ""
+}

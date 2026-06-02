@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -674,6 +676,46 @@ func (m *MockDaemon) UpdateSession(_ context.Context, req *connect.Request[pb.Up
 		}
 	}
 	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
+}
+
+func (m *MockDaemon) LinkSessionPR(_ context.Context, req *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prNumber, prURL, err := parseMockPRRef(req.Msg.Pr)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	for _, s := range m.sessions {
+		if s.Id == req.Msg.Id {
+			s.PrNumber = &prNumber
+			s.PrUrl = &prURL
+			return connect.NewResponse(&pb.LinkSessionPRResponse{Session: s}), nil
+		}
+	}
+	return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session %q not found", req.Msg.Id))
+}
+
+func parseMockPRRef(ref string) (int32, string, error) {
+	ref = strings.TrimSpace(ref)
+	if n, err := strconv.ParseInt(ref, 10, 32); err == nil {
+		if n <= 0 {
+			return 0, "", fmt.Errorf("PR number must be positive")
+		}
+		return int32(n), fmt.Sprintf("https://github.com/owner/repo/pull/%d", n), nil
+	}
+	u, err := url.Parse(ref)
+	if err != nil || u.Host == "" {
+		return 0, "", fmt.Errorf("invalid PR URL")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 4 || parts[2] != "pull" {
+		return 0, "", fmt.Errorf("invalid PR URL")
+	}
+	n, err := strconv.ParseInt(parts[3], 10, 32)
+	if err != nil || n <= 0 {
+		return 0, "", fmt.Errorf("invalid PR number")
+	}
+	return int32(n), fmt.Sprintf("https://%s/%s/%s/pull/%d", u.Host, parts[0], parts[1], n), nil
 }
 
 func (m *MockDaemon) StopSession(context.Context, *connect.Request[pb.StopSessionRequest]) (*connect.Response[pb.StopSessionResponse], error) {

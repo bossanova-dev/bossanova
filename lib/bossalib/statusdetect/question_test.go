@@ -966,3 +966,207 @@ func TestLastNLines_LeadingNewline_n1(t *testing.T) {
 		t.Errorf("LastNLines(\"\\nx\", 1) = %q, want %q", got, want)
 	}
 }
+
+// TestCountConsecutiveNumberedOptions_NewlineAtIndexZero covers the boundary
+// mutation on question.go:180 (`if nl < 0` → `nl <= 0`). When data starts
+// with '\n' the first IndexByte returns nl==0. The unmutated code must take
+// the else branch (line = data[:0] = "", advance past the newline) and treat
+// it as a blank line to skip. The mutant `nl <= 0` swallows the ENTIRE input
+// as one line, so the numbered options that follow are never parsed and the
+// count collapses to 0.
+func TestCountConsecutiveNumberedOptions_NewlineAtIndexZero(t *testing.T) {
+	data := []byte("\n  1. first\n  2. second\n  3. third\n")
+	count, broken := countConsecutiveNumberedOptions(data)
+	if broken {
+		t.Errorf("should not be broken by marker, got broken=true")
+	}
+	if count != 3 {
+		t.Errorf("count = %d, want 3 (leading '\\n' is a blank line, options follow)", count)
+	}
+}
+
+// TestCountConsecutiveNumberedOptions_ColumnZeroNonOption covers the
+// CONDITIONALS_NEGATION mutation on question.go:199
+// (`if line[0] != ' ' && line[0] != '\t'`). A non-blank, non-marker,
+// non-option line at column 0 must END the run (return), while an indented
+// continuation line must be ALLOWED (continue). Both sides are asserted so a
+// flipped condition is caught either way.
+func TestCountConsecutiveNumberedOptions_ColumnZeroNonOption(t *testing.T) {
+	// Column-0 prose line after the first option terminates the run: count==1.
+	endByColumnZero := []byte("  1. first\nprose at column zero\n  2. second\n")
+	count, broken := countConsecutiveNumberedOptions(endByColumnZero)
+	if broken {
+		t.Errorf("column-0 line should not set brokenByMarker, got broken=true")
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (column-0 prose ends the run before option 2)", count)
+	}
+
+	// Indented continuation line between options is allowed: run continues to 2.
+	allowContinuation := []byte("  1. first\n     wrapped continuation text\n  2. second\n")
+	count, broken = countConsecutiveNumberedOptions(allowContinuation)
+	if broken {
+		t.Errorf("indented continuation should not set brokenByMarker, got broken=true")
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2 (indented continuation allowed between options)", count)
+	}
+}
+
+// TestCountConsecutiveNumberedOptions_MultiDigit covers the ARITHMETIC_BASE
+// mutation on question.go:207 (`n = n*10 + int(c-'0')`). A run reaching a
+// two-digit option (10.) requires base-10 accumulation: parsing "10" must
+// yield exactly 10 so the strictly-increasing check (n == prev+1) passes.
+// The mutant `n+10` (or other swaps) parses "10" as 1+0=1, which breaks the
+// run at option 10, collapsing the count to 9.
+func TestCountConsecutiveNumberedOptions_MultiDigit(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 10; i++ {
+		b.WriteString("  ")
+		b.WriteString(itoa(i))
+		b.WriteString(". option\n")
+	}
+	count, broken := countConsecutiveNumberedOptions([]byte(b.String()))
+	if broken {
+		t.Errorf("should not be broken by marker, got broken=true")
+	}
+	if count != 10 {
+		t.Errorf("count = %d, want 10 (two-digit option requires n*10 base-10 parse)", count)
+	}
+}
+
+// TestHasQuestionPrompt_FirstSelectorNoOptions covers the INVERT_NEGATIVES and
+// ARITHMETIC_BASE mutations on question.go:298
+// (`selectorRe.FindAllIndex(tail, -1)`). The `-1` means "find ALL selector
+// matches"; mutating it to `1` (invert/arith) makes FindAllIndex return only
+// the FIRST match.
+//
+// Here the FIRST "❯ " selector (the user's prompt history) is immediately
+// followed by a Claude marker line (⏺), so it has ZERO valid option lines
+// after it. The LAST "❯ " selector is the real AskUserQuestion with options.
+//
+//   - Real code iterates newest-first over ALL matches, finds the last selector
+//     with options → true.
+//   - Mutant (only the first match) sees the user-prompt selector with no
+//     options (run broken immediately by the ⏺ marker) → false.
+//
+// This distinguishes the mutant from real, unlike the prior multi-selector
+// fixture whose first selector happened to have a passing option run.
+func TestHasQuestionPrompt_FirstSelectorNoOptions(t *testing.T) {
+	// The "?" is mid-sentence (no line ends with "?") so Patterns 3 and 4
+	// cannot fire; there is no ☐ header (Pattern 2 out) and no footer
+	// (Pattern 0 out). Pattern 1 is the only path that can return true.
+	//
+	// First selector "❯ first?" is immediately followed by a ⏺ marker line,
+	// so countConsecutiveOptionLines aborts (brokenByMarker) with zero options.
+	// The last selector has two indented option lines.
+	data := "❯ first? then text\n" +
+		"⏺ marker right after the first selector\n" +
+		"\n" +
+		"Which one? pick:\n" +
+		"\n" +
+		"  ❯ Refactor the API\n" +
+		"    Move all handlers to /v2\n" +
+		"    Use the new error helper\n"
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question on the LAST selector with options when the first selector has none (FindAllIndex -1 -> all matches)")
+	}
+}
+
+// TestHasQuestionPrompt_Pattern1ExactlyOneOptionIsolated covers the boundary
+// mutation on question.go:307 (`if !broken && count >= 1` → `count > 1`).
+// Pattern 1 must fire when the selector is followed by EXACTLY ONE indented
+// option line. The mutant `count > 1` would require two options and miss it.
+//
+// The "?" is mid-sentence (no line ends with "?"), so trailingQuestionRe
+// (Patterns 3 and 4) cannot fire. There is no ☐ header (Pattern 2 out) and no
+// AskUserQuestion footer (Pattern 0 out). Pattern 1 is therefore the ONLY path
+// that can return true, isolating the count>=1 boundary.
+func TestHasQuestionPrompt_Pattern1ExactlyOneOptionIsolated(t *testing.T) {
+	data := "What now? Pick below:\n" +
+		"\n" +
+		"  ❯ The single option\n" +
+		"    only option detail line\n" +
+		"done\n"
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect Pattern 1 with exactly one option line after the selector (count >= 1 boundary)")
+	}
+}
+
+// TestHasQuestionPrompt_Pattern3MarkerAtIndexZeroShortCircuits covers the
+// boundary mutation on question.go:342 (`if idx := ...; idx >= 0` → `idx > 0`).
+// The ⏺ response marker sits at byte index 0. The text after it ends with a
+// trailing "?", so Pattern 3 fires and returns true. The ONLY trailing-"?"
+// line is the user's prompt history ("❯ ...?"), which Pattern 4 strips out.
+//
+//   - Real code: idx==0 satisfies `idx >= 0`, Pattern 3 matches the trailing
+//     "?" in afterMarker (Pattern 3 does NOT strip user-prompt lines) → true.
+//   - Mutant `idx > 0`: idx==0 fails, Pattern 3 is skipped, Pattern 4 strips the
+//     "❯ ...?" line leaving no trailing "?" → false.
+//
+// The differing result (true vs false) kills the boundary mutant, which the
+// existing index-zero test could not because Pattern 4 masked it.
+func TestHasQuestionPrompt_Pattern3MarkerAtIndexZeroShortCircuits(t *testing.T) {
+	data := "⏺ Following up on your last message.\n" +
+		"❯ does this approach work for you?\n"
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect question via Pattern 3 when ⏺ marker is at index 0 (idx >= 0 boundary)")
+	}
+}
+
+// itoa is a tiny local helper to avoid an strconv import churn in tests.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+// TestHasQuestionPrompt_Pattern2ExactlyTwoNumberedOptions covers the boundary
+// mutation on question.go:332 (`if count >= 2` → `count > 2`). Pattern 2
+// requires a ☐ header, a "?" in the question region, and a strictly-increasing
+// numbered-option run. With EXACTLY two options the unmutated code returns true
+// (2 >= 2); the mutant `count > 2` would miss it.
+//
+// The "?" is placed only in the question region (not at any line end) and a ⏺
+// marker with no trailing "?" is appended so Pattern 3 short-circuits to false
+// and Pattern 4's trailing-? cannot fire -- isolating Pattern 2 as the only
+// path that can return true.
+func TestHasQuestionPrompt_Pattern2ExactlyTwoNumberedOptions(t *testing.T) {
+	data := strings.Repeat("─", 80) + "\n" +
+		" ☐ Pick approach\n" +
+		"\n" +
+		"Which approach? Either works fine here.\n" +
+		"\n" +
+		" 1. First approach with details\n" +
+		" 2. Second approach with details\n" +
+		"\n" +
+		"⏺ Working… (2s)\n"
+	if !HasQuestionPrompt([]byte(data)) {
+		t.Error("should detect Pattern 2 card with exactly 2 numbered options (count >= 2 boundary)")
+	}
+}
+
+// TestHasQuestionPrompt_Pattern2OneNumberedOptionNegative is the lower-side
+// guard for the same boundary at question.go:332: a single numbered option
+// (count == 1) must NOT trigger Pattern 2. Combined with the test above this
+// pins the `>= 2` threshold exactly. The trailing ⏺ with no "?" keeps Patterns
+// 3 and 4 from masking the result.
+func TestHasQuestionPrompt_Pattern2OneNumberedOptionNegative(t *testing.T) {
+	data := strings.Repeat("─", 80) + "\n" +
+		" ☐ Pick approach\n" +
+		"\n" +
+		"Which approach? Only one listed.\n" +
+		"\n" +
+		" 1. The only approach with details\n" +
+		"\n" +
+		"⏺ Working… (2s)\n"
+	if HasQuestionPrompt([]byte(data)) {
+		t.Error("should NOT detect Pattern 2 with only 1 numbered option (count >= 2 lower boundary)")
+	}
+}

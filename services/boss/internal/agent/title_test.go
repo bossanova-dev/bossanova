@@ -433,6 +433,99 @@ func TestParseSessionMeta_LargeJSONLine(t *testing.T) {
 	}
 }
 
+func TestParseSessionMeta_BufferCapacityBoundary(t *testing.T) {
+	// Pins the scanner buffer capacity contract on title.go:65:
+	//   scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	// The effective max token size must be 256*1024 = 262144 bytes.
+	//
+	// A JSONL line whose total length sits just under that cap must scan
+	// successfully; one at/over the cap must be dropped. This asserts the
+	// EXACT 262144 product so any arithmetic swap that lowers the effective
+	// cap (e.g. 256*1024 -> 256+1024 = 1280, or -> 256/1024 = 0) would cause
+	// the just-under-cap line to be dropped and the title to come back empty.
+	//
+	// NOTE: Go's bufio.Scanner uses max(len(initialBuffer), maxArg) as the
+	// effective cap, so swapping a single one of the two operators while the
+	// other operand stays at 262144 leaves behavior unchanged. Those single
+	// mutants are therefore equivalent and not killable by a black-box test;
+	// this test guards the overall 262144 contract against regressions that
+	// reduce both the buffer and the cap.
+	const cap = 256 * 1024 // 262144
+
+	// JSON framing overhead for the line below, measured so the encoded line
+	// lands just under the 262144-byte cap.
+	t.Run("just under cap scans", func(t *testing.T) {
+		dir := t.TempDir()
+		id := "under-cap"
+		// Encoded line = {"type":"user","message":{"role":"user","content":"<xs>"}}\n
+		// Keep total well under cap while still far above the 64KB default
+		// buffer and above any reduced-cap mutant (1280 / 0).
+		content := strings.Repeat("x", cap-1024)
+		writeJSONL(t, filepath.Join(dir, id+".jsonl"),
+			map[string]any{
+				"type":    "user",
+				"message": map[string]any{"role": "user", "content": content},
+			},
+		)
+		got := chatTitleInDir(dir, id)
+		if len(got) != maxSummaryLen {
+			t.Errorf("len=%d, want %d (line ~%d bytes must scan within %d cap)",
+				len(got), maxSummaryLen, len(content), cap)
+		}
+		if !strings.HasSuffix(got, "...") {
+			t.Errorf("got %q, want truncated content with '...'", got)
+		}
+	})
+
+	t.Run("over cap dropped", func(t *testing.T) {
+		dir := t.TempDir()
+		id := "over-cap"
+		// Encoded line exceeds 262144 bytes -> scanner returns token-too-long,
+		// the line is skipped, and no title is produced.
+		content := strings.Repeat("x", cap+1024)
+		writeJSONL(t, filepath.Join(dir, id+".jsonl"),
+			map[string]any{
+				"type":    "user",
+				"message": map[string]any{"role": "user", "content": content},
+			},
+		)
+		got := chatTitleInDir(dir, id)
+		if got != "" {
+			t.Errorf("got %q, want empty (line over %d-byte cap must be dropped)", got, cap)
+		}
+	})
+}
+
+func TestFirstLine_BoundaryNewlinePositions(t *testing.T) {
+	// Guards the boundary check on title.go:124:
+	//   if idx := strings.IndexByte(s, '\n'); idx >= 0 { s = s[:idx] }
+	//
+	// CONDITIONALS_BOUNDARY would swap `idx >= 0` for `idx > 0`. The only
+	// value that distinguishes them is idx == 0 (a leading newline). Because
+	// firstLine calls strings.TrimSpace(s) first, a leading newline is always
+	// stripped, so idx can never be 0 in this function -- making the >= / >
+	// mutant equivalent. These cases pin the surrounding behavior: a newline
+	// at position >0 truncates, and no newline leaves the string intact.
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "no newline", input: "only line", want: "only line"},
+		{name: "newline at position 1", input: "a\nb", want: "a"},
+		{name: "newline immediately after trimmed start", input: "  z\nrest", want: "z"},
+		{name: "trailing newline only", input: "tail\n", want: "tail"},
+		{name: "leading newline is trimmed not truncated", input: "\nkept", want: "kept"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstLine(tt.input); got != tt.want {
+				t.Errorf("firstLine(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseSessionMeta_LoopIncrement(t *testing.T) {
 	// Tests that the loop counter increments forward (i++), not backward (i--).
 	// Catches mutation: i++ changed to i--.

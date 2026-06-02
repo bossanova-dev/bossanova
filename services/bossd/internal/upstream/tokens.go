@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/99designs/keyring"
+	"github.com/recurser/bossalib/authlock"
 	"github.com/recurser/bossalib/keyringutil"
 )
 
@@ -35,6 +36,11 @@ type keychainTokens struct {
 	AccessToken  string    `json:"access_token"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	Email        string    `json:"email,omitempty"`
+}
+
+func (t *keychainTokens) valid() bool {
+	return t != nil && t.AccessToken != "" && time.Now().Before(t.ExpiresAt)
 }
 
 // defaultWorkOSClientID is the production WorkOS client used when
@@ -47,32 +53,90 @@ const defaultWorkOSClientID = "client_01KP805YXXAMZSN2YB4NGXS9XB"
 // with no flag plumbing, so allowInsecure is hard-wired to false here — a
 // broken environment should surface a real error rather than silently
 // reverting to the hardcoded passphrase.
-func openKeyring() (keyring.Keyring, error) {
-	return keyring.Open(keyring.Config{
-		ServiceName:              "bossanova",
-		KeychainTrustApplication: true,
-		FileDir:                  "~/.config/bossanova/keyring",
-		FilePasswordFunc:         keyring.PromptFunc(keyringutil.New(false)),
-		// Optional override via BOSS_KEYRING_BACKEND. Stays in lock-step
-		// with the boss CLI so a developer who exports the env var sees
-		// the same backend on both processes.
-		AllowedBackends: keyringutil.Backends(),
+var (
+	workOSRefreshHTTPClient = &http.Client{Timeout: 10 * time.Second}
+	workOSAuthenticateURL   = "https://api.workos.com/user_management/authenticate"
+	openKeyring             = func() (keyring.Keyring, error) {
+		return keyring.Open(keyring.Config{
+			ServiceName:              "bossanova",
+			KeychainTrustApplication: true,
+			FileDir:                  "~/.config/bossanova/keyring",
+			FilePasswordFunc:         keyring.PromptFunc(keyringutil.New(false)),
+			// Optional override via BOSS_KEYRING_BACKEND. Stays in lock-step
+			// with the boss CLI so a developer who exports the env var sees
+			// the same backend on both processes.
+			AllowedBackends: keyringutil.Backends(),
+		})
+	}
+	refreshWorkOSTokenFn = refreshWorkOSToken
+	acquireRefreshLock   = func(ctx context.Context) (refreshUnlocker, error) {
+		return authlock.AcquireWorkOSRefreshLock(ctx)
+	}
+	loadKeychainTokensFn   = loadKeychainTokens
+	saveKeychainTokensFn   = saveKeychainTokens
+	removeKeychainTokensFn = removeKeychainTokens
+)
+
+type refreshUnlocker interface {
+	Unlock() error
+}
+
+func loadKeychainTokens() (*keychainTokens, error) {
+	ring, err := openKeyring()
+	if err != nil {
+		return nil, err
+	}
+	item, err := ring.Get("workos-tokens")
+	if err != nil {
+		return nil, err
+	}
+	var tokens keychainTokens
+	if err := json.Unmarshal(item.Data, &tokens); err != nil {
+		return nil, err
+	}
+	return &tokens, nil
+}
+
+func saveKeychainTokens(tokens *keychainTokens) error {
+	ring, err := openKeyring()
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(tokens)
+	if err != nil {
+		return err
+	}
+	return ring.Set(keyring.Item{
+		Key:         "workos-tokens",
+		Data:        data,
+		Label:       "Bossanova",
+		Description: "WorkOS authentication tokens",
 	})
 }
 
+func removeKeychainTokens() error {
+	ring, err := openKeyring()
+	if err != nil {
+		return err
+	}
+	return ring.Remove("workos-tokens")
+}
+
 // refreshWorkOSToken exchanges a refresh token for a new access token.
-func refreshWorkOSToken(clientID, refreshToken string) (*keychainTokens, error) {
+func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*keychainTokens, error) {
 	data := url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {clientID},
 		"refresh_token": {refreshToken},
 	}
 
-	resp, err := http.Post(
-		"https://api.workos.com/user_management/authenticate",
-		"application/x-www-form-urlencoded",
-		strings.NewReader(data.Encode()),
-	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, workOSAuthenticateURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("build refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := workOSRefreshHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +180,7 @@ func refreshWorkOSToken(clientID, refreshToken string) (*keychainTokens, error) 
 		AccessToken:  result.AccessToken,
 		RefreshToken: result.RefreshToken,
 		ExpiresAt:    time.Now().Add(time.Duration(result.ExpiresIn) * time.Second),
+		Email:        result.User.Email,
 	}, nil
 }
 
@@ -156,22 +221,12 @@ func (p *KeychainTokenProvider) Reload() {
 // loadFromKeychain snapshots the keychain entry into the in-memory cache.
 // Safe to call repeatedly; no-op when the entry is missing.
 func (p *KeychainTokenProvider) loadFromKeychain() {
-	ring, err := openKeyring()
+	tokens, err := loadKeychainTokensFn()
 	if err != nil {
-		return
-	}
-	item, err := ring.Get("workos-tokens")
-	if err != nil {
-		return
-	}
-	var tokens keychainTokens
-	if err := json.Unmarshal(item.Data, &tokens); err != nil {
 		return
 	}
 	p.mu.Lock()
-	p.accessToken = tokens.AccessToken
-	p.refreshToken = tokens.RefreshToken
-	p.expiresAt = tokens.ExpiresAt
+	p.applyTokensLocked(tokens)
 	p.mu.Unlock()
 }
 
@@ -189,14 +244,14 @@ func (p *KeychainTokenProvider) ExpiresAt() time.Time {
 	return p.expiresAt
 }
 
-// Refresh implements TokenProvider.Refresh by invoking the WorkOS
-// refresh flow and persisting the new tokens back to the keychain. Errors
-// from the keychain write are swallowed (the refreshed token is still
-// usable in memory for this daemon's lifetime).
-func (p *KeychainTokenProvider) Refresh(_ context.Context) (string, error) {
+// Refresh implements TokenProvider.Refresh by invoking the WorkOS refresh flow
+// under the shared refresh lock and persisting the new tokens back to keychain.
+func (p *KeychainTokenProvider) Refresh(ctx context.Context) (tok string, retErr error) {
 	p.mu.RLock()
+	originalAccess := p.accessToken
 	refreshTok := p.refreshToken
 	p.mu.RUnlock()
+	originalRefreshTok := refreshTok
 
 	clientID := os.Getenv(p.clientIDEnv)
 	if clientID == "" {
@@ -206,50 +261,93 @@ func (p *KeychainTokenProvider) Refresh(_ context.Context) (string, error) {
 		return "", fmt.Errorf("refresh not configured (empty refresh token or %s)", p.clientIDEnv)
 	}
 
-	refreshed, err := refreshWorkOSToken(clientID, refreshTok)
+	lockCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	lock, err := acquireRefreshLock(lockCtx)
 	if err != nil {
-		// invalid_grant means the user's WorkOS session has terminally
-		// ended — there is no recovery short of `boss login`. Clear the
-		// in-memory cache and delete the keychain entry so the boss
-		// CLI's Status() flips to "logged out" and the TUI menu
-		// switches from [l]ogout to [l]ogin. Other refresh failures
-		// (network, 5xx) leave the keychain alone — those are
-		// transient and the next attempt may succeed.
-		if errors.Is(err, ErrAuthExpired) {
-			p.mu.Lock()
-			p.accessToken = ""
-			p.refreshToken = ""
-			p.expiresAt = time.Time{}
-			p.mu.Unlock()
-			if ring, ringErr := openKeyring(); ringErr == nil {
-				_ = ring.Remove("workos-tokens")
+		return "", fmt.Errorf("acquire refresh lock: %w", err)
+	}
+	defer func() {
+		if unlockErr := lock.Unlock(); unlockErr != nil {
+			retErr = errors.Join(retErr, unlockErr)
+		}
+	}()
+
+	latest, err := loadKeychainTokensFn()
+	if err == nil {
+		p.mu.Lock()
+		p.applyTokensLocked(latest)
+		p.mu.Unlock()
+		if latest.valid() && (latest.RefreshToken != originalRefreshTok || latest.AccessToken != originalAccess) {
+			return latest.AccessToken, nil
+		}
+		if latest.RefreshToken != "" {
+			refreshTok = latest.RefreshToken
+		}
+	}
+
+	for attempts := 0; attempts < 2; attempts++ {
+		requestCtx, requestCancel := context.WithTimeout(ctx, 10*time.Second)
+		refreshed, err := refreshWorkOSTokenFn(requestCtx, clientID, refreshTok)
+		requestCancel()
+		if err != nil {
+			if errors.Is(err, ErrAuthExpired) {
+				reloaded, loadErr := loadKeychainTokensFn()
+				if loadErr == nil && reloaded.RefreshToken != "" && reloaded.RefreshToken != refreshTok {
+					p.mu.Lock()
+					p.applyTokensLocked(reloaded)
+					p.mu.Unlock()
+					if reloaded.valid() {
+						return reloaded.AccessToken, nil
+					}
+					refreshTok = reloaded.RefreshToken
+					continue
+				}
+				p.clear()
+				return "", errors.Join(err, removeKeychainTokensFn())
 			}
+			return "", err
 		}
-		return "", err
-	}
-	if refreshed.RefreshToken == "" {
-		refreshed.RefreshToken = refreshTok
+		if refreshed.RefreshToken == "" {
+			refreshed.RefreshToken = refreshTok
+		}
+		if latest != nil && refreshed.Email == "" {
+			refreshed.Email = latest.Email
+		}
+		current, loadErr := loadKeychainTokensFn()
+		if loadErr == nil && current.RefreshToken != "" && current.RefreshToken != refreshTok {
+			p.mu.Lock()
+			p.applyTokensLocked(current)
+			p.mu.Unlock()
+			if current.valid() {
+				return current.AccessToken, nil
+			}
+			latest = current
+			refreshTok = current.RefreshToken
+			continue
+		}
+		p.mu.Lock()
+		p.applyTokensLocked(refreshed)
+		p.mu.Unlock()
+		if err := saveKeychainTokensFn(refreshed); err != nil {
+			return refreshed.AccessToken, fmt.Errorf("save refreshed tokens: %w", err)
+		}
+		return refreshed.AccessToken, nil
 	}
 
+	return "", ErrAuthExpired
+}
+
+func (p *KeychainTokenProvider) applyTokensLocked(tokens *keychainTokens) {
+	p.accessToken = tokens.AccessToken
+	p.refreshToken = tokens.RefreshToken
+	p.expiresAt = tokens.ExpiresAt
+}
+
+func (p *KeychainTokenProvider) clear() {
 	p.mu.Lock()
-	p.accessToken = refreshed.AccessToken
-	p.refreshToken = refreshed.RefreshToken
-	p.expiresAt = refreshed.ExpiresAt
+	p.accessToken = ""
+	p.refreshToken = ""
+	p.expiresAt = time.Time{}
 	p.mu.Unlock()
-
-	// Persist to keychain best-effort. A failure here doesn't block the
-	// stream — the in-memory cache still holds the fresh token until the
-	// daemon restarts.
-	if ring, err := openKeyring(); err == nil {
-		if data, err := json.Marshal(refreshed); err == nil {
-			_ = ring.Set(keyring.Item{
-				Key:         "workos-tokens",
-				Data:        data,
-				Label:       "Bossanova",
-				Description: "WorkOS authentication tokens",
-			})
-		}
-	}
-
-	return refreshed.AccessToken, nil
 }

@@ -192,6 +192,9 @@ func (s *stubRepoClient) RemoveSession(context.Context, string) error { panic("u
 func (s *stubRepoClient) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *stubRepoClient) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *stubRepoClient) ArchiveSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }

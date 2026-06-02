@@ -8,7 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 
@@ -21,6 +27,11 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	gitpkg "github.com/recurser/bossd/internal/git"
 	"github.com/recurser/bossd/internal/tmux"
+)
+
+var (
+	conventionalCommitPrefixRE = regexp.MustCompile(`^[[:alpha:]][[:alnum:]-]*(\([^)]*\))?!?:[[:space:]]+`)
+	prNumberPrefixRE           = regexp.MustCompile(`^\[#[0-9]+\][[:space:]]+`)
 )
 
 // PollArmer arms a poll-fallback goroutine that drives an agent run to
@@ -792,11 +803,12 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 }
 
 func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) error {
+	title := l.draftPRTitle(ctx, session)
 	prInfo, err := l.provider.CreateDraftPR(ctx, vcs.CreatePROpts{
 		RepoPath:   repo.OriginURL,
 		HeadBranch: session.BranchName,
 		BaseBranch: session.BaseBranch,
-		Title:      session.Title,
+		Title:      title,
 		Body:       session.Plan,
 		Draft:      true,
 	})
@@ -831,10 +843,66 @@ func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, 
 	return nil
 }
 
+func (l *Lifecycle) draftPRTitle(ctx context.Context, session *models.Session) string {
+	if session.CronJobID == nil || *session.CronJobID == "" {
+		return session.Title
+	}
+
+	subject, err := l.worktrees.LatestCommitSubject(ctx, session.WorktreePath)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Str("worktree", session.WorktreePath).
+			Msg("failed to read latest commit subject for cron PR title")
+		return session.Title
+	}
+	if strings.TrimSpace(subject) == "" {
+		return session.Title
+	}
+	return normalizeCronPRTitle(subject)
+}
+
+func normalizeCronPRTitle(subject string) string {
+	title := strings.TrimSpace(subject)
+	if title == "" {
+		return title
+	}
+
+	for {
+		next := conventionalCommitPrefixRE.ReplaceAllString(title, "")
+		next = prNumberPrefixRE.ReplaceAllString(strings.TrimSpace(next), "")
+		next = strings.TrimSpace(next)
+		if next == title {
+			break
+		}
+		title = next
+	}
+	if title == "" {
+		return strings.TrimSpace(subject)
+	}
+
+	first, size := utf8.DecodeRuneInString(title)
+	if first == utf8.RuneError && size == 0 {
+		return title
+	}
+	return string(unicode.ToUpper(first)) + title[size:]
+}
+
 func (l *Lifecycle) attachExistingPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) error {
+	found, err := l.attachOpenPRForBranch(ctx, sessionID, session, repo)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("existing PR for branch %q not found", session.BranchName)
+	}
+	return nil
+}
+
+func (l *Lifecycle) attachOpenPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) (bool, error) {
 	prs, err := l.provider.ListOpenPRs(ctx, repo.OriginURL)
 	if err != nil {
-		return fmt.Errorf("list open PRs: %w", err)
+		return false, fmt.Errorf("list open PRs: %w", err)
 	}
 
 	for _, pr := range prs {
@@ -842,30 +910,36 @@ func (l *Lifecycle) attachExistingPRForBranch(ctx context.Context, sessionID str
 			continue
 		}
 
-		prURL, err := prURLForRepo(repo.OriginURL, pr.Number)
-		if err != nil {
-			return err
+		if err := l.attachPRMetadata(ctx, sessionID, session, repo, pr.Number); err != nil {
+			return false, err
 		}
-		prNumber := pr.Number
-		prNumberPtr := &prNumber
-		prURLPtr := &prURL
-		updated, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-			PRNumber: &prNumberPtr,
-			PRURL:    &prURLPtr,
-		})
-		if err != nil {
-			return fmt.Errorf("update PR info: %w", err)
-		}
-
-		session.PRNumber = updated.PRNumber
-		session.PRURL = updated.PRURL
-		if err := l.clearDraftPRBlockedReason(ctx, sessionID, session); err != nil {
-			return err
-		}
-		return nil
+		return true, nil
 	}
 
-	return fmt.Errorf("existing PR for branch %q not found", session.BranchName)
+	return false, nil
+}
+
+func (l *Lifecycle) attachPRMetadata(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo, prNumber int) error {
+	prURL, err := prURLForRepo(repo.OriginURL, prNumber)
+	if err != nil {
+		return err
+	}
+	prNumberPtr := &prNumber
+	prURLPtr := &prURL
+	updated, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+		PRNumber: &prNumberPtr,
+		PRURL:    &prURLPtr,
+	})
+	if err != nil {
+		return fmt.Errorf("update PR info: %w", err)
+	}
+
+	session.PRNumber = updated.PRNumber
+	session.PRURL = updated.PRURL
+	if err := l.clearDraftPRBlockedReason(ctx, sessionID, session); err != nil {
+		return err
+	}
+	return nil
 }
 
 func prURLForRepo(originURL string, prNumber int) (string, error) {
@@ -877,6 +951,122 @@ func prURLForRepo(originURL string, prNumber int) (string, error) {
 		return "", fmt.Errorf("construct PR URL: unsupported origin URL %q", originURL)
 	}
 	return fmt.Sprintf("https://github.com/%s/pull/%d", nwo, prNumber), nil
+}
+
+// LinkPR attaches an existing pull request to a session. It is intended as a
+// manual repair path for cron sessions whose agent already created a PR before
+// the Stop-hook finalize path ran.
+//
+// It assumes the session row still exists and does not guard against a
+// concurrent finalize that deletes a no-changes session: the two are not
+// serialized, so a link issued at the exact moment such a finalize deletes the
+// row will fail benignly on the row lookup or update rather than corrupt state.
+// In practice this path is used precisely because finalize already ran or
+// failed, so that window is negligible.
+func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*models.Session, error) {
+	prRef = strings.TrimSpace(prRef)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session ID is required")
+	}
+	if prRef == "" {
+		return nil, fmt.Errorf("PR number or URL is required")
+	}
+
+	sess, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+	repo, err := l.repos.Get(ctx, sess.RepoID)
+	if err != nil {
+		return nil, fmt.Errorf("get repo: %w", err)
+	}
+	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+		return nil, fmt.Errorf("resolve origin URL: %w", err)
+	}
+
+	prNumber, prURL, err := resolvePRReference(repo.OriginURL, prRef)
+	if err != nil {
+		return nil, err
+	}
+	if l.provider != nil {
+		if _, err := l.provider.GetPRStatus(ctx, repo.OriginURL, prNumber); err != nil {
+			return nil, fmt.Errorf("get PR status: %w", err)
+		}
+	}
+
+	prNumberPtr := &prNumber
+	prURLPtr := &prURL
+	updateParams := db.UpdateSessionParams{
+		PRNumber: &prNumberPtr,
+		PRURL:    &prURLPtr,
+	}
+	if sess.State == machine.Finalizing || sess.State == machine.Blocked {
+		awaitingState := int(machine.AwaitingChecks)
+		updateParams.State = &awaitingState
+	}
+	if sess.State == machine.Blocked {
+		var cleared *string
+		updateParams.BlockedReason = &cleared
+	}
+	updated, err := l.sessions.Update(ctx, sessionID, updateParams)
+	if err != nil {
+		return nil, fmt.Errorf("update PR info: %w", err)
+	}
+	if err := l.clearDraftPRBlockedReason(ctx, sessionID, updated); err != nil {
+		return nil, err
+	}
+
+	if updated.CronJobID != nil && *updated.CronJobID != "" && l.cronJobs != nil {
+		recordedID := updated.ID
+		if err := l.cronJobs.UpdateLastRun(ctx, *updated.CronJobID, db.UpdateCronJobLastRunParams{
+			SessionID: &recordedID,
+			RanAt:     time.Now(),
+			Outcome:   models.CronJobOutcomePRCreated,
+		}); err != nil {
+			return nil, fmt.Errorf("update cron last run: %w", err)
+		}
+	}
+
+	l.logger.Info().
+		Str("session", sessionID).
+		Int("pr", prNumber).
+		Msg("linked existing PR to session")
+
+	return updated, nil
+}
+
+func resolvePRReference(originURL, prRef string) (int, string, error) {
+	if prNumber, err := strconv.Atoi(prRef); err == nil {
+		if prNumber <= 0 {
+			return 0, "", fmt.Errorf("PR number must be positive")
+		}
+		prURL, err := prURLForRepo(originURL, prNumber)
+		if err != nil {
+			return 0, "", err
+		}
+		return prNumber, prURL, nil
+	}
+
+	u, err := url.Parse(prRef)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return 0, "", fmt.Errorf("PR reference must be a PR number or URL")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 4 || parts[2] != "pull" {
+		return 0, "", fmt.Errorf("PR URL must look like https://github.com/owner/repo/pull/123")
+	}
+	prNumber, err := strconv.Atoi(parts[3])
+	if err != nil || prNumber <= 0 {
+		return 0, "", fmt.Errorf("PR URL has invalid number %q", parts[3])
+	}
+
+	expectedRepoURL := vcs.NormalizeRepoURL(originURL)
+	actualRepoURL := fmt.Sprintf("https://%s/%s/%s", u.Hostname(), parts[0], parts[1])
+	if expectedRepoURL == "" || !strings.EqualFold(expectedRepoURL, actualRepoURL) {
+		return 0, "", fmt.Errorf("PR URL repo %s/%s does not match session repo", parts[0], parts[1])
+	}
+
+	return prNumber, fmt.Sprintf("https://%s/%s/%s/pull/%d", u.Host, parts[0], parts[1], prNumber), nil
 }
 
 // EnsurePR pushes the session's branch and creates a draft PR if one does

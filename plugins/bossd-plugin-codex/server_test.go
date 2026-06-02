@@ -213,6 +213,24 @@ func TestBuildInteractiveCommandEmbedsStartupCommand(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveCommandConvertsSlashStartupCommand(t *testing.T) {
+	s := newTestServer(t)
+
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:      "abc",
+		InitialCommand: "/bs-mutation-test",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if got, want := resp.Argv[len(resp.Argv)-1], "$bs-mutation-test"; got != want {
+		t.Fatalf("fresh command argv last = %q, want %q; argv=%v", got, want, resp.Argv)
+	}
+	if !resp.ConsumesInitialInput {
+		t.Fatal("ConsumesInitialInput = false, want true")
+	}
+}
+
 func TestBuildInteractiveCommandEmbedsStartupPromptOnResume(t *testing.T) {
 	s := newTestServer(t)
 

@@ -1,0 +1,122 @@
+//go:build e2e
+
+package main
+
+import (
+	"context"
+	"errors"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+)
+
+type e2eCloudAccessClient struct {
+	mu            sync.Mutex
+	states        []pb.CloudAccessState
+	refreshIndex  int
+	checkoutURL   string
+	portalURL     string
+	checkoutError bool
+}
+
+func resolveE2ECloudAccessClient() cloudAccessClient {
+	raw := strings.TrimSpace(os.Getenv("BOSS_CLOUD_ACCESS_E2E_SEQUENCE"))
+	if raw == "" {
+		return nil
+	}
+	checkoutURL := strings.TrimSpace(os.Getenv("BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL"))
+	if checkoutURL == "" {
+		checkoutURL = "https://billing.example.test/checkout"
+	}
+	portalURL := strings.TrimSpace(os.Getenv("BOSS_CLOUD_ACCESS_E2E_PORTAL_URL"))
+	if portalURL == "" {
+		portalURL = "https://billing.example.test/portal"
+	}
+	return &e2eCloudAccessClient{
+		states:        parseE2ECloudAccessStates(raw),
+		checkoutURL:   checkoutURL,
+		portalURL:     portalURL,
+		checkoutError: os.Getenv("BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR") == "1",
+	}
+}
+
+func parseE2ECloudAccessStates(raw string) []pb.CloudAccessState {
+	var states []pb.CloudAccessState
+	for _, part := range strings.Split(raw, ",") {
+		switch strings.TrimSpace(part) {
+		case "":
+			continue
+		case "active":
+			states = append(states, pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE)
+		case "needs_subscription":
+			states = append(states, pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION)
+		case "pending_entitlement_refresh":
+			states = append(states, pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH)
+		case "billing_unavailable":
+			states = append(states, pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE)
+		case "error":
+			states = append(states, pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED)
+		}
+	}
+	if len(states) == 0 {
+		return []pb.CloudAccessState{pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE}
+	}
+	return states
+}
+
+func (c *e2eCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudAccessStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state := pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE
+	if len(c.states) > 0 {
+		state = c.states[0]
+	}
+	if state == pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED {
+		return nil, errors.New("e2e cloud access status error")
+	}
+	return &pb.CloudAccessStatus{State: state, CanCreateCheckout: true}, nil
+}
+
+func (c *e2eCloudAccessClient) RefreshCloudEntitlements(context.Context) (*pb.CloudAccessStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state := pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE
+	if len(c.states) > 0 {
+		if c.refreshIndex < len(c.states)-1 {
+			c.refreshIndex++
+		}
+		state = c.states[c.refreshIndex]
+	}
+	if state == pb.CloudAccessState_CLOUD_ACCESS_STATE_UNSPECIFIED {
+		return nil, errors.New("e2e cloud access refresh error")
+	}
+	return &pb.CloudAccessStatus{State: state, CanCreateCheckout: true}, nil
+}
+
+func (c *e2eCloudAccessClient) CreateCheckoutSession(context.Context, string, string) (string, error) {
+	if c.checkoutError {
+		return "", errors.New("e2e checkout error")
+	}
+	return c.checkoutURL, nil
+}
+
+func (c *e2eCloudAccessClient) CreateBillingPortalSession(context.Context, string) (string, error) {
+	return c.portalURL, nil
+}
+
+func e2eCloudRefreshInterval() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL"))
+	if raw == "" {
+		return 0
+	}
+	interval, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0
+	}
+	return interval
+}

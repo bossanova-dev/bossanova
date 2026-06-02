@@ -4,8 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/auth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -50,6 +52,34 @@ func TestLoginModelRunsAfterAuthHookOnSuccess(t *testing.T) {
 	batch[1]()
 	if !called {
 		t.Fatal("after-auth hook was not called")
+	}
+}
+
+func TestLoginModelOpensVerificationURLThroughPackageHook(t *testing.T) {
+	openedURL := ""
+	originalOpen := openLoginVerificationURL
+	openLoginVerificationURL = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+	defer func() { openLoginVerificationURL = originalOpen }()
+
+	m := LoginModel{ctx: context.Background()}
+	updated, cmd := m.Update(deviceCodeMsg{resp: &auth.DeviceCodeResponse{
+		DeviceCode:              "device-code",
+		UserCode:                "USER-CODE",
+		VerificationURI:         "https://auth.example.test/device",
+		VerificationURIComplete: "https://auth.example.test/device?user_code=USER-CODE",
+		ExpiresIn:               int((5 * time.Second).Seconds()),
+		Interval:                1,
+	}})
+	m = updated.(LoginModel)
+
+	if cmd == nil {
+		t.Fatal("device code update returned nil cmd, want polling command")
+	}
+	if openedURL != m.verifyURL {
+		t.Fatalf("opened URL = %q, want %q", openedURL, m.verifyURL)
 	}
 }
 

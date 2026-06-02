@@ -79,6 +79,10 @@ const (
 	// the chat process still being attached. Default is 5 minutes — the user
 	// may have stepped away; we don't want to wait forever.
 	defaultIdleRepairThreshold = 5 * time.Minute
+
+	defaultPostRepairPollInterval = 2 * time.Second
+	defaultPostRepairWaitTimeout  = 30 * time.Minute
+	maxRepairLoopAttempts         = 5
 )
 
 // repairConfig holds parsed config for a repair workflow. Fields mirror
@@ -92,10 +96,31 @@ type repairConfig struct {
 	StuckTimeoutMinutes        int                  `json:"stuck_timeout_minutes,omitempty"`
 	ForceAdvanceTimeoutMinutes int                  `json:"force_advance_timeout_minutes,omitempty"`
 	IdleRepairThresholdMinutes int                  `json:"idle_repair_threshold_minutes,omitempty"`
+	PostRepairPollMilliseconds int                  `json:"post_repair_poll_milliseconds,omitempty"`
+	PostRepairWaitMilliseconds int                  `json:"post_repair_wait_milliseconds,omitempty"`
 }
 
 type repairSkillOverrides struct {
 	Repair string `json:"repair,omitempty"`
+}
+
+type postRepairStatus string
+
+const (
+	postRepairStatusClean       postRepairStatus = "clean"
+	postRepairStatusPending     postRepairStatus = "pending"
+	postRepairStatusNeedsRepair postRepairStatus = "needs_repair"
+	postRepairStatusUnknown     postRepairStatus = "unknown"
+)
+
+type postRepairAssessment struct {
+	Status                     postRepairStatus
+	Reason                     string
+	DisplayStatus              bossanovav1.DisplayStatus
+	HasFailures                bool
+	ReviewFingerprint          string
+	ReviewFingerprintAvailable bool
+	HeadSHA                    string
 }
 
 func (c *repairConfig) cooldownDuration() time.Duration {
@@ -169,6 +194,20 @@ func (c *repairConfig) idleRepairThreshold() time.Duration {
 		return time.Duration(c.IdleRepairThresholdMinutes) * time.Minute
 	}
 	return defaultIdleRepairThreshold
+}
+
+func (c *repairConfig) postRepairPollInterval() time.Duration {
+	if c != nil && c.PostRepairPollMilliseconds > 0 {
+		return time.Duration(c.PostRepairPollMilliseconds) * time.Millisecond
+	}
+	return defaultPostRepairPollInterval
+}
+
+func (c *repairConfig) postRepairWaitTimeout() time.Duration {
+	if c != nil && c.PostRepairWaitMilliseconds > 0 {
+		return time.Duration(c.PostRepairWaitMilliseconds) * time.Millisecond
+	}
+	return defaultPostRepairWaitTimeout
 }
 
 func parseRepairConfig(configJSON string) (*repairConfig, error) {
@@ -539,7 +578,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	repoName := info.RepoName
 	sessionTitle := info.SessionTitle
 	headSHA := info.HeadSHA
-	reviewFP, reviewFPOk := m.currentReviewFingerprint(repairCtx, info, displayStatus)
+	reviewFP, reviewFPOk := m.currentReviewFingerprint(repairCtx, info)
 	if headSHA != "" &&
 		info.LastRepairHeadSHA == headSHA &&
 		info.LastRepairDisplayStatus == displayStatus &&
@@ -677,7 +716,7 @@ func reviewFingerprint(comments []*bossanovav1.ReviewComment) (string, error) {
 	}
 	parts := make([]string, 0, len(comments))
 	for _, c := range comments {
-		if c == nil {
+		if c == nil || !isActionableReviewComment(c) {
 			continue
 		}
 		comment := reviewFingerprintComment{
@@ -709,6 +748,16 @@ func reviewFingerprint(comments []*bossanovav1.ReviewComment) (string, error) {
 	}
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+func isActionableReviewComment(c *bossanovav1.ReviewComment) bool {
+	switch c.GetState() {
+	case bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED,
+		bossanovav1.ReviewState_REVIEW_STATE_COMMENTED:
+		return true
+	default:
+		return false
+	}
 }
 
 // lookupSession resolves the daemon's view of the session and returns the
@@ -773,15 +822,29 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 	return sessionInfo{}
 }
 
-func (m *repairMonitor) currentReviewFingerprint(ctx context.Context, info sessionInfo, displayStatus bossanovav1.DisplayStatus) (string, bool) {
-	if displayStatus != bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED {
-		return "", true
+func sessionByID(sessions []*bossanovav1.Session, sessionID string) *bossanovav1.Session {
+	for _, sess := range sessions {
+		if sess.GetId() == sessionID {
+			return sess
+		}
 	}
+	return nil
+}
+
+// currentReviewFingerprint fetches a stable hash of the PR's actionable review
+// comments. It deliberately does NOT gate on display status: a PR agent can
+// leave a new review comment (with sub-comments) without the host flipping the
+// PR to REJECTED, so a green/PASSING PR can still have fresh feedback that must
+// re-trigger the repair loop. The returned bool reports whether the fingerprint
+// is authoritative (true even for zero comments, where the fingerprint is "");
+// false means we could not fetch it and callers should fall back to the legacy
+// head-SHA + display-status duplicate guard.
+func (m *repairMonitor) currentReviewFingerprint(ctx context.Context, info sessionInfo) (string, bool) {
 	if info.RepoOriginURL == "" || info.PRNumber == 0 {
 		m.logger.Warn().
 			Str("repo", info.RepoName).
 			Str("session_name", info.SessionTitle).
-			Msg("rejected session missing repo origin or PR number; using legacy duplicate-repair guard")
+			Msg("session missing repo origin or PR number; using legacy duplicate-repair guard")
 		return "", false
 	}
 	resp, err := m.host.GetReviewComments(ctx, &bossanovav1.GetReviewCommentsRequest{
@@ -830,6 +893,190 @@ func isRepairableState(state bossanovav1.SessionState, displayStatus bossanovav1
 		return displayStatus == bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT
 	default:
 		return false
+	}
+}
+
+func assessPostRepairStatus(session *bossanovav1.Session) postRepairAssessment {
+	if session == nil {
+		return postRepairAssessment{
+			Status: postRepairStatusUnknown,
+			Reason: "session missing",
+		}
+	}
+
+	assessment := postRepairAssessment{
+		DisplayStatus: session.GetDisplayStatus(),
+		HasFailures:   session.GetDisplayHasFailures(),
+		HeadSHA:       session.GetPrDisplayHeadSha(),
+	}
+
+	switch session.GetDisplayStatus() {
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING:
+		assessment.Status = postRepairStatusPending
+		assessment.Reason = "checks still running"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_APPROVED,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_REVIEW:
+		assessment.Status = postRepairStatusClean
+		assessment.Reason = "checks passed"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING:
+		assessment.Status = postRepairStatusNeedsRepair
+		assessment.Reason = "checks failed"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT:
+		assessment.Status = postRepairStatusNeedsRepair
+		assessment.Reason = "merge conflict"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED:
+		assessment.Status = postRepairStatusNeedsRepair
+		assessment.Reason = "review feedback"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED:
+		assessment.Status = postRepairStatusUnknown
+		assessment.Reason = "display status unspecified"
+	case bossanovav1.DisplayStatus_DISPLAY_STATUS_IDLE,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_DRAFT,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_MERGED,
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_CLOSED:
+		assessment.Status = postRepairStatusClean
+		assessment.Reason = "not repairable"
+	default:
+		assessment.Status = postRepairStatusUnknown
+		assessment.Reason = "display status unrecognized"
+	}
+
+	return assessment
+}
+
+func (a postRepairAssessment) withReviewComparison(
+	previousReviewFingerprint string,
+	previousReviewFingerprintAvailable bool,
+) postRepairAssessment {
+	// Both fingerprints must be authoritative to compare. An empty string is a
+	// valid value here (it means "fetched, zero actionable comments"), so we
+	// gate on availability rather than emptiness — otherwise a zero-comments to
+	// one-comment transition would be silently dropped.
+	if !previousReviewFingerprintAvailable || !a.ReviewFingerprintAvailable {
+		return a
+	}
+	if previousReviewFingerprint != a.ReviewFingerprint && a.ReviewFingerprint != "" {
+		a.Status = postRepairStatusNeedsRepair
+		a.Reason = "new review feedback"
+	}
+	return a
+}
+
+func (m *repairMonitor) waitForPostRepairAssessment(
+	ctx context.Context,
+	sessionID string,
+	currentDisplayStatus bossanovav1.DisplayStatus,
+	currentHasFailures bool,
+	currentHeadSHA string,
+	previousReviewFingerprint string,
+	previousReviewFingerprintAvailable bool,
+) postRepairAssessment {
+	m.mu.Lock()
+	pollInterval := m.config.postRepairPollInterval()
+	waitTimeout := m.config.postRepairWaitTimeout()
+	m.mu.Unlock()
+
+	waitCtx, cancel := context.WithTimeout(ctx, waitTimeout)
+	defer cancel()
+
+	cancelledAssessment := func(err error) postRepairAssessment {
+		if err == context.DeadlineExceeded {
+			return postRepairAssessment{
+				Status: postRepairStatusPending,
+				Reason: "post-repair checks did not settle before timeout",
+			}
+		}
+		return postRepairAssessment{
+			Status: postRepairStatusUnknown,
+			Reason: "post-repair wait cancelled: " + err.Error(),
+		}
+	}
+
+	for {
+		if err := waitCtx.Err(); err != nil {
+			return cancelledAssessment(err)
+		}
+
+		resp, err := m.host.ListSessions(waitCtx)
+		if err != nil {
+			if ctxErr := waitCtx.Err(); ctxErr != nil {
+				return cancelledAssessment(ctxErr)
+			}
+			return postRepairAssessment{
+				Status: postRepairStatusUnknown,
+				Reason: "list sessions failed: " + err.Error(),
+			}
+		}
+
+		sess := sessionByID(resp.GetSessions(), sessionID)
+		assessment := assessPostRepairStatus(sess)
+		// Populate the review fingerprint once checks have reached a terminal
+		// status (clean or needs-repair). We deliberately skip the fetch while
+		// checks are still pending: that avoids a per-poll GetReviewComments RPC
+		// and stops a comment landing mid-check from cutting the wait short.
+		// Fetching it on needs-repair too keeps the duplicate-input guard and the
+		// next iteration's baseline accurate. The new-feedback upgrade only
+		// applies on a clean status, since that is the one case the base
+		// assessment would otherwise miss (a green PR with a fresh comment that
+		// the host has not flipped to REJECTED).
+		if sess != nil &&
+			(assessment.Status == postRepairStatusClean || assessment.Status == postRepairStatusNeedsRepair) {
+			info := sessionInfo{
+				RepoName:      sess.GetRepoDisplayName(),
+				SessionTitle:  sess.GetTitle(),
+				RepoOriginURL: sess.GetRepoOriginUrl(),
+				PRNumber:      sess.GetPrNumber(),
+			}
+			reviewFingerprint, reviewFingerprintAvailable := m.currentReviewFingerprint(waitCtx, info)
+			assessment.ReviewFingerprint = reviewFingerprint
+			assessment.ReviewFingerprintAvailable = reviewFingerprintAvailable
+			if assessment.Status == postRepairStatusClean {
+				assessment = assessment.withReviewComparison(previousReviewFingerprint, previousReviewFingerprintAvailable)
+			}
+		}
+
+		switch assessment.Status {
+		case postRepairStatusClean, postRepairStatusUnknown:
+			return assessment
+		case postRepairStatusNeedsRepair:
+			if postRepairInputChanged(
+				currentDisplayStatus,
+				currentHasFailures,
+				currentHeadSHA,
+				previousReviewFingerprint,
+				previousReviewFingerprintAvailable,
+				assessment,
+			) {
+				return assessment
+			}
+			m.logger.Debug().
+				Str("session_id", sessionID).
+				Str("reason", assessment.Reason).
+				Int32("display_status", int32(assessment.DisplayStatus)).
+				Bool("has_failures", assessment.HasFailures).
+				Str("head_sha", assessment.HeadSHA).
+				Msg("post-repair assessment still matches pre-repair input, continuing wait")
+			timer := time.NewTimer(pollInterval)
+			select {
+			case <-waitCtx.Done():
+				timer.Stop()
+				return cancelledAssessment(waitCtx.Err())
+			case <-timer.C:
+			}
+		case postRepairStatusPending:
+			timer := time.NewTimer(pollInterval)
+			select {
+			case <-waitCtx.Done():
+				timer.Stop()
+				return cancelledAssessment(waitCtx.Err())
+			case <-timer.C:
+			}
+		default:
+			assessment.Status = postRepairStatusUnknown
+			assessment.Reason = "post-repair status unrecognized"
+			return assessment
+		}
 	}
 }
 
@@ -999,7 +1246,173 @@ func repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason str
 	return req
 }
 
-// repairSession drives a single Claude repair run for a failing/conflicted/
+func postRepairInputChanged(
+	currentDisplayStatus bossanovav1.DisplayStatus,
+	currentHasFailures bool,
+	currentHeadSHA string,
+	currentReviewFingerprint string,
+	currentReviewFingerprintAvailable bool,
+	assessment postRepairAssessment,
+) bool {
+	if assessment.DisplayStatus != currentDisplayStatus {
+		return true
+	}
+	if assessment.HasFailures != currentHasFailures {
+		return true
+	}
+	if assessment.HeadSHA != "" && assessment.HeadSHA != currentHeadSHA {
+		return true
+	}
+	if assessment.ReviewFingerprintAvailable != currentReviewFingerprintAvailable {
+		return true
+	}
+	if assessment.ReviewFingerprintAvailable && assessment.ReviewFingerprint != currentReviewFingerprint {
+		return true
+	}
+	return false
+}
+
+// repairSession drives bounded repair attempts until post-repair PR checks
+// settle cleanly, need another fresh repair run, or stop making safe progress.
+//
+// Concurrency: the caller holds the maybeRepair guard (m.repairing). The guard
+// is cleared after the bounded loop exits, so no other repair goroutine can
+// start for the same session while post-repair checks are still settling.
+func (m *repairMonitor) repairSession(
+	ctx context.Context,
+	sessionID, repoName, sessionName string,
+	displayStatus bossanovav1.DisplayStatus,
+	hasFailures bool,
+	headSHA string,
+	replaceExistingReason string,
+	replaceExistingObservedLastChatActivityAt time.Time,
+	reviewFingerprint string,
+	reviewFingerprintAvailable bool,
+) {
+	log := m.logger.With().
+		Str("session_id", sessionID).
+		Str("session_name", sessionName).
+		Str("repo", repoName).
+		Logger()
+
+	defer func() {
+		m.mu.Lock()
+		delete(m.repairing, sessionID)
+		m.mu.Unlock()
+	}()
+
+	currentDisplayStatus := displayStatus
+	currentHasFailures := hasFailures
+	currentHeadSHA := headSHA
+	currentReviewFingerprint := reviewFingerprint
+	currentReviewFingerprintAvailable := reviewFingerprintAvailable
+
+	for attempt := 1; attempt <= maxRepairLoopAttempts; attempt++ {
+		m.mu.Lock()
+		stopped, paused := m.stopped, m.paused
+		m.mu.Unlock()
+		if stopped || paused {
+			log.Info().
+				Int("attempt", attempt).
+				Bool("stopped", stopped).
+				Bool("paused", paused).
+				Msg("workflow stopped or paused, stopping repair loop")
+			return
+		}
+
+		if ok := m.runRepairAttempt(
+			ctx,
+			sessionID,
+			repoName,
+			sessionName,
+			currentDisplayStatus,
+			currentHasFailures,
+			currentHeadSHA,
+			replaceExistingReason,
+			replaceExistingObservedLastChatActivityAt,
+			currentReviewFingerprint,
+			currentReviewFingerprintAvailable,
+		); !ok {
+			return
+		}
+
+		assessment := m.waitForPostRepairAssessment(
+			ctx,
+			sessionID,
+			currentDisplayStatus,
+			currentHasFailures,
+			currentHeadSHA,
+			currentReviewFingerprint,
+			currentReviewFingerprintAvailable,
+		)
+		log.Info().
+			Int("attempt", attempt).
+			Str("post_repair_status", string(assessment.Status)).
+			Str("reason", assessment.Reason).
+			Int32("display_status", int32(assessment.DisplayStatus)).
+			Bool("has_failures", assessment.HasFailures).
+			Str("review_fingerprint", assessment.ReviewFingerprint).
+			Bool("review_fingerprint_available", assessment.ReviewFingerprintAvailable).
+			Msg("post-repair status assessed")
+
+		switch assessment.Status {
+		case postRepairStatusClean:
+			return
+		case postRepairStatusNeedsRepair:
+			if !postRepairInputChanged(
+				currentDisplayStatus,
+				currentHasFailures,
+				currentHeadSHA,
+				currentReviewFingerprint,
+				currentReviewFingerprintAvailable,
+				assessment,
+			) {
+				log.Info().
+					Str("reason", assessment.Reason).
+					Int32("display_status", int32(assessment.DisplayStatus)).
+					Bool("has_failures", assessment.HasFailures).
+					Str("head_sha", currentHeadSHA).
+					Str("review_fingerprint", assessment.ReviewFingerprint).
+					Bool("review_fingerprint_available", assessment.ReviewFingerprintAvailable).
+					Msg("post-repair input unchanged, stopping repair loop")
+				return
+			}
+			if attempt == maxRepairLoopAttempts {
+				log.Warn().
+					Int("max_attempts", maxRepairLoopAttempts).
+					Str("reason", assessment.Reason).
+					Msg("maximum repair loop attempts reached, stopping")
+				return
+			}
+			currentDisplayStatus = assessment.DisplayStatus
+			currentHasFailures = assessment.HasFailures
+			if assessment.HeadSHA != "" {
+				currentHeadSHA = assessment.HeadSHA
+			}
+			currentReviewFingerprint = assessment.ReviewFingerprint
+			currentReviewFingerprintAvailable = assessment.ReviewFingerprintAvailable
+		case postRepairStatusPending:
+			log.Warn().
+				Int("attempt", attempt).
+				Str("reason", assessment.Reason).
+				Msg("post-repair checks did not settle before timeout, stopping repair loop")
+			return
+		case postRepairStatusUnknown:
+			log.Warn().
+				Int("attempt", attempt).
+				Str("reason", assessment.Reason).
+				Msg("post-repair status could not be determined, stopping repair loop")
+			return
+		default:
+			log.Warn().
+				Str("post_repair_status", string(assessment.Status)).
+				Msg("unrecognized post-repair status, stopping")
+			return
+		}
+	}
+}
+
+// runRepairAttempt drives a single Claude repair run for a failing/conflicted/
 // rejected session. It asks the daemon to spawn a Claude process in the
 // session's worktree (StartClaudeRun), waits for it to exit (WaitClaudeRun),
 // and on success fires FIX_COMPLETE so the state machine fast-tracks past
@@ -1012,7 +1425,7 @@ func repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason str
 // owns both. attemptRan controls whether lastAttemptCommit is updated:
 // a completed agent run, even with a non-zero exit, blocks same-head/status
 // retries; StartChatRun and WaitChatRun infrastructure failures stay retryable.
-func (m *repairMonitor) repairSession(
+func (m *repairMonitor) runRepairAttempt(
 	ctx context.Context,
 	sessionID, repoName, sessionName string,
 	displayStatus bossanovav1.DisplayStatus,
@@ -1022,7 +1435,7 @@ func (m *repairMonitor) repairSession(
 	replaceExistingObservedLastChatActivityAt time.Time,
 	reviewFingerprint string,
 	reviewFingerprintAvailable bool,
-) {
+) bool {
 	log := m.logger.With().
 		Str("session_id", sessionID).
 		Str("session_name", sessionName).
@@ -1042,7 +1455,6 @@ func (m *repairMonitor) repairSession(
 
 	defer func() {
 		m.mu.Lock()
-		delete(m.repairing, sessionID)
 		if runOwned {
 			m.cooldowns[sessionID] = time.Now()
 		}
@@ -1108,7 +1520,7 @@ func (m *repairMonitor) repairSession(
 				// Soft skip — another instance owns this run, do not record an
 				// outcome here (the winner's deferred cleanup will).
 				log.Info().Err(err).Msg("another repair run is active, skipping repair")
-				return
+				return false
 			}
 			reclaimResp, reclaimErr := m.host.ReclaimRepairChat(ctx, &bossanovav1.ReclaimRepairChatHostRequest{
 				SessionId:      sessionID,
@@ -1119,7 +1531,7 @@ func (m *repairMonitor) repairSession(
 				log.Info().Err(reclaimErr).
 					Str("stale_agent_session_id", staleAgentSessionID).
 					Msg("repair chat reclaim failed, skipping repair")
-				return
+				return false
 			}
 			log.Info().
 				Str("stale_agent_session_id", staleAgentSessionID).
@@ -1131,12 +1543,12 @@ func (m *repairMonitor) repairSession(
 			if err != nil {
 				if grpcstatus.Code(err) == codes.AlreadyExists {
 					log.Info().Err(err).Msg("another repair run is active after reclaim, skipping repair")
-					return
+					return false
 				}
 				outcomeRunnerError = err.Error()
 				outcomeShouldRecord = true
 				log.Error().Err(err).Msg("failed to start repair chat run after reclaim")
-				return
+				return false
 			}
 		} else {
 			// Daemon-side StartChatRun refusal (eg. "claude not on PATH",
@@ -1145,7 +1557,7 @@ func (m *repairMonitor) repairSession(
 			outcomeRunnerError = err.Error()
 			outcomeShouldRecord = true
 			log.Error().Err(err).Msg("failed to start repair chat run")
-			return
+			return false
 		}
 	}
 	runOwned = true
@@ -1178,7 +1590,7 @@ func (m *repairMonitor) repairSession(
 		// status field.
 		outcomeRunnerError = "wait for repair run failed: " + waitErr.Error()
 		log.Error().Err(waitErr).Msg("wait for repair run failed")
-		return
+		return false
 	}
 	if exitErr := waitResp.GetExitError(); exitErr != "" {
 		outcomeExitError = exitErr
@@ -1188,7 +1600,7 @@ func (m *repairMonitor) repairSession(
 			// not rerun the same head/status forever for those failures.
 			attemptRan = true
 		}
-		return
+		return false
 	}
 	// The chat reported clean completion. Do not rerun the same head/status
 	// forever after a successful repair attempt.
@@ -1202,7 +1614,7 @@ func (m *repairMonitor) repairSession(
 	sessionsResp, err := m.host.ListSessions(cleanupCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("post-repair ListSessions failed; polling will handle transition")
-		return
+		return true
 	}
 	var st bossanovav1.SessionState
 	for _, s := range sessionsResp.GetSessions() {
@@ -1221,4 +1633,5 @@ func (m *repairMonitor) repairSession(
 	} else {
 		log.Debug().Str("state", st.String()).Msg("not in fixing_checks, skipping FixComplete")
 	}
+	return true
 }

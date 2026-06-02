@@ -99,10 +99,14 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 		return nil
 	}
 
-	query := `query($owner:String!, $repo:String!, $pr:Int!) {
+	query := `query($owner:String!, $repo:String!, $pr:Int!, $after:String) {
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$pr) {
-      reviewThreads(first:100) {
+      reviewThreads(first:100, after:$after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           isResolved
           comments(first:1) {
@@ -114,22 +118,15 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
   }
 }`
 
-	out, err := p.runGH(ctx, "api", "graphql",
-		"-f", "query="+query,
-		"-f", "owner="+owner,
-		"-f", "repo="+repo,
-		"-F", fmt.Sprintf("pr=%d", prID),
-	)
-	if err != nil {
-		p.logger.Warn().Err(err).Msg("GraphQL thread query failed, failing closed")
-		return nil
-	}
-
 	var result struct {
 		Data struct {
 			Repository struct {
 				PullRequest struct {
 					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
 						Nodes []struct {
 							IsResolved bool `json:"isResolved"`
 							Comments   struct {
@@ -145,10 +142,6 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 			} `json:"repository"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		p.logger.Warn().Err(err).Msg("failed to parse GraphQL thread response, failing closed")
-		return nil
-	}
 
 	// GraphQL returns bare logins for bots ("cursor") while REST returns
 	// the suffixed form ("cursor[bot]"). Build a lookup that handles both.
@@ -159,19 +152,73 @@ func (p *Provider) unresolvedThreadAuthors(ctx context.Context, repoPath string,
 	}
 
 	unresolved := make(map[string]bool)
-	for _, thread := range result.Data.Repository.PullRequest.ReviewThreads.Nodes {
-		if thread.IsResolved {
-			continue
+	after := ""
+	for {
+		args := []string{
+			"api", "graphql",
+			"-f", "query=" + query,
+			"-f", "owner=" + owner,
+			"-f", "repo=" + repo,
+			"-F", fmt.Sprintf("pr=%d", prID),
 		}
-		if len(thread.Comments.Nodes) == 0 {
-			continue
+		if after != "" {
+			args = append(args, "-f", "after="+after)
 		}
-		author := thread.Comments.Nodes[0].Author.Login
-		if restLogin, ok := graphqlToRest[author]; ok {
-			unresolved[restLogin] = true
+		out, err := p.runGH(ctx, args...)
+		if err != nil {
+			p.logger.Warn().Err(err).Msg("GraphQL thread query failed, failing closed")
+			return nil
 		}
+		result = struct {
+			Data struct {
+				Repository struct {
+					PullRequest struct {
+						ReviewThreads struct {
+							PageInfo struct {
+								HasNextPage bool   `json:"hasNextPage"`
+								EndCursor   string `json:"endCursor"`
+							} `json:"pageInfo"`
+							Nodes []struct {
+								IsResolved bool `json:"isResolved"`
+								Comments   struct {
+									Nodes []struct {
+										Author struct {
+											Login string `json:"login"`
+										} `json:"author"`
+									} `json:"nodes"`
+								} `json:"comments"`
+							} `json:"nodes"`
+						} `json:"reviewThreads"`
+					} `json:"pullRequest"`
+				} `json:"repository"`
+			} `json:"data"`
+		}{}
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			p.logger.Warn().Err(err).Msg("failed to parse GraphQL thread response, failing closed")
+			return nil
+		}
+		page := result.Data.Repository.PullRequest.ReviewThreads
+		for _, thread := range page.Nodes {
+			if thread.IsResolved {
+				continue
+			}
+			if len(thread.Comments.Nodes) == 0 {
+				continue
+			}
+			author := thread.Comments.Nodes[0].Author.Login
+			if restLogin, ok := graphqlToRest[author]; ok {
+				unresolved[restLogin] = true
+			}
+		}
+		if !page.PageInfo.HasNextPage {
+			return unresolved
+		}
+		if page.PageInfo.EndCursor == "" {
+			p.logger.Warn().Msg("GraphQL thread response missing endCursor, failing closed")
+			return nil
+		}
+		after = page.PageInfo.EndCursor
 	}
-	return unresolved
 }
 
 // CreateDraftPR pushes the head branch and creates a draft pull request.
@@ -466,7 +513,10 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 		// Promote bot COMMENTED reviews to CHANGES_REQUESTED only when the bot
 		// has unresolved review threads. This avoids false "rejected" status
 		// when all review issues have been addressed.
-		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] && botsWithUnresolved[r.User.Login] {
+		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] && botsWithUnresolved != nil {
+			if !botsWithUnresolved[r.User.Login] {
+				continue
+			}
 			state = vcs.ReviewStateChangesRequested
 		}
 		comments = append(comments, vcs.ReviewComment{

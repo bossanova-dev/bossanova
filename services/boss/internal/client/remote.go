@@ -191,6 +191,10 @@ func (c *RemoteClient) UpdateSession(_ context.Context, _ *pb.UpdateSessionReque
 	return nil, errLocalOnly("UpdateSession")
 }
 
+func (c *RemoteClient) LinkSessionPR(_ context.Context, _, _ string) (*pb.Session, error) {
+	return nil, errLocalOnly("LinkSessionPR")
+}
+
 // --- Archive / Resurrect (local only) ---
 
 func (c *RemoteClient) ArchiveSession(_ context.Context, _ string) (*pb.Session, error) {

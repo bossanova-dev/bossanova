@@ -72,9 +72,11 @@ function parseFrontmatter(markdown, filePath) {
 }
 
 function rewriteBody(body) {
-  return BODY_REWRITES.reduce((current, [pattern, replacement]) => {
+  const rewritten = BODY_REWRITES.reduce((current, [pattern, replacement]) => {
     return current.replace(pattern, replacement);
   }, body);
+
+  return rewritten.replace(/\bAGENTS\.md`, `AGENTS\.md\b/g, 'AGENTS.md`, `CLAUDE.md');
 }
 
 export function rewriteClaudeSkillMarkdown(markdown, filePath = 'SKILL.md') {

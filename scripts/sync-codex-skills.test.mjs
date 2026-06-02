@@ -16,6 +16,12 @@ import {
 
 const tmpRoots = [];
 const scriptPath = fileURLToPath(new URL('./sync-codex-skills.mjs', import.meta.url));
+const privateDebtSkillPath = fileURLToPath(
+  new URL('../.claude/skills/bs-technical-debt/SKILL.md', import.meta.url),
+);
+const privateMutationSkillPath = fileURLToPath(
+  new URL('../.claude/skills/bs-mutation-test/SKILL.md', import.meta.url),
+);
 
 function tmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-skills-test-'));
@@ -49,6 +55,41 @@ afterEach(() => {
 });
 
 describe('sync-codex-skills', () => {
+  it(
+    'keeps the bs-technical-debt daily automation safety contract explicit',
+    {
+      skip: !fs.existsSync(privateDebtSkillPath) && 'private skill fixture is absent',
+    },
+    () => {
+      const skill = fs.readFileSync(privateDebtSkillPath, 'utf8');
+      assert.match(skill, /^name: bs-technical-debt/m);
+      assert.match(skill, /Push at most one PR-worthy session-branch commit per run/);
+      assert.match(skill, /session's stored `BranchName`/);
+      assert.match(skill, /Windows WSL/);
+      assert.match(skill, /macOS, Linux, and Windows WSL/);
+      assert.match(skill, /\$boss-finalize/);
+      assert.match(skill, /NO_PR/);
+      assert.match(skill, /Platform Portability Scan/);
+    },
+  );
+
+  it(
+    'keeps cron mutation PR creation owned by boss-finalize',
+    {
+      skip: !fs.existsSync(privateMutationSkillPath) && 'private mutation skill fixture is absent',
+    },
+    () => {
+      const skill = fs.readFileSync(privateMutationSkillPath, 'utf8');
+
+      assert.match(skill, /^name: bs-mutation-test/m);
+      assert.match(skill, /boss-finalize/);
+      assert.match(skill, /current session branch/);
+      assert.match(skill, /session's stored `BranchName`/);
+      assert.doesNotMatch(skill, /git switch -c "\$BRANCH"/);
+      assert.doesNotMatch(skill, /gh pr create[\s\S]*--title\s+"test\(/);
+    },
+  );
+
   it('fails when a skill is missing required frontmatter fields', () => {
     const root = tmpDir();
     const sourceRoot = path.join(root, '.claude', 'skills');
@@ -141,9 +182,11 @@ description: example description
 ---
 
 Claude Code should update CLAUDE.md, use TodoWrite, \`Read\`, \`Edit\`, and the Playwright MCP server.
+\`AGENTS.md\`, \`CLAUDE.md\`
 `);
 
     assert.match(rewritten, /Codex should update AGENTS\.md/);
+    assert.match(rewritten, /`AGENTS\.md`, `CLAUDE\.md`/);
     assert.match(rewritten, /update_plan/);
     assert.match(rewritten, /file-reading tool/);
     assert.match(rewritten, /apply_patch/);

@@ -18,6 +18,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/cron"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/taskorchestrator"
@@ -359,6 +360,70 @@ func TestE2ECron_HookAuth(t *testing.T) {
 		// the cron job's outcome must be set to exactly one value, not written N times.
 		waitForCronOutcome(t, h2.CronJobs, job2.ID, models.CronJobOutcomePRCreated)
 	})
+}
+
+func TestE2ECron_CleanWorktreeExistingPRStaysVisible(t *testing.T) {
+	h := testharness.NewWithOptions(t, testharness.Options{
+		TmuxCommandFactory: testharness.CronReadyTmuxFactory(),
+	})
+	ctx := context.Background()
+
+	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
+	useTempWorktrees(t, h)
+	h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
+		return "", nil
+	}
+
+	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
+		RepoID:   repoID,
+		Name:     "clean-existing-pr",
+		Prompt:   "open PR externally",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	sched := newCronScheduler(h)
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	sched.Tick(tickTime)
+
+	sess := sessionFromCronJob(t, h, job.ID)
+	if sess.HookToken == nil || *sess.HookToken == "" {
+		t.Fatal("expected HookToken on cron session")
+	}
+	h.VCS.OpenPRs = []vcs.PRSummary{{
+		Number:     77,
+		HeadBranch: sess.BranchName,
+		State:      vcs.PRStateOpen,
+	}}
+
+	resp, err := h.PostStopHook(sess.ID, *sess.HookToken)
+	if err != nil {
+		t.Fatalf("PostStopHook: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck // test-only: best-effort body close
+	if resp.StatusCode != 200 {
+		t.Fatalf("POST status = %d, want 200", resp.StatusCode)
+	}
+	waitForCronOutcome(t, h.CronJobs, job.ID, models.CronJobOutcomePRCreated)
+
+	got, err := h.Sessions.Get(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("session should remain visible after PR attachment: %v", err)
+	}
+	if got.PRNumber == nil || *got.PRNumber != 77 {
+		t.Fatalf("PRNumber = %v, want 77", got.PRNumber)
+	}
+	if got.PRURL == nil || *got.PRURL == "" {
+		t.Fatalf("PRURL = %v, want attached PR URL", got.PRURL)
+	}
+	if got.HookToken != nil {
+		t.Fatalf("HookToken = %v, want nil after PR attachment success", got.HookToken)
+	}
 }
 
 // ---------------------------------------------------------------------------

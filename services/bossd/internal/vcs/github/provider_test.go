@@ -694,6 +694,13 @@ func graphqlThreadsResponse(threads ...struct {
 	resolved bool
 	author   string
 }) string {
+	return graphqlThreadsPageResponse(false, "", threads...)
+}
+
+func graphqlThreadsPageResponse(hasNextPage bool, endCursor string, threads ...struct {
+	resolved bool
+	author   string
+}) string {
 	nodes := make([]string, len(threads))
 	for i, t := range threads {
 		nodes[i] = fmt.Sprintf(
@@ -702,8 +709,8 @@ func graphqlThreadsResponse(threads ...struct {
 		)
 	}
 	return fmt.Sprintf(
-		`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[%s]}}}}}`,
-		strings.Join(nodes, ","),
+		`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":%t,"endCursor":%q},"nodes":[%s]}}}}}`,
+		hasNextPage, endCursor, strings.Join(nodes, ","),
 	)
 }
 
@@ -814,6 +821,56 @@ func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 	}
 }
 
+func TestGetReviewComments_BotWithUnresolvedThreadOnSecondPage(t *testing.T) {
+	graphQLCalls := 0
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			graphQLCalls++
+			argsStr := strings.Join(args, " ")
+			if !strings.Contains(argsStr, "after=cursor-1") {
+				return graphqlThreadsPageResponse(true, "cursor-1",
+					struct {
+						resolved bool
+						author   string
+					}{true, "chatgpt-codex-connector"},
+				), nil
+			}
+			return graphqlThreadsPageResponse(false, "",
+				struct {
+					resolved bool
+					author   string
+				}{false, "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/123/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"fix second-page issue","path":"main.go","line":42}
+			]`, nil
+		}
+		return `[
+			{"id":123,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"found issues","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if graphQLCalls != 2 {
+		t.Fatalf("GraphQL calls = %d, want 2", graphQLCalls)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want promoted summary and inline comment", len(comments))
+	}
+	if comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Errorf("bot comment state = %v, want ChangesRequested", comments[0].State)
+	}
+	if comments[1].Body != "fix second-page issue" {
+		t.Fatalf("inline comment body = %q, want fix second-page issue", comments[1].Body)
+	}
+}
+
 func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
 		if args[0] == "api" && args[1] == "graphql" {
@@ -839,15 +896,11 @@ func TestGetReviewComments_BotAllThreadsResolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(comments) != 2 {
-		t.Fatalf("got %d comments, want 2", len(comments))
+	if len(comments) != 1 {
+		t.Fatalf("got %d comments, want only the human review", len(comments))
 	}
-	// All threads resolved — should NOT be promoted.
-	if comments[0].State != vcs.ReviewStateCommented {
-		t.Errorf("bot comment state = %v, want Commented (all threads resolved)", comments[0].State)
-	}
-	if comments[1].State != vcs.ReviewStateApproved {
-		t.Errorf("human comment state = %v, want Approved", comments[1].State)
+	if comments[0].State != vcs.ReviewStateApproved {
+		t.Errorf("human comment state = %v, want Approved", comments[0].State)
 	}
 }
 
@@ -867,12 +920,8 @@ func TestGetReviewComments_BotNoThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(comments) != 1 {
-		t.Fatalf("got %d comments, want 1", len(comments))
-	}
-	// No threads — should NOT be promoted.
-	if comments[0].State != vcs.ReviewStateCommented {
-		t.Errorf("bot comment state = %v, want Commented (no threads)", comments[0].State)
+	if len(comments) != 0 {
+		t.Fatalf("got %d comments, want none for resolved/no-thread bot review", len(comments))
 	}
 }
 
@@ -961,16 +1010,12 @@ func TestGetReviewComments_MultipleBotsMixed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(comments) != 2 {
-		t.Fatalf("got %d comments, want 2", len(comments))
+	if len(comments) != 1 {
+		t.Fatalf("got %d comments, want only unresolved bot review", len(comments))
 	}
 	// cursor[bot] has unresolved threads — promoted.
 	if comments[0].State != vcs.ReviewStateChangesRequested {
 		t.Errorf("cursor[bot] state = %v, want ChangesRequested", comments[0].State)
-	}
-	// cubic-dev-ai[bot] all resolved — NOT promoted.
-	if comments[1].State != vcs.ReviewStateCommented {
-		t.Errorf("cubic-dev-ai[bot] state = %v, want Commented", comments[1].State)
 	}
 }
 

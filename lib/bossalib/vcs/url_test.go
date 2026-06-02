@@ -309,3 +309,107 @@ func TestConstructPRURL_Boundaries(t *testing.T) {
 		})
 	}
 }
+
+// TestGitHubPullRequestURL_PRNumberBoundary exercises the prNumber guard inside
+// the github provider's pullRequestURL closure (url.go:25, `prNumber <= 0`).
+// PullRequestWebLink gates prNumber <= 0 before reaching the closure, so the
+// closure's own boundary can only be hit by calling it directly.
+//
+// Catches CONDITIONALS_BOUNDARY (`<=` → `<`): at the exact boundary prNumber==0
+// the closure must return "" (with `<` it would build a URL with /pull/0).
+func TestGitHubPullRequestURL_PRNumberBoundary(t *testing.T) {
+	provider := webLinkProviderForHost("github.com")
+	if provider == nil {
+		t.Fatal("expected a provider for github.com")
+	}
+
+	tests := []struct {
+		name     string
+		prNumber int
+		want     string
+	}{
+		// Boundary: prNumber == 0 must yield "" (kills `<=` → `<`).
+		{"zero pr", 0, ""},
+		// Negative side: still "".
+		{"negative pr", -1, ""},
+		// Positive side: 1 is the smallest valid PR and must build a URL.
+		{"smallest valid pr", 1, "https://github.com/owner/repo/pull/1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := provider.pullRequestURL("github.com", "owner/repo", tt.prNumber)
+			if got != tt.want {
+				t.Errorf("pullRequestURL(owner/repo, %d) = %q, want %q", tt.prNumber, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseOriginURL_Boundaries targets the comparison boundaries in
+// parseOriginURL that the higher-level helpers don't isolate.
+func TestParseOriginURL_Boundaries(t *testing.T) {
+	tests := []struct {
+		name      string
+		originURL string
+		wantHost  string
+		wantSlug  string
+	}{
+		// url.go:130 `idx > 0` (CONDITIONALS_BOUNDARY `>` → `>=`).
+		// idx == 0: a leading colon must NOT be treated as the SSH separator.
+		// With `>=` the SSH rewrite would fire on s[:0]="" and corrupt parsing.
+		{"leading colon not SSH", ":owner/repo.git", "", ""},
+		// Other side of url.go:130: idx > 0 (a real SSH shorthand) parses.
+		{"ssh shorthand idx gt 0", "host:owner/repo.git", "host", "owner/repo"},
+
+		// url.go:133 `at >= 0` inside the SSH-shorthand host (CONDITIONALS_BOUNDARY
+		// `>=` → `>` and CONDITIONALS_NEGATION `>=` → `<`).
+		// at == 0: leading "@" in the host must trigger the user@ strip.
+		{"ssh shorthand leading at", "@host:owner/repo.git", "host", "owner/repo"},
+		// Negation/other side: no "@" (at == -1) leaves the host untouched.
+		{"ssh shorthand no at", "myhost:owner/repo.git", "myhost", "owner/repo"},
+
+		// url.go:143 first comparison `at >= 0` for full URLs after protocol
+		// strip (CONDITIONALS_BOUNDARY `>=` → `>`).
+		// After stripping "ssh://", s == "@host/owner/repo.git", at == 0: the
+		// user@ strip must fire. With `>` the "@host" prefix would remain and
+		// host would parse as "@host".
+		{"full url leading at after protocol", "ssh://@host/owner/repo.git", "host", "owner/repo"},
+		// Other side: full URL with a real user@ (at > 0) still strips.
+		{"full url user at", "ssh://git@host/owner/repo.git", "host", "owner/repo"},
+
+		// url.go:143 second comparison `at < indexOfFirstSlash`: a "@" that
+		// appears in the PATH (after the first slash) must NOT be stripped,
+		// because the host segment has no "@".
+		{"at in path not stripped", "host/own@er/repo.git", "host", "own@er/repo"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("parseOriginURL(%q) panicked: %v", tt.originURL, r)
+				}
+			}()
+			gotHost, gotSlug := parseOriginURL(tt.originURL)
+			if gotHost != tt.wantHost || gotSlug != tt.wantSlug {
+				t.Errorf("parseOriginURL(%q) = (%q, %q), want (%q, %q)",
+					tt.originURL, gotHost, gotSlug, tt.wantHost, tt.wantSlug)
+			}
+		})
+	}
+}
+
+// TestPullRequestWebLink_PRNumberBoundary pins the url.go:110 boundary
+// (`prNumber <= 0`, CONDITIONALS_BOUNDARY `<=` → `<`) at the helper level:
+// prNumber==0 hides the link; prNumber==1 (smallest valid) exposes it.
+func TestPullRequestWebLink_PRNumberBoundary(t *testing.T) {
+	if _, _, ok := PullRequestWebLink("git@github.com:owner/repo.git", 0); ok {
+		t.Errorf("PullRequestWebLink with prNumber=0 should not be ok")
+	}
+	provider, url, ok := PullRequestWebLink("git@github.com:owner/repo.git", 1)
+	if !ok || provider != "github" || url != "https://github.com/owner/repo/pull/1" {
+		t.Errorf("PullRequestWebLink with prNumber=1 = (%q, %q, %v), want (github, .../pull/1, true)",
+			provider, url, ok)
+	}
+}

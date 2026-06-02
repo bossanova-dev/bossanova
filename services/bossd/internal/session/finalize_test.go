@@ -12,6 +12,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
 
@@ -115,6 +116,462 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
 		t.Errorf("recorded outcome = %q, want deleted_no_changes", cron.lastRunCalls[0].outcome)
+	}
+}
+
+func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 77, HeadBranch: "cron-br-1", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	}
+	if len(wt.archived) != 0 {
+		t.Fatalf("worktree should be preserved when branch already has PR, got %v", wt.archived)
+	}
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("clean branch with existing PR must not create PR, calls=%d", len(vp.createPRCalls))
+	}
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 claude.Start call, got %d", len(cr.started))
+	}
+	if cr.started[0].plan != finalizeChatSkill {
+		t.Errorf("claude.Start plan = %q, want %q", cr.started[0].plan, finalizeChatSkill)
+	}
+	if cr.started[0].workDir != "/tmp/wt-sess1" {
+		t.Errorf("claude.Start workDir = %q, want /tmp/wt-sess1", cr.started[0].workDir)
+	}
+	if len(chats.created) != 1 {
+		t.Fatalf("expected 1 chat row created, got %d", len(chats.created))
+	}
+	if chats.created[0].SessionID != "sess-1" {
+		t.Errorf("chat row session = %q, want sess-1", chats.created[0].SessionID)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved")
+	}
+	if sess.PRNumber == nil || *sess.PRNumber != 77 {
+		t.Fatalf("PRNumber = %v, want 77", sess.PRNumber)
+	}
+	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/77" {
+		t.Fatalf("PRURL = %v, want existing PR URL", sess.PRURL)
+	}
+	if sess.HookToken != nil {
+		t.Fatalf("hook_token = %v, want nil after PR attachment success", sess.HookToken)
+	}
+	if sess.State != machine.Finalizing {
+		t.Fatalf("state = %s, want finalizing", sess.State)
+	}
+	if len(cron.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
+	}
+	if cron.lastRunCalls[0].sessionID == nil || *cron.lastRunCalls[0].sessionID != "sess-1" {
+		t.Fatalf("recorded session ID = %v, want sess-1", cron.lastRunCalls[0].sessionID)
+	}
+	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("recorded outcome = %q, want pr_created", cron.lastRunCalls[0].outcome)
+	}
+}
+
+func TestFinalizeSession_CleanWorktreeNoBranchPR_DeletesSession(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 77, HeadBranch: "other-branch", State: vcs.PRStateOpen},
+	}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want deleted_no_changes", res.Outcome)
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Fatal("session row should be deleted when no matching branch PR exists")
+	}
+	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
+		t.Fatalf("archived = %v, want /tmp/wt-sess1", wt.archived)
+	}
+}
+
+func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "fix(cron): preserve PR-backed clean sessions",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
+		},
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
+	}
+	if len(wt.archived) != 0 {
+		t.Fatalf("worktree should be preserved when committed branch needs PR, got %v", wt.archived)
+	}
+	if len(wt.emptyCommits) != 0 {
+		t.Fatalf("clean committed branch should not get placeholder commit, got %v", wt.emptyCommits)
+	}
+	if len(wt.fetchedBases) != 1 || wt.fetchedBases[0] != "main" {
+		t.Fatalf("fetched bases = %v, want [main]", wt.fetchedBases)
+	}
+	if len(wt.pushed) != 1 || wt.pushed[0] != "cron-br-1" {
+		t.Fatalf("pushed branches = %v, want [cron-br-1]", wt.pushed)
+	}
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	if vp.createPRCalls[0].Title != "Preserve PR-backed clean sessions" {
+		t.Fatalf("CreateDraftPR title = %q, want %q", vp.createPRCalls[0].Title, "Preserve PR-backed clean sessions")
+	}
+	if len(cr.started) != 1 || cr.started[0].plan != finalizeChatSkill {
+		t.Fatalf("finalize chat starts = %+v, want one %q start", cr.started, finalizeChatSkill)
+	}
+	if sessions.sessions["sess-1"].HookToken != nil {
+		t.Fatalf("hook_token = %v, want nil after PR creation success", sessions.sessions["sess-1"].HookToken)
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
+	}
+}
+
+func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreatingPR(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "fix(cron): preserve PR-backed clean sessions",
+		originURL:           "git@github.com:owner/repo.git",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
+		},
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
+	}
+	if repos.repos["repo-1"].OriginURL != "git@github.com:owner/repo.git" {
+		t.Fatalf("repo origin = %q, want re-detected GitHub origin", repos.repos["repo-1"].OriginURL)
+	}
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	if len(wt.archived) != 0 {
+		t.Fatalf("worktree should be preserved when creating PR, got %v", wt.archived)
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
+	}
+}
+
+func TestFinalizeSession_CleanCommittedBranchNoOriginNoBranchWorkDeletesSession(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:    "",
+		fetchBaseErr: fmt.Errorf("remote origin does not exist"),
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "main" {
+				return true, nil
+			}
+			t.Fatalf("unexpected ancestor check %q -> %q", ref, target)
+			return false, nil
+		},
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if len(wt.fetchedBases) != 0 {
+		t.Fatalf("FetchBase should not run for no-origin clean branch, got %v", wt.fetchedBases)
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Error("session row should have been deleted")
+	}
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
+	}
+}
+
+func TestFinalizeSession_CleanCommittedBranchNoOriginSkipsPRWithoutFetch(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:    "",
+		fetchBaseErr: fmt.Errorf("remote origin does not exist"),
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "main" {
+				return false, nil
+			}
+			t.Fatalf("unexpected ancestor check %q -> %q", ref, target)
+			return false, nil
+		},
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	}
+	if len(wt.fetchedBases) != 0 {
+		t.Fatalf("FetchBase should not run for no-origin clean branch, got %v", wt.fetchedBases)
+	}
+	if len(wt.archived) != 0 {
+		t.Fatalf("worktree should be preserved, got archived=%v", wt.archived)
+	}
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome recording: got %+v, want single pr_skipped_no_github entry", cron.lastRunCalls)
+	}
+}
+
+func TestFinalizeSession_CleanWorktreePRLookupFailure_PreservesSession(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	vp.listOpenPRErr = fmt.Errorf("github unavailable")
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
+	}
+	if res.Err == nil {
+		t.Fatal("Err should carry PR lookup failure")
+	}
+	if len(wt.archived) != 0 {
+		t.Fatalf("worktree should be preserved on PR lookup failure, got %v", wt.archived)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved")
+	}
+	if sess.HookToken == nil {
+		t.Fatal("hook_token should be preserved on pr_failed")
+	}
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", sess.State)
+	}
+	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("recorded outcome = %q, want pr_failed", cron.lastRunCalls[0].outcome)
 	}
 }
 
@@ -250,7 +707,10 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{statusOut: " M file.go"} // modified file
+	wt := &mockWorktreeManager{
+		statusOut:           " M file.go", // modified file
+		latestCommitSubject: "test(mutate): add tests for surviving mutants",
+	}
 	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
@@ -287,6 +747,9 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 	}
 	if len(vp.createPRCalls) != 1 {
 		t.Errorf("expected 1 createPR call, got %d", len(vp.createPRCalls))
+	}
+	if len(vp.createPRCalls) == 1 && vp.createPRCalls[0].Title != "Add tests for surviving mutants" {
+		t.Errorf("CreateDraftPR title = %q, want %q", vp.createPRCalls[0].Title, "Add tests for surviving mutants")
 	}
 	// claude.Start should have been called with the /boss-finalize skill in the
 	// session's worktree.
@@ -709,12 +1172,13 @@ type recordingCronJobStore struct {
 }
 
 type lastRunCall struct {
-	id      string
-	outcome models.CronJobOutcome
+	id        string
+	sessionID *string
+	outcome   models.CronJobOutcome
 }
 
 func (r *recordingCronJobStore) UpdateLastRun(_ context.Context, id string, params db.UpdateCronJobLastRunParams) error {
-	r.lastRunCalls = append(r.lastRunCalls, lastRunCall{id: id, outcome: params.Outcome})
+	r.lastRunCalls = append(r.lastRunCalls, lastRunCall{id: id, sessionID: params.SessionID, outcome: params.Outcome})
 	return nil
 }
 

@@ -154,6 +154,14 @@ func sessionCmd() *cobra.Command {
 	}
 	checks.Flags().Int32("limit", 5, "Number of snapshots to show (newest first)")
 	cmd.AddCommand(checks)
+	cmd.AddCommand(&cobra.Command{
+		Use:   "link-pr <session-id> <pr-number-or-url>",
+		Short: "Attach an existing pull request to a session",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSessionLinkPR(cmd, args[0], args[1])
+		},
+	})
 	return cmd
 }
 

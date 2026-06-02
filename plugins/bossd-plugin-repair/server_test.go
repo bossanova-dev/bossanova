@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -35,9 +36,11 @@ import (
 type mockHostClient struct {
 	mu sync.Mutex
 
-	sessions      []*bossanovav1.Session
-	listSessErr   error
-	listSessCalls int
+	sessions         []*bossanovav1.Session
+	sessionSequences [][]*bossanovav1.Session
+	sessionSeqIndex  int
+	listSessErr      error
+	listSessCalls    int
 
 	startResp  *bossanovav1.StartChatRunHostResponse
 	startErr   error
@@ -82,6 +85,14 @@ func (m *mockHostClient) ListSessions(_ context.Context) (*bossanovav1.HostServi
 	m.listSessCalls++
 	if m.listSessErr != nil {
 		return nil, m.listSessErr
+	}
+	if len(m.sessionSequences) > 0 {
+		idx := m.sessionSeqIndex
+		if idx >= len(m.sessionSequences) {
+			idx = len(m.sessionSequences) - 1
+		}
+		m.sessionSeqIndex++
+		return &bossanovav1.HostServiceListSessionsResponse{Sessions: m.sessionSequences[idx]}, nil
 	}
 	return &bossanovav1.HostServiceListSessionsResponse{Sessions: m.sessions}, nil
 }
@@ -238,6 +249,311 @@ func TestRepairSession_HappyPath(t *testing.T) {
 	assert.False(t, rm.repairing["s1"], "repairing flag cleared")
 	assert.False(t, rm.cooldowns["s1"].IsZero(), "cooldown set")
 	assert.Equal(t, "abc123", rm.lastAttemptCommit["s1"])
+}
+
+func TestRepairSession_WaitsForChecksAndStopsWhenClean(t *testing.T) {
+	mock := newTestMock()
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING}},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+
+	startCalls, waitCalls, fireCalls, setRepair := mock.snapshot()
+	require.Equal(t, 1, startCalls)
+	require.Equal(t, 1, waitCalls)
+	require.Equal(t, 1, fireCalls)
+	require.Len(t, setRepair, 2)
+	mock.mu.Lock()
+	require.Equal(t, 3, mock.listSessCalls)
+	require.Equal(t, 3, mock.sessionSeqIndex)
+	mock.mu.Unlock()
+}
+
+func TestRepairSession_StartsSecondFreshRunWhenChecksFailAfterPush(t *testing.T) {
+	mock := newTestMock()
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, DisplayHasFailures: true, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING, PrDisplayHeadSha: "def456"}},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+
+	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
+	require.Equal(t, 2, startCalls)
+	require.Equal(t, 2, waitCalls)
+	require.Equal(t, 2, fireCalls)
+}
+
+func TestRepairSession_DoesNotStartSecondFreshRunWhenChecksFailOnSameInput(t *testing.T) {
+	mock := newTestMock()
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "abc123"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING, PrDisplayHeadSha: "abc123"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, DisplayHasFailures: true, PrDisplayHeadSha: "abc123"}},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	// These sessions carry no PR origin/number, so the review fingerprint is
+	// unavailable — exactly what maybeRepair computes for an origin-less session.
+	// The baseline availability must match what the wait loop recomputes, or the
+	// duplicate-input guard would see availability flip and re-run.
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+
+	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
+	require.Equal(t, 1, startCalls)
+	require.Equal(t, 1, waitCalls)
+	require.Equal(t, 1, fireCalls)
+}
+
+func TestRepairSession_WaitsThroughStaleSameInputBeforeRetryingNewHead(t *testing.T) {
+	mock := newTestMock()
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "abc123"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, DisplayHasFailures: true, PrDisplayHeadSha: "abc123"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING, PrDisplayHeadSha: "abc123"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, DisplayHasFailures: true, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING, PrDisplayHeadSha: "def456"}},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+
+	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
+	require.Equal(t, 2, startCalls)
+	require.Equal(t, 2, waitCalls)
+	require.Equal(t, 2, fireCalls)
+}
+
+func TestRepairSession_StartsSecondFreshRunWhenConflictAppearsAfterPush(t *testing.T) {
+	mock := newTestMock()
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING, PrDisplayHeadSha: "def456"}},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT, false, "abc123", "", time.Time{}, "", true)
+
+	startCalls, waitCalls, fireCalls, _ := mock.snapshot()
+	require.Equal(t, 2, startCalls)
+	require.Equal(t, 2, waitCalls)
+	require.Equal(t, 2, fireCalls)
+}
+
+func TestRepairSession_StartsSecondFreshRunWhenReviewFingerprintChangesAfterPush(t *testing.T) {
+	mock := newTestMock()
+	path := "x.go"
+	line := int32(12)
+	prNumber := int32(123)
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{
+			Id:               "s1",
+			State:            bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			RepoOriginUrl:    "git@github.com:recurser/bossanova.git",
+			PrNumber:         &prNumber,
+			PrDisplayHeadSha: "abc123",
+		}},
+		{{
+			Id:               "s1",
+			State:            bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+			DisplayStatus:    bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED,
+			RepoOriginUrl:    "git@github.com:recurser/bossanova.git",
+			PrNumber:         &prNumber,
+			PrDisplayHeadSha: "def456",
+		}},
+		{{
+			Id:               "s1",
+			State:            bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			RepoOriginUrl:    "git@github.com:recurser/bossanova.git",
+			PrNumber:         &prNumber,
+			PrDisplayHeadSha: "def456",
+		}},
+		{{
+			Id:               "s1",
+			State:            bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+			DisplayStatus:    bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING,
+			RepoOriginUrl:    "git@github.com:recurser/bossanova.git",
+			PrNumber:         &prNumber,
+			PrDisplayHeadSha: "def456",
+		}},
+	}
+	mock.reviewCommentsResp = &bossanovav1.GetReviewCommentsResponse{
+		Comments: []*bossanovav1.ReviewComment{
+			{Author: "reviewer", Body: "please fix the new failure", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+		},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED, false, "abc123", "", time.Time{}, "old-review-fingerprint", true)
+
+	startCalls, waitCalls, _, _ := mock.snapshot()
+	require.Equal(t, 2, startCalls)
+	require.Equal(t, 2, waitCalls)
+}
+
+// A reviewer (or PR agent) can leave a new actionable comment without the host
+// flipping the PR to REJECTED, so a green/PASSING PR can still carry fresh
+// feedback. The loop must notice the changed review fingerprint and start a
+// second repair run rather than declaring the PR clean and handing off.
+func TestRepairSession_StartsSecondFreshRunWhenNewReviewCommentOnGreenPR(t *testing.T) {
+	mock := newTestMock()
+	path := "x.go"
+	line := int32(7)
+	prNumber := int32(99)
+	const origin = "git@github.com:recurser/bossanova.git"
+	green := &bossanovav1.Session{
+		Id:               "s1",
+		State:            bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+		DisplayStatus:    bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING,
+		RepoOriginUrl:    origin,
+		PrNumber:         &prNumber,
+		PrDisplayHeadSha: "abc123",
+	}
+	checking := &bossanovav1.Session{
+		Id:               "s1",
+		State:            bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+		RepoOriginUrl:    origin,
+		PrNumber:         &prNumber,
+		PrDisplayHeadSha: "abc123",
+	}
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{checking}, // attempt 1: runRepairAttempt FIX_COMPLETE state check
+		{green},    // attempt 1: wait — PASSING, but a new comment exists -> needs repair
+		{checking}, // attempt 2: runRepairAttempt FIX_COMPLETE state check
+		{green},    // attempt 2: wait — PASSING, comment now matches baseline -> clean -> stop
+	}
+	// A single new comment whose fingerprint differs from the baseline passed in
+	// below, so the first post-repair assessment sees changed feedback.
+	mock.reviewCommentsResp = &bossanovav1.GetReviewCommentsResponse{
+		Comments: []*bossanovav1.ReviewComment{
+			{Author: "reviewer", Body: "address this", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+		},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "baseline-fingerprint", true)
+
+	startCalls, waitCalls, _, _ := mock.snapshot()
+	require.Equal(t, 2, startCalls, "new review comment on a green PR must start a second repair run")
+	require.Equal(t, 2, waitCalls)
+}
+
+func TestRepairSession_StopsBeforeSecondRunWhenPaused(t *testing.T) {
+	mock := newTestMock()
+	path := "x.go"
+	line := int32(7)
+	prNumber := int32(99)
+	const origin = "git@github.com:recurser/bossanova.git"
+	green := &bossanovav1.Session{
+		Id:               "s1",
+		State:            bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW,
+		DisplayStatus:    bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING,
+		RepoOriginUrl:    origin,
+		PrNumber:         &prNumber,
+		PrDisplayHeadSha: "abc123",
+	}
+	checking := &bossanovav1.Session{
+		Id:               "s1",
+		State:            bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+		RepoOriginUrl:    origin,
+		PrNumber:         &prNumber,
+		PrDisplayHeadSha: "abc123",
+	}
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{checking},
+		{green},
+	}
+	mock.reviewCommentsResp = &bossanovav1.GetReviewCommentsResponse{
+		Comments: []*bossanovav1.ReviewComment{
+			{Author: "reviewer", Body: "address this", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
+		},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+	mock.waitFunc = func(_ context.Context, _ *bossanovav1.WaitChatRunHostRequest) (*bossanovav1.WaitChatRunHostResponse, error) {
+		rm.mu.Lock()
+		rm.paused = true
+		rm.mu.Unlock()
+		return &bossanovav1.WaitChatRunHostResponse{}, nil
+	}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "baseline-fingerprint", true)
+
+	startCalls, waitCalls, _, _ := mock.snapshot()
+	require.Equal(t, 1, startCalls, "paused workflow must not start a second repair run")
+	require.Equal(t, 1, waitCalls)
+}
+
+// The loop is the primary infinite-loop guardrail: if every post-repair
+// assessment reports a fresh failure (changing head SHA each time), the
+// duplicate-input guard never trips and only the maxRepairLoopAttempts cap
+// stops it.
+func TestRepairSession_StopsAtMaxRepairLoopAttempts(t *testing.T) {
+	mock := newTestMock()
+	// Two sessions per attempt: the FIX_COMPLETE state check then the
+	// post-repair wait. Each wait reports FAILING with a brand-new head SHA, so
+	// postRepairInputChanged stays true on every iteration.
+	seqs := make([][]*bossanovav1.Session, 0, 2*maxRepairLoopAttempts)
+	for i := range 2 * maxRepairLoopAttempts {
+		seqs = append(seqs, []*bossanovav1.Session{{
+			Id:                 "s1",
+			State:              bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS,
+			DisplayStatus:      bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING,
+			DisplayHasFailures: true,
+			PrDisplayHeadSha:   fmt.Sprintf("sha-%d", i),
+		}})
+	}
+	mock.sessionSequences = seqs
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "sha-init", "", time.Time{}, "", false)
+
+	startCalls, _, _, _ := mock.snapshot()
+	require.Equal(t, maxRepairLoopAttempts, startCalls, "loop must stop at the max-attempts cap")
+}
+
+// When checks never settle (perpetually CHECKING), the wait hits its timeout and
+// reports pending. The loop must give up after the single attempt rather than
+// spinning or starting another run.
+func TestRepairSession_StopsWhenChecksNeverSettle(t *testing.T) {
+	mock := newTestMock()
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING}},
+	}
+	rm := newTestMonitor(mock)
+	// Short timeout, shorter poll: the wait polls the still-CHECKING PR a few
+	// times then exits on DeadlineExceeded.
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 5, PostRepairWaitMilliseconds: 25}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name",
+		bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", false)
+
+	startCalls, _, _, _ := mock.snapshot()
+	require.Equal(t, 1, startCalls, "a perpetually-pending PR must not spawn a second repair run")
 }
 
 func TestRepairSession_AlreadyExists(t *testing.T) {
@@ -475,12 +791,136 @@ func TestRepairSession_DoesNotPersistUnavailableReviewFingerprint(t *testing.T) 
 	assert.Nil(t, mock.recordOutcomeReqs[0].ReviewFingerprint, "unavailable fingerprint must not be persisted as an empty fingerprint")
 }
 
+func TestAssessPostRepairStatus_ClassifiesDisplayStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		session    *bossanovav1.Session
+		wantStatus postRepairStatus
+		wantReason string
+	}{
+		{
+			name: "checking is pending",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING,
+			},
+			wantStatus: postRepairStatusPending,
+			wantReason: "checks still running",
+		},
+		{
+			name: "passing is clean",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING,
+			},
+			wantStatus: postRepairStatusClean,
+			wantReason: "checks passed",
+		},
+		{
+			name: "approved is clean",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_APPROVED,
+			},
+			wantStatus: postRepairStatusClean,
+			wantReason: "checks passed",
+		},
+		{
+			name: "failing needs another repair",
+			session: &bossanovav1.Session{
+				Id:                 "s1",
+				DisplayStatus:      bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING,
+				DisplayHasFailures: true,
+			},
+			wantStatus: postRepairStatusNeedsRepair,
+			wantReason: "checks failed",
+		},
+		{
+			name: "conflict needs another repair",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CONFLICT,
+			},
+			wantStatus: postRepairStatusNeedsRepair,
+			wantReason: "merge conflict",
+		},
+		{
+			name: "rejected needs another repair",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_REJECTED,
+			},
+			wantStatus: postRepairStatusNeedsRepair,
+			wantReason: "review feedback",
+		},
+		{
+			name: "unspecified is unknown",
+			session: &bossanovav1.Session{
+				Id:            "s1",
+				DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_UNSPECIFIED,
+			},
+			wantStatus: postRepairStatusUnknown,
+			wantReason: "display status unspecified",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := assessPostRepairStatus(tt.session)
+
+			require.Equal(t, tt.wantStatus, got.Status)
+			require.Equal(t, tt.wantReason, got.Reason)
+			require.Equal(t, tt.session.GetDisplayStatus(), got.DisplayStatus)
+			require.Equal(t, tt.session.GetDisplayHasFailures(), got.HasFailures)
+		})
+	}
+}
+
+func TestPostRepairAssessment_WithReviewComparisonNewFingerprintNeedsRepair(t *testing.T) {
+	t.Parallel()
+
+	session := &bossanovav1.Session{
+		Id:            "s1",
+		DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING,
+	}
+
+	got := assessPostRepairStatus(session)
+	got.ReviewFingerprint = "new-review-fingerprint"
+	got.ReviewFingerprintAvailable = true
+	got = got.withReviewComparison("old-review-fingerprint", true)
+
+	require.Equal(t, postRepairStatusNeedsRepair, got.Status)
+	require.Equal(t, "new review feedback", got.Reason)
+}
+
+func TestPostRepairAssessment_WithReviewComparisonResolvedFingerprintStaysClean(t *testing.T) {
+	t.Parallel()
+
+	session := &bossanovav1.Session{
+		Id:            "s1",
+		DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING,
+	}
+
+	got := assessPostRepairStatus(session)
+	got.ReviewFingerprint = ""
+	got.ReviewFingerprintAvailable = true
+	got = got.withReviewComparison("old-review-fingerprint", true)
+
+	require.Equal(t, postRepairStatusClean, got.Status)
+	require.Equal(t, "checks passed", got.Reason)
+}
+
 func TestReviewFingerprintStableAcrossCommentOrder(t *testing.T) {
 	path := "proxy.go"
 	line := int32(164)
 	comments := []*bossanovav1.ReviewComment{
 		{Author: "bot", Body: "first", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_CHANGES_REQUESTED},
-		{Author: "bot", Body: "second"},
+		{Author: "bot", Body: "second", State: bossanovav1.ReviewState_REVIEW_STATE_COMMENTED},
 	}
 	reversed := []*bossanovav1.ReviewComment{comments[1], comments[0]}
 
@@ -505,6 +945,17 @@ func TestReviewFingerprintChangesWhenFeedbackChanges(t *testing.T) {
 	assert.NotEqual(t, before, after)
 }
 
+func TestReviewFingerprintIgnoresNonActionableReviewStates(t *testing.T) {
+	path := "proxy.go"
+	line := int32(164)
+	got, err := reviewFingerprint([]*bossanovav1.ReviewComment{
+		{Author: "reviewer", Body: "approved", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_APPROVED},
+		{Author: "reviewer", Body: "dismissed", Path: &path, Line: &line, State: bossanovav1.ReviewState_REVIEW_STATE_DISMISSED},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "", got)
+}
+
 func TestReviewFingerprintEmptyForNoComments(t *testing.T) {
 	got, err := reviewFingerprint(nil)
 	require.NoError(t, err)
@@ -514,11 +965,11 @@ func TestReviewFingerprintEmptyForNoComments(t *testing.T) {
 func TestReviewFingerprintDistinguishesOptionalFieldPresence(t *testing.T) {
 	path := "proxy.go"
 	emptyPath := ""
-	withMissingPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same"}})
+	withMissingPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same", State: bossanovav1.ReviewState_REVIEW_STATE_COMMENTED}})
 	require.NoError(t, err)
-	withEmptyPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same", Path: &emptyPath}})
+	withEmptyPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same", Path: &emptyPath, State: bossanovav1.ReviewState_REVIEW_STATE_COMMENTED}})
 	require.NoError(t, err)
-	withPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same", Path: &path}})
+	withPath, err := reviewFingerprint([]*bossanovav1.ReviewComment{{Author: "bot", Body: "same", Path: &path, State: bossanovav1.ReviewState_REVIEW_STATE_COMMENTED}})
 	require.NoError(t, err)
 
 	assert.NotEqual(t, withMissingPath, withEmptyPath)

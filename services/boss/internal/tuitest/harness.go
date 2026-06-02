@@ -96,19 +96,35 @@ type Harness struct {
 // Option configures the test harness.
 type Option func(*harnessConfig)
 
+// E2ECloudAccessState names the cloud subscription state that the e2e-tagged
+// boss binary should return from its fake cloud-access client.
+type E2ECloudAccessState string
+
+const (
+	E2ECloudAccessActive             E2ECloudAccessState = "active"
+	E2ECloudAccessNeedsSubscription  E2ECloudAccessState = "needs_subscription"
+	E2ECloudAccessPendingEntitlement E2ECloudAccessState = "pending_entitlement_refresh"
+	E2ECloudAccessBillingUnavailable E2ECloudAccessState = "billing_unavailable"
+)
+
 type harnessConfig struct {
-	repos          []*pb.Repo
-	sessions       []*pb.Session
-	chats          []*pb.ClaudeChat
-	cronJobs       []*pb.CronJob
-	prs            map[string][]*pb.PRSummary
-	trackerIssues  map[string][]*pb.TrackerIssue
-	agents         []*pb.AgentInfo
-	args           []string
-	loggedInEmail  string
-	terminalWidth  int
-	terminalHeight int
-	archiveDelay   time.Duration
+	repos                   []*pb.Repo
+	sessions                []*pb.Session
+	chats                   []*pb.ClaudeChat
+	cronJobs                []*pb.CronJob
+	prs                     map[string][]*pb.PRSummary
+	trackerIssues           map[string][]*pb.TrackerIssue
+	agents                  []*pb.AgentInfo
+	args                    []string
+	loggedInEmail           string
+	e2eLoginEmail           string
+	e2eCloudAccessSequence  []E2ECloudAccessState
+	e2eCloudCheckoutURL     string
+	e2eCloudCheckoutError   bool
+	e2eCloudRefreshInterval string
+	terminalWidth           int
+	terminalHeight          int
+	archiveDelay            time.Duration
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -182,6 +198,44 @@ func WithAgents(agents ...*pb.AgentInfo) Option {
 func WithLoggedInUser(email string) Option {
 	return func(c *harnessConfig) {
 		c.loggedInEmail = email
+	}
+}
+
+// WithE2ELogin makes the e2e-tagged boss subprocess complete the login flow
+// as the given email through its fake auth device-code client.
+func WithE2ELogin(email string) Option {
+	return func(c *harnessConfig) {
+		c.e2eLoginEmail = email
+	}
+}
+
+// WithE2ECloudAccessSequence configures the fake cloud-access client to return
+// the supplied subscription states in order.
+func WithE2ECloudAccessSequence(states ...E2ECloudAccessState) Option {
+	return func(c *harnessConfig) {
+		c.e2eCloudAccessSequence = append([]E2ECloudAccessState(nil), states...)
+	}
+}
+
+// WithE2ECloudCheckoutURL configures the fake cloud-access client checkout URL.
+func WithE2ECloudCheckoutURL(rawURL string) Option {
+	return func(c *harnessConfig) {
+		c.e2eCloudCheckoutURL = rawURL
+	}
+}
+
+// WithE2ECloudCheckoutError makes the fake cloud-access checkout request fail.
+func WithE2ECloudCheckoutError() Option {
+	return func(c *harnessConfig) {
+		c.e2eCloudCheckoutError = true
+	}
+}
+
+// WithE2ECloudRefreshInterval configures how often the fake cloud-access client
+// should report entitlement refreshes to the e2e-tagged boss subprocess.
+func WithE2ECloudRefreshInterval(interval string) Option {
+	return func(c *harnessConfig) {
+		c.e2eCloudRefreshInterval = interval
 	}
 }
 
@@ -259,6 +313,11 @@ func New(t *testing.T, opts ...Option) *Harness {
 		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
 			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
+			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL=") ||
 			strings.HasPrefix(e, "HOME=") ||
 			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
 			continue
@@ -276,6 +335,25 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	if cfg.loggedInEmail != "" {
 		env = append(env, "BOSS_AUTH_E2E_EMAIL="+cfg.loggedInEmail)
+	}
+	if cfg.e2eLoginEmail != "" {
+		env = append(env, "BOSS_AUTH_E2E_LOGIN_EMAIL="+cfg.e2eLoginEmail)
+	}
+	if len(cfg.e2eCloudAccessSequence) > 0 {
+		states := make([]string, 0, len(cfg.e2eCloudAccessSequence))
+		for _, state := range cfg.e2eCloudAccessSequence {
+			states = append(states, string(state))
+		}
+		env = append(env, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE="+strings.Join(states, ","))
+	}
+	if cfg.e2eCloudCheckoutURL != "" {
+		env = append(env, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL="+cfg.e2eCloudCheckoutURL)
+	}
+	if cfg.e2eCloudCheckoutError {
+		env = append(env, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=1")
+	}
+	if cfg.e2eCloudRefreshInterval != "" {
+		env = append(env, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL="+cfg.e2eCloudRefreshInterval)
 	}
 
 	width := 120

@@ -5,13 +5,67 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/posthog/posthog-go"
 	"github.com/recurser/bossalib/config"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
+
+// fakePostHogClient is a minimal posthog.Client used to drive postHogClient.Close.
+type fakePostHogClient struct {
+	closeErr error
+}
+
+func (f *fakePostHogClient) Close() error                           { return f.closeErr }
+func (f *fakePostHogClient) CloseWithContext(context.Context) error { return f.closeErr }
+func (f *fakePostHogClient) Enqueue(posthog.Message) error          { return nil }
+func (f *fakePostHogClient) IsFeatureEnabled(posthog.FeatureFlagPayload) (interface{}, error) {
+	return false, nil
+}
+func (f *fakePostHogClient) GetFeatureFlag(posthog.FeatureFlagPayload) (interface{}, error) {
+	return false, nil
+}
+func (f *fakePostHogClient) GetFeatureFlagResult(posthog.FeatureFlagPayload) (*posthog.FeatureFlagResult, error) {
+	return nil, nil
+}
+func (f *fakePostHogClient) GetFeatureFlagPayload(posthog.FeatureFlagPayload) (string, error) {
+	return "", nil
+}
+func (f *fakePostHogClient) GetRemoteConfigPayload(string) (string, error) { return "", nil }
+func (f *fakePostHogClient) GetAllFlags(posthog.FeatureFlagPayloadNoKey) (map[string]interface{}, error) {
+	return nil, nil
+}
+func (f *fakePostHogClient) EvaluateFlags(posthog.EvaluateFlagsPayload) (*posthog.FeatureFlagEvaluations, error) {
+	return nil, nil
+}
+func (f *fakePostHogClient) ReloadFeatureFlags() error                       { return nil }
+func (f *fakePostHogClient) GetFeatureFlags() ([]posthog.FeatureFlag, error) { return nil, nil }
+
+func TestPostHogClientCloseLogsOnlyOnError(t *testing.T) {
+	captureLog := func(closeErr error) string {
+		var buf bytes.Buffer
+		previous := log.Logger
+		log.Logger = zerolog.New(&buf)
+		t.Cleanup(func() { log.Logger = previous })
+
+		c := &postHogClient{inner: &fakePostHogClient{closeErr: closeErr}}
+		c.Close()
+		return buf.String()
+	}
+
+	// Real code logs only when Close returns an error. The mutated condition
+	// (err == nil) would invert this, so each branch must be observably distinct.
+	if got := captureLog(errors.New("close boom")); !strings.Contains(got, "posthog close failed") {
+		t.Fatalf("Close with error should log warning, got %q", got)
+	}
+	if got := captureLog(nil); strings.Contains(got, "posthog close failed") {
+		t.Fatalf("Close without error should not log warning, got %q", got)
+	}
+}
 
 func TestDefaultHostsUseFirstPartyDomains(t *testing.T) {
 	if ProductionPostHogHost != "https://k.bossanova.dev" {
@@ -193,6 +247,34 @@ func TestFilterPropertiesDropsUnsafeValues(t *testing.T) {
 	}
 	if props["ok"] != true || props["source"] != "cli" {
 		t.Fatalf("safe scalar properties not preserved: %#v", props)
+	}
+}
+
+func TestNewSelectsClientByEnabledAndToken(t *testing.T) {
+	cases := []struct {
+		name     string
+		cfg      Config
+		wantNoop bool
+	}{
+		{name: "disabled with token", cfg: Config{Enabled: false, ProjectToken: "phc_token"}, wantNoop: true},
+		{name: "enabled without token", cfg: Config{Enabled: true, ProjectToken: ""}, wantNoop: true},
+		{name: "disabled without token", cfg: Config{Enabled: false, ProjectToken: ""}, wantNoop: true},
+		{name: "enabled with token", cfg: Config{Enabled: true, ProjectToken: "phc_token", Host: "https://example.com"}, wantNoop: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := New(tc.cfg)
+			_, isNoop := client.(noopClient)
+			if isNoop != tc.wantNoop {
+				t.Fatalf("New(%+v) noop = %v, want %v (got %T)", tc.cfg, isNoop, tc.wantNoop, client)
+			}
+			if !tc.wantNoop {
+				if _, ok := client.(*postHogClient); !ok {
+					t.Fatalf("New(%+v) = %T, want *postHogClient", tc.cfg, client)
+				}
+				client.Close()
+			}
+		})
 	}
 }
 

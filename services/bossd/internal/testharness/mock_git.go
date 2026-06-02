@@ -41,6 +41,9 @@ type MockWorktreeManager struct {
 	// StatusFunc overrides the default Status behavior when set.
 	StatusFunc func(ctx context.Context, worktreePath string) (string, error)
 
+	// LatestCommitSubjectFunc overrides the default LatestCommitSubject behavior when set.
+	LatestCommitSubjectFunc func(ctx context.Context, worktreePath string) (string, error)
+
 	// DetectOriginURLResult is returned by DetectOriginURL.
 	DetectOriginURLResult string
 
@@ -240,6 +243,13 @@ func (m *MockWorktreeManager) SetPushError(err error) {
 func (m *MockWorktreeManager) Status(ctx context.Context, worktreePath string) (string, error) {
 	if m.StatusFunc != nil {
 		return m.StatusFunc(ctx, worktreePath)
+	}
+	return "", nil
+}
+
+func (m *MockWorktreeManager) LatestCommitSubject(ctx context.Context, worktreePath string) (string, error) {
+	if m.LatestCommitSubjectFunc != nil {
+		return m.LatestCommitSubjectFunc(ctx, worktreePath)
 	}
 	return "", nil
 }

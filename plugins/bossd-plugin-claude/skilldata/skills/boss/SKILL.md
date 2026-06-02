@@ -78,6 +78,17 @@ List chats (conversation turns) in a session.
 boss chats abc123
 ```
 
+### `boss session link-pr <session-id> <pr-number-or-url>`
+
+Attach an existing GitHub PR to a session. Use this to repair cron sessions
+where the agent already committed, pushed, and opened a PR before bossd
+finalized the run.
+
+```bash
+boss session link-pr abc123 477
+boss session link-pr abc123 https://github.com/owner/repo/pull/477
+```
+
 ### `boss archive <session-id>`
 
 Archive a session — keeps the branch but removes the worktree.
@@ -333,6 +344,13 @@ Show bossd's persisted view of a session's CI check snapshots, alongside the
 ```bash
 boss session checks abc123
 boss session checks abc123 --limit 10
+```
+
+Cron repair example:
+
+```bash
+boss ls --state finalizing,blocked
+boss session link-pr b4764f1684e33742 477
 ```
 
 ---

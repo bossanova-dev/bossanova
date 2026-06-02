@@ -200,6 +200,94 @@ func TestTailMoreLinesThanRequested(t *testing.T) {
 	}
 }
 
+// TestTailChunkedLongLinesArithmetic forces the chunked read path (file > 1MB)
+// with lines that are each LARGER than a single 64KB read chunk. Because every
+// newline lands in its own chunk pass, the exact value of `needed` in
+//
+//	needed := maxLines + 1   (tail.go:55)
+//
+// becomes load-bearing: the +1 accounts for the trailing newline that yields an
+// empty final segment. If the `+` mutates to `-`, `*` or `/` (ARITHMETIC_BASE),
+// or the break test `count >= needed` (tail.go:64) flips to `count < needed`
+// (CONDITIONALS_NEGATION), the loop stops one newline too early and the first
+// returned "line" is a truncated tail of a long line ("yyy...") rather than the
+// expected marker. We assert the exact first/last line prefixes so any such
+// early-stop is observable.
+func TestTailChunkedLongLinesArithmetic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "longlines.log")
+	const lineFill = 80000 // > 64KB chunk, so each line spans multiple chunk reads
+	const numLines = 16    // 16 * ~80KB = ~1.28MB, comfortably over the 1MB threshold
+	var sb strings.Builder
+	for i := range numLines {
+		fmt.Fprintf(&sb, "MARK%02d:%s\n", i, strings.Repeat("y", lineFill))
+	}
+	if sb.Len() <= 1<<20 {
+		t.Fatalf("test setup: file must exceed 1MB to hit chunked path, got %d", sb.Len())
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Tail(path, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected exactly 3 lines, got %d", len(lines))
+	}
+	// Last 3 markers of 16 lines (0..15) are MARK13, MARK14, MARK15.
+	if !strings.HasPrefix(lines[0], "MARK13:") {
+		t.Errorf("first tailed line = %.10q, want prefix %q", lines[0], "MARK13:")
+	}
+	if !strings.HasPrefix(lines[2], "MARK15:") {
+		t.Errorf("last tailed line = %.10q, want prefix %q", lines[2], "MARK15:")
+	}
+}
+
+// TestTailChunkedFewerLinesThanRequested forces the chunked read path with a
+// file that contains FEWER lines than requested, so the break condition on
+// tail.go:64 never fires and the loop must run all the way down to offset 0.
+//
+// This pins the loop-guard boundary `for offset > 0` (tail.go:56): the real
+// code terminates when offset reaches 0, but the CONDITIONALS_BOUNDARY mutant
+// `offset >= 0` would execute one more iteration with a zero-length read that
+// never advances offset, spinning forever. Under that mutant this test hangs
+// and is killed by the test timeout; under correct code it returns promptly
+// with all lines intact.
+func TestTailChunkedFewerLinesThanRequested(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fewlines.log")
+	const lineFill = 150000 // big lines so few of them still exceed 1MB
+	const numLines = 8
+	var sb strings.Builder
+	for i := range numLines {
+		fmt.Fprintf(&sb, "ROW%02d:%s\n", i, strings.Repeat("z", lineFill))
+	}
+	if sb.Len() <= 1<<20 {
+		t.Fatalf("test setup: file must exceed 1MB to hit chunked path, got %d", sb.Len())
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ask for far more lines than exist so the newline-count break never trips
+	// and the loop is forced to walk to offset 0.
+	got, err := Tail(path, 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) != numLines {
+		t.Fatalf("expected all %d lines, got %d", numLines, len(lines))
+	}
+	if !strings.HasPrefix(lines[0], "ROW00:") {
+		t.Errorf("first line = %.10q, want prefix %q", lines[0], "ROW00:")
+	}
+	if !strings.HasPrefix(lines[numLines-1], "ROW07:") {
+		t.Errorf("last line = %.10q, want prefix %q", lines[numLines-1], "ROW07:")
+	}
+}
+
 // TestTailLargeFileExactRequestedLines covers the chunked read path's
 // `needed = maxLines + 1` arithmetic — if mutated to `maxLines - 1` or
 // `maxLines * 1`, the loop would terminate too early and return a

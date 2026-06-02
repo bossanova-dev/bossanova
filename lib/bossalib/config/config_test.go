@@ -784,6 +784,57 @@ func TestDedupPluginConfigs(t *testing.T) {
 	}
 }
 
+// TestDedupPluginConfigs_SingleEntryReturnsInputUnchanged pins the len(cfgs)<=1
+// boundary: a single-entry slice must take the early-return path and hand back
+// the original backing array (not a freshly built copy). If the boundary is
+// mutated to len(cfgs)<1, a single entry would fall through into the dedup loop
+// where out is allocated with make, so the returned slice would no longer share
+// storage with the input.
+func TestDedupPluginConfigs_SingleEntryReturnsInputUnchanged(t *testing.T) {
+	in := []PluginConfig{{Name: "repair", Path: "/a", Enabled: true}}
+	got, dropped := DedupPluginConfigs(in)
+	if dropped {
+		t.Fatalf("dropped = true, want false for single entry")
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	if &got[0] != &in[0] {
+		t.Fatalf("single entry must return the same backing slice (early return), got a copy")
+	}
+}
+
+// TestSetPluginConfigString_ExistingPluginBothBranches covers both sides of the
+// `value == ""` branch for a plugin that already exists in s.Plugins: a
+// non-empty value sets the key, and an empty value deletes it. Negating the
+// comparison would swap these behaviours.
+func TestSetPluginConfigString_ExistingPluginBothBranches(t *testing.T) {
+	s := Settings{Plugins: []PluginConfig{
+		{Name: "codex", Config: map[string]string{"existing": "keep"}},
+	}}
+
+	// Non-empty value: should set the key without deleting others.
+	SetPluginConfigString(&s, "codex", "model", "o1-pro")
+	if got := PluginConfigString(&s, "codex", "model"); got != "o1-pro" {
+		t.Fatalf("after set: model = %q, want o1-pro", got)
+	}
+	if got := PluginConfigString(&s, "codex", "existing"); got != "keep" {
+		t.Fatalf("non-empty set must not delete other keys: existing = %q, want keep", got)
+	}
+
+	// Empty value: should delete the key, leaving others intact.
+	SetPluginConfigString(&s, "codex", "model", "")
+	if got := PluginConfigString(&s, "codex", "model"); got != "" {
+		t.Fatalf("after delete: model = %q, want empty", got)
+	}
+	if _, ok := s.Plugins[0].Config["model"]; ok {
+		t.Fatalf("empty value must delete the key from the config map")
+	}
+	if got := PluginConfigString(&s, "codex", "existing"); got != "keep" {
+		t.Fatalf("delete must not remove other keys: existing = %q, want keep", got)
+	}
+}
+
 func TestSettings_ErrorTrackingEnabled_Default(t *testing.T) {
 	var s Settings
 	if s.ErrorTrackingEnabled {

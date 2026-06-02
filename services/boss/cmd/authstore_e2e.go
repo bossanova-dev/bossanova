@@ -30,13 +30,19 @@ func resolveE2ETokenStore() auth.TokenStore {
 	if email == "" {
 		return &memoryTokenStore{}
 	}
-	return &memoryTokenStore{
-		tokens: &auth.Tokens{
-			AccessToken:  "e2e-access-token",
-			RefreshToken: "e2e-refresh-token",
-			Email:        email,
-			ExpiresAt:    time.Now().Add(1 * time.Hour),
-		},
+	return &memoryTokenStore{tokens: e2eTokensForEmail(email)}
+}
+
+func resolveE2ELoginEmail() string {
+	return os.Getenv("BOSS_AUTH_E2E_LOGIN_EMAIL")
+}
+
+func e2eTokensForEmail(email string) *auth.Tokens {
+	return &auth.Tokens{
+		AccessToken:  "e2e-access-token",
+		RefreshToken: "e2e-refresh-token",
+		Email:        email,
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
 	}
 }
 

@@ -4,12 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 // --- Mock token store ---
 
@@ -674,6 +681,46 @@ func TestRefreshAccessToken_KeepsOldRefreshIfNotReissued(t *testing.T) {
 	}
 	if tokens.RefreshToken != "keep-me" {
 		t.Errorf("expected old refresh token to be preserved, got %q", tokens.RefreshToken)
+	}
+}
+
+func TestRefreshAccessToken_UsesInjectedHTTPClient(t *testing.T) {
+	origBase := workosAPIBase
+	origClient := workosHTTPClient
+	t.Cleanup(func() {
+		workosAPIBase = origBase
+		workosHTTPClient = origClient
+	})
+	workosAPIBase = "https://workos.test"
+	called := false
+	workosHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			called = true
+			if req.URL.String() != "https://workos.test/user_management/authenticate" {
+				t.Fatalf("url = %q", req.URL.String())
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"access_token":"fresh-access",
+					"refresh_token":"fresh-refresh",
+					"expires_in":7200,
+					"user":{"email":"test@example.com"}
+				}`)),
+			}, nil
+		}),
+	}
+
+	tokens, err := RefreshAccessToken(context.Background(), Config{ClientID: "c"}, "old-refresh")
+	if err != nil {
+		t.Fatalf("RefreshAccessToken returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("injected HTTP client was not called")
+	}
+	if tokens.AccessToken != "fresh-access" {
+		t.Fatalf("access token = %q, want fresh-access", tokens.AccessToken)
 	}
 }
 

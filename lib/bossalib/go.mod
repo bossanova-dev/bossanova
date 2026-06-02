@@ -6,6 +6,7 @@ require (
 	connectrpc.com/connect v1.19.1
 	github.com/99designs/keyring v1.2.2
 	github.com/getsentry/sentry-go v0.46.2
+	github.com/gofrs/flock v0.13.0
 	github.com/hashicorp/go-plugin v1.7.0
 	github.com/posthog/posthog-go v1.12.5
 	github.com/pressly/goose/v3 v3.27.0
@@ -32,7 +33,7 @@ require (
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
-	github.com/kr/pretty v0.3.1 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect

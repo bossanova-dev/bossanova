@@ -63,6 +63,11 @@ type cloudAccessClient interface {
 	RefreshCloudEntitlements(ctx context.Context) (*pb.CloudAccessStatus, error)
 }
 
+type appCloudAccessClient interface {
+	cloudAccessClient
+	CreateBillingPortalSession(ctx context.Context, returnURL string) (string, error)
+}
+
 var openCloudCheckoutURL = auth.OpenBrowser
 
 type cloudGateError struct {
@@ -116,7 +121,11 @@ func newAuthManager(cmd *cobra.Command) (*auth.Manager, error) {
 		return nil, fmt.Errorf("BOSS_WORKOS_CLIENT_ID must be set for cloud authentication")
 	}
 
-	return auth.NewManager(store, cfg), nil
+	mgr := auth.NewManager(store, cfg)
+	if email := resolveE2ELoginEmail(); email != "" {
+		mgr.SetE2ELogin(email)
+	}
+	return mgr, nil
 }
 
 // allowInsecureKeyring reads the --allow-insecure-keyring persistent flag if
@@ -160,12 +169,15 @@ func runLogin(cmd *cobra.Command) error {
 	notifyDaemonAuthChange("login")
 
 	if cloudURL := cloudURL(cmd); cloudURL != "" {
-		token, err := mgr.AccessToken(ctx)
-		if err != nil {
-			return fmt.Errorf("access token: %w", err)
+		cloudAccess := resolveE2ECloudAccessClient()
+		if cloudAccess == nil {
+			token, err := mgr.AccessToken(ctx)
+			if err != nil {
+				return fmt.Errorf("access token: %w", err)
+			}
+			cloudAccess = client.NewRemote(cloudURL, token)
 		}
-		cloud := client.NewRemote(cloudURL, token)
-		active := checkLoginCloudGateWithTelemetry(ctx, cloud, os.Stdout, commandTelemetryClient(cmd))
+		active := checkLoginCloudGateWithTelemetry(ctx, cloudAccess, os.Stdout, commandTelemetryClient(cmd))
 		if !active {
 			return nil
 		}
@@ -199,7 +211,12 @@ type authCloudAccessClient struct {
 	url string
 }
 
-func newAuthCloudAccessClient(mgr *auth.Manager, url string) *authCloudAccessClient {
+func newAuthCloudAccessClient(mgr *auth.Manager, url string) appCloudAccessClient {
+	if cloudAccess := resolveE2ECloudAccessClient(); cloudAccess != nil {
+		if appCloudAccess, ok := cloudAccess.(appCloudAccessClient); ok {
+			return appCloudAccess
+		}
+	}
 	return &authCloudAccessClient{mgr: mgr, url: url}
 }
 

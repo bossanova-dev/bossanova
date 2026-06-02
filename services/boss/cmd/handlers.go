@@ -112,6 +112,12 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 	}
 	authMgr := newOptionalAuthManager(cmd)
 	app := views.NewApp(c, authMgr)
+	if resolveE2ELoginEmail() != "" || resolveE2ECloudAccessClient() != nil {
+		views.DisableExternalBrowserForE2E()
+	}
+	if interval := e2eCloudRefreshInterval(); interval > 0 {
+		views.SetSubscriptionPollIntervalOverride(interval)
+	}
 	app.WithTelemetry(commandTelemetryClient(cmd))
 	if authMgr != nil {
 		if cloud := cloudURL(cmd); cloud != "" {
@@ -690,6 +696,32 @@ func runResurrect(cmd *cobra.Command, sessionID string) error {
 		return fmt.Errorf("resurrect session: %w", err)
 	}
 	fmt.Printf("Session %s resurrected (%s).\n", sess.Id, sess.Title)
+	return nil
+}
+
+func runSessionLinkPR(cmd *cobra.Command, sessionID, prRef string) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	sessionID, err = resolveSessionID(c, ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	sess, err := c.LinkSessionPR(ctx, sessionID, prRef)
+	if err != nil {
+		return fmt.Errorf("link PR: %w", err)
+	}
+	if sess.PrUrl != nil && *sess.PrUrl != "" {
+		fmt.Printf("Session %s linked to PR %s.\n", sess.Id, *sess.PrUrl)
+		return nil
+	}
+	if sess.PrNumber != nil {
+		fmt.Printf("Session %s linked to PR #%d.\n", sess.Id, *sess.PrNumber)
+		return nil
+	}
+	fmt.Printf("Session %s linked to PR.\n", sess.Id)
 	return nil
 }
 

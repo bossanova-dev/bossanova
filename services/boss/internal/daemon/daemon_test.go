@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -41,6 +43,48 @@ func TestIsSocketReachable(t *testing.T) {
 	// Test with a non-existent socket.
 	if isSocketReachable("/tmp/nonexistent-socket-12345.sock") {
 		t.Error("expected socket to be unreachable")
+	}
+}
+
+// TestIsSocketReachable_LiveSocket verifies that isSocketReachable returns
+// true for a real, accepting Unix socket. This exercises the dial-timeout
+// arithmetic on daemon.go:110 (`500*time.Millisecond`).
+//
+// Catches daemon.go:110 ARITHMETIC_BASE: if the `*` is swapped to `-`, the
+// expression becomes `500-time.Millisecond`, a *negative* duration. A
+// negative timeout makes net.DialTimeout fail immediately (deadline already
+// expired) even against a live, accepting socket — so isSocketReachable
+// would wrongly return false. The real 500ms timeout connects successfully
+// and returns true, so this assertion fails under the mutant and passes
+// against the real code.
+func TestIsSocketReachable_LiveSocket(t *testing.T) {
+	// Use a short socket path: macOS limits sun_path to ~104 bytes, and
+	// t.TempDir() paths can be long.
+	sockPath := filepath.Join("/tmp", "bs-"+strconv.Itoa(os.Getpid())+".sock")
+	if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove stale socket: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	// Accept and immediately close connections so dials succeed.
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	if !isSocketReachable(sockPath) {
+		t.Errorf("expected live accepting socket %q to be reachable", sockPath)
 	}
 }
 

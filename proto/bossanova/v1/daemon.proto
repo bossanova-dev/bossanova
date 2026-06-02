@@ -36,6 +36,7 @@ service DaemonService {
   rpc MergeSession(MergeSessionRequest) returns (MergeSessionResponse);
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
   rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
+  rpc LinkSessionPR(LinkSessionPRRequest) returns (LinkSessionPRResponse);
 
   // Archive / resurrect
   rpc ArchiveSession(ArchiveSessionRequest) returns (ArchiveSessionResponse);
@@ -365,6 +366,15 @@ message UpdateSessionRequest {
 }
 
 message UpdateSessionResponse {
+  Session session = 1;
+}
+
+message LinkSessionPRRequest {
+  string id = 1;
+  string pr = 2;
+}
+
+message LinkSessionPRResponse {
   Session session = 1;
 }
 

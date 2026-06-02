@@ -49,6 +49,90 @@ func TestChatInputRenderPromptPreservesRawText(t *testing.T) {
 	}
 }
 
+func TestCronChatInputFromPromptConvertsLeadingSlashCommand(t *testing.T) {
+	input := cronChatInputFromPrompt("/bs-technical-debt")
+	if input.Prompt != "" {
+		t.Fatalf("Prompt = %q, want empty", input.Prompt)
+	}
+	if input.Command != "/bs-technical-debt" {
+		t.Fatalf("Command = %q, want /bs-technical-debt", input.Command)
+	}
+}
+
+func TestCronChatInputFromPromptConvertsLeadingDollarCommand(t *testing.T) {
+	input := cronChatInputFromPrompt("$bs-mutation-test")
+	if input.Prompt != "" {
+		t.Fatalf("Prompt = %q, want empty", input.Prompt)
+	}
+	if input.Command != "$bs-mutation-test" {
+		t.Fatalf("Command = %q, want $bs-mutation-test", input.Command)
+	}
+}
+
+func TestCronChatInputFromPromptTrimsSurroundingWhitespace(t *testing.T) {
+	input := cronChatInputFromPrompt("  /bs-mutation-test  ")
+	if input.Prompt != "" {
+		t.Fatalf("Prompt = %q, want empty", input.Prompt)
+	}
+	if input.Command != "/bs-mutation-test" {
+		t.Fatalf("Command = %q, want /bs-mutation-test", input.Command)
+	}
+}
+
+// Embedded commands must NOT be extracted: doing so silently truncates the
+// surrounding free-text instruction, which is the user's actual cron plan.
+func TestCronChatInputFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {
+	prompt := "Run /bs-mutation-test"
+	input := cronChatInputFromPrompt(prompt)
+	if input.Prompt != prompt {
+		t.Fatalf("Prompt = %q, want %q", input.Prompt, prompt)
+	}
+	if input.Command != "" {
+		t.Fatalf("Command = %q, want empty", input.Command)
+	}
+}
+
+// A single-line free-text prompt containing a slash (path/URL) or dollar
+// (price) must stay a prompt rather than being truncated into a bogus command.
+func TestCronChatInputFromPromptKeepsFreeTextWithSlashOrDollar(t *testing.T) {
+	for _, prompt := range []string{
+		"Review the auth changes in /internal/auth",
+		"Add a $5 discount banner",
+		"Summarize https://example.com/foo",
+	} {
+		input := cronChatInputFromPrompt(prompt)
+		if input.Prompt != prompt {
+			t.Fatalf("prompt %q: Prompt = %q, want unchanged", prompt, input.Prompt)
+		}
+		if input.Command != "" {
+			t.Fatalf("prompt %q: Command = %q, want empty", prompt, input.Command)
+		}
+	}
+}
+
+func TestCronChatInputFromPromptKeepsMultilinePrompt(t *testing.T) {
+	prompt := "/bs-mutation-test\nwith extra notes"
+	input := cronChatInputFromPrompt(prompt)
+	if input.Prompt != prompt {
+		t.Fatalf("Prompt = %q, want %q", input.Prompt, prompt)
+	}
+	if input.Command != "" {
+		t.Fatalf("Command = %q, want empty", input.Command)
+	}
+}
+
+func TestCronChatInputFromPromptKeepsEmptyAndWhitespace(t *testing.T) {
+	for _, prompt := range []string{"", "   ", "\t"} {
+		input := cronChatInputFromPrompt(prompt)
+		if input.Command != "" {
+			t.Fatalf("prompt %q: Command = %q, want empty", prompt, input.Command)
+		}
+		if input.Prompt != prompt {
+			t.Fatalf("prompt %q: Prompt = %q, want unchanged", prompt, input.Prompt)
+		}
+	}
+}
+
 // startTmuxChatHarness wires up everything Lifecycle.StartTmuxChat needs:
 // in-memory stores, a fake tmux client, an agent runner client returning
 // realistic argv, and an agentLogsDir. Each test instantiates one of
@@ -1094,6 +1178,49 @@ func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 		if !h.tmuxFake.hasSubcommand(sub) {
 			t.Errorf("expected tmux %s call (SendPlan), none recorded", sub)
 		}
+	}
+}
+
+func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.agentFake.CommandPrefix = "$"
+
+	h.sessions.sessions["sess-1"].Plan = "/bs-mutation-test"
+	h.sessions.sessions["sess-1"].Title = "Nightly mutation test"
+
+	_, err := h.lc.startCronTmuxChat(ctx, "sess-1", StartSessionOpts{}, h.sessions.sessions["sess-1"], nil)
+	if err != nil {
+		t.Fatalf("startCronTmuxChat: %v", err)
+	}
+
+	if h.tmuxFake.hasSubcommand("load-buffer") || h.tmuxFake.hasSubcommand("paste-buffer") {
+		t.Fatal("cron command input should use literal send-keys, not bracketed paste")
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetInitialCommand(); got != "/bs-mutation-test" {
+		t.Fatalf("InitialCommand = %q, want /bs-mutation-test", got)
+	}
+
+	var sendKeys []recordedTmuxCall
+	h.tmuxFake.mu.Lock()
+	for _, call := range h.tmuxFake.calls {
+		if call.subcommand == "send-keys" {
+			sendKeys = append(sendKeys, call)
+		}
+	}
+	h.tmuxFake.mu.Unlock()
+
+	if len(sendKeys) < 2 {
+		t.Fatalf("expected literal text + Enter send-keys calls, got %d", len(sendKeys))
+	}
+	tmuxName := tmux.ChatSessionName("repo-abcdef12", h.chats.createCalls[0].AgentSessionID)
+	textCall := sendKeys[len(sendKeys)-2]
+	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$bs-mutation-test"}) {
+		t.Fatalf("literal send-keys args = %v", textCall.args)
+	}
+	enterCall := sendKeys[len(sendKeys)-1]
+	if !slices.Equal(enterCall.args, []string{"-t", tmuxName, "Enter"}) {
+		t.Fatalf("Enter send-keys args = %v", enterCall.args)
 	}
 }
 

@@ -37,7 +37,8 @@ type FinalizeResult struct {
 // state transition (ImplementingPlan → Finalizing) guarded by rows_affected.
 //
 // Outcome classification, in the order it's evaluated:
-//   - deleted_no_changes       — empty git status → worktree + session removed
+//   - pr_created               — empty git status but branch already has an open PR, or branch has committed work that needs a PR
+//   - deleted_no_changes       — empty git status and no committed branch work → worktree + session removed
 //   - cleanup_failed           — empty status but worktree removal errored
 //   - pr_skipped_no_github     — changes present, origin is not GitHub
 //   - pr_failed                — EnsurePR returned an error
@@ -278,6 +279,12 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	status = stripBossdManagedFilesWith(status, managedPaths)
 
 	if strings.TrimSpace(status) == "" {
+		if result := l.attachExistingPRIfCleanBranchHasOne(ctx, session); result != nil {
+			return result
+		}
+		if result := l.createPRIfCleanBranchHasCommittedWork(ctx, session); result != nil {
+			return result
+		}
 		return l.finalizeNoChanges(ctx, session)
 	}
 
@@ -318,6 +325,170 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	}
 
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
+}
+
+func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, session *models.Session) *FinalizeResult {
+	repo, err := l.repos.Get(ctx, session.RepoID)
+	if err != nil {
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomeCleanupFailed,
+			Err:     fmt.Errorf("get repo: %w", err),
+		}
+	}
+	if !libvcs.IsGitHubURL(repo.OriginURL) {
+		return nil
+	}
+
+	found, err := l.attachOpenPRForBranch(ctx, session.ID, session, repo)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Str("branch", session.BranchName).
+			Msg("finalize: branch PR lookup failed; preserving worktree")
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomePRFailed,
+			Err:     err,
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	l.logger.Info().
+		Str("session", session.ID).
+		Str("branch", session.BranchName).
+		Msg("finalize: attached existing branch PR for clean worktree")
+	if err := l.StartFinalizeChat(ctx, session.ID); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Msg("finalize: chat spawn failed after attaching existing PR")
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomeChatSpawnFailed,
+			Err:     err,
+		}
+	}
+	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
+}
+
+func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, session *models.Session) *FinalizeResult {
+	repo, err := l.repos.Get(ctx, session.RepoID)
+	if err != nil {
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomeCleanupFailed,
+			Err:     fmt.Errorf("get repo: %w", err),
+		}
+	}
+	originURL, err := l.originURLIfConfigured(ctx, repo)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Str("branch", session.BranchName).
+			Msg("finalize: origin lookup failed for clean committed branch; preserving worktree")
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomePRFailed,
+			Err:     err,
+		}
+	}
+	isGitHubOrigin := libvcs.IsGitHubURL(originURL)
+	hasCommittedWork, err := l.cleanBranchHasCommittedWork(ctx, session, isGitHubOrigin)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Str("branch", session.BranchName).
+			Msg("finalize: committed work lookup failed; preserving worktree")
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomePRFailed,
+			Err:     err,
+		}
+	}
+	if !hasCommittedWork {
+		return nil
+	}
+
+	if !isGitHubOrigin {
+		l.logger.Info().
+			Str("session", session.ID).
+			Str("branch", session.BranchName).
+			Str("origin", originURL).
+			Msg("finalize: clean branch has committed work but origin is not GitHub; preserving worktree")
+		return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub}
+	}
+
+	l.logger.Info().
+		Str("session", session.ID).
+		Str("branch", session.BranchName).
+		Msg("finalize: clean branch has committed work; creating PR")
+	if err := l.EnsurePR(ctx, session.ID); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Msg("finalize: EnsurePR failed for clean committed branch; preserving worktree")
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomePRFailed,
+			Err:     err,
+		}
+	}
+
+	if err := l.StartFinalizeChat(ctx, session.ID); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Msg("finalize: chat spawn failed for clean committed branch; PR already created, preserving worktree")
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomeChatSpawnFailed,
+			Err:     err,
+		}
+	}
+
+	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
+}
+
+func (l *Lifecycle) cleanBranchHasCommittedWork(ctx context.Context, session *models.Session, fetchBase bool) (bool, error) {
+	if session.BranchName == "" {
+		return false, nil
+	}
+	if session.BaseBranch == "" {
+		return false, fmt.Errorf("base branch is empty for clean branch %q", session.BranchName)
+	}
+
+	baseRef := session.BaseBranch
+	if fetchBase {
+		if err := l.worktrees.FetchBase(ctx, session.WorktreePath, session.BaseBranch); err != nil {
+			return false, fmt.Errorf("fetch base branch: %w", err)
+		}
+		baseRef = "refs/remotes/origin/" + session.BaseBranch
+	}
+	headInBase, err := l.worktrees.IsAncestor(ctx, session.WorktreePath, "HEAD", baseRef)
+	if err != nil {
+		return false, fmt.Errorf("check branch commits against %s: %w", baseRef, err)
+	}
+	return !headInBase, nil
+}
+
+func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo) (string, error) {
+	if repo.OriginURL != "" {
+		return repo.OriginURL, nil
+	}
+
+	url, err := l.worktrees.DetectOriginURL(ctx, repo.LocalPath)
+	if err != nil {
+		return "", fmt.Errorf("detect origin URL: %w", err)
+	}
+	if url == "" {
+		return "", nil
+	}
+
+	if _, err := l.repos.Update(ctx, repo.ID, db.UpdateRepoParams{
+		OriginURL: &url,
+	}); err != nil {
+		return "", fmt.Errorf("persist origin URL: %w", err)
+	}
+
+	l.logger.Info().
+		Str("repo", repo.ID).
+		Str("originURL", url).
+		Msg("re-detected and persisted origin URL")
+
+	repo.OriginURL = url
+	return url, nil
 }
 
 // finalizeNoChanges handles the deleted_no_changes branch: remove the

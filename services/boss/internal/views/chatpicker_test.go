@@ -112,6 +112,9 @@ func (s *chatPickerStub) RemoveSession(context.Context, string) error           
 func (s *chatPickerStub) UpdateSession(context.Context, *pb.UpdateSessionRequest) (*pb.Session, error) {
 	panic("unused")
 }
+func (s *chatPickerStub) LinkSessionPR(context.Context, string, string) (*pb.Session, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) ArchiveSession(context.Context, string) (*pb.Session, error) {
 	panic("unused")
 }

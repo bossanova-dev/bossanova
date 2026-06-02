@@ -37,8 +37,10 @@ type Config struct {
 
 // Manager coordinates token loading, refresh, and persistence.
 type Manager struct {
-	store  TokenStore
-	config Config
+	store      TokenStore
+	config     Config
+	startLogin func(context.Context) (*DeviceCodeResponse, error)
+	pollLogin  func(context.Context, string, int) error
 }
 
 // NewManager creates a Manager with the given store and WorkOS config.
@@ -61,18 +63,13 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 		return tokens.AccessToken, nil
 	}
 
-	// Token expired — try refresh.
 	if tokens.RefreshToken == "" {
 		return "", fmt.Errorf("access token expired and no refresh token available; run 'boss login'")
 	}
 
-	refreshed, err := RefreshAccessToken(ctx, m.config, tokens.RefreshToken)
+	refreshed, err := m.refreshStoredTokens(ctx, false)
 	if err != nil {
 		return "", fmt.Errorf("refresh token: %w (run 'boss login' to re-authenticate)", err)
-	}
-
-	if err := m.store.Save(refreshed); err != nil {
-		return "", fmt.Errorf("save refreshed tokens: %w", err)
 	}
 
 	return refreshed.AccessToken, nil
@@ -89,28 +86,27 @@ func (m *Manager) Login(ctx context.Context) error {
 
 // Refresh refreshes stored credentials using the saved refresh token.
 func (m *Manager) Refresh(ctx context.Context) error {
-	tokens, err := m.store.Load()
-	if err != nil {
-		return err
-	}
-	if tokens.RefreshToken == "" {
-		return fmt.Errorf("no refresh token available; run 'boss login'")
-	}
-	refreshed, err := RefreshAccessToken(ctx, m.config, tokens.RefreshToken)
+	_, err := m.refreshStoredTokens(ctx, true)
 	if err != nil {
 		return fmt.Errorf("refresh token: %w", err)
 	}
-	return m.store.Save(refreshed)
+	return nil
 }
 
 // StartLogin initiates the device code flow and returns the device code
 // response without printing to stdout (safe for TUI use).
 func (m *Manager) StartLogin(ctx context.Context) (*DeviceCodeResponse, error) {
+	if m.startLogin != nil {
+		return m.startLogin(ctx)
+	}
 	return RequestDeviceCode(ctx, m.config)
 }
 
 // PollLogin polls for token completion and saves the resulting tokens.
 func (m *Manager) PollLogin(ctx context.Context, deviceCode string, interval int) error {
+	if m.pollLogin != nil {
+		return m.pollLogin(ctx, deviceCode, interval)
+	}
 	result, err := PollForToken(ctx, m.config, deviceCode, interval)
 	if err != nil {
 		return err

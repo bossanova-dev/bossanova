@@ -215,6 +215,9 @@ func (m *cleanupWorktreeManager) Push(context.Context, string, string) error {
 func (m *cleanupWorktreeManager) Status(context.Context, string) (string, error) {
 	panic("not used")
 }
+func (m *cleanupWorktreeManager) LatestCommitSubject(context.Context, string) (string, error) {
+	panic("not used")
+}
 func (m *cleanupWorktreeManager) Clone(context.Context, string, string) error {
 	panic("not used")
 }

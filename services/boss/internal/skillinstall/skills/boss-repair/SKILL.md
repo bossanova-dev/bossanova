@@ -206,8 +206,10 @@ Before running local checks, discover this repo's commands from project instruct
    - `probe_status=failed`: the probe failed. Fix the command or auth issue; do not report "no review feedback."
    - `probe_status=suspicious_zero`: `latestReviews` contains `COMMENTED`, but both probes found zero comments. Retry with the explicit repo and PR number before concluding there is no review feedback.
    - Empty stdout from any wrapped/batched command is a probe failure, not a zero-comment result.
-   - REST and GraphQL should agree on comment presence. If REST finds inline comments but GraphQL returns zero threads, use the REST comments as evidence of feedback and retry GraphQL before resolving thread state.
-   - Only conclude "no review feedback" when the probe prints `probe_status=ok`, `inline_comments=0`, `review_threads=0`, and there is no `COMMENTED` latest review.
+   - Trust `repair_status` as the normalized result when `probe_status=ok`.
+   - `repair_status=clean`: there are no unresolved review threads. Historical REST `inline_comments`, resolved GraphQL `review_threads`, and `COMMENTED` latest reviews do not require action by themselves.
+   - `repair_status=needs_repair`: handle every printed unresolved thread.
+   - `repair_status=unknown`: REST and GraphQL disagree or thread state is unavailable. Retry with explicit repo/pr before concluding there is no review feedback.
 
 2. For each unresolved thread, triage into one of three categories:
 
@@ -293,13 +295,19 @@ After applying the repair:
    git status     # Should show clean working tree
    ```
 
-2. Verify PR status has improved:
+2. Verify the committed fix is pushed to origin:
+
+   ```bash
+   git status -sb  # Branch should not be ahead of origin
+   ```
+
+3. Report remote PR state without waiting for checks:
 
    ```bash
    gh pr view
    ```
 
-3. If checks are pending, note that in output:
+4. If checks are pending, note that in output:
    ```
    ✓ Repair applied and pushed
    ⏳ Waiting for checks to complete
@@ -446,19 +454,23 @@ Result: ✓ Review feedback addressed
 This skill is invoked by the repair plugin via:
 
 ```go
-CreateAttempt(ctx, &CreateAttemptRequest{
-    WorkflowId: workflowID,
-    SkillName:  "boss-repair",
-    Input:      "/boss-repair",
-    WorkDir:    sessionWorkDir,
+StartChatRun(ctx, &StartChatRunHostRequest{
+    SessionId: sessionID,
+    Command:   "boss-repair",
+    Title:     "Repair: " + sessionName,
 })
 ```
 
 The plugin:
 
 - Detects red status changes (Failing/Conflict/Rejected)
-- Enforces 5-minute cooldown between attempts
-- Prevents concurrent repairs for the same session
+- Applies exponential backoff between attempts, persisted so a daemon restart
+  cannot reset the schedule
+- Prevents concurrent repairs for the same session (the guard is held across the
+  whole wait-and-loop, not just a single run)
+- After each run, waits for the PR checks to settle and loops — up to a bounded
+  number of attempts — until the PR is clean, the failing signal stops changing,
+  or the wait times out
 - Calls `FireSessionEvent(FixComplete)` on success
 
 This skill should:
@@ -478,21 +490,26 @@ Before completing the repair:
 - [ ] Appropriate repair strategy executed
 - [ ] Local formatting and test gates passed
 - [ ] Changes committed with descriptive message
-- [ ] Changes pushed to origin
-- [ ] PR status verified (improved or checks pending)
+- [ ] Changes pushed to origin; post-push waiting is delegated to the repair plugin
 - [ ] Summary provided with actions taken
 
 ---
 
 ## Success Criteria
 
-The repair is successful when:
+One repair run is successful when:
 
-1. ✅ Changes are pushed to the PR branch
-2. ✅ No conflicts remain (`git status` is clean)
-3. ✅ Local tests pass (repo test command succeeds)
-4. ✅ PR checks are passing or pending (not failing)
-5. ✅ Review feedback addressed (if applicable)
-6. ✅ All review threads resolved — either fixed, declined with explanation, or asked for clarification (no silently skipped threads)
+1. ✅ The immediate issue was identified and fixed
+2. ✅ Local formatting and test gates passed
+3. ✅ Changes were committed with a descriptive message
+4. ✅ Changes were pushed to the PR branch
+5. ✅ Review threads touched by this repair were resolved, declined with explanation, or replied to with a clarification question
+6. ✅ The run exits cleanly so the repair plugin can wait for GitHub checks/reviews/conflicts to settle
 
-If ANY criterion fails, the repair attempt failed and should exit with error status (triggering cooldown).
+The entire repair workflow is successful only when the repair plugin observes:
+
+1. ✅ Checks have finished and are passing
+2. ✅ No merge conflict remains
+3. ✅ No unresolved actionable review feedback remains
+
+Do not treat pending checks as final success. Pending checks mean the agent run should exit cleanly after pushing, and the repair plugin will wait. If checks fail, new review feedback appears, or a conflict appears, the plugin will start a fresh `boss-repair` run.

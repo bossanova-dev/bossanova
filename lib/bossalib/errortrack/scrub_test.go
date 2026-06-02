@@ -119,6 +119,39 @@ func TestScrub_HomePathNormalized(t *testing.T) {
 	}
 }
 
+// TestCapMessage_Boundary exercises the exact messageCap boundary in
+// scrub.go:104 (len(s) <= messageCap). Kills CONDITIONALS_BOUNDARY: a string of
+// exactly messageCap bytes must be returned untouched; only one byte more is
+// truncated. Swapping <= for < would wrongly truncate the at-cap case.
+func TestCapMessage_Boundary(t *testing.T) {
+	tests := []struct {
+		name         string
+		length       int
+		wantTruncate bool
+	}{
+		{name: "below cap", length: messageCap - 1, wantTruncate: false},
+		{name: "exactly cap", length: messageCap, wantTruncate: false},
+		{name: "one over cap", length: messageCap + 1, wantTruncate: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := strings.Repeat("a", tt.length)
+			got := capMessage(in)
+			if tt.wantTruncate {
+				if !strings.HasSuffix(got, truncMarker) {
+					t.Fatalf("capMessage(len=%d) = %q, want truncated", tt.length, got)
+				}
+				if got != in[:messageCap]+truncMarker {
+					t.Fatalf("capMessage(len=%d) truncated incorrectly", tt.length)
+				}
+			} else if got != in {
+				t.Fatalf("capMessage(len=%d) modified an at-or-below-cap string", tt.length)
+			}
+		})
+	}
+}
+
 func TestBeforeSend_StripsRequestBodyAndCookies(t *testing.T) {
 	event := &sentry.Event{
 		Message: "user person@example.invalid failed",

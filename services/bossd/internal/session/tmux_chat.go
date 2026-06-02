@@ -89,6 +89,30 @@ func (i ChatInput) render(commandPrefix string) string {
 	return commandPrefix + strings.TrimLeft(i.Command, "/$")
 }
 
+// cronChatInputFromPrompt decides whether a cron session's stored plan should
+// be dispatched as a boss command (literal send-keys + Enter, so Claude Code
+// recognizes it as a slash command) or as raw prompt text (bracketed paste).
+//
+// A plan is treated as a command only when, after trimming surrounding
+// whitespace, it is a single-line token that begins with "/" or "$" — e.g.
+// "/bs-mutation-test". Anything else (multi-line plans, free-text instructions,
+// or text that merely contains a slash/dollar such as a path, URL, or price)
+// stays a prompt. Detection is deliberately leading-token-only: matching an
+// embedded "/" or "$" would silently truncate legitimate free-text prompts.
+func cronChatInputFromPrompt(prompt string) ChatInput {
+	trimmed := strings.TrimSpace(prompt)
+	if strings.ContainsAny(trimmed, "\r\n") {
+		return ChatInput{Prompt: prompt}
+	}
+	if strings.ContainsAny(trimmed, " \t") {
+		return ChatInput{Prompt: prompt}
+	}
+	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "$") {
+		return ChatInput{Command: trimmed}
+	}
+	return ChatInput{Prompt: prompt}
+}
+
 // StartTmuxChat boots a Claude (or other agent) run inside a detached tmux
 // session and registers it as an agent_chats row so the chat list view can
 // surface it. It is the generalized form of the cron-only helper that
@@ -624,7 +648,7 @@ func (l *Lifecycle) startCronTmuxChat(
 	// Cron sessions wire their session-keyed Stop hook earlier in
 	// StartSession; pass an empty HookOpts so StartTmuxChat doesn't
 	// install a duplicate run-keyed entry.
-	return l.StartTmuxChat(ctx, sessionID, ChatInput{Prompt: session.Plan}, `Run "`+cronName+`"`, HookOpts{})
+	return l.StartTmuxChat(ctx, sessionID, cronChatInputFromPrompt(session.Plan), `Run "`+cronName+`"`, HookOpts{})
 }
 
 // killTmuxChatBestEffort tears down a tmux session created during a failed

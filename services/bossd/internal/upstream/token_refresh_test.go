@@ -99,6 +99,47 @@ func TestTokenRefresh_BeforeExpiry_EmitsRefreshEvent(t *testing.T) {
 	<-errCh
 }
 
+func TestTokenRefresh_DefaultThresholdDoesNotRefreshWithMoreThanSixtySecondsRemaining(t *testing.T) {
+	clock := newFakeClock()
+	tp := &fakeTokenProvider{
+		token:     "old",
+		expiresAt: clock.Now().Add(2 * time.Minute),
+		refreshFn: func(_ context.Context) (string, error) { return "new", nil },
+	}
+	client := NewStreamClient(StreamClientConfig{
+		TokenProvider:   tp,
+		Logger:          zerolog.Nop(),
+		Clock:           clock,
+		RefreshInterval: 50 * time.Millisecond,
+	})
+	if client.refreshThreshold != 60*time.Second {
+		t.Fatalf("default refreshThreshold = %v, want 60s", client.refreshThreshold)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbound := make(chan *pb.DaemonEvent, 4)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.runTokenRefresher(ctx, outbound) }()
+	waitForTimer(clock, 200*time.Millisecond)
+	clock.Advance(100 * time.Millisecond)
+
+	select {
+	case ev := <-outbound:
+		t.Fatalf("unexpected refresh event: %v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+	tp.mu.Lock()
+	refreshCalls := tp.refreshCalls
+	tp.mu.Unlock()
+	if refreshCalls != 0 {
+		t.Fatalf("refresh calls = %d, want 0", refreshCalls)
+	}
+	cancel()
+	<-errCh
+}
+
 func TestTokenRefresh_FailureClosesStream(t *testing.T) {
 	clock := newFakeClock()
 	refreshErr := errors.New("workos down")

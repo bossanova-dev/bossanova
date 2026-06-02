@@ -168,7 +168,7 @@ func (o *connectOpener) DaemonStream(ctx context.Context) bidirectionalStream {
 				// keep the original behaviour: log + reload keychain so
 				// an out-of-band `boss login` is picked up even if its
 				// NotifyLogin RPC never reached us.
-				if errors.Is(err, ErrAuthExpired) {
+				if errors.Is(err, ErrAuthExpired) && o.authState != nil {
 					if o.authState.MarkNeedsLogin() {
 						o.logger.Warn().Err(err).Msg("token refresh rejected as invalid_grant; pausing stream until re-login")
 					}
@@ -501,7 +501,7 @@ type StreamClientConfig struct {
 	// 60s (decision #2).
 	RefreshInterval time.Duration
 	// RefreshThreshold is how much headroom we keep before expiry before
-	// forcing a refresh. Zero picks 10 minutes (decision #2).
+	// forcing a refresh. Zero picks 60s.
 	RefreshThreshold time.Duration
 }
 
@@ -542,7 +542,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 	}
 	refreshThreshold := cfg.RefreshThreshold
 	if refreshThreshold == 0 {
-		refreshThreshold = 10 * time.Minute
+		refreshThreshold = 60 * time.Second
 	}
 	return &StreamClient{
 		opener:           opener,

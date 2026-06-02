@@ -1486,6 +1486,27 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 	return connect.NewResponse(&pb.UpdateSessionResponse{Session: p}), nil
 }
 
+func (s *Server) LinkSessionPR(ctx context.Context, req *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error) {
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+	if strings.TrimSpace(req.Msg.Pr) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("pr is required"))
+	}
+
+	sess, err := s.lifecycle.LinkPR(ctx, req.Msg.Id, req.Msg.Pr)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("link PR: %w", err))
+	}
+
+	p := s.sessionProtoWithRepo(ctx, sess)
+	if s.onSessionUpdated != nil {
+		s.onSessionUpdated(ctx, p)
+	}
+
+	return connect.NewResponse(&pb.LinkSessionPRResponse{Session: p}), nil
+}
+
 // --- Archive / Resurrect ---
 
 func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {

@@ -86,6 +86,11 @@ type WorktreeManager interface {
 	// decide between the no-changes cleanup branch and the PR branch.
 	Status(ctx context.Context, worktreePath string) (string, error)
 
+	// LatestCommitSubject returns the subject line for HEAD in the given
+	// worktree. Used by cron finalize to derive a human-facing PR title while
+	// keeping the actual commit message conventional.
+	LatestCommitSubject(ctx context.Context, worktreePath string) (string, error)
+
 	// Clone clones a remote repository to the given local path.
 	Clone(ctx context.Context, cloneURL, localPath string) error
 
@@ -562,6 +567,14 @@ func (m *Manager) Status(ctx context.Context, worktreePath string) (string, erro
 	out, err := runGit(ctx, worktreePath, "status", "--porcelain")
 	if err != nil {
 		return "", fmt.Errorf("git status: %w", err)
+	}
+	return out, nil
+}
+
+func (m *Manager) LatestCommitSubject(ctx context.Context, worktreePath string) (string, error) {
+	out, err := runGit(ctx, worktreePath, "log", "-1", "--pretty=%s")
+	if err != nil {
+		return "", fmt.Errorf("latest commit subject: %w", err)
 	}
 	return out, nil
 }

@@ -44,6 +44,8 @@ type loginAutoReturnMsg struct{}
 
 type loginCompleteHook func(context.Context)
 
+var openLoginVerificationURL = auth.OpenBrowser
+
 // LoginModel handles the interactive device code login flow.
 type LoginModel struct {
 	mgr       *auth.Manager
@@ -165,7 +167,7 @@ func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Open browser (best-effort).
-		_ = auth.OpenBrowser(m.verifyURL)
+		_ = openLoginVerificationURL(m.verifyURL)
 
 		// Start polling with a timeout based on ExpiresIn.
 		pollCtx, pollCancel := context.WithTimeout(m.ctx, time.Duration(msg.resp.ExpiresIn)*time.Second)

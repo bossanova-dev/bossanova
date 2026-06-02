@@ -112,6 +112,37 @@ func TestValidate_RejectsMakeTargetMetacharacters(t *testing.T) {
 	}
 }
 
+// TestValidate_MakeTarget covers both sides of the empty-target check at
+// setupscript.go:87. An empty/whitespace target must be rejected; a
+// non-empty target must pass validation. This kills the CONDITIONALS_NEGATION
+// mutant (== "" flipped to != "").
+func TestValidate_MakeTarget(t *testing.T) {
+	tests := []struct {
+		name    string
+		target  string
+		wantErr bool
+	}{
+		{name: "empty rejected", target: "", wantErr: true},
+		{name: "whitespace rejected", target: "   ", wantErr: true},
+		{name: "non-empty accepted", target: "setup", wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Spec{Type: TypeMake, Target: tt.target}
+			err := s.Validate()
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidSpec) {
+					t.Fatalf("want ErrInvalidSpec, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("want nil error for target %q, got %v", tt.target, err)
+			}
+		})
+	}
+}
+
 func TestValidate_UnknownType_Errors(t *testing.T) {
 	s := Spec{Type: "rogue"}
 	if err := s.Validate(); !errors.Is(err, ErrInvalidSpec) {
@@ -245,6 +276,31 @@ func TestExecute_Timeout_PreservesDeadline(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("timeout not enforced: elapsed %v", elapsed)
+	}
+}
+
+// TestExecute_ZeroTimeout_NoDeadline pins the boundary at setupscript.go:153
+// (opts.Timeout > 0). With a zero timeout no deadline is installed, so a
+// fast command must succeed. The CONDITIONALS_BOUNDARY mutant (> 0 → >= 0)
+// would call context.WithTimeout(ctx, 0), yielding an already-expired
+// context and a DeadlineExceeded failure — making this test fail.
+func TestExecute_ZeroTimeout_NoDeadline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX echo behavior assumed")
+	}
+	wt := t.TempDir()
+
+	var buf bytes.Buffer
+	s := Spec{Type: TypeCommand, Argv: []string{"echo", "ran"}}
+	if err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &buf,
+		Timeout:      0, // exact boundary: no additional deadline
+	}); err != nil {
+		t.Fatalf("Execute with zero timeout should succeed, got %v", err)
+	}
+	if strings.TrimSpace(buf.String()) != "ran" {
+		t.Fatalf("command did not run cleanly: %q", buf.String())
 	}
 }
 

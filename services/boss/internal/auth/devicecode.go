@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-var workosAPIBase = "https://api.workos.com"
+var (
+	workosAPIBase    = "https://api.workos.com"
+	workosHTTPClient = http.DefaultClient
+)
 
 // DeviceCodeResponse holds the response from the WorkOS device authorization endpoint.
 type DeviceCodeResponse struct {
@@ -61,7 +64,7 @@ func RequestDeviceCode(ctx context.Context, cfg Config) (*DeviceCodeResponse, er
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := workosHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("device code request: %w", err)
 	}
@@ -109,7 +112,7 @@ func PollForToken(ctx context.Context, cfg Config, deviceCode string, interval i
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := workosHTTPClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("token request: %w", err)
 		}
@@ -198,7 +201,7 @@ func RefreshAccessToken(ctx context.Context, cfg Config, refreshToken string) (*
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := workosHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}

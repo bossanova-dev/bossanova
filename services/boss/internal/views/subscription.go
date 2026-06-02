@@ -17,6 +17,18 @@ const (
 )
 
 var openSubscriptionCheckoutURL = auth.OpenBrowser
+var subscriptionPollIntervalOverride time.Duration
+
+func SetSubscriptionPollIntervalOverride(interval time.Duration) {
+	subscriptionPollIntervalOverride = interval
+}
+
+func subscriptionPollIntervalValue() time.Duration {
+	if subscriptionPollIntervalOverride > 0 {
+		return subscriptionPollIntervalOverride
+	}
+	return subscriptionPollInterval
+}
 
 type subscriptionPhase int
 
@@ -127,7 +139,7 @@ func (m LoginModel) subscriptionPoll(c CloudAccessClient, attempt int) tea.Cmd {
 }
 
 func (m LoginModel) subscriptionPollTick(attempt int) tea.Cmd {
-	return tea.Tick(subscriptionPollInterval, func(time.Time) tea.Msg {
+	return tea.Tick(subscriptionPollIntervalValue(), func(time.Time) tea.Msg {
 		return subscriptionPollTickMsg{attempt: attempt}
 	})
 }
@@ -281,7 +293,7 @@ func (m LoginModel) subscriptionView() string {
 	var body string
 	switch m.subscription.phase {
 	case subscriptionPhaseSuccess:
-		body = "Bossanova Cloud is ready.\nReturning home..."
+		body = "Bossanova Cloud is ready. Returning home..."
 	case subscriptionPhaseTimedOut:
 		body = "Subscription activation is taking longer than expected.\nPress enter to check again or reopen checkout."
 	case subscriptionPhaseError:

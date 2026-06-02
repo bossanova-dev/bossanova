@@ -474,10 +474,15 @@ type mockWorktreeManager struct {
 	pushErr                     error    // if set, Push returns this error
 	emptyCommits                []string // worktree paths on which EmptyCommit was invoked
 	emptyCommitCalls            int
+	latestCommitSubject         string
+	latestCommitSubjectErr      error
 	originURL                   string // returned by DetectOriginURL
 	statusOut                   string // returned by Status
 	statusErr                   error  // if set, Status returns this error
 	worktreePath                string // override for Create's returned WorktreePath; empty uses the historical fixed path
+	fetchedBases                []string
+	fetchBaseErr                error
+	isAncestorFn                func(localPath, ref, target string) (bool, error)
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -519,6 +524,10 @@ func (m *mockWorktreeManager) Status(_ context.Context, _ string) (string, error
 	return m.statusOut, m.statusErr
 }
 
+func (m *mockWorktreeManager) LatestCommitSubject(_ context.Context, _ string) (string, error) {
+	return m.latestCommitSubject, m.latestCommitSubjectErr
+}
+
 func (m *mockWorktreeManager) Clone(_ context.Context, _, _ string) error {
 	return nil
 }
@@ -543,7 +552,10 @@ func (m *mockWorktreeManager) EnsureBaseBranchReadyForSync(_ context.Context, _,
 	return nil
 }
 
-func (m *mockWorktreeManager) IsAncestor(_ context.Context, _, _, _ string) (bool, error) {
+func (m *mockWorktreeManager) IsAncestor(_ context.Context, localPath, ref, target string) (bool, error) {
+	if m.isAncestorFn != nil {
+		return m.isAncestorFn(localPath, ref, target)
+	}
 	return true, nil
 }
 
@@ -551,8 +563,9 @@ func (m *mockWorktreeManager) MergeLocalBranch(_ context.Context, _, _, _, _ str
 	return nil
 }
 
-func (m *mockWorktreeManager) FetchBase(_ context.Context, _, _ string) error {
-	return nil
+func (m *mockWorktreeManager) FetchBase(_ context.Context, _, base string) error {
+	m.fetchedBases = append(m.fetchedBases, base)
+	return m.fetchBaseErr
 }
 
 func (m *mockWorktreeManager) SyncBaseBranch(_ context.Context, _, _ string) error {
@@ -658,6 +671,7 @@ type mockVCSProvider struct {
 	nextOpenPRs        []vcs.PRSummary
 	allowedStrategies  []string
 	createPRErr        error
+	listOpenPRErr      error
 	checkResultsErr    error
 	reviewCommentsErr  error
 	mergePRErr         error
@@ -711,6 +725,9 @@ func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) 
 
 func (m *mockVCSProvider) ListOpenPRs(_ context.Context, repoPath string) ([]vcs.PRSummary, error) {
 	m.listOpenPRCalls = append(m.listOpenPRCalls, repoPath)
+	if m.listOpenPRErr != nil {
+		return nil, m.listOpenPRErr
+	}
 	return m.nextOpenPRs, nil
 }
 
@@ -2445,6 +2462,144 @@ func TestEnsurePR_AttachExistingPRReturnsClearBlockedReasonFailure(t *testing.T)
 	}
 	if len(provider.createPRCalls) != 1 {
 		t.Fatalf("CreateDraftPR calls = %d, want 1", len(provider.createPRCalls))
+	}
+}
+
+func TestLinkPR_NumberUpdatesSessionAndCronLastRun(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	blockedReason := "draft PR creation failed"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:            "sess-1",
+		RepoID:        "repo-1",
+		BranchName:    "cron-br-1",
+		State:         machine.Blocked,
+		CronJobID:     &cronJobID,
+		BlockedReason: &blockedReason,
+	}
+
+	lifecycle := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
+	if err != nil {
+		t.Fatalf("LinkPR: %v", err)
+	}
+
+	if updated.PRNumber == nil || *updated.PRNumber != 42 {
+		t.Fatalf("PRNumber = %v, want 42", updated.PRNumber)
+	}
+	if updated.PRURL == nil || *updated.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Fatalf("PRURL = %v, want generated URL", updated.PRURL)
+	}
+	if updated.State != machine.AwaitingChecks {
+		t.Fatalf("state = %s, want awaiting_checks", updated.State)
+	}
+	if updated.BlockedReason != nil {
+		t.Fatalf("BlockedReason = %q, want nil", *updated.BlockedReason)
+	}
+	if len(vp.getPRStatusPRNumbers) != 1 || vp.getPRStatusPRNumbers[0] != 42 {
+		t.Fatalf("GetPRStatus calls = %v, want [42]", vp.getPRStatusPRNumbers)
+	}
+	if len(cron.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
+	}
+	if cron.lastRunCalls[0].sessionID == nil || *cron.lastRunCalls[0].sessionID != "sess-1" {
+		t.Fatalf("last run session ID = %v, want sess-1", cron.lastRunCalls[0].sessionID)
+	}
+	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("last run outcome = %q, want pr_created", cron.lastRunCalls[0].outcome)
+	}
+}
+
+func TestLinkPR_FinalizingSessionMovesToAwaitingChecks(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "cron-br-1",
+		State:      machine.Finalizing,
+		CronJobID:  &cronJobID,
+	}
+
+	lifecycle := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
+	if err != nil {
+		t.Fatalf("LinkPR: %v", err)
+	}
+
+	if updated.State != machine.AwaitingChecks {
+		t.Fatalf("state = %s, want awaiting_checks", updated.State)
+	}
+	if updated.PRNumber == nil || *updated.PRNumber != 42 {
+		t.Fatalf("PRNumber = %v, want 42", updated.PRNumber)
+	}
+	if len(cron.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
+	}
+	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("last run outcome = %q, want pr_created", cron.lastRunCalls[0].outcome)
+	}
+}
+
+func TestLinkPR_URLRejectsWrongRepo(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.Blocked,
+	}
+
+	lifecycle := NewLifecycle(sessions, repos, nil, &stubCronJobStore{}, wt, cr, nil, vp, logger)
+	_, err := lifecycle.LinkPR(ctx, "sess-1", "https://github.com/other/repo/pull/42")
+	if err == nil {
+		t.Fatal("expected wrong-repo PR URL to be rejected")
+	}
+	if sessions.sessions["sess-1"].PRNumber != nil {
+		t.Fatalf("PRNumber = %v, want nil after rejection", sessions.sessions["sess-1"].PRNumber)
+	}
+	if len(vp.getPRStatusPRNumbers) != 0 {
+		t.Fatalf("GetPRStatus should not be called before repo validation, got %v", vp.getPRStatusPRNumbers)
 	}
 }
 

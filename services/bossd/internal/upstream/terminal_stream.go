@@ -121,7 +121,7 @@ func (o *terminalConnectOpener) TerminalStream(ctx context.Context) terminalBidi
 				// that will never work. Other refresh failures are
 				// logged by the DaemonStream opener (which runs more
 				// often) — keep this branch quiet to avoid double-warns.
-				if errors.Is(err, ErrAuthExpired) {
+				if errors.Is(err, ErrAuthExpired) && o.authState != nil {
 					if o.authState.MarkNeedsLogin() {
 						o.logger.Warn().Err(err).Msg("terminal: token refresh rejected as invalid_grant; pausing stream until re-login")
 					}

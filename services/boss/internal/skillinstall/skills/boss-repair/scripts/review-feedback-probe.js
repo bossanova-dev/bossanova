@@ -2,6 +2,8 @@
 
 const { execFileSync } = require('child_process');
 
+const INLINE_COMMENT_DISPLAY_LIMIT = 100;
+
 function runGh(args) {
   const out = execFileSync('gh', args, {
     encoding: 'utf8',
@@ -23,21 +25,48 @@ function compact(value, max = 360) {
     .slice(0, max);
 }
 
-function main() {
-  const prView = JSON.parse(runGh(['pr', 'view', '--json', 'number,latestReviews']));
-  const repoView = JSON.parse(runGh(['repo', 'view', '--json', 'owner,name']));
-  const owner = repoView.owner.login;
-  const name = repoView.name;
-  const repo = `${owner}/${name}`;
-  const pr = prView.number;
+function parsePaginatedArray(raw) {
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
 
-  const comments = JSON.parse(runGh(['api', `repos/${repo}/pulls/${pr}/comments`, '--paginate']));
+  if (parsed.every((page) => Array.isArray(page))) {
+    return parsed.flat();
+  }
 
+  return parsed;
+}
+
+function repairStatusFromReviewProbe({
+  suspiciousZero,
+  unresolvedCount,
+  inlineCommentCount,
+  reviewThreadCount,
+  latestCommented,
+}) {
+  if (suspiciousZero) {
+    return { status: 'unknown', reason: 'commented review but no comments found' };
+  }
+  if (unresolvedCount > 0) {
+    return { status: 'needs_repair', reason: 'unresolved review threads' };
+  }
+  if (reviewThreadCount === 0 && (inlineCommentCount > 0 || latestCommented)) {
+    return { status: 'unknown', reason: 'inline comments without review thread state' };
+  }
+  return { status: 'clean', reason: 'no unresolved review threads' };
+}
+
+function fetchReviewThreads(owner, name, pr) {
   const query = `
-    query($owner: String!, $name: String!, $number: Int!) {
+    query($owner: String!, $name: String!, $number: Int!, $after: String) {
       repository(owner: $owner, name: $name) {
         pullRequest(number: $number) {
-          reviewThreads(first: 100) {
+          reviewThreads(first: 100, after: $after) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
             nodes {
               id
               isResolved
@@ -57,8 +86,10 @@ function main() {
       }
     }`;
 
-  const graph = JSON.parse(
-    runGh([
+  const threads = [];
+  let after = '';
+  for (;;) {
+    const args = [
       'api',
       'graphql',
       '-f',
@@ -69,10 +100,50 @@ function main() {
       `number=${pr}`,
       '-f',
       `query=${query}`,
+    ];
+    if (after) {
+      args.push('-f', `after=${after}`);
+    }
+
+    const graph = JSON.parse(runGh(args));
+    const page = graph?.data?.repository?.pullRequest?.reviewThreads;
+    if (!page) {
+      throw new Error('GraphQL response did not include reviewThreads');
+    }
+
+    threads.push(...(page.nodes || []));
+    if (!page.pageInfo?.hasNextPage) {
+      return threads;
+    }
+    if (!page.pageInfo.endCursor) {
+      throw new Error('GraphQL reviewThreads page is missing endCursor');
+    }
+    after = page.pageInfo.endCursor;
+  }
+}
+
+function main() {
+  const prView = JSON.parse(runGh(['pr', 'view', '--json', 'number,latestReviews']));
+  const repoView = JSON.parse(runGh(['repo', 'view', '--json', 'owner,name']));
+  const owner = repoView.owner.login;
+  const name = repoView.name;
+  const repo = `${owner}/${name}`;
+  const pr = prView.number;
+
+  const comments = parsePaginatedArray(
+    runGh([
+      'api',
+      `repos/${repo}/pulls/${pr}/comments`,
+      '--method',
+      'GET',
+      '--paginate',
+      '--slurp',
+      '-f',
+      'per_page=100',
     ]),
   );
 
-  const threads = graph?.data?.repository?.pullRequest?.reviewThreads?.nodes || [];
+  const threads = fetchReviewThreads(owner, name, pr);
   const unresolved = threads.filter((thread) => !thread.isResolved);
   const latestCommented = (prView.latestReviews || []).some(
     (review) => review.state === 'COMMENTED',
@@ -84,6 +155,15 @@ function main() {
   console.log(`review_threads=${threads.length} unresolved_threads=${unresolved.length}`);
   console.log(`latest_review_commented=${latestCommented}`);
   console.log(`probe_status=${suspiciousZero ? 'suspicious_zero' : 'ok'}`);
+  const repair = repairStatusFromReviewProbe({
+    suspiciousZero,
+    unresolvedCount: unresolved.length,
+    inlineCommentCount: comments.length,
+    reviewThreadCount: threads.length,
+    latestCommented,
+  });
+  console.log(`repair_status=${repair.status}`);
+  console.log(`repair_reason=${repair.reason}`);
 
   if (suspiciousZero) {
     console.log(
@@ -108,10 +188,10 @@ function main() {
     return;
   }
 
-  if (comments.length > 0) {
+  if (comments.length > 0 && threads.length === 0) {
     console.log('');
     console.log('INLINE_COMMENTS_NO_UNRESOLVED_THREAD_STATE');
-    comments.forEach((comment, index) => {
+    comments.slice(0, INLINE_COMMENT_DISPLAY_LIMIT).forEach((comment, index) => {
       console.log(
         `#${index + 1} comment_id=${comment.id} reply_to=${comment.in_reply_to_id || ''} path=${comment.path || ''} line=${comment.line || comment.original_line || ''}`,
       );
@@ -119,6 +199,9 @@ function main() {
       console.log(`url=${comment.html_url || ''}`);
       console.log(`body=${compact(comment.body)}`);
     });
+    if (comments.length > INLINE_COMMENT_DISPLAY_LIMIT) {
+      console.log(`... omitted ${comments.length - INLINE_COMMENT_DISPLAY_LIMIT} inline comments`);
+    }
   }
 }
 
@@ -126,6 +209,8 @@ try {
   main();
 } catch (error) {
   console.log('probe_status=failed');
+  console.log('repair_status=unknown');
+  console.log('repair_reason=review probe failed');
   console.log(`ERROR ${error.message}`);
   process.exit(1);
 }

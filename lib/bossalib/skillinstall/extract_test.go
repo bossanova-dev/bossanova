@@ -449,6 +449,159 @@ func TestNeedsUpdateDetectsStaleTopLevelSymlink(t *testing.T) {
 	}
 }
 
+// TestNeedsUpdateDetectsEmptyStaleTopLevelSkillDir uses an EMPTY stale boss-*
+// directory at the top level of the namespace. Because it contains no files,
+// the only code path that can flag it is the directory-level stale check at
+// extract.go:134 (filepath.Dir(rel) == "."). This kills:
+//   - line 131 CONDITIONALS_NEGATION (if err != nil after filepath.Rel in the
+//     directory branch): the negated form returns early before reaching 134,
+//     so the empty stale dir would go undetected.
+//   - line 134 CONDITIONALS_NEGATION (filepath.Dir(rel) == "."): exercises the
+//     true side of the top-level check with no file to mask the result.
+func TestNeedsUpdateDetectsEmptyStaleTopLevelSkillDir(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	// Empty top-level boss-* directory (no files inside).
+	stale := filepath.Join(dest, Namespace, "boss-empty-removed")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for empty stale top-level skill dir")
+	}
+}
+
+// TestNeedsUpdateIgnoresNestedBossNamedDir places a directory whose basename
+// looks like a boss skill but lives nested beneath an expected skill, with no
+// files inside it. The real code must NOT flag it (filepath.Dir(rel) != ".").
+// This kills line 134 CONDITIONALS_NEGATION's false side: the negated form
+// (filepath.Dir(rel) != ".") would treat the nested dir as stale and report an
+// update.
+func TestNeedsUpdateIgnoresNestedBossNamedDir(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	// Nested dir named like a boss skill, but not top-level, and empty.
+	nested := filepath.Join(dest, Namespace, "boss-test", "boss-nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if needs {
+		t.Fatal("NeedsUpdate = true, want false for nested boss-named dir with no extra files")
+	}
+}
+
+// TestNeedsUpdateDetectsExtraInstalledFile installs an extra file that is not
+// part of the embedded payload. The real code flags it via the unexpected-file
+// check at extract.go:143, which is only reached after the err check at line
+// 140. This kills line 140 CONDITIONALS_NEGATION (if err != nil after
+// filepath.Rel in the file branch): the negated form returns early before
+// reaching 143, so the extra file would go undetected.
+func TestNeedsUpdateDetectsExtraInstalledFile(t *testing.T) {
+	dest := t.TempDir()
+	if err := Extract(dest, testFS()); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	extra := filepath.Join(dest, Namespace, "boss-test", "EXTRA.md")
+	if err := os.WriteFile(extra, []byte("not embedded"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	needs, err := NeedsUpdate(dest, testFS())
+	if err != nil {
+		t.Fatalf("NeedsUpdate: %v", err)
+	}
+	if !needs {
+		t.Fatal("NeedsUpdate = false, want true for extra installed file")
+	}
+}
+
+// TestManifestStableOrderingAcrossFSIteration verifies embeddedFiles sorts its
+// output deterministically by rel (extract.go:221, files[i].rel < files[j].rel).
+// Two filesystems with the same files but registered such that natural map
+// iteration could differ must produce identical manifests. This kills:
+//   - line 221 CONDITIONALS_NEGATION (< -> >=): would reverse-sort, changing the
+//     hash relative to the canonical ascending order.
+//   - line 221 CONDITIONALS_BOUNDARY (< -> <=): a non-strict comparator is an
+//     invalid sort.Slice less func; combined with the explicit ordering check
+//     below the resulting order/hash diverges from the strict-less reference.
+func TestManifestStableOrderingAcrossFSIteration(t *testing.T) {
+	// Reference manifest from the canonical fixture.
+	want, err := Manifest(testFS())
+	if err != nil {
+		t.Fatalf("Manifest(testFS): %v", err)
+	}
+	// Recompute several times; must be identical every time regardless of map
+	// iteration order, proving a stable strict-ascending sort.
+	for i := 0; i < 20; i++ {
+		got, err := Manifest(testFS())
+		if err != nil {
+			t.Fatalf("Manifest iteration %d: %v", i, err)
+		}
+		if got != want {
+			t.Fatalf("Manifest unstable at iteration %d: got %q want %q", i, got, want)
+		}
+	}
+}
+
+// TestEmbeddedFilesSortedAscending asserts the precise ascending-by-rel order
+// produced by embeddedFiles (extract.go:221). It pins the exact boundary
+// behaviour of the comparator so that both the negated (>=, descending) and the
+// boundary (<=, non-strict) mutants are caught: the expected sequence below is
+// only correct for a strict ascending sort.
+func TestEmbeddedFilesSortedAscending(t *testing.T) {
+	files, err := embeddedFiles(testFS())
+	if err != nil {
+		t.Fatalf("embeddedFiles: %v", err)
+	}
+	want := []string{
+		"boss-finalize/SKILL.md",
+		"boss-finalize/add-pr.sh",
+		"boss-other/SKILL.md",
+		"boss-repair/SKILL.md",
+		"boss-repair/scripts/review-feedback-probe.js",
+		"boss-repair/scripts/review-feedback-probe.test.txt",
+		"boss-test/SKILL.md",
+		"boss/SKILL.md",
+	}
+	if len(files) != len(want) {
+		t.Fatalf("embeddedFiles returned %d files, want %d", len(files), len(want))
+	}
+	for i, f := range files {
+		if f.rel != want[i] {
+			t.Fatalf("embeddedFiles[%d].rel = %q, want %q (full order: %v)", i, f.rel, want[i], relsOf(files))
+		}
+	}
+	// Explicit strictly-ascending invariant: every adjacent pair must satisfy
+	// a < b. A descending (>=) or non-strict (<=) comparator violates this.
+	for i := 1; i < len(files); i++ {
+		if files[i-1].rel >= files[i].rel {
+			t.Fatalf("embeddedFiles not strictly ascending at %d: %q !< %q", i, files[i-1].rel, files[i].rel)
+		}
+	}
+}
+
+func relsOf(files []embeddedFile) []string {
+	out := make([]string, len(files))
+	for i, f := range files {
+		out[i] = f.rel
+	}
+	return out
+}
+
 func TestEnsureUpdatedDoesNotInstallIntoEmptyDirectory(t *testing.T) {
 	dest := t.TempDir()
 	updated, err := EnsureUpdated(dest, testFS())

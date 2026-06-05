@@ -56,11 +56,36 @@ func TestCronListRebuildTable_ShowsDeletingStatusForMatchingJob(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("table rows = %d, want 2", len(rows))
 	}
-	if got := rows[0][7]; !strings.Contains(got, "deleting") {
+	if got := rows[0][8]; !strings.Contains(got, "deleting") {
 		t.Fatalf("deleting cron STATUS = %q, want deleting", got)
 	}
-	if got := rows[1][7]; strings.Contains(got, "deleting") {
+	if got := rows[1][8]; strings.Contains(got, "deleting") {
 		t.Fatalf("non-deleting cron STATUS = %q, want normal status", got)
+	}
+}
+
+func TestCronListRebuildTable_ShowsStoredAgentName(t *testing.T) {
+	m := CronListModel{
+		spinner:  newStatusSpinner(),
+		running:  map[string]bool{},
+		deleting: map[string]bool{},
+		repos: map[string]*pb.Repo{
+			"repo-1": {Id: "repo-1", DisplayName: "repo"},
+		},
+		jobs: []*pb.CronJob{
+			{Id: "cron-1", RepoId: "repo-1", Name: "first", Schedule: "@daily", Enabled: true, AgentName: "opencode"},
+		},
+		table: newBossTable(nil, nil, 0),
+	}
+
+	m.rebuildTable()
+
+	rows := m.table.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("table rows = %d, want 1", len(rows))
+	}
+	if got := strings.Join(rows[0], " "); !strings.Contains(got, "opencode") {
+		t.Fatalf("cron row = %q, want stored agent name", got)
 	}
 }
 

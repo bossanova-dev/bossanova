@@ -8,9 +8,9 @@ package testharness_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -531,10 +531,18 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
 		useTempWorktrees(t, h)
 
-		// Changes exist; push fails.
-		h.Agent.WithChanges("result.txt", "data")
+		// Clean branch has committed work; push fails in EnsurePR.
 		h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
-			return "M result.txt\n", nil
+			return "", nil
+		}
+		h.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
+			return "test: exercise push failure", nil
+		}
+		h.Git.IsAncestorFn = func(_ context.Context, _, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
 		}
 		h.SetVCSMode(testharness.VCSModePushFail)
 
@@ -587,10 +595,18 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
 		useTempWorktrees(t, h)
 
-		// Changes exist; CreateDraftPR fails.
-		h.Agent.WithChanges("result.txt", "data")
+		// Clean branch has committed work; CreateDraftPR fails in EnsurePR.
 		h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
-			return "M result.txt\n", nil
+			return "", nil
+		}
+		h.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
+			return "test: exercise create PR failure", nil
+		}
+		h.Git.IsAncestorFn = func(_ context.Context, _, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
 		}
 		h.SetVCSMode(testharness.VCSModeCreatePRFail)
 
@@ -635,22 +651,44 @@ func TestE2ECron_FailureModes(t *testing.T) {
 	})
 
 	t.Run("chatSpawnFail", func(t *testing.T) {
+		tmuxFake := testharness.NewCronReadyTmuxFake()
+		baseTmuxFactory := tmuxFake.Factory()
+		var tmuxMu sync.Mutex
+		newSessionCalls := 0
 		h := testharness.NewWithOptions(t, testharness.Options{
-			TmuxCommandFactory: testharness.CronReadyTmuxFactory(),
+			TmuxCommandFactory: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+				if name == "tmux" && len(args) > 0 && args[0] == "new-session" {
+					tmuxMu.Lock()
+					newSessionCalls++
+					fail := newSessionCalls == 2
+					tmuxMu.Unlock()
+					if fail {
+						return exec.CommandContext(ctx, "false")
+					}
+				}
+				return baseTmuxFactory(ctx, name, args...)
+			},
 		})
 		ctx := context.Background()
 
 		repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
 		useTempWorktrees(t, h)
 
-		// Changes present, PR creation succeeds, but the finalize chat start fails.
-		// Note: cron-spawned sessions no longer call h.Agent.Start during the
-		// implementing-plan path — that's now handled by startCronTmuxChat
-		// (tmux + SendPlan). Only StartFinalizeChat still calls Start, so
-		// SetSpawnError below targets that one and only call.
-		h.Agent.WithChanges("result.txt", "data")
+		// Clean branch has committed work and PR creation succeeds, but the
+		// finalize chat's tmux new-session fails. The first new-session is the
+		// cron implementing chat; the second is the finalize sibling launched
+		// after the stop hook fires.
 		h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
-			return "M result.txt\n", nil
+			return "", nil
+		}
+		h.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
+			return "test: exercise chat spawn failure", nil
+		}
+		h.Git.IsAncestorFn = func(_ context.Context, _, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
 		}
 
 		job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
@@ -679,12 +717,6 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		if sess.HookToken == nil || *sess.HookToken == "" {
 			t.Fatal("expected HookToken")
 		}
-
-		// Set spawn error so the finalize chat's Start call (in
-		// StartFinalizeChat) returns an error. SetSpawnError fires once
-		// and clears, and StartFinalizeChat is the only Start invocation
-		// in this flow now that cron-spawned sessions skip headless claude.
-		h.Agent.SetSpawnError(errors.New("mock: finalize chat spawn failed"))
 
 		resp, err := h.PostStopHook(sess.ID, *sess.HookToken)
 		if err != nil {

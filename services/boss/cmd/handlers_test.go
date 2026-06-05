@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/recurser/bossalib/config"
 )
 
 func TestBossdPgrepArgsRestrictsToEffectiveUser(t *testing.T) {
@@ -42,6 +45,65 @@ func TestRestartSocketPath(t *testing.T) {
 			t.Fatal("restartSocketPath returned nil error for empty path")
 		}
 	})
+}
+
+func TestLaunchSettingsDoesNotSaveInstalledAtWhenLoadFails(t *testing.T) {
+	oldLoadSettings := loadSettings
+	oldSaveSettings := saveSettings
+	defer func() {
+		loadSettings = oldLoadSettings
+		saveSettings = oldSaveSettings
+	}()
+
+	settings := config.DefaultSettings()
+	settings.BossCloudGuestOfferHidden = true
+	loadSettings = func() (config.Settings, error) {
+		return settings, errors.New("corrupt settings")
+	}
+	saveSettings = func(config.Settings) error {
+		t.Fatal("saveSettings called after load error")
+		return nil
+	}
+
+	got := launchSettings(time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
+
+	if !got.BossCloudGuestOfferHidden {
+		t.Fatal("launchSettings did not return loaded runtime settings")
+	}
+}
+
+func TestLaunchSettingsSavesWhenInstalledAtMissing(t *testing.T) {
+	oldLoadSettings := loadSettings
+	oldSaveSettings := saveSettings
+	defer func() {
+		loadSettings = oldLoadSettings
+		saveSettings = oldSaveSettings
+	}()
+
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.FixedZone("JST", 9*60*60))
+	settings := config.DefaultSettings()
+	loadSettings = func() (config.Settings, error) {
+		return settings, nil
+	}
+	var saved config.Settings
+	saveCalls := 0
+	saveSettings = func(s config.Settings) error {
+		saveCalls++
+		saved = s
+		return nil
+	}
+
+	got := launchSettings(now)
+
+	if saveCalls != 1 {
+		t.Fatalf("saveSettings calls = %d, want 1", saveCalls)
+	}
+	if !saved.InstalledAt.Equal(now.UTC()) {
+		t.Fatalf("saved InstalledAt = %s, want %s", saved.InstalledAt, now.UTC())
+	}
+	if !got.InstalledAt.Equal(now.UTC()) {
+		t.Fatalf("returned InstalledAt = %s, want %s", got.InstalledAt, now.UTC())
+	}
 }
 
 func TestParsePgrepOutput(t *testing.T) {

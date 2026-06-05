@@ -17,13 +17,13 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
 	"github.com/recurser/bossalib/errortrack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/cron"
@@ -74,6 +74,7 @@ type Server struct {
 	agentClients       map[string]agent.AgentRunnerClient
 	worktrees          gitpkg.WorktreeManager
 	provider           vcs.Provider
+	prResolver         PRAssociationResolver
 	pluginHost         *plugin.Host
 	tmux               *tmux.Client
 	chatWakeGroup      singleflight.Group // per-chat idempotency for WakeChat
@@ -96,9 +97,15 @@ type branchStartLock struct {
 	refs int
 }
 
+type listSessionsPRAssociationResult struct {
+	updated int64
+	err     error
+}
+
 var (
 	providerSessionIDBackgroundDiscoveryTimeout      = time.Minute
 	providerSessionIDBackgroundDiscoveryPollInterval = time.Second
+	listSessionsPRAssociationTimeout                 = 3 * time.Second
 )
 
 // Config holds all dependencies for creating a new Server.
@@ -120,6 +127,7 @@ type Config struct {
 	AgentClients       map[string]agent.AgentRunnerClient
 	Worktrees          gitpkg.WorktreeManager
 	Provider           vcs.Provider
+	PRResolver         PRAssociationResolver // optional, may be nil
 	PluginHost         *plugin.Host
 	Tmux               *tmux.Client
 	CompletionNotifier session.SessionCompletionNotifier // optional, may be nil
@@ -152,26 +160,33 @@ type AuthNotifier interface {
 	NotifyLogout()
 }
 
+// PRAssociationResolver refreshes local session-to-PR links.
+type PRAssociationResolver interface {
+	ReconcileSessions(context.Context, []*models.Session) (int64, error)
+}
+
 // New creates a new Server wired to the given stores and lifecycle orchestrator.
 func New(cfg Config) *Server {
 	return &Server{
-		repos:              cfg.Repos,
-		sessions:           cfg.Sessions,
-		attempts:           cfg.Attempts,
-		agentChats:         cfg.AgentChats,
-		workflows:          cfg.Workflows,
-		taskMappings:       cfg.TaskMappings,
-		cronJobs:           cfg.CronJobs,
-		checkSnapshots:     cfg.CheckSnapshots,
-		cronScheduler:      cfg.CronScheduler,
-		chatStatus:         cfg.ChatStatus,
-		displayTracker:     cfg.DisplayTracker,
-		tmuxPoller:         cfg.TmuxPoller,
-		lifecycle:          cfg.Lifecycle,
-		agent:              cfg.Agent,
-		agentClients:       cfg.AgentClients,
-		worktrees:          cfg.Worktrees,
-		provider:           cfg.Provider,
+		repos:          cfg.Repos,
+		sessions:       cfg.Sessions,
+		attempts:       cfg.Attempts,
+		agentChats:     cfg.AgentChats,
+		workflows:      cfg.Workflows,
+		taskMappings:   cfg.TaskMappings,
+		cronJobs:       cfg.CronJobs,
+		checkSnapshots: cfg.CheckSnapshots,
+		cronScheduler:  cfg.CronScheduler,
+		chatStatus:     cfg.ChatStatus,
+		displayTracker: cfg.DisplayTracker,
+		tmuxPoller:     cfg.TmuxPoller,
+		lifecycle:      cfg.Lifecycle,
+		agent:          cfg.Agent,
+		agentClients:   cfg.AgentClients,
+		worktrees:      cfg.Worktrees,
+		provider:       cfg.Provider,
+
+		prResolver:         cfg.PRResolver,
 		pluginHost:         cfg.PluginHost,
 		tmux:               cfg.Tmux,
 		branchStartLocks:   map[string]*branchStartLock{},
@@ -778,6 +793,9 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		// Use the branch name from the request (e.g., from Linear's suggested branch name).
 		headBranch = *msg.BranchName
 	}
+	if !msg.QuickChat && strings.TrimSpace(baseBranch) == "" {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo %s has no default base branch; update repo settings before creating a session", repo.ID))
+	}
 
 	unlockBranch := s.lockBranchStart(msg.RepoId, headBranch)
 	branchLocked := true
@@ -792,27 +810,9 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 	}
 
 	// Resolve the agent name. The proto field is a oneof (*string), so an
-	// unset request falls back to Settings.DefaultAgent — which Task 3
-	// backfills to "claude" when the settings file omits it. As an ergonomic
-	// exception: when only one AgentRunner plugin is loaded we pick that
-	// one regardless of DefaultAgent, mirroring the dispatcher's
-	// single-loaded-agent rule so a fresh "install codex, no settings"
-	// install can create sessions without editing the settings file.
-	// Defense in depth against config.Load failure: an empty string here
-	// is still safe because the SQLite store has its own ""→"claude"
-	// fallback.
-	agentName := msg.GetAgentName()
-	if agentName == "" {
-		if s.pluginHost != nil {
-			if names := s.pluginHost.AgentClientNames(); len(names) == 1 {
-				agentName = names[0]
-			}
-		}
-		if agentName == "" {
-			cfg, _ := config.Load()
-			agentName = cfg.DefaultAgent
-		}
-	}
+	// unset request resolves via the shared rule (single-loaded runner, then
+	// Settings.DefaultAgent) — see resolveAgentName.
+	agentName := s.resolveAgentName(msg.GetAgentName())
 
 	createParams := db.CreateSessionParams{
 		RepoID:     msg.RepoId,
@@ -976,36 +976,32 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	msg := req.Msg
 	repoID := msg.GetRepoId()
 
-	var sessions []*models.Session
-	var err error
-
-	if msg.IncludeArchived {
-		sessions, err = s.sessions.List(ctx, repoID)
-	} else {
-		sessions, err = s.sessions.ListActive(ctx, repoID)
-	}
+	rows, err := s.loadSessionsForList(ctx, repoID, msg.IncludeArchived, msg.States)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list sessions: %w", err))
 	}
 
-	// Filter by states if specified.
-	if len(msg.States) > 0 {
-		stateSet := make(map[pb.SessionState]bool, len(msg.States))
-		for _, st := range msg.States {
-			stateSet[st] = true
+	sessionsNeedingPR := sessionRowsNeedingPRAssociation(rows)
+	if s.prResolver != nil && len(sessionsNeedingPR) > 0 {
+		updated, reconcileErr := s.reconcileListSessionPRAssociations(ctx, sessionsNeedingPR)
+		if reconcileErr != nil {
+			s.logger.Warn().Err(reconcileErr).Msg("ListSessions: reconcile PR associations")
 		}
-		filtered := make([]*models.Session, 0, len(sessions))
-		for _, sess := range sessions {
-			if stateSet[pb.SessionState(sess.State)] {
-				filtered = append(filtered, sess)
+		if updated > 0 {
+			rows, err = s.loadSessionsForList(ctx, repoID, msg.IncludeArchived, msg.States)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list sessions: %w", err))
 			}
 		}
-		sessions = filtered
 	}
 
 	// Build repo lookup for denormalization and attention hydration.
 	repoCache := make(map[string]*models.Repo)
-	for _, sess := range sessions {
+	for _, row := range rows {
+		if row == nil || row.Session == nil {
+			continue
+		}
+		sess := row.Session
 		if _, ok := repoCache[sess.RepoID]; !ok {
 			if repo, err := s.repos.Get(ctx, sess.RepoID); err == nil {
 				repoCache[sess.RepoID] = repo
@@ -1013,15 +1009,22 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 		}
 	}
 
-	pbSessions := make([]*pb.Session, len(sessions))
-	for i, sess := range sessions {
+	pbSessions := make([]*pb.Session, 0, len(rows))
+	for _, row := range rows {
+		if row == nil || row.Session == nil {
+			continue
+		}
+		sess := row.Session
 		p := SessionToProto(sess)
 		if repo, ok := repoCache[sess.RepoID]; ok {
 			p.RepoDisplayName = repo.DisplayName
 			p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 			p.AttentionStatus = attentionStatusToProto(vcs.ComputeAttentionStatus(sess, repo))
+		} else {
+			p.RepoDisplayName = row.RepoDisplayName
+			p.RepoOriginUrl = CanonicalRepoOriginURL(row.RepoOriginURL)
 		}
-		pbSessions[i] = p
+		pbSessions = append(pbSessions, p)
 	}
 
 	// Hydrate PR display statuses from the in-memory tracker.
@@ -1033,15 +1036,15 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	// in-memory tracker knows them. Remaining typed-enum consumers: the TUI
 	// (home.go/chatpicker.go/theme.go via GetDisplayStatus) and the repair plugin
 	// (server.go via GetDisplayStatus + GetDisplayHasFailures).
-	sessionIDs := make([]string, len(sessions))
-	for i, sess := range sessions {
-		sessionIDs[i] = sess.ID
+	sessionIDs := make([]string, len(pbSessions))
+	for i, sess := range pbSessions {
+		sessionIDs[i] = sess.Id
 	}
 	var entries map[string]*status.DisplayEntry
 	if s.displayTracker != nil {
 		entries = s.displayTracker.GetBatch(sessionIDs)
-		for i, sess := range sessions {
-			if e, ok := entries[sess.ID]; ok {
+		for i, sess := range pbSessions {
+			if e, ok := entries[sess.Id]; ok {
 				pbSessions[i].DisplayStatus = pb.DisplayStatus(e.Status)
 				pbSessions[i].DisplayHasFailures = e.HasFailures
 				pbSessions[i].DisplayHasChangesRequested = e.HasChangesRequested
@@ -1078,6 +1081,82 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 	}
 
 	return connect.NewResponse(&pb.ListSessionsResponse{Sessions: pbSessions}), nil
+}
+
+func (s *Server) reconcileListSessionPRAssociations(ctx context.Context, sessions []*models.Session) (int64, error) {
+	reconcileCtx, cancel := context.WithTimeout(ctx, listSessionsPRAssociationTimeout)
+	defer cancel()
+
+	// The result channel is buffered so the goroutine can always send and exit
+	// even if we have already returned on the timeout below. safego.Go gives the
+	// goroutine panic recovery so a misbehaving provider can't crash the daemon
+	// on the ListSessions hot path.
+	resultCh := make(chan listSessionsPRAssociationResult, 1)
+	safego.Go(s.logger, func() {
+		updated, err := s.prResolver.ReconcileSessions(reconcileCtx, sessions)
+		resultCh <- listSessionsPRAssociationResult{updated: updated, err: err}
+	})
+
+	select {
+	case result := <-resultCh:
+		return result.updated, result.err
+	case <-reconcileCtx.Done():
+		return 0, reconcileCtx.Err()
+	}
+}
+
+// loadSessionsForList loads the session rows for a ListSessions request and
+// applies the optional state filter. It is called twice: once up front, and
+// again after PR-association reconciliation when associations changed. Using
+// the *WithRepo store methods means the rows carry denormalized repo fields,
+// which back the display-name/origin fallback used when the repo cache misses.
+func (s *Server) loadSessionsForList(ctx context.Context, repoID string, includeArchived bool, states []pb.SessionState) ([]*db.SessionWithRepo, error) {
+	var rows []*db.SessionWithRepo
+	var err error
+	if includeArchived {
+		rows, err = s.sessions.ListWithRepo(ctx, repoID)
+	} else {
+		rows, err = s.sessions.ListActiveWithRepo(ctx, repoID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(states) > 0 {
+		rows = filterSessionRowsByStates(rows, states)
+	}
+	return rows, nil
+}
+
+func filterSessionRowsByStates(rows []*db.SessionWithRepo, states []pb.SessionState) []*db.SessionWithRepo {
+	stateSet := make(map[pb.SessionState]bool, len(states))
+	for _, st := range states {
+		stateSet[st] = true
+	}
+
+	filtered := make([]*db.SessionWithRepo, 0, len(rows))
+	for _, row := range rows {
+		if row == nil || row.Session == nil {
+			continue
+		}
+		if stateSet[pb.SessionState(row.State)] {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func sessionRowsNeedingPRAssociation(rows []*db.SessionWithRepo) []*models.Session {
+	sessions := make([]*models.Session, 0, len(rows))
+	for _, row := range rows {
+		if row == nil || row.Session == nil {
+			continue
+		}
+		sess := row.Session
+		if sess.ArchivedAt == nil && sess.PRNumber == nil && sess.BranchName != "" {
+			sessions = append(sessions, sess)
+		}
+	}
+	return sessions
 }
 
 func shouldKeepCheckingCompositeOverReview(sess *pb.Session, chatStatus pb.ChatStatus) bool {

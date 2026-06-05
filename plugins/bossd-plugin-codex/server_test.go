@@ -23,6 +23,21 @@ func newTestServer(t *testing.T, opts ...Option) *Server {
 	return newServer(nil, zerolog.Nop(), opts...)
 }
 
+func TestBuildInteractiveCommandReturnsDollarCommandPrefix(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:      "agent-1",
+		LogPath:        t.TempDir() + "/codex.log",
+		InitialCommand: "boss-finalize",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if resp.GetCommandPrefix() != "$" {
+		t.Fatalf("command prefix = %q, want $", resp.GetCommandPrefix())
+	}
+}
+
 // TestConfigureFinalizeHookReturnsUnsupported asserts that codex declines
 // finalize-via-hook (no in-CLI Stop-hook surface). The daemon falls back
 // to ExitStatus polling for codex sessions.

@@ -27,6 +27,8 @@ type stubClient struct {
 	trackerIssuesErr error
 	agents           []client.AgentInfo
 	agentsErr        error
+	createdCronReq   *pb.CreateCronJobRequest
+	updatedCronReq   *pb.UpdateCronJobRequest
 }
 
 func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
@@ -193,12 +195,14 @@ func (s *stubClient) GetSessionStatuses(context.Context, []string) ([]*pb.Sessio
 }
 func (s *stubClient) NotifyAuthChange(context.Context, string) error { return nil }
 
-func (s *stubClient) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {
-	panic("unused")
+func (s *stubClient) CreateCronJob(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+	s.createdCronReq = req
+	return &pb.CronJob{Id: "cron-1"}, nil
 }
 func (s *stubClient) ListCronJobs(context.Context) ([]*pb.CronJob, error) { panic("unused") }
-func (s *stubClient) UpdateCronJob(context.Context, *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
-	panic("unused")
+func (s *stubClient) UpdateCronJob(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+	s.updatedCronReq = req
+	return &pb.CronJob{Id: req.Id}, nil
 }
 func (s *stubClient) DeleteCronJob(context.Context, string) error { panic("unused") }
 func (s *stubClient) RunCronJobNow(context.Context, string) (*pb.RunCronJobNowResponse, error) {

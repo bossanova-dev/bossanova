@@ -46,6 +46,8 @@ const waitAgentRunPollInterval = 500 * time.Millisecond
 // the run state. Spec §"Failure modes" sets this at 30 minutes.
 const defaultWaitChatRunDeadline = 30 * time.Minute
 
+const waitChatRunProviderIDDiscoveryTimeout = 2 * time.Second
+
 // ChatLifecycle is the narrow surface HostServiceServer needs from
 // *session.Lifecycle for StartChatRun. Defining it as an interface
 // (rather than holding a *session.Lifecycle directly) keeps tests
@@ -130,6 +132,26 @@ type HostServiceServer struct {
 	runHookTokens    map[string]string
 	runSessionByID   map[string]string
 
+	// pendingChatRuns marks sessions with an in-flight StartChatRun that has
+	// not yet registered its runCompletion entry. StartChatRun sets the flag
+	// before it asks the lifecycle to spawn the tmux agent (which is also
+	// where the hookless completion poll is armed) and clears it once the run
+	// is registered or the call fails. It bounds earlyChatCompletions so a
+	// poll completion that races ahead of registration is only retained for
+	// runs that will actually register a waiter — cron, finalize, and
+	// bootstrap re-arm runs never set the flag, so their SignalRunComplete
+	// no-ops as before and leave nothing behind. Keyed by session_id, guarded
+	// by runMu.
+	pendingChatRuns map[string]bool
+	// earlyChatCompletions holds completion results that arrived (via
+	// SignalRunComplete) after the hookless poll observed the agent exit but
+	// before StartChatRun registered the run. Without this, the signal would
+	// no-op against an empty runCompletion map and the matching WaitChatRun
+	// would block until its deadline. Keyed by session_id; drained by
+	// registerRunWithCompletionMode and discarded by clearPendingChatRun.
+	// Guarded by runMu.
+	earlyChatCompletions map[string]completionResult
+
 	// lifecycle owns the tmux-hosted chat lifecycle (StartTmuxChat /
 	// FinalizeSession). Required by StartChatRun. Wired post-construction
 	// via SetLifecycle so cmd/main.go can still build either object first.
@@ -180,14 +202,16 @@ type activeRun struct {
 // requires SetAgentClients + SetAgentLogsDir.
 func NewHostServiceServer(provider vcs.Provider) *HostServiceServer {
 	return &HostServiceServer{
-		provider:            provider,
-		activeRuns:          make(map[string]activeRun),
-		agentSessionByID:    make(map[string]string),
-		runCompletion:       make(map[string]activeChatRun),
-		runHookTokens:       make(map[string]string),
-		runSessionByID:      make(map[string]string),
-		agentClients:        map[string]agent.AgentRunnerClient{},
-		waitChatRunDeadline: defaultWaitChatRunDeadline,
+		provider:             provider,
+		activeRuns:           make(map[string]activeRun),
+		agentSessionByID:     make(map[string]string),
+		runCompletion:        make(map[string]activeChatRun),
+		runHookTokens:        make(map[string]string),
+		runSessionByID:       make(map[string]string),
+		pendingChatRuns:      make(map[string]bool),
+		earlyChatCompletions: make(map[string]completionResult),
+		agentClients:         map[string]agent.AgentRunnerClient{},
+		waitChatRunDeadline:  defaultWaitChatRunDeadline,
 	}
 }
 
@@ -216,8 +240,43 @@ func (s *HostServiceServer) registerRunWithCompletionMode(sessionID, agentSessio
 	s.runCompletion[agentSessionID] = activeChatRun{done: ch, completionMode: mode}
 	s.runHookTokens[agentSessionID] = token
 	s.runSessionByID[agentSessionID] = sessionID
+	// Drain any completion that the hookless poll signalled before this
+	// registration landed (see earlyChatCompletions). Deliver it onto the
+	// buffered channel so the matching WaitChatRun returns immediately
+	// instead of blocking until its deadline. The session is no longer
+	// pending once registered.
+	if res, ok := s.earlyChatCompletions[sessionID]; ok {
+		delete(s.earlyChatCompletions, sessionID)
+		select {
+		case ch <- res:
+		default:
+		}
+	}
+	delete(s.pendingChatRuns, sessionID)
 	s.runMu.Unlock()
 	return ch
+}
+
+// markPendingChatRun records that StartChatRun is about to spawn a run for
+// sessionID whose runCompletion entry has not been registered yet. While the
+// flag is set, a SignalRunComplete that races ahead of registration is
+// retained in earlyChatCompletions rather than discarded. Guarded by runMu.
+func (s *HostServiceServer) markPendingChatRun(sessionID string) {
+	s.runMu.Lock()
+	s.pendingChatRuns[sessionID] = true
+	s.runMu.Unlock()
+}
+
+// clearPendingChatRun drops the pending marker for sessionID and discards any
+// early completion that was never drained by a registration (e.g. StartTmuxChat
+// failed, or returned an AlreadyExists id that took a different code path).
+// StartChatRun defers this so a racing poll completion can't outlive the call
+// that armed it. Guarded by runMu.
+func (s *HostServiceServer) clearPendingChatRun(sessionID string) {
+	s.runMu.Lock()
+	delete(s.pendingChatRuns, sessionID)
+	delete(s.earlyChatCompletions, sessionID)
+	s.runMu.Unlock()
 }
 
 // SetSessionDeps injects the dependencies needed for session-related RPCs
@@ -1172,12 +1231,24 @@ func (s *HostServiceServer) CompleteAgentRun(_ context.Context, agentSessionID, 
 // Idempotent: a call for an agent_session_id whose completion channel was
 // already cleared (e.g. the finalize hook arrived first, or a previous
 // SignalRunComplete fired) is a no-op.
-func (s *HostServiceServer) SignalRunComplete(agentSessionID, exitError string) {
+//
+// Early-completion race: a hookless poll can observe the agent exit before
+// StartChatRun registers the run (the poll is armed mid-spawn, registration
+// happens after the spawn returns). When that happens for a session with a
+// pending StartChatRun, the result is parked in earlyChatCompletions keyed by
+// sessionID so registerRunWithCompletionMode can deliver it; otherwise the
+// signal is a no-op as before, so cron/finalize/bootstrap runs (which never
+// register a host-service waiter) leave nothing behind.
+func (s *HostServiceServer) SignalRunComplete(sessionID, agentSessionID, exitError string) {
 	s.runMu.Lock()
 	run, ok := s.runCompletion[agentSessionID]
 	if !ok {
+		if sessionID != "" && s.pendingChatRuns[sessionID] {
+			s.earlyChatCompletions[sessionID] = completionResult{exitError: exitError}
+		}
 		s.runMu.Unlock()
-		// Run already cleaned up (e.g. hook arrived first). Idempotent no-op.
+		// Not yet registered: parked above if a StartChatRun is pending,
+		// otherwise an idempotent no-op (e.g. hook arrived first).
 		return
 	}
 	select {
@@ -1185,7 +1256,9 @@ func (s *HostServiceServer) SignalRunComplete(agentSessionID, exitError string) 
 	default:
 	}
 	delete(s.runCompletion, agentSessionID)
-	sessionID := s.runSessionByID[agentSessionID]
+	// Prefer the session_id recorded at registration; it is authoritative for
+	// the cleanup below and matches the historical behaviour of this path.
+	sessionID = s.runSessionByID[agentSessionID]
 	if sessionID != "" {
 		if cur, ok := s.activeRuns[sessionID]; ok && cur.agentSessionID == agentSessionID {
 			delete(s.activeRuns, sessionID)
@@ -1318,7 +1391,17 @@ func (s *HostServiceServer) StartChatRun(ctx context.Context, req *bossanovav1.S
 	// prompt as the final step of StartTmuxChat. A POST that arrived in
 	// the registration gap would 404 — operators would see a hook failure
 	// rather than a stuck session, but no current path reaches that gap.
-	input := session.ChatInput{Prompt: req.GetPrompt(), Command: req.GetCommand()}
+	//
+	// The hookless completion poll, by contrast, IS armed inside
+	// StartTmuxChat (before this call returns) for agents without a finalize
+	// hook. A fast-exiting agent can make that poll signal completion before
+	// the registration below lands. Mark the session pending so
+	// SignalRunComplete parks that early signal (see earlyChatCompletions)
+	// instead of dropping it; the deferred clear guarantees the marker can't
+	// outlive this call on any error/early-return path.
+	s.markPendingChatRun(sessionID)
+	defer s.clearPendingChatRun(sessionID)
+	input := session.ChatInput{Prompt: req.GetPrompt(), Command: req.GetCommand(), ResumeAgentSessionID: req.GetResumeAgentSessionId()}
 	agentSessionID, err := s.lifecycle.StartTmuxChat(ctx, sessionID, input, req.GetTitle(), session.HookOpts{Token: token})
 	if err != nil && grpcstatus.Code(err) == codes.AlreadyExists && req.GetReplaceExistingChat() && !replacedActiveRun {
 		blockingAgentSessionID := agentSessionID
@@ -1469,8 +1552,9 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 
 	select {
 	case res := <-run.done:
+		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
 		s.cleanupRun(agentSessionID)
-		return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError}, nil
+		return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
 	case <-deadline.C:
 		// Surface the deadline expiry so operators can correlate a
 		// synthesised exit_error with later events (eg. a Stop POST
@@ -1480,19 +1564,84 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 			Str("agent_session", agentSessionID).
 			Dur("deadline", s.waitChatRunDeadline).
 			Msg("WaitChatRun: agent run did not signal completion within deadline; synthesising exit_error")
+		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
 		s.cleanupRun(agentSessionID)
 		return &bossanovav1.WaitChatRunHostResponse{
-			ExitError: waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
+			ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
+			ProviderSessionId: providerSessionID,
 		}, nil
 	case <-ctx.Done():
+		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
 		s.cleanupRun(agentSessionID)
 		if run.completionMode == chatRunCompletionExplicit {
 			return &bossanovav1.WaitChatRunHostResponse{
-				ExitError: waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+				ExitError:         waitChatRunNoSignalMessage(run.completionMode, ctx.Err().Error()),
+				ProviderSessionId: providerSessionID,
 			}, nil
 		}
 		return nil, grpcstatus.FromContextError(ctx.Err()).Err()
 	}
+}
+
+func (s *HostServiceServer) providerSessionIDForAgentSession(ctx context.Context, agentSessionID string) string {
+	if s.agentChats == nil || agentSessionID == "" {
+		return ""
+	}
+	chat, err := s.agentChats.GetByAgentSessionID(ctx, agentSessionID)
+	if err != nil || chat == nil || chat.ProviderSessionID == nil {
+		if err != nil {
+			log.Warn().Err(err).Str("agent_session_id", agentSessionID).Msg("provider session id lookup failed")
+		}
+	} else if *chat.ProviderSessionID != "" {
+		return *chat.ProviderSessionID
+	}
+	if chat == nil || chat.AgentName != "codex" || chat.CreatedAt.IsZero() || s.sessionStore == nil {
+		return ""
+	}
+	client, ok := s.agentClients[chat.AgentName]
+	if !ok || client == nil {
+		return ""
+	}
+	sess, err := s.sessionStore.Get(ctx, chat.SessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" {
+		if err != nil {
+			log.Warn().Err(err).Str("session_id", chat.SessionID).Msg("provider session id discovery could not load session")
+		}
+		return ""
+	}
+
+	discoveryCtx, cancel := context.WithTimeout(context.Background(), waitChatRunProviderIDDiscoveryTimeout)
+	defer cancel()
+	resp, err := client.ResolveInteractiveSessionID(discoveryCtx, &bossanovav1.ResolveInteractiveSessionIDRequest{
+		WorkDir:             sess.WorktreePath,
+		RequestedSessionId:  chat.AgentSessionID,
+		ChatCreatedAt:       timestamppb.New(chat.CreatedAt),
+		AllowLegacyBackfill: true,
+	})
+	if err != nil {
+		log.Warn().Err(err).
+			Str("agent_session_id", chat.AgentSessionID).
+			Msg("provider session id discovery failed before WaitChatRun response")
+		return ""
+	}
+	if resp == nil || !resp.GetFound() || resp.GetSessionId() == "" {
+		if resp != nil && resp.GetAmbiguous() {
+			log.Warn().
+				Str("agent_session_id", chat.AgentSessionID).
+				Str("reason", resp.GetReason()).
+				Msg("provider session id discovery ambiguous before WaitChatRun response")
+		}
+		return ""
+	}
+	providerID := resp.GetSessionId()
+	if err := s.agentChats.UpdateProviderSessionID(discoveryCtx, chat.AgentSessionID, &providerID); err != nil {
+		log.Warn().Err(err).
+			Str("agent_session_id", chat.AgentSessionID).
+			Str("provider_session_id", providerID).
+			Msg("persist provider session id before WaitChatRun response failed")
+		return ""
+	}
+	return providerID
 }
 
 func waitChatRunNoSignalMessage(mode chatRunCompletionMode, reason string) string {

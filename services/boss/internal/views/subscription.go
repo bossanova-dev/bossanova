@@ -180,6 +180,22 @@ func subscriptionTerminalLocal(status *pb.CloudAccessStatus, err error) bool {
 	return status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE
 }
 
+// subscriptionUnavailableError builds the user-facing message rendered in the
+// subscription flow's unavailable phase. It preserves the original casing of the
+// underlying detail (so redacted identifiers stay readable) and always returns a
+// non-nil error so the view has something to render.
+func subscriptionUnavailableError(status *pb.CloudAccessStatus, err error) error {
+	if err != nil {
+		return errors.New(cloudAccessUnavailableLine(err))
+	}
+	// These are terminal, user-facing display sentences (never wrapped into
+	// another error), so ST1005's no-trailing-punctuation rule does not apply.
+	if status.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE {
+		return errors.New(cloudBillingUnavailableLine) //nolint:staticcheck // user-facing copy, see above
+	}
+	return errors.New(cloudAccessUnavailableFallbackLine) //nolint:staticcheck // user-facing copy, see above
+}
+
 func (m LoginModel) updateSubscriptionAccess(msg subscriptionAccessMsg) (LoginModel, tea.Cmd) {
 	if msg.attempt != m.subscription.attempt {
 		return m, nil
@@ -190,9 +206,11 @@ func (m LoginModel) updateSubscriptionAccess(msg subscriptionAccessMsg) (LoginMo
 		return m, m.subscriptionWaitCmds(msg.attempt, !alreadyWaiting)
 	}
 	if subscriptionTerminalLocal(msg.status, msg.err) {
+		// Surface the error in the unavailable phase and wait for the user to
+		// acknowledge it. Returning home immediately (m.done) would discard this
+		// LoginModel before subscriptionView could render the message.
 		m.subscription.phase = subscriptionPhaseUnavailable
-		m.subscription.err = errors.New("cloud billing unavailable; local sessions are still available")
-		m.done = true
+		m.subscription.err = subscriptionUnavailableError(msg.status, msg.err)
 		return m, nil
 	}
 	if subscriptionIsActive(msg.status) {
@@ -228,8 +246,10 @@ func (m LoginModel) updateSubscriptionAccess(msg subscriptionAccessMsg) (LoginMo
 		m.subscription.checkoutStarted = true
 		return m, m.subscriptionCreateCheckout(m.cloudAccess, msg.attempt)
 	}
+	// Unexpected, unrecoverable state: surface it and wait for the user to
+	// acknowledge rather than silently returning home.
 	m.subscription.phase = subscriptionPhaseUnavailable
-	m.done = true
+	m.subscription.err = subscriptionUnavailableError(msg.status, msg.err)
 	return m, nil
 }
 
@@ -298,11 +318,17 @@ func (m LoginModel) subscriptionView() string {
 		body = "Subscription activation is taking longer than expected.\nPress enter to check again or reopen checkout."
 	case subscriptionPhaseError:
 		body = "Cloud checkout unavailable. Local sessions are still available.\nPress enter to retry."
+	case subscriptionPhaseUnavailable:
+		if m.subscription.err != nil {
+			body = m.subscription.err.Error()
+		} else {
+			body = cloudAccessUnavailableFallbackLine
+		}
 	default:
 		if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutStarted && m.subscription.checkoutURL == "" {
 			body = m.spinner.View() + "Activating your subscription. This can take a few minutes..."
 		} else {
-			body = m.spinner.View() + "Waiting for a subscription. Continue in your browser..."
+			body = m.spinner.View() + "Loading your account. Continue in your browser..."
 		}
 		if m.subscription.err != nil && m.subscription.checkoutURL != "" {
 			body += "\nOpen this billing URL: " + m.subscription.checkoutURL
@@ -310,7 +336,9 @@ func (m LoginModel) subscriptionView() string {
 	}
 
 	actionBar := "[enter] retry  [esc] cancel"
-	if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutURL != "" {
+	if m.subscription.phase == subscriptionPhaseUnavailable {
+		actionBar = "[enter] continue  [esc] cancel"
+	} else if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutURL != "" {
 		actionBar = "[enter] re-open subscription page  [esc] cancel"
 	} else if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutStarted {
 		actionBar = "[enter] check again  [esc] cancel"

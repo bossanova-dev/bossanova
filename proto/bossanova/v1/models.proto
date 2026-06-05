@@ -479,4 +479,5 @@ message CronJob {
   google.protobuf.Timestamp created_at   = 12;
   google.protobuf.Timestamp updated_at   = 13;
   CronJobStatus last_run_status = 14;  // derived; not persisted
+  string agent_name = 15;              // agent runner plugin name; empty legacy data defaults to claude
 }

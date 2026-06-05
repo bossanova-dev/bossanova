@@ -35,10 +35,10 @@ func chatTitleInDir(projectDir, agentSessionID string) string {
 }
 
 // PathToProjectKey converts a filesystem path to a Claude Code project key.
-// Claude Code replaces both "/" and "." with "-".
+// Claude Code replaces path separators and "." with "-".
 // e.g. "/Users/dave/Code/.worktrees/foo" → "-Users-dave-Code--worktrees-foo"
 func PathToProjectKey(path string) string {
-	return strings.NewReplacer("/", "-", ".", "-").Replace(path)
+	return strings.NewReplacer("/", "-", "\\", "-", ".", "-", ":", "-").Replace(path)
 }
 
 // jsonlLine is a minimal representation of a JSONL line for parsing.

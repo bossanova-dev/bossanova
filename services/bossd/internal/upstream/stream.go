@@ -608,6 +608,16 @@ func (c *StreamClient) Run(ctx context.Context) {
 		switch {
 		case ctx.Err() != nil:
 			return
+		case c.authState != nil && c.authState.NeedsLogin():
+			// openStream returned because logout cancelled the inner
+			// streamCtx (the outer ctx is still live, so the case above
+			// didn't fire). This is an intentional pause, not a stream
+			// failure — skip IncStreamError, the "reconnecting" warn, and
+			// the backoff sleep, and loop straight to the NeedsLogin() gate
+			// at the top, which logs the pause once and blocks on Wait()
+			// until the next login. Without this, a clean logout surfaces a
+			// misleading reconnect warning and an unnecessary backoff delay.
+			continue
 		case err == nil:
 			// Stream closed cleanly (server shutdown etc). Reset backoff
 			// and try again immediately — this is usually a recycle, not
@@ -692,6 +702,11 @@ func (c *StreamClient) Run(ctx context.Context) {
 func (c *StreamClient) openStream(ctx context.Context) error {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	authWatchDone := cancelOnNeedsLogin(streamCtx, c.authState, cancel)
+	defer func() {
+		cancel()
+		<-authWatchDone
+	}()
 
 	stream := c.opener.DaemonStream(streamCtx)
 
@@ -740,6 +755,7 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 	// 5. Command reader — runs on this goroutine. Receive is blocking
 	//    and must be owned by exactly one caller per connect semantics.
 	readErr := c.runCommandReader(streamCtx, stream, outbound)
+	readCtxErr := streamCtx.Err()
 
 	// Tear down in the reverse order we started. Close the outbound
 	// channel so the writer exits, then wait for all children so a
@@ -763,6 +779,9 @@ func (c *StreamClient) openStream(ctx context.Context) error {
 
 	if refreshErr != nil {
 		return refreshErr
+	}
+	if readErr == nil && readCtxErr != nil {
+		return readCtxErr
 	}
 	return readErr
 }

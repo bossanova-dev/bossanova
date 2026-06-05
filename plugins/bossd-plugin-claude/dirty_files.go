@@ -7,6 +7,11 @@ package main
 //	.claude/settings.local.json — the Stop-hook config; contains a
 //	bearer token, so misclassifying it as an agent change would risk
 //	pushing credentials to the remote.
+//
+//	.claude/scheduled_tasks.lock — Claude/bossd-owned scheduler lock;
+//	misclassifying it as agent output would create noisy dirty worktrees
+//	and unnecessary finalize chats.
 var ignoredDirtyFiles = []string{
 	".claude/settings.local.json",
+	".claude/scheduled_tasks.lock",
 }

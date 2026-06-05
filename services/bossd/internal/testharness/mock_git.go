@@ -23,6 +23,7 @@ type MockWorktreeManager struct {
 	ArchiveCalls                  []string
 	ResurrectCalls                []gitpkg.ResurrectOpts
 	PushCalls                     []pushCall
+	VerifyPushedBranchCalls       []verifyPushedBranchCall
 	EmptyTrashCalls               []emptyTrashCall
 	PurgeWorktreeCalls            []purgeWorktreeCall
 
@@ -37,6 +38,9 @@ type MockWorktreeManager struct {
 
 	// PushFunc overrides the default Push behavior when set.
 	PushFunc func(ctx context.Context, worktreePath, branch string) error
+
+	// VerifyPushedBranchAheadOfBaseFunc overrides the default verification behavior when set.
+	VerifyPushedBranchAheadOfBaseFunc func(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error)
 
 	// StatusFunc overrides the default Status behavior when set.
 	StatusFunc func(ctx context.Context, worktreePath string) (string, error)
@@ -87,6 +91,12 @@ type cloneCall struct {
 type pushCall struct {
 	WorktreePath string
 	Branch       string
+}
+
+type verifyPushedBranchCall struct {
+	WorktreePath string
+	Branch       string
+	BaseBranch   string
 }
 
 type emptyTrashCall struct {
@@ -216,6 +226,10 @@ func (m *MockWorktreeManager) EmptyCommit(_ context.Context, _, _ string) error 
 	return nil
 }
 
+func (m *MockWorktreeManager) VerifyCurrentBranch(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *MockWorktreeManager) Push(ctx context.Context, worktreePath, branch string) error {
 	m.mu.Lock()
 	m.PushCalls = append(m.PushCalls, pushCall{WorktreePath: worktreePath, Branch: branch})
@@ -230,6 +244,27 @@ func (m *MockWorktreeManager) Push(ctx context.Context, worktreePath, branch str
 		return m.PushFunc(ctx, worktreePath, branch)
 	}
 	return nil
+}
+
+func (m *MockWorktreeManager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {
+	m.mu.Lock()
+	m.VerifyPushedBranchCalls = append(m.VerifyPushedBranchCalls, verifyPushedBranchCall{
+		WorktreePath: worktreePath,
+		Branch:       branch,
+		BaseBranch:   baseBranch,
+	})
+	override := m.VerifyPushedBranchAheadOfBaseFunc
+	m.mu.Unlock()
+
+	if override != nil {
+		return override(ctx, worktreePath, branch, baseBranch)
+	}
+	return &gitpkg.BranchVerification{
+		HeadSHA:       "head-sha",
+		BaseSHA:       "base-sha",
+		RemoteHeadSHA: "head-sha",
+		AheadCount:    1,
+	}, nil
 }
 
 // SetPushError causes the next Push call to return err. After firing
@@ -252,6 +287,10 @@ func (m *MockWorktreeManager) LatestCommitSubject(ctx context.Context, worktreeP
 		return m.LatestCommitSubjectFunc(ctx, worktreePath)
 	}
 	return "", nil
+}
+
+func (m *MockWorktreeManager) BranchDebugSnapshot(_ context.Context, _, _, _ string) (*gitpkg.BranchDebugSnapshot, error) {
+	return &gitpkg.BranchDebugSnapshot{}, nil
 }
 
 func (m *MockWorktreeManager) DetectOriginURL(ctx context.Context, repoPath string) (string, error) {

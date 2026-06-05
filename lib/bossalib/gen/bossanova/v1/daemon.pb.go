@@ -4069,6 +4069,7 @@ type CreateCronJobRequest struct {
 	Schedule      string                 `protobuf:"bytes,4,opt,name=schedule,proto3" json:"schedule,omitempty"`
 	Timezone      string                 `protobuf:"bytes,5,opt,name=timezone,proto3" json:"timezone,omitempty"` // optional IANA tz; empty = daemon-local
 	Enabled       bool                   `protobuf:"varint,6,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	AgentName     string                 `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"` // optional agent runner plugin name; empty = claude
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4143,6 +4144,13 @@ func (x *CreateCronJobRequest) GetEnabled() bool {
 		return x.Enabled
 	}
 	return false
+}
+
+func (x *CreateCronJobRequest) GetAgentName() string {
+	if x != nil {
+		return x.AgentName
+	}
+	return ""
 }
 
 type CreateCronJobResponse struct {
@@ -4374,6 +4382,7 @@ type UpdateCronJobRequest struct {
 	Schedule      *string                `protobuf:"bytes,4,opt,name=schedule,proto3,oneof" json:"schedule,omitempty"`
 	Timezone      *string                `protobuf:"bytes,5,opt,name=timezone,proto3,oneof" json:"timezone,omitempty"`
 	Enabled       *bool                  `protobuf:"varint,6,opt,name=enabled,proto3,oneof" json:"enabled,omitempty"`
+	AgentName     *string                `protobuf:"bytes,7,opt,name=agent_name,json=agentName,proto3,oneof" json:"agent_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4448,6 +4457,13 @@ func (x *UpdateCronJobRequest) GetEnabled() bool {
 		return *x.Enabled
 	}
 	return false
+}
+
+func (x *UpdateCronJobRequest) GetAgentName() string {
+	if x != nil && x.AgentName != nil {
+		return *x.AgentName
+	}
+	return ""
 }
 
 type UpdateCronJobResponse struct {
@@ -5647,14 +5663,16 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x17DeliverVCSEventResponse\"1\n" +
 	"\x17NotifyAuthChangeRequest\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\"\x1a\n" +
-	"\x18NotifyAuthChangeResponse\"\xad\x01\n" +
+	"\x18NotifyAuthChangeResponse\"\xcc\x01\n" +
 	"\x14CreateCronJobRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x16\n" +
 	"\x06prompt\x18\x03 \x01(\tR\x06prompt\x12\x1a\n" +
 	"\bschedule\x18\x04 \x01(\tR\bschedule\x12\x1a\n" +
 	"\btimezone\x18\x05 \x01(\tR\btimezone\x12\x18\n" +
-	"\aenabled\x18\x06 \x01(\bR\aenabled\"I\n" +
+	"\aenabled\x18\x06 \x01(\bR\aenabled\x12\x1d\n" +
+	"\n" +
+	"agent_name\x18\a \x01(\tR\tagentName\"I\n" +
 	"\x15CreateCronJobResponse\x120\n" +
 	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"?\n" +
 	"\x13ListCronJobsRequest\x12\x1c\n" +
@@ -5666,20 +5684,23 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x11GetCronJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"F\n" +
 	"\x12GetCronJobResponse\x120\n" +
-	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"\xf7\x01\n" +
+	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"\xaa\x02\n" +
 	"\x14UpdateCronJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\x04name\x18\x02 \x01(\tH\x00R\x04name\x88\x01\x01\x12\x1b\n" +
 	"\x06prompt\x18\x03 \x01(\tH\x01R\x06prompt\x88\x01\x01\x12\x1f\n" +
 	"\bschedule\x18\x04 \x01(\tH\x02R\bschedule\x88\x01\x01\x12\x1f\n" +
 	"\btimezone\x18\x05 \x01(\tH\x03R\btimezone\x88\x01\x01\x12\x1d\n" +
-	"\aenabled\x18\x06 \x01(\bH\x04R\aenabled\x88\x01\x01B\a\n" +
+	"\aenabled\x18\x06 \x01(\bH\x04R\aenabled\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"agent_name\x18\a \x01(\tH\x05R\tagentName\x88\x01\x01B\a\n" +
 	"\x05_nameB\t\n" +
 	"\a_promptB\v\n" +
 	"\t_scheduleB\v\n" +
 	"\t_timezoneB\n" +
 	"\n" +
-	"\b_enabled\"I\n" +
+	"\b_enabledB\r\n" +
+	"\v_agent_name\"I\n" +
 	"\x15UpdateCronJobResponse\x120\n" +
 	"\bcron_job\x18\x01 \x01(\v2\x15.bossanova.v1.CronJobR\acronJob\"&\n" +
 	"\x14DeleteCronJobRequest\x12\x0e\n" +

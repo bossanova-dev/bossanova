@@ -16,11 +16,13 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
@@ -44,7 +46,15 @@ var (
 // would otherwise create a name-only mismatch between session's narrower
 // interface and agent's narrower interface.
 type PollArmer interface {
-	Arm(ctx context.Context, agentSessionID string, client agent.AgentRunnerClient)
+	Arm(ctx context.Context, sessionID, agentSessionID string, client agent.AgentRunnerClient)
+}
+
+type pollRunCompleter interface {
+	SignalRunComplete(sessionID, agentSessionID, exitError string)
+}
+
+type cronCompletionNotifier interface {
+	NotifyCronAgentStopped(sessionID string)
 }
 
 // Lifecycle orchestrates worktree creation, Claude process management,
@@ -60,24 +70,30 @@ type Lifecycle struct {
 	provider    vcs.Provider
 	logger      zerolog.Logger
 
-	// pollArmer arms the per-run poll-fallback goroutine for agent plugins
-	// whose ConfigureFinalizeHook reports IsSupported=false (e.g. codex).
-	// Plugins that own a finalize hook (claude) skip this entirely. Wired
-	// post-construction via SetPollArmer; nil means no fallback (the
-	// existing claude-only behaviour).
+	// pollArmer is retained for compatibility with older wiring, but tmux-
+	// hosted lifecycle paths no longer arm plugin ExitStatus polling.
 	pollArmer PollArmer
 
-	// daemonCtx is the long-running context controlling the daemon's
-	// goroutine fleet — passed to PollArmer.Arm so the poll outlives the
-	// per-call RPC ctx that drove StartSession. Wired via SetDaemonCtx
-	// during daemon startup. nil means polls won't be armed even when a
-	// PollArmer is set; that combination shouldn't occur in production.
-	daemonCtx context.Context //nolint:containedctx // intentional: passed to long-lived goroutines spawned by PollArmer
+	// pollCompleter preserves HostServiceServer's StartChatRun waiter path
+	// for hookless tmux chats. Lifecycle-owned cron runs are not registered
+	// in HostServiceServer, so cron finalization is driven by
+	// cronCompletionNotifier below instead of host-service maps.
+	pollCompleter pollRunCompleter
+
+	// cronCompletionNotifier receives hookless poll completion candidates
+	// for lifecycle-owned cron sessions.
+	cronCompletionNotifier cronCompletionNotifier
+
+	// daemonCtx is retained for compatibility with older SetDaemonCtx wiring.
+	daemonCtx context.Context //nolint:containedctx // retained compatibility field
 
 	// agentClientHookSupport caches the per-agent-name IsSupported result
 	// from ConfigureFinalizeHook. Populated lazily during Bootstrap (and,
-	// later, SetAgents) so the daemon doesn't probe each plugin twice on
-	// restart. nil-safe: a missing entry triggers a fresh probe.
+	// later, SetAgents). It is used only to skip the RPC for known-hookless
+	// agents — hook-supporting agents still call ConfigureFinalizeHook per
+	// surviving chat because the hook config is written per-worktree and must
+	// carry the current daemon port. nil-safe: a missing entry triggers a
+	// fresh probe.
 	agentClientHookSupport map[string]bool
 
 	// hookPort is the loopback TCP port of the daemon's Stop-hook server.
@@ -104,6 +120,15 @@ type Lifecycle struct {
 	// will reject the call with FailedPrecondition rather than write to an
 	// unconfigured path.
 	agentLogsDir string
+
+	// newTmuxChatAgentSessionID mints daemon-local IDs for tmux-hosted
+	// agent chats. Kept on the Lifecycle instance so tests can make one
+	// fixture deterministic without changing package-global state.
+	newTmuxChatAgentSessionID func() string
+
+	// tmuxCompletionPollInterval controls how often lifecycle-owned hookless
+	// cron runs check whether their tmux session has exited.
+	tmuxCompletionPollInterval time.Duration
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -129,16 +154,19 @@ func (l *Lifecycle) SetHookPort(port int) {
 // begins. Not safe for concurrent re-injection alongside in-flight RPCs.
 func (l *Lifecycle) SetAgents(m map[string]agent.AgentRunnerClient) { l.agents = m }
 
-// Bootstrap re-arms the poll-fallback for hookless agent runs that were
-// alive when the daemon last shut down. Call once during daemon startup,
-// after SetAgents / SetPollArmer / SetDaemonCtx and before serving begins.
+// Bootstrap restores supported session-keyed finalize hooks for tmux chats
+// that were alive when the daemon last shut down. Call once during daemon
+// startup, after SetAgents and before serving begins.
 //
 // For each agent_chats row whose tmux session is still alive, Bootstrap
-// looks up the parent session's HookToken, probes the agent plugin's
-// ConfigureFinalizeHook (caching the result per agent name to avoid
-// duplicate writes), and — when IsSupported=false — arms the poll
-// fallback under l.daemonCtx so the run's eventual completion still
-// signals through to WaitChatRun.
+// looks up the parent session's HookToken and calls the agent plugin's
+// ConfigureFinalizeHook so that session's worktree gets its hook config
+// rewritten with this (post-restart) daemon's port. The call runs per
+// surviving chat because the config is per-worktree; the per-agent-name
+// support result is cached only to skip the RPC for known-hookless agents,
+// which are re-armed onto the completion poll instead. Hookless tmux-hosted
+// runs are intentionally not wired to PollFallback: plugin ExitStatus only
+// observes StartAgentRun processes, not tmux-spawned processes.
 //
 // Failures (DB error, missing session, RPC error) are logged and skipped;
 // a single bad row mustn't block the rest from re-arming.
@@ -180,52 +208,142 @@ func (l *Lifecycle) Bootstrap(ctx context.Context) {
 				Msg("bootstrap re-arm: agent client missing; skipping")
 			continue
 		}
-		supported, ok := l.agentClientHookSupport[chat.AgentName]
-		if !ok {
-			hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
-				WorkDir:        sess.WorktreePath,
-				SessionId:      chat.SessionID,
-				AgentSessionId: chat.AgentSessionID,
-				HookToken:      *sess.HookToken,
-				HookPort:       int32(l.hookPort),
-			})
-			if err != nil {
-				l.logger.Warn().Err(err).
-					Str("agent_session", chat.AgentSessionID).
-					Msg("bootstrap re-arm: ConfigureFinalizeHook probe failed; skipping")
-				continue
-			}
-			supported = hookResp.GetIsSupported()
-			if l.agentClientHookSupport == nil {
-				l.agentClientHookSupport = map[string]bool{}
-			}
-			l.agentClientHookSupport[chat.AgentName] = supported
+		tmuxName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
+		if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
+			tmuxName = *chat.TmuxSessionName
 		}
+
+		// A known-hookless agent has no finalize hook to rewrite — re-arm the
+		// completion poll directly and skip the RPC.
+		if supported, known := l.agentClientHookSupport[chat.AgentName]; known && !supported {
+			l.armTmuxCompletionForHooklessTmux(chat.SessionID, chat.AgentSessionID, tmuxName)
+			continue
+		}
+
+		// Call ConfigureFinalizeHook for every surviving hook-capable chat:
+		// the hook config is written into THIS session's worktree and carries
+		// this daemon's (post-restart) hook port. The write is per-worktree,
+		// so it must run for each chat — caching the support result across
+		// sessions (the previous behavior) skipped the RPC for every chat
+		// after the first, leaving those worktrees pointing at the dead
+		// previous daemon's port so their Stop hook never reached the
+		// restarted daemon. We still cache the support result to skip the RPC
+		// for known-hookless agents (above).
+		hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
+			WorkDir:   sess.WorktreePath,
+			SessionId: chat.SessionID,
+			HookToken: *sess.HookToken,
+			HookPort:  int32(l.hookPort),
+		})
+		if err != nil {
+			l.logger.Warn().Err(err).
+				Str("agent_session", chat.AgentSessionID).
+				Msg("bootstrap re-arm: ConfigureFinalizeHook probe failed; skipping")
+			continue
+		}
+		supported := hookResp.GetIsSupported()
+		if l.agentClientHookSupport == nil {
+			l.agentClientHookSupport = map[string]bool{}
+		}
+		l.agentClientHookSupport[chat.AgentName] = supported
 		if supported {
+			// Hook config (re)written for this worktree with the current port.
 			continue
 		}
-		if l.pollArmer == nil || l.daemonCtx == nil {
-			continue
-		}
-		l.pollArmer.Arm(l.daemonCtx, chat.AgentSessionID, client)
-		l.logger.Info().
-			Str("agent_session", chat.AgentSessionID).
-			Str("agent", chat.AgentName).
-			Msg("bootstrap: re-armed poll fallback for hookless run")
+		l.armTmuxCompletionForHooklessTmux(chat.SessionID, chat.AgentSessionID, tmuxName)
 	}
 }
 
-// SetPollArmer wires the poll-fallback armer used when an agent's
-// ConfigureFinalizeHook reports IsSupported=false. Wired during daemon
-// startup with *agent.PollFallback; tests inject a fake. A nil armer is
-// valid — sessions whose agents support hooks ignore it, and sessions
-// whose agents don't will simply not get re-driven on completion.
+// SetPollArmer retains compatibility with older daemon wiring. Tmux-hosted
+// lifecycle paths intentionally do not arm plugin ExitStatus polling.
 func (l *Lifecycle) SetPollArmer(p PollArmer) { l.pollArmer = p }
 
-// SetDaemonCtx records the daemon-scoped context PollArmer.Arm should
-// use. Required alongside SetPollArmer for the poll-fallback path to
-// activate. Tests that exercise the poll path inject context.Background.
+// SetPollCompleter wires the host-service waiter completion path for
+// hookless StartChatRun calls.
+func (l *Lifecycle) SetPollCompleter(c pollRunCompleter) { l.pollCompleter = c }
+
+// SetCronCompletionNotifier wires the cron completion gate for hookless
+// lifecycle-owned cron runs.
+func (l *Lifecycle) SetCronCompletionNotifier(n cronCompletionNotifier) {
+	l.cronCompletionNotifier = n
+}
+
+// SignalSessionRunComplete is called by PollFallback when a hookless agent
+// run completes. It preserves host-service waiter completion for StartChatRun
+// and independently routes lifecycle-owned cron sessions to the cron gate.
+func (l *Lifecycle) SignalSessionRunComplete(sessionID, agentSessionID, exitError string) {
+	if l.pollCompleter != nil {
+		l.pollCompleter.SignalRunComplete(sessionID, agentSessionID, exitError)
+	}
+	l.notifyCronCompletionIfCronSession(context.Background(), sessionID)
+}
+
+func (l *Lifecycle) notifyCronCompletionIfCronSession(ctx context.Context, sessionID string) {
+	if sessionID == "" || l.cronCompletionNotifier == nil || l.sessions == nil {
+		return
+	}
+
+	session, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		l.logger.Warn().Err(err).Str("session", sessionID).Msg("poll fallback completion: failed to load session")
+		return
+	}
+	if session == nil || session.CronJobID == nil || *session.CronJobID == "" {
+		return
+	}
+
+	l.cronCompletionNotifier.NotifyCronAgentStopped(sessionID)
+}
+
+// SetDaemonCtx retains compatibility with older daemon wiring.
 func (l *Lifecycle) SetDaemonCtx(ctx context.Context) { l.daemonCtx = ctx }
+
+func (l *Lifecycle) armTmuxCompletionForHooklessRun(sessionID, agentSessionID, repoID string) {
+	l.armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, tmux.ChatSessionName(repoID, agentSessionID))
+}
+
+func (l *Lifecycle) armTmuxCompletionForHooklessTmux(sessionID, agentSessionID, tmuxName string) {
+	if l.tmux == nil || (l.pollCompleter == nil && l.cronCompletionNotifier == nil) {
+		return
+	}
+	ctx := l.daemonCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	interval := l.tmuxCompletionPollInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+
+	safego.Go(l.logger, func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			alive, err := l.tmux.HasSessionStatus(ctx, tmuxName)
+			if err != nil {
+				l.logger.Warn().Err(err).
+					Str("session", sessionID).
+					Str("agent_session", agentSessionID).
+					Str("tmux_session", tmuxName).
+					Msg("hookless cron tmux completion poll failed")
+			} else if !alive {
+				l.SignalSessionRunComplete(sessionID, agentSessionID, "")
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+}
+
+func (l *Lifecycle) armTmuxCompletionForHooklessCron(sessionID, agentSessionID, repoID string) {
+	l.armTmuxCompletionForHooklessRun(sessionID, agentSessionID, repoID)
+}
 
 // SetAgentLogsDir records the bossd-owned directory where agent plugins
 // write their tmux-hosted interactive run logs. Mirrors the same field
@@ -269,15 +387,17 @@ func NewLifecycle(
 	logger zerolog.Logger,
 ) *Lifecycle {
 	return &Lifecycle{
-		sessions:    sessions,
-		repos:       repos,
-		agentChats:  agentChats,
-		cronJobs:    cronJobs,
-		worktrees:   worktrees,
-		agentRunner: agentRunner,
-		tmux:        tmux,
-		provider:    provider,
-		logger:      logger,
+		sessions:                   sessions,
+		repos:                      repos,
+		agentChats:                 agentChats,
+		cronJobs:                   cronJobs,
+		worktrees:                  worktrees,
+		agentRunner:                agentRunner,
+		tmux:                       tmux,
+		provider:                   provider,
+		logger:                     logger,
+		newTmuxChatAgentSessionID:  uuid.NewString,
+		tmuxCompletionPollInterval: 2 * time.Second,
 	}
 }
 
@@ -439,6 +559,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// elsewhere) and before claude.Start (so Claude reads the config on
 	// startup). Non-cron sessions have an empty HookToken and skip this
 	// path entirely, preserving historical behaviour.
+	var hookResp *bossanovav1.ConfigureFinalizeHookResponse
 	if opts.HookToken != "" {
 		if l.hookPort == 0 {
 			return fmt.Errorf("hook port not configured: SetHookPort must be called before starting sessions with a HookToken")
@@ -447,7 +568,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if err != nil {
 			return fmt.Errorf("agent client not configured: %w; SetAgents must be called before starting sessions with a HookToken", err)
 		}
-		hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
+		hookResp, err = client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
 			WorkDir:   result.WorktreePath,
 			SessionId: sessionID,
 			HookToken: opts.HookToken,
@@ -456,22 +577,8 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		if err != nil {
 			return fmt.Errorf("configure finalize hook: %w", err)
 		}
-		if !hookResp.IsSupported {
-			// Hookless agent (e.g. codex) — arm the daemon-side poll
-			// fallback so we still learn when the run finishes. Plugins
-			// that own a finalize hook (claude) skip this path entirely;
-			// their Stop hook drives CompleteAgentRun directly.
-			l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook; arming poll fallback")
-			if l.pollArmer != nil && l.daemonCtx != nil {
-				// agent_session_id for cron-spawned tmux sessions is minted
-				// inside StartTmuxChat below; for the headless agentRunner
-				// path the poller would need that id too. The cron path
-				// re-arms via StartTmuxChat (see Task D.4), so for the
-				// non-cron branch we arm with the boss session_id as the
-				// agent_session_id key — matching the historical claude
-				// behaviour where the two were the same value.
-				l.pollArmer.Arm(l.daemonCtx, sessionID, client)
-			}
+		if !hookResp.GetIsSupported() {
+			l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook")
 		} else {
 			l.logger.Info().
 				Str("session", sessionID).
@@ -512,12 +619,19 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			return fmt.Errorf("start claude: %w", err)
 		}
 	}
+	if hookResp != nil && !hookResp.GetIsSupported() {
+		l.logger.Info().Str("session", sessionID).Msg("agent does not support finalize hook")
+	}
+	hooklessCronTmux := opts.CronJobID != "" && hookResp != nil && !hookResp.GetIsSupported()
 
 	// Update session with Claude session ID.
 	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 		AgentSessionID: strPtr(claudeSessionID),
 	}); err != nil {
 		return fmt.Errorf("update claude session id: %w", err)
+	}
+	if hooklessCronTmux {
+		l.armTmuxCompletionForHooklessCron(sessionID, claudeSessionID, session.RepoID)
 	}
 
 	// Fire AgentStarted → ImplementingPlan.
@@ -699,6 +813,7 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 		Msg("creating draft PR")
 
 	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+		l.logDraftPRBranchDebugSnapshot(ctx, sessionID, session.WorktreePath, session.BranchName, session.BaseBranch, err)
 		return err
 	}
 
@@ -772,6 +887,13 @@ func (l *Lifecycle) clearDraftPRBlockedReason(ctx context.Context, sessionID str
 	return nil
 }
 
+// draftPRPlaceholderCommitSubject is the message of the empty commit used to
+// give a branch a diff so GitHub will open a PR for it (session-start draft
+// PRs and dirty-only cron finalize both use it). draftPRTitle recognizes it
+// and falls back to the session/cron title rather than deriving a user-facing
+// PR title from this scaffolding commit.
+const draftPRPlaceholderCommitSubject = "chore: [skip ci] create pull request"
+
 func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, branchName string, session *models.Session, repo *models.Repo) error {
 	// Ensure origin URL is available before any VCS operations.
 	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
@@ -783,9 +905,13 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 		Str("branch", branchName).
 		Msg("pushing branch for immediate PR")
 
-	// Create an empty commit so the branch diverges from base — GitHub
+	if err := l.worktrees.VerifyCurrentBranch(ctx, worktreePath, branchName); err != nil {
+		return fmt.Errorf("verify worktree branch before draft PR: %w", err)
+	}
+
+	// Create an empty commit so the branch diverges from base; GitHub
 	// rejects PRs with "No commits between" otherwise.
-	if err := l.worktrees.EmptyCommit(ctx, worktreePath, "chore: [skip ci] create pull request"); err != nil {
+	if err := l.worktrees.EmptyCommit(ctx, worktreePath, draftPRPlaceholderCommitSubject); err != nil {
 		return fmt.Errorf("empty commit: %w", err)
 	}
 
@@ -793,13 +919,54 @@ func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, 
 		return fmt.Errorf("push branch: %w", err)
 	}
 
+	verification, err := l.worktrees.VerifyPushedBranchAheadOfBase(ctx, worktreePath, branchName, session.BaseBranch)
+	if err != nil {
+		return fmt.Errorf("verify PR branch before draft PR: %w", err)
+	}
+
 	session.WorktreePath = worktreePath
 	session.BranchName = branchName
 	if err := l.openDraftPRForBranch(ctx, sessionID, session, repo); err != nil {
+		if strings.Contains(err.Error(), "No commits between") && verification != nil {
+			err = fmt.Errorf(
+				"head branch %s has no commits over base origin/%s (base SHA %s, head SHA %s): %w",
+				branchName,
+				session.BaseBranch,
+				verification.BaseSHA,
+				verification.HeadSHA,
+				err,
+			)
+		}
+		l.logDraftPRBranchDebugSnapshot(ctx, sessionID, worktreePath, branchName, session.BaseBranch, err)
 		return err
 	}
 
 	return nil
+}
+
+// logDraftPRBranchDebugSnapshot logs the worktree's current branch/HEAD/remote
+// state alongside a failed draft PR error. The snapshot reflects state at call
+// time, which is after the branch has been pushed — so remote_head_sha shows
+// the just-pushed HEAD. That's intentional: it confirms whether the PR branch
+// actually received the commit when CreateDraftPR still failed.
+func (l *Lifecycle) logDraftPRBranchDebugSnapshot(ctx context.Context, sessionID, worktreePath, branchName, baseBranch string, draftPRErr error) {
+	if snapshot, snapshotErr := l.worktrees.BranchDebugSnapshot(ctx, worktreePath, branchName, baseBranch); snapshotErr == nil {
+		l.logger.Warn().Err(draftPRErr).
+			Str("session", sessionID).
+			Str("branch", branchName).
+			Str("base", baseBranch).
+			Str("current_branch", snapshot.CurrentBranch).
+			Str("head_sha", snapshot.HeadSHA).
+			Str("remote_head_sha", snapshot.RemoteHeadSHA).
+			Str("ahead_behind", snapshot.AheadBehind).
+			Msg("draft PR creation failed with branch debug snapshot")
+	} else {
+		l.logger.Warn().Err(snapshotErr).
+			Str("session", sessionID).
+			Str("branch", branchName).
+			Str("draft_pr_error", draftPRErr.Error()).
+			Msg("failed to collect branch debug snapshot after draft PR failure")
+	}
 }
 
 func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) error {
@@ -848,16 +1015,20 @@ func (l *Lifecycle) draftPRTitle(ctx context.Context, session *models.Session) s
 		return session.Title
 	}
 
+	fallback := normalizeCronPRTitle(session.Title)
 	subject, err := l.worktrees.LatestCommitSubject(ctx, session.WorktreePath)
 	if err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", session.ID).
 			Str("worktree", session.WorktreePath).
 			Msg("failed to read latest commit subject for cron PR title")
-		return session.Title
+		return fallback
 	}
-	if strings.TrimSpace(subject) == "" {
-		return session.Title
+	// A dirty-only cron run gets an empty placeholder commit so a PR can be
+	// opened; its subject is scaffolding, not the user's work, so fall back to
+	// the cron/session title instead of deriving the PR title from it.
+	if trimmed := strings.TrimSpace(subject); trimmed == "" || trimmed == draftPRPlaceholderCommitSubject {
+		return fallback
 	}
 	return normalizeCronPRTitle(subject)
 }
@@ -908,6 +1079,13 @@ func (l *Lifecycle) attachOpenPRForBranch(ctx context.Context, sessionID string,
 	for _, pr := range prs {
 		if pr.HeadBranch != session.BranchName || pr.State != vcs.PRStateOpen {
 			continue
+		}
+
+		if session.CronJobID != nil && *session.CronJobID != "" {
+			title := l.draftPRTitle(ctx, session)
+			if err := l.provider.UpdatePRTitle(ctx, repo.OriginURL, pr.Number, title); err != nil {
+				return false, fmt.Errorf("update attached PR title: %w", err)
+			}
 		}
 
 		if err := l.attachPRMetadata(ctx, sessionID, session, repo, pr.Number); err != nil {
@@ -1114,6 +1292,7 @@ func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
 				return fmt.Errorf("attach existing PR after duplicate create: %w", attachErr)
 			}
 		}
+		l.logDraftPRBranchDebugSnapshot(ctx, sessionID, session.WorktreePath, session.BranchName, session.BaseBranch, err)
 		l.setDraftPRBlockedReason(ctx, sessionID, err)
 		return err
 	}

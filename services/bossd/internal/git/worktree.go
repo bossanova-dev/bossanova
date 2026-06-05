@@ -76,6 +76,7 @@ type WorktreeManager interface {
 	// used to ensure a branch has at least one commit diverging from the
 	// base branch before creating a PR.
 	EmptyCommit(ctx context.Context, worktreePath, message string) error
+	VerifyCurrentBranch(ctx context.Context, worktreePath, expectedBranch string) error
 
 	// Push pushes the given branch to the "origin" remote.
 	Push(ctx context.Context, worktreePath, branch string) error
@@ -90,6 +91,14 @@ type WorktreeManager interface {
 	// worktree. Used by cron finalize to derive a human-facing PR title while
 	// keeping the actual commit message conventional.
 	LatestCommitSubject(ctx context.Context, worktreePath string) (string, error)
+
+	// BranchDebugSnapshot captures branch state used to diagnose draft PR
+	// creation failures.
+	BranchDebugSnapshot(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchDebugSnapshot, error)
+
+	// VerifyPushedBranchAheadOfBase verifies the worktree is on branch, HEAD is
+	// ahead of origin/<baseBranch>, and origin/<branch> points at local HEAD.
+	VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchVerification, error)
 
 	// Clone clones a remote repository to the given local path.
 	Clone(ctx context.Context, cloneURL, localPath string) error
@@ -140,6 +149,23 @@ type WorktreeManager interface {
 	// with a human-readable message otherwise. Strategy accepts the same
 	// values as MergePR ("merge", "squash", "rebase"; empty → "merge").
 	MergeLocalBranch(ctx context.Context, localPath, base, head, strategy string) error
+}
+
+// BranchDebugSnapshot contains branch state useful for diagnosing PR creation
+// failures against a remote base branch.
+type BranchDebugSnapshot struct {
+	CurrentBranch string
+	HeadSHA       string
+	RemoteHeadSHA string
+	AheadBehind   string
+}
+
+// BranchVerification contains local/remote commit state for a PR branch.
+type BranchVerification struct {
+	HeadSHA       string
+	BaseSHA       string
+	RemoteHeadSHA string
+	AheadCount    int
 }
 
 // CreateOpts holds the parameters for creating a new worktree.
@@ -325,6 +351,11 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 	return err == nil
 }
 
+func remoteBranchExists(ctx context.Context, repoPath, branch string) bool {
+	_, err := runGit(ctx, repoPath, "ls-remote", "--exit-code", "--heads", "origin", "refs/heads/"+branch)
+	return err == nil
+}
+
 // clearStaleWorktree removes a leftover worktree at wtPath so a fresh
 // `git worktree add` can succeed. A directory can be left behind when a prior
 // session was orphaned (daemon crash/restart, or a duplicate daemon stealing
@@ -337,17 +368,26 @@ func branchExists(ctx context.Context, repoPath, branch string) bool {
 // session for a branch before reaching worktree creation, so reaching here
 // means no live session owns wtPath. All steps are best-effort.
 func (m *Manager) clearStaleWorktree(ctx context.Context, repoPath, wtPath string) {
-	if _, err := os.Stat(wtPath); err != nil {
-		return // nothing on disk
+	if _, err := os.Stat(wtPath); err == nil {
+		m.logger.Warn().
+			Str("path", wtPath).
+			Msg("clearing stale worktree directory before create")
+	} else if os.IsNotExist(err) {
+		m.logger.Debug().
+			Str("path", wtPath).
+			Msg("pruning stale worktree registration before create")
+	} else {
+		m.logger.Debug().
+			Err(err).
+			Str("path", wtPath).
+			Msg("stat stale worktree path before create")
 	}
-
-	m.logger.Warn().
-		Str("path", wtPath).
-		Msg("clearing stale worktree directory before create")
 
 	// Drop any git registration for the path (handles a registered worktree),
 	// then prune dangling refs, then remove whatever directory remains
-	// (handles a directory left with no registration).
+	// (handles a directory left with no registration). Prune must run even
+	// when the directory is already missing, because Git still treats a stale
+	// registration as a branch checkout until $GIT_DIR/worktrees is pruned.
 	if _, err := runGit(ctx, repoPath, "worktree", "remove", "--force", wtPath); err != nil {
 		m.logger.Debug().Err(err).Msg("worktree remove (best effort)")
 	}
@@ -375,6 +415,24 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 	if branch == "" {
 		branch = sanitizeBranchName(opts.Title)
 	}
+
+	if opts.BaseBranch == "" {
+		return nil, fmt.Errorf("base branch is required")
+	}
+	if err := m.FetchBase(ctx, opts.RepoPath, opts.BaseBranch); err != nil {
+		return nil, err
+	}
+	if !hasRef(ctx, opts.RepoPath, "refs/remotes/origin/"+opts.BaseBranch) {
+		return nil, fmt.Errorf("origin/%s does not exist", opts.BaseBranch)
+	}
+	if !opts.Force {
+		uniqueBranch, err := m.availableNewBranchName(ctx, opts.RepoPath, branch, opts.BranchName == "")
+		if err != nil {
+			return nil, err
+		}
+		branch = uniqueBranch
+	}
+
 	wtPath := filepath.Join(opts.WorktreeBaseDir, sanitizeDirName(opts.RepoName), branch)
 
 	// Ensure the worktree base directory exists.
@@ -415,14 +473,6 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		Str("path", wtPath).
 		Msg("creating worktree")
 
-	// Fetch the latest base branch from origin so the worktree starts from
-	// the most recent remote state, not a potentially stale local ref.
-	if _, err := runGit(ctx, opts.RepoPath,
-		"fetch", "origin", opts.BaseBranch,
-	); err != nil {
-		return nil, fmt.Errorf("fetch base branch: %w", err)
-	}
-
 	// Clear any stale worktree left at this path by an orphaned prior session
 	// so the add below doesn't fail with "already exists".
 	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
@@ -450,10 +500,38 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (*CreateResult, e
 		}
 	}
 
+	if err := m.verifyCurrentBranch(ctx, wtPath, branch); err != nil {
+		return nil, fmt.Errorf("verify created worktree branch: %w", err)
+	}
+
 	return &CreateResult{
 		WorktreePath: wtPath,
 		BranchName:   branch,
 	}, nil
+}
+
+func (m *Manager) availableNewBranchName(ctx context.Context, repoPath, branch string, allowSuffix bool) (string, error) {
+	if branch == "" {
+		return "", fmt.Errorf("branch name is required")
+	}
+
+	for i := 0; ; i++ {
+		candidate := branch
+		if i > 0 {
+			if !allowSuffix {
+				return "", ErrBranchExists
+			}
+			candidate = fmt.Sprintf("%s-%d", branch, i+1)
+		}
+
+		if branchExists(ctx, repoPath, candidate) || remoteBranchExists(ctx, repoPath, candidate) {
+			if i >= 99 {
+				return "", fmt.Errorf("find unique branch name for %q: %w", branch, ErrBranchExists)
+			}
+			continue
+		}
+		return candidate, nil
+	}
 }
 
 // Archive removes the worktree directory but keeps the git branch alive.
@@ -524,6 +602,10 @@ func (m *Manager) Resurrect(ctx context.Context, opts ResurrectOpts) error {
 		}
 	}
 
+	if err := m.verifyCurrentBranch(ctx, opts.WorktreePath, opts.BranchName); err != nil {
+		return fmt.Errorf("verify resurrected worktree branch: %w", err)
+	}
+
 	return nil
 }
 
@@ -579,16 +661,127 @@ func (m *Manager) LatestCommitSubject(ctx context.Context, worktreePath string) 
 	return out, nil
 }
 
+// branchDebugUnavailable is the sentinel recorded in a BranchDebugSnapshot
+// field when the underlying git command fails (e.g. the remote ref does not
+// exist yet). An explicit sentinel keeps failure logs self-documenting rather
+// than leaving an ambiguous empty string.
+const branchDebugUnavailable = "<none>"
+
+func (m *Manager) BranchDebugSnapshot(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchDebugSnapshot, error) {
+	// A detached HEAD is exactly the kind of state worth reporting, so don't
+	// abort the snapshot when there's no current branch — record it instead.
+	current, err := m.currentBranch(ctx, worktreePath)
+	if err != nil {
+		current = "(detached)"
+	}
+	head, err := runGit(ctx, worktreePath, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
+	}
+
+	remoteHead, remoteErr := runGit(ctx, worktreePath, "rev-parse", "origin/"+branch)
+	if remoteErr != nil {
+		remoteHead = branchDebugUnavailable
+	}
+
+	aheadBehind, aheadErr := runGit(ctx, worktreePath, "rev-list", "--left-right", "--count", "origin/"+baseBranch+"...HEAD")
+	if aheadErr != nil {
+		aheadBehind = branchDebugUnavailable
+	}
+
+	return &BranchDebugSnapshot{
+		CurrentBranch: current,
+		HeadSHA:       strings.TrimSpace(head),
+		RemoteHeadSHA: strings.TrimSpace(remoteHead),
+		AheadBehind:   strings.TrimSpace(aheadBehind),
+	}, nil
+}
+
+func (m *Manager) currentBranch(ctx context.Context, worktreePath string) (string, error) {
+	out, err := runGit(ctx, worktreePath, "branch", "--show-current")
+	if err != nil {
+		return "", fmt.Errorf("current branch: %w", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		return "", fmt.Errorf("current branch: detached HEAD in %s", worktreePath)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (m *Manager) verifyCurrentBranch(ctx context.Context, worktreePath, expectedBranch string) error {
+	current, err := m.currentBranch(ctx, worktreePath)
+	if err != nil {
+		return err
+	}
+	if current != expectedBranch {
+		return fmt.Errorf("worktree is on branch %q, expected %q", current, expectedBranch)
+	}
+	return nil
+}
+
+func (m *Manager) VerifyCurrentBranch(ctx context.Context, worktreePath, expectedBranch string) error {
+	return m.verifyCurrentBranch(ctx, worktreePath, expectedBranch)
+}
+
 func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {
 	m.logger.Info().
 		Str("path", worktreePath).
 		Str("branch", branch).
 		Msg("pushing branch")
 
-	if _, err := runGit(ctx, worktreePath, "push", "-u", "origin", branch); err != nil {
+	if err := m.verifyCurrentBranch(ctx, worktreePath, branch); err != nil {
+		return fmt.Errorf("verify branch before push: %w", err)
+	}
+
+	if _, err := runGit(ctx, worktreePath, "push", "-u", "origin", "HEAD:refs/heads/"+branch); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchVerification, error) {
+	if err := m.verifyCurrentBranch(ctx, worktreePath, branch); err != nil {
+		return nil, err
+	}
+	if err := m.FetchBase(ctx, worktreePath, baseBranch); err != nil {
+		return nil, err
+	}
+
+	headSHA, err := runGit(ctx, worktreePath, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	baseSHA, err := runGit(ctx, worktreePath, "rev-parse", "origin/"+baseBranch)
+	if err != nil {
+		return nil, fmt.Errorf("resolve origin/%s: %w", baseBranch, err)
+	}
+	remoteHeadSHA, err := runGit(ctx, worktreePath, "rev-parse", "origin/"+branch)
+	if err != nil {
+		return nil, fmt.Errorf("resolve origin/%s: %w", branch, err)
+	}
+
+	verification := &BranchVerification{
+		HeadSHA:       strings.TrimSpace(headSHA),
+		BaseSHA:       strings.TrimSpace(baseSHA),
+		RemoteHeadSHA: strings.TrimSpace(remoteHeadSHA),
+	}
+
+	if verification.RemoteHeadSHA != verification.HeadSHA {
+		return verification, fmt.Errorf("remote head mismatch for %s: local HEAD %s, origin/%s %s", branch, verification.HeadSHA, branch, verification.RemoteHeadSHA)
+	}
+
+	aheadRaw, err := runGit(ctx, worktreePath, "rev-list", "--count", "origin/"+baseBranch+"..HEAD")
+	if err != nil {
+		return verification, fmt.Errorf("count commits over origin/%s: %w", baseBranch, err)
+	}
+	if _, err := fmt.Sscanf(strings.TrimSpace(aheadRaw), "%d", &verification.AheadCount); err != nil {
+		return verification, fmt.Errorf("parse commits over origin/%s %q: %w", baseBranch, strings.TrimSpace(aheadRaw), err)
+	}
+	if verification.AheadCount == 0 {
+		return verification, fmt.Errorf("head branch %s has no commits over base origin/%s (base SHA %s, head SHA %s)", branch, baseBranch, verification.BaseSHA, verification.HeadSHA)
+	}
+
+	return verification, nil
 }
 
 // Clone clones a remote repository to the given local path.
@@ -723,7 +916,8 @@ func (m *Manager) FetchBase(ctx context.Context, localPath, base string) error {
 	if base == "" {
 		return fmt.Errorf("base branch is required")
 	}
-	if _, err := runGit(ctx, localPath, "fetch", "origin", base); err != nil {
+	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
+	if _, err := runGit(ctx, localPath, "fetch", "origin", refspec); err != nil {
 		return fmt.Errorf("fetch origin/%s: %w", base, err)
 	}
 	return nil
@@ -940,36 +1134,56 @@ func (m *Manager) CreateFromExistingBranch(ctx context.Context, opts CreateFromE
 		Str("path", wtPath).
 		Msg("creating worktree from existing branch")
 
-	// Fetch the branch from origin.
+	// Fetch the branch from origin into its remote-tracking ref first. If the
+	// remote branch is missing, callers may fall back to creating from a local
+	// branch, so do not clear any existing path until this succeeds.
 	if _, err := runGit(ctx, opts.RepoPath,
-		"fetch", "origin", opts.BranchName,
+		"fetch", "origin",
+		"+refs/heads/"+opts.BranchName+":refs/remotes/origin/"+opts.BranchName,
 	); err != nil {
-		return nil, fmt.Errorf("fetch branch: %w", err)
+		return nil, fmt.Errorf("fetch existing branch: %w", err)
 	}
 
 	// Clear any stale worktree left at this path by an orphaned prior session
-	// so the add below doesn't fail with "already exists".
+	// before updating the local branch ref. Git refuses to move a branch that is
+	// still checked out in a registered stale worktree.
 	m.clearStaleWorktree(ctx, opts.RepoPath, wtPath)
+
+	if _, err := runGit(ctx, opts.RepoPath,
+		"branch", "-f", opts.BranchName, "refs/remotes/origin/"+opts.BranchName,
+	); err != nil {
+		return nil, fmt.Errorf("update existing branch: %w", err)
+	}
+
+	if _, err := runGit(ctx, opts.RepoPath,
+		"branch", "--set-upstream-to=origin/"+opts.BranchName, opts.BranchName,
+	); err != nil {
+		return nil, fmt.Errorf("set existing branch upstream: %w", err)
+	}
 
 	// Create worktree from the fetched branch.
 	// git worktree add <path> <branch> — checks out existing branch.
 	if _, err := runGit(ctx, opts.RepoPath,
 		"worktree", "add", wtPath, opts.BranchName,
 	); err != nil {
-		return nil, fmt.Errorf("worktree add: %w", err)
+		return nil, fmt.Errorf("create worktree from existing branch: %w", err)
 	}
 
 	// Ensure bossd-managed paths (e.g. .boss/) are git-ignored before any
 	// downstream step writes into them.
 	if err := ensureGitInfoExclude(ctx, wtPath, bossdManagedExcludePatterns); err != nil {
-		return nil, fmt.Errorf("ensure info/exclude: %w", err)
+		return nil, fmt.Errorf("ensure git info exclude: %w", err)
 	}
 
 	// Run setup script if provided.
-	if opts.SetupScript != nil && *opts.SetupScript != "" {
+	if opts.SetupScript != nil && strings.TrimSpace(*opts.SetupScript) != "" {
 		if err := runSetupScript(ctx, opts.RepoPath, wtPath, *opts.SetupScript, opts.SetupScriptOutput); err != nil {
 			return nil, fmt.Errorf("setup script: %w", err)
 		}
+	}
+
+	if err := m.verifyCurrentBranch(ctx, wtPath, opts.BranchName); err != nil {
+		return nil, fmt.Errorf("verify existing-branch worktree branch: %w", err)
 	}
 
 	return &CreateResult{

@@ -12,12 +12,11 @@ import (
 )
 
 // Completer is the host-side hook PollFallback signals when an agent run
-// completes. Implemented by *plugin.HostServiceServer.SignalRunComplete
-// (in-process, no auth — see CompleteAgentRun for the external auth-checked
-// path). The interface keeps the package-internal coupling explicit and
-// avoids an import cycle between the agent and plugin packages.
+// completes. The callback receives both the boss session_id and agent
+// session_id so lifecycle-owned runs do not depend on HostServiceServer's
+// StartChatRun-only active run maps.
 type Completer interface {
-	SignalRunComplete(agentSessionID, exitError string)
+	SignalSessionRunComplete(sessionID, agentSessionID, exitError string)
 }
 
 // PollFallback runs a per-run goroutine that polls the agent plugin's
@@ -50,7 +49,7 @@ func NewPollFallback(logger zerolog.Logger, cadence, jitter time.Duration, c Com
 // before returning). Safe to call from any goroutine — internally uses
 // safego.Go so a panic in the polling loop is logged and recovered rather
 // than crashing the daemon.
-func (p *PollFallback) Arm(ctx context.Context, agentSessionID string, client AgentRunnerClient) {
+func (p *PollFallback) Arm(ctx context.Context, sessionID, agentSessionID string, client AgentRunnerClient) {
 	safego.Go(p.logger, func() {
 		for {
 			d := p.cadence
@@ -73,7 +72,7 @@ func (p *PollFallback) Arm(ctx context.Context, agentSessionID string, client Ag
 			if !resp.IsComplete {
 				continue
 			}
-			p.completer.SignalRunComplete(agentSessionID, resp.ExitError)
+			p.completer.SignalSessionRunComplete(sessionID, agentSessionID, resp.ExitError)
 			return
 		}
 	})

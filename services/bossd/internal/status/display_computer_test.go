@@ -142,6 +142,20 @@ func TestRecompute_Matrix(t *testing.T) {
 			wantSpinner: false,
 		},
 		{
+			name:        "PR closed",
+			display:     &DisplayEntry{Status: vcs.DisplayStatusClosed},
+			wantLabel:   "closed",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_MUTED,
+			wantSpinner: false,
+		},
+		{
+			name:        "PR draft",
+			display:     &DisplayEntry{Status: vcs.DisplayStatusDraft},
+			wantLabel:   "draft",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_MUTED,
+			wantSpinner: false,
+		},
+		{
 			name:        "PR conflict",
 			display:     &DisplayEntry{Status: vcs.DisplayStatusConflict},
 			wantLabel:   "⨯ conflict",

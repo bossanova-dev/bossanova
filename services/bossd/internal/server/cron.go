@@ -31,13 +31,21 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 	if strings.TrimSpace(msg.Schedule) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("schedule is required"))
 	}
+	agentName := strings.TrimSpace(msg.AgentName)
+	if err := s.validateExplicitAgentName(agentName); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	params := db.CreateCronJobParams{
 		RepoID:   msg.RepoId,
 		Name:     strings.TrimSpace(msg.Name),
 		Prompt:   msg.Prompt,
 		Schedule: strings.TrimSpace(msg.Schedule),
-		Enabled:  msg.Enabled,
+		// Resolve a blank agent the same way CreateSession does, so a cron job
+		// created with no explicit agent lands on the daemon's actual runner
+		// rather than a hardcoded "claude" that may not be loaded.
+		AgentName: s.resolveAgentName(agentName),
+		Enabled:   msg.Enabled,
 	}
 	if tz := strings.TrimSpace(msg.Timezone); tz != "" {
 		params.Timezone = &tz
@@ -109,7 +117,17 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
+	existing, err := s.cronJobs.Get(ctx, msg.Id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("cron job not found: %s", msg.Id))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get cron job: %w", err))
+	}
+
 	params := db.UpdateCronJobParams{}
+	nextAgentName := existing.AgentName
+	nextEnabled := existing.Enabled
 	if msg.Name != nil {
 		v := strings.TrimSpace(*msg.Name)
 		if v == "" {
@@ -136,8 +154,22 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 		}
 		params.Timezone = &tz
 	}
+	if msg.AgentName != nil {
+		v := strings.TrimSpace(*msg.AgentName)
+		if err := s.validateExplicitAgentName(v); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		params.AgentName = &v
+		nextAgentName = v
+	}
 	if msg.Enabled != nil {
 		params.Enabled = msg.Enabled
+		nextEnabled = *msg.Enabled
+	}
+	if nextEnabled {
+		if err := s.validateExplicitAgentName(nextAgentName); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 	}
 
 	job, err := s.cronJobs.Update(ctx, msg.Id, params)

@@ -34,13 +34,15 @@ func TestCronJobStore_CreateAndGet(t *testing.T) {
 	repo := createTestRepo(t, repoStore)
 
 	tz := "America/New_York"
+	agentName := "codex"
 	job, err := store.Create(ctx, CreateCronJobParams{
-		RepoID:   repo.ID,
-		Name:     "Daily summary",
-		Prompt:   "Summarize yesterday's PR activity",
-		Schedule: "0 9 * * *",
-		Timezone: &tz,
-		Enabled:  true,
+		RepoID:    repo.ID,
+		Name:      "Daily summary",
+		Prompt:    "Summarize yesterday's PR activity",
+		Schedule:  "0 9 * * *",
+		Timezone:  &tz,
+		AgentName: agentName,
+		Enabled:   true,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -62,6 +64,9 @@ func TestCronJobStore_CreateAndGet(t *testing.T) {
 	}
 	if job.Timezone == nil || *job.Timezone != "America/New_York" {
 		t.Errorf("timezone = %v, want America/New_York", job.Timezone)
+	}
+	if job.AgentName != "codex" {
+		t.Errorf("agent_name = %q, want codex", job.AgentName)
 	}
 	if !job.Enabled {
 		t.Error("enabled should be true")
@@ -89,9 +94,12 @@ func TestCronJobStore_CreateAndGet(t *testing.T) {
 	if got.Timezone == nil || *got.Timezone != "America/New_York" {
 		t.Errorf("get: timezone = %v", got.Timezone)
 	}
+	if got.AgentName != "codex" {
+		t.Errorf("get: agent_name = %q, want codex", got.AgentName)
+	}
 }
 
-func TestCronJobStore_Create_NilTimezoneAndDisabled(t *testing.T) {
+func TestCronJobStore_Create_DefaultsBlankAgentToClaude(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
 	store := NewCronJobStore(db)
@@ -114,6 +122,35 @@ func TestCronJobStore_Create_NilTimezoneAndDisabled(t *testing.T) {
 	}
 	if job.Enabled {
 		t.Error("enabled should be false")
+	}
+	if job.AgentName != "claude" {
+		t.Errorf("agent_name = %q, want claude", job.AgentName)
+	}
+}
+
+func TestCronJobStore_Get_DefaultsLegacyRowAgentToClaude(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cron-legacy", repo.ID, "Legacy", "Run checks", "@daily", 1,
+		"2026-06-04T00:00:00.000Z", "2026-06-04T00:00:00.000Z",
+	)
+	if err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	got, err := store.Get(ctx, "cron-legacy")
+	if err != nil {
+		t.Fatalf("get legacy row: %v", err)
+	}
+	if got.AgentName != "claude" {
+		t.Errorf("agent_name = %q, want claude", got.AgentName)
 	}
 }
 
@@ -262,6 +299,7 @@ func TestCronJobStore_Update(t *testing.T) {
 	newSchedule := "0 12 * * *"
 	tz := "Europe/London"
 	tzPtr := &tz
+	agentName := "codex"
 	disabled := false
 	nextRun := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Millisecond)
 	nextRunPtr := &nextRun
@@ -271,6 +309,7 @@ func TestCronJobStore_Update(t *testing.T) {
 		Prompt:    &newPrompt,
 		Schedule:  &newSchedule,
 		Timezone:  &tzPtr,
+		AgentName: &agentName,
 		Enabled:   &disabled,
 		NextRunAt: &nextRunPtr,
 	})
@@ -288,6 +327,9 @@ func TestCronJobStore_Update(t *testing.T) {
 	}
 	if updated.Timezone == nil || *updated.Timezone != "Europe/London" {
 		t.Errorf("timezone = %v", updated.Timezone)
+	}
+	if updated.AgentName != "codex" {
+		t.Errorf("agent_name = %q, want codex", updated.AgentName)
 	}
 	if updated.Enabled {
 		t.Error("enabled should be false")
@@ -314,6 +356,15 @@ func TestCronJobStore_Update(t *testing.T) {
 	}
 	if cleared2.NextRunAt != nil {
 		t.Errorf("next_run_at after clear = %v, want nil", cleared2.NextRunAt)
+	}
+
+	blankAgent := " "
+	defaulted, err := store.Update(ctx, job.ID, UpdateCronJobParams{AgentName: &blankAgent})
+	if err != nil {
+		t.Fatalf("blank agent update: %v", err)
+	}
+	if defaulted.AgentName != "claude" {
+		t.Errorf("agent_name after blank update = %q, want claude", defaulted.AgentName)
 	}
 }
 

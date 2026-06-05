@@ -148,6 +148,81 @@ func TestCreateSession_Success(t *testing.T) {
 	}
 }
 
+func TestCreateSession_PersistsAgentName(t *testing.T) {
+	var capturedParams db.CreateSessionParams
+
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			capturedParams = params
+			return &models.Session{ID: "sess-123", RepoID: params.RepoID, AgentName: params.AgentName}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1", AgentName: capturedParams.AgentName}, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			return nil
+		},
+	}
+
+	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	sess, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:     "repo-1",
+		Title:      "Cron job",
+		Plan:       "Run scheduled task",
+		BaseBranch: "main",
+		AgentName:  "codex",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if capturedParams.AgentName != "codex" {
+		t.Errorf("Create params AgentName = %q, want 'codex'", capturedParams.AgentName)
+	}
+	if sess.AgentName != "codex" {
+		t.Errorf("session AgentName = %q, want 'codex'", sess.AgentName)
+	}
+}
+
+func TestCreateSession_BlankAgentNameUsesStoreDefault(t *testing.T) {
+	var capturedParams db.CreateSessionParams
+
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			capturedParams = params
+			return &models.Session{ID: "sess-123", RepoID: params.RepoID, AgentName: "claude"}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1", AgentName: "claude"}, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			return nil
+		},
+	}
+
+	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	sess, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:     "repo-1",
+		Title:      "Cron job",
+		Plan:       "Run scheduled task",
+		BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if capturedParams.AgentName != "" {
+		t.Errorf("Create params AgentName = %q, want blank so store applies default", capturedParams.AgentName)
+	}
+	if sess.AgentName != "claude" {
+		t.Errorf("session AgentName = %q, want default 'claude'", sess.AgentName)
+	}
+}
+
 func TestCreateSession_NoHeadBranch(t *testing.T) {
 	var capturedBranch string
 

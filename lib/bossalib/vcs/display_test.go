@@ -32,6 +32,11 @@ func TestComputeDisplayStatus(t *testing.T) {
 			wantStatus: DisplayStatusClosed,
 		},
 		{
+			name:       "closed draft PR",
+			pr:         &PRStatus{State: PRStateClosed, Draft: true},
+			wantStatus: DisplayStatusClosed,
+		},
+		{
 			name:       "draft PR",
 			pr:         &PRStatus{State: PRStateOpen, Draft: true, Mergeable: boolPtr(true)},
 			wantStatus: DisplayStatusDraft,

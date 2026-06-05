@@ -33,6 +33,12 @@ type cronFormReposMsg struct {
 	err   error
 }
 
+// cronFormAgentsMsg carries agents loaded for the Agent select field.
+type cronFormAgentsMsg struct {
+	agents []client.AgentInfo
+	err    error
+}
+
 // --- Validation ---
 
 var cronNameRe = regexp.MustCompile(`^[A-Za-z0-9 _-]+$`)
@@ -42,12 +48,13 @@ var cronNameRe = regexp.MustCompile(`^[A-Za-z0-9 _-]+$`)
 // cronFormData holds huh-bound values on the heap so Value() pointers survive
 // bubbletea value-receiver copies.
 type cronFormData struct {
-	name     string
-	repoID   string
-	prompt   string
-	schedule string
-	timezone string
-	enabled  bool
+	name      string
+	repoID    string
+	prompt    string
+	schedule  string
+	timezone  string
+	enabled   bool
+	agentName string
 }
 
 // --- Model ---
@@ -61,6 +68,11 @@ type CronFormModel struct {
 	// Loaded repos for the Repo select field.
 	repos      []*pb.Repo
 	reposReady bool
+
+	// Loaded agents for the Agent select field. Agent loading is best-effort;
+	// failures collapse to daemon-default agent behavior.
+	agents      []client.AgentInfo
+	agentsReady bool
 
 	// huh form and bound data.
 	form *huh.Form
@@ -100,13 +112,20 @@ func (m CronFormModel) Cancelled() bool { return m.cancelled }
 func (m CronFormModel) Done() bool { return m.done }
 
 func (m CronFormModel) Init() tea.Cmd {
-	return m.fetchRepos()
+	return tea.Batch(m.fetchRepos(), m.fetchAgents())
 }
 
 func (m CronFormModel) fetchRepos() tea.Cmd {
 	return func() tea.Msg {
 		repos, err := m.client.ListRepos(m.ctx)
 		return cronFormReposMsg{repos: repos, err: err}
+	}
+}
+
+func (m CronFormModel) fetchAgents() tea.Cmd {
+	return func() tea.Msg {
+		agents, err := m.client.ListAgents(m.ctx)
+		return cronFormAgentsMsg{agents: agents, err: err}
 	}
 }
 
@@ -126,9 +145,9 @@ func (m *CronFormModel) buildForm() {
 		m.fd.schedule = m.job.Schedule
 		m.fd.timezone = m.job.Timezone
 		m.fd.enabled = m.job.Enabled
+		m.fd.agentName = cronDisplayAgentName(m.job.AgentName)
 		m.fdPopulated = true
 	}
-
 	// Build repo select options.
 	repoOpts := make([]huh.Option[string], len(m.repos))
 	for i, r := range m.repos {
@@ -139,76 +158,119 @@ func (m *CronFormModel) buildForm() {
 		repoOpts = []huh.Option[string]{huh.NewOption("(no repos)", "")}
 	}
 
-	m.form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Name").
-				Placeholder("Daily dependency update").
-				Value(&m.fd.name).
-				Validate(func(s string) error {
-					s = strings.TrimSpace(s)
-					if s == "" {
-						return fmt.Errorf("name is required")
-					}
-					if len(s) > 80 {
-						return fmt.Errorf("name must be 80 characters or fewer")
-					}
-					if !cronNameRe.MatchString(s) {
-						return fmt.Errorf("name may only contain letters, digits, spaces, hyphens, and underscores")
-					}
-					return nil
-				}),
+	fields := []huh.Field{
+		huh.NewInput().
+			Title("Name").
+			Placeholder("Daily dependency update").
+			Value(&m.fd.name).
+			Validate(func(s string) error {
+				s = strings.TrimSpace(s)
+				if s == "" {
+					return fmt.Errorf("name is required")
+				}
+				if len(s) > 80 {
+					return fmt.Errorf("name must be 80 characters or fewer")
+				}
+				if !cronNameRe.MatchString(s) {
+					return fmt.Errorf("name may only contain letters, digits, spaces, hyphens, and underscores")
+				}
+				return nil
+			}),
 
+		huh.NewSelect[string]().
+			Title("Repo").
+			Options(repoOpts...).
+			Value(&m.fd.repoID),
+	}
+
+	if agentOpts := m.agentOptions(); len(agentOpts) > 0 {
+		fields = append(fields,
 			huh.NewSelect[string]().
-				Title("Repo").
-				Options(repoOpts...).
-				Value(&m.fd.repoID),
+				Title("Agent").
+				Options(agentOpts...).
+				Value(&m.fd.agentName),
+		)
+	}
 
-			huh.NewText().
-				Title("Prompt").
-				Description("Single-turn prompt. Cron sessions only listen for the main agent's Stop hook — subagents are ignored. Keep it self-contained.").
-				Value(&m.fd.prompt).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("prompt is required")
-					}
-					return nil
-				}),
+	fields = append(fields,
+		huh.NewText().
+			Title("Prompt").
+			Description("Single-turn prompt. Cron sessions only listen for the main agent's Stop hook — subagents are ignored. Keep it self-contained.").
+			Value(&m.fd.prompt).
+			Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("prompt is required")
+				}
+				return nil
+			}),
 
-			huh.NewInput().
-				Title("Schedule").
-				Placeholder("0 9 * * 1-5").
-				Description("5-field cron expression or @daily/@hourly/@weekly/@monthly").
-				Value(&m.fd.schedule).
-				Validate(func(s string) error {
-					if strings.TrimSpace(s) == "" {
-						return fmt.Errorf("schedule is required")
-					}
-					_, err := cronutil.Parse(strings.TrimSpace(s))
-					if err != nil {
-						return err
-					}
-					return nil
-				}),
-
-			huh.NewInput().
-				Title("Timezone").
-				Placeholder("America/New_York").
-				Description("Optional IANA timezone name. Empty = daemon local.").
-				Value(&m.fd.timezone).
-				Validate(func(s string) error {
-					if s == "" {
-						return nil
-					}
-					_, err := cronutil.ResolveTimezone(s)
+		huh.NewInput().
+			Title("Schedule").
+			Placeholder("0 9 * * 1-5").
+			Description("5-field cron expression or @daily/@hourly/@weekly/@monthly").
+			Value(&m.fd.schedule).
+			Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" {
+					return fmt.Errorf("schedule is required")
+				}
+				_, err := cronutil.Parse(strings.TrimSpace(s))
+				if err != nil {
 					return err
-				}),
+				}
+				return nil
+			}),
 
-			huh.NewConfirm().
-				Title("Enabled").
-				Value(&m.fd.enabled),
-		),
+		huh.NewInput().
+			Title("Timezone").
+			Placeholder("America/New_York").
+			Description("Optional IANA timezone name. Empty = daemon local.").
+			Value(&m.fd.timezone).
+			Validate(func(s string) error {
+				if s == "" {
+					return nil
+				}
+				_, err := cronutil.ResolveTimezone(s)
+				return err
+			}),
+
+		huh.NewConfirm().
+			Title("Enabled").
+			Value(&m.fd.enabled),
+	)
+
+	m.form = huh.NewForm(
+		huh.NewGroup(fields...),
 	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+}
+
+func (m CronFormModel) agentOptions() []huh.Option[string] {
+	if len(m.agents) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(m.agents)+1)
+	opts := make([]huh.Option[string], 0, len(m.agents)+1)
+	if m.job == nil {
+		seen[""] = true
+		opts = append(opts, huh.NewOption("Daemon default", ""))
+	}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		opts = append(opts, huh.NewOption(name, name))
+	}
+	for _, agent := range m.agents {
+		add(agent.Name)
+	}
+	// In edit mode the saved agent may no longer be loaded (plugin removed, or a
+	// legacy "claude" job on a non-claude install). Keep it selectable so an
+	// unrelated edit doesn't silently rewrite the agent.
+	if m.fd != nil {
+		add(m.fd.agentName)
+	}
+	return opts
 }
 
 // recomputePreview refreshes m.schedulePreview and m.scheduleErr based on
@@ -263,8 +325,22 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.repos = msg.repos
 		m.reposReady = true
-		m.buildForm()
-		return m, m.form.Init()
+		if m.agentsReady {
+			m.buildForm()
+			return m, m.form.Init()
+		}
+		return m, nil
+
+	case cronFormAgentsMsg:
+		if msg.err == nil {
+			m.agents = msg.agents
+		}
+		m.agentsReady = true
+		if m.reposReady {
+			m.buildForm()
+			return m, m.form.Init()
+		}
+		return m, nil
 
 	case cronFormSavedMsg:
 		m.submitting = false
@@ -278,7 +354,7 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// ESC before form is ready — cancel immediately.
-	if !m.reposReady {
+	if !m.reposReady || !m.agentsReady {
 		if km, ok := msg.(tea.KeyMsg); ok && km.String() == "esc" {
 			m.cancelled = true
 			return m, nil
@@ -333,12 +409,13 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 		// Create mode.
 		return m, func() tea.Msg {
 			job, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
-				RepoId:   fd.repoID,
-				Name:     strings.TrimSpace(fd.name),
-				Prompt:   strings.TrimSpace(fd.prompt),
-				Schedule: strings.TrimSpace(fd.schedule),
-				Timezone: strings.TrimSpace(fd.timezone),
-				Enabled:  fd.enabled,
+				RepoId:    fd.repoID,
+				Name:      strings.TrimSpace(fd.name),
+				Prompt:    strings.TrimSpace(fd.prompt),
+				Schedule:  strings.TrimSpace(fd.schedule),
+				Timezone:  strings.TrimSpace(fd.timezone),
+				Enabled:   fd.enabled,
+				AgentName: strings.TrimSpace(fd.agentName),
 			})
 			return cronFormSavedMsg{job: job, err: err}
 		}
@@ -368,6 +445,10 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 		enabled := fd.enabled
 		req.Enabled = &enabled
 	}
+	agentName := strings.TrimSpace(fd.agentName)
+	if cronDisplayAgentName(agentName) != cronDisplayAgentName(original.AgentName) {
+		req.AgentName = &agentName
+	}
 
 	return m, func() tea.Msg {
 		job, err := c.UpdateCronJob(ctx, req)
@@ -392,7 +473,7 @@ func (m CronFormModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	if !m.reposReady {
+	if !m.reposReady || !m.agentsReady {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render("Loading…"))
 		b.WriteString("\n")
 		b.WriteString(actionBar([]string{"[esc] cancel"}))

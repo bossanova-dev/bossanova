@@ -119,6 +119,27 @@ func (f *fakeFinalizer) callCount() int {
 	return len(f.calls)
 }
 
+func (f *fakeFinalizer) count() int {
+	return f.callCount()
+}
+
+type fakeCronCompletionNotifier struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeCronCompletionNotifier) NotifyCronAgentStopped(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, sessionID)
+}
+
+func (f *fakeCronCompletionNotifier) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 // startHookServer boots a HookServer wired to the given deps and returns
 // it plus the handler-dispatched base URL.
 func startHookServer(t *testing.T, store db.SessionStore, fin HookFinalizer) (*HookServer, string) {
@@ -158,6 +179,43 @@ func waitForDispatch(t *testing.T, f *fakeFinalizer, timeout time.Duration) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestHookServer_FinalizeHookNotifiesCronCompletionGate(t *testing.T) {
+	store := newHookMockSessionStore()
+	store.sessions["sess-1"] = &models.Session{ID: "sess-1", HookToken: strPtr("secret-token")}
+	fin := newFakeFinalizer()
+	notifier := &fakeCronCompletionNotifier{}
+
+	hookSrv, base := startHookServer(t, store, fin)
+	hookSrv.SetCronCompletionNotifier(notifier)
+
+	req, err := http.NewRequest(http.MethodPost, base+"/hooks/finalize/sess-1", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post finalize hook: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	select {
+	case <-fin.done:
+		t.Fatalf("FinalizeSession was dispatched; calls = %d, want 0", fin.count())
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := fin.count(); got != 0 {
+		t.Fatalf("FinalizeSession calls = %d, want 0", got)
+	}
+	if got := notifier.count(); got != 1 {
+		t.Fatalf("NotifyCronAgentStopped calls = %d, want 1", got)
+	}
+}
 
 // TestHookServer_HappyPath valid token → 200 + FinalizeSession dispatched.
 func TestHookServer_HappyPath(t *testing.T) {

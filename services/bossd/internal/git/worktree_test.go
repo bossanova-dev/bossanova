@@ -115,6 +115,17 @@ func TestIsBranchAlreadyExistsGitOutput(t *testing.T) {
 	}
 }
 
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func TestCreate(t *testing.T) {
 	repoDir := initTestRepo(t)
 	wtBase := filepath.Join(t.TempDir(), "worktrees")
@@ -155,6 +166,213 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+func TestCreateLeavesWorktreeOnCreatedBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Fix Camera Crash",
+		BaseBranch:      "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != result.BranchName {
+		t.Fatalf("current branch = %q, want %q", current, result.BranchName)
+	}
+}
+
+func TestCreateUsesOriginBaseWhenRootCheckoutIsDifferent(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	mainSHA := gitOutput(t, repoDir, "rev-parse", "origin/main")
+	gitOutput(t, repoDir, "checkout", "-b", "production")
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "production-only")
+
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Fix Camera Crash",
+		BaseBranch:      "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gotSHA := gitOutput(t, result.WorktreePath, "rev-parse", "HEAD")
+	if gotSHA != mainSHA {
+		t.Fatalf("worktree HEAD = %s, want origin/main %s", gotSHA, mainSHA)
+	}
+}
+
+func TestCreateSuffixesGeneratedBranchWhenRemoteBranchExists(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	gitOutput(t, repoDir, "branch", "test-session")
+	gitOutput(t, repoDir, "push", "origin", "test-session")
+	gitOutput(t, repoDir, "branch", "-D", "test-session")
+
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+		BaseBranch:      "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if result.BranchName != "test-session-2" {
+		t.Fatalf("branch = %q, want test-session-2", result.BranchName)
+	}
+}
+
+func TestCreateDoesNotSuffixGeneratedBranchWhenOnlyNamespacedRemoteBranchExists(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	gitOutput(t, repoDir, "checkout", "-b", "team/test-session")
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "remote namespaced branch")
+	gitOutput(t, repoDir, "push", "origin", "team/test-session")
+	gitOutput(t, repoDir, "checkout", "main")
+	gitOutput(t, repoDir, "branch", "-D", "team/test-session")
+
+	result, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+		BaseBranch:      "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if result.BranchName != "test-session" {
+		t.Fatalf("branch = %q, want test-session", result.BranchName)
+	}
+}
+
+func TestCreateFailsWhenRemoteBaseMissing(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+
+	_, err := mgr.Create(context.Background(), CreateOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Test session",
+		BaseBranch:      "missing",
+	})
+	if err == nil {
+		t.Fatal("Create: want error for missing base branch, got nil")
+	}
+	if !strings.Contains(err.Error(), "fetch origin/missing") {
+		t.Fatalf("error = %v, want fetch origin/missing", err)
+	}
+}
+
+func TestVerifyCurrentBranchDetectsMismatch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+
+	for _, args := range [][]string{
+		{"checkout", "-b", "production"},
+		{"commit", "--allow-empty", "-m", "production commit"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	err := mgr.verifyCurrentBranch(ctx, repoDir, "fix-camera-crash")
+	if err == nil {
+		t.Fatal("verifyCurrentBranch returned nil, want mismatch error")
+	}
+	if !strings.Contains(err.Error(), `worktree is on branch "production", expected "fix-camera-crash"`) {
+		t.Fatalf("error = %q, want branch mismatch details", err)
+	}
+}
+
+func TestBranchDebugSnapshotReportsBranchState(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+
+	gitOutput(t, repoDir, "checkout", "-b", "fix-camera-crash")
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "remote feature")
+	gitOutput(t, repoDir, "push", "-u", "origin", "fix-camera-crash")
+	remoteHead := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "local feature")
+	head := gitOutput(t, repoDir, "rev-parse", "HEAD")
+
+	snapshot, err := mgr.BranchDebugSnapshot(ctx, repoDir, "fix-camera-crash", "main")
+	if err != nil {
+		t.Fatalf("BranchDebugSnapshot: %v", err)
+	}
+
+	if snapshot.CurrentBranch != "fix-camera-crash" {
+		t.Fatalf("CurrentBranch = %q, want fix-camera-crash", snapshot.CurrentBranch)
+	}
+	if snapshot.HeadSHA != head {
+		t.Fatalf("HeadSHA = %q, want %q", snapshot.HeadSHA, head)
+	}
+	if snapshot.RemoteHeadSHA != remoteHead {
+		t.Fatalf("RemoteHeadSHA = %q, want %q", snapshot.RemoteHeadSHA, remoteHead)
+	}
+	if snapshot.AheadBehind != "0\t2" {
+		t.Fatalf("AheadBehind = %q, want %q", snapshot.AheadBehind, "0\t2")
+	}
+}
+
+// TestBranchDebugSnapshotToleratesDetachedHeadAndMissingRemote verifies the
+// snapshot stays useful in the failure states it exists to diagnose: a detached
+// HEAD is reported as "(detached)" rather than aborting the snapshot, and a
+// missing remote ref / base yields the explicit "<none>" sentinel instead of an
+// ambiguous empty string.
+func TestBranchDebugSnapshotToleratesDetachedHeadAndMissingRemote(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+
+	head := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	// Detach HEAD and ask about a branch that was never pushed.
+	gitOutput(t, repoDir, "checkout", "--detach", "HEAD")
+
+	snapshot, err := mgr.BranchDebugSnapshot(ctx, repoDir, "never-pushed", "missing-base")
+	if err != nil {
+		t.Fatalf("BranchDebugSnapshot: %v", err)
+	}
+
+	if snapshot.CurrentBranch != "(detached)" {
+		t.Fatalf("CurrentBranch = %q, want %q", snapshot.CurrentBranch, "(detached)")
+	}
+	if snapshot.HeadSHA != head {
+		t.Fatalf("HeadSHA = %q, want %q", snapshot.HeadSHA, head)
+	}
+	if snapshot.RemoteHeadSHA != "<none>" {
+		t.Fatalf("RemoteHeadSHA = %q, want %q", snapshot.RemoteHeadSHA, "<none>")
+	}
+	if snapshot.AheadBehind != "<none>" {
+		t.Fatalf("AheadBehind = %q, want %q", snapshot.AheadBehind, "<none>")
+	}
+}
+
 // TestCreate_RemovesStaleWorktreeDir verifies that Create self-heals when a
 // leftover directory occupies the target path (e.g. from an orphaned prior
 // session). Without the cleanup, `git worktree add` fails with "already exists"
@@ -190,6 +408,86 @@ func TestCreate_RemovesStaleWorktreeDir(t *testing.T) {
 	// The stale file must be gone (the dir was recreated as a fresh worktree).
 	if _, err := os.Stat(filepath.Join(stalePath, "leftover.txt")); !os.IsNotExist(err) {
 		t.Fatalf("stale file still present (err=%v)", err)
+	}
+}
+
+func TestCreateFromExistingBranchLeavesWorktreeOnRequestedBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	for _, args := range [][]string{
+		{"checkout", "-b", "fix-camera-crash"},
+		{"commit", "--allow-empty", "-m", "feature"},
+		{"push", "origin", "fix-camera-crash"},
+		{"checkout", "main"},
+		{"branch", "-D", "fix-camera-crash"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	result, err := mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      "fix-camera-crash",
+	})
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch: %v", err)
+	}
+
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != "fix-camera-crash" {
+		t.Fatalf("current branch = %q, want fix-camera-crash", current)
+	}
+}
+
+func TestCreateFromExistingBranchForceRefreshesRewrittenBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	branch := "force-refresh-existing"
+
+	for _, args := range [][]string{
+		{"checkout", "-b", branch},
+		{"commit", "--allow-empty", "-m", "old feature"},
+		{"push", "origin", branch},
+		{"fetch", "origin", branch + ":refs/remotes/origin/" + branch},
+		{"checkout", "main"},
+		{"checkout", "-b", "rewritten-feature"},
+		{"commit", "--allow-empty", "-m", "rewritten feature"},
+		{"push", "--force", "origin", "rewritten-feature:" + branch},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	newCommit := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	for _, args := range [][]string{
+		{"checkout", "main"},
+		{"branch", "-D", "rewritten-feature"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	result, err := mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      branch,
+	})
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch after force-pushed origin branch: %v", err)
+	}
+
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != branch {
+		t.Fatalf("current branch = %q, want %s", current, branch)
+	}
+	gotCommit := gitOutput(t, result.WorktreePath, "rev-parse", "HEAD")
+	if gotCommit != newCommit {
+		t.Fatalf("worktree HEAD = %s, want force-pushed commit %s", gotCommit, newCommit)
+	}
+	originCommit := gitOutput(t, repoDir, "rev-parse", "refs/remotes/origin/"+branch)
+	if originCommit != newCommit {
+		t.Fatalf("origin/%s = %s, want %s", branch, originCommit, newCommit)
 	}
 }
 
@@ -237,6 +535,195 @@ func TestCreateFromExistingBranch_RemovesStaleWorktreeDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stalePath, "leftover.txt")); !os.IsNotExist(err) {
 		t.Fatalf("stale file still present (err=%v)", err)
+	}
+}
+
+func TestCreateFromExistingBranch_RemovesRegisteredStaleWorktreeBeforeFetch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	stalePath := filepath.Join(wtBase, "my-repo", "fix-camera-crash")
+
+	for _, args := range [][]string{
+		{"checkout", "-b", "fix-camera-crash"},
+		{"commit", "--allow-empty", "-m", "feature"},
+		{"push", "-u", "origin", "fix-camera-crash"},
+		{"checkout", "main"},
+		{"worktree", "add", stalePath, "fix-camera-crash"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	originURL := gitOutput(t, repoDir, "config", "--get", "remote.origin.url")
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	gitOutput(t, repoDir, "clone", originURL, cloneDir)
+	for _, args := range [][]string{
+		{"checkout", "fix-camera-crash"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test User"},
+		{"commit", "--allow-empty", "-m", "remote feature"},
+		{"push", "origin", "fix-camera-crash"},
+	} {
+		gitOutput(t, cloneDir, args...)
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	result, err := mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      "fix-camera-crash",
+	})
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch: %v", err)
+	}
+	if result.WorktreePath != stalePath {
+		t.Fatalf("worktree path = %q, want %q", result.WorktreePath, stalePath)
+	}
+
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != "fix-camera-crash" {
+		t.Fatalf("current branch = %q, want fix-camera-crash", current)
+	}
+	subject := gitOutput(t, result.WorktreePath, "log", "-1", "--format=%s")
+	if subject != "remote feature" {
+		t.Fatalf("latest commit subject = %q, want remote feature", subject)
+	}
+	upstream := gitOutput(t, result.WorktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if upstream != "origin/fix-camera-crash" {
+		t.Fatalf("upstream = %q, want origin/fix-camera-crash", upstream)
+	}
+}
+
+func TestCreateFromExistingBranchMissingRemoteKeepsStaleWorktreeForFallback(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	stalePath := filepath.Join(wtBase, "my-repo", "local-only")
+
+	if err := os.MkdirAll(stalePath, 0o755); err != nil {
+		t.Fatalf("mkdir stale worktree: %v", err)
+	}
+	leftover := filepath.Join(stalePath, "leftover.txt")
+	if err := os.WriteFile(leftover, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+	for _, args := range [][]string{
+		{"checkout", "-b", "local-only"},
+		{"commit", "--allow-empty", "-m", "local-only"},
+		{"checkout", "main"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	_, err := mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      "local-only",
+	})
+	if err == nil {
+		t.Fatal("CreateFromExistingBranch succeeded for missing remote branch")
+	}
+	if _, statErr := os.Stat(leftover); statErr != nil {
+		t.Fatalf("stale worktree was removed before fallback could run: %v", statErr)
+	}
+}
+
+func TestCreateFromExistingBranchQualifiesFetchRefspecs(t *testing.T) {
+	repoDir := initTestRepo(t)
+	branch := "v1.2.3"
+
+	for _, args := range [][]string{
+		{"tag", branch},
+		{"checkout", "-b", branch},
+		{"commit", "--allow-empty", "-m", "remote branch"},
+		{"push", "origin", "refs/heads/" + branch},
+		{"push", "origin", "refs/tags/" + branch},
+		{"checkout", "main"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	tagCommit := gitOutput(t, repoDir, "rev-parse", "refs/tags/"+branch)
+	branchCommit := gitOutput(t, repoDir, "rev-parse", "refs/heads/"+branch)
+
+	mgr := NewManager(zerolog.Nop())
+	result, err := mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: filepath.Join(t.TempDir(), "worktrees"),
+		RepoName:        "my-repo",
+		BranchName:      branch,
+	})
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch with branch/tag collision: %v", err)
+	}
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != branch {
+		t.Fatalf("current branch = %q, want %s", current, branch)
+	}
+	if got := gitOutput(t, repoDir, "rev-parse", "refs/tags/"+branch); got != tagCommit {
+		t.Fatalf("tag ref moved to %s, want %s", got, tagCommit)
+	}
+	if got := gitOutput(t, repoDir, "rev-parse", "refs/remotes/origin/"+branch); got != branchCommit {
+		t.Fatalf("origin branch ref = %s, want %s", got, branchCommit)
+	}
+}
+
+func TestCreateFromExistingBranch_PrunesMissingRegisteredStaleWorktreeBeforeFetch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	stalePath := filepath.Join(wtBase, "my-repo", "fix-camera-crash")
+
+	for _, args := range [][]string{
+		{"checkout", "-b", "fix-camera-crash"},
+		{"commit", "--allow-empty", "-m", "feature"},
+		{"push", "-u", "origin", "fix-camera-crash"},
+		{"checkout", "main"},
+		{"worktree", "add", stalePath, "fix-camera-crash"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	if err := os.RemoveAll(stalePath); err != nil {
+		t.Fatalf("remove stale worktree dir: %v", err)
+	}
+
+	originURL := gitOutput(t, repoDir, "config", "--get", "remote.origin.url")
+	cloneDir := filepath.Join(t.TempDir(), "clone")
+	gitOutput(t, repoDir, "clone", originURL, cloneDir)
+	for _, args := range [][]string{
+		{"checkout", "fix-camera-crash"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test User"},
+		{"commit", "--allow-empty", "-m", "remote feature"},
+		{"push", "origin", "fix-camera-crash"},
+	} {
+		gitOutput(t, cloneDir, args...)
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	result, err := mgr.CreateFromExistingBranch(context.Background(), CreateFromExistingBranchOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		BranchName:      "fix-camera-crash",
+	})
+	if err != nil {
+		t.Fatalf("CreateFromExistingBranch: %v", err)
+	}
+	if result.WorktreePath != stalePath {
+		t.Fatalf("worktree path = %q, want %q", result.WorktreePath, stalePath)
+	}
+
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != "fix-camera-crash" {
+		t.Fatalf("current branch = %q, want fix-camera-crash", current)
+	}
+	subject := gitOutput(t, result.WorktreePath, "log", "-1", "--format=%s")
+	if subject != "remote feature" {
+		t.Fatalf("latest commit subject = %q, want remote feature", subject)
+	}
+	upstream := gitOutput(t, result.WorktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if upstream != "origin/fix-camera-crash" {
+		t.Fatalf("upstream = %q, want origin/fix-camera-crash", upstream)
 	}
 }
 
@@ -631,6 +1118,11 @@ func TestResurrect(t *testing.T) {
 	if _, err := os.Stat(result.WorktreePath); err != nil {
 		t.Errorf("worktree dir not found after resurrect: %v", err)
 	}
+
+	current := gitOutput(t, result.WorktreePath, "branch", "--show-current")
+	if current != result.BranchName {
+		t.Fatalf("current branch = %q, want %q", current, result.BranchName)
+	}
 }
 
 // TestResurrect_IgnoresBossDir covers the case where a worktree predates
@@ -744,6 +1236,73 @@ func TestEmptyCommitBypassesCommitHooks(t *testing.T) {
 	}
 	if subject != "chore: [skip ci] create pull request" {
 		t.Errorf("commit subject = %q, want %q", subject, "chore: [skip ci] create pull request")
+	}
+}
+
+func TestPushSendsCurrentHeadToRequestedRemoteBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+
+	for _, args := range [][]string{
+		{"checkout", "-b", "fix-camera-crash"},
+		{"push", "origin", "fix-camera-crash"},
+		{"checkout", "main"},
+		{"checkout", "-b", "production"},
+		{"commit", "--allow-empty", "-m", "placeholder on wrong local branch"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	if err := mgr.Push(ctx, repoDir, "fix-camera-crash"); err == nil {
+		t.Fatal("Push returned nil, want branch mismatch error")
+	} else if !strings.Contains(err.Error(), `worktree is on branch "production", expected "fix-camera-crash"`) {
+		t.Fatalf("Push error = %q, want branch mismatch details", err)
+	}
+
+	gitOutput(t, repoDir, "checkout", "fix-camera-crash")
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "placeholder on target branch")
+	if err := mgr.Push(ctx, repoDir, "fix-camera-crash"); err != nil {
+		t.Fatalf("Push after checkout target branch: %v", err)
+	}
+
+	localHead := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	remoteHead := gitOutput(t, repoDir, "ls-remote", "origin", "refs/heads/fix-camera-crash")
+	if !strings.HasPrefix(remoteHead, localHead) {
+		t.Fatalf("remote head = %q, want prefix %q", remoteHead, localHead)
+	}
+}
+
+func TestPushQualifiesRemoteBranchDestination(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+	branch := "v1.2.3"
+
+	for _, args := range [][]string{
+		{"tag", branch},
+		{"push", "origin", "refs/tags/" + branch},
+		{"checkout", "-b", branch},
+		{"commit", "--allow-empty", "-m", "initial branch commit"},
+		{"push", "origin", "refs/heads/" + branch},
+		{"commit", "--allow-empty", "-m", "updated branch commit"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	tagCommit := gitOutput(t, repoDir, "rev-parse", "refs/tags/"+branch)
+	localHead := gitOutput(t, repoDir, "rev-parse", "HEAD")
+
+	if err := mgr.Push(ctx, repoDir, branch); err != nil {
+		t.Fatalf("Push with branch/tag name collision: %v", err)
+	}
+
+	remoteHead := gitOutput(t, repoDir, "ls-remote", "origin", "refs/heads/"+branch)
+	if !strings.HasPrefix(remoteHead, localHead) {
+		t.Fatalf("remote head = %q, want prefix %q", remoteHead, localHead)
+	}
+	remoteTag := gitOutput(t, repoDir, "ls-remote", "origin", "refs/tags/"+branch)
+	if !strings.HasPrefix(remoteTag, tagCommit) {
+		t.Fatalf("remote tag = %q, want prefix %q", remoteTag, tagCommit)
 	}
 }
 

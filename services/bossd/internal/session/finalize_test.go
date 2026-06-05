@@ -10,10 +10,13 @@ import (
 
 	"github.com/rs/zerolog"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
+	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/tmux"
 )
 
 // TestFinalizeSession_NoOpWhenNotImplementing exercises the idempotency gate:
@@ -126,7 +129,6 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{statusOut: ""}
-	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	vp.nextOpenPRs = []vcs.PRSummary{
 		{Number: 77, HeadBranch: "cron-br-1", State: vcs.PRStateOpen},
@@ -151,7 +153,7 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 		HookToken:    &hookToken,
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, cr, nil, vp, logger)
+	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -166,14 +168,8 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	if len(vp.createPRCalls) != 0 {
 		t.Fatalf("clean branch with existing PR must not create PR, calls=%d", len(vp.createPRCalls))
 	}
-	if len(cr.started) != 1 {
-		t.Fatalf("expected 1 claude.Start call, got %d", len(cr.started))
-	}
-	if cr.started[0].plan != finalizeChatSkill {
-		t.Errorf("claude.Start plan = %q, want %q", cr.started[0].plan, finalizeChatSkill)
-	}
-	if cr.started[0].workDir != "/tmp/wt-sess1" {
-		t.Errorf("claude.Start workDir = %q, want /tmp/wt-sess1", cr.started[0].workDir)
+	if got := runner.lastInput.Command; got != "boss-finalize" {
+		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
 	}
 	if len(chats.created) != 1 {
 		t.Fatalf("expected 1 chat row created, got %d", len(chats.created))
@@ -271,7 +267,6 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 			return true, nil
 		},
 	}
-	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 	chats := &recordingAgentChatStore{}
@@ -296,7 +291,7 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 		HookToken:    &hookToken,
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, cr, nil, vp, logger)
+	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -323,8 +318,8 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 	if vp.createPRCalls[0].Title != "Preserve PR-backed clean sessions" {
 		t.Fatalf("CreateDraftPR title = %q, want %q", vp.createPRCalls[0].Title, "Preserve PR-backed clean sessions")
 	}
-	if len(cr.started) != 1 || cr.started[0].plan != finalizeChatSkill {
-		t.Fatalf("finalize chat starts = %+v, want one %q start", cr.started, finalizeChatSkill)
+	if got := runner.lastInput.Command; got != "boss-finalize" {
+		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
 	}
 	if sessions.sessions["sess-1"].HookToken != nil {
 		t.Fatalf("hook_token = %v, want nil after PR creation success", sessions.sessions["sess-1"].HookToken)
@@ -351,7 +346,6 @@ func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreating
 			return true, nil
 		},
 	}
-	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 	chats := &recordingAgentChatStore{}
@@ -376,7 +370,7 @@ func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreating
 		HookToken:    &hookToken,
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, cr, nil, vp, logger)
+	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -393,6 +387,9 @@ func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreating
 	}
 	if len(wt.archived) != 0 {
 		t.Fatalf("worktree should be preserved when creating PR, got %v", wt.archived)
+	}
+	if got := runner.lastInput.Command; got != "boss-finalize" {
+		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
 	}
 	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
 		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
@@ -576,12 +573,11 @@ func TestFinalizeSession_CleanWorktreePRLookupFailure_PreservesSession(t *testin
 }
 
 // TestFinalizeSession_HookConfigOnly_DeletedNoChanges proves that the
-// bossd-managed Stop-hook config file in `.claude/settings.local.json`
-// must NOT be classified as a Claude-authored change. Without this
-// filtering, a "do nothing" cron run lands in pr_failed → Blocked
-// because git status reports the hook config as untracked, kicking the
-// finalize pipeline down the EnsurePR path; this was observed in prod
-// for cron job "Another Cron Test". The file is owned by bossd and
+// bossd-managed Claude files must NOT be classified as Claude-authored
+// changes. Without this filtering, a "do nothing" cron run lands in
+// pr_failed → Blocked because git status reports bossd-owned files as
+// untracked, kicking the finalize pipeline down the EnsurePR path; this
+// was observed in prod for cron job "Another Cron Test". The hook config
 // also contains a bearer token, so it must be ignored on the no-changes
 // branch (and never staged for commit by anything downstream).
 func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
@@ -595,6 +591,8 @@ func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
 		{"hook_config_alone", "?? .claude/settings.local.json\n"},
 		{"hook_config_with_trailing_whitespace", "?? .claude/settings.local.json  \n"},
 		{"hook_config_among_blank_lines", "\n?? .claude/settings.local.json\n\n"},
+		{"scheduled_tasks_lock_alone", "?? .claude/scheduled_tasks.lock\n"},
+		{"hook_config_and_scheduled_tasks_lock", "?? .claude/settings.local.json\n?? .claude/scheduled_tasks.lock\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -696,22 +694,16 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 	}
 }
 
-// TestFinalizeSession_PRCreated covers the happy path: changes exist on a
-// GitHub-linked repo, EnsurePR opens the PR, and StartFinalizeChat spawns the
-// /boss-finalize Claude conversation. Outcome must be pr_created, the session
-// stays in Finalizing (the chat drives it onward to PRMerged/PRClosed), and
-// hook_token is cleared so a replayed Stop event can no longer authenticate.
-func TestFinalizeSession_PRCreated(t *testing.T) {
+func TestFinalizeSession_DirtyUncommittedCronOutputStartsFinalizeChat(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{
-		statusOut:           " M file.go", // modified file
-		latestCommitSubject: "test(mutate): add tests for surviving mutants",
+		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		latestCommitSubject: "fix(bossd): preserve dirty cron output",
 	}
-	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	cron := &recordingCronJobStore{}
 	chats := &recordingAgentChatStore{}
@@ -736,7 +728,193 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 		HookToken:    &hookToken,
 	}
 
-	lc := NewLifecycle(sessions, repos, chats, cron, wt, cr, nil, vp, logger)
+	lc, _ := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	}
+	// The /boss-finalize skill has no `gh pr create` step, so dirty cron
+	// output must get a PR opened before the chat starts — otherwise the chat
+	// has nothing for `gh pr view` / `gh pr ready` to operate on.
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1 (PR opened before the finalize chat)", len(vp.createPRCalls))
+	}
+	// This branch has no commits beyond base (mock IsAncestor defaults to
+	// true), so a placeholder commit must be added so GitHub accepts the PR —
+	// otherwise dirty-only runs could never reach the finalizer chat.
+	if wt.emptyCommitCalls != 1 {
+		t.Fatalf("EmptyCommit calls = %d, want 1 (placeholder for zero-commit dirty branch)", wt.emptyCommitCalls)
+	}
+	if len(chats.created) != 1 {
+		t.Fatalf("finalize chats created = %d, want 1", len(chats.created))
+	}
+}
+
+// TestFinalizeSession_DirtyUncommittedCronOutputPRFailed covers the dirty cron
+// output path when opening the PR genuinely fails (here GitHub rejects the
+// create even after the placeholder commit). Because the /boss-finalize skill
+// assumes a PR already exists, we must not start the chat without one: the
+// outcome is pr_failed, the worktree is preserved, and no finalize chat is
+// spawned. (The zero-commit case itself no longer fails — a placeholder commit
+// makes the PR openable; see TestFinalizeSession_DirtyUncommittedCronOutputStartsFinalizeChat.)
+func TestFinalizeSession_DirtyUncommittedCronOutputPRFailed(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		latestCommitSubject: "fix(bossd): preserve dirty cron output",
+	}
+	vp := newMockVCSProvider()
+	vp.createPRErr = fmt.Errorf("github 422: no commits between main and cron-br-1")
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc, _ := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+	}
+	if len(chats.created) != 0 {
+		t.Fatalf("finalize chats created = %d, want 0 when no PR could be opened", len(chats.created))
+	}
+}
+
+// TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder verifies that
+// when a dirty-only cron run gets its placeholder commit as HEAD, the draft PR
+// title falls back to the cron/session title rather than being derived from the
+// placeholder commit subject ("create pull request"). The /boss-finalize skill
+// does not repair PR titles, so the title set at creation must be correct.
+func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	// Simulate the placeholder commit being HEAD (what EnsurePR/openDraftPRForBranch
+	// would read after the dirty path adds it for a zero-commit branch).
+	wt := &mockWorktreeManager{
+		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		latestCommitSubject: draftPRPlaceholderCommitSubject,
+	}
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Nightly mutation tests",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc, _ := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	}
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	if got := vp.createPRCalls[0].Title; got != "Nightly mutation tests" {
+		t.Errorf("draft PR title = %q, want %q (session title, not the placeholder subject)", got, "Nightly mutation tests")
+	}
+}
+
+// TestFinalizeSession_PRCreated covers the happy path: a clean branch contains
+// committed work on a GitHub-linked repo, EnsurePR opens the PR, and
+// StartFinalizeChat spawns the /boss-finalize Claude conversation. Outcome must
+// be pr_created, the session stays in Finalizing (the chat drives it onward to
+// PRMerged/PRClosed), and hook_token is cleared so a replayed Stop event can no
+// longer authenticate.
+func TestFinalizeSession_PRCreated(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "test(mutate): add tests for surviving mutants",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
+		},
+	}
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -751,16 +929,8 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 	if len(vp.createPRCalls) == 1 && vp.createPRCalls[0].Title != "Add tests for surviving mutants" {
 		t.Errorf("CreateDraftPR title = %q, want %q", vp.createPRCalls[0].Title, "Add tests for surviving mutants")
 	}
-	// claude.Start should have been called with the /boss-finalize skill in the
-	// session's worktree.
-	if len(cr.started) != 1 {
-		t.Fatalf("expected 1 claude.Start call, got %d", len(cr.started))
-	}
-	if cr.started[0].plan != finalizeChatSkill {
-		t.Errorf("claude.Start plan = %q, want %q", cr.started[0].plan, finalizeChatSkill)
-	}
-	if cr.started[0].workDir != "/tmp/wt-sess1" {
-		t.Errorf("claude.Start workDir = %q, want /tmp/wt-sess1", cr.started[0].workDir)
+	if got := runner.lastInput.Command; got != "boss-finalize" {
+		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
 	}
 	// A claude_chats row must be created so the UI lists the finalize chat
 	// alongside the prior implementing chat.
@@ -780,17 +950,27 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 	}
 }
 
-// TestFinalizeSession_PRFailed covers the GitHub-linked + EnsurePR-fails
-// branch: changes exist, repo has a GitHub origin, but the draft PR creation
-// errored. Outcome must be pr_failed, the worktree is preserved (no archive),
-// hook_token stays set, and the session lands in Blocked for an operator.
+// TestFinalizeSession_PRFailed covers the clean committed branch +
+// EnsurePR-fails branch: repo has a GitHub origin and committed work, but the
+// draft PR creation errored. Outcome must be pr_failed, the worktree is
+// preserved (no archive), hook_token stays set, and the session lands in
+// Blocked for an operator.
 func TestFinalizeSession_PRFailed(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{statusOut: " M file.go"}
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "fix(cron): preserve PR-backed clean sessions",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
+		},
+	}
 	cr := newMockAgentRunner()
 	vp := newMockVCSProvider()
 	vp.createPRErr = fmt.Errorf("github 503: service unavailable")
@@ -842,17 +1022,27 @@ func TestFinalizeSession_PRFailed(t *testing.T) {
 	}
 }
 
-// TestFinalizeSession_ChatSpawnFailed covers the EnsurePR-succeeds-but-chat-
-// fails branch: the PR is opened (so we can't redo it cleanly), but the
-// /boss-finalize claude process won't start. Outcome must be chat_spawn_failed
-// with the worktree + hook_token preserved and the session in Blocked.
+// TestFinalizeSession_ChatSpawnFailed covers the clean committed branch where
+// EnsurePR succeeds but chat spawn fails: the PR is opened (so we can't redo it
+// cleanly), but the /boss-finalize claude process won't start. Outcome must be
+// chat_spawn_failed with the worktree + hook_token preserved and the session in
+// Blocked.
 func TestFinalizeSession_ChatSpawnFailed(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{statusOut: " M file.go"}
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "fix(cron): preserve PR-backed clean sessions",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
+		},
+	}
 	cr := newMockAgentRunner()
 	cr.startErr = fmt.Errorf("claude binary not found")
 	vp := newMockVCSProvider()
@@ -1151,6 +1341,50 @@ func TestRecoverFinalizingSessions_NoneStuck(t *testing.T) {
 }
 
 // --- helpers ---
+
+type recordingFinalizeAgentRunner struct {
+	*fakeAgentForLifecycle
+	lastInput ChatInput
+}
+
+func newRecordingFinalizeAgentRunner() *recordingFinalizeAgentRunner {
+	return &recordingFinalizeAgentRunner{fakeAgentForLifecycle: newFakeAgent()}
+}
+
+func (r *recordingFinalizeAgentRunner) BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
+	r.lastInput = ChatInput{
+		Prompt:  req.GetInitialPrompt(),
+		Command: req.GetInitialCommand(),
+	}
+	return r.fakeAgentForLifecycle.BuildInteractiveCommand(ctx, req)
+}
+
+func newFinalizeChatLifecycle(
+	t *testing.T,
+	sessions *mockSessionStore,
+	repos *mockRepoStore,
+	chats db.AgentChatStore,
+	cron db.CronJobStore,
+	wt *mockWorktreeManager,
+	vp *mockVCSProvider,
+	logger zerolog.Logger,
+) (*Lifecycle, *recordingFinalizeAgentRunner) {
+	t.Helper()
+
+	for _, sess := range sessions.sessions {
+		if sess.AgentName == "" {
+			sess.AgentName = "claude"
+		}
+	}
+
+	runner := newRecordingFinalizeAgentRunner()
+	tmuxFake := newFakeTmux()
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgentLogsDir(t.TempDir())
+	return lc, runner
+}
 
 // recordingAgentChatStore captures Create calls so tests can assert that
 // the finalize chat row was written with the right session/claude IDs.

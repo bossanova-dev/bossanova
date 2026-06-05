@@ -124,6 +124,56 @@ func TestPostHogSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEnsureInstalledAtBackfillsMissingTimestamp(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := DefaultSettings()
+
+	got, changed := settings.EnsureInstalledAt(now)
+	if !changed {
+		t.Fatal("EnsureInstalledAt changed = false, want true")
+	}
+	if !got.InstalledAt.Equal(now) {
+		t.Fatalf("InstalledAt = %s, want %s", got.InstalledAt, now)
+	}
+}
+
+func TestEnsureInstalledAtPreservesExistingTimestamp(t *testing.T) {
+	installedAt := time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC)
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := DefaultSettings()
+	settings.InstalledAt = installedAt
+
+	got, changed := settings.EnsureInstalledAt(now)
+	if changed {
+		t.Fatal("EnsureInstalledAt changed = true, want false")
+	}
+	if !got.InstalledAt.Equal(installedAt) {
+		t.Fatalf("InstalledAt = %s, want %s", got.InstalledAt, installedAt)
+	}
+}
+
+func TestCloudGuestOfferSettingsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	installedAt := time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC)
+	settings := DefaultSettings()
+	settings.InstalledAt = installedAt
+	settings.BossCloudGuestOfferHidden = true
+
+	if err := SaveTo(path, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if !loaded.InstalledAt.Equal(installedAt) {
+		t.Fatalf("InstalledAt = %s, want %s", loaded.InstalledAt, installedAt)
+	}
+	if !loaded.BossCloudGuestOfferHidden {
+		t.Fatal("BossCloudGuestOfferHidden = false, want true")
+	}
+}
+
 func TestLoadFrom_BackfillsDefaultAgent(t *testing.T) {
 	// LoadFrom must guarantee a non-empty DefaultAgent on two file shapes:
 	//   1. Legacy file: omits default_agent entirely (older binary).

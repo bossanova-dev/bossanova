@@ -3,6 +3,7 @@ package views
 
 import (
 	"context"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/auth"
@@ -44,6 +45,8 @@ type App struct {
 	checkoutReturnURL string
 	checkoutCancelURL string
 	subscriptionURL   string
+	userSettings      config.Settings
+	startedAt         time.Time
 	ctx               context.Context
 	ptyManager        *bosspty.Manager
 	activeView        View
@@ -99,20 +102,35 @@ func (a *App) WithSubscriptionURL(rawURL string) *App {
 	return a
 }
 
+func (a *App) WithSettings(settings config.Settings) *App {
+	a.userSettings = settings
+	a.home.SetSettings(settings)
+	return a
+}
+
 // NewApp creates a new App wired to the daemon client.
 //
 // Provider setup runs before the daemon is auto-started so plugin settings
 // are current by the time bossd reads them.
 func NewApp(c client.BossClient, authMgr *auth.Manager) App {
 	ctx := context.Background()
-	return App{
-		client:     c,
-		auth:       authMgr,
-		ctx:        ctx,
-		ptyManager: bosspty.NewManager(),
-		activeView: ViewHome,
-		home:       NewHomeModel(c, ctx, authMgr),
+	settings := config.DefaultSettings()
+	home := NewHomeModel(c, ctx, authMgr)
+	app := App{
+		client:       c,
+		auth:         authMgr,
+		ctx:          ctx,
+		ptyManager:   bosspty.NewManager(),
+		activeView:   ViewHome,
+		home:         home,
+		userSettings: settings,
+		// startedAt is the process-lifetime session epoch for the guest cloud
+		// offer fatigue timer. It is captured once here and copied into every
+		// Home model so navigating back to Home does not reset the clock.
+		startedAt: home.startedAt,
 	}
+	app.home.SetSettings(settings)
+	return app
 }
 
 // SetInitialView overrides the default initial view before running the program.
@@ -566,6 +584,8 @@ func (a *App) switchToHome() tea.Cmd {
 
 func (a *App) newHomeModel() HomeModel {
 	home := NewHomeModel(a.client, a.ctx, a.auth)
+	home.startedAt = a.startedAt
+	home.SetSettings(a.userSettings)
 	home.SetCloudSubscription(a.cloudAccess, a.checkoutReturnURL, a.checkoutCancelURL)
 	home.width = a.width
 	home.height = a.height

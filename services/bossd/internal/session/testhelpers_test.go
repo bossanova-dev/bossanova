@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"strings"
+	"sync"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossd/internal/agent"
@@ -16,6 +17,7 @@ var _ agent.AgentRunnerClient = (*fakeAgentForLifecycle)(nil)
 // The LastConfigureHookReq field lets callers verify what was passed.
 type fakeAgentForLifecycle struct {
 	LastConfigureHookReq        *bossanovav1.ConfigureFinalizeHookRequest
+	ConfigureHookReqs           []*bossanovav1.ConfigureFinalizeHookRequest
 	LastBuildInteractiveCommand *bossanovav1.BuildInteractiveCommandRequest
 	IsSupported                 bool  // controls ConfigureFinalizeHook response
 	ConfigureHookErr            error // when non-nil, ConfigureFinalizeHook returns it
@@ -51,6 +53,7 @@ func (f *fakeAgentForLifecycle) ExitStatus(_ context.Context, _ *bossanovav1.Age
 
 func (f *fakeAgentForLifecycle) ConfigureFinalizeHook(_ context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	f.LastConfigureHookReq = req
+	f.ConfigureHookReqs = append(f.ConfigureHookReqs, req)
 	if f.OnConfigureHook != nil {
 		f.OnConfigureHook()
 	}
@@ -115,11 +118,73 @@ func (f *fakeAgentForLifecycle) TranscriptExists(_ context.Context, _ *bossanova
 // fakePollArmer records calls to Arm so tests can assert that the poll
 // fallback was (or was not) wired for a given agent_session_id.
 type fakePollArmer struct {
-	armCalled bool
-	armedID   string
+	armCalled      bool
+	armedSessionID string
+	armedID        string
 }
 
-func (f *fakePollArmer) Arm(_ context.Context, agentSessionID string, _ agent.AgentRunnerClient) {
+func (f *fakePollArmer) Arm(_ context.Context, sessionID, agentSessionID string, _ agent.AgentRunnerClient) {
 	f.armCalled = true
+	f.armedSessionID = sessionID
 	f.armedID = agentSessionID
+}
+
+type recordingCronCompletionNotifier struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (n *recordingCronCompletionNotifier) NotifyCronAgentStopped(sessionID string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.calls = append(n.calls, sessionID)
+}
+
+func (n *recordingCronCompletionNotifier) count() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.calls)
+}
+
+func (n *recordingCronCompletionNotifier) callsCopy() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make([]string, len(n.calls))
+	copy(out, n.calls)
+	return out
+}
+
+type recordingPollCompleter struct {
+	mu    sync.Mutex
+	calls []pollCompletionCall
+}
+
+type pollCompletionCall struct {
+	sessionID      string
+	agentSessionID string
+	exitError      string
+}
+
+func (c *recordingPollCompleter) SignalRunComplete(sessionID, agentSessionID, exitError string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, pollCompletionCall{
+		sessionID:      sessionID,
+		agentSessionID: agentSessionID,
+		exitError:      exitError,
+	})
+}
+
+func (c *recordingPollCompleter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.calls)
+}
+
+func (c *recordingPollCompleter) callsCopy() []pollCompletionCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]pollCompletionCall, len(c.calls))
+	copy(out, c.calls)
+	return out
 }

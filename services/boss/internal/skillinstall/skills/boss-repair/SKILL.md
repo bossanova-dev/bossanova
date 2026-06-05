@@ -17,7 +17,9 @@ The repair plugin automatically invokes this skill when:
 - **Conflict status (4)**: Merge conflicts with base branch
 - **Rejected status (5)**: Review feedback requires changes
 
-This skill is NOT manually invoked by users — it runs automatically via the repair plugin.
+This skill normally runs **automatically** via the repair plugin and performs a focused repair pass per invocation: fix, push, wait for the resulting PR checks to finish, then report green/red/pending status. The repair plugin owns retrying additional attempts when checks remain red.
+
+It may also be run **by hand** as `/boss-repair watch` to keep the whole wait-and-repair loop inside one manual invocation until the PR is green. See [Watch Mode](#watch-mode) below. The repair plugin always invokes this skill with no arguments, so automated runs never enter watch mode.
 
 ---
 
@@ -301,16 +303,19 @@ After applying the repair:
    git status -sb  # Branch should not be ahead of origin
    ```
 
-3. Report remote PR state without waiting for checks:
+3. Wait for remote PR checks to finish, then report the final PR state (default mode waits once after the pushed fix; in Watch Mode you may loop per the [Watch Mode](#watch-mode) section):
 
    ```bash
+   gh pr checks --watch
+   CHECKS_STATUS=$?
    gh pr view
    ```
 
-4. If checks are pending, note that in output:
+4. If checks are still pending, failed, or timed out, note that in output. In default mode, still **exit cleanly (zero)** after the push even when the checks failed — report the failing status but do not exit nonzero. The repair plugin only enters its in-session resume/retry loop after a clean exit; a nonzero exit makes it abandon that loop and fall back to a slower fresh sweep. (Watch Mode is the exception: it owns the loop and re-runs the matching repair strategy on failures itself, per the [Watch Mode](#watch-mode) section.)
+
    ```
    ✓ Repair applied and pushed
-   ⏳ Waiting for checks to complete
+   Checks finished: [passing | failing | pending | timed out]
    ```
 
 **3.2 Report Results**
@@ -482,6 +487,44 @@ This skill should:
 
 ---
 
+## Watch Mode
+
+**Manual `/boss-repair watch` only.** This mode is active **only** when the skill is invoked with the `watch` argument. The repair plugin always invokes `/boss-repair` with no arguments, so it never enters watch mode; default mode still waits for checks after its pushed fix, but the plugin owns additional repair attempts.
+
+In default mode (no `watch` argument) you MUST behave exactly as Phases 1–3 describe: apply one repair pass, push, wait for the resulting checks to finish, report the result, and exit so the repair plugin can decide whether to retry. **Do not** start an additional repair loop in default mode.
+
+In watch mode, after completing one normal repair pass (Phases 1–2) and pushing, do **not** exit. Instead loop, bounded to **5 repair passes total** (matching the plugin's own limit):
+
+1. Record the just-pushed commit:
+
+   ```bash
+   BEFORE=$(git rev-parse HEAD)
+   ```
+
+2. Wait for checks to settle (blocks until every check finishes):
+
+   ```bash
+   gh pr checks --watch
+   ```
+
+3. Re-assess the full PR state:
+
+   - **Checks:** `gh pr checks` — exit status 0 means all checks passed.
+   - **Review threads:** `node scripts/review-feedback-probe.js` — trust `repair_status` (`clean` vs `needs_repair`) using the same interpretation rules as Strategy C above.
+   - **Conflicts:** `gh pr view --json mergeable -q .mergeable` — `CONFLICTING` means a merge conflict appeared.
+
+4. **Done:** if checks pass AND `repair_status=clean` AND mergeable is not `CONFLICTING`, report success and exit.
+
+5. **Still red:** run the matching repair strategy from Phase 2 for the new failure, then push.
+
+6. **No-progress stop:** after a pass, if `git rev-parse HEAD` equals `$BEFORE` (no new commit was pushed) and the failing signal is unchanged, stop and report — do not spin on an unfixable failure. This mirrors the plugin's duplicate-input guard.
+
+7. **Bound:** never exceed 5 repair passes. After the 5th, report the remaining failures and exit.
+
+When watch mode exits (green, no-progress, or 5 attempts reached), print the standard Repair Summary plus a final line stating why the loop ended (`green` / `no-progress` / `max-attempts`).
+
+---
+
 ## Checklist
 
 Before completing the repair:
@@ -512,4 +555,4 @@ The entire repair workflow is successful only when the repair plugin observes:
 2. ✅ No merge conflict remains
 3. ✅ No unresolved actionable review feedback remains
 
-Do not treat pending checks as final success. Pending checks mean the agent run should exit cleanly after pushing, and the repair plugin will wait. If checks fail, new review feedback appears, or a conflict appears, the plugin will start a fresh `boss-repair` run.
+Do not treat pending checks as final success. In **default mode**, pending checks mean the agent run should exit cleanly after pushing, and the repair plugin will wait; if checks fail, new review feedback appears, or a conflict appears, the plugin will start a fresh `boss-repair` run. In **Watch Mode** (`/boss-repair watch`), the skill itself waits and loops as described in [Watch Mode](#watch-mode) instead of exiting on pending checks.

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
@@ -77,6 +76,12 @@ func RepairChatStaleForReclaim(agentLogsDir string, chat *models.AgentChat, now 
 type ChatInput struct {
 	Prompt  string
 	Command string
+	// ResumeAgentSessionID, when set, resumes this prior agent session instead
+	// of minting a fresh one (claude `--resume <id>`), preserving the agent's
+	// memory of earlier attempts. The id is reused as the bossd correlation key
+	// (log path, finalize hook, tmux name, completion arming) so everything
+	// stays keyed on a single id.
+	ResumeAgentSessionID string
 }
 
 func (i ChatInput) render(commandPrefix string) string {
@@ -177,6 +182,11 @@ type HookOpts struct {
 	// Token is the per-run bearer token written into settings.local.json
 	// for the run-scoped Stop hook. Empty disables run-keyed hook config.
 	Token string
+
+	// AllowSiblingChat bypasses the per-session live-chat idempotency check
+	// for callers that intentionally launch an additional chat next to an
+	// existing primary chat, such as cron finalization.
+	AllowSiblingChat bool
 }
 
 // Note: this method calls ConfigureFinalizeHook only when hookOpts.Token
@@ -219,30 +229,48 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			"agent runner not loaded for session %s: %v", sessionID, err)
 	}
 
-	// Step 2: idempotency check — if a previous launch's tmux is still
+	// Step 2: resolve the requested resume target before idempotency. A
+	// completed repair pass can leave its tmux pane alive at the prompt; the
+	// next repair iteration should send the resumed command into that same
+	// pane instead of tripping the generic duplicate-chat guard.
+	resuming := input.ResumeAgentSessionID != ""
+	agentSessionID := input.ResumeAgentSessionID
+
+	// Step 3: idempotency check — if a previous launch's tmux is still
 	// alive, treat this as a no-op and bubble the existing agent_session_id
 	// up. Stale rows (tmux already exited) are cleaned out so the caller
-	// can retry from a clean slate.
-	if existing, found, idemErr := l.findLiveTmuxChat(ctx, sessionID); idemErr != nil {
-		return "", idemErr
-	} else if found {
-		// Return the existing agent_session_id in the success-shaped string
-		// slot alongside the typed AlreadyExists error so callers can read
-		// it without parsing the human-readable message.
-		return existing, grpcstatus.Errorf(codes.AlreadyExists,
-			"tmux chat already active for session %s", sessionID)
+	// can retry from a clean slate. Some callers intentionally launch a
+	// sibling chat next to an existing primary chat; they opt out via
+	// HookOpts.AllowSiblingChat.
+	if !hookOpts.AllowSiblingChat {
+		if existing, found, idemErr := l.findLiveTmuxChat(ctx, sessionID); idemErr != nil {
+			return "", idemErr
+		} else if found {
+			if resuming && liveChatMatchesResumeTarget(existing, agentSessionID) {
+				return l.sendInputToLiveTmuxChat(ctx, sess, client, input, existing, agentSessionID, hookOpts)
+			}
+			// Return the existing agent_session_id in the success-shaped string
+			// slot alongside the typed AlreadyExists error so callers can read
+			// it without parsing the human-readable message.
+			return existing.AgentSessionID, grpcstatus.Errorf(codes.AlreadyExists,
+				"tmux chat already active for session %s", sessionID)
+		}
 	}
 
-	// Step 3: mint a fresh agent session UUID and derive the tmux name.
-	agentSessionID := uuid.NewString()
+	// Step 4: resolve the agent session id. A resume request reuses the prior
+	// id so logs/hooks/tmux/completion all stay keyed on one id; otherwise mint
+	// a fresh one.
+	if !resuming {
+		agentSessionID = l.newTmuxChatAgentSessionID()
+	}
 	tmuxName := tmux.ChatSessionName(sess.RepoID, agentSessionID)
 	logPath := l.agentLogPathFor(agentSessionID)
 
-	// Step 4: resolve argv via the plugin. The plugin owns flags like
+	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:      agentSessionID,
-		Resume:         false,
+		Resume:         resuming,
 		LogPath:        logPath,
 		InitialPrompt:  input.Prompt,
 		InitialCommand: input.Command,
@@ -255,13 +283,16 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 			"agent runner for session %s returned empty argv", sessionID)
 	}
 
+	finalizeHookSupported := true
 	if cmdResp.GetConsumesInitialInput() {
-		if err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts); err != nil {
+		hookSupported, err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts)
+		if err != nil {
 			return "", err
 		}
+		finalizeHookSupported = hookSupported
 	}
 
-	// Step 5: spawn the tmux session.
+	// Step 6: spawn the tmux session.
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
@@ -270,7 +301,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
 
-	// Step 5a: arm pipe-pane so pane output is mirrored to logPath. This
+	// Step 6a: arm pipe-pane so pane output is mirrored to logPath. This
 	// replaces the previous in-process `claude … | tee log` wrapping the
 	// claude plugin used to apply in BuildInteractiveCommand: piping the
 	// agent's stdout through tee made isatty(stdout)=false, and modern
@@ -299,7 +330,18 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		Str("worktree", sess.WorktreePath).
 		Msg("started agent inside tmux")
 
-	// Step 6: persist the agent_chats row. Failure here orphans the tmux
+	// On resume the prior chat row still exists (findLiveTmuxChat preserves it,
+	// only clearing its tmux pointer) and agent_session_id is not unique, so a
+	// fresh Create would insert a duplicate row. Delete the stale row first so
+	// exactly one row carries the reused id.
+	if resuming {
+		if err := l.agentChats.DeleteByAgentSessionID(ctx, agentSessionID); err != nil {
+			l.killTmuxChatBestEffort(ctx, sessionID, agentSessionID, tmuxName)
+			return "", fmt.Errorf("delete stale agent_chats row for resume of session %s: %w", sessionID, err)
+		}
+	}
+
+	// Step 7: persist the agent_chats row. Failure here orphans the tmux
 	// session so we tear it back down before returning.
 	if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
 		SessionID:      sessionID,
@@ -311,42 +353,35 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		return "", fmt.Errorf("create agent_chats row for session %s: %w", sessionID, err)
 	}
 
-	// Step 7: stamp the tmux session name onto the row.
+	// Step 8: stamp the tmux session name onto the row.
 	if err := l.agentChats.UpdateTmuxSessionName(ctx, agentSessionID, &tmuxName); err != nil {
 		l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
 			"persist tmux session name failed: "+err.Error())
 		return "", fmt.Errorf("persist tmux session name for session %s: %w", sessionID, err)
 	}
 
-	// Step 8: install a run-scoped Stop-hook entry when the caller asked
+	// Step 9: install a run-scoped Stop-hook entry when the caller asked
 	// for one. If argv already embeds startup input, this was done before
 	// tmux launch so a fast-finishing agent cannot beat hook configuration.
 	if !cmdResp.GetConsumesInitialInput() {
-		if err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts); err != nil {
+		hookSupported, err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sessionID, agentSessionID, hookOpts)
+		if err != nil {
 			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
 				"configure finalize hook failed: "+err.Error())
 			return "", err
 		}
+		finalizeHookSupported = hookSupported
+	}
+
+	if !finalizeHookSupported {
+		l.armTmuxCompletionForHooklessRun(sessionID, agentSessionID, sess.RepoID)
 	}
 
 	if cmdResp.GetConsumesInitialInput() {
 		return agentSessionID, nil
 	}
 
-	// Step 9: inject the prompt. Long prompt bodies use bracketed paste.
-	// Short command invocations use literal keys plus Enter; Codex has been
-	// observed leaving pasted "$boss-repair" text sitting idle in the input box.
-	prompt := input.render(cmdResp.GetCommandPrefix())
-	if input.Command != "" {
-		if err := l.tmux.SendLineWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
-			l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
-				"send command failed: "+err.Error())
-			return "", fmt.Errorf("send command to tmux session %q: %w", tmuxName, err)
-		}
-		return agentSessionID, nil
-	}
-
-	// Step 9b: inject the prompt as a bracketed paste. This is the step
+	// Step 10: inject the prompt. This is the step
 	// that broke for every repair attempt before #350: the broken
 	// `bash -c "claude … | tee log"` argv caused the pane to show a
 	// "--print needs stdin or prompt" error from claude and the ready
@@ -354,24 +389,94 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// preserve the chat row with a start_error rather than deleting it,
 	// so the operator can see exactly what was attempted even when the
 	// agent never came up.
-	if err := l.tmux.SendPlanWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
-		l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName,
-			"send plan failed: "+err.Error())
-		return "", fmt.Errorf("send plan to tmux session %q: %w", tmuxName, err)
+	if err := l.injectTmuxChatInput(ctx, tmuxName, input, cmdResp); err != nil {
+		reason := "send plan failed: " + err.Error()
+		if input.Command != "" {
+			reason = "send command failed: " + err.Error()
+		}
+		l.failStartBestEffort(ctx, sessionID, agentSessionID, tmuxName, reason)
+		return "", err
 	}
 
 	return agentSessionID, nil
 }
 
-func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client agent.AgentRunnerClient, workDir, sessionID, agentSessionID string, hookOpts HookOpts) error {
-	if hookOpts.Token == "" {
+func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Session, client agent.AgentRunnerClient, input ChatInput, chat *models.AgentChat, resumeSessionID string, hookOpts HookOpts) (string, error) {
+	agentSessionID := chat.AgentSessionID
+	tmuxName := ""
+	if chat.TmuxSessionName != nil {
+		tmuxName = *chat.TmuxSessionName
+	}
+	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:      resumeSessionID,
+		Resume:         true,
+		LogPath:        l.agentLogPathFor(agentSessionID),
+		InitialPrompt:  input.Prompt,
+		InitialCommand: input.Command,
+	})
+	if err != nil {
+		return "", fmt.Errorf("build interactive command for session %s: %w", sess.ID, err)
+	}
+	if cmdResp == nil || len(cmdResp.Argv) == 0 {
+		return "", grpcstatus.Errorf(codes.FailedPrecondition,
+			"agent runner for session %s returned empty argv", sess.ID)
+	}
+
+	finalizeHookSupported, err := l.configureFinalizeHookForTmuxChat(ctx, client, sess.WorktreePath, sess.ID, agentSessionID, hookOpts)
+	if err != nil {
+		return "", err
+	}
+	if !finalizeHookSupported {
+		l.armTmuxCompletionForHooklessTmux(sess.ID, agentSessionID, tmuxName)
+	}
+
+	l.logger.Info().
+		Str("session", sess.ID).
+		Str("agentSessionID", agentSessionID).
+		Str("tmuxSession", tmuxName).
+		Msg("resuming agent inside existing tmux")
+
+	// Existing panes cannot consume startup input via argv; always inject the
+	// rendered input into the live prompt.
+	if err := l.injectTmuxChatInput(ctx, tmuxName, input, cmdResp); err != nil {
+		return "", err
+	}
+	return agentSessionID, nil
+}
+
+func liveChatMatchesResumeTarget(chat *models.AgentChat, resumeSessionID string) bool {
+	if chat == nil || resumeSessionID == "" {
+		return false
+	}
+	if chat.AgentSessionID == resumeSessionID {
+		return true
+	}
+	return chat.ProviderSessionID != nil && *chat.ProviderSessionID == resumeSessionID
+}
+
+func (l *Lifecycle) injectTmuxChatInput(ctx context.Context, tmuxName string, input ChatInput, cmdResp *bossanovav1.BuildInteractiveCommandResponse) error {
+	prompt := input.render(cmdResp.GetCommandPrefix())
+	if input.Command != "" {
+		if err := l.tmux.SendLineWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
+			return fmt.Errorf("send command to tmux session %q: %w", tmuxName, err)
+		}
 		return nil
 	}
+	if err := l.tmux.SendPlanWithReadyMarker(ctx, tmuxName, prompt, cmdResp.GetReadyMarker()); err != nil {
+		return fmt.Errorf("send plan to tmux session %q: %w", tmuxName, err)
+	}
+	return nil
+}
+
+func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client agent.AgentRunnerClient, workDir, sessionID, agentSessionID string, hookOpts HookOpts) (bool, error) {
+	if hookOpts.Token == "" {
+		return true, nil
+	}
 	if l.hookPort == 0 {
-		return grpcstatus.Errorf(codes.FailedPrecondition,
+		return false, grpcstatus.Errorf(codes.FailedPrecondition,
 			"hook port not configured: SetHookPort must be called before StartTmuxChat with a hook token")
 	}
-	hookResp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
+	resp, err := client.ConfigureFinalizeHook(ctx, &bossanovav1.ConfigureFinalizeHookRequest{
 		WorkDir:        workDir,
 		SessionId:      sessionID,
 		AgentSessionId: agentSessionID,
@@ -379,22 +484,9 @@ func (l *Lifecycle) configureFinalizeHookForTmuxChat(ctx context.Context, client
 		HookPort:       int32(l.hookPort),
 	})
 	if err != nil {
-		return fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
+		return false, fmt.Errorf("configure finalize hook for run %s: %w", agentSessionID, err)
 	}
-	if !hookResp.GetIsSupported() {
-		l.armPollFallbackForTmuxChat(agentSessionID, client)
-	}
-	return nil
-}
-
-func (l *Lifecycle) armPollFallbackForTmuxChat(agentSessionID string, client agent.AgentRunnerClient) {
-	if l.pollArmer == nil || l.daemonCtx == nil {
-		return
-	}
-	l.pollArmer.Arm(l.daemonCtx, agentSessionID, client)
-	l.logger.Info().
-		Str("agent_session", agentSessionID).
-		Msg("armed poll fallback for hookless interactive tmux chat")
+	return resp.GetIsSupported(), nil
 }
 
 // failStartBestEffort tears down a tmux session created by a failing
@@ -421,29 +513,29 @@ func (l *Lifecycle) failStartBestEffort(ctx context.Context, sessionID, agentSes
 // findLiveTmuxChat scans the session's existing agent_chats rows for an
 // entry whose tmux_session_name is still alive. It returns:
 //
-//   - (agentSessionID, true, nil) when a live tmux chat is found.
-//   - ("", false, nil) when no row matches OR the rows that exist have a
+//   - (chat, true, nil) when a live tmux chat is found.
+//   - (nil, false, nil) when no row matches OR the rows that exist have a
 //     stale tmux name (those rows have their tmux_session_name cleared
 //     as a side effect so they no longer count toward idempotency, but
 //     the rows themselves are preserved as historical chat-list
 //     entries — eg. completed repair runs the operator should still be
 //     able to see).
-//   - ("", false, err) when ListBySession itself fails.
+//   - (nil, false, err) when ListBySession itself fails.
 //
 // Best-effort: if clearing a stale row's tmux_session_name fails, we log
 // and continue — the caller will create a new agent_chats row anyway,
 // and the next sweep can retry the unlink.
-func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID string) (string, bool, error) {
+func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID string) (*models.AgentChat, bool, error) {
 	chats, err := l.agentChats.ListBySession(ctx, sessionID)
 	if err != nil {
-		return "", false, fmt.Errorf("list chats for session %s: %w", sessionID, err)
+		return nil, false, fmt.Errorf("list chats for session %s: %w", sessionID, err)
 	}
 	for _, chat := range chats {
 		if chat.TmuxSessionName == nil || *chat.TmuxSessionName == "" {
 			continue
 		}
 		if l.tmux.HasSession(ctx, *chat.TmuxSessionName) {
-			return chat.AgentSessionID, true, nil
+			return chat, true, nil
 		}
 		// Stale tmux name — clear it so a retry can mint a fresh
 		// agent_session_id and tmux session. The row itself is preserved
@@ -456,7 +548,7 @@ func (l *Lifecycle) findLiveTmuxChat(ctx context.Context, sessionID string) (str
 				Msg("failed to clear stale tmux_session_name during idempotency cleanup")
 		}
 	}
-	return "", false, nil
+	return nil, false, nil
 }
 
 func (l *Lifecycle) ReclaimRepairChat(ctx context.Context, sessionID, agentSessionID, reason string) (ReclaimRepairChatResult, error) {

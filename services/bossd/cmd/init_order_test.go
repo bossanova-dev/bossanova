@@ -99,3 +99,77 @@ func TestInitOrder_BootstrapBeforeServe(t *testing.T) {
 		t.Fatal("run did not return within 15s of SIGTERM")
 	}
 }
+
+// TestInitOrder_HookPortSetBeforeBootstrap pins the invariant that the hook
+// server port is bound (lifecycle.SetHookPort) BEFORE lifecycle.Bootstrap runs.
+// Bootstrap re-issues ConfigureFinalizeHook for tmux chats that survived a
+// daemon restart, and the claude plugin's WriteHookConfig rejects port <= 0. If
+// bootstrap ran first, surviving claude cron chats would keep the previous
+// daemon's stale hook URL and never deliver their Stop signal — finalization /
+// PR cleanup would silently never fire.
+func TestInitOrder_HookPortSetBeforeBootstrap(t *testing.T) {
+	baseDir, err := os.MkdirTemp("/tmp", "bossdtest-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+
+	t.Setenv("HOME", baseDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	dbPath := filepath.Join(baseDir, "bossd.db")
+	socketPath := filepath.Join(baseDir, "bossd.sock")
+
+	var hookPortSet atomic.Int32
+	var bootstrapStarted atomic.Int32
+	var bootstrapBeforeHookPort atomic.Int32
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run(runOpts{
+			stopSig:    stopSig,
+			dbPath:     dbPath,
+			socketPath: socketPath,
+			plugins:    []config.PluginConfig{},
+			onReady:    func() { close(ready) },
+			onHookPortSet: func() {
+				hookPortSet.Store(1)
+			},
+			onBootstrapStart: func() {
+				if hookPortSet.Load() != 1 {
+					bootstrapBeforeHookPort.Store(1)
+				}
+				bootstrapStarted.Store(1)
+			},
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state within 15s")
+	}
+
+	if bootstrapBeforeHookPort.Load() != 0 {
+		t.Errorf("lifecycle.Bootstrap ran before lifecycle.SetHookPort")
+	}
+	if hookPortSet.Load() != 1 {
+		t.Errorf("onHookPortSet never fired")
+	}
+	if bootstrapStarted.Load() != 1 {
+		t.Errorf("onBootstrapStart never fired")
+	}
+
+	stopSig <- syscall.SIGTERM
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return within 15s of SIGTERM")
+	}
+}

@@ -314,7 +314,8 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	// Wire the lifecycle so tests that exercise StartChatRun directly
 	// (Task 4) hit the same plumbing the daemon installs in cmd/main.go.
 	hostService.SetLifecycle(lifecycle)
-	lifecycle.SetPollArmer(agent.NewPollFallback(logger, 100*time.Millisecond, 0, hostService))
+	lifecycle.SetPollCompleter(hostService)
+	lifecycle.SetPollArmer(agent.NewPollFallback(logger, 100*time.Millisecond, 0, lifecycle))
 	lifecycle.SetDaemonCtx(realtimeCtx)
 
 	// Hook server — loopback HTTP server that receives Claude Stop-hook POSTs

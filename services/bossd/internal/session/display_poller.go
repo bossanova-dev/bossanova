@@ -182,7 +182,7 @@ func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prN
 		if sess.PRNumber == nil || *sess.PRNumber != prNumber {
 			continue
 		}
-		if entry := p.tracker.Get(sess.ID); entry != nil && entry.Status == vcs.DisplayStatusMerged {
+		if entry := p.tracker.Get(sess.ID); entry != nil && isTerminalDisplayStatus(entry.Status) {
 			continue
 		}
 		p.pollSession(ctx, repo, sess.ID, *sess.PRNumber)
@@ -227,8 +227,8 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 			if sess.PRNumber == nil {
 				continue
 			}
-			// Skip merged PRs — terminal state, no further polling needed.
-			if entry := p.tracker.Get(sess.ID); entry != nil && entry.Status == vcs.DisplayStatusMerged {
+			// Skip terminal PR states — no further polling needed.
+			if entry := p.tracker.Get(sess.ID); entry != nil && isTerminalDisplayStatus(entry.Status) {
 				continue
 			}
 			activeSessions[sess.ID] = struct{}{}
@@ -274,6 +274,7 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 		info := vcs.ComputeDisplayStatus(prStatus, nil, nil)
 		info.HeadSHA = prStatus.HeadSHA
 		p.tracker.Set(sessionID, info)
+		p.persistSnapshot(ctx, sessionID, prStatus, nil, info)
 		return
 	}
 
@@ -331,6 +332,10 @@ func prStateString(state vcs.PRState) string {
 	default:
 		return "unknown"
 	}
+}
+
+func isTerminalDisplayStatus(status vcs.DisplayStatus) bool {
+	return status == vcs.DisplayStatusMerged || status == vcs.DisplayStatusClosed
 }
 
 func (p *DisplayPoller) persistSnapshot(ctx context.Context, sessionID string, prStatus *vcs.PRStatus, checks []vcs.CheckResult, info vcs.DisplayInfo) {

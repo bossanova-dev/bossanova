@@ -127,6 +127,12 @@ func (m LoginModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return updated, cmd
 				}
 			case "enter":
+				// The unavailable phase is terminal (e.g. billing is down).
+				// Acknowledge and return home; local sessions remain available.
+				if m.subscription.phase == subscriptionPhaseUnavailable {
+					m.done = true
+					return m, nil
+				}
 				if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutURL != "" {
 					return m, m.subscriptionOpenBrowser(m.subscription.checkoutURL, m.subscription.attempt)
 				}

@@ -209,13 +209,22 @@ func (m *cleanupWorktreeManager) PurgeWorktree(_ context.Context, repoPath, _, _
 func (m *cleanupWorktreeManager) EmptyCommit(context.Context, string, string) error {
 	panic("not used")
 }
+func (m *cleanupWorktreeManager) VerifyCurrentBranch(context.Context, string, string) error {
+	panic("not used")
+}
 func (m *cleanupWorktreeManager) Push(context.Context, string, string) error {
+	panic("not used")
+}
+func (m *cleanupWorktreeManager) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) Status(context.Context, string) (string, error) {
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) LatestCommitSubject(context.Context, string) (string, error) {
+	panic("not used")
+}
+func (m *cleanupWorktreeManager) BranchDebugSnapshot(context.Context, string, string, string) (*gitpkg.BranchDebugSnapshot, error) {
 	panic("not used")
 }
 func (m *cleanupWorktreeManager) Clone(context.Context, string, string) error {

@@ -85,15 +85,17 @@ func (m PreflightModel) View() tea.View {
 	}
 
 	footer := styleActionBar.Render("Press q to quit.")
+	footerGap := "\n"
 	if m.retryCheck != nil {
 		waiting := lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).
 			Render("Waiting for the daemon... will reconnect automatically.")
 		footer = waiting + "\n" + styleActionBar.Render("[q]uit")
+		footerGap = "\n\n"
 	}
 
 	content := renderBanner(ViewHome, bannerOpts{}) + "\n" +
 		titleStyle.Render(m.issue.Title) + "\n\n" +
-		bodyStyle.Render(m.issue.Detail) + "\n" +
+		bodyStyle.Render(m.issue.Detail) + footerGap +
 		footer
 
 	v := tea.NewView(content)

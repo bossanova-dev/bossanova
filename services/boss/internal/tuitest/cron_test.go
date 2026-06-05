@@ -408,6 +408,72 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 	}
 }
 
+func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithAgents(
+			&pb.AgentInfo{Name: "claude"},
+			&pb.AgentInfo{Name: "opencode"},
+		),
+		tuitest.WithTerminalSize(120, 50),
+	)
+
+	navigateToCronList(t, h)
+
+	if err := h.Driver.SendKey('n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
+		t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Agent"); err != nil {
+		t.Fatalf("expected Agent field; screen:\n%s", h.Driver.Screen())
+	}
+
+	if err := h.Driver.SendString("Agent Roundtrip Job"); err != nil {
+		t.Fatal(err)
+	}
+	advanceCronFormField(t, h)
+
+	// Repo — keep default.
+	advanceCronFormField(t, h)
+
+	// Agent — default is daemon default; move past claude to opencode and select it.
+	if err := h.Driver.SendKey('j'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('j'); err != nil {
+		t.Fatal(err)
+	}
+	advanceCronFormField(t, h)
+
+	if err := h.Driver.SendString("Run with opencode."); err != nil {
+		t.Fatal(err)
+	}
+	advanceCronFormPrompt(t, h)
+
+	if err := h.Driver.SendString("@daily"); err != nil {
+		t.Fatal(err)
+	}
+	advanceCronFormField(t, h)
+	advanceCronFormField(t, h)
+	advanceCronFormField(t, h)
+
+	if err := h.Driver.WaitFor(waitTimeout, func(_ string) bool {
+		return h.Daemon.CreateCronJobCallCount() >= 1
+	}); err != nil {
+		t.Fatalf("CreateCronJob not called after form submit; screen:\n%s", h.Driver.Screen())
+	}
+
+	calls := h.Daemon.CreateCronJobCalls()
+	if len(calls) != 1 {
+		t.Fatalf("CreateCronJob called %d times, want 1", len(calls))
+	}
+	if got, want := calls[0].AgentName, "opencode"; got != want {
+		t.Fatalf("CreateCronJob.AgentName = %q, want %q; screen:\n%s", got, want, h.Driver.Screen())
+	}
+}
+
 // TestCron_EditRoundtrip verifies that the edit form pre-populates from the
 // existing job and calls UpdateCronJob with only the changed field.
 func TestCron_EditRoundtrip(t *testing.T) {

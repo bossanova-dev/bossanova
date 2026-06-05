@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -9,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -328,6 +331,7 @@ type mockAgentChatStore struct {
 	chatsWithTmux          []*models.AgentChat            // returned by ListWithTmuxSession when set
 	createErr              error
 	updateTmuxNameErr      error
+	deleteErr              error
 }
 
 type markStartFailedCall struct {
@@ -452,6 +456,9 @@ func (m *mockAgentChatStore) DeleteByAgentSessionID(_ context.Context, agentSess
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.deletedAgentSessionIDs = append(m.deletedAgentSessionIDs, agentSessionID)
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
 	return nil
 }
 
@@ -474,8 +481,16 @@ type mockWorktreeManager struct {
 	pushErr                     error    // if set, Push returns this error
 	emptyCommits                []string // worktree paths on which EmptyCommit was invoked
 	emptyCommitCalls            int
+	verifyCurrentBranchErr      error
+	verifiedBranches            []string
+	verifyPushedErr             error
+	verifyPushedResult          *gitpkg.BranchVerification
+	verifyPushedCalls           []verifyPushedCall
 	latestCommitSubject         string
 	latestCommitSubjectErr      error
+	branchDebugSnapshot         *gitpkg.BranchDebugSnapshot
+	branchDebugSnapshotErr      error
+	branchDebugSnapshotCalls    []branchDebugSnapshotCall
 	originURL                   string // returned by DetectOriginURL
 	statusOut                   string // returned by Status
 	statusErr                   error  // if set, Status returns this error
@@ -483,6 +498,18 @@ type mockWorktreeManager struct {
 	fetchedBases                []string
 	fetchBaseErr                error
 	isAncestorFn                func(localPath, ref, target string) (bool, error)
+}
+
+type branchDebugSnapshotCall struct {
+	worktreePath string
+	branch       string
+	baseBranch   string
+}
+
+type verifyPushedCall struct {
+	worktreePath string
+	branch       string
+	baseBranch   string
 }
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
@@ -515,9 +542,34 @@ func (m *mockWorktreeManager) EmptyCommit(_ context.Context, worktreePath, _ str
 	return nil
 }
 
+func (m *mockWorktreeManager) VerifyCurrentBranch(_ context.Context, _ string, branch string) error {
+	m.verifiedBranches = append(m.verifiedBranches, branch)
+	return m.verifyCurrentBranchErr
+}
+
 func (m *mockWorktreeManager) Push(_ context.Context, _ string, branch string) error {
 	m.pushed = append(m.pushed, branch)
 	return m.pushErr
+}
+
+func (m *mockWorktreeManager) VerifyPushedBranchAheadOfBase(_ context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {
+	m.verifyPushedCalls = append(m.verifyPushedCalls, verifyPushedCall{
+		worktreePath: worktreePath,
+		branch:       branch,
+		baseBranch:   baseBranch,
+	})
+	if m.verifyPushedErr != nil {
+		return nil, m.verifyPushedErr
+	}
+	if m.verifyPushedResult != nil {
+		return m.verifyPushedResult, nil
+	}
+	return &gitpkg.BranchVerification{
+		HeadSHA:       "head-sha",
+		BaseSHA:       "base-sha",
+		RemoteHeadSHA: "head-sha",
+		AheadCount:    1,
+	}, nil
 }
 
 func (m *mockWorktreeManager) Status(_ context.Context, _ string) (string, error) {
@@ -526,6 +578,21 @@ func (m *mockWorktreeManager) Status(_ context.Context, _ string) (string, error
 
 func (m *mockWorktreeManager) LatestCommitSubject(_ context.Context, _ string) (string, error) {
 	return m.latestCommitSubject, m.latestCommitSubjectErr
+}
+
+func (m *mockWorktreeManager) BranchDebugSnapshot(_ context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchDebugSnapshot, error) {
+	m.branchDebugSnapshotCalls = append(m.branchDebugSnapshotCalls, branchDebugSnapshotCall{
+		worktreePath: worktreePath,
+		branch:       branch,
+		baseBranch:   baseBranch,
+	})
+	if m.branchDebugSnapshotErr != nil {
+		return nil, m.branchDebugSnapshotErr
+	}
+	if m.branchDebugSnapshot != nil {
+		return m.branchDebugSnapshot, nil
+	}
+	return &gitpkg.BranchDebugSnapshot{}, nil
 }
 
 func (m *mockWorktreeManager) Clone(_ context.Context, _, _ string) error {
@@ -662,6 +729,7 @@ func (m *mockAgentRunner) IsRunningByAgent(_, agentSessionID string) bool {
 type mockVCSProvider struct {
 	createPRCalls      []vcs.CreatePROpts
 	listOpenPRCalls    []string
+	updatePRTitleCalls []updatePRTitleCall
 	markReadyCalls     []int
 	mergePRCalls       []int
 	nextPRInfo         *vcs.PRInfo
@@ -672,6 +740,7 @@ type mockVCSProvider struct {
 	allowedStrategies  []string
 	createPRErr        error
 	listOpenPRErr      error
+	updatePRTitleErr   error
 	checkResultsErr    error
 	reviewCommentsErr  error
 	mergePRErr         error
@@ -679,6 +748,12 @@ type mockVCSProvider struct {
 	getCheckResultsCalls   int
 	getReviewCommentsCalls int
 	getPRStatusPRNumbers   []int
+}
+
+type updatePRTitleCall struct {
+	repoPath string
+	prID     int
+	title    string
 }
 
 func newMockVCSProvider() *mockVCSProvider {
@@ -735,8 +810,13 @@ func (m *mockVCSProvider) ListClosedPRs(_ context.Context, _ string) ([]vcs.PRSu
 	return nil, nil
 }
 
-func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, _ string, _ int, _ string) error {
-	return nil
+func (m *mockVCSProvider) UpdatePRTitle(_ context.Context, repoPath string, prID int, title string) error {
+	m.updatePRTitleCalls = append(m.updatePRTitleCalls, updatePRTitleCall{
+		repoPath: repoPath,
+		prID:     prID,
+		title:    title,
+	})
+	return m.updatePRTitleErr
 }
 
 func (m *mockVCSProvider) MergePR(_ context.Context, _ string, prID int, _ string) error {
@@ -828,6 +908,119 @@ func TestStartSession(t *testing.T) {
 	}
 }
 
+func TestStartSession_DraftPRNotAttemptedWhenBranchHasNoCommitsOverBase(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		verifyPushedErr: fmt.Errorf("head branch test-session has no commits over base origin/main (base SHA base123, head SHA head123)"),
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		OriginURL:         "owner/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
+	}
+	if len(wt.verifyPushedCalls) != 1 {
+		t.Fatalf("VerifyPushedBranchAheadOfBase calls = %d, want 1", len(wt.verifyPushedCalls))
+	}
+
+	reason := sessions.sessions["sess-1"].BlockedReason
+	if reason == nil {
+		t.Fatal("BlockedReason = nil, want branch invariant reason")
+	}
+	for _, want := range []string{
+		"head branch test-session has no commits over base origin/main",
+		"base SHA base123",
+		"head SHA head123",
+	} {
+		if !strings.Contains(*reason, want) {
+			t.Fatalf("BlockedReason = %q, want %q", *reason, want)
+		}
+	}
+}
+
+func TestStartSession_NoCommitsBetweenProviderErrorIncludesBranchSHAs(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		verifyPushedResult: &gitpkg.BranchVerification{
+			HeadSHA:       "head456",
+			BaseSHA:       "base123",
+			RemoteHeadSHA: "head456",
+			AheadCount:    1,
+		},
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	vp.createPRErr = fmt.Errorf("gh pr create: GraphQL: No commits between main and test-session (createPullRequest)")
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		OriginURL:         "owner/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	reason := sessions.sessions["sess-1"].BlockedReason
+	if reason == nil {
+		t.Fatal("BlockedReason = nil, want No commits between reason")
+	}
+	for _, want := range []string{
+		"head branch test-session has no commits over base origin/main",
+		"base SHA base123",
+		"head SHA head456",
+		"No commits between main and test-session",
+	} {
+		if !strings.Contains(*reason, want) {
+			t.Fatalf("BlockedReason = %q, want %q", *reason, want)
+		}
+	}
+}
+
 func TestStartSession_DuplicatePRErrorAttachesExistingPRAndClearsBlockedReason(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -885,6 +1078,53 @@ func TestStartSession_DuplicatePRErrorAttachesExistingPRAndClearsBlockedReason(t
 	}
 	if len(vp.listOpenPRCalls) != 1 || vp.listOpenPRCalls[0] != "git@github.com:owner/repo.git" {
 		t.Fatalf("ListOpenPRs calls = %v, want [git@github.com:owner/repo.git]", vp.listOpenPRCalls)
+	}
+}
+
+func TestStartSession_CronPRTitleNormalizesSessionTitleWhenLatestCommitSubjectFails(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := new(mockWorktreeManager)
+	wt.latestCommitSubjectErr = errors.New("git log failed")
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		OriginURL:         "git@github.com:owner/repo.git",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "test(githubapp): [#493] cover malformed Link header without brackets",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, vp, logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": newFakeAgent()})
+	lc.SetAgentLogsDir(t.TempDir())
+
+	cronJobID := "cron-42"
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{CronJobID: cronJobID}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	if got, want := vp.createPRCalls[0].Title, "Cover malformed Link header without brackets"; got != want {
+		t.Fatalf("PR title = %q, want %q", got, want)
 	}
 }
 
@@ -1932,6 +2172,198 @@ func TestStartSession_CreateDraftPRFailureStoresBlockedReason(t *testing.T) {
 	}
 }
 
+func TestStartSession_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
+	const prFailure = "gh pr create: GraphQL: Head sha can't be blank"
+
+	findLogEvent := func(t *testing.T, logs string, message string) map[string]any {
+		t.Helper()
+		for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			var event map[string]any
+			if err := json.Unmarshal([]byte(line), &event); err != nil {
+				t.Fatalf("decode log line %q: %v", line, err)
+			}
+			if event["message"] == message {
+				return event
+			}
+		}
+		t.Fatalf("log event %q not found in:\n%s", message, logs)
+		return nil
+	}
+
+	startWithDraftPRError := func(t *testing.T, worktrees *mockWorktreeManager, logger zerolog.Logger) (*mockSessionStore, error) {
+		t.Helper()
+		ctx := context.Background()
+		sessions := newMockSessionStore()
+		repos := newMockRepoStore()
+		agentChats := &mockAgentChatStore{}
+		agentRunner := newMockAgentRunner()
+		provider := newMockVCSProvider()
+		lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, logger)
+
+		repo := &models.Repo{
+			ID:              "repo-1",
+			DisplayName:     "repo",
+			LocalPath:       "/tmp/repo",
+			OriginURL:       "git@github.com:owner/repo.git",
+			WorktreeBaseDir: "/tmp/worktrees",
+		}
+		repos.repos[repo.ID] = repo
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:         "sess-1",
+			RepoID:     repo.ID,
+			Title:      "Open a PR",
+			Plan:       "Do useful work",
+			BaseBranch: "main",
+			State:      machine.CreatingWorktree,
+		}
+		provider.createPRErr = errors.New(prFailure)
+
+		err := lifecycle.StartSession(ctx, "sess-1", StartSessionOpts{})
+		return sessions, err
+	}
+
+	assertBlockedReason := func(t *testing.T, sessions *mockSessionStore) {
+		t.Helper()
+		updated := sessions.sessions["sess-1"]
+		if updated.BlockedReason == nil {
+			t.Fatal("BlockedReason = nil, want draft PR failure")
+		}
+		wantReason := "draft PR creation failed: create draft PR: " + prFailure
+		if !strings.Contains(*updated.BlockedReason, wantReason) {
+			t.Fatalf("BlockedReason = %q, want to contain %q", *updated.BlockedReason, wantReason)
+		}
+	}
+
+	assertSnapshotCall := func(t *testing.T, worktrees *mockWorktreeManager, wantPath, wantBranch, wantBase string) {
+		t.Helper()
+		if len(worktrees.branchDebugSnapshotCalls) != 1 {
+			t.Fatalf("BranchDebugSnapshot calls = %d, want 1", len(worktrees.branchDebugSnapshotCalls))
+		}
+		call := worktrees.branchDebugSnapshotCalls[0]
+		if call.worktreePath != wantPath || call.branch != wantBranch || call.baseBranch != wantBase {
+			t.Fatalf("BranchDebugSnapshot call = %+v, want path=%q branch=%q base=%q", call, wantPath, wantBranch, wantBase)
+		}
+	}
+
+	t.Run("logs snapshot fields", func(t *testing.T) {
+		var logs bytes.Buffer
+		worktrees := &mockWorktreeManager{
+			worktreePath: "/tmp/worktrees/repo/test-session",
+			branchDebugSnapshot: &gitpkg.BranchDebugSnapshot{
+				CurrentBranch: "test-session",
+				HeadSHA:       "abc123",
+				RemoteHeadSHA: "def456",
+				AheadBehind:   "0\t2",
+			},
+		}
+
+		sessions, err := startWithDraftPRError(t, worktrees, zerolog.New(&logs))
+		if err != nil {
+			t.Fatalf("StartSession returned error: %v", err)
+		}
+		assertBlockedReason(t, sessions)
+		assertSnapshotCall(t, worktrees, "/tmp/worktrees/repo/test-session", "test-session", "main")
+
+		event := findLogEvent(t, logs.String(), "draft PR creation failed with branch debug snapshot")
+		for field, want := range map[string]string{
+			"session":         "sess-1",
+			"branch":          "test-session",
+			"base":            "main",
+			"current_branch":  "test-session",
+			"head_sha":        "abc123",
+			"remote_head_sha": "def456",
+			"ahead_behind":    "0\t2",
+		} {
+			if got := event[field]; got != want {
+				t.Fatalf("log field %s = %v, want %q", field, got, want)
+			}
+		}
+		if got := fmt.Sprint(event["error"]); !strings.Contains(got, "create draft PR: "+prFailure) {
+			t.Fatalf("log error = %q, want original draft PR error", got)
+		}
+	})
+
+	t.Run("logs original draft PR error when snapshot collection fails", func(t *testing.T) {
+		var logs bytes.Buffer
+		worktrees := &mockWorktreeManager{
+			worktreePath:           "/tmp/worktrees/repo/test-session",
+			branchDebugSnapshotErr: errors.New("snapshot failed"),
+		}
+
+		sessions, err := startWithDraftPRError(t, worktrees, zerolog.New(&logs))
+		if err != nil {
+			t.Fatalf("StartSession returned error: %v", err)
+		}
+		assertBlockedReason(t, sessions)
+		assertSnapshotCall(t, worktrees, "/tmp/worktrees/repo/test-session", "test-session", "main")
+
+		event := findLogEvent(t, logs.String(), "failed to collect branch debug snapshot after draft PR failure")
+		for field, want := range map[string]string{
+			"session":        "sess-1",
+			"branch":         "test-session",
+			"draft_pr_error": "create draft PR: " + prFailure,
+		} {
+			if got := event[field]; got != want {
+				t.Fatalf("log field %s = %v, want %q", field, got, want)
+			}
+		}
+		if got := fmt.Sprint(event["error"]); got != "snapshot failed" {
+			t.Fatalf("log error = %q, want snapshot failure", got)
+		}
+	})
+}
+
+func TestStartSession_BlocksDraftPRWhenWorktreeBranchMismatches(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		verifyCurrentBranchErr: errors.New(`worktree is on branch "production", expected "fix-camera-crash"`),
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Fix camera crash",
+		BranchName: "fix-camera-crash",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, logger)
+	err := lc.StartSession(ctx, "sess-1", StartSessionOpts{})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if wt.emptyCommitCalls != 0 {
+		t.Fatalf("EmptyCommit calls = %d, want 0", wt.emptyCommitCalls)
+	}
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess.BlockedReason == nil {
+		t.Fatal("BlockedReason = nil, want branch mismatch reason")
+	}
+	if !strings.Contains(*sess.BlockedReason, `worktree is on branch "production", expected "fix-camera-crash"`) {
+		t.Fatalf("BlockedReason = %q, want branch mismatch", *sess.BlockedReason)
+	}
+}
+
 // TestStartSession_DeferPRTrue_SkipsDraftPR verifies the cron-session path:
 // DeferPR=true must suppress the up-front PR creation so the finalize path
 // can later call EnsurePR based on the session's outcome.
@@ -2043,7 +2475,8 @@ func TestStartSession_HookToken_CallsConfigureFinalizeHook(t *testing.T) {
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tmuxFake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -2199,6 +2632,101 @@ func TestEnsurePR_Idempotent(t *testing.T) {
 			t.Errorf("second EnsurePR call re-created PR: got %d calls, want %d", len(vp.createPRCalls), prevPRCalls)
 		}
 	})
+}
+
+func TestEnsurePR_CreateDraftPRFailureLogsBranchDiagnostics(t *testing.T) {
+	const prFailure = "gh pr create: GraphQL: No commits between main and br-1"
+
+	ctx := context.Background()
+	var logs bytes.Buffer
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		branchDebugSnapshot: &gitpkg.BranchDebugSnapshot{
+			CurrentBranch: "br-1",
+			HeadSHA:       "head-sha",
+			RemoteHeadSHA: "remote-sha",
+			AheadBehind:   "0\t1",
+		},
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	vp.createPRErr = errors.New(prFailure)
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Deferred PR",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt",
+		BranchName:   "br-1",
+		BaseBranch:   "main",
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, vp, zerolog.New(&logs))
+
+	err := lc.EnsurePR(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("EnsurePR returned nil, want draft PR failure")
+	}
+	if !strings.Contains(err.Error(), "create draft PR: "+prFailure) {
+		t.Fatalf("EnsurePR error = %q, want draft PR failure", err)
+	}
+
+	if len(wt.branchDebugSnapshotCalls) != 1 {
+		t.Fatalf("BranchDebugSnapshot calls = %d, want 1", len(wt.branchDebugSnapshotCalls))
+	}
+	call := wt.branchDebugSnapshotCalls[0]
+	if call.worktreePath != "/tmp/wt" || call.branch != "br-1" || call.baseBranch != "main" {
+		t.Fatalf("BranchDebugSnapshot call = %+v, want path=/tmp/wt branch=br-1 base=main", call)
+	}
+
+	updated := sessions.sessions["sess-1"]
+	if updated.BlockedReason == nil {
+		t.Fatal("BlockedReason = nil, want draft PR failure")
+	}
+	if !strings.Contains(*updated.BlockedReason, "draft PR creation failed: create draft PR: "+prFailure) {
+		t.Fatalf("BlockedReason = %q, want draft PR failure", *updated.BlockedReason)
+	}
+
+	var event map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var candidate map[string]any
+		if err := json.Unmarshal([]byte(line), &candidate); err != nil {
+			t.Fatalf("decode log line %q: %v", line, err)
+		}
+		if candidate["message"] == "draft PR creation failed with branch debug snapshot" {
+			event = candidate
+			break
+		}
+	}
+	if event == nil {
+		t.Fatalf("branch diagnostic log not found in:\n%s", logs.String())
+	}
+	for field, want := range map[string]string{
+		"session":         "sess-1",
+		"branch":          "br-1",
+		"base":            "main",
+		"current_branch":  "br-1",
+		"head_sha":        "head-sha",
+		"remote_head_sha": "remote-sha",
+		"ahead_behind":    "0\t1",
+	} {
+		if got := event[field]; got != want {
+			t.Fatalf("log field %s = %v, want %q", field, got, want)
+		}
+	}
+	if got := fmt.Sprint(event["error"]); !strings.Contains(got, "create draft PR: "+prFailure) {
+		t.Fatalf("log error = %q, want original draft PR error", got)
+	}
 }
 
 func TestEnsurePR_RetriesDraftPRWithoutEmptyCommitAndClearsBlockedReason(t *testing.T) {
@@ -2392,6 +2920,183 @@ func TestEnsurePR_AttachesExistingPROnDuplicateError(t *testing.T) {
 	}
 }
 
+func TestEnsurePR_AttachesExistingCronPRAndUpdatesMessyTitle(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{
+		latestCommitSubject: "test(githubapp): [#493] cover malformed Link header without brackets",
+	}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	cronJobID := "cron-1"
+	session := &models.Session{
+		ID:           "sess-1",
+		RepoID:       repo.ID,
+		Title:        "test(githubapp): [#493] cover malformed Link header without brackets",
+		Plan:         "Do useful work",
+		WorktreePath: "/tmp/worktrees/repo/open-a-pr",
+		BranchName:   "cron-link-header-123",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.createPRErr = vcs.ErrPRAlreadyExists
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     493,
+			Title:      "test(githubapp): [#493] cover malformed Link header without brackets",
+			HeadBranch: "cron-link-header-123",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+		t.Fatalf("EnsurePR returned error: %v", err)
+	}
+
+	if len(provider.updatePRTitleCalls) != 1 {
+		t.Fatalf("UpdatePRTitle calls = %d, want 1", len(provider.updatePRTitleCalls))
+	}
+	if got, want := provider.updatePRTitleCalls[0].repoPath, "git@github.com:owner/repo.git"; got != want {
+		t.Fatalf("UpdatePRTitle repoPath = %q, want %q", got, want)
+	}
+	if got, want := provider.updatePRTitleCalls[0].prID, 493; got != want {
+		t.Fatalf("UpdatePRTitle prID = %d, want %d", got, want)
+	}
+	if got, want := provider.updatePRTitleCalls[0].title, "Cover malformed Link header without brackets"; got != want {
+		t.Fatalf("UpdatePRTitle title = %q, want %q", got, want)
+	}
+
+	updated := sessions.sessions[session.ID]
+	if updated.PRNumber == nil || *updated.PRNumber != 493 {
+		t.Fatalf("PRNumber = %v, want 493", updated.PRNumber)
+	}
+}
+
+func TestEnsurePR_AttachesExistingNonCronPRWithoutUpdatingTitle(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{
+		latestCommitSubject: "test(githubapp): [#493] cover malformed Link header without brackets",
+	}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	session := &models.Session{
+		ID:           "sess-1",
+		RepoID:       repo.ID,
+		Title:        "test(githubapp): [#493] cover malformed Link header without brackets",
+		Plan:         "Do useful work",
+		WorktreePath: "/tmp/worktrees/repo/open-a-pr",
+		BranchName:   "cron-link-header-123",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.createPRErr = vcs.ErrPRAlreadyExists
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     493,
+			Title:      "test(githubapp): [#493] cover malformed Link header without brackets",
+			HeadBranch: "cron-link-header-123",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	if err := lifecycle.EnsurePR(ctx, session.ID); err != nil {
+		t.Fatalf("EnsurePR returned error: %v", err)
+	}
+
+	if len(provider.updatePRTitleCalls) != 0 {
+		t.Fatalf("UpdatePRTitle calls = %d, want 0", len(provider.updatePRTitleCalls))
+	}
+}
+
+func TestEnsurePR_AttachExistingCronPRTitleUpdateFailureReturnsError(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{
+		latestCommitSubject: "test(githubapp): [#493] cover malformed Link header without brackets",
+	}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	provider.updatePRTitleErr = errors.New("gh pr edit failed")
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	repo := &models.Repo{
+		ID:              "repo-1",
+		DisplayName:     "repo",
+		LocalPath:       "/tmp/repo",
+		OriginURL:       "git@github.com:owner/repo.git",
+		WorktreeBaseDir: "/tmp/worktrees",
+	}
+	repos.repos[repo.ID] = repo
+
+	cronJobID := "cron-1"
+	session := &models.Session{
+		ID:           "sess-1",
+		RepoID:       repo.ID,
+		Title:        "test(githubapp): [#493] cover malformed Link header without brackets",
+		Plan:         "Do useful work",
+		WorktreePath: "/tmp/worktrees/repo/open-a-pr",
+		BranchName:   "cron-link-header-123",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+	sessions.sessions[session.ID] = session
+
+	provider.createPRErr = vcs.ErrPRAlreadyExists
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     493,
+			Title:      "test(githubapp): [#493] cover malformed Link header without brackets",
+			HeadBranch: "cron-link-header-123",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	err := lifecycle.EnsurePR(ctx, session.ID)
+	if err == nil || !strings.Contains(err.Error(), "update attached PR title") {
+		t.Fatalf("EnsurePR error = %v, want update attached PR title failure", err)
+	}
+
+	updated := sessions.sessions[session.ID]
+	if updated.PRNumber != nil {
+		t.Fatalf("PRNumber = %v, want nil", updated.PRNumber)
+	}
+}
+
 func TestEnsurePR_AttachExistingPRReturnsClearBlockedReasonFailure(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -2462,6 +3167,43 @@ func TestEnsurePR_AttachExistingPRReturnsClearBlockedReasonFailure(t *testing.T)
 	}
 	if len(provider.createPRCalls) != 1 {
 		t.Fatalf("CreateDraftPR calls = %d, want 1", len(provider.createPRCalls))
+	}
+}
+
+func TestNormalizeCronPRTitle_StripsConventionalCommitAndPRNumberPrefixes(t *testing.T) {
+	tests := []struct {
+		name    string
+		subject string
+		want    string
+	}{
+		{
+			name:    "conventional commit with scope and PR number",
+			subject: "test(githubapp): [#493] cover malformed Link header without brackets",
+			want:    "Cover malformed Link header without brackets",
+		},
+		{
+			name:    "conventional commit without PR number",
+			subject: "fix: bump lodash",
+			want:    "Bump lodash",
+		},
+		{
+			name:    "PR number without conventional commit prefix",
+			subject: "[#493] cover malformed Link header without brackets",
+			want:    "Cover malformed Link header without brackets",
+		},
+		{
+			name:    "already natural language",
+			subject: "Cover malformed Link header without brackets",
+			want:    "Cover malformed Link header without brackets",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeCronPRTitle(tt.subject); got != tt.want {
+				t.Fatalf("normalizeCronPRTitle(%q) = %q, want %q", tt.subject, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -3023,7 +3765,8 @@ func TestSetAgents_RoutesByAgentName(t *testing.T) {
 	chats := &mockAgentChatStore{}
 	wt := &mockWorktreeManager{worktreePath: worktreeDir}
 	cr := newMockAgentRunner()
-	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+	tmuxFake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
 	logger := zerolog.Nop()
 
 	repos.repos["repo-1"] = &models.Repo{
@@ -3119,11 +3862,10 @@ func TestSetAgents_UnknownAgentErrors(t *testing.T) {
 	}
 }
 
-// TestStartSessionArmsPollFallbackWhenHookUnsupported verifies that when
-// the agent's ConfigureFinalizeHook returns IsSupported=false (e.g. codex),
-// StartSession arms the daemon-side poll fallback so the run completion
-// signal still arrives.
-func TestStartSessionArmsPollFallbackWhenHookUnsupported(t *testing.T) {
+// TestStartSessionDoesNotArmPollFallbackWhenHookUnsupportedWithoutCronJobID
+// verifies that hookless non-cron sessions do not arm daemon-side poll
+// fallback.
+func TestStartSessionDoesNotArmPollFallbackWhenHookUnsupportedWithoutCronJobID(t *testing.T) {
 	ctx := context.Background()
 	worktreeDir := t.TempDir()
 
@@ -3168,25 +3910,25 @@ func TestStartSessionArmsPollFallbackWhenHookUnsupported(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	if !armer.armCalled {
-		t.Error("poll fallback should be armed when IsSupported=false")
-	}
-	if armer.armedID == "" {
-		t.Error("armed agent_session_id missing")
+	if armer.armCalled {
+		t.Errorf("poll fallback armed for non-cron session id %q", armer.armedID)
 	}
 }
 
-// TestBootstrapReArmsPollForActiveHooklessRuns verifies that on daemon
-// restart, Lifecycle.Bootstrap walks the agent_chats table and re-arms
-// the poll fallback for runs whose agent reports IsSupported=false.
-func TestBootstrapReArmsPollForActiveHooklessRuns(t *testing.T) {
+// TestBootstrapDoesNotPollHooklessTmuxRuns verifies that on daemon restart,
+// Lifecycle.Bootstrap does not poll plugin ExitStatus for tmux-hosted rows
+// whose agent reports IsSupported=false.
+func TestBootstrapDoesNotPollHooklessTmuxRuns(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	wt := &mockWorktreeManager{}
 	cr := newMockAgentRunner()
+	tmuxFake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
 
 	tok := "tok-3"
+	cronID := "cron-1"
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:           "sess-1",
 		RepoID:       "repo-1",
@@ -3196,6 +3938,7 @@ func TestBootstrapReArmsPollForActiveHooklessRuns(t *testing.T) {
 		State:        machine.ImplementingPlan,
 		AgentName:    "codex",
 		HookToken:    &tok,
+		CronJobID:    &cronID,
 	}
 
 	tmuxName := "tmux-x"
@@ -3215,20 +3958,30 @@ func TestBootstrapReArmsPollForActiveHooklessRuns(t *testing.T) {
 	fa.IsSupported = false
 
 	armer := &fakePollArmer{}
-	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	notifier := &recordingCronCompletionNotifier{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
 	lc.SetHookPort(45678)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": fa})
 	lc.SetAgentLogsDir(t.TempDir())
 	lc.SetPollArmer(armer)
+	lc.SetCronCompletionNotifier(notifier)
 	lc.SetDaemonCtx(ctx)
+	lc.tmuxCompletionPollInterval = time.Millisecond
 
 	lc.Bootstrap(ctx)
 
-	if !armer.armCalled {
-		t.Error("Bootstrap did not re-arm poll for codex run")
+	if armer.armCalled {
+		t.Errorf("Bootstrap armed plugin poll fallback for tmux-hosted run %q", armer.armedID)
 	}
-	if armer.armedID != "run-1" {
-		t.Errorf("armed agent_session_id = %q, want run-1", armer.armedID)
+	tmuxFake.mu.Lock()
+	tmuxFake.failSubcommand["has-session"] = true
+	tmuxFake.failStderr["has-session"] = "can't find session"
+	tmuxFake.mu.Unlock()
+
+	waitForCount(t, "NotifyCronAgentStopped", notifier.count)
+	calls := notifier.callsCopy()
+	if calls[0] != "sess-1" {
+		t.Fatalf("NotifyCronAgentStopped called with %q, want sess-1", calls[0])
 	}
 }
 
@@ -3280,6 +4033,80 @@ func TestBootstrapDoesNotArmForHookedAgents(t *testing.T) {
 	if armer.armCalled {
 		t.Error("Bootstrap should NOT arm for hooked agents (claude)")
 	}
+	if fa.LastConfigureHookReq == nil {
+		t.Fatal("Bootstrap should probe ConfigureFinalizeHook")
+	}
+	if fa.LastConfigureHookReq.GetAgentSessionId() != "" {
+		t.Errorf("bootstrap hook probe AgentSessionId = %q, want empty", fa.LastConfigureHookReq.GetAgentSessionId())
+	}
+}
+
+// TestBootstrapReConfiguresHookForEveryWorktree pins the invariant that when
+// multiple hook-supporting (claude) cron chats survive a daemon restart,
+// Bootstrap calls ConfigureFinalizeHook for EACH one. The hook config is
+// written per-worktree and carries this daemon's restarted port; caching the
+// per-agent support result must not skip the rewrite for chats after the
+// first, or those worktrees keep the previous daemon's dead port and their
+// Stop hook never reaches the restarted daemon.
+func TestBootstrapReConfiguresHookForEveryWorktree(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	tok1 := "tok-1"
+	tok2 := "tok-2"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		AgentName:    "claude",
+		HookToken:    &tok1,
+	}
+	sessions.sessions["sess-2"] = &models.Session{
+		ID:           "sess-2",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-2",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		AgentName:    "claude",
+		HookToken:    &tok2,
+	}
+
+	tmux1 := "tmux-1"
+	tmux2 := "tmux-2"
+	chats := &mockAgentChatStore{
+		chatsWithTmux: []*models.AgentChat{
+			{ID: "chat-1", SessionID: "sess-1", AgentSessionID: "run-1", AgentName: "claude", TmuxSessionName: &tmux1},
+			{ID: "chat-2", SessionID: "sess-2", AgentSessionID: "run-2", AgentName: "claude", TmuxSessionName: &tmux2},
+		},
+	}
+
+	fa := newFakeAgent() // IsSupported defaults to true
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": fa})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetDaemonCtx(ctx)
+
+	lc.Bootstrap(ctx)
+
+	if len(fa.ConfigureHookReqs) != 2 {
+		t.Fatalf("ConfigureFinalizeHook calls = %d, want 2 (one per surviving worktree)", len(fa.ConfigureHookReqs))
+	}
+	gotWorkDirs := map[string]bool{}
+	for _, req := range fa.ConfigureHookReqs {
+		gotWorkDirs[req.GetWorkDir()] = true
+		if req.GetHookPort() != 45678 {
+			t.Errorf("ConfigureFinalizeHook HookPort = %d, want 45678", req.GetHookPort())
+		}
+	}
+	if !gotWorkDirs["/tmp/wt-1"] || !gotWorkDirs["/tmp/wt-2"] {
+		t.Errorf("ConfigureFinalizeHook worktrees = %v, want both /tmp/wt-1 and /tmp/wt-2", gotWorkDirs)
+	}
 }
 
 // TestStartSessionDoesNotArmPollFallbackWhenHookSupported verifies that
@@ -3330,6 +4157,117 @@ func TestStartSessionDoesNotArmPollFallbackWhenHookSupported(t *testing.T) {
 
 	if armer.armCalled {
 		t.Error("poll fallback should NOT be armed when hook is supported")
+	}
+}
+
+func TestStartSession_DeferPRTrue_HookSupportedDoesNotArmPollFallback(t *testing.T) {
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockAgentRunner()
+	tx := tmux.NewClient(tmux.WithCommandFactory(newFakeTmux().factory))
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Hooked cron agent",
+		Plan:       "do work",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "claude",
+	}
+
+	client := newFakeAgent()
+	pollArmer := &fakePollArmer{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": client})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetPollArmer(pollArmer)
+	lc.SetDaemonCtx(ctx)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true, CronJobID: "cron-1", HookToken: "tok-1"}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if pollArmer.armCalled {
+		t.Fatal("hook-supported cron agents should use hook notification, not poll fallback")
+	}
+}
+
+func TestStartSession_DeferPRTrue_HooklessAgentDoesNotArmPollFallback(t *testing.T) {
+	ctx := context.Background()
+	worktreeDir := t.TempDir()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{worktreePath: worktreeDir}
+	cr := newMockAgentRunner()
+	tmuxFake := newFakeTmux()
+	tx := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+		OriginURL:         "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Hookless cron agent",
+		Plan:       "do work",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "codex",
+	}
+
+	client := newFakeAgent()
+	client.IsSupported = false
+
+	pollArmer := &fakePollArmer{}
+	notifier := &recordingCronCompletionNotifier{}
+	lc := NewLifecycle(sessions, repos, chats, &stubCronJobStore{}, wt, cr, tx, newMockVCSProvider(), zerolog.Nop())
+	lc.newTmuxChatAgentSessionID = func() string { return "agent-1" }
+	lc.tmuxCompletionPollInterval = time.Millisecond
+	lc.SetHookPort(45678)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": client})
+	lc.SetAgentLogsDir(t.TempDir())
+	lc.SetPollArmer(pollArmer)
+	lc.SetCronCompletionNotifier(notifier)
+	lc.SetDaemonCtx(ctx)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{DeferPR: true, CronJobID: "cron-1", HookToken: "tok-1"}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	agentSessionID := sessions.sessions["sess-1"].AgentSessionID
+	if agentSessionID == nil {
+		t.Fatal("primary cron agent session id missing")
+	}
+	if pollArmer.armCalled {
+		t.Fatalf("poll fallback armed for tmux-hosted hookless cron run %q", *agentSessionID)
+	}
+	tmuxFake.mu.Lock()
+	tmuxFake.failSubcommand["has-session"] = true
+	tmuxFake.failStderr["has-session"] = "can't find session"
+	tmuxFake.mu.Unlock()
+
+	waitForCount(t, "NotifyCronAgentStopped", notifier.count)
+	calls := notifier.callsCopy()
+	if calls[0] != "sess-1" {
+		t.Fatalf("NotifyCronAgentStopped called with %q, want sess-1", calls[0])
 	}
 }
 

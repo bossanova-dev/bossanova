@@ -9,13 +9,18 @@
 // same JWT, so if one is dead the other is.
 package upstream
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // AuthState is the tiny synchronisation primitive that flips between
 // "auth OK" (default) and "needs login" when an opener observes
-// ErrAuthExpired. Run loops poll NeedsLogin and block on Wait until the
-// next MarkOK, which the auth notifier fires after `boss login` rewrites
-// the keychain.
+// ErrAuthExpired or the user explicitly logs out. Run loops poll
+// NeedsLogin and block on Wait until the next MarkOK, which the auth
+// notifier fires after `boss login` rewrites the keychain. Active streams
+// watch NeedsLoginSignal so a logout cancels them immediately instead of
+// lingering until the next reconnect.
 type AuthState struct {
 	mu         sync.Mutex
 	needsLogin bool
@@ -24,13 +29,17 @@ type AuthState struct {
 	// round so a later MarkNeedsLogin can re-arm it. nil-safe receive on
 	// the closed channel returns immediately, which is exactly the
 	// "already cleared" semantics we want for late callers of Wait.
-	waitCh chan struct{}
+	waitCh       chan struct{}
+	needsLoginCh chan struct{}
 }
 
 // NewAuthState returns an AuthState in the "auth OK" state with a fresh
 // wait channel ready for the first MarkNeedsLogin.
 func NewAuthState() *AuthState {
-	return &AuthState{waitCh: make(chan struct{})}
+	return &AuthState{
+		waitCh:       make(chan struct{}),
+		needsLoginCh: make(chan struct{}),
+	}
 }
 
 // MarkNeedsLogin transitions to "needs login". Returns true iff this was
@@ -47,6 +56,7 @@ func (s *AuthState) MarkNeedsLogin() bool {
 		return false
 	}
 	s.needsLogin = true
+	close(s.needsLoginCh)
 	return true
 }
 
@@ -67,6 +77,7 @@ func (s *AuthState) MarkOK() bool {
 	s.needsLogin = false
 	close(s.waitCh)
 	s.waitCh = make(chan struct{})
+	s.needsLoginCh = make(chan struct{})
 	return true
 }
 
@@ -100,4 +111,52 @@ func (s *AuthState) Wait() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.waitCh
+}
+
+// NeedsLoginSignal returns a channel that closes on the next transition to
+// needs-login. If the state already needs login, the returned channel is
+// already closed.
+func (s *AuthState) NeedsLoginSignal() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.needsLoginCh
+}
+
+// watchNeedsLogin runs onSignal exactly once if the AuthState transitions
+// to needs-login before ctx is cancelled. The returned channel closes when
+// the watcher goroutine exits — on ctx cancel, or after onSignal runs — so
+// callers can join it during teardown. A nil state (or one whose signal is
+// already disarmed) yields an immediately-closed channel and spawns no
+// goroutine. onSignal carries whatever teardown the caller needs: a bare
+// cancel for the daemon stream, or close-attaches-then-cancel for the
+// terminal stream.
+func watchNeedsLogin(ctx context.Context, state *AuthState, onSignal func()) <-chan struct{} {
+	done := make(chan struct{})
+	if state == nil {
+		close(done)
+		return done
+	}
+	signal := state.NeedsLoginSignal()
+	if signal == nil {
+		close(done)
+		return done
+	}
+
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+		case <-signal:
+			onSignal()
+		}
+	}()
+
+	return done
+}
+
+func cancelOnNeedsLogin(ctx context.Context, state *AuthState, cancel context.CancelFunc) <-chan struct{} {
+	return watchNeedsLogin(ctx, state, func() { cancel() })
 }

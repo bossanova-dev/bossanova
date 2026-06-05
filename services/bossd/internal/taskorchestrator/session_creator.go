@@ -25,6 +25,7 @@ type CreateSessionOpts struct {
 	SkipSetupScript bool   // if true, skip running the repo's setup script (e.g. for dependabot PRs)
 	PRNumber        *int
 	PRURL           *string
+	AgentName       string // Agent plugin name; empty falls back to "claude".
 
 	// Cron-session fields. Populated when the scheduler spawns a session.
 	// DeferPR and HookToken are persisted through to StartSession; they take
@@ -78,6 +79,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		BaseBranch: opts.BaseBranch,
 		PRNumber:   opts.PRNumber,
 		PRURL:      opts.PRURL,
+		AgentName:  opts.AgentName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)

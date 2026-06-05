@@ -818,9 +818,12 @@ func parseReviewState(s string) vcs.ReviewState {
 	}
 }
 
-// isRepoNotReady returns true when the gh CLI error indicates the repository
-// lacks enough commit history to create a pull request. This typically happens
-// when a repo only has an --allow-empty initial commit with no real content.
+// isRepoNotReady returns true when the gh CLI error indicates GitHub has not
+// resolved the base/head refs or compare view yet. It gates the short
+// (3-attempt, ~6s total) retry in CreateDraftPR. "No commits between" is
+// treated as transient here because genuinely empty branches are caught before
+// the API call by VerifyPushedBranchAheadOfBase; reaching this point with that
+// error means GitHub has not yet indexed the freshly pushed head ref.
 func isRepoNotReady(err error) bool {
 	if err == nil {
 		return false

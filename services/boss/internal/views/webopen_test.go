@@ -16,6 +16,7 @@ func TestOpenURLCmd(t *testing.T) {
 		goos        string
 		env         map[string]string
 		available   map[string]bool
+		rawURL      string
 		wantBase    string
 		wantArgs    []string
 		wantErrPart string
@@ -47,7 +48,20 @@ func TestOpenURLCmd(t *testing.T) {
 			env:       map[string]string{"WSL_INTEROP": "/run/WSL/123_interop"},
 			available: map[string]bool{"cmd.exe": true, "xdg-open": true},
 			wantBase:  "cmd.exe",
-			wantArgs:  []string{"/c", "start", "", repoURL},
+			wantArgs:  []string{"/c", "start", "", `"` + repoURL + `"`},
+		},
+		{
+			// cmd.exe /c re-parses its command line, so an unquoted &
+			// (or |, <, >, ^) in a query string would be treated as a
+			// shell metacharacter — breaking the open and allowing
+			// command injection. The URL must reach start(1) quoted.
+			name:      "wsl cmd start quotes url with special chars",
+			goos:      "linux",
+			env:       map[string]string{"WSL_INTEROP": "/run/WSL/123_interop"},
+			available: map[string]bool{"cmd.exe": true},
+			rawURL:    "https://example.test/path?code=abc&state=xyz",
+			wantBase:  "cmd.exe",
+			wantArgs:  []string{"/c", "start", "", `"https://example.test/path?code=abc&state=xyz"`},
 		},
 		{
 			name:     "windows uses file protocol handler",
@@ -65,7 +79,10 @@ func TestOpenURLCmd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			rawURL := repoURL
+			rawURL := tt.rawURL
+			if rawURL == "" {
+				rawURL = repoURL
+			}
 			if tt.wantErrPart != "" {
 				rawURL = "file:///tmp/repo"
 			}

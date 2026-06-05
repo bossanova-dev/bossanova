@@ -23,17 +23,25 @@ func NewCronJobStore(db *sql.DB) *SQLiteCronJobStore {
 	return &SQLiteCronJobStore{db: db}
 }
 
+func normalizeCronJobAgentName(agentName string) string {
+	if v := strings.TrimSpace(agentName); v != "" {
+		return v
+	}
+	return "claude"
+}
+
 func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobParams) (*models.CronJob, error) {
 	id, err := sqlutil.NewID()
 	if err != nil {
 		return nil, fmt.Errorf("new cron job id: %w", err)
 	}
 	now := sqlutil.TimeNow()
+	agentName := normalizeCronJobAgentName(params.AgentName)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Name, params.Prompt, params.Schedule, params.Timezone,
-		sqlutil.BoolToInt(params.Enabled), now, now,
+		agentName, sqlutil.BoolToInt(params.Enabled), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert cron job: %w", err)
@@ -96,6 +104,10 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 			sets = append(sets, "timezone = ?")
 			args = append(args, **params.Timezone)
 		}
+	}
+	if params.AgentName != nil {
+		sets = append(sets, "agent_name = ?")
+		args = append(args, normalizeCronJobAgentName(*params.AgentName))
 	}
 	if params.Enabled != nil {
 		sets = append(sets, "enabled = ?")
@@ -197,7 +209,7 @@ func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, enabled,
+const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, enabled,
 	last_run_session_id, last_run_at, last_run_outcome, next_run_at,
 	created_at, updated_at
 	FROM cron_jobs`
@@ -218,11 +230,11 @@ func collectCronJobs(rows *sql.Rows) ([]*models.CronJob, error) {
 func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	var j models.CronJob
 	var enabledInt int
-	var timezone, lastRunSessionID, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
+	var timezone, agentName, lastRunSessionID, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
 	var createdAt, updatedAt string
 	err := s.Scan(
 		&j.ID, &j.RepoID, &j.Name, &j.Prompt, &j.Schedule,
-		&timezone, &enabledInt,
+		&timezone, &agentName, &enabledInt,
 		&lastRunSessionID, &lastRunAt, &lastRunOutcome, &nextRunAt,
 		&createdAt, &updatedAt,
 	)
@@ -234,6 +246,7 @@ func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 		s := timezone.String
 		j.Timezone = &s
 	}
+	j.AgentName = normalizeCronJobAgentName(agentName.String)
 	if lastRunSessionID.Valid {
 		s := lastRunSessionID.String
 		j.LastRunSessionID = &s

@@ -74,6 +74,98 @@ func newSubscriptionTestLoginModel(fake *fakeSubscriptionCloudAccess) LoginModel
 	return m
 }
 
+func TestSubscriptionUnavailableErrorUsesBillingCopyForBillingStatus(t *testing.T) {
+	err := subscriptionUnavailableError(&pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE,
+	}, nil)
+
+	if err == nil {
+		t.Fatal("expected unavailable error")
+	}
+	if got := err.Error(); got != cloudBillingUnavailableLine {
+		t.Fatalf("error = %q, want billing unavailable copy", got)
+	}
+}
+
+func TestSubscriptionUnavailableErrorIncludesStatusErrorDetail(t *testing.T) {
+	err := subscriptionUnavailableError(nil, errors.New("connection refused"))
+	if err == nil {
+		t.Fatal("expected unavailable error")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "Cloud access status unavailable") {
+		t.Fatalf("error = %q, want cloud access status unavailable copy", got)
+	}
+	if !strings.Contains(got, "connection refused") {
+		t.Fatalf("error = %q, want status error detail", got)
+	}
+	if strings.Contains(got, "Cloud billing unavailable") {
+		t.Fatalf("error = %q, want no billing unavailable copy", got)
+	}
+}
+
+func TestSubscriptionUnavailableErrorRedactsSensitiveStatusErrorDetail(t *testing.T) {
+	err := subscriptionUnavailableError(nil, errors.New("Authorization: Bearer access-token-123 refresh_token=refresh-token-456"))
+	if err == nil {
+		t.Fatal("expected unavailable error")
+	}
+	got := err.Error()
+	if strings.Contains(got, "access-token-123") || strings.Contains(got, "refresh-token-456") {
+		t.Fatalf("error = %q, want sensitive tokens redacted", got)
+	}
+	if strings.Count(got, "[redacted]") < 2 {
+		t.Fatalf("error = %q, want redacted token markers", got)
+	}
+}
+
+func TestSubscriptionBillingUnavailableRendersAndWaitsForAck(t *testing.T) {
+	m := newSubscriptionTestLoginModel(&fakeSubscriptionCloudAccess{})
+	m.subscription = subscriptionState{phase: subscriptionPhaseChecking, attempt: 1}
+
+	updated, cmd := m.Update(subscriptionAccessMsg{
+		status:  &pb.CloudAccessStatus{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE},
+		attempt: 1,
+	})
+	m = updated.(LoginModel)
+
+	if m.subscription.phase != subscriptionPhaseUnavailable {
+		t.Fatalf("phase = %v, want unavailable", m.subscription.phase)
+	}
+	if m.done {
+		t.Fatal("subscription flow returned home before the user could see the error")
+	}
+	if cmd != nil {
+		t.Fatalf("unavailable phase command = %T, want nil", cmd)
+	}
+	view := m.View().Content
+	for _, want := range []string{cloudBillingUnavailableLine, "[enter] continue", "[esc] cancel"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q: %q", want, view)
+		}
+	}
+}
+
+func TestSubscriptionUnavailableEnterReturnsHome(t *testing.T) {
+	m := newSubscriptionTestLoginModel(&fakeSubscriptionCloudAccess{})
+	m.subscription = subscriptionState{
+		phase:   subscriptionPhaseUnavailable,
+		attempt: 1,
+		err:     errors.New(cloudBillingUnavailableLine),
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(LoginModel)
+	if cmd != nil {
+		t.Fatalf("continue command = %T, want nil", cmd)
+	}
+	if !m.done {
+		t.Fatal("enter on unavailable phase should return home (done)")
+	}
+	if m.cancelled {
+		t.Fatal("acknowledging an unavailable subscription is not a cancellation")
+	}
+}
+
 func TestSubscriptionOpensLandingPageAndRendersWaiting(t *testing.T) {
 	fake := &fakeSubscriptionCloudAccess{
 		statuses:    []*pb.CloudAccessStatus{{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION}},
@@ -96,7 +188,7 @@ func TestSubscriptionOpensLandingPageAndRendersWaiting(t *testing.T) {
 		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
 	}
 	view := m.View().Content
-	for _, want := range []string{"Waiting for a subscription. Continue in your browser...", "[enter] re-open subscription page", "[esc] cancel"} {
+	for _, want := range []string{"Loading your account. Continue in your browser...", "[enter] re-open subscription page", "[esc] cancel"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q: %q", want, view)
 		}

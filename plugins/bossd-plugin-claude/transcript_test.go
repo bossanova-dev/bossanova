@@ -127,3 +127,31 @@ func TestTranscriptExistsReturnsFalseForMissing(t *testing.T) {
 		t.Error("expected transcriptExists=false")
 	}
 }
+
+func TestPathToProjectKeyReplacesPathSeparators(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "posix path",
+			path: "/Users/dave/Code/.worktrees/foo",
+			want: "-Users-dave-Code--worktrees-foo",
+		},
+		{
+			name: "windows path",
+			path: `C:\Users\dave\Code\.worktrees\foo`,
+			want: "C--Users-dave-Code--worktrees-foo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pathToProjectKey(tt.path)
+			if got != tt.want {
+				t.Fatalf("pathToProjectKey() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

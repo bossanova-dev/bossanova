@@ -36,6 +36,21 @@ func TestGetInfo(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveCommandReturnsSlashCommandPrefix(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:      "agent-1",
+		LogPath:        t.TempDir() + "/claude.log",
+		InitialCommand: "boss-finalize",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if resp.GetCommandPrefix() != "/" {
+		t.Fatalf("command prefix = %q, want /", resp.GetCommandPrefix())
+	}
+}
+
 func TestGetInfoIncludesDangerouslySkipPermissionsSetting(t *testing.T) {
 	s := newServer(nil, zerolog.Nop())
 	resp, err := s.GetInfo(context.Background(), &bossanovav1.AgentRunnerServiceGetInfoRequest{})
@@ -338,6 +353,23 @@ func TestServer_ListIgnoredDirtyFiles(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Paths missing %q: got %v", want, resp.Paths)
+	}
+}
+
+func TestListIgnoredDirtyFilesIncludesScheduledTasksLock(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.ListIgnoredDirtyFiles(context.Background(), &bossanovav1.ListIgnoredDirtyFilesRequest{})
+	if err != nil {
+		t.Fatalf("ListIgnoredDirtyFiles: %v", err)
+	}
+	got := map[string]bool{}
+	for _, path := range resp.GetPaths() {
+		got[path] = true
+	}
+	for _, want := range []string{".claude/settings.local.json", ".claude/scheduled_tasks.lock"} {
+		if !got[want] {
+			t.Fatalf("ignored paths missing %q; got %v", want, resp.GetPaths())
+		}
 	}
 }
 

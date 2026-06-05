@@ -65,24 +65,26 @@ func (f *fakePollAgentClient) TranscriptExists(_ context.Context, _ *bossanovav1
 }
 
 type fakeCompleter struct {
-	mu       sync.Mutex
-	signaled bool
-	exitErr  string
-	id       string
+	mu        sync.Mutex
+	signaled  bool
+	exitErr   string
+	sessionID string
+	id        string
 }
 
-func (f *fakeCompleter) SignalRunComplete(id, exitErr string) {
+func (f *fakeCompleter) SignalSessionRunComplete(sessionID, id, exitErr string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.signaled = true
 	f.exitErr = exitErr
+	f.sessionID = sessionID
 	f.id = id
 }
 
-func (f *fakeCompleter) snapshot() (bool, string, string) {
+func (f *fakeCompleter) snapshot() (bool, string, string, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.signaled, f.exitErr, f.id
+	return f.signaled, f.sessionID, f.exitErr, f.id
 }
 
 func TestPollFallbackSignalsCompletionWhenExitStatusReady(t *testing.T) {
@@ -93,12 +95,15 @@ func TestPollFallbackSignalsCompletionWhenExitStatusReady(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	p.Arm(ctx, "agent-sess-1", ac)
+	p.Arm(ctx, "sess-1", "agent-sess-1", ac)
 
 	deadline := time.After(500 * time.Millisecond)
 	for {
-		signaled, _, id := cc.snapshot()
+		signaled, sessionID, _, id := cc.snapshot()
 		if signaled {
+			if sessionID != "sess-1" {
+				t.Errorf("sessionID = %q", sessionID)
+			}
 			if id != "agent-sess-1" {
 				t.Errorf("id = %q", id)
 			}
@@ -119,10 +124,10 @@ func TestPollFallbackSurfacesExitErrorVerbatim(t *testing.T) {
 	p := agent.NewPollFallback(zerolog.Nop(), 10*time.Millisecond, 0, cc)
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	p.Arm(ctx, "x", ac)
+	p.Arm(ctx, "sess-1", "x", ac)
 	deadline := time.After(500 * time.Millisecond)
 	for {
-		signaled, exitErr, _ := cc.snapshot()
+		signaled, _, exitErr, _ := cc.snapshot()
 		if signaled {
 			if exitErr != "boom" {
 				t.Errorf("exitErr = %q", exitErr)
@@ -143,7 +148,7 @@ func TestPollFallbackStopsOnContextCancel(t *testing.T) {
 	cc := &fakeCompleter{}
 	p := agent.NewPollFallback(zerolog.Nop(), 10*time.Millisecond, 0, cc)
 	ctx, cancel := context.WithCancel(context.Background())
-	p.Arm(ctx, "x", ac)
+	p.Arm(ctx, "sess-1", "x", ac)
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 	time.Sleep(50 * time.Millisecond)

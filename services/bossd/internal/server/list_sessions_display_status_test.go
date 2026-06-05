@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,7 +15,9 @@ import (
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/status"
+	"github.com/rs/zerolog"
 )
 
 func TestListSessions_RecomputesDisplayCompositeFromLiveTracker(t *testing.T) {
@@ -284,6 +287,239 @@ func TestListSessions_BatchesChatStatusLookup(t *testing.T) {
 	}
 }
 
+func TestListSessions_AttachesOpenPRForNoPRBranch(t *testing.T) {
+	sess := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Fresh claim PR failed",
+		BranchName: "freshclaim-pr-failed",
+		State:      machine.AwaitingChecks,
+		CreatedAt:  time.Now(),
+	}
+	provider := &listSessionsVCSProviderFake{
+		openPRs: []vcs.PRSummary{
+			{
+				Number:     497,
+				HeadBranch: "freshclaim-pr-failed",
+				State:      vcs.PRStateOpen,
+			},
+		},
+	}
+	s := newListSessionsDisplayStatusTestServer(
+		[]*models.Session{sess},
+		nil,
+		status.NewDisplayTracker(),
+		status.NewTracker(),
+	)
+	s.prResolver = session.NewPRAssociationResolver(s.sessions, s.repos, provider, zerolog.Nop())
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+
+	got := onlySession(t, resp.Msg.Sessions)
+	if got.PrNumber == nil || got.GetPrNumber() != 497 {
+		t.Fatalf("PRNumber = %v, want 497", got.PrNumber)
+	}
+	const wantURL = "https://github.com/recurser/repo/pull/497"
+	if got.PrUrl == nil || got.GetPrUrl() != wantURL {
+		t.Fatalf("PRURL = %v, want %q", got.PrUrl, wantURL)
+	}
+	if provider.listOpenCalls != 1 {
+		t.Fatalf("ListOpenPRs calls = %d, want 1", provider.listOpenCalls)
+	}
+	if provider.listClosedCalls != 0 {
+		t.Fatalf("ListClosedPRs calls = %d, want 0", provider.listClosedCalls)
+	}
+}
+
+func TestListSessions_BoundsPRAssociationReconciliation(t *testing.T) {
+	originalTimeout := listSessionsPRAssociationTimeout
+	listSessionsPRAssociationTimeout = 10 * time.Millisecond
+	t.Cleanup(func() {
+		listSessionsPRAssociationTimeout = originalTimeout
+	})
+
+	sess := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Fresh claim PR failed",
+		BranchName: "freshclaim-pr-failed",
+		State:      machine.AwaitingChecks,
+		CreatedAt:  time.Now(),
+	}
+	provider := &listSessionsVCSProviderFake{
+		listOpenDelay:          2 * time.Second,
+		listOpenIgnoresContext: true,
+		openPRs: []vcs.PRSummary{
+			{
+				Number:     497,
+				HeadBranch: "freshclaim-pr-failed",
+				State:      vcs.PRStateOpen,
+			},
+		},
+	}
+	s := newListSessionsDisplayStatusTestServer(
+		[]*models.Session{sess},
+		nil,
+		status.NewDisplayTracker(),
+		status.NewTracker(),
+	)
+	s.prResolver = session.NewPRAssociationResolver(s.sessions, s.repos, provider, zerolog.Nop())
+
+	start := time.Now()
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("ListSessions took %s, want bounded below 1s", elapsed)
+	}
+
+	got := onlySession(t, resp.Msg.Sessions)
+	if got.PrNumber != nil {
+		t.Fatalf("PRNumber = %v, want nil after timed out reconciliation", got.PrNumber)
+	}
+	if got := provider.listOpenCallCount(); got != 1 {
+		t.Fatalf("ListOpenPRs calls = %d, want 1", got)
+	}
+	if got := provider.listClosedCallCount(); got != 0 {
+		t.Fatalf("ListClosedPRs calls = %d, want 0", got)
+	}
+}
+
+func TestListSessions_ReloadsRowsAfterPartialPRDiscoveryError(t *testing.T) {
+	first := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "First session",
+		BranchName: "first-branch",
+		State:      machine.AwaitingChecks,
+		CreatedAt:  time.Now(),
+	}
+	second := &models.Session{
+		ID:         "sess-2",
+		RepoID:     "repo-2",
+		Title:      "Second session",
+		BranchName: "second-branch",
+		State:      machine.AwaitingChecks,
+		CreatedAt:  time.Now(),
+	}
+	const firstOrigin = "https://github.com/recurser/first.git"
+	const secondOrigin = "https://github.com/recurser/second.git"
+	provider := &listSessionsVCSProviderFake{
+		openPRsByOrigin: map[string][]vcs.PRSummary{
+			firstOrigin: {
+				{
+					Number:     497,
+					HeadBranch: "first-branch",
+					State:      vcs.PRStateOpen,
+				},
+			},
+		},
+		listOpenErrByOrigin: map[string]error{
+			secondOrigin: errors.New("provider unavailable"),
+		},
+	}
+	s := newListSessionsDisplayStatusTestServer(
+		[]*models.Session{first, second},
+		nil,
+		status.NewDisplayTracker(),
+		status.NewTracker(),
+	)
+	s.sessions.(*listSessionsSessionStoreFake).cloneRows = true
+	s.repos = &listSessionsRepoStoreFake{
+		repos: map[string]*models.Repo{
+			"repo-1": {
+				ID:                "repo-1",
+				DisplayName:       "first",
+				OriginURL:         firstOrigin,
+				DefaultBaseBranch: "main",
+			},
+			"repo-2": {
+				ID:                "repo-2",
+				DisplayName:       "second",
+				OriginURL:         secondOrigin,
+				DefaultBaseBranch: "main",
+			},
+		},
+	}
+	s.prResolver = session.NewPRAssociationResolver(s.sessions, s.repos, provider, zerolog.Nop())
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(resp.Msg.Sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(resp.Msg.Sessions))
+	}
+	got := resp.Msg.Sessions[0]
+	if got.GetId() != "sess-1" {
+		t.Fatalf("first session ID = %q, want sess-1", got.GetId())
+	}
+	if got.PrNumber == nil || got.GetPrNumber() != 497 {
+		t.Fatalf("PRNumber = %v, want 497", got.PrNumber)
+	}
+	const wantURL = "https://github.com/recurser/first/pull/497"
+	if got.PrUrl == nil || got.GetPrUrl() != wantURL {
+		t.Fatalf("PRURL = %v, want %q", got.PrUrl, wantURL)
+	}
+	if provider.listOpenCalls != 2 {
+		t.Fatalf("ListOpenPRs calls = %d, want 2", provider.listOpenCalls)
+	}
+	if provider.listClosedCalls != 0 {
+		t.Fatalf("ListClosedPRs calls = %d, want 0", provider.listClosedCalls)
+	}
+	if len(provider.listOpenOrigins) != 2 || provider.listOpenOrigins[0] != firstOrigin || provider.listOpenOrigins[1] != secondOrigin {
+		t.Fatalf("ListOpenPRs origins = %v, want [%q %q]", provider.listOpenOrigins, firstOrigin, secondOrigin)
+	}
+	// ListActiveWithRepo is called twice: once for the initial load and once
+	// to reload rows after reconciliation attached a PR association.
+	if s.sessions.(*listSessionsSessionStoreFake).listActiveWithRepoCalls != 2 {
+		t.Fatalf("ListActiveWithRepo calls = %d, want 2", s.sessions.(*listSessionsSessionStoreFake).listActiveWithRepoCalls)
+	}
+}
+
+func TestListSessions_DoesNotReconcileWhenAllSessionsHavePRs(t *testing.T) {
+	prNumber := 123
+	prURL := "https://github.com/recurser/repo/pull/123"
+	sess := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Already linked",
+		BranchName: "already-linked",
+		State:      machine.AwaitingChecks,
+		CreatedAt:  time.Now(),
+		PRNumber:   &prNumber,
+		PRURL:      &prURL,
+	}
+	provider := &listSessionsVCSProviderFake{}
+	s := newListSessionsDisplayStatusTestServer(
+		[]*models.Session{sess},
+		nil,
+		status.NewDisplayTracker(),
+		status.NewTracker(),
+	)
+	s.prResolver = session.NewPRAssociationResolver(s.sessions, s.repos, provider, zerolog.Nop())
+
+	resp, err := s.ListSessions(context.Background(), connect.NewRequest(&pb.ListSessionsRequest{}))
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+
+	got := onlySession(t, resp.Msg.Sessions)
+	if got.PrNumber == nil || got.GetPrNumber() != 123 {
+		t.Fatalf("PRNumber = %v, want 123", got.PrNumber)
+	}
+	if got.PrUrl == nil || got.GetPrUrl() != prURL {
+		t.Fatalf("PRURL = %v, want %q", got.PrUrl, prURL)
+	}
+	if provider.listOpenCalls != 0 {
+		t.Fatalf("ListOpenPRs calls = %d, want 0", provider.listOpenCalls)
+	}
+}
+
 func onlySession(t *testing.T, sessions []*pb.Session) *pb.Session {
 	t.Helper()
 	if len(sessions) != 1 {
@@ -309,23 +545,102 @@ func newListSessionsDisplayStatusTestServer(
 
 type listSessionsSessionStoreFake struct {
 	db.SessionStore
-	sessions []*models.Session
+	sessions                []*models.Session
+	cloneRows               bool
+	listCalls               int
+	listActiveCalls         int
+	listWithRepoCalls       int
+	listActiveWithRepoCalls int
 }
 
 func (f *listSessionsSessionStoreFake) List(_ context.Context, _ string) ([]*models.Session, error) {
-	return f.sessions, nil
+	f.listCalls++
+	return f.sessionModels(), nil
 }
 
 func (f *listSessionsSessionStoreFake) ListActive(_ context.Context, _ string) ([]*models.Session, error) {
-	return f.sessions, nil
+	f.listActiveCalls++
+	return f.sessionModels(), nil
+}
+
+func (f *listSessionsSessionStoreFake) ListWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	f.listWithRepoCalls++
+	return f.sessionRows(), nil
+}
+
+func (f *listSessionsSessionStoreFake) ListActiveWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+	f.listActiveWithRepoCalls++
+	return f.sessionRows(), nil
+}
+
+func (f *listSessionsSessionStoreFake) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	for _, sess := range f.sessions {
+		if sess == nil || sess.ID != id {
+			continue
+		}
+		if params.PRNumber != nil {
+			sess.PRNumber = *params.PRNumber
+		}
+		if params.PRURL != nil {
+			sess.PRURL = *params.PRURL
+		}
+		if params.BlockedReason != nil {
+			sess.BlockedReason = *params.BlockedReason
+		}
+		return sess, nil
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (f *listSessionsSessionStoreFake) sessionModels() []*models.Session {
+	if !f.cloneRows {
+		return f.sessions
+	}
+	sessions := make([]*models.Session, 0, len(f.sessions))
+	for _, sess := range f.sessions {
+		if sess == nil {
+			continue
+		}
+		clone := *sess
+		sessions = append(sessions, &clone)
+	}
+	return sessions
+}
+
+func (f *listSessionsSessionStoreFake) sessionRows() []*db.SessionWithRepo {
+	rows := make([]*db.SessionWithRepo, 0, len(f.sessions))
+	for _, sess := range f.sessions {
+		if sess == nil {
+			continue
+		}
+		rowSession := sess
+		if f.cloneRows {
+			clone := *sess
+			rowSession = &clone
+		}
+		rows = append(rows, &db.SessionWithRepo{
+			Session:         rowSession,
+			RepoDisplayName: "repo",
+			RepoOriginURL:   "https://github.com/recurser/repo.git",
+		})
+	}
+	return rows
 }
 
 type listSessionsRepoStoreFake struct {
 	db.RepoStore
+	repos map[string]*models.Repo
 }
 
 func (f *listSessionsRepoStoreFake) Get(_ context.Context, id string) (*models.Repo, error) {
 	if id == "" {
+		return nil, sql.ErrNoRows
+	}
+	if f.repos != nil {
+		if repo, ok := f.repos[id]; ok {
+			clone := *repo
+			return &clone, nil
+		}
 		return nil, sql.ErrNoRows
 	}
 	return &models.Repo{
@@ -334,6 +649,78 @@ func (f *listSessionsRepoStoreFake) Get(_ context.Context, id string) (*models.R
 		OriginURL:         "https://github.com/recurser/repo.git",
 		DefaultBaseBranch: "main",
 	}, nil
+}
+
+type listSessionsVCSProviderFake struct {
+	vcs.Provider
+	mu sync.Mutex
+
+	openPRs                []vcs.PRSummary
+	openPRsByOrigin        map[string][]vcs.PRSummary
+	closedPRsByOrigin      map[string][]vcs.PRSummary
+	listOpenErrByOrigin    map[string]error
+	listClosedErrByOrigin  map[string]error
+	listOpenDelay          time.Duration
+	listOpenIgnoresContext bool
+	listOpenCalls          int
+	listClosedCalls        int
+	listOpenOrigins        []string
+	listClosedOrigins      []string
+}
+
+func (f *listSessionsVCSProviderFake) ListOpenPRs(ctx context.Context, originURL string) ([]vcs.PRSummary, error) {
+	f.mu.Lock()
+	f.listOpenCalls++
+	f.listOpenOrigins = append(f.listOpenOrigins, originURL)
+	delay := f.listOpenDelay
+	ignoreContext := f.listOpenIgnoresContext
+	f.mu.Unlock()
+	if delay > 0 {
+		if ignoreContext {
+			time.Sleep(delay)
+		} else {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err, ok := f.listOpenErrByOrigin[originURL]; ok {
+		return nil, err
+	}
+	if prs, ok := f.openPRsByOrigin[originURL]; ok {
+		return prs, nil
+	}
+	return f.openPRs, nil
+}
+
+func (f *listSessionsVCSProviderFake) ListClosedPRs(_ context.Context, originURL string) ([]vcs.PRSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listClosedCalls++
+	f.listClosedOrigins = append(f.listClosedOrigins, originURL)
+	if err, ok := f.listClosedErrByOrigin[originURL]; ok {
+		return nil, err
+	}
+	if prs, ok := f.closedPRsByOrigin[originURL]; ok {
+		return prs, nil
+	}
+	return nil, nil
+}
+
+func (f *listSessionsVCSProviderFake) listOpenCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listOpenCalls
+}
+
+func (f *listSessionsVCSProviderFake) listClosedCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listClosedCalls
 }
 
 type listSessionsAgentChatStoreFake struct {

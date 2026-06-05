@@ -13,6 +13,7 @@ import (
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/upgrade"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -195,7 +196,7 @@ func TestHomeCloudGatePendingRefreshCommand(t *testing.T) {
 	}
 }
 
-func TestHomeCloudGateBillingUnavailableIsNonBlocking(t *testing.T) {
+func TestHomeCloudGateAccessErrorIsNonBlocking(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
 	h.loading = false
@@ -205,12 +206,97 @@ func TestHomeCloudGateBillingUnavailableIsNonBlocking(t *testing.T) {
 	model, _ := h.Update(cloudAccessMsg{err: errors.New("connection refused")})
 	h = model.(HomeModel)
 
-	content := h.View().Content
-	if !strings.Contains(content, "Cloud billing unavailable") {
-		t.Fatalf("expected non-blocking billing unavailable status, got: %s", content)
+	line := h.cloudGateLine()
+	if !strings.Contains(line, "Cloud access status unavailable") {
+		t.Fatalf("expected cloud access status error, got: %s", line)
 	}
+	if !strings.Contains(line, "connection refused") {
+		t.Fatalf("expected error detail, got: %s", line)
+	}
+	if !strings.Contains(line, "Local sessions are still available") {
+		t.Fatalf("expected local-usable copy, got: %s", line)
+	}
+	if strings.Contains(line, "Cloud billing unavailable") {
+		t.Fatalf("generic error used billing copy: %s", line)
+	}
+	content := h.View().Content
 	if !strings.Contains(content, "[n]ew session") {
 		t.Fatalf("expected local session actions to remain available, got: %s", content)
+	}
+}
+
+func TestHomeCloudGateBillingUnavailableStatusUsesBillingCopy(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+
+	model, _ := h.Update(cloudAccessMsg{status: &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE,
+	}})
+	h = model.(HomeModel)
+
+	line := h.cloudGateLine()
+	if !strings.Contains(line, "Cloud billing unavailable") {
+		t.Fatalf("expected billing unavailable copy, got: %s", line)
+	}
+	if !strings.Contains(line, "Local sessions are still available") {
+		t.Fatalf("expected local-usable copy, got: %s", line)
+	}
+	if strings.Contains(line, "Cloud access status unavailable") {
+		t.Fatalf("billing status used generic access copy: %s", line)
+	}
+}
+
+func TestHomeCloudGateConnectErrorIncludesCodeAndDetail(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+
+	err := connect.NewError(connect.CodeUnauthenticated, errors.New("refresh token rejected"))
+	model, _ := h.Update(cloudAccessMsg{err: err})
+	h = model.(HomeModel)
+
+	line := h.cloudGateLine()
+	if !strings.Contains(line, "Cloud access status unavailable") {
+		t.Fatalf("expected cloud access status error, got: %s", line)
+	}
+	if !strings.Contains(line, "unauthenticated") {
+		t.Fatalf("expected connect code, got: %s", line)
+	}
+	if count := strings.Count(line, "unauthenticated"); count != 1 {
+		t.Fatalf("expected connect code once, got %d occurrences in: %s", count, line)
+	}
+	if !strings.Contains(line, "unauthenticated: refresh token rejected") {
+		t.Fatalf("expected single code prefix with detail, got: %s", line)
+	}
+	if !strings.Contains(line, "refresh token rejected") {
+		t.Fatalf("expected safe detail, got: %s", line)
+	}
+}
+
+func TestHomeCloudGateAccessErrorRedactsSecrets(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+
+	err := errors.New("request failed: access_token=access-token-123 refresh_token=refresh-token-456 Authorization: Bearer secret-token-123")
+	model, _ := h.Update(cloudAccessMsg{err: err})
+	h = model.(HomeModel)
+
+	line := h.cloudGateLine()
+	if !strings.Contains(line, "[redacted]") {
+		t.Fatalf("expected redacted marker, got: %s", line)
+	}
+	for _, secret := range []string{"access-token-123", "refresh-token-456", "secret-token-123"} {
+		if strings.Contains(line, secret) {
+			t.Fatalf("rendered secret %q in line: %s", secret, line)
+		}
 	}
 }
 
@@ -969,6 +1055,55 @@ func TestHomeViewShowsCloudDiscoveryWithActiveSessions(t *testing.T) {
 	separator := content[menuIdx:promptIdx]
 	if !strings.Contains(separator, "\n") || strings.Contains(separator, "\n\n") {
 		t.Fatalf("home view should leave one newline between bottom menu and cloud prompt; got: %q", content)
+	}
+}
+
+func TestHomeViewHidesCloudDiscoveryWhenOfferHiddenInSettings(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = now
+	settings.BossCloudGuestOfferHidden = true
+
+	h := HomeModel{
+		ctx:       context.Background(),
+		authMgr:   &auth.Manager{},
+		repoCount: 1,
+		loading:   false,
+		loggedIn:  false,
+		sessions:  []*pb.Session{{Id: "sess-1", Title: "Active work"}},
+		settings:  settings,
+		startedAt: now,
+		now:       func() time.Time { return now },
+	}
+	h.buildTableRows()
+
+	content := h.View().Content
+	if strings.Contains(content, "Bossanova Cloud") {
+		t.Fatalf("home view showed cloud discovery despite settings hide flag: %q", content)
+	}
+}
+
+func TestHomeViewHidesCloudDiscoveryAfterSessionLimit(t *testing.T) {
+	startedAt := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = startedAt
+
+	h := HomeModel{
+		ctx:       context.Background(),
+		authMgr:   &auth.Manager{},
+		repoCount: 1,
+		loading:   false,
+		loggedIn:  false,
+		sessions:  []*pb.Session{{Id: "sess-1", Title: "Active work"}},
+		settings:  settings,
+		startedAt: startedAt,
+		now:       func() time.Time { return startedAt.Add(cloudGuestOfferSessionLimit + time.Second) },
+	}
+	h.buildTableRows()
+
+	content := h.View().Content
+	if strings.Contains(content, "Bossanova Cloud") {
+		t.Fatalf("home view showed cloud discovery after session limit: %q", content)
 	}
 }
 

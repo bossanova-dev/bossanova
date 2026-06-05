@@ -150,11 +150,11 @@ func (c *repairConfig) cooldownDuration() time.Duration {
 // value reaches maxCooldownDuration. Larger bases therefore hit the cap
 // sooner; for example, base=15 m yields 15 m, 30 m, then 30 m thereafter.
 func cooldownFor(attemptCount int32, base time.Duration) time.Duration {
-	if attemptCount <= 0 {
-		return base
-	}
 	if base <= 0 || base >= maxCooldownDuration {
 		return maxCooldownDuration
+	}
+	if attemptCount <= 0 {
+		return base
 	}
 	const maxShift = 16 // 2^16 is well past the cap for supported bases.
 	shift := int(attemptCount) - 1
@@ -488,8 +488,9 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 	// exponential-backoff gate runs after lookupSession, using the
 	// persisted last_repair_started_at / last_repair_attempt_count so
 	// the schedule survives daemon restarts. The base cooldown is also
-	// the floor that the exponential is built from.
-	baseCooldown := m.config.cooldownDuration()
+	// the floor that the exponential is built from, capped to match the
+	// persisted cooldown path below.
+	baseCooldown := cooldownFor(0, m.config.cooldownDuration())
 	if lastAttempt, ok := m.cooldowns[sessionID]; ok {
 		elapsed := time.Since(lastAttempt)
 		if elapsed < baseCooldown {
@@ -628,8 +629,8 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 
 	// Re-acquire lock to mark as repairing and re-check every guard. The
 	// world may have moved while we were doing RPCs without the lock:
-	// StartWorkflow could have swapped m.config (so cooldownDuration must be
-	// re-read, not reused), Cancel/Pause could have flipped stopped/paused,
+	// StartWorkflow could have swapped m.config (so the capped base cooldown
+	// must be re-read, not reused), Cancel/Pause could have flipped stopped/paused,
 	// another goroutine could have started repairing this session, and a
 	// previous repair could have written lastAttemptCommit. Folding the
 	// commit check into this same critical section keeps the
@@ -639,7 +640,7 @@ func (m *repairMonitor) maybeRepair(sessionID string, displayStatus bossanovav1.
 		m.mu.Unlock()
 		return
 	}
-	if lastAttempt, ok := m.cooldowns[sessionID]; ok && time.Since(lastAttempt) < m.config.cooldownDuration() {
+	if lastAttempt, ok := m.cooldowns[sessionID]; ok && time.Since(lastAttempt) < cooldownFor(0, m.config.cooldownDuration()) {
 		m.mu.Unlock()
 		return
 	}
@@ -1230,11 +1231,12 @@ func (m *repairMonitor) periodicSweep(ctx context.Context) {
 	}
 }
 
-func repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason string, replaceExistingObservedLastChatActivityAt time.Time) *bossanovav1.StartChatRunHostRequest {
+func repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason string, replaceExistingObservedLastChatActivityAt time.Time, resumeAgentSessionID string) *bossanovav1.StartChatRunHostRequest {
 	req := &bossanovav1.StartChatRunHostRequest{
-		SessionId: sessionID,
-		Command:   repairCommand,
-		Title:     "Repair: " + sessionName,
+		SessionId:            sessionID,
+		Command:              repairCommand,
+		Title:                "Repair: " + sessionName,
+		ResumeAgentSessionId: resumeAgentSessionID,
 	}
 	if replaceExistingReason != "" {
 		req.ReplaceExistingChat = true
@@ -1307,6 +1309,16 @@ func (m *repairMonitor) repairSession(
 	currentReviewFingerprint := reviewFingerprint
 	currentReviewFingerprintAvailable := reviewFingerprintAvailable
 
+	// resumeAgentSessionID carries the agent session started by the previous
+	// loop iteration into the next one, so each repair attempt resumes (claude
+	// `--resume`) the same conversation and the agent remembers what it already
+	// tried. The first attempt starts fresh (empty). Resume targets are always
+	// intra-repairSession: a daemon restart kills this goroutine and the next
+	// repairSession starts at attempt 1 with an empty target, so claude's local
+	// session storage always still contains the target. Cross-restart resume is
+	// intentionally never attempted.
+	resumeAgentSessionID := ""
+
 	for attempt := 1; attempt <= maxRepairLoopAttempts; attempt++ {
 		m.mu.Lock()
 		stopped, paused := m.stopped, m.paused
@@ -1320,7 +1332,7 @@ func (m *repairMonitor) repairSession(
 			return
 		}
 
-		if ok := m.runRepairAttempt(
+		nextResumeAgentSessionID, ok := m.runRepairAttempt(
 			ctx,
 			sessionID,
 			repoName,
@@ -1332,9 +1344,15 @@ func (m *repairMonitor) repairSession(
 			replaceExistingObservedLastChatActivityAt,
 			currentReviewFingerprint,
 			currentReviewFingerprintAvailable,
-		); !ok {
+			resumeAgentSessionID,
+		)
+		if !ok {
 			return
 		}
+		// Next iteration resumes the run we just completed. Providers such as
+		// Codex may return a provider-owned resume id instead of the logical
+		// bossd agent_session_id.
+		resumeAgentSessionID = nextResumeAgentSessionID
 
 		assessment := m.waitForPostRepairAssessment(
 			ctx,
@@ -1435,7 +1453,8 @@ func (m *repairMonitor) runRepairAttempt(
 	replaceExistingObservedLastChatActivityAt time.Time,
 	reviewFingerprint string,
 	reviewFingerprintAvailable bool,
-) bool {
+	resumeAgentSessionID string,
+) (string, bool) {
 	log := m.logger.With().
 		Str("session_id", sessionID).
 		Str("session_name", sessionName).
@@ -1512,7 +1531,7 @@ func (m *repairMonitor) runRepairAttempt(
 		Bool("has_failures", hasFailures).
 		Msg("starting repair attempt")
 
-	startResp, err := m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt))
+	startResp, err := m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt, resumeAgentSessionID))
 	if err != nil {
 		if grpcstatus.Code(err) == codes.AlreadyExists {
 			staleAgentSessionID := agentSessionIDFromAlreadyExists(err)
@@ -1520,7 +1539,7 @@ func (m *repairMonitor) runRepairAttempt(
 				// Soft skip — another instance owns this run, do not record an
 				// outcome here (the winner's deferred cleanup will).
 				log.Info().Err(err).Msg("another repair run is active, skipping repair")
-				return false
+				return "", false
 			}
 			reclaimResp, reclaimErr := m.host.ReclaimRepairChat(ctx, &bossanovav1.ReclaimRepairChatHostRequest{
 				SessionId:      sessionID,
@@ -1531,7 +1550,7 @@ func (m *repairMonitor) runRepairAttempt(
 				log.Info().Err(reclaimErr).
 					Str("stale_agent_session_id", staleAgentSessionID).
 					Msg("repair chat reclaim failed, skipping repair")
-				return false
+				return "", false
 			}
 			log.Info().
 				Str("stale_agent_session_id", staleAgentSessionID).
@@ -1539,16 +1558,16 @@ func (m *repairMonitor) runRepairAttempt(
 				Str("tmux_session_name", reclaimResp.GetTmuxSessionName()).
 				Msg("reclaimed stale repair chat, retrying repair")
 
-			startResp, err = m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt))
+			startResp, err = m.host.StartChatRun(ctx, repairStartChatRunRequest(sessionID, sessionName, replaceExistingReason, replaceExistingObservedLastChatActivityAt, resumeAgentSessionID))
 			if err != nil {
 				if grpcstatus.Code(err) == codes.AlreadyExists {
 					log.Info().Err(err).Msg("another repair run is active after reclaim, skipping repair")
-					return false
+					return "", false
 				}
 				outcomeRunnerError = err.Error()
 				outcomeShouldRecord = true
 				log.Error().Err(err).Msg("failed to start repair chat run after reclaim")
-				return false
+				return "", false
 			}
 		} else {
 			// Daemon-side StartChatRun refusal (eg. "claude not on PATH",
@@ -1557,7 +1576,7 @@ func (m *repairMonitor) runRepairAttempt(
 			outcomeRunnerError = err.Error()
 			outcomeShouldRecord = true
 			log.Error().Err(err).Msg("failed to start repair chat run")
-			return false
+			return "", false
 		}
 	}
 	runOwned = true
@@ -1590,7 +1609,7 @@ func (m *repairMonitor) runRepairAttempt(
 		// status field.
 		outcomeRunnerError = "wait for repair run failed: " + waitErr.Error()
 		log.Error().Err(waitErr).Msg("wait for repair run failed")
-		return false
+		return "", false
 	}
 	if exitErr := waitResp.GetExitError(); exitErr != "" {
 		outcomeExitError = exitErr
@@ -1600,13 +1619,14 @@ func (m *repairMonitor) runRepairAttempt(
 			// not rerun the same head/status forever for those failures.
 			attemptRan = true
 		}
-		return false
+		return "", false
 	}
 	// The chat reported clean completion. Do not rerun the same head/status
 	// forever after a successful repair attempt.
 	attemptRan = true
 
 	log.Info().Msg("repair attempt completed successfully")
+	nextResumeAgentSessionID := repairResumeSessionID(agentSessionID, waitResp)
 
 	// FIX_COMPLETE is only valid in FIXING_CHECKS; in other states the
 	// next polling cycle handles the transition. With CreateWorkflow gone
@@ -1614,7 +1634,7 @@ func (m *repairMonitor) runRepairAttempt(
 	sessionsResp, err := m.host.ListSessions(cleanupCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("post-repair ListSessions failed; polling will handle transition")
-		return true
+		return nextResumeAgentSessionID, true
 	}
 	var st bossanovav1.SessionState
 	for _, s := range sessionsResp.GetSessions() {
@@ -1633,5 +1653,15 @@ func (m *repairMonitor) runRepairAttempt(
 	} else {
 		log.Debug().Str("state", st.String()).Msg("not in fixing_checks, skipping FixComplete")
 	}
-	return true
+	return nextResumeAgentSessionID, true
+}
+
+func repairResumeSessionID(agentSessionID string, waitResp *bossanovav1.WaitChatRunHostResponse) string {
+	// WaitChatRun discovers and persists provider-owned ids for agents such as
+	// Codex before returning; fallback only applies to agents that resume by the
+	// logical bossd agent_session_id or when discovery could not find a match.
+	if waitResp != nil && waitResp.GetProviderSessionId() != "" {
+		return waitResp.GetProviderSessionId()
+	}
+	return agentSessionID
 }

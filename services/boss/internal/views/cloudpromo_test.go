@@ -4,6 +4,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/recurser/bossalib/config"
 )
 
 func TestCloudDiscoveryLine(t *testing.T) {
@@ -48,5 +51,63 @@ func TestSettingsViewHidesCloudBlockWithoutAuth(t *testing.T) {
 	view := m.View().Content
 	if strings.Contains(view, "press [l]ogin from Home") {
 		t.Fatalf("settings view showed cloud login prompt without auth configured: %q", view)
+	}
+}
+
+func TestCloudGuestOfferVisiblePolicy(t *testing.T) {
+	installedAt := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	sessionStartedAt := installedAt.Add(10 * time.Second)
+	now := sessionStartedAt.Add(30 * time.Second)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = installedAt
+
+	if !cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
+		t.Fatal("cloudGuestOfferVisible = false, want true for eligible guest")
+	}
+}
+
+func TestCloudGuestOfferHiddenByManualSetting(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = now
+	settings.BossCloudGuestOfferHidden = true
+
+	if cloudGuestOfferVisible(settings, now, now, false, true) {
+		t.Fatal("cloudGuestOfferVisible = true, want false when manually hidden")
+	}
+}
+
+func TestCloudGuestOfferHiddenAfterSessionLimit(t *testing.T) {
+	installedAt := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	sessionStartedAt := installedAt
+	now := sessionStartedAt.Add(cloudGuestOfferSessionLimit + time.Second)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = installedAt
+
+	if cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
+		t.Fatal("cloudGuestOfferVisible = true, want false after session limit")
+	}
+}
+
+func TestCloudGuestOfferHiddenAfterInstallLimit(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = now.Add(-cloudGuestOfferInstallLimit)
+
+	if cloudGuestOfferVisible(settings, now, now, false, true) {
+		t.Fatal("cloudGuestOfferVisible = true, want false after install limit")
+	}
+}
+
+func TestCloudGuestOfferHiddenWhenLoggedInOrAuthUnavailable(t *testing.T) {
+	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = now
+
+	if cloudGuestOfferVisible(settings, now, now, true, true) {
+		t.Fatal("cloudGuestOfferVisible = true, want false for logged-in user")
+	}
+	if cloudGuestOfferVisible(settings, now, now, false, false) {
+		t.Fatal("cloudGuestOfferVisible = true, want false without auth configured")
 	}
 }

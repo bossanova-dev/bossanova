@@ -20,7 +20,7 @@ description: End-of-session workflow ensuring all work is committed and pushed. 
 | 3   | **PR number in ALL commits**    | Every commit on this branch (compared to the PR base branch) MUST have `[#PR-NUM]` in the message. Check with `git log origin/$BASE_BRANCH..HEAD --oneline`. If ANY commit is missing it, you MUST run the fix script. |
 | 4   | **Commits squashed and tidied** | You MUST squash commits into logical groups and force-push. Do NOT ask for permission — just do it.                                                                                                     |
 | 5   | **GitHub checks not failing**   | After pushing, run `gh pr checks` to verify. Checks may be idle, queued, in_progress, or passing. Any **failing/red** check MUST be investigated and fixed before the session is complete.              |
-| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready` to mark the PR as ready for review. Do NOT leave the PR as a draft.                                                                        |
+| 6   | **PR marked Ready for Review**  | After all checks pass or are non-blocking, run `gh pr ready "$PR_URL"` and verify `gh pr view "$PR_URL" --json isDraft -q .isDraft` returns `false`. Do NOT leave the PR as a draft.                                                                        |
 | 7   | **No merge conflicts**          | Check GitHub for merge conflicts with `gh pr view --json mergeable -q .mergeable`. If `CONFLICTING`, rebase onto the PR base branch and resolve conflicts before completing.                             |
 
 **If you complete without satisfying ALL SIX requirements, you have failed this workflow.**
@@ -274,15 +274,30 @@ gh pr checks
 
 **This step is NON-NEGOTIABLE. You MUST mark the PR as ready for review.**
 
-After checks are passing (or pending/in_progress), mark the PR as ready:
+After checks are passing (or pending/in_progress), mark the PR as ready and verify GitHub actually recorded the state change:
 
 ```bash
-gh pr ready
+PR_URL=$(gh pr view --json url -q .url)
+gh pr ready "$PR_URL"
+
+IS_DRAFT=""
+for attempt in 1 2 3 4 5 6; do
+  IS_DRAFT=$(gh pr view "$PR_URL" --json isDraft -q .isDraft)
+  [ "$IS_DRAFT" = "false" ] && break
+  sleep 5
+done
+
+test "$IS_DRAFT" = "false" || {
+  echo "PR is still draft after gh pr ready: $PR_URL"
+  exit 1
+}
 ```
 
 This converts the PR from draft to ready-for-review status. Do NOT leave the PR as a draft when landing the plane.
 
 **If the PR is already ready for review**, this command is a no-op and safe to run.
+
+**Do NOT treat a successful `gh pr ready` exit alone as sufficient.** The postcondition is `isDraft == false` for the exact PR URL. If verification fails, stop and report the failure instead of completing.
 
 ### Step 6d: Check for Merge Conflicts
 
@@ -348,7 +363,7 @@ Before saying "done", verify ALL items:
 - [ ] Empty "create pull request" commits dropped
 - [ ] `git push` succeeded
 - [ ] GitHub checks are not failing (idle/queued/in_progress/passing are OK)
-- [ ] PR marked as ready for review (`gh pr ready`)
+- [ ] PR marked as ready for review and verified with `gh pr view "$PR_URL" --json isDraft -q .isDraft` → `false`
 - [ ] No merge conflicts (`gh pr view --json mergeable -q .mergeable` → `MERGEABLE`)
 - [ ] Provided handoff with next steps
 
@@ -375,6 +390,7 @@ Before saying "done", verify ALL items:
 | Ignored failing check as "unrelated" | CI still red           | Even if unrelated, inform user and get explicit acknowledgment                                       |
 | Left empty "create PR" commit        | Messy history          | Use `drop` in rebase to remove empty scaffolding commits like `chore: [skip ci] create pull request` |
 | Left PR as draft                     | Not reviewable         | Run `gh pr ready` to mark the PR as ready for review before completing                               |
+| Ran `gh pr ready` but did not verify | Silent no-op possible  | Verify `isDraft == false` for the exact PR URL and fail finalize if GitHub still reports draft       |
 | Left PR with merge conflicts         | PR can't be merged     | Run `gh pr view --json mergeable -q .mergeable`, rebase onto the PR base branch if `CONFLICTING`     |
 
 ---

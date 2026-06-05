@@ -6,6 +6,7 @@ run:
 linters:
   enable:
     - bodyclose
+    - depguard
     - errcheck
     - exhaustive
     - gocritic
@@ -22,6 +23,26 @@ linters:
     - unused
 
   settings:
+    depguard:
+      rules:
+        # Enforce the module boundary documented in CLAUDE.md: out-of-process
+        # plugin binaries must not import host (boss/bossd/bosso) packages. They
+        # talk to the host over gRPC and duplicate small types rather than take a
+        # source dependency. Go's internal/ rule already blocks cross-module
+        # internal imports; this catches the importable (non-internal) host
+        # packages it does not — e.g. bossd/migrations or bosso/migrations.
+        # Scoped to plugin files so host modules linting against this same config
+        # are unaffected.
+        plugins-no-host-imports:
+          files:
+            - "**/plugins/bossd-plugin-*/**"
+          deny:
+            - pkg: github.com/recurser/boss/
+              desc: plugins must not import the boss TUI; communicate over gRPC
+            - pkg: github.com/recurser/bossd/
+              desc: plugins must not import host bossd packages; communicate over gRPC
+            - pkg: github.com/recurser/bosso/
+              desc: plugins must not import host bosso packages; communicate over gRPC
     exhaustive:
       default-signifies-exhaustive: true
     gocritic:

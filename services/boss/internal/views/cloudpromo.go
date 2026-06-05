@@ -1,6 +1,32 @@
 package views
 
-import "charm.land/lipgloss/v2"
+import (
+	"time"
+
+	"charm.land/lipgloss/v2"
+	"github.com/recurser/bossalib/config"
+)
+
+const (
+	cloudGuestOfferSessionLimit = time.Minute
+	cloudGuestOfferInstallLimit = 72 * time.Hour
+)
+
+func cloudGuestOfferVisible(settings config.Settings, now, sessionStartedAt time.Time, loggedIn bool, authConfigured bool) bool {
+	if loggedIn || !authConfigured {
+		return false
+	}
+	if settings.BossCloudGuestOfferHidden {
+		return false
+	}
+	if !settings.InstalledAt.IsZero() && !now.Before(settings.InstalledAt.Add(cloudGuestOfferInstallLimit)) {
+		return false
+	}
+	if !sessionStartedAt.IsZero() && !now.Before(sessionStartedAt.Add(cloudGuestOfferSessionLimit)) {
+		return false
+	}
+	return true
+}
 
 func cloudDiscoveryLine(loggedIn bool, authConfigured bool) string {
 	if loggedIn || !authConfigured {

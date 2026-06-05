@@ -195,6 +195,8 @@ func UserPluginDir() (string, error) {
 type Settings struct {
 	WorktreeBaseDir                string            `json:"worktree_base_dir"`
 	DefaultAgent                   string            `json:"default_agent,omitempty"`
+	InstalledAt                    time.Time         `json:"installed_at,omitzero"`
+	BossCloudGuestOfferHidden      bool              `json:"boss_cloud_guest_offer_hidden,omitempty"`
 	SkillsDeclined                 bool              `json:"skills_declined,omitempty"`
 	SkillsDeclinedByAgent          map[string]bool   `json:"skills_declined_by_agent,omitempty"`
 	SkillsDeclinedManifestByAgent  map[string]string `json:"skills_declined_manifest_by_agent,omitempty"`
@@ -333,6 +335,16 @@ func DefaultSettings() Settings {
 		WorktreeBaseDir: filepath.Join(home, ".bossanova", "worktrees"),
 		DefaultAgent:    "claude",
 	}
+}
+
+// EnsureInstalledAt returns settings with InstalledAt initialized.
+// It reports whether the caller should persist the returned settings.
+func (s Settings) EnsureInstalledAt(now time.Time) (Settings, bool) {
+	if !s.InstalledAt.IsZero() {
+		return s, false
+	}
+	s.InstalledAt = now.UTC()
+	return s, true
 }
 
 // Path returns the default settings file path.

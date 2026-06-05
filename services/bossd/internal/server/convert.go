@@ -178,6 +178,7 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 		Name:          c.Name,
 		Prompt:        c.Prompt,
 		Schedule:      c.Schedule,
+		AgentName:     protoString(c.AgentName),
 		Enabled:       c.Enabled,
 		CreatedAt:     timestamppb.New(c.CreatedAt),
 		UpdatedAt:     timestamppb.New(c.UpdatedAt),

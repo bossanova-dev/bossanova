@@ -977,8 +977,13 @@ type StartChatRunHostRequest struct {
 	// blocking chat was idle. bossd refuses replacement if the current blocking
 	// chat has produced newer output since that snapshot.
 	ReplaceExistingObservedLastChatActivityAt *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=replace_existing_observed_last_chat_activity_at,json=replaceExistingObservedLastChatActivityAt,proto3" json:"replace_existing_observed_last_chat_activity_at,omitempty"`
-	unknownFields                             protoimpl.UnknownFields
-	sizeCache                                 protoimpl.SizeCache
+	// When set, resume this prior agent session (claude `--resume <id>`) instead
+	// of starting a fresh one, so the agent retains the history of earlier
+	// attempts. Used by auto-repair to make each loop iteration continue the
+	// previous iteration's conversation. Empty = fresh start.
+	ResumeAgentSessionId string `protobuf:"bytes,8,opt,name=resume_agent_session_id,json=resumeAgentSessionId,proto3" json:"resume_agent_session_id,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *StartChatRunHostRequest) Reset() {
@@ -1058,6 +1063,13 @@ func (x *StartChatRunHostRequest) GetReplaceExistingObservedLastChatActivityAt()
 		return x.ReplaceExistingObservedLastChatActivityAt
 	}
 	return nil
+}
+
+func (x *StartChatRunHostRequest) GetResumeAgentSessionId() string {
+	if x != nil {
+		return x.ResumeAgentSessionId
+	}
+	return ""
 }
 
 type StartChatRunHostResponse struct {
@@ -1154,9 +1166,12 @@ type WaitChatRunHostResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Empty on clean exit, otherwise the exit error from the hook payload
 	// or a synthetic message when the wait deadline elapsed.
-	ExitError     string `protobuf:"bytes,1,opt,name=exit_error,json=exitError,proto3" json:"exit_error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ExitError string `protobuf:"bytes,1,opt,name=exit_error,json=exitError,proto3" json:"exit_error,omitempty"`
+	// Provider-owned resume/session UUID, when the agent reports one. Empty means
+	// callers should resume using agent_session_id.
+	ProviderSessionId string `protobuf:"bytes,2,opt,name=provider_session_id,json=providerSessionId,proto3" json:"provider_session_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *WaitChatRunHostResponse) Reset() {
@@ -1192,6 +1207,13 @@ func (*WaitChatRunHostResponse) Descriptor() ([]byte, []int) {
 func (x *WaitChatRunHostResponse) GetExitError() string {
 	if x != nil {
 		return x.ExitError
+	}
+	return ""
+}
+
+func (x *WaitChatRunHostResponse) GetProviderSessionId() string {
+	if x != nil {
+		return x.ProviderSessionId
 	}
 	return ""
 }
@@ -1512,7 +1534,7 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"9\n" +
 	"\x18WaitAgentRunHostResponse\x12\x1d\n" +
 	"\n" +
-	"exit_error\x18\x01 \x01(\tR\texitError\"\xec\x02\n" +
+	"exit_error\x18\x01 \x01(\tR\texitError\"\xa3\x03\n" +
 	"\x17StartChatRunHostRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
@@ -1521,14 +1543,16 @@ const file_bossanova_v1_host_service_proto_rawDesc = "" +
 	"\acommand\x18\x04 \x01(\tR\acommand\x122\n" +
 	"\x15replace_existing_chat\x18\x05 \x01(\bR\x13replaceExistingChat\x126\n" +
 	"\x17replace_existing_reason\x18\x06 \x01(\tR\x15replaceExistingReason\x12~\n" +
-	"/replace_existing_observed_last_chat_activity_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR)replaceExistingObservedLastChatActivityAt\"D\n" +
+	"/replace_existing_observed_last_chat_activity_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR)replaceExistingObservedLastChatActivityAt\x125\n" +
+	"\x17resume_agent_session_id\x18\b \x01(\tR\x14resumeAgentSessionId\"D\n" +
 	"\x18StartChatRunHostResponse\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"B\n" +
 	"\x16WaitChatRunHostRequest\x12(\n" +
-	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"8\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"h\n" +
 	"\x17WaitChatRunHostResponse\x12\x1d\n" +
 	"\n" +
-	"exit_error\x18\x01 \x01(\tR\texitError\"\x7f\n" +
+	"exit_error\x18\x01 \x01(\tR\texitError\x12.\n" +
+	"\x13provider_session_id\x18\x02 \x01(\tR\x11providerSessionId\"\x7f\n" +
 	"\x1cReclaimRepairChatHostRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +

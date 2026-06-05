@@ -393,6 +393,7 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, st
 		Title:      job.Name,
 		Plan:       job.Prompt,
 		BaseBranch: repo.DefaultBaseBranch,
+		AgentName:  job.AgentName,
 		// Per-fire branch name. Without this, every fire of the same cron
 		// job tries to create the same branch (e.g. cron-test) and the
 		// second fire trips ErrBranchExists once the first run's branch

@@ -285,6 +285,21 @@ func TestConstructPRURL_Boundaries(t *testing.T) {
 			want:      "https://host/owner/repo/pull/4",
 		},
 		{
+			// at == 0 on the *full-URL* user@ strip (url.go:143), reached via a
+			// protocol prefix rather than SSH shorthand. "ssh://@host/..." has an
+			// empty user, so after stripping "ssh://" the path starts with "@".
+			// The SSH-shorthand branch (line 130) is skipped because the byte
+			// after the first ":" is "/", so the user@ strip must happen at the
+			// full-URL guard on line 143 — a path the SSH-shorthand cases above
+			// (which strip at line 133) never reach with at == 0.
+			// Catches CONDITIONALS_BOUNDARY at url.go:143: `at >= 0` → `at > 0`
+			// would leave the leading "@" in the host ("@github.com").
+			name:      "full url empty user leading @",
+			originURL: "ssh://@github.com/owner/repo.git",
+			prNumber:  3,
+			want:      "https://github.com/owner/repo/pull/3",
+		},
+		{
 			// "https://" — the colon is at idx=5, but s[6]='/', so SSH branch
 			// must NOT be taken. This ensures the `s[idx+1] != '/'` guard
 			// works; without it, we'd misparse https URLs as SSH.
@@ -368,6 +383,14 @@ func TestParseOriginURL_Boundaries(t *testing.T) {
 		{"ssh shorthand leading at", "@host:owner/repo.git", "host", "owner/repo"},
 		// Negation/other side: no "@" (at == -1) leaves the host untouched.
 		{"ssh shorthand no at", "myhost:owner/repo.git", "myhost", "owner/repo"},
+		// A *doubled* "@" in the SSH host pins url.go:133 on its own. The single
+		// leading-"@" case above can't: the full-URL user@ strip on line 143 also
+		// removes one leading "@", so a mutant that skips line 133 (`at > 0` or
+		// `at < 0`) still looks correct there. With "@git@host" the host region
+		// holds two "@": line 133 must strip the outer one so line 143 can strip
+		// the inner "git@" and leave "host". A line-133 mutant leaves "@git@host",
+		// line 143 strips only the outer "@", and the host parses as "git@host".
+		{"ssh shorthand double at", "@git@host:owner/repo.git", "host", "owner/repo"},
 
 		// url.go:143 first comparison `at >= 0` for full URLs after protocol
 		// strip (CONDITIONALS_BOUNDARY `>=` → `>`).

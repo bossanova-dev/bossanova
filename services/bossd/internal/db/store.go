@@ -253,12 +253,13 @@ type WorkflowStore interface {
 
 // CreateCronJobParams holds the parameters for creating a new cron job.
 type CreateCronJobParams struct {
-	RepoID   string
-	Name     string
-	Prompt   string
-	Schedule string
-	Timezone *string
-	Enabled  bool
+	RepoID    string
+	Name      string
+	Prompt    string
+	Schedule  string
+	Timezone  *string
+	AgentName string // Agent plugin name; empty falls back to "claude".
+	Enabled   bool
 }
 
 // UpdateCronJobParams holds the fields that can be updated on a cron job.
@@ -268,6 +269,7 @@ type UpdateCronJobParams struct {
 	Prompt    *string
 	Schedule  *string
 	Timezone  **string // double pointer: nil = don't update, *nil = set to NULL
+	AgentName *string
 	Enabled   *bool
 	NextRunAt **time.Time // double pointer: nil = don't update, *nil = clear
 }

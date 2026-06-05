@@ -44,6 +44,11 @@ func TestPathToProjectKey(t *testing.T) {
 			path: "/Users/dave/Documents/Code/bossanova",
 			want: "-Users-dave-Documents-Code-bossanova",
 		},
+		{
+			name: "windows path",
+			path: `C:\Users\dave\Code\.worktrees\foo`,
+			want: "C--Users-dave-Code--worktrees-foo",
+		},
 	}
 
 	for _, tt := range tests {

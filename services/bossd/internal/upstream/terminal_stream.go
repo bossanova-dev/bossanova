@@ -257,8 +257,9 @@ type TerminalStreamClient struct {
 
 	// attaches is the per-stream multiplex map. Reset on every reconnect —
 	// attach_ids are bosso-scoped and not portable across stream incarnations.
-	mu       sync.Mutex
-	attaches map[string]*activeAttach
+	mu            sync.Mutex
+	attaches      map[string]*activeAttach
+	streamClosing bool
 }
 
 // activeAttach is the per-attach bookkeeping the client maintains while a
@@ -397,6 +398,13 @@ func (c *TerminalStreamClient) Run(ctx context.Context) error {
 			c.closeAllAttaches()
 			return nil
 		}
+		if c.authState != nil && c.authState.NeedsLogin() {
+			// openStream returned because logout cancelled the inner
+			// streamCtx. That is an intentional pause, not a stream
+			// failure, so skip the reconnect warning/backoff and loop
+			// straight to the NeedsLogin gate above.
+			continue
+		}
 		// Treat any stream that lived >= terminalStreamHealthyDuration as a
 		// successful connection: any error after that is a transient drop,
 		// not a sick bosso, so the next reconnect should start from the
@@ -451,7 +459,14 @@ func (c *TerminalStreamClient) Run(ctx context.Context) error {
 // torn down.
 func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	c.mu.Lock()
+	c.streamClosing = false
+	c.mu.Unlock()
+	authWatchDone := c.closeAttachesThenCancelOnNeedsLogin(streamCtx, cancel)
+	defer func() {
+		cancel()
+		<-authWatchDone
+	}()
 
 	stream := c.opener.TerminalStream(streamCtx)
 
@@ -475,21 +490,40 @@ func (c *TerminalStreamClient) openStream(ctx context.Context) error {
 	})
 
 	readErr := c.runReader(streamCtx, stream, outbound)
+	readCtxErr := streamCtx.Err()
 
-	// Tear down attaches BEFORE cancelling the streamCtx so per-attach
-	// pumps can drain their final Exited frame onto outbound (where it
-	// is dropped — the writer is still alive but the stream side has
-	// errored). Order is: closeAllAttaches → cancel → close(outbound) →
-	// wait for writer.
-	c.closeAllAttaches()
+	// Tear down attaches in phases. TerminalAttach.Close must run before
+	// streamCtx cancellation so PTYs are not leaked, but streamCtx cancellation
+	// must happen before waiting on attach pumps so any pump blocked on outbound
+	// can observe ctx.Done. Only close outbound after every attach producer is
+	// done, then wait for the single writer.
+	states := c.closeActiveAttaches()
 	cancel()
+	c.cancelAndWaitAttaches(states)
+	<-authWatchDone
 	close(outbound)
 	<-writerDone
 
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		return readErr
 	}
+	if readCtxErr != nil {
+		return readCtxErr
+	}
 	return nil
+}
+
+// closeAttachesThenCancelOnNeedsLogin watches for logout and, when it
+// fires, tears the active attaches down in the load-bearing order (Close
+// each attach before cancelling streamCtx, then join the pumps) so PTYs
+// are not leaked — see openStream's teardown comment. The bare cancel that
+// the daemon stream uses would skip the attach Close and leak terminals.
+func (c *TerminalStreamClient) closeAttachesThenCancelOnNeedsLogin(ctx context.Context, cancel context.CancelFunc) <-chan struct{} {
+	return watchNeedsLogin(ctx, c.authState, func() {
+		states := c.closeActiveAttaches()
+		cancel()
+		c.cancelAndWaitAttaches(states)
+	})
 }
 
 // runWriter drains outbound onto the stream. Returns when outbound is
@@ -619,24 +653,40 @@ func (c *TerminalStreamClient) handleAttach(ctx context.Context, cmd *pb.Termina
 		cancel:      cancel,
 	}
 
+	pumpStart := make(chan struct{})
+	// safego.Go gives us panic recovery + a done channel for the teardown
+	// path; assign done before publishing state so logout teardown can never
+	// snapshot a partially initialized activeAttach. Gate the pump until after
+	// the attach is in c.attaches so a fast-exiting attach can still remove
+	// itself from the map.
+	state.done = safego.Go(c.logger, func() {
+		<-pumpStart
+		c.runAttachPump(attachCtx, state, outbound)
+	})
+
 	c.mu.Lock()
+	if c.streamClosing || attachCtx.Err() != nil {
+		c.mu.Unlock()
+		_ = attach.Close()
+		cancel()
+		close(pumpStart)
+		<-state.done
+		return
+	}
 	if _, exists := c.attaches[attachID]; exists {
 		// Race: a concurrent attach with the same id beat us here. Tear
 		// down our newly-spawned PTY and bail.
 		c.mu.Unlock()
-		cancel()
 		_ = attach.Close()
+		cancel()
+		close(pumpStart)
+		<-state.done
 		c.logger.Warn().Str("attach_id", attachID).Msg("terminal stream: lost duplicate-attach race; dropping")
 		return
 	}
 	c.attaches[attachID] = state
 	c.mu.Unlock()
-
-	// safego.Go gives us panic recovery + a done channel for the teardown
-	// path; reuse the channel it returns rather than allocating our own.
-	state.done = safego.Go(c.logger, func() {
-		c.runAttachPump(attachCtx, state, outbound)
-	})
+	close(pumpStart)
 }
 
 // runAttachPump fans Output() and Exited() onto the per-stream outbound
@@ -765,16 +815,15 @@ func (c *TerminalStreamClient) lookupAttach(attachID string) *activeAttach {
 	return c.attaches[attachID]
 }
 
-// closeAllAttaches tears down every active attach. Called on stream error
-// and on context cancellation. We snapshot the map BEFORE cancelling any
-// attach contexts, otherwise the per-attach pump's defer (which removes
-// itself from the map) would race openStream's teardown: a pump that
-// observed ctx.Done first would clear the map before closeAllAttaches
-// could see it, and the underlying TerminalAttach would never get
-// Close()'d on the daemon side. Waiting on done at the end serialises
-// goroutine shutdown so a subsequent reconnect starts from a clean slate.
-func (c *TerminalStreamClient) closeAllAttaches() {
+// closeActiveAttaches snapshots and removes every active attach, then calls
+// TerminalAttach.Close on each one before any caller-triggered context
+// cancellation. Snapshotting first prevents attach pumps that observe
+// cancellation from removing themselves before teardown can Close the
+// underlying PTY. Marking the stream as closing under the same lock prevents
+// handleAttach from publishing a just-spawned attach after this snapshot.
+func (c *TerminalStreamClient) closeActiveAttaches() []*activeAttach {
 	c.mu.Lock()
+	c.streamClosing = true
 	states := make([]*activeAttach, 0, len(c.attaches))
 	for _, s := range c.attaches {
 		states = append(states, s)
@@ -789,11 +838,24 @@ func (c *TerminalStreamClient) closeAllAttaches() {
 		if err := s.attach.Close(); err != nil {
 			c.logger.Debug().Err(err).Str("attach_id", s.id).Msg("terminal stream: attach close returned error during teardown")
 		}
+	}
+	return states
+}
+
+func (c *TerminalStreamClient) cancelAndWaitAttaches(states []*activeAttach) {
+	for _, s := range states {
 		s.cancel()
 	}
 	for _, s := range states {
 		<-s.done
 	}
+}
+
+// closeAllAttaches tears down every active attach. Called on stream error
+// and on context cancellation. Waiting on done at the end serialises
+// goroutine shutdown so a subsequent reconnect starts from a clean slate.
+func (c *TerminalStreamClient) closeAllAttaches() {
+	c.cancelAndWaitAttaches(c.closeActiveAttaches())
 }
 
 // sendServerMessage pushes a message onto the outbound channel, respecting

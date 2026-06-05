@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -17,6 +20,8 @@ import (
 // --- reconcile-specific mock VCS provider ---
 
 type reconcileMockProvider struct {
+	mu sync.Mutex
+
 	openPRs   map[string][]vcs.PRSummary // keyed by originURL
 	closedPRs map[string][]vcs.PRSummary
 	openErr   map[string]error
@@ -24,6 +29,9 @@ type reconcileMockProvider struct {
 
 	listOpenCalls   []string
 	listClosedCalls []string
+	openDelay       time.Duration
+	openInFlight    int
+	maxOpenInFlight int
 }
 
 func newReconcileMockProvider() *reconcileMockProvider {
@@ -35,15 +43,42 @@ func newReconcileMockProvider() *reconcileMockProvider {
 	}
 }
 
-func (m *reconcileMockProvider) ListOpenPRs(_ context.Context, repoPath string) ([]vcs.PRSummary, error) {
+func (m *reconcileMockProvider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	m.mu.Lock()
 	m.listOpenCalls = append(m.listOpenCalls, repoPath)
-	if err := m.openErr[repoPath]; err != nil {
+	m.openInFlight++
+	if m.openInFlight > m.maxOpenInFlight {
+		m.maxOpenInFlight = m.openInFlight
+	}
+	delay := m.openDelay
+	err := m.openErr[repoPath]
+	prs := m.openPRs[repoPath]
+	m.mu.Unlock()
+
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			m.mu.Lock()
+			m.openInFlight--
+			m.mu.Unlock()
+			return nil, ctx.Err()
+		}
+	}
+
+	m.mu.Lock()
+	m.openInFlight--
+	m.mu.Unlock()
+
+	if err != nil {
 		return nil, err
 	}
-	return m.openPRs[repoPath], nil
+	return prs, nil
 }
 
 func (m *reconcileMockProvider) ListClosedPRs(_ context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.listClosedCalls = append(m.listClosedCalls, repoPath)
 	if err := m.closedErr[repoPath]; err != nil {
 		return nil, err
@@ -120,7 +155,7 @@ func (m *reconcileMockSessionStore) List(_ context.Context, _ string) ([]*models
 func (m *reconcileMockSessionStore) ListActive(_ context.Context, repoID string) ([]*models.Session, error) {
 	var result []*models.Session
 	for _, s := range m.sessions {
-		if s.RepoID == repoID {
+		if s.ArchivedAt == nil && (repoID == "" || s.RepoID == repoID) {
 			result = append(result, s)
 		}
 	}
@@ -130,7 +165,7 @@ func (m *reconcileMockSessionStore) ListActive(_ context.Context, repoID string)
 func (m *reconcileMockSessionStore) ListActiveWithRepo(_ context.Context, repoID string) ([]*db.SessionWithRepo, error) {
 	var result []*db.SessionWithRepo
 	for _, s := range m.sessions {
-		if repoID == "" || s.RepoID == repoID {
+		if s.ArchivedAt == nil && (repoID == "" || s.RepoID == repoID) {
 			result = append(result, &db.SessionWithRepo{Session: s})
 		}
 	}
@@ -148,7 +183,13 @@ func (m *reconcileMockSessionStore) ListWithRepo(_ context.Context, repoID strin
 }
 
 func (m *reconcileMockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
-	return nil, nil
+	var result []*models.Session
+	for _, s := range m.sessions {
+		if s.ArchivedAt != nil {
+			result = append(result, s)
+		}
+	}
+	return result, nil
 }
 
 func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
@@ -236,6 +277,108 @@ func TestReconcilePRAssociations_NoOrphanedSessions(t *testing.T) {
 	}
 }
 
+func TestPRAssociationResolver_ReconcileSessionsScopesToSuppliedSessions(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo-one",
+	}
+	repos.repos["repo-2"] = &models.Repo{
+		ID:        "repo-2",
+		OriginURL: "https://github.com/owner/repo-two",
+	}
+
+	visible := &models.Session{
+		ID:         "sess-visible",
+		RepoID:     "repo-1",
+		BranchName: "feature-visible",
+		State:      machine.AwaitingChecks,
+	}
+	unlisted := &models.Session{
+		ID:         "sess-unlisted",
+		RepoID:     "repo-2",
+		BranchName: "feature-unlisted",
+		State:      machine.AwaitingChecks,
+	}
+	sessions.addSession(visible)
+	sessions.addSession(unlisted)
+
+	provider.openPRs["https://github.com/owner/repo-one"] = []vcs.PRSummary{{
+		Number:     11,
+		HeadBranch: "feature-visible",
+		State:      vcs.PRStateOpen,
+	}}
+	provider.openPRs["https://github.com/owner/repo-two"] = []vcs.PRSummary{{
+		Number:     22,
+		HeadBranch: "feature-unlisted",
+		State:      vcs.PRStateOpen,
+	}}
+
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	updated, err := resolver.ReconcileSessions(ctx, []*models.Session{visible})
+	if err != nil {
+		t.Fatalf("ReconcileSessions: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("updated = %d, want 1", updated)
+	}
+	if visible.PRNumber == nil || *visible.PRNumber != 11 {
+		t.Fatalf("visible PRNumber = %v, want 11", visible.PRNumber)
+	}
+	if unlisted.PRNumber != nil {
+		t.Fatalf("unlisted PRNumber = %v, want nil", *unlisted.PRNumber)
+	}
+	if got, want := strings.Join(provider.listOpenCalls, ","), "https://github.com/owner/repo-one"; got != want {
+		t.Fatalf("ListOpenPRs calls = %q, want %q", got, want)
+	}
+}
+
+func TestPRAssociationResolver_ReconcileSessionsSkipsArchived(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo",
+	}
+
+	archivedAt := time.Now()
+	archived := &models.Session{
+		ID:         "sess-archived",
+		RepoID:     "repo-1",
+		BranchName: "feature-archived",
+		State:      machine.AwaitingChecks,
+		ArchivedAt: &archivedAt,
+	}
+	sessions.addSession(archived)
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{{
+		Number:     33,
+		HeadBranch: "feature-archived",
+		State:      vcs.PRStateOpen,
+	}}
+
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	updated, err := resolver.ReconcileSessions(ctx, []*models.Session{archived})
+	if err != nil {
+		t.Fatalf("ReconcileSessions: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("updated = %d, want 0", updated)
+	}
+	if archived.PRNumber != nil {
+		t.Fatalf("archived PRNumber = %v, want nil", *archived.PRNumber)
+	}
+	if len(provider.listOpenCalls) != 0 {
+		t.Fatalf("ListOpenPRs calls = %v, want none", provider.listOpenCalls)
+	}
+}
+
 func TestReconcilePRAssociations_MatchOpenPR(t *testing.T) {
 	sessions := newReconcileMockSessionStore()
 	repos := newMockRepoStore()
@@ -271,6 +414,229 @@ func TestReconcilePRAssociations_MatchOpenPR(t *testing.T) {
 	}
 	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Fatalf("expected PR URL, got %v", sess.PRURL)
+	}
+}
+
+func TestPRAssociationResolver_ReusesOpenPRCacheWithinTTL(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo",
+	}
+
+	sessions.addSession(&models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.AwaitingChecks,
+	})
+	sessions.addSession(&models.Session{
+		ID:         "sess-2",
+		RepoID:     "repo-1",
+		BranchName: "feature-y",
+		State:      machine.AwaitingChecks,
+	})
+
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 42, HeadBranch: "feature-x", State: vcs.PRStateOpen},
+	}
+
+	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	resolver.SetTTLForTest(time.Minute)
+	resolver.SetNowForTest(func() time.Time { return now })
+
+	updated, err := resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("expected 1 updated, got %d", updated)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("expected 1 ListOpenPRs call, got %d", len(provider.listOpenCalls))
+	}
+	if len(provider.listClosedCalls) != 0 {
+		t.Fatalf("expected no ListClosedPRs calls, got %d", len(provider.listClosedCalls))
+	}
+
+	updated, err = resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("expected 0 updated, got %d", updated)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("expected cached open PRs to be reused, got %d ListOpenPRs calls", len(provider.listOpenCalls))
+	}
+	if len(provider.listClosedCalls) != 0 {
+		t.Fatalf("expected no ListClosedPRs calls, got %d", len(provider.listClosedCalls))
+	}
+}
+
+func TestPRAssociationResolver_DoesNotHoldCacheLockDuringProviderCalls(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+	provider.openDelay = 50 * time.Millisecond
+
+	first := &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-x",
+		State:      machine.AwaitingChecks,
+	}
+	second := &models.Session{
+		ID:         "sess-2",
+		RepoID:     "repo-2",
+		BranchName: "feature-y",
+		State:      machine.AwaitingChecks,
+	}
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo-1",
+	}
+	repos.repos["repo-2"] = &models.Repo{
+		ID:        "repo-2",
+		OriginURL: "https://github.com/owner/repo-2",
+	}
+
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+
+	var wg sync.WaitGroup
+	for _, sess := range []*models.Session{first, second} {
+		wg.Add(1)
+		go func(sess *models.Session) {
+			defer wg.Done()
+			<-start
+			_, err := resolver.ReconcileSessions(ctx, []*models.Session{sess})
+			errs <- err
+		}(sess)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("ReconcileSessions: %v", err)
+		}
+	}
+	if provider.maxOpenInFlight < 2 {
+		t.Fatalf("max concurrent ListOpenPRs calls = %d, want at least 2", provider.maxOpenInFlight)
+	}
+}
+
+func TestPRAssociationResolver_RefreshesOpenPRCacheAfterTTL(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo",
+	}
+
+	sessions.addSession(&models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-y",
+		State:      machine.AwaitingChecks,
+	})
+
+	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	resolver.SetTTLForTest(time.Minute)
+	resolver.SetNowForTest(func() time.Time { return now })
+
+	updated, err := resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("expected 0 updated, got %d", updated)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("expected 1 ListOpenPRs call, got %d", len(provider.listOpenCalls))
+	}
+
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 43, HeadBranch: "feature-y", State: vcs.PRStateOpen},
+	}
+	now = now.Add(time.Minute + time.Second)
+
+	updated, err = resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("expected 1 updated, got %d", updated)
+	}
+	if len(provider.listOpenCalls) != 2 {
+		t.Fatalf("expected open PR cache refresh, got %d ListOpenPRs calls", len(provider.listOpenCalls))
+	}
+	if len(provider.listClosedCalls) != 0 {
+		t.Fatalf("expected no ListClosedPRs calls, got %d", len(provider.listClosedCalls))
+	}
+
+	sess := sessions.sessions["sess-1"]
+	if sess.PRNumber == nil || *sess.PRNumber != 43 {
+		t.Fatalf("expected PRNumber=43, got %v", sess.PRNumber)
+	}
+}
+
+func TestPRAssociationResolver_DoesNotMatchClosedPR(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo",
+	}
+
+	sessions.addSession(&models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		BranchName: "feature-closed",
+		State:      machine.AwaitingChecks,
+	})
+
+	provider.closedPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 99, HeadBranch: "feature-closed", State: vcs.PRStateClosed},
+	}
+
+	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	resolver.SetTTLForTest(time.Minute)
+	resolver.SetNowForTest(func() time.Time { return now })
+
+	updated, err := resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("expected 0 updated, got %d", updated)
+	}
+	if sessions.sessions["sess-1"].PRNumber != nil {
+		t.Fatalf("expected PRNumber=nil for closed-only match, got %v", sessions.sessions["sess-1"].PRNumber)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("expected 1 ListOpenPRs call, got %d", len(provider.listOpenCalls))
+	}
+	if len(provider.listClosedCalls) != 0 {
+		t.Fatalf("expected no ListClosedPRs calls, got %d", len(provider.listClosedCalls))
 	}
 }
 
@@ -327,7 +693,7 @@ func TestReconcilePRAssociationsClearsDraftPRBlockedReasonWhenPRAttached(t *test
 	}
 }
 
-func TestReconcilePRAssociations_MatchClosedPR(t *testing.T) {
+func TestReconcilePRAssociations_DoesNotMatchClosedPR(t *testing.T) {
 	sessions := newReconcileMockSessionStore()
 	repos := newMockRepoStore()
 	provider := newReconcileMockProvider()
@@ -352,17 +718,23 @@ func TestReconcilePRAssociations_MatchClosedPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 updated, got %d", n)
+	if n != 0 {
+		t.Fatalf("expected 0 updated, got %d", n)
 	}
 
 	sess := sessions.sessions["sess-1"]
-	if sess.PRNumber == nil || *sess.PRNumber != 99 {
-		t.Fatalf("expected PRNumber=99, got %v", sess.PRNumber)
+	if sess.PRNumber != nil {
+		t.Fatalf("expected PRNumber=nil for closed-only match, got %v", sess.PRNumber)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("expected 1 ListOpenPRs call, got %d", len(provider.listOpenCalls))
+	}
+	if len(provider.listClosedCalls) != 0 {
+		t.Fatalf("expected no ListClosedPRs calls, got %d", len(provider.listClosedCalls))
 	}
 }
 
-func TestReconcilePRAssociations_OpenPRTakesPrecedenceOverClosed(t *testing.T) {
+func TestReconcilePRAssociations_DuplicateOpenBranchesKeepFirstResult(t *testing.T) {
 	sessions := newReconcileMockSessionStore()
 	repos := newMockRepoStore()
 	provider := newReconcileMockProvider()
@@ -379,11 +751,8 @@ func TestReconcilePRAssociations_OpenPRTakesPrecedenceOverClosed(t *testing.T) {
 		State:      machine.AwaitingChecks,
 	})
 
-	// Same branch has both a closed PR and an open PR.
-	provider.closedPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
-		{Number: 50, HeadBranch: "feature-z", State: vcs.PRStateClosed},
-	}
 	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 50, HeadBranch: "feature-z", State: vcs.PRStateOpen},
 		{Number: 51, HeadBranch: "feature-z", State: vcs.PRStateOpen},
 	}
 
@@ -396,12 +765,18 @@ func TestReconcilePRAssociations_OpenPRTakesPrecedenceOverClosed(t *testing.T) {
 	}
 
 	sess := sessions.sessions["sess-1"]
-	if sess.PRNumber == nil || *sess.PRNumber != 51 {
-		t.Fatalf("expected PRNumber=51 (open PR), got %v", sess.PRNumber)
+	if sess.PRNumber == nil || *sess.PRNumber != 50 {
+		t.Fatalf("expected PRNumber=50 (first open PR), got %v", sess.PRNumber)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("expected 1 ListOpenPRs call, got %d", len(provider.listOpenCalls))
+	}
+	if len(provider.listClosedCalls) != 0 {
+		t.Fatalf("expected no ListClosedPRs calls, got %d", len(provider.listClosedCalls))
 	}
 }
 
-func TestReconcilePRAssociations_APIErrorSkipsRepo(t *testing.T) {
+func TestReconcilePRAssociations_APIErrorContinues(t *testing.T) {
 	sessions := newReconcileMockSessionStore()
 	repos := newMockRepoStore()
 	provider := newReconcileMockProvider()
@@ -428,12 +803,9 @@ func TestReconcilePRAssociations_APIErrorSkipsRepo(t *testing.T) {
 		State:      machine.AwaitingChecks,
 	})
 
-	// repo-1 fails with an API error.
 	provider.openErr["https://github.com/owner/repo1"] = errors.New("API rate limit")
-
-	// repo-2 succeeds.
 	provider.openPRs["https://github.com/owner/repo2"] = []vcs.PRSummary{
-		{Number: 7, HeadBranch: "branch-b", State: vcs.PRStateOpen},
+		{Number: 22, HeadBranch: "branch-b", State: vcs.PRStateOpen},
 	}
 
 	n, err := ReconcilePRAssociations(context.Background(), sessions, repos, provider, zerolog.Nop())
@@ -441,7 +813,19 @@ func TestReconcilePRAssociations_APIErrorSkipsRepo(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if n != 1 {
-		t.Fatalf("expected 1 updated (repo-2 only), got %d", n)
+		t.Fatalf("expected 1 updated, got %d", n)
+	}
+	if sessions.sessions["sess-1"].PRNumber != nil {
+		t.Fatalf("expected sess-1 PRNumber to remain nil, got %v", sessions.sessions["sess-1"].PRNumber)
+	}
+	if sessions.sessions["sess-2"].PRNumber == nil || *sessions.sessions["sess-2"].PRNumber != 22 {
+		t.Fatalf("expected sess-2 PRNumber=22, got %v", sessions.sessions["sess-2"].PRNumber)
+	}
+	if len(provider.listOpenCalls) != 2 {
+		t.Fatalf("expected 2 ListOpenPRs calls, got %d", len(provider.listOpenCalls))
+	}
+	if len(provider.listClosedCalls) != 0 {
+		t.Fatalf("expected no ListClosedPRs calls, got %d", len(provider.listClosedCalls))
 	}
 }
 

@@ -33,6 +33,10 @@ node_modules/
 
 # Build artifacts (binaries outside bin/)
 /services/bossd/main
+# Root-anchored so it never matches the plugins/bossd-plugin-*/ source dirs.
+/bossd-plugin-*
+# Plugin-local binaries produced by running go build inside a plugin dir.
+/plugins/bossd-plugin-*/bossd-plugin-*
 
 # Misc
 *.log
@@ -47,3 +51,6 @@ docs/handoffs/
 .beads/interactions.jsonl
 .beads/issues.jsonl
 .gstack/
+
+# Compound Engineering machine-local config
+.compound-engineering/*.local.yaml

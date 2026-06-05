@@ -670,6 +670,40 @@ func TestStartTmuxChat_AlreadyExists_LiveTmux(t *testing.T) {
 	}
 }
 
+func TestStartTmuxChat_AllowSiblingChatBypassesLiveChatIdempotency(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	existingTmuxName := "boss-repo-abc12345"
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-existing",
+			SessionID:       "sess-1",
+			AgentSessionID:  "agent-existing-12345678",
+			TmuxSessionName: &existingTmuxName,
+		}},
+	}
+
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Command: "boss-finalize"}, "Finalize", HookOpts{
+		AllowSiblingChat: true,
+	})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if agentSessionID == "" || agentSessionID == "agent-existing-12345678" {
+		t.Fatalf("agentSessionID = %q, want new sibling chat ID", agentSessionID)
+	}
+	if len(h.chats.createCalls) != 1 {
+		t.Fatalf("expected 1 sibling Create call, got %d", len(h.chats.createCalls))
+	}
+	if h.chats.createCalls[0].Title != "Finalize" {
+		t.Fatalf("sibling title = %q, want Finalize", h.chats.createCalls[0].Title)
+	}
+	if !h.tmuxFake.hasSubcommand("new-session") {
+		t.Fatal("expected new tmux session for sibling chat")
+	}
+}
+
 // TestStartTmuxChat_StaleTmux_PreservesRowAndStartsFresh verifies that an
 // existing chat row whose tmux session has already exited is preserved as
 // a historical record (its tmux_session_name is cleared so it no longer
@@ -1317,7 +1351,7 @@ func TestStartTmuxChat_ConfiguresHookBeforeLaunchForConsumedStartupInput(t *test
 	}
 }
 
-func TestStartTmuxChat_HooklessCommandArmsPollFallback(t *testing.T) {
+func TestStartTmuxChat_HooklessCommandDoesNotArmPollFallback(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1339,11 +1373,8 @@ func TestStartTmuxChat_HooklessCommandArmsPollFallback(t *testing.T) {
 	if agentSessionID == "" {
 		t.Fatal("expected agent session id")
 	}
-	if !armer.armCalled {
-		t.Fatal("expected hookless interactive tmux command to arm poll fallback")
-	}
-	if armer.armedID != agentSessionID {
-		t.Fatalf("poll fallback armed for %q, want %q", armer.armedID, agentSessionID)
+	if armer.armCalled {
+		t.Fatalf("poll fallback armed for tmux-hosted hookless command %q", agentSessionID)
 	}
 }
 
@@ -1462,17 +1493,21 @@ func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 	}
 }
 
-// TestStartTmuxChatArmsPollWhenHookUnsupported verifies hookless interactive
-// tmux chats get a daemon-side completion fallback.
-func TestStartTmuxChatArmsPollWhenHookUnsupported(t *testing.T) {
+// TestStartTmuxChatDoesNotArmPollWhenHookUnsupported verifies hookless
+// interactive tmux chats do not poll plugin ExitStatus, which only observes
+// plugin-runner processes rather than tmux-spawned processes.
+func TestStartTmuxChatDoesNotArmPollWhenHookUnsupported(t *testing.T) {
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(54321)
 	h.agentFake.IsSupported = false // hookless agent
 
 	armer := &fakePollArmer{}
+	completer := &recordingPollCompleter{}
 	h.lc.SetPollArmer(armer)
+	h.lc.SetPollCompleter(completer)
 	h.lc.SetDaemonCtx(ctx)
+	h.lc.tmuxCompletionPollInterval = time.Millisecond
 
 	id, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "the prompt"}, "the title", HookOpts{Token: "tok-2"})
 	if err != nil {
@@ -1481,11 +1516,21 @@ func TestStartTmuxChatArmsPollWhenHookUnsupported(t *testing.T) {
 	if id == "" {
 		t.Fatal("expected agent session id")
 	}
-	if !armer.armCalled {
-		t.Fatal("expected poll fallback to be armed when hook is unsupported")
+	if armer.armCalled {
+		t.Errorf("poll fallback armed for tmux-hosted hookless run %q", id)
 	}
-	if armer.armedID != id {
-		t.Errorf("poll fallback armed for %q, want %q", armer.armedID, id)
+	h.tmuxFake.mu.Lock()
+	h.tmuxFake.failSubcommand["has-session"] = true
+	h.tmuxFake.failStderr["has-session"] = "can't find session"
+	h.tmuxFake.mu.Unlock()
+
+	waitForCount(t, "SignalRunComplete", completer.count)
+	calls := completer.callsCopy()
+	if calls[0].agentSessionID != id {
+		t.Fatalf("SignalRunComplete called for %q, want %q", calls[0].agentSessionID, id)
+	}
+	if calls[0].exitError != "" {
+		t.Fatalf("SignalRunComplete exit error = %q, want empty", calls[0].exitError)
 	}
 }
 
@@ -1506,6 +1551,255 @@ func TestStartTmuxChatDoesNotArmPollWhenHookSupported(t *testing.T) {
 	}
 	if armer.armCalled {
 		t.Error("poll fallback should NOT be armed when hook is supported")
+	}
+}
+
+// TestStartTmuxChat_ResumeReusesIDAndSetsResume verifies that a resume request
+// reuses the supplied agent session id (instead of minting a fresh one) and
+// asks the agent plugin to resume rather than start fresh.
+func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior"},
+		"T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat resume: %v", err)
+	}
+	if id != "agent-session-prior" {
+		t.Fatalf("returned id = %q, want %q (reused prior id)", id, "agent-session-prior")
+	}
+	if !h.agentFake.LastBuildInteractiveCommand.GetResume() {
+		t.Error("expected BuildInteractiveCommand Resume=true on resume")
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetSessionId(); got != "agent-session-prior" {
+		t.Errorf("BuildInteractiveCommand SessionId = %q, want %q", got, "agent-session-prior")
+	}
+}
+
+// TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate verifies that resuming
+// deletes the stale prior chat row (whose agent_session_id is non-unique)
+// before re-creating, so exactly one row carries the reused id.
+func TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	staleTmuxName := "boss-repo-prior123"
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-prior",
+			SessionID:       "sess-1",
+			AgentSessionID:  "agent-session-prior",
+			TmuxSessionName: &staleTmuxName,
+		}},
+	}
+	// Force the prior tmux session to read as dead so idempotency clears it
+	// and the launch proceeds.
+	h.tmuxFake.failSubcommand["has-session"] = true
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: "agent-session-prior"},
+		"T", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat resume: %v", err)
+	}
+	if id != "agent-session-prior" {
+		t.Fatalf("returned id = %q, want %q (reused prior id)", id, "agent-session-prior")
+	}
+	if !slices.Contains(h.chats.deletedAgentSessionIDs, "agent-session-prior") {
+		t.Errorf("expected stale row %q to be deleted before re-create, deletes=%v",
+			"agent-session-prior", h.chats.deletedAgentSessionIDs)
+	}
+	if len(h.chats.createCalls) != 1 {
+		t.Fatalf("expected exactly 1 Create call (no duplicate), got %d", len(h.chats.createCalls))
+	}
+	if got := h.chats.createCalls[0].AgentSessionID; got != "agent-session-prior" {
+		t.Errorf("Create AgentSessionID = %q, want %q (reused, no duplicate)", got, "agent-session-prior")
+	}
+}
+
+// TestStartTmuxChat_ResumeReusesLivePane verifies that a completed repair pane
+// that is still alive at the prompt is reused instead of being rejected by the
+// live-chat idempotency guard.
+func TestStartTmuxChat_ResumeReusesLivePane(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetHookPort(54321)
+	h.agentFake.CommandPrefix = "$"
+	h.agentFake.ConsumesInitialInput = true
+
+	const agentSessionID = "agent-session-prior"
+	tmuxName := tmux.ChatSessionName("repo-abcdef12", agentSessionID)
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:              "chat-prior",
+			SessionID:       "sess-1",
+			AgentSessionID:  agentSessionID,
+			TmuxSessionName: &tmuxName,
+		}},
+	}
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: agentSessionID},
+		"T", HookOpts{Token: "tok-resume"})
+	if err != nil {
+		t.Fatalf("StartTmuxChat resume into live pane: %v", err)
+	}
+	if id != agentSessionID {
+		t.Fatalf("returned id = %q, want %q", id, agentSessionID)
+	}
+	if h.tmuxFake.hasSubcommand("new-session") {
+		t.Fatalf("resume into live pane must not create a replacement tmux session; calls=%v", h.tmuxFake.calls)
+	}
+	if len(h.chats.createCalls) != 0 {
+		t.Fatalf("resume into live pane must not create duplicate chat rows, got %d", len(h.chats.createCalls))
+	}
+	if len(h.chats.deletedAgentSessionIDs) != 0 {
+		t.Fatalf("resume into live pane must not delete the active chat row, deletes=%v", h.chats.deletedAgentSessionIDs)
+	}
+	if !h.agentFake.LastBuildInteractiveCommand.GetResume() {
+		t.Error("expected BuildInteractiveCommand Resume=true on live-pane resume")
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetSessionId(); got != agentSessionID {
+		t.Errorf("BuildInteractiveCommand SessionId = %q, want %q", got, agentSessionID)
+	}
+	if got := h.agentFake.LastConfigureHookReq; got == nil {
+		t.Fatal("expected run-keyed hook to be configured for live-pane resume")
+	} else if got.GetAgentSessionId() != agentSessionID || got.GetHookToken() != "tok-resume" {
+		t.Fatalf("ConfigureFinalizeHook = %+v, want agent_session_id %q and token tok-resume", got, agentSessionID)
+	}
+
+	var sendKeys []recordedTmuxCall
+	h.tmuxFake.mu.Lock()
+	for _, call := range h.tmuxFake.calls {
+		if call.subcommand == "send-keys" {
+			sendKeys = append(sendKeys, call)
+		}
+	}
+	h.tmuxFake.mu.Unlock()
+
+	if len(sendKeys) < 2 {
+		t.Fatalf("expected literal text + Enter send-keys calls, got %d", len(sendKeys))
+	}
+	textCall := sendKeys[len(sendKeys)-2]
+	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$boss-repair"}) {
+		t.Fatalf("literal send-keys args = %v", textCall.args)
+	}
+	enterCall := sendKeys[len(sendKeys)-1]
+	if !slices.Equal(enterCall.args, []string{"-t", tmuxName, "Enter"}) {
+		t.Fatalf("Enter send-keys args = %v", enterCall.args)
+	}
+}
+
+func TestStartTmuxChat_ResumeReusesLivePaneByProviderSessionID(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetHookPort(54321)
+	h.agentFake.CommandPrefix = "$"
+
+	const logicalAgentSessionID = "agent-session-logical"
+	const providerSessionID = "codex-rollout-provider"
+	tmuxName := tmux.ChatSessionName("repo-abcdef12", logicalAgentSessionID)
+	h.chats.chatsBySession = map[string][]*models.AgentChat{
+		"sess-1": {{
+			ID:                "chat-codex",
+			SessionID:         "sess-1",
+			AgentSessionID:    logicalAgentSessionID,
+			ProviderSessionID: ptr(providerSessionID),
+			TmuxSessionName:   &tmuxName,
+		}},
+	}
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Command: "boss-repair", ResumeAgentSessionID: providerSessionID},
+		"T", HookOpts{Token: "tok-codex"})
+	if err != nil {
+		t.Fatalf("StartTmuxChat resume into Codex live pane: %v", err)
+	}
+	if id != logicalAgentSessionID {
+		t.Fatalf("returned id = %q, want logical id %q for WaitChatRun registration", id, logicalAgentSessionID)
+	}
+	if h.tmuxFake.hasSubcommand("new-session") {
+		t.Fatalf("provider-id resume into live pane must not create a replacement tmux session; calls=%v", h.tmuxFake.calls)
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetSessionId(); got != providerSessionID {
+		t.Errorf("BuildInteractiveCommand SessionId = %q, want provider id %q", got, providerSessionID)
+	}
+	if !h.agentFake.LastBuildInteractiveCommand.GetResume() {
+		t.Error("expected BuildInteractiveCommand Resume=true on provider-id live-pane resume")
+	}
+	if got := h.agentFake.LastConfigureHookReq; got == nil {
+		t.Fatal("expected run-keyed hook to be configured for provider-id live-pane resume")
+	} else if got.GetAgentSessionId() != logicalAgentSessionID {
+		t.Fatalf("ConfigureFinalizeHook AgentSessionId = %q, want logical id %q", got.GetAgentSessionId(), logicalAgentSessionID)
+	}
+	if len(h.chats.createCalls) != 0 {
+		t.Fatalf("provider-id live-pane resume must not create duplicate chat rows, got %d", len(h.chats.createCalls))
+	}
+}
+
+// TestStartTmuxChat_ResumeStillArmsCompletion is the #491 regression guard: a
+// resumed, hookless run must still arm completion using the reused id so a
+// later WaitChatRun resolves when tmux reports the pane dead.
+func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.lc.SetHookPort(54321)
+	h.agentFake.IsSupported = false // hookless agent
+
+	armer := &fakePollArmer{}
+	completer := &recordingPollCompleter{}
+	h.lc.SetPollArmer(armer)
+	h.lc.SetPollCompleter(completer)
+	h.lc.SetDaemonCtx(ctx)
+	h.lc.tmuxCompletionPollInterval = time.Millisecond
+
+	id, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior"},
+		"the title", HookOpts{Token: "tok-2"})
+	if err != nil {
+		t.Fatalf("StartTmuxChat resume: %v", err)
+	}
+	if id != "agent-session-prior" {
+		t.Fatalf("returned id = %q, want %q (reused prior id)", id, "agent-session-prior")
+	}
+	if armer.armCalled {
+		t.Errorf("poll fallback armed for tmux-hosted hookless run %q", id)
+	}
+
+	h.tmuxFake.mu.Lock()
+	h.tmuxFake.failSubcommand["has-session"] = true
+	h.tmuxFake.failStderr["has-session"] = "can't find session"
+	h.tmuxFake.mu.Unlock()
+
+	waitForCount(t, "SignalRunComplete", completer.count)
+	calls := completer.callsCopy()
+	if calls[0].agentSessionID != "agent-session-prior" {
+		t.Fatalf("SignalRunComplete called for %q, want %q (reused id)", calls[0].agentSessionID, "agent-session-prior")
+	}
+}
+
+// TestStartTmuxChat_ResumeDeleteErrorTearsDown verifies that a
+// DeleteByAgentSessionID failure on the resume branch tears the just-spawned
+// tmux session back down and returns an error, and that no Create call is made
+// (the delete failed before we reached Create).
+func TestStartTmuxChat_ResumeDeleteErrorTearsDown(t *testing.T) {
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.chats.deleteErr = errors.New("boom")
+
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1",
+		ChatInput{Prompt: "p", ResumeAgentSessionID: "agent-session-prior"},
+		"T", HookOpts{})
+	if err == nil {
+		t.Fatal("expected error when DeleteByAgentSessionID fails")
+	}
+	if !h.tmuxFake.hasSubcommand("kill-session") {
+		t.Error("expected tmux kill-session to clean up after delete failure")
+	}
+	if len(h.chats.createCalls) != 0 {
+		t.Errorf("expected 0 Create calls (delete failed before Create), got %d", len(h.chats.createCalls))
 	}
 }
 

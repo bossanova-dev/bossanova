@@ -111,7 +111,9 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 		}
 	}
 	authMgr := newOptionalAuthManager(cmd)
+	settings := launchSettings(time.Now())
 	app := views.NewApp(c, authMgr)
+	app.WithSettings(settings)
 	if resolveE2ELoginEmail() != "" || resolveE2ECloudAccessClient() != nil {
 		views.DisableExternalBrowserForE2E()
 	}
@@ -203,7 +205,21 @@ var restartDaemon = daemon.Restart
 
 var loadSettings = config.Load
 
+var saveSettings = config.Save
+
 var discoverPlugins = config.DiscoverPlugins
+
+func launchSettings(now time.Time) config.Settings {
+	settings, err := loadSettings()
+	if err != nil {
+		return settings
+	}
+	if initialized, changed := settings.EnsureInstalledAt(now); changed {
+		settings = initialized
+		_ = saveSettings(settings)
+	}
+	return settings
+}
 
 func currentExecutableDir() (string, error) {
 	path, err := executablePath()

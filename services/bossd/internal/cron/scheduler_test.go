@@ -336,6 +336,12 @@ func makeJob(id, schedule string, enabled bool) *models.CronJob {
 	}
 }
 
+func makeJobWithAgent(id, schedule string, enabled bool, agentName string) *models.CronJob {
+	job := makeJob(id, schedule, enabled)
+	job.AgentName = agentName
+	return job
+}
+
 // --- Start loads jobs ----------------------------------------------------
 
 func TestStart_LoadsEnabledSkipsDisabled(t *testing.T) {
@@ -466,7 +472,7 @@ func TestAddJob_InvalidTimezone(t *testing.T) {
 
 func TestFire_Happy(t *testing.T) {
 	store := newFakeStore()
-	store.put(makeJob("j", "@every 1m", true))
+	store.put(makeJobWithAgent("j", "@every 1m", true, "codex"))
 	sessions := newFakeSessionStore()
 	creator := newFakeCreator()
 	s := newTestScheduler(t, store, sessions, creator)
@@ -505,6 +511,9 @@ func TestFire_Happy(t *testing.T) {
 	}
 	if opts.BaseBranch != "main" {
 		t.Errorf("opts.BaseBranch = %q, want 'main' (resolved from repo.DefaultBaseBranch)", opts.BaseBranch)
+	}
+	if opts.AgentName != "codex" {
+		t.Errorf("opts.AgentName = %q, want 'codex' (from cron job)", opts.AgentName)
 	}
 	// Branch must be unique per fire (cron-<slug>-<unix>) so a leftover
 	// branch from a SIGTERM'd / archived orphan can't trip ErrBranchExists.
@@ -697,6 +706,29 @@ func TestFire_BaseBranchFromRepoDefault(t *testing.T) {
 	}
 	if got := creator.calls[0].BaseBranch; got != "develop" {
 		t.Errorf("BaseBranch = %q, want 'develop' (from repo.DefaultBaseBranch)", got)
+	}
+}
+
+func TestRunNow_UsesCronJobAgentName(t *testing.T) {
+	store := newFakeStore()
+	store.put(makeJobWithAgent("j", "@every 1m", true, "opencode"))
+
+	creator := newFakeCreator()
+	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+	if err := s.AddJob(store.jobs["j"]); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	if _, skipped, err := s.RunNow(context.Background(), "j"); err != nil {
+		t.Fatalf("RunNow: %v", err)
+	} else if skipped != "" {
+		t.Fatalf("RunNow skipped = %q, want empty", skipped)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls = %d, want 1", len(creator.calls))
+	}
+	if got := creator.calls[0].AgentName; got != "opencode" {
+		t.Errorf("AgentName = %q, want 'opencode' (from cron job)", got)
 	}
 }
 

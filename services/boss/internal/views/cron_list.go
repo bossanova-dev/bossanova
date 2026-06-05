@@ -358,6 +358,7 @@ func (m *CronListModel) rebuildTable() {
 	schedules := make([]string, n)
 	names := make([]string, n)
 	repoNames := make([]string, n)
+	agents := make([]string, n)
 	enableds := make([]string, n)
 	lastRuns := make([]string, n)
 	nextRuns := make([]string, n)
@@ -372,6 +373,7 @@ func (m *CronListModel) rebuildTable() {
 		} else {
 			repoNames[i] = job.RepoId
 		}
+		agents[i] = cronDisplayAgentName(job.AgentName)
 
 		if job.Enabled {
 			enableds[i] = "yes"
@@ -415,6 +417,7 @@ func (m *CronListModel) rebuildTable() {
 		{Title: "CRON", Width: maxColWidth("CRON", schedules, 20) + tableColumnSep},
 		{Title: "NAME", Width: maxColWidth("NAME", names, 30) + tableColumnSep},
 		{Title: "REPO", Width: maxColWidth("REPO", repoNames, 25) + tableColumnSep},
+		{Title: "AGENT", Width: maxColWidth("AGENT", agents, 16) + tableColumnSep},
 		{Title: "ENABLED", Width: maxColWidth("ENABLED", enableds, 8) + tableColumnSep},
 		{Title: "LAST RUN", Width: maxColWidth("LAST RUN", lastRuns, 12) + tableColumnSep},
 		{Title: "NEXT RUN", Width: maxColWidth("NEXT RUN", nextRuns, 12) + tableColumnSep},
@@ -430,12 +433,13 @@ func (m *CronListModel) rebuildTable() {
 		if i == cursor {
 			indicator = cursorChevron
 		}
-		schedule, name, repo, enabled := schedules[i], names[i], repoNames[i], enableds[i]
+		schedule, name, repo, agent, enabled := schedules[i], names[i], repoNames[i], agents[i], enableds[i]
 		lastRun, nextRun, status := lastRuns[i], nextRuns[i], statuses[i]
 		if !job.Enabled {
 			schedule = muted.Render(schedule)
 			name = muted.Render(name)
 			repo = muted.Render(repo)
+			agent = muted.Render(agent)
 			enabled = muted.Render(enabled)
 			lastRun = muted.Render(lastRun)
 			nextRun = muted.Render(nextRun)
@@ -446,6 +450,7 @@ func (m *CronListModel) rebuildTable() {
 			schedule,
 			name,
 			repo,
+			agent,
 			enabled,
 			lastRun,
 			nextRun,
@@ -467,6 +472,14 @@ func (m *CronListModel) rebuildTable() {
 		newCursor = n - 1
 	}
 	m.table.SetCursor(newCursor)
+}
+
+func cronDisplayAgentName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "claude"
+	}
+	return name
 }
 
 func (m CronListModel) tableHeight() int {

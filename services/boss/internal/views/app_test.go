@@ -4,8 +4,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/auth"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -94,6 +97,59 @@ func TestAppSwitchViewHomePreservesCloudAccessClient(t *testing.T) {
 	}
 }
 
+func TestAppWithSettingsPassesSettingsToHome(t *testing.T) {
+	settings := config.DefaultSettings()
+	settings.BossCloudGuestOfferHidden = true
+
+	a := NewApp(nil, nil)
+	a.WithSettings(settings)
+
+	if !a.home.settings.BossCloudGuestOfferHidden {
+		t.Fatal("home.settings.BossCloudGuestOfferHidden = false, want true")
+	}
+}
+
+// TestNewHomeModelPreservesSessionStart guards the cloud-offer session-fatigue
+// timer: recreating Home (on every navigation back to the list) must reuse the
+// App's session epoch, not reset it to "now". Otherwise the 60s guest offer
+// reappears with a fresh clock on each round-trip to Home.
+func TestNewHomeModelPreservesSessionStart(t *testing.T) {
+	epoch := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	a := NewApp(nil, nil)
+	a.startedAt = epoch
+
+	home := a.newHomeModel()
+	if !home.startedAt.Equal(epoch) {
+		t.Fatalf("newHomeModel startedAt = %v, want %v (session epoch must survive Home recreation)", home.startedAt, epoch)
+	}
+}
+
+// TestAppHomeKeepsCloudOfferHiddenAcrossNavigationAfterSessionLimit exercises
+// the full path: once the session-fatigue window has elapsed, navigating back
+// to Home must not re-show the guest cloud offer.
+func TestAppHomeKeepsCloudOfferHiddenAcrossNavigationAfterSessionLimit(t *testing.T) {
+	epoch := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = epoch
+
+	a := NewApp(nil, &auth.Manager{})
+	a.WithSettings(settings)
+	a.startedAt = epoch
+
+	a.switchToHome()
+	a.home.repoCount = 1
+	a.home.loading = false
+	a.home.loggedIn = false
+	a.home.sessions = []*pb.Session{{Id: "sess-1", Title: "Active work"}}
+	a.home.buildTableRows()
+	a.home.now = func() time.Time { return epoch.Add(cloudGuestOfferSessionLimit + time.Second) }
+
+	content := a.home.View().Content
+	if strings.Contains(content, "Bossanova Cloud") {
+		t.Fatalf("cloud offer reappeared after navigation past the session limit: %q", content)
+	}
+}
+
 func TestAppChatPickerReturnPreservesCloudAccessClient(t *testing.T) {
 	cloud := &fakeHomeCloudAccessClient{}
 	a := NewApp(nil, nil)
@@ -167,7 +223,7 @@ func TestAppHomeSubscribeKeyShowsSubscriptionWaitingView(t *testing.T) {
 	if got.login.subscription.phase != subscriptionPhaseWaiting {
 		t.Fatalf("subscription phase = %v, want waiting", got.login.subscription.phase)
 	}
-	if !strings.Contains(got.View().Content, "Waiting for a subscription. Continue in your browser...") {
+	if !strings.Contains(got.View().Content, "Loading your account. Continue in your browser...") {
 		t.Fatalf("login view missing waiting copy: %q", got.View().Content)
 	}
 	if cmd == nil {

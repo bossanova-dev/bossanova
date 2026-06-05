@@ -1052,3 +1052,98 @@ func TestSplitNWO(t *testing.T) {
 		})
 	}
 }
+
+// flagValue returns the argument immediately following the first occurrence of
+// flag, or "" when the flag is absent or has no value. Used to assert the
+// --state gh requests without coupling to the full argv ordering.
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// A populated gh payload exercising the field mapping both list calls perform:
+// headRefName -> HeadBranch, author.login -> Author, and parsePRState on state.
+const listPRsPayload = `[
+	{"number":42,"title":"Add widget","headRefName":"feature/widget","state":"OPEN","author":{"login":"alice"}},
+	{"number":7,"title":"Fix typo","headRefName":"bugfix/typo","state":"CLOSED","author":{"login":"bob"}}
+]`
+
+func TestListOpenPRs_ParsesAndMapsPayload(t *testing.T) {
+	var gotArgs []string
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		gotArgs = append([]string(nil), args...)
+		return listPRsPayload, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	prs, err := p.ListOpenPRs(context.Background(), "owner/repo")
+	if err != nil {
+		t.Fatalf("ListOpenPRs: %v", err)
+	}
+
+	if got := flagValue(gotArgs, "--state"); got != "open" {
+		t.Errorf("ListOpenPRs requested --state %q, want %q", got, "open")
+	}
+
+	want := []vcs.PRSummary{
+		{Number: 42, Title: "Add widget", HeadBranch: "feature/widget", State: vcs.PRStateOpen, Author: "alice"},
+		{Number: 7, Title: "Fix typo", HeadBranch: "bugfix/typo", State: vcs.PRStateClosed, Author: "bob"},
+	}
+	assertPRSummaries(t, prs, want)
+}
+
+func TestListClosedPRs_ParsesAndMapsPayload(t *testing.T) {
+	var gotArgs []string
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		gotArgs = append([]string(nil), args...)
+		return listPRsPayload, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	prs, err := p.ListClosedPRs(context.Background(), "owner/repo")
+	if err != nil {
+		t.Fatalf("ListClosedPRs: %v", err)
+	}
+
+	if got := flagValue(gotArgs, "--state"); got != "closed" {
+		t.Errorf("ListClosedPRs requested --state %q, want %q", got, "closed")
+	}
+
+	want := []vcs.PRSummary{
+		{Number: 42, Title: "Add widget", HeadBranch: "feature/widget", State: vcs.PRStateOpen, Author: "alice"},
+		{Number: 7, Title: "Fix typo", HeadBranch: "bugfix/typo", State: vcs.PRStateClosed, Author: "bob"},
+	}
+	assertPRSummaries(t, prs, want)
+}
+
+func TestListOpenPRs_EmptyPayloadYieldsNoPRs(t *testing.T) {
+	fakeGH := func(_ context.Context, _ ...string) (string, error) { return `[]`, nil }
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	prs, err := p.ListOpenPRs(context.Background(), "owner/repo")
+	if err != nil {
+		t.Fatalf("ListOpenPRs: %v", err)
+	}
+	if len(prs) != 0 {
+		t.Errorf("got %d PRs, want 0", len(prs))
+	}
+}
+
+func assertPRSummaries(t *testing.T, got, want []vcs.PRSummary) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d PRs, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("PR[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

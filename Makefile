@@ -1,6 +1,7 @@
 .PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format generate lint \
 	lint-check-version lint-docs lint-scripts \
-	mutate mutate-diff mutate-fix mutate-loop mutate-report mutate-survivors \
+	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
+	mutate-report mutate-survivors mutate-uncovered \
 	plugins plugins-all readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-race \
 	test-bosso-scale test-docs test-integration-bossd test-public-mirror test-readme test-scripts
@@ -132,7 +133,7 @@ deps:
 	esac
 	@echo "==> Done. Run 'make' to build."
 
-## setup-worktree: Copy .env from the main repo into a new worktree (for bossanova setup-script)
+## setup-worktree: Copy gitignored local files (.env, .node-version, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
 	@if [ -z "$$REPO_DIR" ] || [ -z "$$WORKTREE_DIR" ]; then \
 		echo "setup-worktree must be invoked by bossanova (REPO_DIR and WORKTREE_DIR required)"; \
@@ -149,6 +150,13 @@ setup-worktree:
 		echo "Copied .node-version into $$WORKTREE_DIR"; \
 	else \
 		echo "No .node-version in $$REPO_DIR — skipping"; \
+	fi
+	@if [ -f "$$REPO_DIR/.compound-engineering/config.local.yaml" ]; then \
+		mkdir -p "$$WORKTREE_DIR/.compound-engineering"; \
+		cp "$$REPO_DIR/.compound-engineering/config.local.yaml" "$$WORKTREE_DIR/.compound-engineering/config.local.yaml"; \
+		echo "Copied .compound-engineering/config.local.yaml into $$WORKTREE_DIR"; \
+	else \
+		echo "No .compound-engineering/config.local.yaml in $$REPO_DIR — skipping"; \
 	fi
 	direnv allow
 
@@ -575,6 +583,27 @@ mutate-survivors:
 			"$$f" 2>/dev/null; \
 	done
 
+## mutate-uncovered: List NOT_COVERED mutants (untested code, for coverage work)
+mutate-uncovered:
+	@for f in $(MUTATE_DIR)/*.json; do \
+		[ -f "$$f" ] || continue; \
+		name=$$(basename "$$f" .json); \
+		jq -r --arg mod "$$name" \
+			'.files[]? | .file_name as $$file | .mutations[]? | select(.status == "NOT_COVERED" or .status == "NOT COVERED") | "[\($$mod)] \($$file):\(.line) \(.type)"' \
+			"$$f" 2>/dev/null; \
+	done
+
+## mutate-coverage: Rank packages by mutation coverage, lowest first.
+## Columns (tab-separated): coverage%  not_covered  package
+mutate-coverage:
+	@for f in $(MUTATE_DIR)/*.json; do \
+		[ -f "$$f" ] || continue; \
+		name=$$(basename "$$f" .json); \
+		jq -r --arg mod "$$name" \
+			'"\(.mutations_coverage // 0)\t\(.mutants_not_covered // 0)\t\($$mod)"' \
+			"$$f" 2>/dev/null; \
+	done | sort -n
+
 ## mutate-fix: Feed surviving mutants to Claude Code to generate tests
 mutate-fix:
 	@mkdir -p $(MUTATE_DIR)
@@ -615,6 +644,26 @@ define run-mutate-module
 			"./$$reldir") || true; \
 	done
 endef
+
+## mutate-pkg: Mutation-test a single package (fast, for targeted verification).
+## Usage: make mutate-pkg MODULE=services/bosso PKG=./internal/auth
+## MODNAME defaults to $(notdir MODULE), matching the full `mutate` target's
+## JSON naming (e.g. plugins stay bossd-plugin-claude); override only to retarget.
+mutate-pkg:
+	@test -n "$(MODULE)" || { echo "MODULE is required (e.g. MODULE=services/bosso)"; exit 2; }
+	@test -n "$(PKG)" || { echo "PKG is required (e.g. PKG=./internal/auth)"; exit 2; }
+	@$(MAKE) --no-print-directory $(GEN_STAMP)
+	@mkdir -p $(MUTATE_DIR)
+	@root=$$(git rev-parse --show-toplevel); \
+	modname="$(MODNAME)"; [ -n "$$modname" ] || modname=$$(basename "$(MODULE)"); \
+	reldir=$$(echo "$(PKG)" | sed -e 's|^\./||' -e 's|/$$||'); \
+	if [ -z "$$reldir" ] || [ "$$reldir" = "." ]; then safename="root"; else safename=$$(echo "$$reldir" | tr '/' '-'); fi; \
+	echo "==> $$modname/$$reldir"; \
+	(cd "$(MODULE)" && gremlins unleash \
+		-o "$$root/$(MUTATE_DIR)/$$modname--$$safename.json" \
+		--timeout-coefficient $(MUTATE_TIMEOUT) \
+		--workers 0 \
+		"$(PKG)")
 
 mutate-bossalib:
 	$(call run-mutate-module,lib/bossalib,bossalib,$(MUTATE_TIMEOUT))

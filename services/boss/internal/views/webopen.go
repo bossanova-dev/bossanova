@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 var openURLFunc = openURL
@@ -26,7 +27,7 @@ func openURLCmd(env func(string) string, lookPath func(string) (string, error), 
 				return exec.Command("wslview", rawURL), nil
 			}
 			if _, err := lookPath("cmd.exe"); err == nil {
-				return exec.Command("cmd.exe", "/c", "start", "", rawURL), nil
+				return exec.Command("cmd.exe", "/c", "start", "", quoteCmdURL(rawURL)), nil
 			}
 		}
 		if _, err := lookPath("xdg-open"); err == nil {
@@ -36,6 +37,15 @@ func openURLCmd(env func(string) string, lookPath func(string) (string, error), 
 	default:
 		return nil, fmt.Errorf("unsupported OS %q", goos)
 	}
+}
+
+// quoteCmdURL wraps a URL for `cmd.exe /c start "" <url>`. cmd.exe
+// re-parses its command line, so an unquoted & (or |, <, >, ^) in a
+// query string is treated as a shell metacharacter, breaking the open
+// and allowing command injection. Embedded double quotes are
+// percent-encoded so they cannot terminate the quoted run early.
+func quoteCmdURL(rawURL string) string {
+	return `"` + strings.ReplaceAll(rawURL, `"`, `%22`) + `"`
 }
 
 func validateBrowserURL(rawURL string) error {

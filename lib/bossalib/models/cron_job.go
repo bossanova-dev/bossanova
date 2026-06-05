@@ -27,6 +27,7 @@ type CronJob struct {
 	Prompt           string
 	Schedule         string
 	Timezone         *string // IANA name; nil = daemon-local
+	AgentName        string
 	Enabled          bool
 	LastRunSessionID *string
 	LastRunAt        *time.Time

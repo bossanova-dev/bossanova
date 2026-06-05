@@ -202,9 +202,35 @@ func TestCreateSessionStartErrorAfterSetupOutputReturnsConnectError(t *testing.T
 	}
 }
 
+func TestCreateSessionQuickChatAllowsEmptyDefaultBaseBranch(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+	empty := ""
+	repo, err := h.repos.Update(context.Background(), h.repo.ID, db.UpdateRepoParams{
+		DefaultBaseBranch: &empty,
+	})
+	if err != nil {
+		t.Fatalf("update repo: %v", err)
+	}
+	h.repo = repo
+
+	events, err := h.createQuickChat(t, "quick chat")
+	if err != nil {
+		t.Fatalf("CreateSession quick chat error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(events))
+	}
+	if events[0].GetSessionCreated() == nil {
+		t.Fatalf("event[0] = %T, want SessionCreated", events[0].GetEvent())
+	}
+}
+
 type createSessionStreamHarness struct {
 	client   bossanovav1connect.DaemonServiceClient
 	repo     *models.Repo
+	repos    db.RepoStore
 	sessions db.SessionStore
 }
 
@@ -246,6 +272,7 @@ func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree,
 	return &createSessionStreamHarness{
 		client:   bossanovav1connect.NewDaemonServiceClient(httpServer.Client(), httpServer.URL),
 		repo:     repo,
+		repos:    repos,
 		sessions: sessions,
 	}
 }
@@ -260,6 +287,28 @@ func (h *createSessionStreamHarness) createSession(t *testing.T, title string) (
 		Title:     title,
 		Plan:      "do work",
 		PrNumber:  &prNumber,
+		AgentName: &agentName,
+	}))
+	if err != nil {
+		return nil, err
+	}
+
+	var events []*pb.CreateSessionResponse
+	for stream.Receive() {
+		events = append(events, stream.Msg())
+	}
+	return events, stream.Err()
+}
+
+func (h *createSessionStreamHarness) createQuickChat(t *testing.T, title string) ([]*pb.CreateSessionResponse, error) {
+	t.Helper()
+
+	agentName := "claude"
+	stream, err := h.client.CreateSession(context.Background(), connect.NewRequest(&pb.CreateSessionRequest{
+		RepoId:    h.repo.ID,
+		Title:     title,
+		Plan:      "quick question",
+		QuickChat: true,
 		AgentName: &agentName,
 	}))
 	if err != nil {
@@ -345,10 +394,17 @@ func (w *setupStreamWorktree) Resurrect(context.Context, gitpkg.ResurrectOpts) e
 func (w *setupStreamWorktree) EmptyTrash(context.Context, string, []string) error            { return nil }
 func (w *setupStreamWorktree) PurgeWorktree(context.Context, string, string, string, string) {}
 func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error             { return nil }
+func (w *setupStreamWorktree) VerifyCurrentBranch(context.Context, string, string) error     { return nil }
 func (w *setupStreamWorktree) Push(context.Context, string, string) error                    { return nil }
-func (w *setupStreamWorktree) Status(context.Context, string) (string, error)                { return "", nil }
+func (w *setupStreamWorktree) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
+	return &gitpkg.BranchVerification{HeadSHA: "head", BaseSHA: "base", RemoteHeadSHA: "head", AheadCount: 1}, nil
+}
+func (w *setupStreamWorktree) Status(context.Context, string) (string, error) { return "", nil }
 func (w *setupStreamWorktree) LatestCommitSubject(context.Context, string) (string, error) {
 	return "", nil
+}
+func (w *setupStreamWorktree) BranchDebugSnapshot(context.Context, string, string, string) (*gitpkg.BranchDebugSnapshot, error) {
+	return &gitpkg.BranchDebugSnapshot{}, nil
 }
 func (w *setupStreamWorktree) Clone(context.Context, string, string) error { return nil }
 func (w *setupStreamWorktree) DetectOriginURL(context.Context, string) (string, error) {

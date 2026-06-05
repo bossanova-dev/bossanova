@@ -226,9 +226,12 @@ type fakeAgentClient struct {
 		plan    string
 		logPath string
 	}
-	running    map[string]bool
-	exitErrors map[string]string
-	completed  map[string]bool
+	running     map[string]bool
+	exitErrors  map[string]string
+	completed   map[string]bool
+	resolveResp *bossanovav1.ResolveInteractiveSessionIDResponse
+	resolveErr  error
+	resolveReqs []*bossanovav1.ResolveInteractiveSessionIDRequest
 }
 
 var _ agent.AgentRunnerClient = (*fakeAgentClient)(nil)
@@ -283,7 +286,16 @@ func (f *fakeAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav
 func (f *fakeAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }
-func (f *fakeAgentClient) ResolveInteractiveSessionID(_ context.Context, _ *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+func (f *fakeAgentClient) ResolveInteractiveSessionID(_ context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolveReqs = append(f.resolveReqs, req)
+	if f.resolveErr != nil {
+		return nil, f.resolveErr
+	}
+	if f.resolveResp != nil {
+		return f.resolveResp, nil
+	}
 	return &bossanovav1.ResolveInteractiveSessionIDResponse{}, nil
 }
 func (f *fakeAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
@@ -591,11 +603,23 @@ func (f *fakeSessionStoreWithListActive) ListActive(_ context.Context, repoID st
 type fakeAgentChatStore struct {
 	db.AgentChatStore
 	chatsBySession map[string][]*models.AgentChat
+	chatsByAgent   map[string]*models.AgentChat
 	updatedTmux    []string
 }
 
 func (f *fakeAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
 	return f.chatsBySession[sessionID], nil
+}
+
+func (f *fakeAgentChatStore) GetByAgentSessionID(_ context.Context, agentSessionID string) (*models.AgentChat, error) {
+	return f.chatsByAgent[agentSessionID], nil
+}
+
+func (f *fakeAgentChatStore) UpdateProviderSessionID(_ context.Context, agentSessionID string, providerSessionID *string) error {
+	if chat := f.chatsByAgent[agentSessionID]; chat != nil {
+		chat.ProviderSessionID = providerSessionID
+	}
+	return nil
 }
 
 func TestListSessions_PopulatesPRMetadata(t *testing.T) {
@@ -1170,7 +1194,7 @@ func TestSignalRunCompleteSignalsChannelWithoutAuth(t *testing.T) {
 	srv.agentSessionByID[agentSessionID] = "codex"
 	srv.runMu.Unlock()
 
-	srv.SignalRunComplete(agentSessionID, "exit-1")
+	srv.SignalRunComplete("session-1", agentSessionID, "exit-1")
 
 	select {
 	case res := <-ch:
@@ -1214,8 +1238,93 @@ func TestSignalRunCompleteSignalsChannelWithoutAuth(t *testing.T) {
 // already-cleaned-up id is a silent no-op (no panic, no double-signal).
 func TestSignalRunCompleteIdempotentForUnknownID(t *testing.T) {
 	srv := newRunCompleteServer()
-	srv.SignalRunComplete("never-registered", "")
-	srv.SignalRunComplete("never-registered", "again")
+	srv.SignalRunComplete("session-1", "never-registered", "")
+	srv.SignalRunComplete("session-1", "never-registered", "again")
+}
+
+// TestSignalRunCompleteParksEarlyCompletionForPendingChatRun reproduces the
+// race the hookless completion poll can lose: it observes the agent exit and
+// signals completion before StartChatRun has registered the run. With the
+// session marked pending, the result must be parked and then delivered to the
+// channel the subsequent registration installs — not dropped, which would
+// strand WaitChatRun until its deadline.
+func TestSignalRunCompleteParksEarlyCompletionForPendingChatRun(t *testing.T) {
+	srv := newRunCompleteServer()
+
+	const (
+		sessionID      = "session-1"
+		agentSessionID = "agent-early"
+	)
+
+	// StartChatRun marks the session pending before it spawns (and arms the
+	// poll). Simulate the poll firing in the gap before registration.
+	srv.markPendingChatRun(sessionID)
+	srv.SignalRunComplete(sessionID, agentSessionID, "early-exit")
+
+	// Registration lands after the signal; it must drain the parked result.
+	ch := srv.registerRunWithCompletionMode(sessionID, agentSessionID, "tok", chatRunCompletionExplicit)
+
+	select {
+	case res := <-ch:
+		if res.exitError != "early-exit" {
+			t.Errorf("exitError = %q, want %q", res.exitError, "early-exit")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("early completion was not delivered to the registered channel")
+	}
+
+	srv.runMu.Lock()
+	_, stillPending := srv.pendingChatRuns[sessionID]
+	_, stillParked := srv.earlyChatCompletions[sessionID]
+	srv.runMu.Unlock()
+	if stillPending {
+		t.Error("pendingChatRuns[session-1] should be cleared after registration")
+	}
+	if stillParked {
+		t.Error("earlyChatCompletions[session-1] should be drained after registration")
+	}
+}
+
+// TestSignalRunCompleteDropsEarlyCompletionWithoutPendingMarker verifies the
+// leak guard: cron / finalize / bootstrap runs never mark the session pending,
+// so an early SignalRunComplete for an unregistered run must leave nothing
+// behind in earlyChatCompletions.
+func TestSignalRunCompleteDropsEarlyCompletionWithoutPendingMarker(t *testing.T) {
+	srv := newRunCompleteServer()
+
+	srv.SignalRunComplete("cron-session", "agent-cron", "exit")
+
+	srv.runMu.Lock()
+	_, parked := srv.earlyChatCompletions["cron-session"]
+	n := len(srv.earlyChatCompletions)
+	srv.runMu.Unlock()
+	if parked || n != 0 {
+		t.Errorf("earlyChatCompletions should stay empty without a pending marker, got %d entries", n)
+	}
+}
+
+// TestClearPendingChatRunDiscardsUndrainedEarlyCompletion verifies the
+// deferred cleanup in StartChatRun: if a spawn fails (or takes the
+// AlreadyExists path) after an early completion was parked, clearing the
+// pending marker also discards the orphaned result so it can't leak or be
+// misattributed to a later run on the same session.
+func TestClearPendingChatRunDiscardsUndrainedEarlyCompletion(t *testing.T) {
+	srv := newRunCompleteServer()
+
+	srv.markPendingChatRun("session-1")
+	srv.SignalRunComplete("session-1", "agent-orphan", "exit")
+	srv.clearPendingChatRun("session-1")
+
+	srv.runMu.Lock()
+	_, pending := srv.pendingChatRuns["session-1"]
+	_, parked := srv.earlyChatCompletions["session-1"]
+	srv.runMu.Unlock()
+	if pending {
+		t.Error("pendingChatRuns[session-1] should be cleared")
+	}
+	if parked {
+		t.Error("earlyChatCompletions[session-1] should be discarded on clear")
+	}
 }
 
 // setWaitChatRunDeadline is a test-only helper that overrides the default
@@ -2263,6 +2372,89 @@ func TestWaitChatRun_HookSignalsCleanExit(t *testing.T) {
 	}
 	if _, ok := srv.runSessionByID["agent-x"]; ok {
 		t.Error("runSessionByID[agent-x] should be cleared after WaitChatRun returns")
+	}
+}
+
+func TestWaitChatRun_ReturnsProviderSessionID(t *testing.T) {
+	srv := newRunCompleteServer()
+	providerSessionID := "codex-provider-123"
+	srv.agentChats = &fakeAgentChatStore{
+		chatsByAgent: map[string]*models.AgentChat{
+			"agent-x": {AgentSessionID: "agent-x", ProviderSessionID: &providerSessionID},
+		},
+	}
+	srv.registerRun("sess-1", "agent-x", "tok")
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = srv.CompleteAgentRun(context.Background(), "agent-x", "tok", "")
+	}()
+
+	resp, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
+	if err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if resp.GetProviderSessionId() != providerSessionID {
+		t.Fatalf("ProviderSessionId = %q, want %q", resp.GetProviderSessionId(), providerSessionID)
+	}
+}
+
+func TestWaitChatRun_DiscoversCodexProviderSessionIDBeforeResponse(t *testing.T) {
+	srv := newRunCompleteServer()
+	client := newFakeAgentClient()
+	client.resolveResp = &bossanovav1.ResolveInteractiveSessionIDResponse{
+		Found:     true,
+		SessionId: "codex-provider-456",
+	}
+	srv.agentClients = map[string]agent.AgentRunnerClient{"codex": client}
+	srv.sessionStore = &fakeSessionStore{
+		sessions: map[string]*models.Session{
+			"sess-1": {ID: "sess-1", WorktreePath: "/tmp/worktree"},
+		},
+	}
+	chat := &models.AgentChat{
+		SessionID:      "sess-1",
+		AgentSessionID: "agent-x",
+		AgentName:      "codex",
+		CreatedAt:      time.Now().Add(-time.Minute),
+	}
+	srv.agentChats = &fakeAgentChatStore{
+		chatsByAgent: map[string]*models.AgentChat{"agent-x": chat},
+	}
+	srv.registerRun("sess-1", "agent-x", "tok")
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = srv.CompleteAgentRun(context.Background(), "agent-x", "tok", "")
+	}()
+
+	resp, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "agent-x"})
+	if err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+	if resp.GetProviderSessionId() != "codex-provider-456" {
+		t.Fatalf("ProviderSessionId = %q, want codex-provider-456", resp.GetProviderSessionId())
+	}
+	if chat.ProviderSessionID == nil || *chat.ProviderSessionID != "codex-provider-456" {
+		t.Fatalf("persisted provider session id = %v, want codex-provider-456", chat.ProviderSessionID)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.resolveReqs) != 1 {
+		t.Fatalf("ResolveInteractiveSessionID calls = %d, want 1", len(client.resolveReqs))
+	}
+	req := client.resolveReqs[0]
+	if req.GetWorkDir() != "/tmp/worktree" {
+		t.Fatalf("resolver WorkDir = %q, want /tmp/worktree", req.GetWorkDir())
+	}
+	if req.GetRequestedSessionId() != "agent-x" {
+		t.Fatalf("resolver RequestedSessionId = %q, want agent-x", req.GetRequestedSessionId())
+	}
+	if !req.GetAllowLegacyBackfill() {
+		t.Fatal("resolver AllowLegacyBackfill = false, want true")
+	}
+	if req.GetChatCreatedAt() == nil {
+		t.Fatal("resolver ChatCreatedAt is nil")
 	}
 }
 

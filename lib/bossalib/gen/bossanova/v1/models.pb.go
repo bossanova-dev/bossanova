@@ -2894,6 +2894,7 @@ type CronJob struct {
 	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	LastRunStatus CronJobStatus          `protobuf:"varint,14,opt,name=last_run_status,json=lastRunStatus,proto3,enum=bossanova.v1.CronJobStatus" json:"last_run_status,omitempty"` // derived; not persisted
+	AgentName     string                 `protobuf:"bytes,15,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`                                                // agent runner plugin name; empty legacy data defaults to claude
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3024,6 +3025,13 @@ func (x *CronJob) GetLastRunStatus() CronJobStatus {
 		return x.LastRunStatus
 	}
 	return CronJobStatus_CRON_JOB_STATUS_UNSPECIFIED
+}
+
+func (x *CronJob) GetAgentName() string {
+	if x != nil {
+		return x.AgentName
+	}
+	return ""
 }
 
 var File_bossanova_v1_models_proto protoreflect.FileDescriptor
@@ -3234,7 +3242,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\x12\x1f\n" +
 	"\vstart_error\x18\n" +
 	" \x01(\tR\n" +
-	"startError\"\xbc\x04\n" +
+	"startError\"\xdb\x04\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +
@@ -3252,7 +3260,9 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"created_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12C\n" +
-	"\x0flast_run_status\x18\x0e \x01(\x0e2\x1b.bossanova.v1.CronJobStatusR\rlastRunStatus*\xd3\x03\n" +
+	"\x0flast_run_status\x18\x0e \x01(\x0e2\x1b.bossanova.v1.CronJobStatusR\rlastRunStatus\x12\x1d\n" +
+	"\n" +
+	"agent_name\x18\x0f \x01(\tR\tagentName*\xd3\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12 \n" +

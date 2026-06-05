@@ -175,6 +175,15 @@ type runOpts struct {
 	// goroutine just before srv.Serve is invoked. Pairs with
 	// onBootstrapComplete to assert init ordering.
 	onServeStart func()
+
+	// onHookPortSet, if non-nil, fires synchronously immediately after
+	// lifecycle.SetHookPort. onBootstrapStart fires just before
+	// lifecycle.Bootstrap. Together they pin the invariant that the hook
+	// port is bound before bootstrap re-arms surviving tmux chats — otherwise
+	// ConfigureFinalizeHook would be re-issued with port 0 and the worktree
+	// would keep the previous daemon's stale hook URL.
+	onHookPortSet    func()
+	onBootstrapStart func()
 }
 
 func run(opts runOpts) error {
@@ -389,12 +398,11 @@ func run(opts runOpts) error {
 	worktrees := gitpkg.NewManager(log.Logger)
 	tmuxClient := tmux.NewClient()
 	ghProvider := github.New(log.Logger)
+	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger)
 
 	// Reconcile sessions that were created before their PR existed (or
 	// where PR creation happened out-of-band). Matches by branch name.
-	if n, err := session.ReconcilePRAssociations(
-		context.Background(), sessions, repos, ghProvider, log.Logger,
-	); err != nil {
+	if n, err := prAssociationResolver.Reconcile(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("failed to reconcile PR associations")
 	} else if n > 0 {
 		log.Info().Int64("count", n).Msg("reconciled sessions with existing PRs")
@@ -543,6 +551,12 @@ func run(opts runOpts) error {
 	// can pass a deterministic log path to BuildInteractiveCommand. Without
 	// this, the extracted method would fail-closed with FailedPrecondition.
 	lifecycle.SetAgentLogsDir(agentLogsDir)
+	cronGate := session.NewCronCompletionGate(session.CronCompletionGateDeps{
+		Sessions:  sessions,
+		Finalizer: lifecycle,
+		Logger:    log.Logger,
+	})
+	lifecycle.SetCronCompletionNotifier(cronGate)
 	// Wire the lifecycle into HostServiceServer so plugin-side StartChatRun
 	// (Task 4) can spawn tmux-hosted runs through the same path the cron
 	// scheduler uses. SetLifecycle accepts the narrow ChatLifecycle
@@ -556,7 +570,8 @@ func run(opts runOpts) error {
 		// never reach the armer. Cadence + jitter chosen to balance
 		// responsiveness with idle CPU cost on a daemon hosting many
 		// concurrent runs.
-		pollFallback := agent.NewPollFallback(log.Logger, 2*time.Second, 200*time.Millisecond, hs)
+		lifecycle.SetPollCompleter(hs)
+		pollFallback := agent.NewPollFallback(log.Logger, 2*time.Second, 200*time.Millisecond, lifecycle)
 		lifecycle.SetPollArmer(pollFallback)
 	}
 
@@ -1051,23 +1066,25 @@ func run(opts runOpts) error {
 	}
 
 	srv := server.New(server.Config{
-		Repos:              repos,
-		Sessions:           sessions,
-		Attempts:           attempts,
-		AgentChats:         agentChats,
-		Workflows:          workflows,
-		TaskMappings:       taskMappings,
-		CronJobs:           cronJobs,
-		CheckSnapshots:     checkSnapshots,
-		CronScheduler:      cronScheduler,
-		ChatStatus:         chatStatusTracker,
-		DisplayTracker:     displayTracker,
-		TmuxPoller:         tmuxStatusPoller,
-		Lifecycle:          lifecycle,
-		Agent:              agentRunner,
-		AgentClients:       agentClients,
-		Worktrees:          worktrees,
-		Provider:           ghProvider,
+		Repos:          repos,
+		Sessions:       sessions,
+		Attempts:       attempts,
+		AgentChats:     agentChats,
+		Workflows:      workflows,
+		TaskMappings:   taskMappings,
+		CronJobs:       cronJobs,
+		CheckSnapshots: checkSnapshots,
+		CronScheduler:  cronScheduler,
+		ChatStatus:     chatStatusTracker,
+		DisplayTracker: displayTracker,
+		TmuxPoller:     tmuxStatusPoller,
+		Lifecycle:      lifecycle,
+		Agent:          agentRunner,
+		AgentClients:   agentClients,
+		Worktrees:      worktrees,
+		Provider:       ghProvider,
+
+		PRResolver:         prAssociationResolver,
 		PluginHost:         pluginHost,
 		Tmux:               tmuxClient,
 		CompletionNotifier: orchestrator,
@@ -1129,11 +1146,51 @@ func run(opts runOpts) error {
 	displayPoller.Run(pollerCtx)
 	trackDone(displayPoller.Done())
 
+	// --- Hook Server (loopback HTTP for Claude Stop-hook notifications) ---
+	//
+	// Created and bound BEFORE lifecycle.Bootstrap: Bootstrap re-issues
+	// ConfigureFinalizeHook for surviving tmux chats with HookPort, and the
+	// claude plugin's WriteHookConfig rejects port <= 0. Binding the port
+	// first ensures the re-arm rewrites the worktree's hook config with this
+	// daemon's port instead of leaving the previous (now-dead) port in place.
+	hookCfg := server.HookServerConfig{
+		Sessions:  sessions,
+		Finalizer: lifecycle,
+		Logger:    log.Logger,
+	}
+	// HostService is non-nil whenever any plugin is configured (it's
+	// constructed alongside the plugin host). When no plugins are loaded
+	// the completer stays nil-interface and the agent-run-complete
+	// endpoint surfaces 500s — that's fine because no plugin is around
+	// to register a run in the first place. Wrap the nil-pointer check
+	// here so the HookServer can rely on `completer == nil` working.
+	if hs := pluginHost.HostService(); hs != nil {
+		hookCfg.Completer = hs
+	}
+	hookSrv := server.NewHookServer(hookCfg)
+	hookSrv.SetCronCompletionNotifier(cronGate)
+	if err := hookSrv.Listen(); err != nil {
+		return fmt.Errorf("hook server listen: %w", err)
+	}
+	// Plumb the bound port into the lifecycle so cron-spawned sessions can
+	// stamp it into settings.local.json without the lifecycle having to
+	// read it back from a file written by the same process.
+	lifecycle.SetHookPort(hookSrv.Port())
+	log.Info().Int("port", hookSrv.Port()).Msg("hook server listening on 127.0.0.1")
+	if opts.onHookPortSet != nil {
+		opts.onHookPortSet()
+	}
+
 	// Re-arm the poll fallback for hookless agent runs that survived a
-	// daemon restart. For agents with a finalize hook (claude), this is a
-	// no-op — the cached IsSupported=true result short-circuits the loop.
-	// For codex (and future hookless agents), this re-attaches the daemon
-	// to in-flight runs so their eventual completion still signals through.
+	// daemon restart. For agents with a finalize hook (claude), the poll
+	// re-arm is skipped (cached IsSupported=true short-circuits the loop) but
+	// ConfigureFinalizeHook still re-writes the worktree hook config with this
+	// daemon's port — which is why SetHookPort must run first (above). For
+	// codex (and future hookless agents), this re-attaches the daemon to
+	// in-flight runs so their eventual completion still signals through.
+	if opts.onBootstrapStart != nil {
+		opts.onBootstrapStart()
+	}
 	lifecycle.Bootstrap(pollerCtx)
 
 	// Bootstrap tmux status poller with pre-existing sessions before starting
@@ -1179,9 +1236,7 @@ func run(opts runOpts) error {
 			case <-pollerCtx.Done():
 				return
 			case <-ticker.C:
-				if n, err := session.ReconcilePRAssociations(
-					pollerCtx, sessions, repos, ghProvider, log.Logger,
-				); err != nil {
+				if n, err := prAssociationResolver.Reconcile(pollerCtx); err != nil {
 					log.Warn().Err(err).Msg("periodic reconcile: failed")
 				} else if n > 0 {
 					log.Info().Int64("count", n).Msg("periodic reconcile: linked sessions to existing PRs")
@@ -1196,32 +1251,6 @@ func run(opts runOpts) error {
 	if err := srv.Listen(socketPath); err != nil {
 		return fmt.Errorf("server listen: %w", err)
 	}
-
-	// --- Hook Server (loopback HTTP for Claude Stop-hook notifications) ---
-
-	hookCfg := server.HookServerConfig{
-		Sessions:  sessions,
-		Finalizer: lifecycle,
-		Logger:    log.Logger,
-	}
-	// HostService is non-nil whenever any plugin is configured (it's
-	// constructed alongside the plugin host). When no plugins are loaded
-	// the completer stays nil-interface and the agent-run-complete
-	// endpoint surfaces 500s — that's fine because no plugin is around
-	// to register a run in the first place. Wrap the nil-pointer check
-	// here so the HookServer can rely on `completer == nil` working.
-	if hs := pluginHost.HostService(); hs != nil {
-		hookCfg.Completer = hs
-	}
-	hookSrv := server.NewHookServer(hookCfg)
-	if err := hookSrv.Listen(); err != nil {
-		return fmt.Errorf("hook server listen: %w", err)
-	}
-	// Plumb the bound port into the lifecycle so cron-spawned sessions can
-	// stamp it into settings.local.json without the lifecycle having to
-	// read it back from a file written by the same process.
-	lifecycle.SetHookPort(hookSrv.Port())
-	log.Info().Int("port", hookSrv.Port()).Msg("hook server listening on 127.0.0.1")
 
 	// Start serving in a goroutine.
 	errCh := make(chan error, 1)
@@ -1458,11 +1487,10 @@ func (a claudeAttachAdapter) Subscribe(ctx context.Context, claudeSessionID stri
 }
 
 // streamAuthAdapter implements server.AuthNotifier by reloading
-// credentials from the keychain and signalling the StreamClient to
-// reconnect. The stream's own Run loop picks up the refreshed token on
-// the next handshake, so the adapter only needs to refresh the
-// tokenProvider cache — cancellation of the current stream attempt is
-// implicit in the reconnect-on-error path.
+// credentials from the keychain on login and signalling active streams on
+// logout. The shared AuthState is wired into both DaemonStream and
+// TerminalStream, so MarkNeedsLogin cancels any open bidi immediately and
+// the outer Run loops pause until NotifyLogin marks auth OK again.
 type streamAuthAdapter struct {
 	streamClient  *upstream.StreamClient
 	tokenProvider *upstream.KeychainTokenProvider
@@ -1492,11 +1520,9 @@ func (a *streamAuthAdapter) NotifyLogin(_ context.Context, _ []string) error {
 	return nil
 }
 
-// NotifyLogout marks the auth state as "needs login" so the Run loops
-// pause on their next iteration, and signals via the same channel any
-// blocked waiter would use. The stream isn't actively cancelled here —
-// the next refresh attempt will fail (no valid refresh token) and the
-// opener's normal path takes over. Idempotent.
+// NotifyLogout marks the auth state as "needs login". Active streams watch
+// this transition and cancel their contexts immediately, then the Run loops
+// pause before reconnecting. Idempotent.
 func (a *streamAuthAdapter) NotifyLogout() {
 	if a.authState != nil {
 		a.authState.MarkNeedsLogin()

@@ -248,6 +248,17 @@ func (m *MockDaemon) CreateCronJobCallCount() int {
 	return len(m.createCronJobCalls)
 }
 
+// CreateCronJobCalls returns a copy of every CreateCronJob request recorded.
+func (m *MockDaemon) CreateCronJobCalls() []*pb.CreateCronJobRequest {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*pb.CreateCronJobRequest, len(m.createCronJobCalls))
+	for i, req := range m.createCronJobCalls {
+		out[i] = proto.Clone(req).(*pb.CreateCronJobRequest)
+	}
+	return out
+}
+
 // UpdateCronJobCalls returns a copy of every UpdateCronJob request recorded.
 func (m *MockDaemon) UpdateCronJobCalls() []*pb.UpdateCronJobRequest {
 	m.mu.RLock()
@@ -786,6 +797,7 @@ func (m *MockDaemon) CreateCronJob(_ context.Context, req *connect.Request[pb.Cr
 		Schedule:  req.Msg.Schedule,
 		Timezone:  req.Msg.Timezone,
 		Enabled:   req.Msg.Enabled,
+		AgentName: req.Msg.AgentName,
 		CreatedAt: timestamppb.Now(),
 		UpdatedAt: timestamppb.Now(),
 	}
@@ -846,6 +858,9 @@ func (m *MockDaemon) UpdateCronJob(_ context.Context, req *connect.Request[pb.Up
 	}
 	if req.Msg.Enabled != nil {
 		job.Enabled = *req.Msg.Enabled
+	}
+	if req.Msg.AgentName != nil {
+		job.AgentName = *req.Msg.AgentName
 	}
 	job.UpdatedAt = timestamppb.Now()
 	// Clone before returning: connect-go marshals the response after we

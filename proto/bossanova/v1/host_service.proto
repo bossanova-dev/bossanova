@@ -228,6 +228,12 @@ message StartChatRunHostRequest {
   // blocking chat was idle. bossd refuses replacement if the current blocking
   // chat has produced newer output since that snapshot.
   google.protobuf.Timestamp replace_existing_observed_last_chat_activity_at = 7;
+
+  // When set, resume this prior agent session (claude `--resume <id>`) instead
+  // of starting a fresh one, so the agent retains the history of earlier
+  // attempts. Used by auto-repair to make each loop iteration continue the
+  // previous iteration's conversation. Empty = fresh start.
+  string resume_agent_session_id = 8;
 }
 
 message StartChatRunHostResponse {
@@ -246,6 +252,9 @@ message WaitChatRunHostResponse {
   // Empty on clean exit, otherwise the exit error from the hook payload
   // or a synthetic message when the wait deadline elapsed.
   string exit_error = 1;
+  // Provider-owned resume/session UUID, when the agent reports one. Empty means
+  // callers should resume using agent_session_id.
+  string provider_session_id = 2;
 }
 
 // --- ReclaimRepairChat ---

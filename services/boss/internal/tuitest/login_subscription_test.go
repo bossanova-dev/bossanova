@@ -7,7 +7,7 @@ import (
 	"github.com/recurser/boss/internal/tuitest"
 )
 
-const subscriptionWaitingText = "Waiting for a subscription. Continue in your browser..."
+const subscriptionWaitingText = "Loading your account. Continue in your browser..."
 
 func waitForSubscriptionWaitingView(t *testing.T, h *tuitest.Harness) {
 	t.Helper()
@@ -81,7 +81,7 @@ func TestTUI_LoginFlow_SubscriptionEnterReopensExistingCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForSubscriptionWaitingView(t, h)
-	if !h.Driver.ScreenContains("[enter] re-open subscription page") {
+	if err := h.Driver.WaitForText(waitTimeout, "[enter] re-open subscription page"); err != nil {
 		t.Fatalf("expected subscription reopen action; screen:\n%s", h.Driver.Screen())
 	}
 	if err := h.Driver.SendEnter(); err != nil {
@@ -165,6 +165,17 @@ func TestTUI_LoginFlow_BillingUnavailableAllowsFallback(t *testing.T) {
 		t.Fatalf("expected logged-out action bar; screen:\n%s", h.Driver.Screen())
 	}
 	if err := h.Driver.SendKey('l'); err != nil {
+		t.Fatal(err)
+	}
+	// The subscription flow surfaces the billing error and waits for the user to
+	// acknowledge it before returning home.
+	if err := h.Driver.WaitForText(waitTimeout, "Cloud billing unavailable. Local sessions are still available."); err != nil {
+		t.Fatalf("expected billing unavailable message; screen:\n%s", h.Driver.Screen())
+	}
+	if !h.Driver.ScreenContains("[enter] continue") {
+		t.Fatalf("expected continue action; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {

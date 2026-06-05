@@ -35,6 +35,13 @@ type HookFinalizer interface {
 	FinalizeSession(ctx context.Context, sessionID string) (*session.FinalizeResult, error)
 }
 
+// CronCompletionNotifier receives session-keyed agent completion signals.
+// The hook server does not decide whether a cron session is truly complete;
+// it only forwards the signal to the lifecycle gate.
+type CronCompletionNotifier interface {
+	NotifyCronAgentStopped(sessionID string)
+}
+
 // AgentRunCompleter is the narrow subset of *plugin.HostServiceServer the
 // hook server depends on for /hooks/agent-run-complete dispatch. Defined
 // as an interface so tests can substitute a fake.
@@ -72,12 +79,13 @@ type AgentRunCompleter interface {
 // silent cron failures and the file added nothing the in-process pointer
 // didn't already provide.
 type HookServer struct {
-	sessions  db.SessionStore
-	finalizer HookFinalizer
-	completer AgentRunCompleter
-	logger    zerolog.Logger
-	listener  net.Listener
-	srv       *http.Server
+	sessions               db.SessionStore
+	finalizer              HookFinalizer
+	cronCompletionNotifier CronCompletionNotifier
+	completer              AgentRunCompleter
+	logger                 zerolog.Logger
+	listener               net.Listener
+	srv                    *http.Server
 }
 
 // HookServerConfig gathers the HookServer dependencies.
@@ -101,6 +109,13 @@ func NewHookServer(cfg HookServerConfig) *HookServer {
 		completer: cfg.Completer,
 		logger:    cfg.Logger,
 	}
+}
+
+// SetCronCompletionNotifier wires the cron completion gate used by the
+// session-keyed finalize hook. Nil preserves the legacy direct-finalize path
+// for tests or partially wired daemons.
+func (h *HookServer) SetCronCompletionNotifier(notifier CronCompletionNotifier) {
+	h.cronCompletionNotifier = notifier
 }
 
 // Listen binds a loopback-only TCP listener on an ephemeral port and wires
@@ -163,9 +178,10 @@ func (h *HookServer) Port() int {
 //   - 404 — session not found
 //   - 500 — session lookup failed for non-NotFound reasons
 //   - 200 — session found with nil hook_token (non-cron no-op) OR
-//     auth succeeded and FinalizeSession was dispatched. The Stop hook
-//     cannot distinguish these; it only needs to know the daemon received
-//     the signal.
+//     auth succeeded and the cron completion gate was notified. If no gate is
+//     wired, FinalizeSession was dispatched through the compatibility fallback.
+//     The Stop hook cannot distinguish these; it only needs to know the daemon
+//     received the signal.
 func (h *HookServer) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("session_id")
 	if sessionID == "" {
@@ -202,10 +218,14 @@ func (h *HookServer) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auth passed; dispatch FinalizeSession asynchronously and return 200
-	// immediately. Claude's Stop-hook contract expects non-blocking
-	// handlers. Errors are logged; the outcome column on cron_jobs is the
-	// user-facing record of what happened.
+	if h.cronCompletionNotifier != nil {
+		h.cronCompletionNotifier.NotifyCronAgentStopped(sessionID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Compatibility fallback for tests and older wiring: if no notifier has
+	// been installed, dispatch FinalizeSession as previous versions did.
 	safego.Go(h.logger, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), finalizeDispatchTimeout)
 		defer cancel()

@@ -122,7 +122,7 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	} else {
 		args = append(args, "--session-id", req.SessionId)
 	}
-	if s.runner.dangerouslySkipPermissions {
+	if s.runner != nil && s.runner.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	return &bossanovav1.BuildInteractiveCommandResponse{

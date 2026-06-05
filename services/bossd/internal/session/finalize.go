@@ -13,10 +13,10 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
-// finalizeChatSkill is the slash-skill the finalize chat is launched with.
-// /boss-finalize handles end-of-run cleanup (review summary, push, status
+// finalizeChatSkill is the agent command the finalize chat is launched with.
+// boss-finalize handles end-of-run cleanup (review summary, push, status
 // update) so the cron-spawned worktree closes cleanly.
-const finalizeChatSkill = "/boss-finalize"
+const finalizeChatSkill = "boss-finalize"
 
 // FinalizeResult is the outcome of a FinalizeSession call. Outcome maps 1:1
 // to the cron_jobs.last_run_outcome column FinalizeSession writes. NoOp is
@@ -41,9 +41,12 @@ type FinalizeResult struct {
 //   - deleted_no_changes       — empty git status and no committed branch work → worktree + session removed
 //   - cleanup_failed           — empty status but worktree removal errored
 //   - pr_skipped_no_github     — changes present, origin is not GitHub
-//   - pr_failed                — EnsurePR returned an error
-//   - chat_spawn_failed        — PR created but /boss-finalize chat start failed
-//   - pr_created               — PR opened + finalize chat started (happy path)
+//   - pr_failed                — dirty output present but the PR could not be opened for the finalize chat
+//   - chat_spawn_failed        — dirty output or PR-backed branch could not start /boss-finalize chat
+//   - pr_created               — dirty output: a PR was opened (placeholder commit added when the branch had none) and the /boss-finalize chat started
+//   - pr_failed                — clean committed branch could not open or attach a PR
+//   - chat_spawn_failed        — clean committed branch opened/attached a PR but /boss-finalize chat start failed
+//   - pr_created               — clean committed branch opened/attached a PR and started finalize chat
 //
 // After the outcome is classified, FinalizeSession writes
 // cron_jobs.last_run_outcome (step 4) and, on the pr_created success path,
@@ -52,11 +55,6 @@ type FinalizeResult struct {
 // Block state-machine event so the session shows up as attention-needed in
 // the UI — the Finalizing state itself is intentionally silent per
 // vcs/attention.go.
-//
-// The StartFinalizeChat call is stubbed in this flight leg; FL4-3 fills in
-// the real spawn logic. Until then, the pr_created branch always reports
-// chat_spawn_failed — tests in FL4-2 therefore exercise pr_created by
-// stubbing StartFinalizeChat through a Lifecycle method override in tests.
 func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*FinalizeResult, error) {
 	// Step 1: conditional state transition. The rows_affected guard is the
 	// authoritative idempotency mechanism — a check-then-set Go path would
@@ -148,16 +146,14 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 	return result, nil
 }
 
-// StartFinalizeChat spawns a new Claude chat running the /boss-finalize skill
+// StartFinalizeChat spawns a new agent chat running the boss-finalize command
 // against the session's worktree. The prior implementing-plan chat is left
 // running — the existing idle poller reaps it once it stops producing output —
 // so the user can switch back to it if the finalize chat fails.
 //
-// On success, the new claude process ID is recorded in agent_chats so the UI
-// lists both conversations under the same session row. The session's primary
-// AgentSessionID is intentionally NOT overwritten: the implementing chat
-// remains the canonical "main" chat for the session, and the finalize chat is
-// a sibling.
+// StartTmuxChat records the new chat in agent_chats. The session's primary
+// AgentSessionID is intentionally NOT overwritten: the implementing chat remains
+// the canonical "main" chat for the session, and the finalize chat is a sibling.
 func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) error {
 	session, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
@@ -168,25 +164,11 @@ func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) err
 		return fmt.Errorf("session %s has no worktree path", sessionID)
 	}
 
-	agentSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, finalizeChatSkill, nil, "")
+	agentSessionID, err := l.StartTmuxChat(ctx, sessionID, ChatInput{Command: finalizeChatSkill}, "Finalize", HookOpts{
+		AllowSiblingChat: true,
+	})
 	if err != nil {
-		return fmt.Errorf("start finalize claude: %w", err)
-	}
-
-	if l.agentChats != nil {
-		if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
-			SessionID:      sessionID,
-			AgentSessionID: agentSessionID,
-			AgentName:      session.AgentName,
-			Title:          "Finalize",
-		}); err != nil {
-			// The claude process is already running; failing to record the
-			// chat row would orphan it from the UI but the run itself can
-			// still complete. Surface as an error so FinalizeSession reports
-			// chat_spawn_failed and the session lands in Blocked for an
-			// operator to investigate.
-			return fmt.Errorf("create finalize chat row: %w", err)
-		}
+		return fmt.Errorf("start finalize chat: %w", err)
 	}
 
 	l.logger.Info().
@@ -210,6 +192,7 @@ func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) err
 // pr_failed → Blocked failure observed for "do nothing" cron runs.
 var bossdManagedWorktreeFiles = []string{
 	".claude/settings.local.json",
+	".claude/scheduled_tasks.lock",
 }
 
 // stripBossdManagedFilesWith removes porcelain entries for any of the given
@@ -304,10 +287,45 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub}
 	}
 
+	// The /boss-finalize skill assumes a PR already exists — it reads
+	// `gh pr view` for the base/number/URL and runs `gh pr ready`, with no
+	// `gh pr create` step. Cron sessions defer PR creation at start
+	// (opts.DeferPR), so dirty output can reach here with no PR, and the
+	// branch may have no commits beyond base when the agent left only
+	// uncommitted changes. EnsurePR can't open a PR for a zero-commit branch
+	// (GitHub rejects it with "no commits between") and deliberately makes no
+	// placeholder commit. Add one in that case — mirroring the session-start
+	// draft PR path — so dirty-only runs still get a PR for the chat to
+	// operate on; the chat commits the dirty changes on top and the
+	// placeholder is squashed away during finalize.
+	hasCommittedWork, err := l.cleanBranchHasCommittedWork(ctx, session, true)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Msg("finalize: committed-work check failed for dirty cron output; preserving worktree")
+		return &FinalizeResult{
+			Outcome: models.CronJobOutcomePRFailed,
+			Err:     err,
+		}
+	}
+	if !hasCommittedWork {
+		if err := l.worktrees.EmptyCommit(ctx, session.WorktreePath, draftPRPlaceholderCommitSubject); err != nil {
+			l.logger.Warn().Err(err).
+				Str("session", session.ID).
+				Msg("finalize: placeholder commit failed for dirty cron output; preserving worktree")
+			return &FinalizeResult{
+				Outcome: models.CronJobOutcomePRFailed,
+				Err:     err,
+			}
+		}
+	}
+
+	// EnsurePR is idempotent: it no-ops when the session already has a PR,
+	// and otherwise pushes the branch and opens a draft PR.
 	if err := l.EnsurePR(ctx, session.ID); err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", session.ID).
-			Msg("finalize: EnsurePR failed; preserving worktree")
+			Msg("finalize: EnsurePR failed for dirty cron output; preserving worktree")
 		return &FinalizeResult{
 			Outcome: models.CronJobOutcomePRFailed,
 			Err:     err,
@@ -317,7 +335,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	if err := l.StartFinalizeChat(ctx, session.ID); err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", session.ID).
-			Msg("finalize: chat spawn failed; PR already created, preserving worktree")
+			Msg("finalize: chat spawn failed for dirty cron output; PR already created, preserving worktree")
 		return &FinalizeResult{
 			Outcome: models.CronJobOutcomeChatSpawnFailed,
 			Err:     err,

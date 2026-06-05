@@ -316,6 +316,44 @@ func TestDisplayPoller_ClosedPRSkipsChecksAndReviews(t *testing.T) {
 	}
 }
 
+func TestDisplayPoller_ClosedPRIsTerminalAfterSnapshot(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	snapshots := newMockCheckSnapshotStore()
+	logger := zerolog.Nop()
+
+	prNum := 10
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, HeadSHA: "closed-sha"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 0, logger)
+	poller.SetSnapshotStore(snapshots)
+	poller.poll(ctx)
+	poller.poll(ctx)
+
+	if got := len(vp.getPRStatusPRNumbers); got != 1 {
+		t.Fatalf("GetPRStatus calls = %d, want 1", got)
+	}
+	snaps := snapshots.all()
+	if len(snaps) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snaps))
+	}
+	if snaps[0].ComputedStatus != int(vcs.DisplayStatusClosed) {
+		t.Errorf("ComputedStatus = %d, want %d (Closed)", snaps[0].ComputedStatus, vcs.DisplayStatusClosed)
+	}
+}
+
 func TestDisplayPoller_FailingChecks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -531,6 +569,7 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
 	tracker := status.NewDisplayTracker()
+	snapshots := newMockCheckSnapshotStore()
 	logger := zerolog.Nop()
 
 	prNum := 10
@@ -548,9 +587,10 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: true}
 
 	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
-	poller.Run(ctx)
-
-	time.Sleep(150 * time.Millisecond)
+	poller.SetSnapshotStore(snapshots)
+	if err := poller.RefreshPR(ctx, "owner/repo", prNum); err != nil {
+		t.Fatalf("RefreshPR returned error: %v", err)
+	}
 
 	e := tracker.Get("sess-1")
 	if e == nil {
@@ -559,6 +599,16 @@ func TestDisplayPoller_DraftPR_SkipsChecksAndReviews(t *testing.T) {
 	}
 	if e.Status != vcs.DisplayStatusDraft {
 		t.Errorf("Status = %d, want %d (Draft)", e.Status, vcs.DisplayStatusDraft)
+	}
+	snaps := snapshots.all()
+	if len(snaps) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snaps))
+	}
+	if snaps[0].SessionID != "sess-1" {
+		t.Errorf("SessionID = %q, want sess-1", snaps[0].SessionID)
+	}
+	if snaps[0].ComputedStatus != int(vcs.DisplayStatusDraft) {
+		t.Errorf("ComputedStatus = %d, want %d (Draft)", snaps[0].ComputedStatus, vcs.DisplayStatusDraft)
 	}
 
 	// Verify no check or review API calls were made.
@@ -641,6 +691,40 @@ func TestRefreshPRClosedDraftOverwritesPreviousDraftStatus(t *testing.T) {
 	}
 	if entry.HeadSHA != "closed-sha" {
 		t.Fatalf("HeadSHA = %q, want closed-sha", entry.HeadSHA)
+	}
+}
+
+func TestRefreshPRClosedPRIsTerminalAfterSnapshot(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	snapshots := newMockCheckSnapshotStore()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	sessions.sessions["sess-1"] = &models.Session{ID: "sess-1", RepoID: "repo-1", PRNumber: intPtr(42)}
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateClosed, HeadSHA: "closed-sha"}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	poller.SetSnapshotStore(snapshots)
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("first RefreshPR returned error: %v", err)
+	}
+	if err := poller.RefreshPR(ctx, "owner/repo", 42); err != nil {
+		t.Fatalf("second RefreshPR returned error: %v", err)
+	}
+
+	if got := len(vp.getPRStatusPRNumbers); got != 1 {
+		t.Fatalf("GetPRStatus calls = %d, want 1", got)
+	}
+	snaps := snapshots.all()
+	if len(snaps) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snaps))
+	}
+	if snaps[0].ComputedStatus != int(vcs.DisplayStatusClosed) {
+		t.Errorf("ComputedStatus = %d, want %d (Closed)", snaps[0].ComputedStatus, vcs.DisplayStatusClosed)
 	}
 }
 

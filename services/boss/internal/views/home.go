@@ -2,10 +2,12 @@ package views
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/recurser/boss/internal/daemon"
 	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -165,6 +168,9 @@ type HomeModel struct {
 	checkoutCancelURL    string
 	cloudCheckoutStatus  string
 	cloudCheckoutPolling bool
+	settings             config.Settings
+	startedAt            time.Time
+	now                  func() time.Time
 
 	// Upgrade banner / restart prompt
 	upgradeAvailable bool
@@ -179,6 +185,7 @@ type HomeModel struct {
 
 // NewHomeModel creates a HomeModel wired to the daemon client.
 func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manager) HomeModel {
+	now := time.Now
 	return HomeModel{
 		client:          c,
 		ctx:             ctx,
@@ -187,7 +194,21 @@ func NewHomeModel(c client.BossClient, ctx context.Context, authMgr *auth.Manage
 		loading:         true,
 		table:           newBossTable(nil, nil, 0),
 		upgradeChecking: true,
+		settings:        config.DefaultSettings(),
+		startedAt:       now(),
+		now:             now,
 	}
+}
+
+func (h *HomeModel) SetSettings(settings config.Settings) {
+	h.settings = settings
+}
+
+func (h HomeModel) currentTime() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
 }
 
 func (h *HomeModel) SetCloudAccessClient(c CloudAccessClient) {
@@ -1035,14 +1056,64 @@ func checkoutActivationPending(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "being activated")
 }
 
+var cloudAccessSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b((?:access_token|refresh_token|id_token|token|api[_-]?key|client[_-]?secret|secret|key)\s*=\s*)[^&\s,;]+`),
+	regexp.MustCompile(`(?i)\b(authorization\s*:\s*bearer\s+)[^\s,;]+`),
+}
+
+// cloudBillingUnavailableLine is the user-facing copy shown when Bossanova
+// Cloud reports its billing system as unavailable. It is shared between the
+// home gate line and the subscription flow so the two cannot drift.
+const cloudBillingUnavailableLine = "Cloud billing unavailable. Local sessions are still available."
+
+// cloudAccessUnavailableFallbackLine is shown when the subscription flow reaches
+// an unexpected, unrecoverable state with no specific error to report.
+const cloudAccessUnavailableFallbackLine = "Bossanova Cloud is unavailable. Local sessions are still available."
+
+func cloudAccessUnavailableLine(err error) string {
+	return fmt.Sprintf(
+		"Cloud access status unavailable: %s. Local sessions are still available.",
+		cloudAccessErrorSummary(err),
+	)
+}
+
+func cloudAccessErrorSummary(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	if code := connect.CodeOf(err); code != connect.CodeUnknown {
+		message := redactCloudAccessError(connectErrorMessage(err))
+		return fmt.Sprintf("%s: %s", strings.ToLower(code.String()), message)
+	}
+	return redactCloudAccessError(err.Error())
+}
+
+func connectErrorMessage(err error) string {
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) {
+		if message := connectErr.Message(); message != "" {
+			return message
+		}
+	}
+	return "unknown error"
+}
+
+func redactCloudAccessError(message string) string {
+	for _, pattern := range cloudAccessSecretPatterns {
+		message = pattern.ReplaceAllString(message, "$1[redacted]")
+	}
+	return message
+}
+
 func (h HomeModel) cloudGateLine() string {
 	if !h.loggedIn || h.cloudAccess == nil {
 		return ""
 	}
-	if h.cloudErr != nil || h.cloudStatus.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE {
-		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(
-			"Cloud billing unavailable. Local sessions are still available.",
-		)
+	if h.cloudErr != nil {
+		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(cloudAccessUnavailableLine(h.cloudErr))
+	}
+	if h.cloudStatus.GetState() == pb.CloudAccessState_CLOUD_ACCESS_STATE_BILLING_UNAVAILABLE {
+		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(cloudBillingUnavailableLine)
 	}
 	if h.cloudChecking && h.cloudStatus == nil {
 		return lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render("Checking Bossanova Cloud access...")
@@ -1099,7 +1170,10 @@ func (h HomeModel) View() tea.View {
 
 	if len(h.sessions) == 0 {
 		var content string
-		discovery := cloudDiscoveryLine(h.loggedIn, h.authMgr != nil)
+		discovery := ""
+		if cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil) {
+			discovery = cloudDiscoveryLine(h.loggedIn, h.authMgr != nil)
+		}
 		if h.repoCount == 0 {
 			// No repos configured - show welcome message with setup instructions
 			actions := []string{"[r]epos", "[s]ettings"}
@@ -1184,8 +1258,10 @@ func (h HomeModel) View() tea.View {
 			navActions,
 			[]string{"[q]uit"},
 		))
-		if discovery := cloudDiscoveryLine(h.loggedIn, h.authMgr != nil); discovery != "" {
-			b.WriteString(discovery)
+		if cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil) {
+			if discovery := cloudDiscoveryLine(h.loggedIn, h.authMgr != nil); discovery != "" {
+				b.WriteString(discovery)
+			}
 		}
 		if gate := h.cloudGateLine(); gate != "" {
 			b.WriteString("\n")

@@ -294,6 +294,113 @@ func TestRepairSession_StartsSecondFreshRunWhenChecksFailAfterPush(t *testing.T)
 	require.Equal(t, 2, fireCalls)
 }
 
+// TestRepairSession_ResumeStartErrorStopsCleanly locks in the resume fallback
+// guarantee: when a resumed iteration's StartChatRun returns a
+// non-AlreadyExists error (the daemon could not honor the run), runRepairAttempt
+// returns ("", false), the loop's `if !ok { return }` ends it, and no further
+// attempts run. The periodic sweep later re-triggers a fresh repairSession from
+// attempt 1 with an empty resume target.
+func TestRepairSession_ResumeStartErrorStopsCleanly(t *testing.T) {
+	mock := newTestMock()
+	// Same two-iteration harness as StartsSecondFreshRunWhenChecksFailAfterPush:
+	// attempt 1 runs, checks fail on a new head, so attempt 2 would start.
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, DisplayHasFailures: true, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING, PrDisplayHeadSha: "def456"}},
+	}
+	var n int
+	mock.startFunc = func(*bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
+		n++
+		if n == 1 {
+			return &bossanovav1.StartChatRunHostResponse{AgentSessionId: "agent-1"}, nil
+		}
+		// Attempt 2 is the resumed run; the daemon refuses it with a
+		// non-AlreadyExists error (eg. an internal failure).
+		return nil, grpcstatus.Error(codes.Internal, "resume failed")
+	}
+	rm := newTestMonitor(mock)
+	rm.repairing["s1"] = true
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+
+	startCalls, waitCalls, _, _ := mock.snapshot()
+	// Attempt 1 started + the failed attempt 2 start; the loop stopped after the
+	// non-AlreadyExists error, so there is no third start.
+	require.Equal(t, 2, startCalls, "StartChatRun called exactly twice (no third attempt)")
+	// Only attempt 1 reached WaitChatRun; the failed start never waits.
+	require.Equal(t, 1, waitCalls, "WaitChatRun called once")
+
+	// The deferred cleanup cleared the repairing flag — the loop returned
+	// cleanly rather than leaking the session as in-repair.
+	rm.mu.Lock()
+	assert.False(t, rm.repairing["s1"], "repairing flag cleared")
+	rm.mu.Unlock()
+
+	// The daemon-refusal path sets outcomeRunnerError + outcomeShouldRecord, so
+	// the failed start records an outcome with a non-empty runner error.
+	mock.mu.Lock()
+	require.NotEmpty(t, mock.recordOutcomeReqs, "an outcome was recorded for the failed start")
+	last := mock.recordOutcomeReqs[len(mock.recordOutcomeReqs)-1]
+	mock.mu.Unlock()
+	assert.NotEmpty(t, last.GetRunnerError(), "failed resume start records a runner error")
+}
+
+func TestRepairStartChatRunRequest_SetsResumeTarget(t *testing.T) {
+	got := repairStartChatRunRequest("sess", "demo", "", time.Time{}, "agent-prior")
+	if got.GetResumeAgentSessionId() != "agent-prior" {
+		t.Errorf("ResumeAgentSessionId = %q, want %q", got.GetResumeAgentSessionId(), "agent-prior")
+	}
+	fresh := repairStartChatRunRequest("sess", "demo", "", time.Time{}, "")
+	if fresh.GetResumeAgentSessionId() != "" {
+		t.Errorf("fresh ResumeAgentSessionId = %q, want empty", fresh.GetResumeAgentSessionId())
+	}
+}
+
+func TestRepairSession_SecondAttemptResumesFirstSession(t *testing.T) {
+	mock := newTestMock()
+	mock.sessionSequences = [][]*bossanovav1.Session{
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_AWAITING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_CHECKING}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, DisplayHasFailures: true, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS, PrDisplayHeadSha: "def456"}},
+		{{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_READY_FOR_REVIEW, DisplayStatus: bossanovav1.DisplayStatus_DISPLAY_STATUS_PASSING, PrDisplayHeadSha: "def456"}},
+	}
+	var n int
+	mock.startFunc = func(*bossanovav1.StartChatRunHostRequest) (*bossanovav1.StartChatRunHostResponse, error) {
+		n++
+		return &bossanovav1.StartChatRunHostResponse{AgentSessionId: fmt.Sprintf("agent-%d", n)}, nil
+	}
+	mock.waitResp = &bossanovav1.WaitChatRunHostResponse{ProviderSessionId: "provider-1"}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{PostRepairPollMilliseconds: 1, PostRepairWaitMilliseconds: 100}
+
+	rm.repairSession(context.Background(), "s1", "repo", "session-name", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true, "abc123", "", time.Time{}, "", true)
+
+	reqs := mock.startRequestsSnapshot()
+	if len(reqs) != 2 {
+		t.Fatalf("StartChatRun calls = %d, want 2", len(reqs))
+	}
+	if reqs[0].GetResumeAgentSessionId() != "" {
+		t.Errorf("attempt 1 resume = %q, want empty (fresh start)", reqs[0].GetResumeAgentSessionId())
+	}
+	if reqs[1].GetResumeAgentSessionId() != "provider-1" {
+		t.Errorf("attempt 2 resume = %q, want %q (the first attempt's provider id)", reqs[1].GetResumeAgentSessionId(), "provider-1")
+	}
+}
+
+func TestRepairResumeSessionIDFallsBackToAgentSessionID(t *testing.T) {
+	if got := repairResumeSessionID("agent-1", &bossanovav1.WaitChatRunHostResponse{}); got != "agent-1" {
+		t.Fatalf("resume id = %q, want agent-1", got)
+	}
+	if got := repairResumeSessionID("agent-1", nil); got != "agent-1" {
+		t.Fatalf("nil response resume id = %q, want agent-1", got)
+	}
+}
+
 func TestRepairSession_DoesNotStartSecondFreshRunWhenChecksFailOnSameInput(t *testing.T) {
 	mock := newTestMock()
 	mock.sessionSequences = [][]*bossanovav1.Session{
@@ -1059,6 +1166,23 @@ func TestMaybeRepair_SkipsDuringCooldown(t *testing.T) {
 	assert.Equal(t, 0, startCalls)
 }
 
+func TestMaybeRepair_CapsInMemoryCooldown(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS},
+	}
+	rm := newTestMonitor(mock)
+	rm.config = &repairConfig{CooldownMinutes: 45}
+	rm.cooldowns["s1"] = time.Now().Add(-31 * time.Minute)
+
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+
+	waitFor(t, func() bool {
+		c, _, _, _ := mock.snapshot()
+		return c > 0
+	}, "StartChatRun called after capped in-memory cooldown")
+}
+
 func TestMaybeRepair_SkipsWhileChatActive(t *testing.T) {
 	mock := newTestMock()
 	mock.sessions = []*bossanovav1.Session{
@@ -1351,6 +1475,7 @@ func TestCooldownFor_RespectsConfiguredBase(t *testing.T) {
 		{"fifteen minute base first failure", 15 * time.Minute, 1, 15 * time.Minute},
 		{"fifteen minute base second failure reaches cap", 15 * time.Minute, 2, 30 * time.Minute},
 		{"fifteen minute base later failures stay capped", 15 * time.Minute, 3, 30 * time.Minute},
+		{"oversized base with no persisted failure caps", 45 * time.Minute, 0, 30 * time.Minute},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

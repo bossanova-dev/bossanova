@@ -137,10 +137,10 @@ type process struct {
 const earlyOutputCap = 8 * 1024
 
 // earlyOutputTimeout bounds how long Runner.Start waits for the early
-// output buffer to produce a discoverable session ID. Two seconds still keeps
+// output buffer to produce a discoverable session ID. Five seconds still keeps
 // StartRun responsive while avoiding false misses on loaded machines where
-// process startup and stdout copy scheduling can exceed half a second.
-const earlyOutputTimeout = 2 * time.Second
+// process startup and stdout copy scheduling can take multiple seconds.
+const earlyOutputTimeout = 5 * time.Second
 
 // Option configures a Runner via NewRunner's variadic options.
 type Option func(*Runner)

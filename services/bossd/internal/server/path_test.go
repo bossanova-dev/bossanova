@@ -1,11 +1,15 @@
 package server
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/recurser/bossalib/config"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 func TestDefaultSocketPathForSettingsUsesSocketPath(t *testing.T) {
@@ -96,6 +100,111 @@ func TestListenRejectsRegularFileSocketPathWithoutRemovingIt(t *testing.T) {
 	if string(got) != string(contents) {
 		t.Fatalf("regular file contents = %q, want %q", got, contents)
 	}
+}
+
+func TestValidateRepoPath(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "not-dir")
+	if err := os.WriteFile(filePath, []byte("contents"), 0o600); err != nil {
+		t.Fatalf("write regular file: %v", err)
+	}
+
+	tests := []struct {
+		name              string
+		path              string
+		worktrees         *validateRepoPathWorktree
+		wantValid         bool
+		wantErrorContains string
+		wantOriginURL     string
+		wantIsGitHub      bool
+		wantDefaultBranch string
+	}{
+		{
+			name:              "empty path",
+			wantErrorContains: "path is required",
+		},
+		{
+			name:              "missing path",
+			path:              filepath.Join(dir, "missing"),
+			wantErrorContains: "path does not exist",
+		},
+		{
+			name:              "regular file",
+			path:              filePath,
+			wantErrorContains: "path is not a directory",
+		},
+		{
+			name:              "directory that is not git repo",
+			path:              dir,
+			worktrees:         &validateRepoPathWorktree{},
+			wantErrorContains: "not a git repository",
+		},
+		{
+			name:              "valid github repo",
+			path:              dir,
+			worktrees:         &validateRepoPathWorktree{isGitRepo: true, originURL: "git@github.com:recurser/bossanova.git", defaultBranch: "trunk"},
+			wantValid:         true,
+			wantOriginURL:     "git@github.com:recurser/bossanova.git",
+			wantIsGitHub:      true,
+			wantDefaultBranch: "trunk",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(Config{Worktrees: tc.worktrees})
+
+			resp, err := s.ValidateRepoPath(context.Background(), connect.NewRequest(&pb.ValidateRepoPathRequest{
+				LocalPath: tc.path,
+			}))
+			if err != nil {
+				t.Fatalf("ValidateRepoPath() error = %v", err)
+			}
+
+			got := resp.Msg
+			if got.IsValid != tc.wantValid {
+				t.Fatalf("ValidateRepoPath().IsValid = %v, want %v", got.IsValid, tc.wantValid)
+			}
+			if tc.wantErrorContains != "" {
+				if !strings.Contains(got.ErrorMessage, tc.wantErrorContains) {
+					t.Fatalf("ValidateRepoPath().ErrorMessage = %q, want substring %q", got.ErrorMessage, tc.wantErrorContains)
+				}
+				return
+			}
+			if got.ErrorMessage != "" {
+				t.Fatalf("ValidateRepoPath().ErrorMessage = %q, want empty", got.ErrorMessage)
+			}
+			if got.OriginUrl != tc.wantOriginURL {
+				t.Fatalf("ValidateRepoPath().OriginUrl = %q, want %q", got.OriginUrl, tc.wantOriginURL)
+			}
+			if got.IsGithub != tc.wantIsGitHub {
+				t.Fatalf("ValidateRepoPath().IsGithub = %v, want %v", got.IsGithub, tc.wantIsGitHub)
+			}
+			if got.DefaultBranch != tc.wantDefaultBranch {
+				t.Fatalf("ValidateRepoPath().DefaultBranch = %q, want %q", got.DefaultBranch, tc.wantDefaultBranch)
+			}
+		})
+	}
+}
+
+type validateRepoPathWorktree struct {
+	setupStreamWorktree
+
+	isGitRepo     bool
+	originURL     string
+	defaultBranch string
+}
+
+func (w *validateRepoPathWorktree) IsGitRepo(context.Context, string) bool {
+	return w.isGitRepo
+}
+
+func (w *validateRepoPathWorktree) DetectOriginURL(context.Context, string) (string, error) {
+	return w.originURL, nil
+}
+
+func (w *validateRepoPathWorktree) DetectDefaultBranch(context.Context, string) (string, error) {
+	return w.defaultBranch, nil
 }
 
 func isolateHomeEnv(t *testing.T) {

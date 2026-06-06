@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/recurser/bossalib/appstate"
+	"github.com/recurser/bossalib/config"
 )
 
 const workOSRefreshLockFile = "workos-refresh.lock"
@@ -21,11 +22,29 @@ type Lock struct {
 
 // AcquireWorkOSRefreshLock acquires the shared WorkOS refresh lock.
 func AcquireWorkOSRefreshLock(ctx context.Context) (*Lock, error) {
-	path, err := appstate.Path(workOSRefreshLockFile)
+	settings, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load settings for refresh lock: %w", err)
+	}
+	return AcquireWorkOSRefreshLockForSettings(ctx, settings)
+}
+
+// AcquireWorkOSRefreshLockForSettings acquires the shared WorkOS refresh lock
+// from the global appstate path. WorkOS tokens are shared through the host
+// keyring, so the refresh lock must stay shared across profiles.
+func AcquireWorkOSRefreshLockForSettings(ctx context.Context, settings config.Settings) (*Lock, error) {
+	path, err := workOSRefreshLockPath(settings)
 	if err != nil {
 		return nil, err
 	}
 	return acquire(ctx, path, pollInterval)
+}
+
+func workOSRefreshLockPath(settings config.Settings) (string, error) {
+	if _, _, err := config.ConfiguredAppDataDir(settings); err != nil {
+		return "", err
+	}
+	return appstate.Path(workOSRefreshLockFile)
 }
 
 func acquire(ctx context.Context, path string, interval time.Duration) (*Lock, error) {

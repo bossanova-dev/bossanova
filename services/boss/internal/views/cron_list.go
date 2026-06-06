@@ -519,7 +519,13 @@ func replaceJob(jobs []*pb.CronJob, updated *pb.CronJob) []*pb.CronJob {
 
 // relTimeAgo formats a past time as "Xm ago", "Xh ago", etc.
 func relTimeAgo(t time.Time) string {
-	d := time.Since(t)
+	return formatRelAgo(time.Since(t))
+}
+
+// formatRelAgo formats an elapsed duration as "just now", "Xm ago", "Xh ago",
+// or "Xd ago". Split from relTimeAgo so the threshold logic is unit-testable
+// with exact durations rather than wall-clock time.
+func formatRelAgo(d time.Duration) string {
 	switch {
 	case d < time.Minute:
 		return "just now"
@@ -534,7 +540,13 @@ func relTimeAgo(t time.Time) string {
 
 // relTimeFuture formats a future time as "in Xm", "in Xh", etc.
 func relTimeFuture(t time.Time) string {
-	d := time.Until(t)
+	return formatRelFuture(time.Until(t))
+}
+
+// formatRelFuture formats a remaining duration as "now", "in Xs", "in Xm",
+// "in Xh", or "in Xd". Split from relTimeFuture so the threshold logic is
+// unit-testable with exact durations rather than wall-clock time.
+func formatRelFuture(d time.Duration) string {
 	if d <= 0 {
 		return "now"
 	}

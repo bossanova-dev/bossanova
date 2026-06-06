@@ -41,6 +41,7 @@ func TestSaveAndLoad(t *testing.T) {
 		WorktreeBaseDir:     "/custom/worktrees",
 		DefaultAgent:        "opencode",
 		PollIntervalSeconds: 60,
+		LoginShell:          "/opt/homebrew/bin/fish",
 		SkillsDeclinedByAgent: map[string]bool{
 			"codex": true,
 		},
@@ -73,6 +74,9 @@ func TestSaveAndLoad(t *testing.T) {
 		t.Errorf("PollIntervalSeconds: got %d, want %d",
 			loaded.PollIntervalSeconds, original.PollIntervalSeconds)
 	}
+	if loaded.LoginShell != original.LoginShell {
+		t.Errorf("LoginShell: got %q, want %q", loaded.LoginShell, original.LoginShell)
+	}
 	if !loaded.SkillsDeclinedByAgent["codex"] {
 		t.Errorf("SkillsDeclinedByAgent[codex]: got false, want true")
 	}
@@ -81,6 +85,122 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if loaded.SkillsInstalledManifestByAgent["claude"] != "installed-manifest" {
 		t.Errorf("SkillsInstalledManifestByAgent[claude]: got %q", loaded.SkillsInstalledManifestByAgent["claude"])
+	}
+}
+
+func TestPathUsesBossSettingsPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile", "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", path)
+
+	got, err := Path()
+	if err != nil {
+		t.Fatalf("Path() returned error: %v", err)
+	}
+	if got != path {
+		t.Fatalf("Path() = %q, want %q", got, path)
+	}
+}
+
+func TestPathRejectsRelativeBossSettingsPath(t *testing.T) {
+	t.Setenv("BOSS_SETTINGS_PATH", "relative/settings.json")
+
+	_, err := Path()
+	if err == nil {
+		t.Fatal("Path() error = nil, want relative path error")
+	}
+	if !strings.Contains(err.Error(), "BOSS_SETTINGS_PATH must be absolute") {
+		t.Fatalf("Path() error = %q, want BOSS_SETTINGS_PATH absolute error", err.Error())
+	}
+}
+
+func TestSettingsRuntimePathsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	in := DefaultSettings()
+	in.AppDataDir = filepath.Join(t.TempDir(), "data")
+	in.SocketPath = filepath.Join(t.TempDir(), "bossd.sock")
+
+	if err := SaveTo(path, in); err != nil {
+		t.Fatalf("SaveTo() returned error: %v", err)
+	}
+
+	out, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom() returned error: %v", err)
+	}
+	if out.AppDataDir != in.AppDataDir {
+		t.Fatalf("AppDataDir = %q, want %q", out.AppDataDir, in.AppDataDir)
+	}
+	if out.SocketPath != in.SocketPath {
+		t.Fatalf("SocketPath = %q, want %q", out.SocketPath, in.SocketPath)
+	}
+}
+
+func TestConfiguredAppDataDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+
+	got, ok, err := ConfiguredAppDataDir(Settings{AppDataDir: dir})
+	if err != nil {
+		t.Fatalf("ConfiguredAppDataDir() returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("ConfiguredAppDataDir() ok = false, want true")
+	}
+	if got != dir {
+		t.Fatalf("ConfiguredAppDataDir() = %q, want %q", got, dir)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("configured app data dir was not created: %v", err)
+	}
+}
+
+func TestConfiguredAppDataDirRejectsRelativePath(t *testing.T) {
+	_, _, err := ConfiguredAppDataDir(Settings{AppDataDir: "relative/data"})
+	if err == nil {
+		t.Fatal("ConfiguredAppDataDir() error = nil, want relative path error")
+	}
+	if !strings.Contains(err.Error(), "app_data_dir must be absolute") {
+		t.Fatalf("ConfiguredAppDataDir() error = %q, want absolute path error", err.Error())
+	}
+}
+
+func TestConfiguredSocketPath(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+
+	got, ok, err := ConfiguredSocketPath(Settings{SocketPath: socketPath})
+	if err != nil {
+		t.Fatalf("ConfiguredSocketPath() returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("ConfiguredSocketPath() ok = false, want true")
+	}
+	if got != socketPath {
+		t.Fatalf("ConfiguredSocketPath() = %q, want %q", got, socketPath)
+	}
+}
+
+func TestConfiguredSocketPathDefaultsToAppDataDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+
+	got, ok, err := ConfiguredSocketPath(Settings{AppDataDir: dir})
+	if err != nil {
+		t.Fatalf("ConfiguredSocketPath() returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("ConfiguredSocketPath() ok = false, want true")
+	}
+	want := filepath.Join(dir, "bossd.sock")
+	if got != want {
+		t.Fatalf("ConfiguredSocketPath() = %q, want %q", got, want)
+	}
+}
+
+func TestConfiguredSocketPathRejectsRelativePath(t *testing.T) {
+	_, _, err := ConfiguredSocketPath(Settings{SocketPath: "relative/bossd.sock"})
+	if err == nil {
+		t.Fatal("ConfiguredSocketPath() error = nil, want relative path error")
+	}
+	if !strings.Contains(err.Error(), "socket_path must be absolute") {
+		t.Fatalf("ConfiguredSocketPath() error = %q, want absolute path error", err.Error())
 	}
 }
 
@@ -934,5 +1054,67 @@ func TestSettings_ErrorTrackingEnabled_OmittedWhenFalse(t *testing.T) {
 	}
 	if strings.Contains(string(data), "error_tracking_enabled") {
 		t.Errorf("default-false field leaked into JSON: %s", data)
+	}
+}
+
+func TestUserPluginDirUsesConfiguredAppDataDir(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	appDataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+
+	if err := SaveTo(settingsPath, Settings{AppDataDir: appDataDir}); err != nil {
+		t.Fatalf("SaveTo() returned error: %v", err)
+	}
+
+	got, err := UserPluginDir()
+	if err != nil {
+		t.Fatalf("UserPluginDir() returned error: %v", err)
+	}
+	want := filepath.Join(appDataDir, "plugins")
+	if got != want {
+		t.Fatalf("UserPluginDir() = %q, want %q", got, want)
+	}
+}
+
+func TestUserPluginDirDoesNotCreateWorktreeBaseDir(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	worktreeBaseDir := filepath.Join(t.TempDir(), "worktrees")
+	appDataDir := filepath.Join(t.TempDir(), "data")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+
+	if err := SaveTo(settingsPath, Settings{
+		WorktreeBaseDir: worktreeBaseDir,
+		AppDataDir:      appDataDir,
+	}); err != nil {
+		t.Fatalf("SaveTo() returned error: %v", err)
+	}
+
+	if _, err := UserPluginDir(); err != nil {
+		t.Fatalf("UserPluginDir() returned error: %v", err)
+	}
+	if _, err := os.Stat(worktreeBaseDir); !os.IsNotExist(err) {
+		t.Fatalf("UserPluginDir() created WorktreeBaseDir %q", worktreeBaseDir)
+	}
+}
+
+func TestUserPluginDirFallsBackToUserConfigDir(t *testing.T) {
+	settingsPath := filepath.Join(t.TempDir(), "missing-settings.json")
+	homeDir := t.TempDir()
+	xdgConfigHome := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	t.Setenv("HOME", homeDir)
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+
+	got, err := UserPluginDir()
+	if err != nil {
+		t.Fatalf("UserPluginDir() returned error: %v", err)
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir() returned error: %v", err)
+	}
+	want := filepath.Join(configDir, "bossanova", "plugins")
+	if got != want {
+		t.Fatalf("UserPluginDir() = %q, want %q", got, want)
 	}
 }

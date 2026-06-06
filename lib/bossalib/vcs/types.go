@@ -1,6 +1,9 @@
 package vcs
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrRepoNotReady is returned when a repository does not have enough commit
 // history to support pull request creation (e.g. the repo only contains an
@@ -68,6 +71,44 @@ const (
 	MergeStateStatusUnstable
 )
 
+// ConflictBlockKind classifies why a PR cannot currently be merged.
+type ConflictBlockKind int
+
+const (
+	ConflictBlockNone ConflictBlockKind = iota
+	ConflictBlockMerge
+	ConflictBlockRebase
+	ConflictBlockReviewRequired
+	ConflictBlockUnstable
+	ConflictBlockUnknown
+)
+
+func (k ConflictBlockKind) Repairable() bool {
+	return k == ConflictBlockMerge || k == ConflictBlockRebase
+}
+
+// String returns a stable, human-readable label for the block kind. It is the
+// single source of truth for rendering a ConflictBlockKind (e.g. in repair
+// error messages), so callers must not maintain their own enum→string maps.
+func (k ConflictBlockKind) String() string {
+	switch k {
+	case ConflictBlockNone:
+		return "none"
+	case ConflictBlockMerge:
+		return "merge"
+	case ConflictBlockRebase:
+		return "rebase"
+	case ConflictBlockReviewRequired:
+		return "review-required"
+	case ConflictBlockUnstable:
+		return "unstable"
+	case ConflictBlockUnknown:
+		return "unknown"
+	default:
+		return fmt.Sprintf("unrecognized(%d)", int(k))
+	}
+}
+
 // PRStatus represents the current status of a pull/merge request.
 type PRStatus struct {
 	State               PRState
@@ -105,10 +146,7 @@ func (pr *PRStatus) IsReviewRequiredBlock() bool {
 // HasConflictBlock reports strategy-independent PR states that should trigger
 // conflict repair.
 func (pr *PRStatus) HasConflictBlock() bool {
-	if pr == nil {
-		return false
-	}
-	return pr.Mergeable != nil && !*pr.Mergeable
+	return pr.ConflictBlockKind(false) == ConflictBlockMerge
 }
 
 // HasRebaseConflictBlock reports PR states that only block rebase-and-merge.
@@ -117,6 +155,36 @@ func (pr *PRStatus) HasRebaseConflictBlock() bool {
 		return false
 	}
 	return pr.Rebaseable != nil && !*pr.Rebaseable && !pr.IsReviewRequiredBlock()
+}
+
+// ConflictBlockKind reports the PR block category after applying the repository
+// merge strategy. Only repairable kinds should trigger conflict repair.
+func (pr *PRStatus) ConflictBlockKind(rebaseStrategy bool) ConflictBlockKind {
+	if pr == nil {
+		return ConflictBlockNone
+	}
+	if pr.IsReviewRequiredBlock() {
+		return ConflictBlockReviewRequired
+	}
+	if pr.MergeStateStatus == MergeStateStatusDirty {
+		return ConflictBlockMerge
+	}
+	if pr.Mergeable != nil && !*pr.Mergeable {
+		return ConflictBlockMerge
+	}
+	switch pr.MergeStateStatus {
+	case MergeStateStatusUnstable, MergeStateStatusBlocked, MergeStateStatusHasHooks:
+		return ConflictBlockUnstable
+	case MergeStateStatusUnknown, MergeStateStatusUnspecified:
+		if pr.Mergeable == nil {
+			return ConflictBlockUnknown
+		}
+	case MergeStateStatusClean, MergeStateStatusBehind, MergeStateStatusDirty, MergeStateStatusDraft:
+	}
+	if rebaseStrategy && pr.HasRebaseConflictBlock() {
+		return ConflictBlockRebase
+	}
+	return ConflictBlockNone
 }
 
 // CheckResult represents the result of a single CI check.

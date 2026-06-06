@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/displaystatus"
 	"github.com/recurser/bossalib/errortrack"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -43,16 +44,31 @@ const maxSetupOutputLineBytes = 256 * 1024
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
 // On macOS: ~/Library/Application Support/bossanova/bossd.sock
+// On Linux: ~/.config/bossanova/bossd.sock
 func DefaultSocketPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := config.DefaultAppDataDir()
 	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
+		return "", fmt.Errorf("resolve app data dir: %w", err)
 	}
-	dir := filepath.Join(home, "Library", "Application Support", "bossanova")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create socket dir: %w", err)
 	}
 	return filepath.Join(dir, "bossd.sock"), nil
+}
+
+// DefaultSocketPathForSettings returns the daemon socket path for loaded
+// settings. socket_path wins over app_data_dir. When both are unset, existing
+// platform defaults are preserved.
+func DefaultSocketPathForSettings(settings config.Settings) (string, error) {
+	if p, ok, err := config.ConfiguredSocketPath(settings); err != nil {
+		return "", err
+	} else if ok {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return "", fmt.Errorf("create socket dir: %w", err)
+		}
+		return p, nil
+	}
+	return DefaultSocketPath()
 }
 
 // Server wraps the ConnectRPC DaemonService handler and a Unix socket listener.
@@ -216,9 +232,21 @@ func (s *Server) Listen(socketPath string) error {
 		return fmt.Errorf("socket %s is already served by a running daemon", socketPath)
 	}
 
-	// Remove stale socket file from previous run.
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stale socket: %w", err)
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		return fmt.Errorf("create socket dir: %w", err)
+	}
+
+	// Remove only stale socket files from previous runs. Never unlink an
+	// arbitrary configured path.
+	if info, err := os.Lstat(socketPath); err == nil {
+		if info.Mode().Type() != os.ModeSocket {
+			return fmt.Errorf("socket path exists and is not a socket: %s", socketPath)
+		}
+		if err := os.Remove(socketPath); err != nil {
+			return fmt.Errorf("remove stale socket: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat socket path: %w", err)
 	}
 
 	ln, err := net.Listen("unix", socketPath)

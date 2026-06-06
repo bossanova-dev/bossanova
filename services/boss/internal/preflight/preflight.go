@@ -4,11 +4,20 @@
 package preflight
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/recurser/bossalib/loginshell"
 )
+
+const agentResolveTimeout = 5 * time.Second
+
+var safeAgentCommandPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Issue describes a failed preflight check. Title is a short headline shown
 // in bold; Detail is the multi-line explanation including install hints.
@@ -57,6 +66,81 @@ func CheckShellTools() *Issue {
 			"and repair runs persist their tmux pane output to disk. Install " +
 			"the missing tool(s) and restart boss:\n\n" + shellToolsInstallHint(missing),
 	}
+}
+
+// CheckAgentResolvable verifies the agent CLI resolves through the user's
+// login shell in the worktree, mirroring how the daemon launches it.
+func CheckAgentResolvable(shell, agent, worktree string) *Issue {
+	return checkAgentResolvable(shell, agent, worktree, runShell)
+}
+
+// checkAgentResolvable verifies the agent CLI resolves through the user's login
+// shell in the worktree, mirroring how the daemon launches it. runShell is
+// injected for testability; production passes runShell which execs a
+// shell-specific `command -v <agent>` probe with cwd=worktree for supported
+// shells.
+func checkAgentResolvable(shell, agent, worktree string, run func(shell, worktree, line string) error) *Issue {
+	if !safeAgentCommandPattern.MatchString(agent) {
+		return &Issue{
+			Title: agent + " is not a valid agent command",
+			Detail: fmt.Sprintf(
+				"Boss cannot check the enabled agent provider %q because its command name "+
+					"is not safe to pass to shell preflight. Use only letters, numbers, dot, "+
+					"underscore, and hyphen, starting with a letter or number.",
+				agent),
+		}
+	}
+	if shell == "" {
+		return nil
+	}
+	if !loginshell.IsSupported(shell) {
+		return nil
+	}
+	// `command -v` probes the same login shell + worktree the daemon launches
+	// through, so it catches a missing PATH/shim binary up front. It assumes the
+	// agent resolves as a PATH/shim entry (how every supported agent ships); an
+	// agent provided purely as a shell function or alias could diverge from the
+	// `exec`-based launch wrap, but none do today.
+	if err := run(shell, worktree, "command -v "+agent); err != nil {
+		return agentNotFoundIssue(shell, agent, worktree)
+	}
+	return nil
+}
+
+func agentNotFoundIssue(shell, agent, worktree string) *Issue {
+	flags := strings.Join(loginshell.Flags(shell), " ")
+	line := loginshell.CommandLine(shell, "command -v "+agent)
+	return &Issue{
+		Title: agent + " was not found for this project",
+		Detail: fmt.Sprintf(
+			"Boss launches %s through your login shell (%s) in the worktree, but it "+
+				"could not be resolved there. If you use a per-project version manager "+
+				"(nodenv/asdf/mise) or a project-local install, make sure `%s` works when "+
+				"you run it in:\n\n    %s\n\n(checked: %s %s %q)",
+			agent, shell, agent, worktree, shell, flags, line),
+	}
+}
+
+func runShell(shell, worktree, line string) error {
+	return runShellWithTimeout(shell, worktree, line, agentResolveTimeout)
+}
+
+func runShellWithTimeout(shell, worktree, line string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	err := runShellContext(ctx, shell, worktree, line)
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("shell command timed out after %s: %w", timeout, ctx.Err())
+	}
+	return err
+}
+
+func runShellContext(ctx context.Context, shell, worktree, line string) error {
+	args := append(loginshell.Flags(shell), loginshell.CommandLine(shell, line))
+	cmd := exec.CommandContext(ctx, shell, args...)
+	cmd.Dir = worktree
+	return cmd.Run()
 }
 
 func tmuxInstallHint() string {

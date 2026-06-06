@@ -50,6 +50,9 @@ func runnerOptsFromEnv() []Option {
 	if model := os.Getenv("BOSS_PLUGIN_model"); model != "" {
 		opts = append(opts, WithModel(model))
 	}
+	if shell := os.Getenv("BOSS_PLUGIN_login_shell"); shell != "" {
+		opts = append(opts, WithLoginShell(shell))
+	}
 	if os.Getenv("BOSS_PLUGIN_dangerously_bypass_approvals_and_sandbox") == "true" {
 		opts = append(opts, WithDangerouslyBypassApprovalsAndSandbox(true))
 	}

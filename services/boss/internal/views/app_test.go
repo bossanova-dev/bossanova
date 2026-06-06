@@ -223,7 +223,7 @@ func TestAppHomeSubscribeKeyShowsSubscriptionWaitingView(t *testing.T) {
 	if got.login.subscription.phase != subscriptionPhaseWaiting {
 		t.Fatalf("subscription phase = %v, want waiting", got.login.subscription.phase)
 	}
-	if !strings.Contains(got.View().Content, "Loading your account. Continue in your browser...") {
+	if !strings.Contains(got.View().Content, "Loading your account...") {
 		t.Fatalf("login view missing waiting copy: %q", got.View().Content)
 	}
 	if cmd == nil {

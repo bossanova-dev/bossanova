@@ -396,6 +396,9 @@ func (w *setupStreamWorktree) PurgeWorktree(context.Context, string, string, str
 func (w *setupStreamWorktree) EmptyCommit(context.Context, string, string) error             { return nil }
 func (w *setupStreamWorktree) VerifyCurrentBranch(context.Context, string, string) error     { return nil }
 func (w *setupStreamWorktree) Push(context.Context, string, string) error                    { return nil }
+func (w *setupStreamWorktree) PushWithLease(context.Context, string, string, string) (string, error) {
+	return "pushed-head-sha", nil
+}
 func (w *setupStreamWorktree) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
 	return &gitpkg.BranchVerification{HeadSHA: "head", BaseSHA: "base", RemoteHeadSHA: "head", AheadCount: 1}, nil
 }

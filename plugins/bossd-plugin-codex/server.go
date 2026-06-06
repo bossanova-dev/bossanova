@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/loginshell"
 	"github.com/recurser/bossalib/plugin/hostclient"
 )
 
@@ -139,7 +140,7 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.Configu
 // Resume vs fresh: codex resume is a positional subcommand, so a resume
 // invocation is `codex resume <UUID>`, not `codex --resume <UUID>`.
 // (Lane 0 spike finding.)
-func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) { //nolint:unparam // interface implementation
+func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	args := []string{"codex"}
 	if req.Resume {
 		args = append(args, "resume", req.SessionId)
@@ -166,8 +167,16 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if initialInput != "" {
 		args = append(args, initialInput)
 	}
+	loginShell := ""
+	if s.runner != nil {
+		loginShell = s.runner.loginShell
+	}
+	if err := trustCodexWorktree(req.GetWorktreePath()); err != nil {
+		return nil, status.Errorf(codes.Internal, "trust codex worktree: %v", err)
+	}
+	wrapped := loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args)
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv:                 args,
+		Argv:                 wrapped,
 		ReadyMarker:          "›",
 		CommandPrefix:        "$",
 		ConsumesInitialInput: initialInput != "",

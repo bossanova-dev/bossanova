@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/loginshell"
 	"github.com/recurser/bossalib/plugin/hostclient"
 	"github.com/recurser/bossalib/statusdetect"
 )
@@ -125,8 +126,12 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if s.runner != nil && s.runner.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
+	loginShell := ""
+	if s.runner != nil {
+		loginShell = s.runner.loginShell
+	}
 	return &bossanovav1.BuildInteractiveCommandResponse{
-		Argv:          args,
+		Argv:          loginshell.Wrap(loginShell, loginshell.Flags(loginShell), args),
 		ReadyMarker:   "❯",
 		CommandPrefix: "/",
 	}, nil

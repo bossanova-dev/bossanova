@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/agentruntime"
+	"github.com/recurser/bossalib/loginshell"
 )
 
 // Runner wraps agentruntime.Runner with codex-specific argv building. The
@@ -22,6 +23,7 @@ type Runner struct {
 	approval          string
 	model             string
 	dangerouslyBypass bool
+	loginShell        string
 	cmdFactory        agentruntime.CommandFactory
 }
 
@@ -40,6 +42,9 @@ func WithApproval(policy string) Option { return func(r *Runner) { r.approval = 
 
 // WithModel pins the codex --model selection. Empty means "use codex default".
 func WithModel(model string) Option { return func(r *Runner) { r.model = model } }
+
+// WithLoginShell wraps codex argv through the configured login shell.
+func WithLoginShell(shell string) Option { return func(r *Runner) { r.loginShell = shell } }
 
 // WithDangerouslyBypassApprovalsAndSandbox toggles passing
 // `--dangerously-bypass-approvals-and-sandbox` to the codex CLI. Wired in
@@ -163,7 +168,7 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	// Caller-provided session ID is ignored: codex generates its own.
 	_ = in.ProvidedSessionID
 	_ = in.SessionID
-	return args
+	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }
 
 // Start spawns the codex CLI subprocess. Delegates to the embedded

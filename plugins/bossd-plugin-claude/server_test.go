@@ -295,6 +295,31 @@ func TestServer_BuildInteractiveCommand_Resume(t *testing.T) {
 	}
 }
 
+func TestServer_BuildInteractiveCommand_WrapsInLoginShellWhenConfigured(t *testing.T) {
+	t.Setenv("BOSS_PLUGIN_login_shell", "/bin/bash")
+	srv := newServer(nil, zerolog.Nop(), runnerOptsFromEnv()...)
+
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "abc-123", Resume: false,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	want := []string{
+		"/bin/bash",
+		"-l",
+		"-c",
+		`if [ -r "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi; exec "$@"`,
+		"bash",
+		"claude",
+		"--session-id",
+		"abc-123",
+	}
+	if !reflect.DeepEqual(resp.Argv, want) {
+		t.Fatalf("wrapped bash argv:\n got=%#v\nwant=%#v", resp.Argv, want)
+	}
+}
+
 func TestServer_BuildInteractiveCommand_DangerouslySkipPermissions(t *testing.T) {
 	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
 	srv.runner.dangerouslySkipPermissions = true

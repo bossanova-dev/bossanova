@@ -138,13 +138,14 @@ type argvCall struct {
 	agentName      string
 	agentSessionID string
 	resume         bool
+	worktreePath   string
 	logPath        string
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, logPath string) ([]string, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, logPath: logPath})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -329,13 +330,14 @@ func TestSpawnChatTmux_UsesProviderSessionIDForResumeAndTmuxNameUsesAgentSession
 	chat := newTestChat(t)
 	chat.ProviderSessionID = &providerID
 
+	wd := t.TempDir()
 	got, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
 		Transcripts: transcripts,
 		Argv:        builder,
 	}, spawnInput{
 		Chat:         chat,
-		WorktreePath: t.TempDir(),
+		WorktreePath: wd,
 		TmuxName:     "boss-agent-session-1",
 	})
 	if err != nil {
@@ -349,6 +351,9 @@ func TestSpawnChatTmux_UsesProviderSessionIDForResumeAndTmuxNameUsesAgentSession
 	}
 	if len(builder.calls) != 1 || builder.calls[0].agentSessionID != providerID {
 		t.Fatalf("BuildInteractive must use provider id %q, got calls=%+v", providerID, builder.calls)
+	}
+	if builder.calls[0].worktreePath != wd {
+		t.Fatalf("BuildInteractive worktree path = %q, want %q", builder.calls[0].worktreePath, wd)
 	}
 	if tmuxer.lastName != "boss-agent-session-1" {
 		t.Fatalf("tmux name must keep agent session id, got %q", tmuxer.lastName)

@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -154,11 +156,25 @@ func TestFixLoopHandleConflict(t *testing.T) {
 	sessions := newMockSessionStore()
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+	)
 	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
+	prNum := 9701
 	repos.repos["repo-1"] = &models.Repo{
 		ID:        "repo-1",
 		OriginURL: "owner/repo",
@@ -167,6 +183,7 @@ func TestFixLoopHandleConflict(t *testing.T) {
 		ID:           "sess-1",
 		RepoID:       "repo-1",
 		State:        machine.FixingChecks,
+		PRNumber:     &prNum,
 		WorktreePath: "/tmp/worktrees/test-repo/test",
 		BranchName:   "test",
 		BaseBranch:   "main",
@@ -195,6 +212,610 @@ func TestFixLoopHandleConflict(t *testing.T) {
 			t.Errorf("trigger = %v, want Conflict", a.Trigger)
 		}
 	}
+}
+
+func TestFixLoopConflictRepairUsesLeaseAndVerifiesRemote(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+	)
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "freshclaim/fresh-claim",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	if err := fl.HandleConflict(ctx, "sess-1"); err != nil {
+		t.Fatalf("HandleConflict: %v", err)
+	}
+
+	if got := wt.pushWithLeaseBranches; len(got) != 1 || got[0] != "fix-camera-focus-issues" {
+		t.Fatalf("PushWithLease branches = %v, want [fix-camera-focus-issues]", got)
+	}
+	if wt.pushWithLeaseExpectedRemoteSHA != "start-head-sha" {
+		t.Fatalf("PushWithLease expected remote SHA = %q, want start-head-sha", wt.pushWithLeaseExpectedRemoteSHA)
+	}
+	if len(wt.pushed) != 0 {
+		t.Fatalf("plain Push branches = %v, want none", wt.pushed)
+	}
+	// 1 status read before repair + 1 to observe the clean pushed head + 1
+	// confirmation re-read that the head has not since moved.
+	if got := vp.getPRStatusPRNumbers; len(got) != 3 {
+		t.Fatalf("GetPRStatus PR numbers = %v, want 3 calls", got)
+	}
+	for i, n := range vp.getPRStatusPRNumbers {
+		if n != prNumber {
+			t.Fatalf("GetPRStatus call %d PR number = %d, want %d", i, n, prNumber)
+		}
+	}
+	if len(cr.started) != 1 {
+		t.Fatalf("expected 1 claude start, got %d", len(cr.started))
+	}
+	prompt := cr.started[0].plan
+	for _, want := range []string{
+		"Required repair flow:",
+		"origin/main",
+		"Do not run plain force push",
+		"Bossanova will push with --force-with-lease",
+		"Report the final local HEAD SHA",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if got := latestAttemptResult(t, attempts); got != models.AttemptResultSuccess {
+		t.Fatalf("attempt result = %v, want success", got)
+	}
+}
+
+func TestFixLoopConflictRepairVerificationUsesRepoMergeStrategy(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			Rebaseable:       boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+	)
+	vp.allowedStrategies = []string{"merge"}
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "freshclaim/fresh-claim",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	if err := fl.HandleConflict(ctx, "sess-1"); err != nil {
+		t.Fatalf("HandleConflict: %v", err)
+	}
+	if got := latestAttemptResult(t, attempts); got != models.AttemptResultSuccess {
+		t.Fatalf("attempt result = %v, want success", got)
+	}
+}
+
+func TestFixLoopConflictRepairVerificationRetriesTransientRemoteStatus(t *testing.T) {
+	withoutConflictRepairVerificationDelay(t)
+
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "newer-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			MergeStateStatus: vcs.MergeStateStatusUnknown,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+	)
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "freshclaim/fresh-claim"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	if err := fl.HandleConflict(ctx, "sess-1"); err != nil {
+		t.Fatalf("HandleConflict: %v", err)
+	}
+	// 4 polls to converge on the clean pushed head (skipping the newer and
+	// unknown transients) + 1 confirmation re-read.
+	if got := len(vp.getPRStatusPRNumbers); got != 5 {
+		t.Fatalf("GetPRStatus calls = %d, want 5", got)
+	}
+	if got := latestAttemptResult(t, attempts); got != models.AttemptResultSuccess {
+		t.Fatalf("attempt result = %v, want success", got)
+	}
+}
+
+func TestFixLoopConflictRepairFailsOnStaleLease(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newSequencePRStatusProvider(&vcs.PRStatus{
+		State:            vcs.PRStateOpen,
+		HeadSHA:          "start-head-sha",
+		Mergeable:        boolPtr(false),
+		MergeStateStatus: vcs.MergeStateStatusDirty,
+	})
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseErr:    errors.New("stale lease"),
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "freshclaim/fresh-claim"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	err := fl.HandleConflict(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("HandleConflict error = nil, want stale lease error")
+	}
+	assertFailedFixAttempt(t, attempts, sessions.sessions["sess-1"], "push branch: stale lease")
+}
+
+func TestFixLoopConflictRepairFailsWhenRemoteHeadDiffers(t *testing.T) {
+	withoutConflictRepairVerificationDelay(t)
+
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "newer-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+	)
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "freshclaim/fresh-claim"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	err := fl.HandleConflict(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("HandleConflict error = nil, want verification error")
+	}
+	assertFailedFixAttempt(t, attempts, sessions.sessions["sess-1"], "conflict repair remote head = newer-head-sha, want pushed head pushed-head-sha")
+}
+
+func TestFixLoopConflictRepairFailsWhenStillRepairable(t *testing.T) {
+	withoutConflictRepairVerificationDelay(t)
+
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+	)
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "freshclaim/fresh-claim"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	err := fl.HandleConflict(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("HandleConflict error = nil, want repairable conflict error")
+	}
+	assertFailedFixAttempt(t, attempts, sessions.sessions["sess-1"], "conflict repair still blocked by merge")
+}
+
+func TestFixLoopConflictRepairFailsWhenSupersededAfterClean(t *testing.T) {
+	withoutConflictRepairVerificationDelay(t)
+
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	// The pushed head verifies clean, but a newer push lands before the
+	// confirmation re-read — the repair must not clear conflict state against
+	// a SHA that is no longer the branch head.
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "newer-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+	)
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "freshclaim/fresh-claim"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	err := fl.HandleConflict(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("HandleConflict error = nil, want superseded error")
+	}
+	assertFailedFixAttempt(t, attempts, sessions.sessions["sess-1"], "conflict repair superseded: remote head = newer-head-sha, want pushed head pushed-head-sha")
+}
+
+func TestFixLoopConflictRepairFailsWhenConfirmationRecomputesConflict(t *testing.T) {
+	withoutConflictRepairVerificationDelay(t)
+
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	// The pushed head verifies clean, but GitHub can recompute mergeability
+	// before the confirmation re-read. The repair must not clear conflict
+	// state when the same head is dirty again.
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+	)
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "freshclaim/fresh-claim"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	err := fl.HandleConflict(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("HandleConflict error = nil, want confirmation conflict error")
+	}
+	assertFailedFixAttempt(t, attempts, sessions.sessions["sess-1"], "conflict repair still blocked by merge")
+}
+
+func TestFixLoopConflictRepairFailsWhenConfirmationReturnsUnknown(t *testing.T) {
+	withoutConflictRepairVerificationDelay(t)
+
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			MergeStateStatus: vcs.MergeStateStatusUnknown,
+		},
+	)
+	cr := newMockAgentRunner()
+	wt := &conflictRepairWorktreeManager{
+		mockWorktreeManager: &mockWorktreeManager{},
+		pushWithLeaseHead:   "pushed-head-sha",
+	}
+	logger := zerolog.Nop()
+
+	prNumber := 9701
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "freshclaim/fresh-claim"}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		PRNumber:     &prNumber,
+		WorktreePath: "/tmp/worktree",
+		BranchName:   "fix-camera-focus-issues",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	err := fl.HandleConflict(ctx, "sess-1")
+	if err == nil {
+		t.Fatal("HandleConflict error = nil, want confirmation unknown error")
+	}
+	assertFailedFixAttempt(t, attempts, sessions.sessions["sess-1"], "conflict repair still blocked by unknown")
+}
+
+type conflictRepairWorktreeManager struct {
+	*mockWorktreeManager
+
+	pushWithLeaseBranches          []string
+	pushWithLeaseExpectedRemoteSHA string
+	pushWithLeaseHead              string
+	pushWithLeaseErr               error
+}
+
+func (m *conflictRepairWorktreeManager) PushWithLease(_ context.Context, _ string, branch, expectedRemoteSHA string) (string, error) {
+	m.pushWithLeaseBranches = append(m.pushWithLeaseBranches, branch)
+	m.pushWithLeaseExpectedRemoteSHA = expectedRemoteSHA
+	if m.pushWithLeaseErr != nil {
+		return "", m.pushWithLeaseErr
+	}
+	if m.pushWithLeaseHead != "" {
+		return m.pushWithLeaseHead, nil
+	}
+	return "pushed-head-sha", nil
+}
+
+type sequencePRStatusProvider struct {
+	*mockVCSProvider
+
+	statuses []*vcs.PRStatus
+}
+
+func newSequencePRStatusProvider(statuses ...*vcs.PRStatus) *sequencePRStatusProvider {
+	return &sequencePRStatusProvider{
+		mockVCSProvider: newMockVCSProvider(),
+		statuses:        statuses,
+	}
+}
+
+func (m *sequencePRStatusProvider) GetPRStatus(_ context.Context, _ string, prNumber int) (*vcs.PRStatus, error) {
+	m.getPRStatusPRNumbers = append(m.getPRStatusPRNumbers, prNumber)
+	if len(m.statuses) == 0 {
+		return &vcs.PRStatus{State: vcs.PRStateOpen}, nil
+	}
+	if len(m.getPRStatusPRNumbers) > len(m.statuses) {
+		return m.statuses[len(m.statuses)-1], nil
+	}
+	return m.statuses[len(m.getPRStatusPRNumbers)-1], nil
+}
+
+func latestAttemptResult(t *testing.T, attempts *mockAttemptStore) models.AttemptResult {
+	t.Helper()
+	return latestAttempt(t, attempts).Result
+}
+
+func latestAttempt(t *testing.T, attempts *mockAttemptStore) *models.Attempt {
+	t.Helper()
+	if len(attempts.attempts) != 1 {
+		t.Fatalf("expected 1 attempt, got %d", len(attempts.attempts))
+	}
+	for _, attempt := range attempts.attempts {
+		return attempt
+	}
+	t.Fatal("attempt store unexpectedly empty")
+	return nil
+}
+
+func assertFailedFixAttempt(t *testing.T, attempts *mockAttemptStore, sess *models.Session, wantErrorText string) {
+	t.Helper()
+
+	attempt := latestAttempt(t, attempts)
+	if attempt.Result != models.AttemptResultFailed {
+		t.Fatalf("attempt result = %v, want failed", attempt.Result)
+	}
+	if attempt.Error == nil {
+		t.Fatalf("attempt error = nil, want to contain %q", wantErrorText)
+	}
+	if !strings.Contains(*attempt.Error, wantErrorText) {
+		t.Fatalf("attempt error = %q, want to contain %q", *attempt.Error, wantErrorText)
+	}
+	if sess.State != machine.AwaitingChecks {
+		t.Fatalf("session state = %v, want AwaitingChecks", sess.State)
+	}
+	if sess.AttemptCount != 0 {
+		t.Fatalf("attempt count = %d, want 0", sess.AttemptCount)
+	}
+}
+
+func withoutConflictRepairVerificationDelay(t *testing.T) {
+	t.Helper()
+	old := conflictRepairVerificationDelay
+	conflictRepairVerificationDelay = 0
+	t.Cleanup(func() {
+		conflictRepairVerificationDelay = old
+	})
 }
 
 func TestFixLoopHandleReviewFeedback(t *testing.T) {
@@ -360,11 +981,25 @@ func TestIntegrationConflictFixLoop(t *testing.T) {
 	sessions := newMockSessionStore()
 	attempts := newMockAttemptStore()
 	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
+	vp := newSequencePRStatusProvider(
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "start-head-sha",
+			Mergeable:        boolPtr(false),
+			MergeStateStatus: vcs.MergeStateStatusDirty,
+		},
+		&vcs.PRStatus{
+			State:            vcs.PRStateOpen,
+			HeadSHA:          "pushed-head-sha",
+			Mergeable:        boolPtr(true),
+			MergeStateStatus: vcs.MergeStateStatusClean,
+		},
+	)
 	cr := newMockAgentRunner()
 	wt := &mockWorktreeManager{}
 	logger := zerolog.Nop()
 
+	prNum := 9701
 	repos.repos["repo-1"] = &models.Repo{
 		ID:        "repo-1",
 		OriginURL: "owner/repo",
@@ -373,6 +1008,7 @@ func TestIntegrationConflictFixLoop(t *testing.T) {
 		ID:           "sess-1",
 		RepoID:       "repo-1",
 		State:        machine.FixingChecks,
+		PRNumber:     &prNum,
 		WorktreePath: "/tmp/worktrees/test-repo/test",
 		BranchName:   "test",
 		BaseBranch:   "main",

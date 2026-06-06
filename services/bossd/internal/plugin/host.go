@@ -119,6 +119,42 @@ func pluginEnvFromConfig(cfg config.PluginConfig) []string {
 	return env
 }
 
+// injectLoginShell adds the user's login shell to an agent plugin's config so
+// the plugin can launch its CLI through it. No-op for non-agent plugins and
+// when no login shell is known.
+func injectLoginShell(pluginName string, cfg map[string]string, settings config.Settings) map[string]string {
+	if settings.LoginShell == "" {
+		return cfg
+	}
+	if !isAgentProviderPlugin(pluginName, settings) {
+		return cfg
+	}
+
+	next := make(map[string]string, len(cfg)+1)
+	for k, v := range cfg {
+		next[k] = v
+	}
+	next["login_shell"] = settings.LoginShell
+	return next
+}
+
+func isAgentProviderPlugin(pluginName string, settings config.Settings) bool {
+	if pluginName == "codex" || pluginName == "claude" {
+		return true
+	}
+	for _, known := range settings.KnownAgentProviders {
+		if pluginName == known {
+			return true
+		}
+	}
+	return false
+}
+
+func preparePluginConfigForStart(cfg config.PluginConfig, settings config.Settings) config.PluginConfig {
+	cfg.Config = injectLoginShell(cfg.Name, cfg.Config, settings)
+	return cfg
+}
+
 // generatePluginCookie returns a fresh 32-byte hex string for the per-startup
 // magic cookie. It is called once per daemon startup (Host.Start).
 func generatePluginCookie() (string, error) {
@@ -147,7 +183,7 @@ func New(eventBus *eventbus.Bus, provider vcs.Provider, logger zerolog.Logger) *
 
 // Start discovers and launches all enabled plugins from the given
 // configuration. It also starts a background health-check goroutine.
-func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
+func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig, settings config.Settings) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -184,6 +220,8 @@ func (h *Host) Start(ctx context.Context, cfgs []config.PluginConfig) error {
 			h.misses = append(h.misses, missedPlugin{cfg: cfg})
 			continue
 		}
+
+		cfg = preparePluginConfigForStart(cfg, settings)
 
 		cmd := exec.Command(cfg.Path)
 		// Project per-plugin Config entries into the subprocess environment

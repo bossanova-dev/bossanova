@@ -5,6 +5,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/agentruntime"
+	"github.com/recurser/bossalib/loginshell"
 )
 
 // Runner wraps agentruntime.Runner with claude-specific argv building. The
@@ -15,6 +16,7 @@ import (
 type Runner struct {
 	*agentruntime.Runner
 	dangerouslySkipPermissions bool
+	loginShell                 string
 	cmdFactory                 agentruntime.CommandFactory
 }
 
@@ -31,6 +33,11 @@ type RunnerOption func(*Runner)
 // directly, so they read the config entry there.
 func WithDangerouslySkipPermissions(v bool) RunnerOption {
 	return func(r *Runner) { r.dangerouslySkipPermissions = v }
+}
+
+// WithLoginShell wraps claude argv through the configured login shell.
+func WithLoginShell(shell string) RunnerOption {
+	return func(r *Runner) { r.loginShell = shell }
 }
 
 // WithCommandFactory overrides the agent command factory (for testing).
@@ -73,5 +80,5 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if r.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	return args
+	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }

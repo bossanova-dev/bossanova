@@ -274,6 +274,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		LogPath:        logPath,
 		InitialPrompt:  input.Prompt,
 		InitialCommand: input.Command,
+		WorktreePath:   sess.WorktreePath,
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -410,6 +411,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:      resumeSessionID,
 		Resume:         true,
+		WorktreePath:   sess.WorktreePath,
 		LogPath:        l.agentLogPathFor(agentSessionID),
 		InitialPrompt:  input.Prompt,
 		InitialCommand: input.Command,

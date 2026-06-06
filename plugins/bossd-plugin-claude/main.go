@@ -51,6 +51,9 @@ func runnerOptsFromEnv() []RunnerOption {
 	if os.Getenv("BOSS_PLUGIN_dangerously_skip_permissions") == "true" {
 		opts = append(opts, WithDangerouslySkipPermissions(true))
 	}
+	if shell := os.Getenv("BOSS_PLUGIN_login_shell"); shell != "" {
+		opts = append(opts, WithLoginShell(shell))
+	}
 	return opts
 }
 

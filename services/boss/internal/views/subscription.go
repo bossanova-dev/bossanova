@@ -328,7 +328,7 @@ func (m LoginModel) subscriptionView() string {
 		if m.subscription.phase == subscriptionPhaseWaiting && m.subscription.checkoutStarted && m.subscription.checkoutURL == "" {
 			body = m.spinner.View() + "Activating your subscription. This can take a few minutes..."
 		} else {
-			body = m.spinner.View() + "Loading your account. Continue in your browser..."
+			body = m.spinner.View() + "Loading your account..."
 		}
 		if m.subscription.err != nil && m.subscription.checkoutURL != "" {
 			body += "\nOpen this billing URL: " + m.subscription.checkoutURL

@@ -1,6 +1,7 @@
 package views
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -9,6 +10,19 @@ import (
 
 func testProvider(name, plugin, command string) onboardingProvider {
 	return onboardingProvider{Name: name, Plugin: plugin, Command: command}
+}
+
+func TestCaptureLoginShell_WritesEnvShell(t *testing.T) {
+	t.Setenv("SHELL", "/opt/homebrew/bin/fish")
+	s := config.Settings{}
+	got, changed := captureLoginShell(s, func() string { return os.Getenv("SHELL") })
+	if !changed || got.LoginShell != "/opt/homebrew/bin/fish" {
+		t.Fatalf("expected login_shell captured, got %q changed=%v", got.LoginShell, changed)
+	}
+	// idempotent
+	if _, changed2 := captureLoginShell(got, func() string { return os.Getenv("SHELL") }); changed2 {
+		t.Fatalf("second capture should be a no-op")
+	}
 }
 
 func TestPlanProviderStartupBlocksWhenNoProviderCommandsAreInstalled(t *testing.T) {

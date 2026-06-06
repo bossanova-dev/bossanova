@@ -231,6 +231,66 @@ func TestPollerEmitsConflictDetected(t *testing.T) {
 	}
 }
 
+func TestPollerDoesNotEmitConflictDetectedForUnstablePR(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	mergeable := true
+	rebaseable := false
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo", MergeStrategy: models.MergeStrategyRebase}
+	repos.repos["repo-1"] = repo
+	prNumber := 42
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		PRNumber:   &prNumber,
+		State:      machine.AwaitingChecks,
+		BranchName: "feature",
+	}
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:            vcs.PRStateOpen,
+		Mergeable:        &mergeable,
+		Rebaseable:       &rebaseable,
+		MergeStateStatus: vcs.MergeStateStatusUnstable,
+	}
+	vp.nextCheckResults = []vcs.CheckResult{}
+
+	poller := NewPoller(sessions, repos, vp, 50*time.Millisecond, DefaultPollTimeout, logger)
+	ch := make(chan SessionEvent, 1)
+	poller.checkSession(ctx, ch, repo, sessions.sessions["sess-1"])
+
+	select {
+	case ev := <-ch:
+		if _, ok := ev.Event.(vcs.ConflictDetected); ok {
+			t.Fatalf("got ConflictDetected for UNSTABLE PR")
+		}
+	default:
+	}
+}
+
+func TestRepairableConflictBlockKeepsPlainMergeConflictWhenStrategyResolutionFails(t *testing.T) {
+	ctx := context.Background()
+	mergeable := false
+	rebaseable := false
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	vp := newMockVCSProvider()
+	vp.allowedStrategies = []string{}
+	prStatus := &vcs.PRStatus{
+		State:      vcs.PRStateOpen,
+		Mergeable:  &mergeable,
+		Rebaseable: &rebaseable,
+	}
+
+	if !repairableConflictBlock(ctx, vp, repo, prStatus, zerolog.Nop(), "test") {
+		t.Fatalf("plain merge conflict was masked by strategy resolution failure")
+	}
+}
+
 func TestCheckSession_EmitsReviewSubmittedWhenStateChanges(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -597,6 +657,20 @@ func TestPollerEmitsConflictDetectedFromPollableStates(t *testing.T) {
 					Rebaseable: &rebaseable,
 				}
 				vp.allowedStrategies = []string{"rebase"}
+			},
+		},
+		{
+			name:  "ReadyForReview mergeable and rebaseable false with no allowed strategies",
+			state: machine.ReadyForReview,
+			setup: func(vp *mockVCSProvider) {
+				mergeable := false
+				rebaseable := false
+				vp.nextPRStatus = &vcs.PRStatus{
+					State:      vcs.PRStateOpen,
+					Mergeable:  &mergeable,
+					Rebaseable: &rebaseable,
+				}
+				vp.allowedStrategies = []string{}
 			},
 		},
 	}

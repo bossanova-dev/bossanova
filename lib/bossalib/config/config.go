@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const settingsPathEnv = "BOSS_SETTINGS_PATH"
+
 // PluginConfig describes a single plugin to load.
 type PluginConfig struct {
 	Name    string            `json:"name"`
@@ -184,16 +186,36 @@ func hasPlatformSuffix(name string) bool {
 // UserPluginDir returns the per-user plugin directory shared by boss upgrade
 // and bossd plugin auto-discovery.
 func UserPluginDir() (string, error) {
-	dir, err := os.UserConfigDir()
+	settings, err := loadWithoutSideEffects()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "bossanova", "plugins"), nil
+	if dir, ok, err := ConfiguredAppDataDir(settings); err != nil {
+		return "", err
+	} else if ok {
+		return filepath.Join(dir, "plugins"), nil
+	}
+
+	dir, err := DefaultAppDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "plugins"), nil
+}
+
+func loadWithoutSideEffects() (Settings, error) {
+	p, err := Path()
+	if err != nil {
+		return DefaultSettings(), err
+	}
+	return LoadFrom(p)
 }
 
 // Settings holds global Bossanova configuration.
 type Settings struct {
 	WorktreeBaseDir                string            `json:"worktree_base_dir"`
+	AppDataDir                     string            `json:"app_data_dir,omitempty"`
+	SocketPath                     string            `json:"socket_path,omitempty"`
 	DefaultAgent                   string            `json:"default_agent,omitempty"`
 	InstalledAt                    time.Time         `json:"installed_at,omitzero"`
 	BossCloudGuestOfferHidden      bool              `json:"boss_cloud_guest_offer_hidden,omitempty"`
@@ -210,6 +232,10 @@ type Settings struct {
 	Repair                         RepairConfig      `json:"repair,omitzero"`
 	ProvidersAcknowledged          bool              `json:"providers_acknowledged,omitempty"`
 	KnownAgentProviders            []string          `json:"known_agent_providers,omitempty"`
+	// LoginShell is the user's interactive shell ($SHELL), captured by the TUI
+	// (which runs in that shell) so the launchd daemon — which has no $SHELL —
+	// can launch agents through it for per-project tool resolution.
+	LoginShell string `json:"login_shell,omitempty"`
 }
 
 // PluginConfigBool reads a boolean-valued entry from a named plugin's
@@ -347,15 +373,77 @@ func (s Settings) EnsureInstalledAt(now time.Time) (Settings, bool) {
 	return s, true
 }
 
-// Path returns the default settings file path.
-// On macOS: ~/Library/Application Support/bossanova/settings.json
-// On Linux: ~/.config/bossanova/settings.json
-func Path() (string, error) {
+// DefaultAppDataDir returns the platform-default directory for Bossanova's
+// per-user state. The settings file, daemon database, lock, socket, and the
+// plugin directory all live here when no app_data_dir/socket_path override is
+// configured, so boss and bossd agree on one location on every platform.
+//
+//	macOS: ~/Library/Application Support/bossanova
+//	Linux: $XDG_CONFIG_HOME/bossanova (defaults to ~/.config/bossanova)
+//
+// It does not create the directory; callers that need it on disk MkdirAll it
+// themselves.
+func DefaultAppDataDir() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "bossanova", "settings.json"), nil
+	return filepath.Join(dir, "bossanova"), nil
+}
+
+// Path returns the default settings file path.
+// If BOSS_SETTINGS_PATH is set, it must be absolute and points directly to the
+// settings file to load. Otherwise platform defaults apply.
+// On macOS: ~/Library/Application Support/bossanova/settings.json
+// On Linux: ~/.config/bossanova/settings.json
+func Path() (string, error) {
+	if p := os.Getenv(settingsPathEnv); p != "" {
+		if !filepath.IsAbs(p) {
+			return "", fmt.Errorf("%s must be absolute: %q", settingsPathEnv, p)
+		}
+		return filepath.Clean(p), nil
+	}
+
+	dir, err := DefaultAppDataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "settings.json"), nil
+}
+
+// ConfiguredAppDataDir returns the configured local runtime data directory.
+// The boolean is false when app_data_dir is unset and callers should keep their
+// existing platform default.
+func ConfiguredAppDataDir(s Settings) (string, bool, error) {
+	if s.AppDataDir == "" {
+		return "", false, nil
+	}
+	if !filepath.IsAbs(s.AppDataDir) {
+		return "", false, fmt.Errorf("app_data_dir must be absolute: %q", s.AppDataDir)
+	}
+	dir := filepath.Clean(s.AppDataDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", false, fmt.Errorf("create app_data_dir %q: %w", dir, err)
+	}
+	return dir, true, nil
+}
+
+// ConfiguredSocketPath returns the configured Unix socket path. socket_path
+// wins when set. If only app_data_dir is set, the socket defaults to
+// app_data_dir/bossd.sock. The boolean is false when neither setting applies.
+func ConfiguredSocketPath(s Settings) (string, bool, error) {
+	if s.SocketPath != "" {
+		if !filepath.IsAbs(s.SocketPath) {
+			return "", false, fmt.Errorf("socket_path must be absolute: %q", s.SocketPath)
+		}
+		return filepath.Clean(s.SocketPath), true, nil
+	}
+
+	dir, ok, err := ConfiguredAppDataDir(s)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return filepath.Join(dir, "bossd.sock"), true, nil
 }
 
 // Load reads settings from the default path, returning defaults if the file is missing.

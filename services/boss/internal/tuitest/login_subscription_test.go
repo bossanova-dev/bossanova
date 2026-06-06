@@ -7,7 +7,7 @@ import (
 	"github.com/recurser/boss/internal/tuitest"
 )
 
-const subscriptionWaitingText = "Loading your account. Continue in your browser..."
+const subscriptionWaitingText = "Loading your account..."
 
 func waitForSubscriptionWaitingView(t *testing.T, h *tuitest.Harness) {
 	t.Helper()

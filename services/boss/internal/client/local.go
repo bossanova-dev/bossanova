@@ -9,22 +9,43 @@ import (
 	"path/filepath"
 
 	"connectrpc.com/connect"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
 )
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
-// If BOSS_SOCKET is set, it is returned directly (used by TUI integration tests).
-// On macOS: ~/Library/Application Support/bossanova/bossd.sock
+// BOSS_SOCKET remains an explicit process-level override for tests and
+// emergency debugging. Normal profile selection should use BOSS_SETTINGS_PATH
+// plus socket_path/app_data_dir in settings.json.
 func DefaultSocketPath() (string, error) {
 	if p := os.Getenv("BOSS_SOCKET"); p != "" {
 		return p, nil
 	}
-	home, err := os.UserHomeDir()
+
+	settings, err := loadSettingsForSocketPath()
 	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
+		return "", fmt.Errorf("load settings: %w", err)
 	}
-	return filepath.Join(home, "Library", "Application Support", "bossanova", "bossd.sock"), nil
+	if p, ok, err := config.ConfiguredSocketPath(settings); err != nil {
+		return "", err
+	} else if ok {
+		return p, nil
+	}
+
+	dir, err := config.DefaultAppDataDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve app data dir: %w", err)
+	}
+	return filepath.Join(dir, "bossd.sock"), nil
+}
+
+func loadSettingsForSocketPath() (config.Settings, error) {
+	p, err := config.Path()
+	if err != nil {
+		return config.DefaultSettings(), err
+	}
+	return config.LoadFrom(p)
 }
 
 // LocalClient communicates with the daemon via Unix socket.

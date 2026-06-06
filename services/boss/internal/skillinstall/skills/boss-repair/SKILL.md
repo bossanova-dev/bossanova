@@ -133,15 +133,16 @@ Before running local checks, discover this repo's commands from project instruct
 1. Identify which checks are failing:
 
    ```bash
-   gh pr checks
+   gh pr checks --json name,bucket,state,link
    ```
 
 2. Get failure details:
 
    ```bash
-   gh pr checks --watch     # If checks are still running
    gh run view <run-id>     # View specific check run details
    ```
+
+   If checks are still pending, do not block only on CI. First probe review threads and mergeability, then poll again as described in Phase 3 or Watch Mode.
 
 3. For **test failures**:
    - Read test output to identify failing tests
@@ -218,7 +219,11 @@ Before running local checks, discover this repo's commands from project instruct
    **a) Actionable — fix it:**
    - Read the relevant code/files
    - Implement the requested change
-   - After fixing, resolve the thread with an explanation:
+   - Add a reply comment on the thread explaining what was fixed:
+     ```bash
+     gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Fixed: [brief explanation of what was changed]"
+     ```
+   - Resolve the parent review thread:
      ```bash
      gh api graphql -f query='
        mutation {
@@ -227,16 +232,12 @@ Before running local checks, discover this repo's commands from project instruct
          }
        }'
      ```
-   - Add a reply comment on the thread explaining what was fixed:
-     ```bash
-     gh api repos/OWNER/REPO/pulls/PR_NUM/comments -f body="Fixed: [brief explanation of what was changed]" -f in_reply_to_id=COMMENT_ID
-     ```
 
    **b) Not actionable — decline and resolve:**
    Some review comments are by design, already fixed, stale (reference old code), or low-priority style suggestions. For these:
    - Add a reply comment explaining why it won't be fixed:
      ```bash
-     gh api repos/OWNER/REPO/pulls/PR_NUM/comments -f body="Not fixing: [explanation — e.g. 'This duplication is by design to avoid a dependency from the plugin binary to the host config package' or 'This was already fixed in a subsequent commit']" -f in_reply_to_id=COMMENT_ID
+     gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Not fixing: [explanation — e.g. 'This duplication is by design to avoid a dependency from the plugin binary to the host config package' or 'This was already fixed in a subsequent commit']"
      ```
    - Then resolve the thread:
      ```bash
@@ -251,11 +252,11 @@ Before running local checks, discover this repo's commands from project instruct
    **c) Unclear — ask for clarification:**
    - Add a reply comment asking for clarification:
      ```bash
-     gh api repos/OWNER/REPO/pulls/PR_NUM/comments -f body="Could you clarify what you meant by [...]?" -f in_reply_to_id=COMMENT_ID
+     gh api repos/OWNER/REPO/pulls/PR_NUM/comments/COMMENT_ID/replies -f body="Could you clarify what you meant by [...]?"
      ```
    - Do NOT resolve the thread — leave it open for the reviewer.
 
-   **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline and resolve with an explanation, or ask for clarification.
+   **IMPORTANT**: Every unresolved thread must be handled. Do not silently skip threads. Either fix and resolve, decline and resolve with an explanation, or ask for clarification. Fixed or declined threads must be resolved before the PR is considered clean. Only true clarification requests may remain unresolved.
 
 3. After implementing changes:
    - Run the repo's formatting and test gates:
@@ -303,15 +304,15 @@ After applying the repair:
    git status -sb  # Branch should not be ahead of origin
    ```
 
-3. Wait for remote PR checks to finish, then report the final PR state (default mode waits once after the pushed fix; in Watch Mode you may loop per the [Watch Mode](#watch-mode) section):
+3. Poll the remote PR state, then report the final PR state (default mode performs one post-push poll; in Watch Mode you loop per the [Watch Mode](#watch-mode) section):
 
    ```bash
-   gh pr checks --watch
-   CHECKS_STATUS=$?
-   gh pr view
+   gh pr checks --json bucket
+   node scripts/review-feedback-probe.js
+   gh pr view --json mergeable -q .mergeable
    ```
 
-4. If checks are still pending, failed, or timed out, note that in output. In default mode, still **exit cleanly (zero)** after the push even when the checks failed — report the failing status but do not exit nonzero. The repair plugin only enters its in-session resume/retry loop after a clean exit; a nonzero exit makes it abandon that loop and fall back to a slower fresh sweep. (Watch Mode is the exception: it owns the loop and re-runs the matching repair strategy on failures itself, per the [Watch Mode](#watch-mode) section.)
+4. If `repair_status=needs_repair` or `repair_status=unknown`, handle or retry the review feedback before exiting; do not treat unknown review status as clean. If checks are still pending, failed, or timed out after known review feedback is handled, note that in output. In default mode, still **exit cleanly (zero)** after the push even when checks are pending or failed — report the status but do not exit nonzero. The repair plugin only enters its in-session resume/retry loop after a clean exit; a nonzero exit makes it abandon that loop and fall back to a slower fresh sweep. (Watch Mode is the exception: it owns the loop and re-runs the matching repair strategy on failures itself, per the [Watch Mode](#watch-mode) section.)
 
    ```
    ✓ Repair applied and pushed
@@ -491,35 +492,43 @@ This skill should:
 
 **Manual `/boss-repair watch` only.** This mode is active **only** when the skill is invoked with the `watch` argument. The repair plugin always invokes `/boss-repair` with no arguments, so it never enters watch mode; default mode still waits for checks after its pushed fix, but the plugin owns additional repair attempts.
 
-In default mode (no `watch` argument) you MUST behave exactly as Phases 1–3 describe: apply one repair pass, push, wait for the resulting checks to finish, report the result, and exit so the repair plugin can decide whether to retry. **Do not** start an additional repair loop in default mode.
+In default mode (no `watch` argument) you MUST behave exactly as Phases 1–3 describe: apply one repair pass, push, poll the resulting PR state once, report the result, and exit so the repair plugin can decide whether to retry. **Do not** start an additional repair loop in default mode. Default mode may exit while checks are pending, but it must not exit while known unresolved review feedback still needs repair.
 
-In watch mode, after completing one normal repair pass (Phases 1–2) and pushing, do **not** exit. Instead loop, bounded to **5 repair passes total** (matching the plugin's own limit):
+In watch mode, after completing one normal repair pass (Phases 1–2) and pushing, do **not** exit. Instead poll the PR state directly, bounded to **5 repair passes total** (matching the plugin's own limit):
 
-1. Record the just-pushed commit:
+1. Record the current commit before each repair pass, and refresh this baseline after every pushed repair before returning to the poll loop:
 
    ```bash
    BEFORE=$(git rev-parse HEAD)
    ```
 
-2. Wait for checks to settle (blocks until every check finishes):
+2. Poll all repair signals before every sleep:
 
    ```bash
-   gh pr checks --watch
+   gh pr checks --json bucket
+   node scripts/review-feedback-probe.js
+   gh pr view --json mergeable -q .mergeable
    ```
 
-3. Re-assess the full PR state:
+3. Interpret the full PR state:
 
-   - **Checks:** `gh pr checks` — exit status 0 means all checks passed.
-   - **Review threads:** `node scripts/review-feedback-probe.js` — trust `repair_status` (`clean` vs `needs_repair`) using the same interpretation rules as Strategy C above.
+   - **Checks:** `gh pr checks --json bucket` — all checks pass only when every bucket is passing/successful and none are pending, skipped-required, cancelled, timed out, or failed.
+   - **Review threads:** `node scripts/review-feedback-probe.js` — trust `repair_status` (`clean`, `needs_repair`, `unknown`) using the same interpretation rules as Strategy C above.
    - **Conflicts:** `gh pr view --json mergeable -q .mergeable` — `CONFLICTING` means a merge conflict appeared.
 
-4. **Done:** if checks pass AND `repair_status=clean` AND mergeable is not `CONFLICTING`, report success and exit.
+4. **Review work first:** if `repair_status=needs_repair`, repair every printed unresolved thread immediately. For each valid comment, fix it, reply with what changed, resolve the parent review thread, push, then start the next poll. For each invalid, stale, or already-handled comment, reply explaining why it is declined, resolve the parent review thread, push if the reply changed local state, then start the next poll. Only true clarification requests may remain unresolved. If `repair_status=unknown`, retry with explicit repo/pr and do not treat reviews as clean.
 
-5. **Still red:** run the matching repair strategy from Phase 2 for the new failure, then push.
+5. **Conflicts next:** if mergeable is `CONFLICTING`, repair the conflict, commit, push, then start the next poll.
 
-6. **No-progress stop:** after a pass, if `git rev-parse HEAD` equals `$BEFORE` (no new commit was pushed) and the failing signal is unchanged, stop and report — do not spin on an unfixable failure. This mirrors the plugin's duplicate-input guard.
+6. **Pending checks:** if checks are pending, sleep 30–60 seconds, then poll checks, review threads, and mergeability again. Do not wait on checks without probing reviews and mergeability first.
 
-7. **Bound:** never exceed 5 repair passes. After the 5th, report the remaining failures and exit.
+7. **Failed checks:** if checks failed, run the matching repair strategy from Phase 2 for the new failure, push, then start the next poll.
+
+8. **Done:** exit success only when checks pass AND `repair_status=clean` AND mergeable is not `CONFLICTING` AND all fixed or declined review threads are resolved.
+
+9. **No-progress stop:** after a repair pass, if `git rev-parse HEAD` equals the `$BEFORE` value captured immediately before that pass (no new commit was pushed) and the failing signal is unchanged, stop and report — do not spin on an unfixable failure. This mirrors the plugin's duplicate-input guard.
+
+10. **Bound:** never exceed 5 repair passes. After the 5th, report the remaining failures and exit.
 
 When watch mode exits (green, no-progress, or 5 attempts reached), print the standard Repair Summary plus a final line stating why the loop ended (`green` / `no-progress` / `max-attempts`).
 

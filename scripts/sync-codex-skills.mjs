@@ -7,6 +7,7 @@ export const GENERATED_HEADER =
   '<!-- Generated from .claude/skills by make codex-skills. Do not edit directly. -->';
 
 const BODY_REWRITES = [
+  [/~\/\.claude\/skills\/bossanova\//g, '~/.codex/skills/bossanova/'],
   [/\bCLAUDE\.md\b/g, 'AGENTS.md'],
   [/\bClaude Code\b/g, 'Codex'],
   [/\bClaude agents\b/g, 'Codex agents'],

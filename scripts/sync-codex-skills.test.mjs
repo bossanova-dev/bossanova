@@ -64,17 +64,23 @@ describe('sync-codex-skills', () => {
       const skill = fs.readFileSync(privateDebtSkillPath, 'utf8');
       assert.match(skill, /^name: bs-technical-debt/m);
       assert.match(skill, /Push at most one PR-worthy session-branch commit per run/);
-      assert.match(skill, /session's stored `BranchName`/);
       assert.match(skill, /Windows WSL/);
       assert.match(skill, /macOS, Linux, and Windows WSL/);
       assert.match(skill, /\$boss-finalize/);
-      assert.match(skill, /NO_PR/);
+      assert.match(skill, /READY_GREEN_PR/);
+      assert.match(skill, /NO_CHANGE/);
+      assert.match(skill, /gh pr ready/);
+      assert.match(skill, /gh pr checks/);
+      assert.match(skill, /isDraft=false/);
+      assert.doesNotMatch(skill, /NO_PR/);
+      assert.doesNotMatch(skill, /BRANCH_PUSHED/);
+      assert.doesNotMatch(skill, /BLOCKED/);
       assert.match(skill, /Platform Portability Scan/);
     },
   );
 
   it(
-    'keeps cron mutation PR creation owned by boss-finalize',
+    'keeps cron mutation PR creation owned by the skill',
     {
       skip: !fs.existsSync(privateMutationSkillPath) && 'private mutation skill fixture is absent',
     },
@@ -82,11 +88,17 @@ describe('sync-codex-skills', () => {
       const skill = fs.readFileSync(privateMutationSkillPath, 'utf8');
 
       assert.match(skill, /^name: bs-mutation-test/m);
-      assert.match(skill, /boss-finalize/);
       assert.match(skill, /current session branch/);
-      assert.match(skill, /session's stored `BranchName`/);
+      assert.match(skill, /READY_GREEN_PR/);
+      assert.match(skill, /NO_CHANGE/);
+      assert.match(skill, /gh pr create/);
+      assert.match(skill, /gh pr ready/);
+      assert.match(skill, /gh pr checks/);
+      assert.match(skill, /isDraft=false/);
       assert.doesNotMatch(skill, /git switch -c "\$BRANCH"/);
-      assert.doesNotMatch(skill, /gh pr create[\s\S]*--title\s+"test\(/);
+      assert.doesNotMatch(skill, /NO_PR/);
+      assert.doesNotMatch(skill, /BRANCH_PUSHED/);
+      assert.doesNotMatch(skill, /BLOCKED/);
     },
   );
 
@@ -182,10 +194,12 @@ description: example description
 ---
 
 Claude Code should update CLAUDE.md, use TodoWrite, \`Read\`, \`Edit\`, and the Playwright MCP server.
+Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a PR.
 \`AGENTS.md\`, \`CLAUDE.md\`
 `);
 
     assert.match(rewritten, /Codex should update AGENTS\.md/);
+    assert.match(rewritten, /~\/\.codex\/skills\/bossanova\/boss-finalize\/add-pr-numbers\.sh/);
     assert.match(rewritten, /`AGENTS\.md`, `CLAUDE\.md`/);
     assert.match(rewritten, /update_plan/);
     assert.match(rewritten, /file-reading tool/);

@@ -3,9 +3,14 @@ package authlock
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/appstate"
+	"github.com/recurser/bossalib/config"
 )
 
 func TestAcquireSerializesLock(t *testing.T) {
@@ -181,5 +186,46 @@ func TestAcquireHonorsContextCancellation(t *testing.T) {
 	_, err = acquire(ctx, path, time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("acquire error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestWorkOSRefreshLockPathIgnoresConfiguredAppDataDir(t *testing.T) {
+	appDataDir := filepath.Join(t.TempDir(), "data")
+
+	got, err := workOSRefreshLockPath(config.Settings{AppDataDir: appDataDir})
+	if err != nil {
+		t.Fatalf("workOSRefreshLockPath() returned error: %v", err)
+	}
+
+	want, err := appstate.Path(workOSRefreshLockFile)
+	if err != nil {
+		t.Fatalf("appstate.Path() returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("workOSRefreshLockPath() = %q, want %q", got, want)
+	}
+}
+
+func TestAcquireWorkOSRefreshLockDoesNotUseConfiguredAppDataDir(t *testing.T) {
+	appDataDir := filepath.Join(t.TempDir(), "data")
+	settingsPath := filepath.Join(t.TempDir(), "settings.json")
+	settingsJSON := []byte(`{"app_data_dir":` + strconv.Quote(appDataDir) + `}`)
+	if err := os.WriteFile(settingsPath, settingsJSON, 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+
+	lock, err := AcquireWorkOSRefreshLock(context.Background())
+	if err != nil {
+		t.Fatalf("AcquireWorkOSRefreshLock() returned error: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	if _, err := os.Stat(filepath.Join(appDataDir, workOSRefreshLockFile)); err != nil {
+		if !os.IsNotExist(err) {
+			t.Fatalf("stat configured refresh lock: %v", err)
+		}
+	} else {
+		t.Fatalf("configured refresh lock was created in app_data_dir")
 	}
 }

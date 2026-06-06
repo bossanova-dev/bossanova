@@ -363,18 +363,28 @@ sleep 3
 exit 0
 `
 
+const fakeBinThreadStartedAfterSlowStartup = `#!/usr/bin/env bash
+sleep 3
+echo '{\"type\":\"thread.started\",\"thread_id\":\"slow-1234\"}'
+sleep 1
+exit 0
+`
+
 func threadIDFromOutput(buf []byte) string {
-	marker := []byte(`"thread_id":"`)
-	idx := strings.Index(string(buf), string(marker))
-	if idx < 0 {
-		return ""
+	output := string(buf)
+	for _, marker := range []string{`"thread_id":"`, `\"thread_id\":\"`} {
+		idx := strings.Index(output, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := output[idx+len(marker):]
+		end := strings.IndexByte(rest, '"')
+		if end < 0 {
+			return ""
+		}
+		return strings.TrimSuffix(rest[:end], `\`)
 	}
-	rest := string(buf[idx+len(marker):])
-	end := strings.IndexByte(rest, '"')
-	if end < 0 {
-		return ""
-	}
-	return rest[:end]
+	return ""
 }
 
 // TestRunnerSessionIDFromOutput verifies the SessionIDFromOutput hook
@@ -394,20 +404,7 @@ func TestRunnerSessionIDFromOutput(t *testing.T) {
 		BuildArgv: func(in agentruntime.BuildArgvInput) []string {
 			return []string{binPath}
 		},
-		SessionIDFromOutput: func(buf []byte) string {
-			// Trivial extractor: scan for `thread_id":"<...>"` substring.
-			marker := []byte(`"thread_id":"`)
-			idx := strings.Index(string(buf), string(marker))
-			if idx < 0 {
-				return ""
-			}
-			rest := string(buf[idx+len(marker):])
-			end := strings.IndexByte(rest, '"')
-			if end < 0 {
-				return ""
-			}
-			return rest[:end]
-		},
+		SessionIDFromOutput: threadIDFromOutput,
 	})
 
 	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath)
@@ -462,6 +459,38 @@ func TestRunnerSessionIDFromOutputReturnsWhenIDArrives(t *testing.T) {
 	}
 	if elapsed > 1500*time.Millisecond {
 		t.Fatalf("Start took %s after session ID output; want under 1.5s", elapsed)
+	}
+
+	if err := r.Stop(sid); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestRunnerSessionIDFromOutputToleratesSlowStartup(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fake-thread-slow-startup.sh")
+	if err := os.WriteFile(binPath, []byte(fakeBinThreadStartedAfterSlowStartup), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "agent.log")
+
+	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{
+		BinaryName: "fake",
+		BuildArgv: func(in agentruntime.BuildArgvInput) []string {
+			return []string{binPath}
+		},
+		SessionIDFromOutput: threadIDFromOutput,
+	})
+
+	started := time.Now()
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if sid != "slow-1234" {
+		_ = r.Stop(sid)
+		t.Fatalf("Start returned sid=%q after %s, want slow-1234", sid, elapsed)
 	}
 
 	if err := r.Stop(sid); err != nil {

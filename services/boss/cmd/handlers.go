@@ -83,15 +83,23 @@ func newRemoteClient(cmd *cobra.Command, baseURL string) (client.BossClient, err
 // callers a chance to override the initial view or seed view-specific
 // state (e.g. the session id for an attach).
 func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
+	return launchTUIWithOptions(cmd, launchTUIOptions{configure: configure})
+}
+
+type launchTUIOptions struct {
+	configure       func(*views.App)
+	attachSessionID string
+}
+
+func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 	if issue := preflight.CheckTmux(); issue != nil {
 		return views.RunPreflight(*issue)
 	}
-	if issue := preflight.CheckShellTools(); issue != nil {
-		return views.RunPreflight(*issue)
-	}
-	remote, _ := cmd.Root().Flags().GetString("remote")
-	if remote == "" && os.Getenv("BOSS_SOCKET") == "" {
-		if err := views.RunProviderStartupIfNeeded(); err != nil {
+	if needsLocalDaemonStartup(cmd) {
+		if issue := preflight.CheckShellTools(); issue != nil {
+			return views.RunPreflight(*issue)
+		}
+		if err := runLocalProviderStartupBeforeClient(); err != nil {
 			if views.IsPreflightCancelled(err) {
 				return nil
 			}
@@ -112,6 +120,12 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 	}
 	authMgr := newOptionalAuthManager(cmd)
 	settings := launchSettings(time.Now())
+	if err := runAgentPreflights(context.Background(), cmd, c, settings, opts.attachSessionID); err != nil {
+		if views.IsPreflightCancelled(err) {
+			return nil
+		}
+		return err
+	}
 	app := views.NewApp(c, authMgr)
 	app.WithSettings(settings)
 	if resolveE2ELoginEmail() != "" || resolveE2ECloudAccessClient() != nil {
@@ -128,12 +142,99 @@ func launchTUI(cmd *cobra.Command, configure func(*views.App)) error {
 		app.WithCheckoutURLs(cloudReturnURL(), cloudCancelURL())
 		app.WithSubscriptionURL(cloudSubscribeURL())
 	}
-	if configure != nil {
-		configure(&app)
+	if opts.configure != nil {
+		opts.configure(&app)
 	}
 	p := tea.NewProgram(app)
 	_, err = p.Run()
 	return err
+}
+
+type agentPreflightClient interface {
+	ResolveContext(ctx context.Context, workingDir string) (*pb.ResolveContextResponse, error)
+	GetSession(ctx context.Context, id string) (*pb.Session, error)
+	ListAgents(ctx context.Context) ([]client.AgentInfo, error)
+}
+
+var checkAgentResolvableForPreflight = preflight.CheckAgentResolvable
+
+var cliBackedAgentProviders = map[string]bool{
+	"claude": true,
+	"codex":  true,
+}
+
+func runAgentPreflights(ctx context.Context, cmd *cobra.Command, c agentPreflightClient, settings config.Settings, sessionID string) error {
+	if remoteURL(cmd) != "" {
+		return nil
+	}
+	loadedAgents, err := c.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	worktree, agentName, err := agentPreflightTarget(ctx, c, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, agent := range enabledAgentProviders(settings, loadedAgents, agentName) {
+		if issue := checkAgentResolvableForPreflight(settings.LoginShell, agent, worktree); issue != nil {
+			return views.RunPreflight(*issue)
+		}
+	}
+	return nil
+}
+
+func needsLocalDaemonStartup(cmd *cobra.Command) bool {
+	return remoteURL(cmd) == "" && os.Getenv("BOSS_SOCKET") == ""
+}
+
+func agentPreflightTarget(ctx context.Context, c agentPreflightClient, sessionID string) (string, string, error) {
+	if sessionID != "" {
+		sess, err := c.GetSession(ctx, sessionID)
+		if err != nil {
+			return "", "", err
+		}
+		if worktree := sess.GetWorktreePath(); worktree != "" {
+			return worktree, sess.GetAgentName(), nil
+		}
+		return "", "", fmt.Errorf("session %s has no worktree path", sessionID)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", "", err
+	}
+	resolved, err := c.ResolveContext(ctx, wd)
+	if err != nil || resolved == nil || resolved.GetSession() == nil {
+		return wd, "", nil
+	}
+	sess := resolved.GetSession()
+	if worktree := sess.GetWorktreePath(); worktree != "" {
+		return worktree, sess.GetAgentName(), nil
+	}
+	return wd, sess.GetAgentName(), nil
+}
+
+func enabledAgentProviders(settings config.Settings, loadedAgents []client.AgentInfo, agentName string) []string {
+	agentProviders := make(map[string]bool, len(loadedAgents))
+	for _, agent := range loadedAgents {
+		if agent.Name != "" {
+			agentProviders[agent.Name] = true
+		}
+	}
+
+	agents := make([]string, 0, 2)
+	seen := map[string]bool{}
+	for _, plugin := range settings.Plugins {
+		if agentName != "" && plugin.Name != agentName {
+			continue
+		}
+		if !plugin.Enabled || !agentProviders[plugin.Name] || !cliBackedAgentProviders[plugin.Name] || seen[plugin.Name] {
+			continue
+		}
+		agents = append(agents, plugin.Name)
+		seen[plugin.Name] = true
+	}
+	return agents
 }
 
 func handleClientStartupError(cmd *cobra.Command, err error, wait func() (client.BossClient, error)) (client.BossClient, error) {
@@ -180,6 +281,81 @@ func runTUI(cmd *cobra.Command) error {
 	return launchTUI(cmd, nil)
 }
 
+func runLocalProviderStartupBeforeClient() error {
+	result, err := runProviderStartupIfNeeded()
+	if result.LoginShellChanged {
+		if restartErr := restartDaemonAfterLoginShellCapture(); restartErr != nil {
+			return restartErr
+		}
+	}
+	return err
+}
+
+var restartDaemonAfterLoginShellCapture = func() error {
+	socketPath, err := defaultSocketPath()
+	if err != nil {
+		return fmt.Errorf("restart daemon after login shell capture: socket path: %w", err)
+	}
+	if !daemonSocketReachable(socketPath) {
+		return nil
+	}
+	if err := restartReachableDaemonForSettingsReload(socketPath); err != nil {
+		return fmt.Errorf("restart daemon after login shell capture: %w", err)
+	}
+	return nil
+}
+
+func restartReachableDaemonForSettingsReload(socketPath string) error {
+	return restartReachableDaemonForSettingsReloadWith(
+		socketPath,
+		daemon.GetStatus,
+		daemon.Stop,
+		daemon.EnsureRunning,
+		terminateBossdProcesses,
+		waitForSocketGone,
+	)
+}
+
+func restartReachableDaemonForSettingsReloadWith(
+	socketPath string,
+	getStatus func() (*daemon.Status, error),
+	stop func() error,
+	ensureRunning func(string) error,
+	terminateStandalone func() (int, error),
+	waitSocketGone func(string) bool,
+) error {
+	st, err := getStatus()
+	if err != nil {
+		return fmt.Errorf("daemon restart: %w", err)
+	}
+	if !st.Installed || !st.Running {
+		n, err := terminateStandalone()
+		if err != nil {
+			return fmt.Errorf("restart standalone bossd failed: %w", err)
+		}
+		if n > 0 && socketPath != "" && !waitSocketGone(socketPath) {
+			return fmt.Errorf("timed out waiting for standalone bossd to stop")
+		}
+		if err := ensureRunning(socketPath); err != nil {
+			if !st.Installed {
+				return fmt.Errorf("restart standalone bossd failed: %w", err)
+			}
+			return fmt.Errorf("restart daemon failed: %w", err)
+		}
+		return nil
+	}
+	if err := stop(); err != nil {
+		return fmt.Errorf("stop daemon failed: %w", err)
+	}
+	if socketPath != "" && !waitSocketGone(socketPath) {
+		return fmt.Errorf("timed out waiting for daemon socket to stop")
+	}
+	if err := ensureRunning(socketPath); err != nil {
+		return fmt.Errorf("restart daemon failed: %w", err)
+	}
+	return nil
+}
+
 var upgradeCurrentVersion = func() string {
 	return buildinfo.Version
 }
@@ -202,6 +378,12 @@ var verifyUpgradeVersion = func(ctx context.Context, version string) error {
 }
 
 var restartDaemon = daemon.Restart
+
+var runProviderStartupIfNeeded = views.RunProviderStartupIfNeeded
+
+var defaultSocketPath = client.DefaultSocketPath
+
+var daemonSocketReachable = daemon.IsSocketReachable
 
 var loadSettings = config.Load
 
@@ -493,9 +675,12 @@ func runNew(cmd *cobra.Command) error {
 }
 
 func runAttach(cmd *cobra.Command, sessionID string) error {
-	return launchTUI(cmd, func(app *views.App) {
-		app.SetInitialView(views.ViewAttach)
-		app.SetAttachSession(sessionID, "")
+	return launchTUIWithOptions(cmd, launchTUIOptions{
+		attachSessionID: sessionID,
+		configure: func(app *views.App) {
+			app.SetInitialView(views.ViewAttach)
+			app.SetAttachSession(sessionID, "")
+		},
 	})
 }
 

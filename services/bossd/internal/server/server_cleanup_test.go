@@ -215,6 +215,9 @@ func (m *cleanupWorktreeManager) VerifyCurrentBranch(context.Context, string, st
 func (m *cleanupWorktreeManager) Push(context.Context, string, string) error {
 	panic("not used")
 }
+func (m *cleanupWorktreeManager) PushWithLease(context.Context, string, string, string) (string, error) {
+	panic("not used")
+}
 func (m *cleanupWorktreeManager) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
 	panic("not used")
 }

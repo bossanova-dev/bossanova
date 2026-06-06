@@ -81,6 +81,11 @@ type WorktreeManager interface {
 	// Push pushes the given branch to the "origin" remote.
 	Push(ctx context.Context, worktreePath, branch string) error
 
+	// PushWithLease force-updates the remote branch only if it still points at
+	// expectedRemoteSHA and the local branch has integrated that SHA. It returns
+	// the pushed local HEAD SHA.
+	PushWithLease(ctx context.Context, worktreePath, branch, expectedRemoteSHA string) (string, error)
+
 	// Status runs `git status --porcelain` in the given worktree and returns
 	// its trimmed stdout. Empty output means the working tree has no changes
 	// (no untracked or modified files). Used by the cron-finalize path to
@@ -737,6 +742,80 @@ func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {
 		return fmt.Errorf("push: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) PushWithLease(ctx context.Context, worktreePath, branch, expectedRemoteSHA string) (string, error) {
+	m.logger.Info().
+		Str("path", worktreePath).
+		Str("branch", branch).
+		Str("expectedRemoteSHA", expectedRemoteSHA).
+		Msg("pushing branch with lease")
+
+	if strings.TrimSpace(expectedRemoteSHA) == "" {
+		return "", errors.New("expected remote SHA is required for push with lease")
+	}
+	if err := m.verifyCurrentBranch(ctx, worktreePath, branch); err != nil {
+		return "", fmt.Errorf("verify branch before push with lease: %w", err)
+	}
+
+	headSHA, err := runGit(ctx, worktreePath, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve local HEAD before push with lease: %w", err)
+	}
+	headSHA = strings.TrimSpace(headSHA)
+
+	expectedRemoteSHA = strings.TrimSpace(expectedRemoteSHA)
+	if err := verifyLeaseSHAIntegrated(ctx, worktreePath, branch, expectedRemoteSHA, headSHA); err != nil {
+		return "", err
+	}
+
+	lease := "refs/heads/" + branch + ":" + expectedRemoteSHA
+	if _, err := runGit(ctx, worktreePath, "push", "--force-with-lease="+lease, "origin", headSHA+":refs/heads/"+branch); err != nil {
+		return "", fmt.Errorf("push with lease: %w", err)
+	}
+	return headSHA, nil
+}
+
+func verifyLeaseSHAIntegrated(ctx context.Context, worktreePath, branch, expectedRemoteSHA, headSHA string) error {
+	if _, err := runGit(ctx, worktreePath, "merge-base", "--is-ancestor", expectedRemoteSHA, headSHA); err == nil {
+		return nil
+	}
+
+	reflog, err := runGit(ctx, worktreePath, "reflog", "show", "--format=%H%x00%gs", "refs/heads/"+branch)
+	if err != nil {
+		return fmt.Errorf("verify lease SHA in local branch reflog before push with lease: %w", err)
+	}
+	if leaseSHAHasRebaseEvidence(reflog, expectedRemoteSHA, headSHA) {
+		return nil
+	}
+
+	return fmt.Errorf("lease SHA %s is not integrated or rebased in local branch before push with lease", expectedRemoteSHA)
+}
+
+func leaseSHAHasRebaseEvidence(reflog, expectedRemoteSHA, headSHA string) bool {
+	type entry struct {
+		sha     string
+		subject string
+	}
+	var entries []entry
+	for _, line := range strings.Split(reflog, "\n") {
+		sha, subject, ok := strings.Cut(line, "\x00")
+		if !ok {
+			continue
+		}
+		entries = append(entries, entry{sha: strings.TrimSpace(sha), subject: strings.TrimSpace(subject)})
+	}
+
+	for i := 1; i < len(entries); i++ {
+		if entries[i].sha != expectedRemoteSHA {
+			continue
+		}
+		previous := entries[i-1]
+		if previous.sha == headSHA && strings.HasPrefix(previous.subject, "rebase (finish):") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchVerification, error) {

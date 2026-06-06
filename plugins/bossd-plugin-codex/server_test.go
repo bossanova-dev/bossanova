@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +38,80 @@ func TestBuildInteractiveCommandReturnsDollarCommandPrefix(t *testing.T) {
 	}
 	if resp.GetCommandPrefix() != "$" {
 		t.Fatalf("command prefix = %q, want $", resp.GetCommandPrefix())
+	}
+}
+
+func TestBuildInteractiveCommandTrustsWorktreeBeforeReturningArgv(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	worktree := t.TempDir()
+	srv := &Server{}
+
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "agent-1",
+		WorktreePath: worktree,
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if len(resp.Argv) == 0 {
+		t.Fatal("Argv is empty")
+	}
+
+	config, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	wantHeader := `[projects."` + tomlBasicStringEscape(worktree) + `"]`
+	if !strings.Contains(string(config), wantHeader+"\ntrust_level = \"trusted\"") {
+		t.Fatalf("codex config missing trusted worktree block:\n%s", config)
+	}
+}
+
+func TestTrustCodexWorktreeSerializesConcurrentConfigUpdates(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	const worktreeCount = 24
+	worktrees := make([]string, worktreeCount)
+	for i := range worktrees {
+		worktrees[i] = filepath.Join(t.TempDir(), "repo")
+		if err := os.MkdirAll(worktrees[i], 0o755); err != nil {
+			t.Fatalf("create worktree: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, worktreeCount)
+	for _, worktree := range worktrees {
+		worktree := worktree
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- trustCodexWorktree(worktree)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("trustCodexWorktree: %v", err)
+		}
+	}
+
+	config, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	for _, worktree := range worktrees {
+		absPath, err := filepath.Abs(worktree)
+		if err != nil {
+			t.Fatalf("resolve worktree path: %v", err)
+		}
+		wantHeader := `[projects."` + tomlBasicStringEscape(absPath) + `"]`
+		if !strings.Contains(string(config), wantHeader+"\ntrust_level = \"trusted\"") {
+			t.Fatalf("codex config missing trusted worktree block for %s:\n%s", worktree, config)
+		}
 	}
 }
 
@@ -317,6 +394,50 @@ func TestBuildInteractiveCommandIncludesDangerouslyBypass(t *testing.T) {
 	}
 	if contains(resp.Argv, "--ask-for-approval") {
 		t.Errorf("argv should drop --ask-for-approval when bypass is on: %v", resp.Argv)
+	}
+}
+
+func TestBuildInteractiveCommandWrapsInLoginShellWhenConfigured(t *testing.T) {
+	s := &Server{runner: &Runner{loginShell: "/opt/homebrew/bin/fish"}}
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:      "abc",
+		InitialCommand: "boss-repair",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	wantArgv := []string{
+		"/opt/homebrew/bin/fish",
+		"-l",
+		"-c",
+		"exec $argv",
+		"codex",
+		"$boss-repair",
+	}
+	if !equalStrings(resp.Argv, wantArgv) {
+		t.Fatalf("wrapped fish argv:\n got=%#v\nwant=%#v", resp.Argv, wantArgv)
+	}
+	if resp.ReadyMarker != "›" {
+		t.Fatalf("ReadyMarker = %q, want Codex prompt marker %q", resp.ReadyMarker, "›")
+	}
+	if resp.CommandPrefix != "$" {
+		t.Fatalf("CommandPrefix = %q, want $", resp.CommandPrefix)
+	}
+	if !resp.ConsumesInitialInput {
+		t.Fatal("ConsumesInitialInput = false, want true")
+	}
+}
+
+func TestBuildInteractiveCommandDoesNotWrapWhenLoginShellEmpty(t *testing.T) {
+	s := &Server{runner: &Runner{}}
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "abc",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if resp.Argv[0] != "codex" {
+		t.Fatalf("no login shell -> direct codex argv, got %v", resp.Argv)
 	}
 }
 

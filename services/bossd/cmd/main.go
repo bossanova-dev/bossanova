@@ -191,11 +191,16 @@ func run(opts runOpts) error {
 	logCloser := bossalog.Setup("bossd")
 	defer func() { _ = logCloser.Close() }()
 
+	settings, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+
 	// --- Database ---
 
 	dbPath := opts.dbPath
 	if dbPath == "" {
-		p, err := db.DefaultDBPath()
+		p, err := db.DefaultDBPathForSettings(settings)
 		if err != nil {
 			return fmt.Errorf("db path: %w", err)
 		}
@@ -416,7 +421,6 @@ func run(opts runOpts) error {
 
 	// --- Settings + Display Poller ---
 
-	settings, _ := config.Load()
 	bossEnv := config.EnvOr("BOSS_ENV", "local")
 	var errortrackClose = func() {}
 	if settings.ErrorTrackingEnabled {
@@ -502,7 +506,7 @@ func run(opts runOpts) error {
 		}
 	}
 
-	if err := pluginHost.Start(context.Background(), pluginCfgs); err != nil {
+	if err := pluginHost.Start(context.Background(), pluginCfgs, settings); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)
 	}
@@ -713,7 +717,7 @@ func run(opts runOpts) error {
 
 	socketPath := opts.socketPath
 	if socketPath == "" {
-		p, err := server.DefaultSocketPath()
+		p, err := server.DefaultSocketPathForSettings(settings)
 		if err != nil {
 			return fmt.Errorf("socket path: %w", err)
 		}

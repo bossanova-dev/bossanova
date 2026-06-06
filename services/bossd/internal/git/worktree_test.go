@@ -1306,6 +1306,185 @@ func TestPushQualifiesRemoteBranchDestination(t *testing.T) {
 	}
 }
 
+func TestPushWithLeaseUsesExpectedRemoteHead(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+	branch := leaseTestBranch
+
+	for _, args := range [][]string{
+		{"checkout", "-b", branch},
+		{"commit", "--allow-empty", "-m", "initial branch commit"},
+		{"push", "origin", "refs/heads/" + branch},
+		{"commit", "--allow-empty", "-m", "updated branch commit"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	expectedRemote := currentRemoteHead(t, repoDir)
+
+	pushedSHA, err := mgr.PushWithLease(ctx, repoDir, branch, expectedRemote)
+	if err != nil {
+		t.Fatalf("PushWithLease: %v", err)
+	}
+
+	got := currentRemoteHead(t, repoDir)
+	if got != pushedSHA {
+		t.Fatalf("remote head = %q, want pushed SHA %q", got, pushedSHA)
+	}
+	if got == expectedRemote {
+		t.Fatalf("remote head did not change after lease push")
+	}
+}
+
+func TestPushWithLeaseRejectsStaleExpectedRemoteHead(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+	branch := leaseTestBranch
+
+	for _, args := range [][]string{
+		{"checkout", "-b", branch},
+		{"commit", "--allow-empty", "-m", "initial branch commit"},
+		{"push", "origin", "refs/heads/" + branch},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	expectedRemote := currentRemoteHead(t, repoDir)
+
+	originURL := gitOutput(t, repoDir, "config", "--get", "remote.origin.url")
+	competingDir := t.TempDir()
+	gitOutput(t, t.TempDir(), "clone", originURL, competingDir)
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"checkout", "-B", branch, "origin/" + branch},
+		{"commit", "--allow-empty", "-m", "competing branch commit"},
+		{"push", "origin", "HEAD:refs/heads/" + branch},
+	} {
+		gitOutput(t, competingDir, args...)
+	}
+	competingRemote := currentRemoteHead(t, repoDir)
+	if competingRemote == expectedRemote {
+		t.Fatalf("competing push did not advance remote branch")
+	}
+
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "local repair commit")
+	if _, err := mgr.PushWithLease(ctx, repoDir, branch, expectedRemote); err == nil {
+		t.Fatalf("PushWithLease succeeded with stale expected remote head")
+	}
+
+	got := currentRemoteHead(t, repoDir)
+	if got != competingRemote {
+		t.Fatalf("remote head = %q, want competing SHA %q", got, competingRemote)
+	}
+}
+
+func TestPushWithLeaseRejectsRemoteHeadNotIncludedLocally(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+	branch := leaseTestBranch
+
+	for _, args := range [][]string{
+		{"checkout", "-b", branch},
+		{"commit", "--allow-empty", "-m", "initial branch commit"},
+		{"push", "origin", "refs/heads/" + branch},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	originURL := gitOutput(t, repoDir, "config", "--get", "remote.origin.url")
+	competingDir := t.TempDir()
+	gitOutput(t, t.TempDir(), "clone", originURL, competingDir)
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"checkout", "-B", branch, "origin/" + branch},
+		{"commit", "--allow-empty", "-m", "remote-only branch commit"},
+		{"push", "origin", "HEAD:refs/heads/" + branch},
+	} {
+		gitOutput(t, competingDir, args...)
+	}
+	remoteOnlyHead := currentRemoteHead(t, repoDir)
+
+	gitOutput(t, repoDir, "fetch", "origin", branch)
+	gitOutput(t, repoDir, "checkout", "--detach", remoteOnlyHead)
+	gitOutput(t, repoDir, "checkout", branch)
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "local repair commit")
+	_, err := mgr.PushWithLease(ctx, repoDir, branch, remoteOnlyHead)
+	if err == nil {
+		t.Fatalf("PushWithLease succeeded when local HEAD did not include expected remote head")
+	}
+	if !strings.Contains(err.Error(), "is not integrated or rebased in local branch") {
+		t.Fatalf("PushWithLease error = %v, want local lease inclusion error", err)
+	}
+
+	got := currentRemoteHead(t, repoDir)
+	if got != remoteOnlyHead {
+		t.Fatalf("remote head = %q, want remote-only SHA %q", got, remoteOnlyHead)
+	}
+}
+
+func TestPushWithLeaseAllowsRebasedHeadFromExpectedRemoteHead(t *testing.T) {
+	repoDir := initTestRepo(t)
+	ctx := context.Background()
+	mgr := NewManager(zerolog.Nop())
+	branch := leaseTestBranch
+
+	for _, args := range [][]string{
+		{"checkout", "-b", branch},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "branch.txt"), []byte("branch\n"), 0o644); err != nil {
+		t.Fatalf("write branch file: %v", err)
+	}
+	for _, args := range [][]string{
+		{"add", "branch.txt"},
+		{"commit", "-m", "initial branch commit"},
+		{"push", "origin", "refs/heads/" + branch},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+	expectedRemote := currentRemoteHead(t, repoDir)
+
+	gitOutput(t, repoDir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatalf("write main file: %v", err)
+	}
+	for _, args := range [][]string{
+		{"add", "main.txt"},
+		{"commit", "-m", "main branch commit"},
+		{"checkout", branch},
+		{"rebase", "main"},
+	} {
+		gitOutput(t, repoDir, args...)
+	}
+
+	pushedSHA, err := mgr.PushWithLease(ctx, repoDir, branch, expectedRemote)
+	if err != nil {
+		t.Fatalf("PushWithLease after rebase: %v", err)
+	}
+	got := currentRemoteHead(t, repoDir)
+	if got != pushedSHA {
+		t.Fatalf("remote head = %q, want pushed SHA %q", got, pushedSHA)
+	}
+}
+
+// leaseTestBranch is the fixture branch used by the PushWithLease tests and
+// their currentRemoteHead helper.
+const leaseTestBranch = "fix-camera-focus-issues"
+
+func currentRemoteHead(t *testing.T, repoDir string) string {
+	t.Helper()
+	out := gitOutput(t, repoDir, "ls-remote", "origin", "refs/heads/"+leaseTestBranch)
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		t.Fatalf("remote branch %q has no head", leaseTestBranch)
+	}
+	return fields[0]
+}
+
 func TestDetectOriginURL(t *testing.T) {
 	logger := zerolog.Nop()
 	mgr := NewManager(logger)

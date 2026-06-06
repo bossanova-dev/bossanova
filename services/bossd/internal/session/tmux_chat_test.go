@@ -394,6 +394,9 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 	if !strings.Contains(joined, "claude --session-id "+agentSessionID) {
 		t.Errorf("expected new-session argv to embed claude --session-id %s, got: %s", agentSessionID, joined)
 	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetWorktreePath(); got != h.sessions.sessions["sess-1"].WorktreePath {
+		t.Errorf("BuildInteractiveCommand WorktreePath = %q, want %q", got, h.sessions.sessions["sess-1"].WorktreePath)
+	}
 
 	// UpdateTmuxSessionName wrote a non-empty resolved tmux name onto the row.
 	if len(h.chats.tmuxNameUpdates) != 1 {
@@ -1575,6 +1578,9 @@ func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
 	}
 	if got := h.agentFake.LastBuildInteractiveCommand.GetSessionId(); got != "agent-session-prior" {
 		t.Errorf("BuildInteractiveCommand SessionId = %q, want %q", got, "agent-session-prior")
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetWorktreePath(); got != h.sessions.sessions["sess-1"].WorktreePath {
+		t.Errorf("BuildInteractiveCommand WorktreePath = %q, want %q", got, h.sessions.sessions["sess-1"].WorktreePath)
 	}
 }
 

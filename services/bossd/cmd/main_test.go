@@ -12,6 +12,7 @@ import (
 
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossd/internal/server"
 )
 
 // TestRun_GracefulShutdown_NoGoroutineLeak boots the full daemon with an
@@ -123,5 +124,73 @@ func TestDaemonDistinctIDUsesHyphenatedSharedHelper(t *testing.T) {
 func TestDaemonDistinctIDFallbackIsHyphenated(t *testing.T) {
 	if got := daemonDistinctIDFromHostname(""); got != "daemon-unknown" {
 		t.Fatalf("daemonDistinctIDFromHostname empty = %q, want daemon-unknown", got)
+	}
+}
+
+func TestRunUsesSettingsPathProfileForDBAndSocket(t *testing.T) {
+	baseDir, err := os.MkdirTemp("/tmp", "bossd-profile-")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(baseDir) })
+
+	settingsPath := filepath.Join(baseDir, "settings.json")
+	appDataDir := filepath.Join(baseDir, "data")
+	socketPath := filepath.Join(baseDir, "profile.sock")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	t.Setenv("BOSSD_ORCHESTRATOR_URL", "")
+
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	settings.SocketPath = socketPath
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo() returned error: %v", err)
+	}
+
+	stopSig := make(chan os.Signal, 1)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- run(runOpts{
+			stopSig: stopSig,
+			plugins: []config.PluginConfig{},
+			onReady: func() { close(ready) },
+		})
+	}()
+
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("run exited before ready: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("daemon did not reach ready state within 15s")
+	}
+
+	if _, err := os.Stat(filepath.Join(appDataDir, "bossd.db")); err != nil {
+		t.Fatalf("settings DB path was not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(appDataDir, server.LockFileName)); err != nil {
+		t.Fatalf("settings lock file was not created: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(socketPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("settings socket path was not created at %s", socketPath)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	stopSig <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not return within 15s of SIGTERM")
 	}
 }

@@ -147,7 +147,7 @@ func TestE2E_PluginDiscovery_LoadsAllPlugins(t *testing.T) {
 	}
 
 	d := newDiscoveryHost(t)
-	if err := d.host.Start(t.Context(), cfgs); err != nil {
+	if err := d.host.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("host.Start: %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestE2E_PluginDiscovery_SkipsBadBinary(t *testing.T) {
 	}
 
 	d := newDiscoveryHost(t)
-	if err := d.host.Start(t.Context(), cfgs); err != nil {
+	if err := d.host.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("host.Start should not abort on bad plugin: %v", err)
 	}
 

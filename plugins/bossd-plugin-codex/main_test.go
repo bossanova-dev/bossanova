@@ -13,6 +13,17 @@ import (
 	"github.com/rs/zerolog"
 )
 
+func TestRunnerOptsFromEnv_LoginShell(t *testing.T) {
+	t.Setenv("BOSS_PLUGIN_login_shell", "/bin/zsh")
+	opts := runnerOptsFromEnv()
+	t.Setenv("BOSS_PLUGIN_login_shell", "")
+
+	r := NewRunner(zerolog.Nop(), opts...)
+	if r.loginShell != "/bin/zsh" {
+		t.Fatalf("loginShell = %q, want /bin/zsh", r.loginShell)
+	}
+}
+
 // TestRunnerEndToEndWithFakeCodex drives the codex Runner against a hermetic
 // fake_codex.sh instead of the real codex binary. The fake binary emits a
 // `thread.started` JSONL event and echoes its stdin, so this exercises:

@@ -53,10 +53,77 @@ func TestPluginEnvFromConfig_EmptyConfig(t *testing.T) {
 	}
 }
 
+func TestInjectLoginShell_AgentPluginsOnly(t *testing.T) {
+	settings := config.Settings{
+		LoginShell:          "/opt/homebrew/bin/fish",
+		KnownAgentProviders: []string{"opencode"},
+	}
+
+	base := map[string]string{"x": "1"}
+	cfg := injectLoginShell("codex", base, settings)
+	if cfg["login_shell"] != "/opt/homebrew/bin/fish" {
+		t.Fatalf("codex should get login_shell, got %q", cfg["login_shell"])
+	}
+	if cfg["x"] != "1" {
+		t.Fatalf("existing keys preserved")
+	}
+	if base["login_shell"] != "" {
+		t.Fatalf("source config map must not be mutated")
+	}
+	if got := injectLoginShell("claude", nil, settings); got["login_shell"] != "/opt/homebrew/bin/fish" {
+		t.Fatalf("claude should get login_shell, got %q", got["login_shell"])
+	}
+	if got := injectLoginShell("opencode", nil, settings); got["login_shell"] != "/opt/homebrew/bin/fish" {
+		t.Fatalf("known agent provider should get login_shell, got %q", got["login_shell"])
+	}
+	if got := injectLoginShell("dependabot", map[string]string{}, settings); got["login_shell"] != "" {
+		t.Fatalf("non-agent plugin must not get login_shell")
+	}
+	// empty login shell -> no key (daemon started from a full shell, passthrough)
+	if got := injectLoginShell("codex", map[string]string{}, config.Settings{}); got["login_shell"] != "" {
+		t.Fatalf("empty login shell must not inject the key")
+	}
+}
+
+func TestPreparePluginConfigForStartInjectsLoginShellBeforeEnvProjection(t *testing.T) {
+	settings := config.Settings{
+		LoginShell:          "/opt/homebrew/bin/fish",
+		KnownAgentProviders: []string{"opencode"},
+	}
+	cfg := preparePluginConfigForStart(config.PluginConfig{
+		Name: "opencode",
+		Config: map[string]string{
+			"x": "1",
+		},
+	}, settings)
+
+	env := map[string]string{}
+	for _, kv := range pluginEnvFromConfig(cfg) {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			t.Fatalf("malformed env entry %q", kv)
+		}
+		env[k] = v
+	}
+	if env["BOSS_PLUGIN_login_shell"] != "/opt/homebrew/bin/fish" {
+		t.Fatalf("BOSS_PLUGIN_login_shell = %q, want %q", env["BOSS_PLUGIN_login_shell"], "/opt/homebrew/bin/fish")
+	}
+	if env["BOSS_PLUGIN_x"] != "1" {
+		t.Fatalf("BOSS_PLUGIN_x = %q, want %q", env["BOSS_PLUGIN_x"], "1")
+	}
+
+	nonAgent := preparePluginConfigForStart(config.PluginConfig{Name: "linear"}, settings)
+	for _, kv := range pluginEnvFromConfig(nonAgent) {
+		if strings.HasPrefix(kv, "BOSS_PLUGIN_login_shell=") {
+			t.Fatalf("non-agent plugin must not project login_shell env, got %q", kv)
+		}
+	}
+}
+
 func TestStartEmptyPlugins(t *testing.T) {
 	h := testHost()
 
-	if err := h.Start(t.Context(), nil); err != nil {
+	if err := h.Start(t.Context(), nil, config.Settings{}); err != nil {
 		t.Fatalf("Start with nil plugins: %v", err)
 	}
 
@@ -73,7 +140,7 @@ func TestStartEmptyPlugins(t *testing.T) {
 func TestStartEmptySlice(t *testing.T) {
 	h := testHost()
 
-	if err := h.Start(t.Context(), []config.PluginConfig{}); err != nil {
+	if err := h.Start(t.Context(), []config.PluginConfig{}, config.Settings{}); err != nil {
 		t.Fatalf("Start with empty slice: %v", err)
 	}
 
@@ -98,7 +165,7 @@ func TestStartDisabledPluginSkipped(t *testing.T) {
 		},
 	}
 
-	if err := h.Start(t.Context(), cfgs); err != nil {
+	if err := h.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("Start with disabled plugin: %v", err)
 	}
 
@@ -121,7 +188,7 @@ func TestStartMultipleDisabledPlugins(t *testing.T) {
 		{Name: "plugin-c", Path: "/nonexistent/c", Enabled: false},
 	}
 
-	if err := h.Start(t.Context(), cfgs); err != nil {
+	if err := h.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -146,7 +213,7 @@ func TestAllPluginsSurfacesMissesAndLoaded(t *testing.T) {
 		{Name: "broken-plugin", Path: "/nonexistent/binary", Enabled: true},
 	}
 
-	if err := h.Start(t.Context(), cfgs); err != nil {
+	if err := h.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { _ = h.Stop() })
@@ -185,7 +252,7 @@ func TestAllPluginsSurfacesMissesAndLoaded(t *testing.T) {
 func TestStopIdempotent(t *testing.T) {
 	h := testHost()
 
-	if err := h.Start(t.Context(), nil); err != nil {
+	if err := h.Start(t.Context(), nil, config.Settings{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -232,7 +299,7 @@ func TestStartEnabledPluginInvalidPath(t *testing.T) {
 		},
 	}
 
-	if err := h.Start(t.Context(), cfgs); err != nil {
+	if err := h.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("Start should skip bad plugins, not fail: %v", err)
 	}
 
@@ -259,7 +326,7 @@ func TestStartMixedEnabledDisabled(t *testing.T) {
 		{Name: "disabled-last", Path: "/nonexistent/c", Enabled: false},
 	}
 
-	if err := h.Start(context.Background(), cfgs); err != nil {
+	if err := h.Start(context.Background(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("Start should skip bad plugin, not fail: %v", err)
 	}
 
@@ -284,7 +351,7 @@ func TestGetTaskSourcesEmptyBeforeStart(t *testing.T) {
 func TestGetTaskSourcesEmptyWithNoPlugins(t *testing.T) {
 	h := testHost()
 
-	if err := h.Start(t.Context(), nil); err != nil {
+	if err := h.Start(t.Context(), nil, config.Settings{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = h.Stop() }()
@@ -303,7 +370,7 @@ func TestGetTaskSourcesEmptyWithDisabledPlugins(t *testing.T) {
 		{Name: "disabled-b", Path: "/nonexistent/b", Enabled: false},
 	}
 
-	if err := h.Start(t.Context(), cfgs); err != nil {
+	if err := h.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = h.Stop() }()
@@ -323,7 +390,7 @@ func TestStopNoGoroutineLeak(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	h := testHost()
-	if err := h.Start(t.Context(), nil); err != nil {
+	if err := h.Start(t.Context(), nil, config.Settings{}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := h.Stop(); err != nil {
@@ -392,7 +459,7 @@ func TestStartRejectsUnwiredHostService(t *testing.T) {
 	cfgs := []config.PluginConfig{
 		{Name: "fake-plugin", Path: "/nonexistent", Enabled: true},
 	}
-	err := h.Start(t.Context(), cfgs)
+	err := h.Start(t.Context(), cfgs, config.Settings{})
 	if err == nil {
 		t.Fatal("expected Start to reject unwired HostService")
 	}
@@ -420,7 +487,7 @@ func TestStartSkipsValidationWithoutEnabledPlugins(t *testing.T) {
 	cfgs := []config.PluginConfig{
 		{Name: "disabled", Path: "/nonexistent", Enabled: false},
 	}
-	if err := h.Start(t.Context(), cfgs); err != nil {
+	if err := h.Start(t.Context(), cfgs, config.Settings{}); err != nil {
 		t.Fatalf("Start with disabled plugin should skip validation: %v", err)
 	}
 	if err := h.Stop(); err != nil {

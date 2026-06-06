@@ -101,6 +101,41 @@ func TestBuildArgvOmitsBypassWhenFalse(t *testing.T) {
 	}
 }
 
+func TestBuildArgv_WrapsInLoginShellWhenConfigured(t *testing.T) {
+	r := &Runner{dangerouslyBypass: true, loginShell: "/opt/homebrew/bin/fish"}
+	argv := r.buildArgv(agentruntime.BuildArgvInput{})
+	want := []string{
+		"/opt/homebrew/bin/fish",
+		"-l",
+		"-c",
+		"exec $argv",
+		"codex",
+		"exec",
+		"--json",
+		"--skip-git-repo-check",
+		"--dangerously-bypass-approvals-and-sandbox",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("wrapped fish argv:\n got=%#v\nwant=%#v", argv, want)
+	}
+}
+
+func TestBuildArgv_NoWrapWhenLoginShellEmpty(t *testing.T) {
+	r := &Runner{dangerouslyBypass: true}
+	argv := r.buildArgv(agentruntime.BuildArgvInput{})
+	if argv[0] != "codex" {
+		t.Fatalf("no login shell -> direct codex argv, got %v", argv)
+	}
+}
+
+func TestNewRunnerIgnoresAmbientLoginShellEnv(t *testing.T) {
+	t.Setenv("BOSS_PLUGIN_login_shell", "/bin/zsh")
+	r := NewRunner(zerolog.Nop())
+	if r.loginShell != "" {
+		t.Fatalf("loginShell = %q, want empty without WithLoginShell option", r.loginShell)
+	}
+}
+
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {

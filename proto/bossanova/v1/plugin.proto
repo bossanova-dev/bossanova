@@ -496,6 +496,7 @@ message BuildInteractiveCommandRequest {
   string log_path = 3;     // argv MUST tee output here
   string initial_prompt = 4;  // raw user prompt to submit at startup
   string initial_command = 5; // boss command name without agent prefix
+  string worktree_path = 6;   // directory where the interactive pane launches
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;

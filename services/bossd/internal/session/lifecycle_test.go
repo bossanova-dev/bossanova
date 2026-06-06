@@ -552,6 +552,17 @@ func (m *mockWorktreeManager) Push(_ context.Context, _ string, branch string) e
 	return m.pushErr
 }
 
+func (m *mockWorktreeManager) PushWithLease(_ context.Context, _ string, branch, expectedRemoteSHA string) (string, error) {
+	if expectedRemoteSHA == "" {
+		return "", errors.New("expected remote SHA is required")
+	}
+	if m.pushErr != nil {
+		return "", m.pushErr
+	}
+	m.pushed = append(m.pushed, branch)
+	return "pushed-head-sha", nil
+}
+
 func (m *mockWorktreeManager) VerifyPushedBranchAheadOfBase(_ context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {
 	m.verifyPushedCalls = append(m.verifyPushedCalls, verifyPushedCall{
 		worktreePath: worktreePath,

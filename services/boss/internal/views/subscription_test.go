@@ -188,7 +188,7 @@ func TestSubscriptionOpensLandingPageAndRendersWaiting(t *testing.T) {
 		t.Fatalf("checkout calls = %d, want 0", fake.checkouts)
 	}
 	view := m.View().Content
-	for _, want := range []string{"Loading your account. Continue in your browser...", "[enter] re-open subscription page", "[esc] cancel"} {
+	for _, want := range []string{"Loading your account...", "[enter] re-open subscription page", "[esc] cancel"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q: %q", want, view)
 		}

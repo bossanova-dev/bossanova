@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/loginshell"
 )
 
 type providerStartupKind int
@@ -25,14 +26,26 @@ type providerStartupPlan struct {
 	changed     bool
 }
 
+type ProviderStartupResult struct {
+	LoginShellChanged bool
+}
+
 var providerLookPath = exec.LookPath
 
 // RunProviderStartupIfNeeded reconciles local provider CLIs with the plugin
 // settings before the daemon is auto-started.
-func RunProviderStartupIfNeeded() error {
+func RunProviderStartupIfNeeded() (ProviderStartupResult, error) {
+	var result ProviderStartupResult
 	settings, err := config.Load()
 	if err != nil {
-		return err
+		return result, err
+	}
+	if next, changed := captureLoginShell(settings, loginshell.Detect); changed {
+		result.LoginShellChanged = true
+		settings = next
+		if err := config.Save(settings); err != nil {
+			return result, err
+		}
 	}
 	discovered := config.DiscoverPlugins()
 	installed := detectInstalledProviderPlugins(onboardingProviders, providerLookPath)
@@ -41,40 +54,52 @@ func RunProviderStartupIfNeeded() error {
 	switch plan.kind {
 	case providerStartupContinue:
 		if plan.changed {
-			return config.Save(plan.settings)
+			return result, config.Save(plan.settings)
 		}
-		return nil
+		return result, nil
 	case providerStartupBlock:
 		if plan.changed {
 			if err := config.Save(plan.settings); err != nil {
-				return err
+				return result, err
 			}
 		}
 		p := tea.NewProgram(NewProviderInstallRequiredModel(onboardingProviders))
 		if _, err := p.Run(); err != nil {
-			return err
+			return result, err
 		}
-		return errPreflightCancelled
+		return result, errPreflightCancelled
 	case providerStartupPrompt:
 		model := NewProviderSelectionModel(plan.providers, plan.preselected)
 		p := tea.NewProgram(model)
 		final, err := p.Run()
 		if err != nil {
-			return err
+			return result, err
 		}
 		finalModel, ok := final.(OnboardingModel)
 		if !ok || finalModel.Cancelled() {
-			return errPreflightCancelled
+			return result, errPreflightCancelled
 		}
 		selected := finalModel.SelectedPlugins()
 		next, changed := applyProviderSelection(settings, installed, selected, discovered, onboardingProviders)
 		if changed {
-			return config.Save(next)
+			return result, config.Save(next)
 		}
-		return nil
+		return result, nil
 	default:
-		return nil
+		return result, nil
 	}
+}
+
+// captureLoginShell records the user's interactive shell into settings so the
+// daemon can launch agents through it. Pure for testability; detect supplies
+// $SHELL. Returns the (possibly) updated settings and whether it changed.
+func captureLoginShell(s config.Settings, detect func() string) (config.Settings, bool) {
+	sh := detect()
+	if sh == "" || s.LoginShell == sh {
+		return s, false
+	}
+	s.LoginShell = sh
+	return s, true
 }
 
 func detectInstalledProviderPlugins(providers []onboardingProvider, lookPath func(string) (string, error)) []string {

@@ -3191,6 +3191,7 @@ type BuildInteractiveCommandRequest struct {
 	LogPath        string                 `protobuf:"bytes,3,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"`                      // argv MUST tee output here
 	InitialPrompt  string                 `protobuf:"bytes,4,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`    // raw user prompt to submit at startup
 	InitialCommand string                 `protobuf:"bytes,5,opt,name=initial_command,json=initialCommand,proto3" json:"initial_command,omitempty"` // boss command name without agent prefix
+	WorktreePath   string                 `protobuf:"bytes,6,opt,name=worktree_path,json=worktreePath,proto3" json:"worktree_path,omitempty"`       // directory where the interactive pane launches
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -3256,6 +3257,13 @@ func (x *BuildInteractiveCommandRequest) GetInitialPrompt() string {
 func (x *BuildInteractiveCommandRequest) GetInitialCommand() string {
 	if x != nil {
 		return x.InitialCommand
+	}
+	return ""
+}
+
+func (x *BuildInteractiveCommandRequest) GetWorktreePath() string {
+	if x != nil {
+		return x.WorktreePath
 	}
 	return ""
 }
@@ -4253,14 +4261,15 @@ const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\thook_port\x18\x04 \x01(\x05R\bhookPort\x12(\n" +
 	"\x10agent_session_id\x18\x05 \x01(\tR\x0eagentSessionId\"B\n" +
 	"\x1dConfigureFinalizeHookResponse\x12!\n" +
-	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xc2\x01\n" +
+	"\fis_supported\x18\x01 \x01(\bR\visSupported\"\xe7\x01\n" +
 	"\x1eBuildInteractiveCommandRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x16\n" +
 	"\x06resume\x18\x02 \x01(\bR\x06resume\x12\x19\n" +
 	"\blog_path\x18\x03 \x01(\tR\alogPath\x12%\n" +
 	"\x0einitial_prompt\x18\x04 \x01(\tR\rinitialPrompt\x12'\n" +
-	"\x0finitial_command\x18\x05 \x01(\tR\x0einitialCommand\"\xb5\x01\n" +
+	"\x0finitial_command\x18\x05 \x01(\tR\x0einitialCommand\x12#\n" +
+	"\rworktree_path\x18\x06 \x01(\tR\fworktreePath\"\xb5\x01\n" +
 	"\x1fBuildInteractiveCommandResponse\x12\x12\n" +
 	"\x04argv\x18\x01 \x03(\tR\x04argv\x12!\n" +
 	"\fready_marker\x18\x02 \x01(\tR\vreadyMarker\x12%\n" +

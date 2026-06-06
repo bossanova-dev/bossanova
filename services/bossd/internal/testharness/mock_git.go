@@ -39,6 +39,9 @@ type MockWorktreeManager struct {
 	// PushFunc overrides the default Push behavior when set.
 	PushFunc func(ctx context.Context, worktreePath, branch string) error
 
+	// PushWithLeaseFunc overrides the default PushWithLease behavior when set.
+	PushWithLeaseFunc func(ctx context.Context, worktreePath, branch, expectedRemoteSHA string) (string, error)
+
 	// VerifyPushedBranchAheadOfBaseFunc overrides the default verification behavior when set.
 	VerifyPushedBranchAheadOfBaseFunc func(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error)
 
@@ -89,8 +92,9 @@ type cloneCall struct {
 }
 
 type pushCall struct {
-	WorktreePath string
-	Branch       string
+	WorktreePath      string
+	Branch            string
+	ExpectedRemoteSHA string
 }
 
 type verifyPushedBranchCall struct {
@@ -244,6 +248,31 @@ func (m *MockWorktreeManager) Push(ctx context.Context, worktreePath, branch str
 		return m.PushFunc(ctx, worktreePath, branch)
 	}
 	return nil
+}
+
+func (m *MockWorktreeManager) PushWithLease(ctx context.Context, worktreePath, branch, expectedRemoteSHA string) (string, error) {
+	if expectedRemoteSHA == "" {
+		return "", fmt.Errorf("expected remote SHA is required")
+	}
+
+	m.mu.Lock()
+	m.PushCalls = append(m.PushCalls, pushCall{
+		WorktreePath:      worktreePath,
+		Branch:            branch,
+		ExpectedRemoteSHA: expectedRemoteSHA,
+	})
+	injectedErr := m.pushError
+	m.pushError = nil
+	override := m.PushWithLeaseFunc
+	m.mu.Unlock()
+
+	if injectedErr != nil {
+		return "", injectedErr
+	}
+	if override != nil {
+		return override(ctx, worktreePath, branch, expectedRemoteSHA)
+	}
+	return "pushed-head-sha", nil
 }
 
 func (m *MockWorktreeManager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {

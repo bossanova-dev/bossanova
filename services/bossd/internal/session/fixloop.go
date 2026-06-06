@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -32,6 +33,27 @@ type FixLoop struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex // per-session mutex
 }
+
+type fixAttemptOptions struct {
+	conflictRepair *conflictRepairOptions
+}
+
+type conflictRepairOptions struct {
+	prNumber     int
+	startHeadSHA string
+}
+
+// conflictRepairVerificationMaxAttempts bounds the number of poll iterations as
+// a runaway backstop. conflictRepairVerificationTimeout is the real budget: a
+// wall-clock ceiling that lets the host (GitHub) finish recomputing
+// mergeability for large repos, which can take well over the old fixed
+// 12-second window. Whichever limit is reached first stops the loop.
+const (
+	conflictRepairVerificationMaxAttempts = 120
+	conflictRepairVerificationTimeout     = 90 * time.Second
+)
+
+var conflictRepairVerificationDelay = time.Second
 
 // NewFixLoop creates a new fix loop handler.
 func NewFixLoop(
@@ -125,7 +147,7 @@ func (f *FixLoop) HandleCheckFailure(ctx context.Context, sessionID string, fail
 
 	plan := fmt.Sprintf("CI checks failed. Please fix the issues and ensure all checks pass.\n\nFailed checks:\n%s", strings.Join(logSummaries, "\n\n"))
 
-	return f.runFixAttempt(ctx, sess, repo, attempt, plan)
+	return f.runFixAttempt(ctx, sess, repo, attempt, plan, fixAttemptOptions{})
 }
 
 // HandleConflict processes a merge conflict event by resuming Claude with
@@ -149,6 +171,18 @@ func (f *FixLoop) HandleConflict(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("get repo: %w", err)
 	}
 
+	if sess.PRNumber == nil {
+		return fmt.Errorf("conflict repair requires PR number")
+	}
+	startStatus, err := f.provider.GetPRStatus(ctx, repo.OriginURL, *sess.PRNumber)
+	if err != nil {
+		return fmt.Errorf("get PR status before conflict repair: %w", err)
+	}
+	startHeadSHA := strings.TrimSpace(startStatus.HeadSHA)
+	if startHeadSHA == "" {
+		return fmt.Errorf("conflict repair requires PR head SHA")
+	}
+
 	attempt, err := f.attempts.Create(ctx, db.CreateAttemptParams{
 		SessionID: sessionID,
 		Trigger:   int(models.AttemptTriggerConflict),
@@ -157,9 +191,21 @@ func (f *FixLoop) HandleConflict(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("create attempt: %w", err)
 	}
 
-	plan := fmt.Sprintf("Merge conflict detected with base branch %q. Please rebase onto the latest base branch and resolve any conflicts.", sess.BaseBranch)
+	plan := fmt.Sprintf(`Merge conflict detected with base branch %q.
 
-	return f.runFixAttempt(ctx, sess, repo, attempt, plan)
+Required repair flow:
+1. Fetch the latest base branch and rebase this branch onto origin/%s.
+2. Resolve conflicts semantically, preserving this branch's intended behavior.
+3. Run the focused tests for touched code.
+4. Do not run plain force push. Bossanova will push with --force-with-lease after you finish.
+5. Report the final local HEAD SHA and the tests you ran.`, sess.BaseBranch, sess.BaseBranch)
+
+	return f.runFixAttempt(ctx, sess, repo, attempt, plan, fixAttemptOptions{
+		conflictRepair: &conflictRepairOptions{
+			prNumber:     *sess.PRNumber,
+			startHeadSHA: startHeadSHA,
+		},
+	})
 }
 
 // HandleReviewFeedback processes review feedback by resuming Claude with
@@ -207,12 +253,12 @@ func (f *FixLoop) HandleReviewFeedback(ctx context.Context, sessionID string, co
 
 	plan := fmt.Sprintf("Code review feedback received. Please address the following comments:\n\n%s", strings.Join(commentSummaries, "\n"))
 
-	return f.runFixAttempt(ctx, sess, repo, attempt, plan)
+	return f.runFixAttempt(ctx, sess, repo, attempt, plan, fixAttemptOptions{})
 }
 
 // runFixAttempt is the common fix attempt logic: resume Claude, wait for
 // completion, push the branch, and fire FixComplete.
-func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *models.Repo, attempt *models.Attempt, plan string) error {
+func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, repo *models.Repo, attempt *models.Attempt, plan string, opts fixAttemptOptions) error {
 	f.logger.Info().
 		Str("session", sess.ID).
 		Str("attempt", attempt.ID).
@@ -243,10 +289,29 @@ func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *mo
 	// Wait for Claude to finish.
 	f.waitForClaude(ctx, claudeSessionID)
 
-	// Push the branch.
-	if err := f.worktrees.Push(ctx, sess.WorktreePath, sess.BranchName); err != nil {
+	var pushedSHA string
+	if opts.conflictRepair != nil {
+		pushedSHA, err = f.worktrees.PushWithLease(ctx, sess.WorktreePath, sess.BranchName, opts.conflictRepair.startHeadSHA)
+	} else {
+		err = f.worktrees.Push(ctx, sess.WorktreePath, sess.BranchName)
+	}
+	if err != nil {
 		f.recordAttemptFailed(ctx, attempt.ID, fmt.Sprintf("push branch: %v", err))
-		return f.fireFixFailed(ctx, sess, fmt.Errorf("push branch: %w", err))
+		pushErr := fmt.Errorf("push branch: %w", err)
+		if fireErr := f.fireFixFailed(ctx, sess, pushErr); fireErr != nil {
+			return fireErr
+		}
+		return pushErr
+	}
+	if opts.conflictRepair != nil {
+		if err := f.verifyConflictRepair(ctx, repo, opts.conflictRepair, pushedSHA); err != nil {
+			f.recordAttemptFailed(ctx, attempt.ID, fmt.Sprintf("verify conflict repair: %v", err))
+			verifyErr := fmt.Errorf("verify conflict repair: %w", err)
+			if fireErr := f.fireFixFailed(ctx, sess, verifyErr); fireErr != nil {
+				return fireErr
+			}
+			return verifyErr
+		}
 	}
 
 	// Record attempt success.
@@ -259,6 +324,106 @@ func (f *FixLoop) runFixAttempt(ctx context.Context, sess *models.Session, _ *mo
 
 	// Fire FixComplete → AwaitingChecks.
 	return f.fireFixComplete(ctx, sess)
+}
+
+func (f *FixLoop) verifyConflictRepair(ctx context.Context, repo *models.Repo, opts *conflictRepairOptions, pushedSHA string) error {
+	pushedSHA = strings.TrimSpace(pushedSHA)
+	if pushedSHA == "" {
+		return fmt.Errorf("conflict repair requires pushed head SHA")
+	}
+
+	// PushWithLease is the authoritative data-loss guard: it already proved
+	// pushedSHA replaced opts.startHeadSHA on the remote without clobbering a
+	// concurrent push. This loop only waits for the host (GitHub) to recompute
+	// mergeability against pushedSHA; the confirmation re-read afterwards then
+	// rejects any push that superseded ours after a clean status appeared.
+	deadline := time.Now().Add(conflictRepairVerificationTimeout)
+
+	var (
+		lastRemoteHead string
+		lastKind       vcs.ConflictBlockKind
+		verified       bool
+	)
+	for attempt := range conflictRepairVerificationMaxAttempts {
+		postStatus, err := f.provider.GetPRStatus(ctx, repo.OriginURL, opts.prNumber)
+		if err != nil {
+			return fmt.Errorf("get PR status after conflict repair: %w", err)
+		}
+		lastRemoteHead = strings.TrimSpace(postStatus.HeadSHA)
+		if lastRemoteHead == pushedSHA {
+			lastKind = conflictBlockKind(ctx, f.provider, repo, postStatus, f.logger, "conflict repair verifier")
+			if lastKind.Repairable() {
+				return fmt.Errorf("conflict repair still blocked by %s", lastKind)
+			}
+			if lastKind != vcs.ConflictBlockUnknown {
+				verified = true
+				break
+			}
+		}
+
+		stop, err := waitConflictRepairVerificationRetry(ctx, deadline, attempt)
+		if err != nil {
+			return err
+		}
+		if stop {
+			break
+		}
+	}
+
+	if !verified {
+		if lastRemoteHead != pushedSHA {
+			return fmt.Errorf("conflict repair remote head = %s, want pushed head %s", lastRemoteHead, pushedSHA)
+		}
+		if lastKind == vcs.ConflictBlockUnknown {
+			return fmt.Errorf("conflict repair still blocked by %s", lastKind)
+		}
+		return fmt.Errorf("conflict repair verification timed out")
+	}
+
+	// Confirmation re-read: a clean status proves pushedSHA was mergeable, but
+	// not that it is still the branch head. Re-read once; if the head has moved,
+	// a newer authorized push superseded ours and we must not clear conflict
+	// state against a SHA that is no longer current.
+	confirmStatus, err := f.provider.GetPRStatus(ctx, repo.OriginURL, opts.prNumber)
+	if err != nil {
+		return fmt.Errorf("confirm PR status after conflict repair: %w", err)
+	}
+	if confirmHead := strings.TrimSpace(confirmStatus.HeadSHA); confirmHead != pushedSHA {
+		return fmt.Errorf("conflict repair superseded: remote head = %s, want pushed head %s", confirmHead, pushedSHA)
+	}
+	confirmKind := conflictBlockKind(ctx, f.provider, repo, confirmStatus, f.logger, "conflict repair confirmation")
+	if confirmKind.Repairable() {
+		return fmt.Errorf("conflict repair still blocked by %s", confirmKind)
+	}
+	if confirmKind == vcs.ConflictBlockUnknown {
+		return fmt.Errorf("conflict repair still blocked by %s", confirmKind)
+	}
+
+	return nil
+}
+
+// waitConflictRepairVerificationRetry sleeps before the next verification poll.
+// It returns stop=true when the loop should give up because the attempt cap is
+// exhausted or the next poll would exceed the wall-clock budget. With no delay
+// configured (tests) it never sleeps and lets the attempt cap bound the loop.
+func waitConflictRepairVerificationRetry(ctx context.Context, deadline time.Time, attempt int) (stop bool, err error) {
+	if attempt >= conflictRepairVerificationMaxAttempts-1 {
+		return true, nil
+	}
+	if conflictRepairVerificationDelay <= 0 {
+		return false, nil
+	}
+	if !time.Now().Add(conflictRepairVerificationDelay).Before(deadline) {
+		return true, nil
+	}
+	timer := time.NewTimer(conflictRepairVerificationDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return false, nil
+	}
 }
 
 // waitForClaude blocks until the Claude process exits or context is cancelled.

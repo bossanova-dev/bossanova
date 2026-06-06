@@ -13,7 +13,6 @@ import (
 	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
-	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/status"
 )
 
@@ -297,28 +296,12 @@ func (p *DisplayPoller) pollSession(ctx context.Context, repo *models.Repo, sess
 	}
 
 	info := vcs.ComputeDisplayStatus(prStatus, checks, reviews)
-	if p.hasDisplayConflictBlock(ctx, repo, prStatus) {
+	if repairableConflictBlock(ctx, p.provider, repo, prStatus, p.logger, "display poller") {
 		info.Status = vcs.DisplayStatusConflict
 	}
 	info.HeadSHA = prStatus.HeadSHA
 	p.tracker.Set(sessionID, info)
 	p.persistSnapshot(ctx, sessionID, prStatus, checks, info)
-}
-
-func (p *DisplayPoller) hasDisplayConflictBlock(ctx context.Context, repo *models.Repo, prStatus *vcs.PRStatus) bool {
-	if prStatus.HasConflictBlock() {
-		return true
-	}
-	if !prStatus.HasRebaseConflictBlock() {
-		return false
-	}
-
-	strategy, err := mergepolicy.ResolveStrategy(ctx, p.provider, repo.OriginURL, string(repo.MergeStrategy))
-	if err != nil {
-		p.logger.Warn().Err(err).Str("repo", repo.ID).Msg("display poller: resolve merge strategy")
-		return false
-	}
-	return strategy == string(models.MergeStrategyRebase)
 }
 
 func prStateString(state vcs.PRState) string {

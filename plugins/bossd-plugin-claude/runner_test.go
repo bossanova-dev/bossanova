@@ -36,6 +36,27 @@ func TestBuildArgvIncludesResume(t *testing.T) {
 	}
 }
 
+func TestClaudeBuildArgv_WrapsInLoginShell(t *testing.T) {
+	t.Setenv("BOSS_PLUGIN_login_shell", "/bin/bash")
+	r := NewRunner(zerolog.Nop(), runnerOptsFromEnv()...)
+	argv := r.buildArgv(agentruntime.BuildArgvInput{})
+	want := []string{
+		"/bin/bash",
+		"-l",
+		"-c",
+		`if [ -r "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi; exec "$@"`,
+		"bash",
+		"claude",
+		"--print",
+		"--verbose",
+		"--output-format",
+		"stream-json",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("wrapped bash argv:\n got=%#v\nwant=%#v", argv, want)
+	}
+}
+
 func TestBuildArgvIncludesDangerouslySkipPermissionsWhenSet(t *testing.T) {
 	r := NewRunner(zerolog.Nop(), WithDangerouslySkipPermissions(true))
 	got := r.buildArgv(agentruntime.BuildArgvInput{SessionID: "x", ProvidedSessionID: true})

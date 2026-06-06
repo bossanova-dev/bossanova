@@ -54,3 +54,6 @@ docs/handoffs/
 
 # Compound Engineering machine-local config
 .compound-engineering/*.local.yaml
+
+# Local Bossanova development profile
+/.config/

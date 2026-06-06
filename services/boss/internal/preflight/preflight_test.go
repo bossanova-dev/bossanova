@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCheckShellTools_AllPresent verifies that on a normal dev/CI host
@@ -61,5 +62,64 @@ func TestCheckShellTools_SingleMissing(t *testing.T) {
 	}
 	if strings.Contains(issue.Title, "bash and tee") {
 		t.Errorf("title must not use combined form when only one tool is missing; got %q", issue.Title)
+	}
+}
+
+func TestCheckAgentResolvable_BlocksWhenMissing(t *testing.T) {
+	issue := checkAgentResolvable("/bin/sh", "definitely-not-a-real-agent-xyz", t.TempDir(), runShell)
+	if issue == nil {
+		t.Fatalf("expected a blocking issue for a missing agent")
+	}
+	if !strings.Contains(issue.Detail, "definitely-not-a-real-agent-xyz") {
+		t.Fatalf("issue must name the agent: %q", issue.Detail)
+	}
+}
+
+func TestCheckAgentResolvable_PassesWhenPresent(t *testing.T) {
+	if issue := checkAgentResolvable("/bin/sh", "sh", t.TempDir(), runShell); issue != nil {
+		t.Fatalf("sh should resolve, got: %+v", issue)
+	}
+}
+
+func TestCheckAgentResolvable_BlocksInvalidAgentNameBeforeShell(t *testing.T) {
+	called := false
+	issue := checkAgentResolvable("/bin/sh", "bad;touch", t.TempDir(), func(string, string, string) error {
+		called = true
+		return nil
+	})
+	if issue == nil {
+		t.Fatalf("expected a blocking issue for an invalid agent name")
+	}
+	if called {
+		t.Fatal("runner should not be invoked for an invalid agent name")
+	}
+	if !strings.Contains(issue.Title, "bad;touch") || !strings.Contains(issue.Detail, "bad;touch") {
+		t.Fatalf("issue must name the invalid agent: title=%q detail=%q", issue.Title, issue.Detail)
+	}
+}
+
+func TestCheckAgentResolvable_SkipsUnsupportedLoginShell(t *testing.T) {
+	called := false
+	issue := checkAgentResolvable("/bin/tcsh", "codex", t.TempDir(), func(string, string, string) error {
+		called = true
+		t.Fatal("runner should not be invoked for an unsupported login shell")
+		return nil
+	})
+
+	if issue != nil {
+		t.Fatalf("unsupported login shell should not block preflight, got: %#v", issue)
+	}
+	if called {
+		t.Fatal("runner was invoked for an unsupported login shell")
+	}
+}
+
+func TestRunShellWithTimeoutReturnsErrorForHangingShell(t *testing.T) {
+	err := runShellWithTimeout("/bin/sh", t.TempDir(), "while true; do sleep 1; done", 10*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error for hanging shell command")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("timeout error should be explicit, got: %v", err)
 	}
 }

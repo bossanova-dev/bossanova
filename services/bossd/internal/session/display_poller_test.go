@@ -66,10 +66,11 @@ func TestDisplayPoller_ShowsRebaseConflictOnlyForRebaseStrategy(t *testing.T) {
 	success := vcs.CheckConclusionSuccess
 
 	tests := []struct {
-		name          string
-		mergeStrategy models.MergeStrategy
-		prStatus      *vcs.PRStatus
-		wantStatus    vcs.DisplayStatus
+		name              string
+		mergeStrategy     models.MergeStrategy
+		prStatus          *vcs.PRStatus
+		allowedStrategies []string
+		wantStatus        vcs.DisplayStatus
 	}{
 		{
 			name:          "rebase strategy",
@@ -93,6 +94,16 @@ func TestDisplayPoller_ShowsRebaseConflictOnlyForRebaseStrategy(t *testing.T) {
 			},
 			wantStatus: vcs.DisplayStatusReview,
 		},
+		{
+			name: "plain merge conflict with no allowed strategies",
+			prStatus: &vcs.PRStatus{
+				State:      vcs.PRStateOpen,
+				Mergeable:  boolPtr(false),
+				Rebaseable: boolPtr(false),
+			},
+			allowedStrategies: []string{},
+			wantStatus:        vcs.DisplayStatusConflict,
+		},
 	}
 
 	for _, tt := range tests {
@@ -100,6 +111,9 @@ func TestDisplayPoller_ShowsRebaseConflictOnlyForRebaseStrategy(t *testing.T) {
 			sessions := newMockSessionStore()
 			repos := newMockRepoStore()
 			vp := newMockVCSProvider()
+			if tt.allowedStrategies != nil {
+				vp.allowedStrategies = tt.allowedStrategies
+			}
 			tracker := status.NewDisplayTracker()
 			logger := zerolog.Nop()
 
@@ -137,6 +151,46 @@ func TestDisplayPoller_ShowsRebaseConflictOnlyForRebaseStrategy(t *testing.T) {
 				t.Fatalf("Status = %d, want %d", e.Status, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestDisplayPollerDoesNotShowConflictForUnstablePR(t *testing.T) {
+	ctx := context.Background()
+	mergeable := true
+	rebaseable := false
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	repo := &models.Repo{ID: "repo-1", OriginURL: "owner/repo", MergeStrategy: models.MergeStrategyRebase}
+	repos.repos["repo-1"] = repo
+	prNumber := 42
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		PRNumber:   &prNumber,
+		BranchName: "feature",
+	}
+	vp.nextPRStatus = &vcs.PRStatus{
+		State:            vcs.PRStateOpen,
+		Mergeable:        &mergeable,
+		Rebaseable:       &rebaseable,
+		MergeStateStatus: vcs.MergeStateStatusUnstable,
+		HeadSHA:          "abc123",
+	}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, time.Minute, logger)
+	poller.pollSession(ctx, repo, "sess-1", prNumber)
+
+	entry := tracker.Get("sess-1")
+	if entry == nil {
+		t.Fatalf("missing display entry")
+	}
+	if entry.Status == vcs.DisplayStatusConflict {
+		t.Fatalf("display status = conflict for UNSTABLE PR")
 	}
 }
 

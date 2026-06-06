@@ -9,9 +9,11 @@ Bossanova reads global settings from a JSON file on disk:
 
 - **macOS:** `~/Library/Application Support/bossanova/settings.json`
 - **Linux:** `$XDG_CONFIG_HOME/bossanova/settings.json` (defaults to `~/.config/bossanova/settings.json`)
+- **Profile override:** set `BOSS_SETTINGS_PATH` to an absolute path to select a specific settings file.
 
 The file is optional. When it's absent, defaults apply. Both `boss` and
-`bossd` read the same file.
+`bossd` read the same file. Use `BOSS_SETTINGS_PATH` when you want a dev
+build and an installed build to run in parallel without sharing local state.
 
 ![Bossanova settings view](/img/screenshots/tui-settings.png)
 
@@ -57,14 +59,16 @@ are configured via environment variables. See
 
 ## Top-level fields
 
-| Field                   | Type   | Default                  | Description                                                                                                      |
-| ----------------------- | ------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `worktree_base_dir`     | string | `~/.bossanova/worktrees` | Directory where per-session git worktrees are created. Auto-created on load.                                     |
-| `default_agent`         | string | `claude`                 | Name of the default agent plugin used for new sessions.                                                          |
-| `skills_declined`       | bool   | `false`                  | Set after the user declines the one-time skills install prompt so it's not shown again.                          |
-| `poll_interval_seconds` | int    | `120`                    | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                         |
-| `plugins`               | array  | auto-discovered          | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own. |
-| `repair`                | object | defaults below           | Repair plugin configuration.                                                                                     |
+| Field                   | Type   | Default                     | Description                                                                                                                       |
+| ----------------------- | ------ | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree_base_dir`     | string | `~/.bossanova/worktrees`    | Directory where per-session git worktrees are created. Auto-created on load.                                                      |
+| `app_data_dir`          | string | platform default            | Absolute directory for local daemon data: `bossd.db`, `bossd.lock`, profile plugin discovery, and default socket placement.       |
+| `socket_path`           | string | derived from data directory | Absolute path to the local `bossd` Unix-domain socket. If unset and `app_data_dir` is set, defaults to `app_data_dir/bossd.sock`. |
+| `default_agent`         | string | `claude`                    | Name of the default agent plugin used for new sessions.                                                                           |
+| `skills_declined`       | bool   | `false`                     | Set after the user declines the one-time skills install prompt so it's not shown again.                                           |
+| `poll_interval_seconds` | int    | `120`                       | How often the Terminal UI (TUI) polls for PR display status, in seconds.                                                          |
+| `plugins`               | array  | auto-discovered             | Plugin binaries to load (see below). If unset, `bossd` auto-discovers `bossd-plugin-*` binaries next to its own.                  |
+| `repair`                | object | defaults below              | Repair plugin configuration.                                                                                                      |
 
 ## `plugins[]` entries
 
@@ -91,6 +95,39 @@ are configured via environment variables. See
 | `poll_interval_seconds`  | int    | `5`           | Poll interval for repair status checks.                  |
 | `sweep_interval_minutes` | int    | `1`           | How often the plugin sweeps for sessions needing repair. |
 
+## Development profile
+
+To run a development build beside the Homebrew build, keep a profile in the
+repo-local `.config/` directory:
+
+```bash
+mkdir -p .config/data
+```
+
+Put this settings content in `.config/settings.json`, replacing
+`/path/to/bossanova` with your repo path:
+
+```json
+{
+  "app_data_dir": "/path/to/bossanova/.config/data",
+  "socket_path": "/path/to/bossanova/.config/bossd.sock",
+  "default_agent": "claude"
+}
+```
+
+```bash
+export BOSS_SETTINGS_PATH="/path/to/bossanova/.config/settings.json"
+```
+
+With that environment, the development `boss` CLI reads `.config/settings.json`,
+starts or dials the daemon at `.config/bossd.sock`, and stores daemon data in
+`.config/data`. The Homebrew install can continue using the standard macOS
+Application Support paths.
+
+If `BOSS_SOCKET` is set in your shell, it overrides the socket selected by
+`socket_path`. Unset `BOSS_SOCKET` when using profile files unless you are
+intentionally debugging a single socket path.
+
 ## Environment overrides
 
 Cloud-sync settings (orchestrator URL, WorkOS client ID, daemon ID)
@@ -106,7 +143,8 @@ hardcoded default.
 | `BOSS_WORKOS_CLIENT_ID`      | WorkOS client used by `boss login`; override when pointing at a staging orchestrator                                                |
 | `BOSS_CLOUD_URL`             | overrides the authenticated cloud orchestrator URL used by `boss login` and remote CLI calls                                        |
 | `BOSS_SKIP_SKILLS`           | any non-empty value suppresses the first-run skill-install prompt (persistent equivalent: `skills_declined` in `settings.json`)     |
-| `BOSS_SOCKET`                | overrides the path to the local `bossd` Unix-domain socket                                                                          |
+| `BOSS_SETTINGS_PATH`         | absolute path to the settings file; selects a profile before `boss` chooses the daemon socket or reads other settings               |
+| `BOSS_SOCKET`                | explicit socket override for tests and one-off debugging; for normal profiles prefer `BOSS_SETTINGS_PATH` plus `socket_path`        |
 | `BOSS_DAEMON_SKIP_LAUNCHCTL` | any non-empty value skips `launchctl` calls in `boss daemon install`/`uninstall`/`status`                                           |
 | `BOSS_REPORT_URL`            | overrides the bug-report submission URL                                                                                             |
 | `BOSS_AUTH_E2E_EMAIL`        | **e2e tests only:** pre-seeds an authenticated identity so login flows can be exercised in CI; built only under the `e2e` build tag |
@@ -121,12 +159,12 @@ hardcoded default.
 
 ### XDG and path variables
 
-| Variable          | What it affects                                                                           |
-| ----------------- | ----------------------------------------------------------------------------------------- |
-| `XDG_CONFIG_HOME` | Where `settings.json` is read from on Linux (macOS uses `~/Library/Application Support/`) |
-| `XDG_STATE_HOME`  | Where rotated log files live                                                              |
-| `XDG_RUNTIME_DIR` | Where the `bossd` Unix socket lives (override with `BOSS_SOCKET`)                         |
-| `HOME`            | Used to resolve `~/.claude/skills/` and `~/.bossanova/`                                   |
+| Variable          | What it affects                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `XDG_CONFIG_HOME` | Where `settings.json` is read from on Linux (macOS uses `~/Library/Application Support/`)                           |
+| `XDG_STATE_HOME`  | Where rotated log files live                                                                                        |
+| `XDG_RUNTIME_DIR` | Not used for Bossanova's daemon socket; set `socket_path` in settings or use `BOSS_SOCKET` for an explicit override |
+| `HOME`            | Used to resolve `~/.claude/skills/` and `~/.bossanova/`                                                             |
 
 ## GitHub App integration
 

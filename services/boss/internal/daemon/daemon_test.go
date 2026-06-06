@@ -118,6 +118,30 @@ func TestStopSkipsServiceManagerWhenEnvSet(t *testing.T) {
 	}
 }
 
+// TestSkipLaunchctl pins the env gate that lets tests exercise file-writing
+// behaviour without touching the host's service manager. skipLaunchctl must
+// report true exactly when BOSS_DAEMON_SKIP_LAUNCHCTL is non-empty.
+//
+// Catches daemon.go:40 CONDITIONALS_NEGATION (`!= ""` → `== ""`): the mutant
+// inverts the gate, so every launchctl/systemctl call site would flip. The
+// indirect Restart/Stop tests don't catch it because the platform stubs
+// swallow "not loaded" errors and still return nil under the mutant; only a
+// direct assertion on the boolean distinguishes the two.
+func TestSkipLaunchctl(t *testing.T) {
+	t.Run("non-empty value reports true", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "1")
+		if !skipLaunchctl() {
+			t.Error("skipLaunchctl() = false, want true when env is set")
+		}
+	})
+	t.Run("empty value reports false", func(t *testing.T) {
+		t.Setenv("BOSS_DAEMON_SKIP_LAUNCHCTL", "")
+		if skipLaunchctl() {
+			t.Error("skipLaunchctl() = true, want false when env is empty")
+		}
+	})
+}
+
 // TestResolveBossdPath_PrefersExecutableDir verifies that ResolveBossdPath
 // returns the bossd binary that lives next to the running executable,
 // even when a different bossd is also on PATH.

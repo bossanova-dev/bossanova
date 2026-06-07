@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 )
@@ -207,8 +208,10 @@ type NewSessionModel struct {
 	setupLines   []string
 
 	// Agents (loaded once at wizard startup; drives agent-select phase).
-	agents     []client.AgentInfo
-	agentTable table.Model
+	agents                 []client.AgentInfo
+	enabledAgentNames      map[string]bool
+	filterAgentsBySettings bool
+	agentTable             table.Model
 
 	// Tables
 	repoTable table.Model
@@ -251,6 +254,29 @@ func (m *NewSessionModel) SetInitialAgent(name string) {
 // bypassing the picker.
 func (m *NewSessionModel) SetPreferredAgent(name string) {
 	m.preferredAgent = name
+}
+
+// SetAgentSettings applies user settings to the loaded daemon agents. The
+// daemon may still report runners that were disabled in settings until it is
+// restarted, so the wizard filters locally before deciding whether to show the
+// agent picker.
+func (m *NewSessionModel) SetAgentSettings(settings config.Settings) {
+	enabled := make(map[string]bool)
+	for _, plugin := range settings.Plugins {
+		if plugin.Enabled {
+			enabled[plugin.Name] = true
+		}
+	}
+	if len(enabled) == 0 {
+		m.enabledAgentNames = nil
+		m.filterAgentsBySettings = false
+		return
+	}
+	m.enabledAgentNames = enabled
+	m.filterAgentsBySettings = true
+	if settings.DefaultAgent != "" {
+		m.preferredAgent = settings.DefaultAgent
+	}
 }
 
 // SetAgentSelectionHandler registers a callback for confirmed picker choices.
@@ -409,6 +435,19 @@ func (m *NewSessionModel) buildAgentTable() {
 	m.agentTable = newBossTable(cols, rows, len(m.agents)+1)
 	m.agentTable.SetCursor(cursor)
 	m.agentTable.SetWidth(columnsWidth(cols))
+}
+
+func (m NewSessionModel) filterEnabledAgents(agents []client.AgentInfo) []client.AgentInfo {
+	if !m.filterAgentsBySettings {
+		return agents
+	}
+	out := make([]client.AgentInfo, 0, len(agents))
+	for _, agent := range agents {
+		if m.enabledAgentNames[agent.Name] {
+			out = append(out, agent)
+		}
+	}
+	return out
 }
 
 func (m *NewSessionModel) buildTypeTable() {
@@ -661,7 +700,18 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// collapses the wizard to its single-agent shape. The daemon will
 		// still serve the implicit default at create time.
 		if msg.err == nil {
-			m.agents = msg.agents
+			m.agents = m.filterEnabledAgents(msg.agents)
+		}
+		if m.phase == newSessionPhaseTypeSelect && m.selectedRepoID != "" && m.initialAgent == "" {
+			if len(m.agents) > 1 {
+				m.phase = newSessionPhaseAgentSelect
+				m.buildAgentTable()
+				return m, nil
+			}
+			if len(m.agents) == 1 {
+				m.initialAgent = m.agents[0].Name
+				m.preferredAgent = m.initialAgent
+			}
 		}
 		return m, nil
 
@@ -838,6 +888,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// repo select if multiple repos exist; else cancel.
 				if len(m.agents) > 1 {
 					m.phase = newSessionPhaseAgentSelect
+					m.buildAgentTable()
 					return m, nil
 				}
 				if len(m.repos) > 1 {
@@ -1014,6 +1065,10 @@ func (m *NewSessionModel) advanceFromRepo() NewSessionModel {
 		m.phase = newSessionPhaseAgentSelect
 		m.buildAgentTable()
 		return *m
+	}
+	if len(m.agents) == 1 && m.initialAgent == "" {
+		m.initialAgent = m.agents[0].Name
+		m.preferredAgent = m.initialAgent
 	}
 	m.phase = newSessionPhaseTypeSelect
 	m.buildTypeTable()

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -17,6 +21,7 @@ import (
 	"github.com/recurser/boss/internal/preflight"
 	"github.com/recurser/boss/internal/views"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -55,6 +60,159 @@ func TestRestartSocketPath(t *testing.T) {
 	})
 }
 
+func TestCurrentDaemonProfileUsesConfiguredAppDataAndSocketPath(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+
+	profile, err := currentDaemonProfile()
+	if err != nil {
+		t.Fatalf("currentDaemonProfile: %v", err)
+	}
+	if profile.SettingsPath != settingsPath {
+		t.Fatalf("SettingsPath = %q, want %q", profile.SettingsPath, settingsPath)
+	}
+	if profile.AppDataDir != appDataDir {
+		t.Fatalf("AppDataDir = %q, want %q", profile.AppDataDir, appDataDir)
+	}
+	if profile.SocketPath != socketPath {
+		t.Fatalf("SocketPath = %q, want %q", profile.SocketPath, socketPath)
+	}
+}
+
+func TestRunDaemonStatusPrintsProfileMetadataWhenReachable(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	executablePath := filepath.Join(dir, "bossd")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+		PID:            12345,
+		ExecutablePath: executablePath,
+		SettingsPath:   settingsPath,
+		SocketPath:     socketPath,
+		StartedAt:      time.Now(),
+	}); err != nil {
+		t.Fatalf("daemonstate.Write: %v", err)
+	}
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: true, Running: true, PID: 99, ServicePath: "/tmp/service"}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("socket reachability path = %q, want %q", path, socketPath)
+		}
+		return true
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStatus(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStatus: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"Daemon is running.",
+		"settings: " + settingsPath,
+		"app data: " + appDataDir,
+		"socket:   " + socketPath,
+		"socket reachable: true",
+		"standalone PID: 12345",
+		"standalone executable: " + executablePath,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	}
+}
+
+func TestRunDaemonStartRefusesReachableSocket(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	socketPath := filepath.Join(t.TempDir(), "bossd.sock")
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	daemonSocketReachable = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("socket reachability path = %q, want %q", path, socketPath)
+		}
+		return true
+	}
+	daemonEnsureRunning = func(string) error {
+		t.Fatal("daemonEnsureRunning called for reachable socket")
+		return nil
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStart(&cobra.Command{}); err != nil {
+			t.Fatalf("runDaemonStart: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Daemon is already running.") {
+		t.Fatalf("output = %q, want already running message", out)
+	}
+}
+
+func TestRunDaemonStopAllStandaloneUsesBroadProcessSignaling(t *testing.T) {
+	restoreDaemonCommandStubs(t)
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "data")
+	socketPath := filepath.Join(dir, "bossd.sock")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	daemonGetStatus = func() (*daemon.Status, error) {
+		return &daemon.Status{Installed: false, Running: false}, nil
+	}
+	defaultSocketPath = func() (string, error) { return socketPath, nil }
+	terminateCalled := false
+	terminateAllBossdProcesses = func() (int, error) {
+		terminateCalled = true
+		return 2, nil
+	}
+	waitForDaemonSocketGone = func(path string) bool {
+		if path != socketPath {
+			t.Fatalf("wait socket path = %q, want %q", path, socketPath)
+		}
+		return true
+	}
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("all-standalone", false, "")
+	if err := cmd.Flags().Set("all-standalone", "true"); err != nil {
+		t.Fatalf("set all-standalone: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runDaemonStop(cmd); err != nil {
+			t.Fatalf("runDaemonStop: %v", err)
+		}
+	})
+	if !terminateCalled {
+		t.Fatal("terminateAllBossdProcesses was not called")
+	}
+	if !strings.Contains(out, "Stopped 2 bossd process(es) across all profiles.") {
+		t.Fatalf("output = %q, want broad stop message", out)
+	}
+}
+
 func TestRunLocalProviderStartupBeforeClientRestartsReachableDaemonAfterLoginShellChange(t *testing.T) {
 	oldRunProviderStartupIfNeeded := runProviderStartupIfNeeded
 	oldRestartDaemonAfterLoginShellCapture := restartDaemonAfterLoginShellCapture
@@ -80,6 +238,34 @@ func TestRunLocalProviderStartupBeforeClientRestartsReachableDaemonAfterLoginShe
 	events = append(events, "new-client")
 
 	want := []string{"provider-startup", "restart", "new-client"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestRunLocalProviderStartupBeforeClientRestartsReachableDaemonAfterSettingsChange(t *testing.T) {
+	oldRunProviderStartupIfNeeded := runProviderStartupIfNeeded
+	oldRestartDaemonAfterLoginShellCapture := restartDaemonAfterLoginShellCapture
+	defer func() {
+		runProviderStartupIfNeeded = oldRunProviderStartupIfNeeded
+		restartDaemonAfterLoginShellCapture = oldRestartDaemonAfterLoginShellCapture
+	}()
+
+	var events []string
+	runProviderStartupIfNeeded = func() (views.ProviderStartupResult, error) {
+		events = append(events, "provider-startup")
+		return views.ProviderStartupResult{SettingsChanged: true}, nil
+	}
+	restartDaemonAfterLoginShellCapture = func() error {
+		events = append(events, "restart")
+		return nil
+	}
+
+	if err := runLocalProviderStartupBeforeClient(); err != nil {
+		t.Fatalf("runLocalProviderStartupBeforeClient: %v", err)
+	}
+
+	want := []string{"provider-startup", "restart"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}
@@ -439,6 +625,158 @@ type fakeProcess struct {
 
 func (p fakeProcess) Signal(os.Signal) error {
 	return p.err
+}
+
+func restoreDaemonCommandStubs(t *testing.T) {
+	t.Helper()
+
+	oldDefaultSocketPath := defaultSocketPath
+	oldDaemonSocketReachable := daemonSocketReachable
+	oldDaemonGetStatus := daemonGetStatus
+	oldDaemonEnsureRunning := daemonEnsureRunning
+	oldDaemonStop := daemonStop
+	oldTerminateAllBossdProcesses := terminateAllBossdProcesses
+	oldWaitForDaemonSocketGone := waitForDaemonSocketGone
+	t.Cleanup(func() {
+		defaultSocketPath = oldDefaultSocketPath
+		daemonSocketReachable = oldDaemonSocketReachable
+		daemonGetStatus = oldDaemonGetStatus
+		daemonEnsureRunning = oldDaemonEnsureRunning
+		daemonStop = oldDaemonStop
+		terminateAllBossdProcesses = oldTerminateAllBossdProcesses
+		waitForDaemonSocketGone = oldWaitForDaemonSocketGone
+	})
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = writer
+	var buf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(&buf, reader)
+		done <- err
+	}()
+	defer func() {
+		os.Stdout = oldStdout
+		_ = reader.Close()
+	}()
+
+	fn()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdout writer: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("copy stdout: %v", err)
+	}
+	return buf.String()
+}
+
+type recordingProcess struct {
+	pid     int
+	signals *[]int
+	err     error
+}
+
+func (p recordingProcess) Signal(os.Signal) error {
+	*p.signals = append(*p.signals, p.pid)
+	return p.err
+}
+
+func TestTerminateProfileBossdProcessSignalsMetadataPIDOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := daemonstate.Write(dir, daemonstate.Metadata{PID: 200, ExecutablePath: "/tmp/bossd"}); err != nil {
+		t.Fatalf("write daemon metadata: %v", err)
+	}
+	oldBossdProcessCommandLine := bossdProcessCommandLine
+	bossdProcessCommandLine = func(pid int) (string, error) {
+		if pid != 200 {
+			t.Fatalf("process command line pid = %d, want metadata pid 200", pid)
+		}
+		return "/tmp/bossd", nil
+	}
+	t.Cleanup(func() { bossdProcessCommandLine = oldBossdProcessCommandLine })
+
+	var signalled []int
+	got, err := terminateProfileBossdProcess(dir, func(pid int) (processSignaler, error) {
+		if pid != 200 {
+			t.Fatalf("findProcess pid = %d, want metadata pid 200", pid)
+		}
+		return recordingProcess{pid: pid, signals: &signalled}, nil
+	})
+
+	if err != nil {
+		t.Fatalf("terminateProfileBossdProcess() returned error: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("terminateProfileBossdProcess() signalled %d processes, want 1", got)
+	}
+	if !reflect.DeepEqual(signalled, []int{200}) {
+		t.Fatalf("signalled PIDs = %v, want [200]", signalled)
+	}
+}
+
+func TestTerminateProfileBossdProcessIgnoresExecutableMismatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := daemonstate.Write(dir, daemonstate.Metadata{PID: 200, ExecutablePath: "/tmp/bossd"}); err != nil {
+		t.Fatalf("write daemon metadata: %v", err)
+	}
+	oldBossdProcessCommandLine := bossdProcessCommandLine
+	bossdProcessCommandLine = func(int) (string, error) {
+		return "/usr/bin/yes", nil
+	}
+	t.Cleanup(func() { bossdProcessCommandLine = oldBossdProcessCommandLine })
+
+	got, err := terminateProfileBossdProcess(dir, func(pid int) (processSignaler, error) {
+		t.Fatalf("findProcess called for mismatched pid %d", pid)
+		return fakeProcess{}, nil
+	})
+
+	if err != nil {
+		t.Fatalf("terminateProfileBossdProcess() returned error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("terminateProfileBossdProcess() signalled %d processes, want 0", got)
+	}
+}
+
+func TestTerminateProfileBossdProcessIgnoresMissingMetadata(t *testing.T) {
+	got, err := terminateProfileBossdProcess(filepath.Join(t.TempDir(), "missing"), func(pid int) (processSignaler, error) {
+		t.Fatalf("findProcess called for pid %d", pid)
+		return fakeProcess{}, nil
+	})
+
+	if err != nil {
+		t.Fatalf("terminateProfileBossdProcess() returned error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("terminateProfileBossdProcess() signalled %d processes, want 0", got)
+	}
+}
+
+func TestTerminateProfileBossdProcessTreatsExitedProcessAsStopped(t *testing.T) {
+	dir := t.TempDir()
+	if err := daemonstate.Write(dir, daemonstate.Metadata{PID: 200}); err != nil {
+		t.Fatalf("write daemon metadata: %v", err)
+	}
+
+	got, err := terminateProfileBossdProcess(dir, func(int) (processSignaler, error) {
+		return fakeProcess{err: syscall.ESRCH}, nil
+	})
+
+	if err != nil {
+		t.Fatalf("terminateProfileBossdProcess() returned error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("terminateProfileBossdProcess() signalled %d processes, want 0", got)
+	}
 }
 
 func TestSignalBossdProcessesCountsOnlySuccessfulSignals(t *testing.T) {

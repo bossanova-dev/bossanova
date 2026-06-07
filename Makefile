@@ -133,7 +133,7 @@ deps:
 	esac
 	@echo "==> Done. Run 'make' to build."
 
-## setup-worktree: Copy gitignored local files (.env, .node-version, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
+## setup-worktree: Copy gitignored local files (.env, .node-version, .config, .compound-engineering/config.local.yaml) from the main repo into a new worktree (for bossanova setup-script)
 setup-worktree:
 	@if [ -z "$$REPO_DIR" ] || [ -z "$$WORKTREE_DIR" ]; then \
 		echo "setup-worktree must be invoked by bossanova (REPO_DIR and WORKTREE_DIR required)"; \
@@ -150,6 +150,13 @@ setup-worktree:
 		echo "Copied .node-version into $$WORKTREE_DIR"; \
 	else \
 		echo "No .node-version in $$REPO_DIR — skipping"; \
+	fi
+	@if [ -d "$$REPO_DIR/.config" ]; then \
+		mkdir -p "$$WORKTREE_DIR/.config"; \
+		cp -R "$$REPO_DIR/.config/." "$$WORKTREE_DIR/.config/"; \
+		echo "Copied .config into $$WORKTREE_DIR"; \
+	else \
+		echo "No .config in $$REPO_DIR — skipping"; \
 	fi
 	@if [ -f "$$REPO_DIR/.compound-engineering/config.local.yaml" ]; then \
 		mkdir -p "$$WORKTREE_DIR/.compound-engineering"; \

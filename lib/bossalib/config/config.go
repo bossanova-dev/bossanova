@@ -100,13 +100,23 @@ func DedupPluginConfigs(cfgs []PluginConfig) ([]PluginConfig, bool) {
 	return out, dropped
 }
 
-// DiscoverPlugins scans for plugin binaries relative to the running binary's
-// location. It checks ../libexec/plugins/ first (Homebrew layout, resolving
-// symlinks), then falls back to the binary's own directory (dev mode where
-// all binaries live in bin/), then the per-user plugin dir used by upgrades.
-// Returns an empty slice if no plugins are found.
+// DiscoverPlugins scans for plugin binaries in precedence order:
+//  1. ../libexec/plugins/ relative to the running binary (Homebrew layout,
+//     resolving symlinks), then the binary's own directory (dev mode where all
+//     binaries live in bin/);
+//  2. a bin/ directory found by walking up from the current working directory
+//     (dev mode where boss is run from inside a checkout but the binary lives
+//     elsewhere, e.g. a temp build dir);
+//  3. the per-user plugin dir used by upgrades.
+//
+// The CWD walk (step 2) only runs when binary-relative discovery finds nothing,
+// so an installed Homebrew daemon using libexec is unaffected. Returns nil if no
+// plugins are found.
 func DiscoverPlugins() []PluginConfig {
 	if plugins := discoverPluginsFrom(""); len(plugins) > 0 {
+		return plugins
+	}
+	if plugins := discoverDevPluginsFromCWD(); len(plugins) > 0 {
 		return plugins
 	}
 	dir, err := UserPluginDir()
@@ -139,6 +149,22 @@ func discoverPluginsFrom(binDir string) []PluginConfig {
 
 	// Fall back to same directory as binary (dev mode).
 	return scanForPlugins(binDir)
+}
+
+func discoverDevPluginsFromCWD() []PluginConfig {
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	for dir := wd; ; dir = filepath.Dir(dir) {
+		if plugins := scanForPlugins(filepath.Join(dir, "bin")); len(plugins) > 0 {
+			return plugins
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
+	}
 }
 
 // platformSuffixes lists OS/arch suffixes to skip during plugin discovery

@@ -14,12 +14,16 @@ import (
 )
 
 type e2eCloudAccessClient struct {
-	mu            sync.Mutex
-	states        []pb.CloudAccessState
-	refreshIndex  int
-	checkoutURL   string
-	portalURL     string
-	checkoutError bool
+	mu                         sync.Mutex
+	states                     []pb.CloudAccessState
+	refreshIndex               int
+	checkoutURL                string
+	portalURL                  string
+	githubAppURL               string
+	githubAppRepos             []*pb.GitHubAppRepoStatus
+	githubAppLists             int
+	githubAppInstallAfterPolls int
+	checkoutError              bool
 }
 
 func resolveE2ECloudAccessClient() cloudAccessClient {
@@ -35,11 +39,18 @@ func resolveE2ECloudAccessClient() cloudAccessClient {
 	if portalURL == "" {
 		portalURL = "https://billing.example.test/portal"
 	}
+	githubAppURL := strings.TrimSpace(os.Getenv("BOSS_GITHUB_APP_E2E_INSTALL_URL"))
+	if githubAppURL == "" {
+		githubAppURL = "https://github.com/apps/bossanova-dev/installations/new"
+	}
 	return &e2eCloudAccessClient{
-		states:        parseE2ECloudAccessStates(raw),
-		checkoutURL:   checkoutURL,
-		portalURL:     portalURL,
-		checkoutError: os.Getenv("BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR") == "1",
+		states:                     parseE2ECloudAccessStates(raw),
+		checkoutURL:                checkoutURL,
+		portalURL:                  portalURL,
+		githubAppURL:               githubAppURL,
+		githubAppRepos:             parseE2EGitHubAppRepos(os.Getenv("BOSS_GITHUB_APP_E2E_INSTALLED_REPOS")),
+		githubAppInstallAfterPolls: parseE2EPositiveInt(os.Getenv("BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS")),
+		checkoutError:              os.Getenv("BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR") == "1",
 	}
 }
 
@@ -107,6 +118,60 @@ func (c *e2eCloudAccessClient) CreateCheckoutSession(context.Context, string, st
 
 func (c *e2eCloudAccessClient) CreateBillingPortalSession(context.Context, string) (string, error) {
 	return c.portalURL, nil
+}
+
+func (c *e2eCloudAccessClient) GetGitHubAppInstallURL(context.Context, string) (string, error) {
+	return c.githubAppURL, nil
+}
+
+func (c *e2eCloudAccessClient) ListGitHubAppRepos(context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.githubAppLists++
+	if c.githubAppInstallAfterPolls > 0 && c.githubAppLists < c.githubAppInstallAfterPolls {
+		return nil, nil
+	}
+	out := make([]*pb.GitHubAppRepoStatus, len(c.githubAppRepos))
+	copy(out, c.githubAppRepos)
+	return out, nil
+}
+
+func parseE2EGitHubAppRepos(raw string) []*pb.GitHubAppRepoStatus {
+	var repos []*pb.GitHubAppRepoStatus
+	for _, part := range strings.Split(raw, ",") {
+		nwo := strings.Trim(strings.TrimSpace(part), "/")
+		if nwo == "" {
+			continue
+		}
+		pieces := strings.Split(nwo, "/")
+		if len(pieces) < 2 {
+			continue
+		}
+		owner := pieces[len(pieces)-2]
+		name := strings.TrimSuffix(pieces[len(pieces)-1], ".git")
+		repos = append(repos, &pb.GitHubAppRepoStatus{
+			RepoOriginUrl: "https://github.com/" + owner + "/" + name + ".git",
+			Owner:         owner,
+			Name:          name,
+			Installed:     true,
+		})
+	}
+	return repos
+}
+
+func parseE2EPositiveInt(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	var n int
+	for _, r := range raw {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
 
 func e2eCloudRefreshInterval() time.Duration {

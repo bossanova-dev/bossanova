@@ -6,11 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -23,10 +26,12 @@ import (
 type repoAddPhase int
 
 const (
-	repoAddPhaseSource  repoAddPhase = iota // Phase 1: table pick (open/clone)
-	repoAddPhaseInput                       // Phase 2: path/URL input
-	repoAddPhaseDetails                     // Phase 3: name + setup + confirm
-	repoAddPhaseDone                        // Terminal state
+	repoAddPhaseSource          repoAddPhase = iota // Phase 1: table pick (open/clone)
+	repoAddPhaseInput                               // Phase 2: path/URL input
+	repoAddPhaseDetails                             // Phase 3: name + setup + confirm
+	repoAddPhaseGitHubAppPrompt                     // Phase 4: confirm GitHub App install
+	repoAddPhaseGitHubApp                           // Phase 5: GitHub App install follow-up
+	repoAddPhaseDone                                // Terminal state
 )
 
 // sourceMode selects between open-project and clone flows.
@@ -53,6 +58,59 @@ type repoValidatedMsg struct {
 	err  error
 }
 
+type githubAppInstallURLMsg struct {
+	url     string
+	err     error
+	attempt int
+}
+
+type githubAppBrowserOpenedMsg struct {
+	url     string
+	err     error
+	attempt int
+}
+
+type githubAppReposMsg struct {
+	repos   []*pb.GitHubAppRepoStatus
+	err     error
+	attempt int
+}
+
+type githubAppPollTickMsg struct {
+	attempt int
+}
+
+// GitHubAppClient is the authenticated cloud subset used by the repo-add
+// follow-up to start GitHub App setup and observe completion.
+type GitHubAppClient interface {
+	GetGitHubAppInstallURL(ctx context.Context, returnURL string) (string, error)
+	ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppRepoStatus, error)
+}
+
+const githubAppInstallPollInterval = 3 * time.Second
+
+// githubAppInstallMaxPolls bounds the automatic installation poll loop so a
+// user who never completes the GitHub App install doesn't leave boss polling
+// the cloud forever. At the default 3s interval this is ~5 minutes, after which
+// the view pauses and offers to keep checking or skip.
+const githubAppInstallMaxPolls = 100
+
+var (
+	openGitHubAppInstallURL              = openURLFunc
+	githubAppInstallPollIntervalOverride time.Duration
+)
+
+func SetGitHubAppInstallPollIntervalOverride(interval time.Duration) {
+	githubAppInstallPollIntervalOverride = interval
+}
+
+func githubAppPollIntervalValue() time.Duration {
+	if githubAppInstallPollIntervalOverride > 0 {
+		return githubAppInstallPollIntervalOverride
+	}
+	return githubAppInstallPollInterval
+}
+
 // sourceOptions defines the rows for the source-selection table.
 var sourceOptions = []struct {
 	label string
@@ -77,6 +135,7 @@ type repoAddFormData struct {
 // RepoAddModel is the wizard for registering a new repository.
 type RepoAddModel struct {
 	client client.BossClient
+	auth   *auth.Manager
 	ctx    context.Context
 
 	phase  repoAddPhase
@@ -95,12 +154,24 @@ type RepoAddModel struct {
 	// Async state
 	validating bool
 	cloning    bool
+	spinner    spinner.Model
 
 	// Validation results
 	isGithub           bool
 	detectedBaseBranch string
+	detectedOriginURL  string
 
 	createdRepo *pb.Repo
+
+	githubAppClient        GitHubAppClient
+	githubAppAttempt       int
+	githubAppInstallURL    string
+	githubAppInstallErr    error
+	githubAppInstallOpen   bool
+	githubAppInstallNWO    string
+	githubAppInstallReady  bool
+	githubAppPollCount     int
+	githubAppPollExhausted bool
 
 	// Form (used for clone/open input fields + details phase)
 	form *huh.Form
@@ -118,6 +189,7 @@ func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 		ctx:                ctx,
 		phase:              repoAddPhaseSource,
 		detectedBaseBranch: "main",
+		spinner:            newStatusSpinner(),
 		fd: &repoAddFormData{
 			localPath: home + "/",
 			name:      filepath.Base(home),
@@ -126,6 +198,11 @@ func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 	}
 	m.buildSourceTable()
 	return m
+}
+
+func (m *RepoAddModel) SetGitHubAppInstall(authMgr *auth.Manager, c GitHubAppClient) {
+	m.auth = authMgr
+	m.githubAppClient = c
 }
 
 func (m *RepoAddModel) buildSourceTable() {
@@ -235,6 +312,9 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.createdRepo = msg.repo
+		if m.shouldOfferGitHubAppInstall() {
+			return m.promptGitHubAppInstall(), nil
+		}
 		m.done = true
 		return m, nil
 
@@ -245,6 +325,9 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.createdRepo = msg.repo
+		if m.shouldOfferGitHubAppInstall() {
+			return m.promptGitHubAppInstall(), nil
+		}
 		m.done = true
 		return m, nil
 
@@ -263,6 +346,7 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Auto-populate fields from validation response.
 		m.isGithub = msg.resp.IsGithub
+		m.detectedOriginURL = msg.resp.OriginUrl
 		if msg.resp.DefaultBranch != "" {
 			m.detectedBaseBranch = msg.resp.DefaultBranch
 		}
@@ -282,7 +366,88 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.buildDetailsForm()
 		return m, m.form.Init()
 
+	case githubAppInstallURLMsg:
+		if msg.attempt != m.githubAppAttempt || m.phase != repoAddPhaseGitHubApp {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.githubAppInstallErr = msg.err
+			return m, nil
+		}
+		m.githubAppInstallURL = msg.url
+		m.githubAppInstallOpen = true
+		return m, tea.Batch(
+			m.openGitHubAppInstall(msg.url, msg.attempt),
+			m.githubAppPollTick(msg.attempt),
+		)
+
+	case githubAppBrowserOpenedMsg:
+		if msg.attempt != m.githubAppAttempt || m.phase != repoAddPhaseGitHubApp {
+			return m, nil
+		}
+		m.githubAppInstallURL = msg.url
+		m.githubAppInstallErr = msg.err
+		return m, nil
+
+	case githubAppPollTickMsg:
+		if msg.attempt != m.githubAppAttempt || m.phase != repoAddPhaseGitHubApp {
+			return m, nil
+		}
+		return m, m.listGitHubAppRepos(msg.attempt)
+
+	case githubAppReposMsg:
+		if msg.attempt != m.githubAppAttempt || m.phase != repoAddPhaseGitHubApp {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.githubAppInstallErr = msg.err
+			cmd := m.nextGitHubAppPoll(msg.attempt)
+			return m, cmd
+		}
+		if m.githubAppRepoInstalled(msg.repos) {
+			m.githubAppInstallReady = true
+			m.done = true
+			return m, nil
+		}
+		cmd := m.nextGitHubAppPoll(msg.attempt)
+		return m, cmd
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if m.phase == repoAddPhaseGitHubApp || m.cloning {
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
+		if m.phase == repoAddPhaseGitHubAppPrompt {
+			switch msg.String() {
+			case "esc":
+				m.done = true
+				return m, nil
+			case "enter":
+				return m.startGitHubAppInstall()
+			}
+			return m, nil
+		}
+		if m.phase == repoAddPhaseGitHubApp {
+			switch msg.String() {
+			case "esc":
+				m.done = true
+				return m, nil
+			case "enter", "o":
+				m.githubAppInstallErr = nil
+				if m.githubAppPollExhausted {
+					// Resume automatic polling and re-open the install page.
+					m.githubAppPollExhausted = false
+					m.githubAppPollCount = 0
+					return m, tea.Batch(m.reopenGitHubAppInstallCmd(), m.githubAppPollTick(m.githubAppAttempt))
+				}
+				return m, m.reopenGitHubAppInstallCmd()
+			}
+			return m, nil
+		}
 		if msg.String() == "esc" {
 			// If showing an error, go back to the input form with data preserved.
 			if m.err != nil {
@@ -356,6 +521,111 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m RepoAddModel) shouldOfferGitHubAppInstall() bool {
+	if m.auth == nil || m.githubAppClient == nil {
+		return false
+	}
+	if status := m.auth.Status(); status == nil || !status.LoggedIn {
+		return false
+	}
+	origin := m.githubAppRepoOrigin()
+	return vcs.GitHubNWO(origin) != ""
+}
+
+func (m RepoAddModel) githubAppRepoOrigin() string {
+	if m.sourceMode == sourceModeClone {
+		return strings.TrimSpace(m.fd.gitURL)
+	}
+	if m.detectedOriginURL != "" {
+		return strings.TrimSpace(m.detectedOriginURL)
+	}
+	if m.createdRepo != nil {
+		return strings.TrimSpace(m.createdRepo.OriginUrl)
+	}
+	return ""
+}
+
+func (m RepoAddModel) promptGitHubAppInstall() RepoAddModel {
+	m.phase = repoAddPhaseGitHubAppPrompt
+	m.githubAppInstallErr = nil
+	m.githubAppInstallNWO = vcs.GitHubNWO(m.githubAppRepoOrigin())
+	return m
+}
+
+func (m RepoAddModel) startGitHubAppInstall() (RepoAddModel, tea.Cmd) {
+	m.phase = repoAddPhaseGitHubApp
+	m.githubAppAttempt++
+	m.githubAppInstallURL = ""
+	m.githubAppInstallErr = nil
+	m.githubAppInstallOpen = false
+	m.githubAppInstallReady = false
+	m.githubAppPollCount = 0
+	m.githubAppPollExhausted = false
+	m.githubAppInstallNWO = vcs.GitHubNWO(m.githubAppRepoOrigin())
+	return m, tea.Batch(m.spinner.Tick, m.requestGitHubAppInstallURL(m.githubAppAttempt))
+}
+
+// nextGitHubAppPoll schedules the next installation poll, or stops and marks
+// the loop exhausted once githubAppInstallMaxPolls have elapsed without the app
+// appearing. Pointer receiver so it updates the poll counter on the caller's
+// model copy before that copy is returned from Update.
+func (m *RepoAddModel) nextGitHubAppPoll(attempt int) tea.Cmd {
+	m.githubAppPollCount++
+	if m.githubAppPollCount >= githubAppInstallMaxPolls {
+		m.githubAppPollExhausted = true
+		return nil
+	}
+	return m.githubAppPollTick(attempt)
+}
+
+// reopenGitHubAppInstallCmd re-opens the install page when the URL is already
+// known, otherwise re-requests it.
+func (m RepoAddModel) reopenGitHubAppInstallCmd() tea.Cmd {
+	if m.githubAppInstallURL != "" {
+		return m.openGitHubAppInstall(m.githubAppInstallURL, m.githubAppAttempt)
+	}
+	return m.requestGitHubAppInstallURL(m.githubAppAttempt)
+}
+
+func (m RepoAddModel) requestGitHubAppInstallURL(attempt int) tea.Cmd {
+	return func() tea.Msg {
+		url, err := m.githubAppClient.GetGitHubAppInstallURL(m.ctx, "")
+		if err == nil {
+			url = enrichGitHubAppInstallURL(m.ctx, url, m.githubAppRepoOrigin())
+		}
+		return githubAppInstallURLMsg{url: url, err: err, attempt: attempt}
+	}
+}
+
+func (m RepoAddModel) openGitHubAppInstall(rawURL string, attempt int) tea.Cmd {
+	return func() tea.Msg {
+		err := openGitHubAppInstallURL(rawURL)
+		return githubAppBrowserOpenedMsg{url: rawURL, err: err, attempt: attempt}
+	}
+}
+
+func (m RepoAddModel) githubAppPollTick(attempt int) tea.Cmd {
+	return tea.Tick(githubAppPollIntervalValue(), func(time.Time) tea.Msg {
+		return githubAppPollTickMsg{attempt: attempt}
+	})
+}
+
+func (m RepoAddModel) listGitHubAppRepos(attempt int) tea.Cmd {
+	return func() tea.Msg {
+		repos, err := m.githubAppClient.ListGitHubAppRepos(m.ctx)
+		return githubAppReposMsg{repos: repos, err: err, attempt: attempt}
+	}
+}
+
+func (m RepoAddModel) githubAppRepoInstalled(repos []*pb.GitHubAppRepoStatus) bool {
+	for _, repo := range repos {
+		if repo.GetInstalled() && strings.EqualFold(repo.GetOwner()+"/"+repo.GetName(), m.githubAppInstallNWO) {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 	switch m.phase {
 	case repoAddPhaseInput:
@@ -400,6 +670,10 @@ func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 
 	case repoAddPhaseSource:
 		// Source table selection — no form completion to handle.
+	case repoAddPhaseGitHubAppPrompt:
+		// GitHub App prompt is handled by key messages, not form completion.
+	case repoAddPhaseGitHubApp:
+		// GitHub App installation is driven by cloud poll messages, not form completion.
 	case repoAddPhaseDone:
 		// Nothing to do.
 	}
@@ -449,6 +723,14 @@ func (m RepoAddModel) Cancelled() bool { return m.cancel }
 func (m RepoAddModel) Done() bool { return m.done }
 
 func (m RepoAddModel) View() tea.View {
+	if m.phase == repoAddPhaseGitHubAppPrompt {
+		return tea.NewView(m.githubAppInstallPromptView())
+	}
+
+	if m.phase == repoAddPhaseGitHubApp {
+		return tea.NewView(m.githubAppInstallView())
+	}
+
 	if m.validating {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).Render(
@@ -500,4 +782,60 @@ func (m RepoAddModel) View() tea.View {
 	}
 
 	return tea.NewView("")
+}
+
+func (m RepoAddModel) githubAppInstallPromptView() string {
+	repoLabel := m.githubAppInstallNWO
+	if repoLabel == "" && m.createdRepo != nil {
+		repoLabel = m.createdRepo.DisplayName
+	}
+	if repoLabel == "" {
+		repoLabel = "this repository"
+	}
+
+	return githubAppInstallPromptContent(repoLabel)
+}
+
+func githubAppInstallPromptContent(repoLabel string) string {
+	padding := lipgloss.NewStyle().Padding(0, 2)
+	body := "Install the Bossanova Github App on " + repoLabel + "?\n\n" +
+		"This enables automated realtime response to conflicts, failing tests and code reviews.\n\n" +
+		"You can always set this up later if you don't want to decide yet."
+	return padding.Render(body) + "\n" +
+		styleActionBar.Render("[enter] install  [esc] skip")
+}
+
+func (m RepoAddModel) githubAppInstallView() string {
+	padding := lipgloss.NewStyle().Padding(0, 2)
+	repoLabel := m.githubAppInstallNWO
+	if repoLabel == "" && m.createdRepo != nil {
+		repoLabel = m.createdRepo.DisplayName
+	}
+	if repoLabel == "" {
+		repoLabel = "this repository"
+	}
+
+	if m.githubAppPollExhausted {
+		body := "Still waiting for the GitHub App installation on " + repoLabel + ".\n" +
+			"Automatic checking has paused."
+		if m.githubAppInstallURL != "" {
+			body += "\nInstall URL: " + m.githubAppInstallURL
+		}
+		return padding.Render(body) + "\n" +
+			styleActionBar.Render("[enter] keep checking  [esc] skip")
+	}
+
+	body := m.spinner.View() + "Waiting for GitHub App installation on " + repoLabel + "..."
+	if !m.githubAppInstallOpen {
+		body = m.spinner.View() + "Opening GitHub App installation page..."
+	}
+	if m.githubAppInstallErr != nil && m.githubAppInstallURL != "" {
+		body += "\nOpen this GitHub App URL: " + m.githubAppInstallURL
+	}
+	if m.githubAppInstallErr != nil && m.githubAppInstallURL == "" {
+		body = "Could not start GitHub App installation: " + m.githubAppInstallErr.Error()
+	}
+
+	return padding.Render(body) + "\n" +
+		styleActionBar.Render("[enter] re-open install page  [esc] skip")
 }

@@ -25,7 +25,8 @@ const (
 	settingsRowKindEnum                                 // cycle picker (plugin Enum config)
 	settingsRowKindWorktree                             // built-in worktree base directory
 	settingsRowKindPollInterval                         // built-in poll interval seconds
-	settingsRowKindDefaultAgent                         // cycle picker over loaded agents
+	settingsRowKindDefaultAgent                         // cycle picker over enabled agents
+	settingsRowKindAgentEnabled                         // checkbox toggle for plugin Enabled
 	settingsRowKindAgentHeader                          // pseudo-row: section header (non-interactive)
 	settingsRowKindTracingHeader                        // pseudo-row: tracing section header (non-interactive)
 	settingsRowKindEventTracing                         // built-in event tracing toggle
@@ -93,7 +94,7 @@ func NewSettingsModel(c client.BossClient, ctx context.Context, authMgr ...*auth
 	m := SettingsModel{
 		client:            c,
 		ctx:               ctx,
-		settings:          s,
+		settings:          mergeDiscoveredAgentPlugins(s, config.DiscoverPlugins()),
 		editingRow:        -1,
 		showCloudSettings: shouldShowCloudSettings(authMgr...),
 		worktreeDirInput:  wtIn,
@@ -107,8 +108,14 @@ func NewSettingsModel(c client.BossClient, ctx context.Context, authMgr ...*auth
 		agents, err := c.ListAgents(ctx)
 		if err == nil {
 			m.agents = agents
+			for _, agent := range agents {
+				if agent.Name != "" && !pluginConfigured(m.settings, agent.Name) {
+					setPluginEnabled(&m.settings, agent.Name, true)
+				}
+			}
 		}
 	}
+	m.agents = mergeAvailableAgentInfos(m.settings, m.agents)
 
 	m.rebuildRows()
 	return m
@@ -122,6 +129,180 @@ func shouldShowCloudSettings(authMgr ...*auth.Manager) bool {
 	return status == nil || !status.LoggedIn
 }
 
+func mergeDiscoveredAgentPlugins(settings config.Settings, discovered []config.PluginConfig) config.Settings {
+	if len(discovered) == 0 {
+		return settings
+	}
+	byName := make(map[string]config.PluginConfig, len(discovered))
+	for _, plugin := range discovered {
+		if plugin.Name == "claude" || plugin.Name == "codex" {
+			byName[plugin.Name] = plugin
+		}
+	}
+	if len(byName) == 0 {
+		return settings
+	}
+	for i := range settings.Plugins {
+		discoveredPlugin, ok := byName[settings.Plugins[i].Name]
+		if !ok {
+			continue
+		}
+		if settings.Plugins[i].Path == "" {
+			settings.Plugins[i].Path = discoveredPlugin.Path
+		}
+		if settings.Plugins[i].Version == "" {
+			settings.Plugins[i].Version = discoveredPlugin.Version
+		}
+		delete(byName, settings.Plugins[i].Name)
+	}
+	for _, name := range settings.KnownAgentProviders {
+		discoveredPlugin, ok := byName[name]
+		if !ok {
+			continue
+		}
+		discoveredPlugin.Enabled = false
+		settings.Plugins = append(settings.Plugins, discoveredPlugin)
+		delete(byName, name)
+	}
+	return settings
+}
+
+func mergeAvailableAgentInfos(settings config.Settings, loaded []client.AgentInfo) []client.AgentInfo {
+	byName := make(map[string]client.AgentInfo, len(loaded)+len(settings.Plugins))
+	for _, agent := range loaded {
+		if agent.Name != "" {
+			byName[agent.Name] = agent
+		}
+	}
+
+	wanted := map[string]bool{}
+	for _, plugin := range settings.Plugins {
+		if plugin.Name == "claude" || plugin.Name == "codex" {
+			wanted[plugin.Name] = true
+		}
+	}
+	for _, name := range settings.KnownAgentProviders {
+		if name == "claude" || name == "codex" {
+			wanted[name] = true
+		}
+	}
+
+	for _, fallback := range fallbackAgentInfos() {
+		if wanted[fallback.Name] {
+			if _, ok := byName[fallback.Name]; !ok {
+				byName[fallback.Name] = fallback
+			}
+		}
+	}
+
+	order := []string{"claude", "codex"}
+	out := make([]client.AgentInfo, 0, len(byName))
+	seen := map[string]bool{}
+	for _, name := range order {
+		if agent, ok := byName[name]; ok {
+			out = append(out, agent)
+			seen[name] = true
+		}
+	}
+	for _, agent := range loaded {
+		if agent.Name != "" && !seen[agent.Name] {
+			out = append(out, agent)
+			seen[agent.Name] = true
+		}
+	}
+	return out
+}
+
+func fallbackAgentInfos() []client.AgentInfo {
+	return []client.AgentInfo{
+		{
+			Name: "claude",
+			UserSettings: []client.UserSetting{
+				{
+					Key:          "dangerously_skip_permissions",
+					Label:        "Skip permission prompts",
+					Description:  "Pass --dangerously-skip-permissions to claude. Use only in trusted worktrees.",
+					Type:         client.SettingTypeBool,
+					DefaultValue: "false",
+				},
+			},
+		},
+		{
+			Name: "codex",
+			UserSettings: []client.UserSetting{
+				{
+					Key:           "sandbox",
+					Label:         "Sandbox mode",
+					Description:   "Codex --sandbox mode. Empty uses codex default (no --sandbox flag passed).",
+					Type:          client.SettingTypeEnum,
+					AllowedValues: []string{"", "read-only", "workspace-write", "danger-full-access"},
+					DefaultValue:  "",
+				},
+				{
+					Key:           "approval",
+					Label:         "Approval policy",
+					Description:   "Codex --ask-for-approval policy. Empty uses codex default (no flag passed).",
+					Type:          client.SettingTypeEnum,
+					AllowedValues: []string{"", "untrusted", "on-failure", "on-request", "never"},
+					DefaultValue:  "",
+				},
+				{
+					Key:          "model",
+					Label:        "Model",
+					Description:  "Codex --model selection. Empty uses codex default.",
+					Type:         client.SettingTypeString,
+					DefaultValue: "",
+				},
+				{
+					Key:          "dangerously_bypass_approvals_and_sandbox",
+					Label:        "Bypass approvals & sandbox (dangerous)",
+					Description:  "Pass --dangerously-bypass-approvals-and-sandbox to codex. Overrides sandbox/approval. Use only in trusted worktrees.",
+					Type:         client.SettingTypeBool,
+					DefaultValue: "false",
+				},
+			},
+		},
+	}
+}
+
+func enabledAgentNames(settings config.Settings, agents []client.AgentInfo) []string {
+	out := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		if pluginEnabled(settings, agent.Name) {
+			out = append(out, agent.Name)
+		}
+	}
+	return out
+}
+
+func pluginEnabled(settings config.Settings, name string) bool {
+	for _, plugin := range settings.Plugins {
+		if plugin.Name == name {
+			return plugin.Enabled
+		}
+	}
+	return false
+}
+
+func pluginConfigured(settings config.Settings, name string) bool {
+	for _, plugin := range settings.Plugins {
+		if plugin.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func setPluginEnabled(settings *config.Settings, name string, enabled bool) {
+	for i := range settings.Plugins {
+		if settings.Plugins[i].Name == name {
+			settings.Plugins[i].Enabled = enabled
+			return
+		}
+	}
+	settings.Plugins = append(settings.Plugins, config.PluginConfig{Name: name, Enabled: enabled})
+}
+
 // rebuildRows reconstructs m.rows from m.settings + m.agents. Called on
 // construction and after agent / setting mutations that change row counts.
 func (m *SettingsModel) rebuildRows() {
@@ -133,29 +314,28 @@ func (m *SettingsModel) rebuildRows() {
 		settingsRow{Kind: settingsRowKindPollInterval, Label: "Poll interval (seconds)"},
 	)
 
-	// Default agent picker — only meaningful when >1 agent is loaded.
-	if len(m.agents) > 1 {
-		allowed := make([]string, len(m.agents))
-		for i, a := range m.agents {
-			allowed[i] = a.Name
-		}
+	// Default agent picker — only meaningful when >1 agent is enabled.
+	enabledAgents := enabledAgentNames(m.settings, m.agents)
+	if len(enabledAgents) > 1 {
 		m.rows = append(m.rows, settingsRow{
 			Kind:    settingsRowKindDefaultAgent,
 			Label:   "Default agent",
-			Allowed: allowed,
+			Allowed: enabledAgents,
 		})
 	}
 
 	// Per-agent sections.
 	for _, a := range m.agents {
-		if len(a.UserSettings) == 0 {
-			continue
-		}
 		m.rows = append(m.rows, settingsRow{
 			Kind:     settingsRowKindAgentHeader,
 			Label:    a.Name,
 			Plugin:   a.Name,
 			IsHeader: true,
+		})
+		m.rows = append(m.rows, settingsRow{
+			Kind:   settingsRowKindAgentEnabled,
+			Plugin: a.Name,
+			Label:  "Enabled",
 		})
 		for _, us := range a.UserSettings {
 			row := settingsRow{
@@ -256,6 +436,30 @@ func (m SettingsModel) activateRow() (tea.Model, tea.Cmd) {
 		if err := config.Save(m.settings); err != nil {
 			m.err = err
 		}
+	case settingsRowKindAgentEnabled:
+		current := pluginEnabled(m.settings, row.Plugin)
+		if current && len(enabledAgentNames(m.settings, m.agents)) <= 1 {
+			m.err = fmt.Errorf("select at least one agent")
+			return m, nil
+		}
+		setPluginEnabled(&m.settings, row.Plugin, !current)
+		if !current && (m.settings.DefaultAgent == "" || !pluginEnabled(m.settings, m.settings.DefaultAgent)) {
+			m.settings.DefaultAgent = row.Plugin
+		}
+		if current && m.settings.DefaultAgent == row.Plugin {
+			enabled := enabledAgentNames(m.settings, m.agents)
+			if len(enabled) > 0 {
+				m.settings.DefaultAgent = enabled[0]
+			} else {
+				m.settings.DefaultAgent = ""
+			}
+		}
+		if err := config.Save(m.settings); err != nil {
+			m.err = err
+		} else {
+			m.err = nil
+		}
+		m.rebuildRows()
 	case settingsRowKindEnum:
 		// Cycle to the next allowed value.
 		if len(row.Allowed) == 0 {
@@ -538,6 +742,12 @@ func (m SettingsModel) renderRow(b *strings.Builder, i int, row settingsRow, edi
 	case settingsRowKindBool:
 		check := " "
 		if config.PluginConfigBool(&m.settings, row.Plugin, row.Key) {
+			check = "x"
+		}
+		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)
+	case settingsRowKindAgentEnabled:
+		check := " "
+		if pluginEnabled(m.settings, row.Plugin) {
 			check = "x"
 		}
 		line = fmt.Sprintf("%s[%s] %s", cursor, check, row.Label)

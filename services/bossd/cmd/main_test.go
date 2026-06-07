@@ -11,6 +11,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonstate"
 	"github.com/recurser/bossalib/telemetry"
 	"github.com/recurser/bossd/internal/server"
 )
@@ -172,6 +173,19 @@ func TestRunUsesSettingsPathProfileForDBAndSocket(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(appDataDir, server.LockFileName)); err != nil {
 		t.Fatalf("settings lock file was not created: %v", err)
 	}
+	metadata, err := daemonstate.Read(appDataDir)
+	if err != nil {
+		t.Fatalf("daemon metadata was not written: %v", err)
+	}
+	if metadata.PID != os.Getpid() {
+		t.Fatalf("metadata PID = %d, want %d", metadata.PID, os.Getpid())
+	}
+	if metadata.SettingsPath != settingsPath {
+		t.Fatalf("metadata settings path = %q, want %q", metadata.SettingsPath, settingsPath)
+	}
+	if metadata.SocketPath != socketPath {
+		t.Fatalf("metadata socket path = %q, want %q", metadata.SocketPath, socketPath)
+	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -192,5 +206,8 @@ func TestRunUsesSettingsPathProfileForDBAndSocket(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("run did not return within 15s of SIGTERM")
+	}
+	if _, err := daemonstate.Read(appDataDir); !os.IsNotExist(err) {
+		t.Fatalf("daemon metadata after shutdown error = %v, want not exist", err)
 	}
 }

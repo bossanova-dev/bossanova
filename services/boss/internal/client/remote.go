@@ -324,6 +324,26 @@ func (c *RemoteClient) RefreshCloudEntitlements(ctx context.Context) (*pb.CloudA
 	return resp.Msg.GetStatus(), nil
 }
 
+// --- GitHub App Setup ---
+
+func (c *RemoteClient) GetGitHubAppInstallURL(ctx context.Context, returnURL string) (string, error) {
+	resp, err := c.rpc.GetGitHubAppInstallURL(ctx, connect.NewRequest(&pb.GetGitHubAppInstallURLRequest{
+		ReturnUrl: returnURL,
+	}))
+	if err != nil {
+		return "", err
+	}
+	return resp.Msg.GetInstallUrl(), nil
+}
+
+func (c *RemoteClient) ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+	resp, err := c.rpc.ListGitHubAppRepos(ctx, connect.NewRequest(&pb.ListGitHubAppReposRequest{}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg.GetRepos(), nil
+}
+
 // --- Cron Jobs (local only) ---
 
 func (c *RemoteClient) CreateCronJob(_ context.Context, _ *pb.CreateCronJobRequest) (*pb.CronJob, error) {

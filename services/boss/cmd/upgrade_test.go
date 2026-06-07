@@ -52,15 +52,27 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 	oldExecutablePath := executablePath
 	oldInstallUpgrade := installUpgrade
 	oldRestartDaemon := restartDaemon
+	oldLoadSettings := loadSettings
+	oldDiscoverPlugins := discoverPlugins
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
 		checkUpgrade = oldCheck
 		executablePath = oldExecutablePath
 		installUpgrade = oldInstallUpgrade
 		restartDaemon = oldRestartDaemon
+		loadSettings = oldLoadSettings
+		discoverPlugins = oldDiscoverPlugins
 	}()
 
 	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	appDataDir := filepath.Join(dir, "appdata")
+	settings := config.DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := config.SaveTo(settingsPath, settings); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
 	realDir := filepath.Join(dir, "real")
 	wrapperDir := filepath.Join(dir, "wrapper")
 	if err := os.Mkdir(realDir, 0o755); err != nil {
@@ -92,6 +104,8 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 		}, nil
 	}
 	executablePath = func() (string, error) { return linkExe, nil }
+	loadSettings = func() (config.Settings, error) { return config.Settings{}, nil }
+	discoverPlugins = config.DiscoverPlugins
 	var gotPlan upgrade.InstallPlan
 	installUpgrade = func(_ context.Context, plan upgrade.InstallPlan) error {
 		gotPlan = plan
@@ -127,6 +141,9 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 	}
 	if gotPlan.PluginDir != wantPluginDir {
 		t.Fatalf("InstallPlan.PluginDir = %q, want %q", gotPlan.PluginDir, wantPluginDir)
+	}
+	if strings.Contains(gotPlan.PluginDir, string(filepath.Separator)+"bin") {
+		t.Fatalf("InstallPlan.PluginDir = %q, want user plugin dir when cwd dev plugins exist", gotPlan.PluginDir)
 	}
 	if !strings.Contains(out.String(), "upgrade installed v1.2.4") {
 		t.Fatalf("runUpgrade() output = %q, want success message", out.String())

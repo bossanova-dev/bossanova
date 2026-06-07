@@ -1125,7 +1125,10 @@ func (h HomeModel) View() tea.View {
 		if h.repoCount == 0 {
 			// No repos configured - show welcome message with setup instructions
 			actions := []string{"[r]epos", "[s]ettings"}
-			if la := h.loginAction(); la != "" {
+			// Suppress the [l]ogout action while the logout confirmation is
+			// showing so the empty state doesn't display the control and its
+			// confirmation prompt at once (mirrors the session-list view).
+			if la := h.loginAction(); la != "" && !h.logoutConfirming {
 				actions = append(actions, la)
 			}
 			if ca := h.cloudAction(); ca != "" {
@@ -1140,7 +1143,10 @@ func (h HomeModel) View() tea.View {
 		} else {
 			// Repos exist but no sessions - show simplified guidance
 			actions := []string{"[n]ew session", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
-			if la := h.loginAction(); la != "" {
+			// Suppress the [l]ogout action while the logout confirmation is
+			// showing so the empty state doesn't display the control and its
+			// confirmation prompt at once (mirrors the session-list view).
+			if la := h.loginAction(); la != "" && !h.logoutConfirming {
 				actions = append(actions, la)
 			}
 			if ca := h.cloudAction(); ca != "" {
@@ -1153,13 +1159,16 @@ func (h HomeModel) View() tea.View {
 				actionBar(actions, []string{"[q]uit"})
 		}
 		if discovery != "" {
-			content += "\n\n" + discovery
+			content += discovery
 		}
 		if gate := h.cloudGateLine(); gate != "" {
 			content += "\n" + gate
 		}
 		if checkoutStatus := h.cloudCheckoutStatusLine(); checkoutStatus != "" {
 			content += "\n" + checkoutStatus
+		}
+		if h.logoutConfirming {
+			content += "\n" + h.logoutConfirmationView()
 		}
 		return tea.NewView(h.withUpgradeStatus(content))
 	}
@@ -1185,13 +1194,7 @@ func (h HomeModel) View() tea.View {
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else if h.logoutConfirming {
 		b.WriteString("\n")
-		label := "Log out?"
-		if h.loggedInEmail != "" {
-			label = fmt.Sprintf("Log out %s?", h.loggedInEmail)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(label))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+		b.WriteString(h.logoutConfirmationView())
 	} else {
 		navActions := []string{"[n]ew", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
 		if la := h.loginAction(); la != "" {
@@ -1222,6 +1225,16 @@ func (h HomeModel) View() tea.View {
 	}
 
 	return tea.NewView(h.withUpgradeStatus(b.String()))
+}
+
+func (h HomeModel) logoutConfirmationView() string {
+	label := "Log out?"
+	if h.loggedInEmail != "" {
+		label = fmt.Sprintf("Log out %s?", h.loggedInEmail)
+	}
+	return lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(label) +
+		"\n" +
+		styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
 }
 
 // tickMsg signals a polling refresh.

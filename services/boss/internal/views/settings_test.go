@@ -164,6 +164,118 @@ func TestSettings_RendersAgentSectionForEachAgent(t *testing.T) {
 	}
 }
 
+func TestSettings_RendersConfiguredAgentsWhenDaemonHasNoneLoaded(t *testing.T) {
+	withTempConfigHome(t)
+	settings := config.DefaultSettings()
+	settings.DefaultAgent = "codex"
+	settings.KnownAgentProviders = []string{"claude", "codex"}
+	settings.Plugins = []config.PluginConfig{
+		{Name: "claude", Enabled: false},
+		{Name: "codex", Enabled: true},
+	}
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	out := m.View().Content
+
+	for _, want := range []string{
+		"claude",
+		"codex",
+		"[ ] Enabled",
+		"[x] Enabled",
+		"Skip permission prompts",
+		"Bypass approvals & sandbox",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("settings missing %q for configured unloaded agents:\n%s", want, out)
+		}
+	}
+	if len(m.agents) != 2 {
+		t.Fatalf("agents = %v, want claude and codex", m.agents)
+	}
+}
+
+func TestSettings_MergeDiscoveredAgentPluginsPreservesEnabledState(t *testing.T) {
+	settings := config.DefaultSettings()
+	settings.KnownAgentProviders = []string{"claude", "codex"}
+	settings.Plugins = []config.PluginConfig{
+		{Name: "claude", Enabled: false},
+	}
+
+	got := mergeDiscoveredAgentPlugins(settings, []config.PluginConfig{
+		{Name: "claude", Path: "/plugins/bossd-plugin-claude", Enabled: true},
+		{Name: "codex", Path: "/plugins/bossd-plugin-codex", Enabled: true},
+	})
+
+	if len(got.Plugins) != 2 {
+		t.Fatalf("plugins = %+v, want claude and codex", got.Plugins)
+	}
+	if got.Plugins[0].Name != "claude" || got.Plugins[0].Enabled || got.Plugins[0].Path == "" {
+		t.Fatalf("claude plugin = %+v, want disabled with discovered path", got.Plugins[0])
+	}
+	if got.Plugins[1].Name != "codex" || got.Plugins[1].Enabled || got.Plugins[1].Path == "" {
+		t.Fatalf("codex plugin = %+v, want disabled with discovered path", got.Plugins[1])
+	}
+}
+
+func TestSettings_AgentEnabledToggleCannotDisableLastAgent(t *testing.T) {
+	withTempConfigHome(t)
+	settings := config.DefaultSettings()
+	settings.DefaultAgent = "codex"
+	settings.KnownAgentProviders = []string{"codex"}
+	settings.Plugins = []config.PluginConfig{{Name: "codex", Enabled: true}}
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindAgentEnabled && row.Plugin == "codex" {
+			m.cursor = i
+			break
+		}
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(SettingsModel)
+
+	if !pluginEnabled(m.settings, "codex") {
+		t.Fatal("codex disabled; want last enabled agent preserved")
+	}
+	if m.err == nil || !strings.Contains(m.err.Error(), "select at least one agent") {
+		t.Fatalf("err = %v, want select at least one agent", m.err)
+	}
+}
+
+func TestSettings_AgentEnabledToggleEnablesConfiguredAgent(t *testing.T) {
+	withTempConfigHome(t)
+	settings := config.DefaultSettings()
+	settings.DefaultAgent = "codex"
+	settings.KnownAgentProviders = []string{"claude", "codex"}
+	settings.Plugins = []config.PluginConfig{
+		{Name: "claude", Enabled: false},
+		{Name: "codex", Enabled: true},
+	}
+	if err := config.Save(settings); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	for i, row := range m.rows {
+		if row.Kind == settingsRowKindAgentEnabled && row.Plugin == "claude" {
+			m.cursor = i
+			break
+		}
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(SettingsModel)
+
+	if !pluginEnabled(m.settings, "claude") {
+		t.Fatal("claude enabled = false, want true")
+	}
+}
+
 func TestSettings_BoolRowToggles(t *testing.T) {
 	withTempConfigHome(t)
 	stub := &settingsAgentStub{

@@ -387,6 +387,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
+			strings.HasPrefix(e, "BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=") ||
@@ -402,6 +403,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 	env = append(env,
 		"BOSS_SKIP_SKILLS=1",
+		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
 		"TERM=xterm-256color",
 		"HOME="+tempHome,
 	)

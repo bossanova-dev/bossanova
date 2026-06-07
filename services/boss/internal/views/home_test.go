@@ -440,7 +440,7 @@ func TestHomeCloudGateUpgradeKeyWinsOverSubscribeKey(t *testing.T) {
 	h.upgradeAvailable = true
 
 	content := h.View().Content
-	if !strings.Contains(content, "u upgrade") {
+	if !strings.Contains(content, "[u]pgrade") {
 		t.Fatalf("home did not render upgrade shortcut: %q", content)
 	}
 	if strings.Contains(content, "Type u to s[u]bscribe.") {
@@ -1401,6 +1401,8 @@ func TestViewEmptyStateWithRepos(t *testing.T) {
 func TestHomeUpgradeBannerRenders(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.width = 100
+	h.loading = false
+	h.repoCount = 1
 
 	model, _ := h.Update(upgradeCheckMsg{
 		current:   "v1.2.3",
@@ -1416,11 +1418,46 @@ func TestHomeUpgradeBannerRenders(t *testing.T) {
 	if !strings.Contains(content, "v1.2.4") {
 		t.Fatalf("expected latest version in upgrade banner, got: %s", content)
 	}
+	if !strings.Contains(content, "[u]pgrade [d]ismiss") {
+		t.Fatalf("expected upgrade actions in banner, got: %s", content)
+	}
+	if strings.Contains(content, "u upgrade  U dismiss") {
+		t.Fatalf("rendered old upgrade actions, got: %s", content)
+	}
+	if got := blankLinesBetween(content, "[q]uit", "Upgrade available"); got == markersNotFound {
+		t.Fatalf("upgrade banner did not render after bottom action bar, got: %s", content)
+	}
+}
+
+func TestHomeUpgradeAndCloudPromptsRenderAfterActionBar(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")
+	h.width = 100
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+	h.upgradeAvailable = true
+	h.upgradeCurrent = "v1.2.3"
+	h.upgradeLatest = "v1.2.4"
+	h.cloudStatus = &pb.CloudAccessStatus{
+		State:             pb.CloudAccessState_CLOUD_ACCESS_STATE_NEEDS_SUBSCRIPTION,
+		CanCreateCheckout: true,
+	}
+
+	content := h.View().Content
+	if got := blankLinesBetween(content, "[q]uit", "Upgrade available"); got == markersNotFound {
+		t.Fatalf("upgrade prompt did not render after bottom action bar, got: %s", content)
+	}
+	if got := blankLinesBetween(content, "Upgrade available", "Upgrade boss first"); got == markersNotFound {
+		t.Fatalf("cloud prompt did not render after upgrade prompt, got: %s", content)
+	}
 }
 
 func TestHomeUpgradeSuccessPromptsRestart(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.width = 100
+	h.loading = false
+	h.repoCount = 1
 
 	model, _ := h.Update(upgradeRunMsg{})
 	h = model.(HomeModel)
@@ -1429,8 +1466,14 @@ func TestHomeUpgradeSuccessPromptsRestart(t *testing.T) {
 	if !strings.Contains(content, "Upgrade installed") {
 		t.Fatalf("expected upgrade-installed prompt, got: %s", content)
 	}
-	if !strings.Contains(content, "r restart") {
+	if !strings.Contains(content, "[r]estart [esc] later") {
 		t.Fatalf("expected restart action in prompt, got: %s", content)
+	}
+	if strings.Contains(content, "r restart  n later") {
+		t.Fatalf("rendered old restart actions, got: %s", content)
+	}
+	if got := blankLinesBetween(content, "[q]uit", "Upgrade installed"); got == markersNotFound {
+		t.Fatalf("restart prompt did not render after bottom action bar, got: %s", content)
 	}
 	// The reviewer specifically asked for a relaunch hint; ensure the
 	// running TUI does not silently keep using the old binary.
@@ -1570,6 +1613,12 @@ func TestHomeUpgradeDismissPersistsSnooze(t *testing.T) {
 	})
 	h = model.(HomeModel)
 	model, _ = h.Update(tea.KeyPressMsg{Code: 'U', Text: "U"})
+	h = model.(HomeModel)
+	if !h.upgradeAvailable {
+		t.Fatal("upgradeAvailable = false after uppercase U, want true")
+	}
+
+	model, _ = h.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
 	h = model.(HomeModel)
 
 	if h.upgradeAvailable {

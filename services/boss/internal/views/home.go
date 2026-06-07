@@ -766,7 +766,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "r", "enter":
 				return h, restartDaemonCmd()
-			case "esc", "n":
+			case "esc":
 				h.restartPrompt = false
 				return h, nil
 			}
@@ -784,7 +784,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				h.upgradeError = ""
 				return h, runUpgradeCmd(executable)
-			case "U":
+			case "d":
 				h.upgradeAvailable = false
 				if path := upgradeCachePath(); path != "" {
 					_ = upgrade.SnoozeUpgrade(
@@ -911,12 +911,12 @@ func (h HomeModel) upgradeStatusView() string {
 	}
 	switch {
 	case h.restartPrompt:
-		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render("Upgrade installed. Quit boss after restart to use the new binary.  r restart  n later"))
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Upgrade installed. Quit boss after restart to use the new binary. [r]estart [esc] later"))
 	case h.upgradeDone:
 		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render("Upgrade installed. Quit boss (q) and re-launch to use the new binary."))
 	case h.upgradeAvailable:
-		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf(
-			"Upgrade available: boss %s -> %s  u upgrade  U dismiss",
+		lines = append(lines, lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(fmt.Sprintf(
+			"Upgrade available: boss %s -> %s. [u]pgrade [d]ismiss",
 			h.upgradeCurrent,
 			h.upgradeLatest,
 		)))
@@ -932,7 +932,7 @@ func (h HomeModel) withUpgradeStatus(content string) string {
 	if content == "" {
 		return status
 	}
-	return status + "\n" + content
+	return content + "\n" + status
 }
 
 // StateLabel returns a short human-readable label for a session state.
@@ -1161,6 +1161,11 @@ func (h HomeModel) View() tea.View {
 		if discovery != "" {
 			content += discovery
 		}
+		if !h.logoutConfirming {
+			if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
+				content += "\n" + upgradeStatus
+			}
+		}
 		if gate := h.cloudGateLine(); gate != "" {
 			content += "\n" + gate
 		}
@@ -1169,8 +1174,11 @@ func (h HomeModel) View() tea.View {
 		}
 		if h.logoutConfirming {
 			content += "\n" + h.logoutConfirmationView()
+			if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
+				content += "\n" + upgradeStatus
+			}
 		}
-		return tea.NewView(h.withUpgradeStatus(content))
+		return tea.NewView(content)
 	}
 
 	var b strings.Builder
@@ -1214,6 +1222,10 @@ func (h HomeModel) View() tea.View {
 				b.WriteString(discovery)
 			}
 		}
+		if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
+			b.WriteString("\n")
+			b.WriteString(upgradeStatus)
+		}
 		if gate := h.cloudGateLine(); gate != "" {
 			b.WriteString("\n")
 			b.WriteString(gate)
@@ -1223,8 +1235,14 @@ func (h HomeModel) View() tea.View {
 			b.WriteString(checkoutStatus)
 		}
 	}
+	if h.confirming || h.logoutConfirming {
+		if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
+			b.WriteString("\n")
+			b.WriteString(upgradeStatus)
+		}
+	}
 
-	return tea.NewView(h.withUpgradeStatus(b.String()))
+	return tea.NewView(b.String())
 }
 
 func (h HomeModel) logoutConfirmationView() string {

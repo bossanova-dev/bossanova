@@ -27,6 +27,7 @@ import (
 	"github.com/recurser/boss/internal/views"
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonstate"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -133,6 +134,7 @@ func launchTUIWithOptions(cmd *cobra.Command, opts launchTUIOptions) error {
 	}
 	if interval := e2eCloudRefreshInterval(); interval > 0 {
 		views.SetSubscriptionPollIntervalOverride(interval)
+		views.SetGitHubAppInstallPollIntervalOverride(interval)
 	}
 	app.WithTelemetry(commandTelemetryClient(cmd))
 	if authMgr != nil {
@@ -283,7 +285,7 @@ func runTUI(cmd *cobra.Command) error {
 
 func runLocalProviderStartupBeforeClient() error {
 	result, err := runProviderStartupIfNeeded()
-	if result.LoginShellChanged {
+	if result.LoginShellChanged || result.SettingsChanged {
 		if restartErr := restartDaemonAfterLoginShellCapture(); restartErr != nil {
 			return restartErr
 		}
@@ -385,6 +387,16 @@ var defaultSocketPath = client.DefaultSocketPath
 
 var daemonSocketReachable = daemon.IsSocketReachable
 
+var daemonGetStatus = daemon.GetStatus
+
+var daemonEnsureRunning = daemon.EnsureRunning
+
+var daemonStop = daemon.Stop
+
+var terminateAllBossdProcesses = terminateBossdProcesses
+
+var waitForDaemonSocketGone = waitForSocketGone
+
 var loadSettings = config.Load
 
 var saveSettings = config.Save
@@ -441,9 +453,43 @@ func upgradePluginDir(goos string) (string, error) {
 	if dir, ok, err := commonEnabledPluginDir(discoverPlugins()); err != nil {
 		return "", err
 	} else if ok {
+		if isCWDDevPluginDir(dir) {
+			return defaultPluginDir(goos)
+		}
 		return dir, nil
 	}
 	return defaultPluginDir(goos)
+}
+
+func isCWDDevPluginDir(dir string) bool {
+	wd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	wd, err = filepath.Abs(wd)
+	if err != nil {
+		return false
+	}
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	for current := wd; ; current = filepath.Dir(current) {
+		devBin := filepath.Join(current, "bin")
+		if resolved, err := filepath.EvalSymlinks(devBin); err == nil {
+			devBin = resolved
+		}
+		if filepath.Clean(dir) == filepath.Clean(devBin) {
+			return true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
+	}
 }
 
 func commonEnabledPluginDir(plugins []config.PluginConfig) (string, bool, error) {
@@ -962,18 +1008,16 @@ func runDaemonUninstall(_ *cobra.Command) error {
 }
 
 func runDaemonStatus(_ *cobra.Command) error {
-	st, err := daemon.GetStatus()
+	st, err := daemonGetStatus()
 	if err != nil {
 		return fmt.Errorf("daemon status: %w", err)
 	}
+	profile, profileErr := currentDaemonProfile()
 
 	if !st.Installed {
 		fmt.Println("Daemon is not installed.")
 		fmt.Println("  Run 'boss daemon install' to set up the daemon.")
-		return nil
-	}
-
-	if st.Running {
+	} else if st.Running {
 		fmt.Println("Daemon is running.")
 		if st.PID > 0 {
 			fmt.Printf("  PID:     %d\n", st.PID)
@@ -984,38 +1028,73 @@ func runDaemonStatus(_ *cobra.Command) error {
 	if st.ServicePath != "" {
 		fmt.Printf("  service: %s\n", st.ServicePath)
 	}
+	if profileErr == nil {
+		fmt.Printf("  settings: %s\n", profile.SettingsPath)
+		fmt.Printf("  app data: %s\n", profile.AppDataDir)
+		fmt.Printf("  socket:   %s\n", profile.SocketPath)
+		fmt.Printf("  socket reachable: %t\n", daemonSocketReachable(profile.SocketPath))
+		if metadata, err := daemonstate.Read(profile.AppDataDir); err == nil {
+			fmt.Printf("  standalone PID: %d\n", metadata.PID)
+			if metadata.ExecutablePath != "" {
+				fmt.Printf("  standalone executable: %s\n", metadata.ExecutablePath)
+			}
+		}
+	} else {
+		fmt.Printf("  profile: unavailable (%v)\n", profileErr)
+	}
 	return nil
 }
 
 func runDaemonStart(_ *cobra.Command) error {
-	socketPath, err := client.DefaultSocketPath()
+	socketPath, err := defaultSocketPath()
 	if err != nil {
 		return fmt.Errorf("daemon start: %w", err)
 	}
-	if daemon.IsSocketReachable(socketPath) {
+	if daemonSocketReachable(socketPath) {
 		fmt.Println("Daemon is already running.")
 		return nil
 	}
-	if err := daemon.EnsureRunning(socketPath); err != nil {
+	if err := daemonEnsureRunning(socketPath); err != nil {
 		return fmt.Errorf("start daemon failed: %w", err)
 	}
 	fmt.Println("Daemon started.")
 	return nil
 }
 
-func runDaemonStop(_ *cobra.Command) error {
-	st, err := daemon.GetStatus()
+func runDaemonStop(cmd *cobra.Command) error {
+	st, err := daemonGetStatus()
 	if err != nil {
 		return fmt.Errorf("daemon stop: %w", err)
 	}
-	socketPath, _ := client.DefaultSocketPath()
+	profile, err := currentDaemonProfile()
+	if err != nil {
+		return fmt.Errorf("daemon stop: %w", err)
+	}
+	stopAllStandalone := false
+	if cmd != nil {
+		stopAllStandalone, _ = cmd.Flags().GetBool("all-standalone")
+	}
+
+	if stopAllStandalone {
+		n, err := terminateAllBossdProcesses()
+		if err != nil {
+			return fmt.Errorf("stop standalone bossd failed: %w", err)
+		}
+		if n == 0 {
+			fmt.Println("No standalone bossd process is running.")
+			return nil
+		}
+		if !waitForDaemonSocketGone(profile.SocketPath) {
+			return fmt.Errorf("timed out waiting for daemon socket to stop")
+		}
+		fmt.Printf("Stopped %d bossd process(es) across all profiles.\n", n)
+		return nil
+	}
 
 	if !st.Installed {
-		// Not LaunchAgent-managed — reap any standalone bossd processes
-		// auto-started by `boss` (EnsureRunning's fallback) or kicked off
-		// manually. pgrep -x bossd matches the exact program name, so
-		// bossd-plugin-* children (and the boss TUI itself) are skipped.
-		n, err := terminateBossdProcesses()
+		n, err := terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
+			return os.FindProcess(pid)
+		})
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
@@ -1023,34 +1102,36 @@ func runDaemonStop(_ *cobra.Command) error {
 			fmt.Println("Daemon is not installed and no standalone bossd is running.")
 			return nil
 		}
-		if socketPath != "" && !waitForSocketGone(socketPath) {
+		if !waitForDaemonSocketGone(profile.SocketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop")
 		}
-		fmt.Printf("Stopped %d standalone bossd process(es).\n", n)
+		fmt.Println("Stopped standalone bossd for current profile.")
 		return nil
 	}
 	if !st.Running {
-		n, err := terminateBossdProcesses()
+		n, err := terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
+			return os.FindProcess(pid)
+		})
 		if err != nil {
 			return fmt.Errorf("stop standalone bossd failed: %w", err)
 		}
 		if n > 0 {
-			if socketPath != "" && !waitForSocketGone(socketPath) {
+			if !waitForDaemonSocketGone(profile.SocketPath) {
 				return fmt.Errorf("timed out waiting for standalone bossd to stop")
 			}
-			fmt.Printf("Stopped %d standalone bossd process(es).\n", n)
+			fmt.Println("Stopped standalone bossd for current profile.")
 			return nil
 		}
 		fmt.Println("Daemon is already stopped.")
 		return nil
 	}
-	if err := daemon.Stop(); err != nil {
+	if err := daemonStop(); err != nil {
 		return fmt.Errorf("stop daemon failed: %w", err)
 	}
 	// Confirm the socket actually went away — bootout returns before the
 	// process has fully exited on busy systems, so polling avoids misleading
 	// "stopped" output while the old bossd is still draining.
-	if socketPath != "" && !waitForSocketGone(socketPath) {
+	if !waitForDaemonSocketGone(profile.SocketPath) {
 		return fmt.Errorf("timed out waiting for daemon socket to stop")
 	}
 	fmt.Println("Daemon stopped.")
@@ -1068,21 +1149,24 @@ func runDaemonRestart(_ *cobra.Command) error {
 	}
 
 	if !st.Installed {
-		// Standalone path: SIGTERM any running bossds, then re-spawn via
-		// EnsureRunning's fallback. Useful for the "duplicate bossd
-		// processes" cleanup case where the user has no LaunchAgent set up.
-		n, err := terminateBossdProcesses()
+		profile, err := currentDaemonProfile()
+		if err != nil {
+			return fmt.Errorf("daemon restart: %w", err)
+		}
+		n, err := terminateProfileBossdProcess(profile.AppDataDir, func(pid int) (processSignaler, error) {
+			return os.FindProcess(pid)
+		})
 		if err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
-		if socketPath != "" && !waitForSocketGone(socketPath) {
+		if n > 0 && !waitForSocketGone(socketPath) {
 			return fmt.Errorf("timed out waiting for standalone bossd to stop")
 		}
 		if err := daemon.EnsureRunning(socketPath); err != nil {
 			return fmt.Errorf("restart standalone bossd failed: %w", err)
 		}
 		if n > 0 {
-			fmt.Printf("Restarted standalone bossd (reaped %d existing process(es)).\n", n)
+			fmt.Println("Restarted standalone bossd for current profile.")
 		} else {
 			fmt.Println("Started standalone bossd.")
 		}
@@ -1125,6 +1209,93 @@ func waitForSocketGone(path string) bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+type daemonProfile struct {
+	SettingsPath string
+	AppDataDir   string
+	SocketPath   string
+}
+
+func currentDaemonProfile() (daemonProfile, error) {
+	settingsPath, err := config.Path()
+	if err != nil {
+		return daemonProfile{}, fmt.Errorf("settings path: %w", err)
+	}
+	settings, err := config.LoadFrom(settingsPath)
+	if err != nil {
+		return daemonProfile{}, fmt.Errorf("load settings: %w", err)
+	}
+	appDataDir, err := appDataDirForSettings(settings)
+	if err != nil {
+		return daemonProfile{}, err
+	}
+	socketPath, err := defaultSocketPath()
+	if err != nil {
+		return daemonProfile{}, fmt.Errorf("socket path: %w", err)
+	}
+	return daemonProfile{
+		SettingsPath: settingsPath,
+		AppDataDir:   appDataDir,
+		SocketPath:   socketPath,
+	}, nil
+}
+
+func appDataDirForSettings(settings config.Settings) (string, error) {
+	if dir, ok, err := config.ConfiguredAppDataDir(settings); err != nil {
+		return "", err
+	} else if ok {
+		return dir, nil
+	}
+	dir, err := config.DefaultAppDataDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve app data dir: %w", err)
+	}
+	return dir, nil
+}
+
+func terminateProfileBossdProcess(appDataDir string, findProcess func(int) (processSignaler, error)) (int, error) {
+	metadata, err := daemonstate.Read(appDataDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if metadata.PID <= 0 {
+		return 0, nil
+	}
+	if !metadataMatchesRunningProcess(metadata) {
+		return 0, nil
+	}
+	return signalBossdProcesses([]int{metadata.PID}, findProcess)
+}
+
+var bossdProcessCommandLine = processCommandLine
+
+func metadataMatchesRunningProcess(metadata daemonstate.Metadata) bool {
+	if metadata.ExecutablePath == "" {
+		return true
+	}
+	commandLine, err := bossdProcessCommandLine(metadata.PID)
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(commandLine)
+	if len(fields) == 0 {
+		return false
+	}
+	got := filepath.Clean(fields[0])
+	want := filepath.Clean(metadata.ExecutablePath)
+	return got == want
+}
+
+func processCommandLine(pid int) (string, error) {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // terminateBossdProcesses SIGTERMs every running `bossd` process (exact name

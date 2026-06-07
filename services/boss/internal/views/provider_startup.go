@@ -28,6 +28,7 @@ type providerStartupPlan struct {
 
 type ProviderStartupResult struct {
 	LoginShellChanged bool
+	SettingsChanged   bool
 }
 
 var providerLookPath = exec.LookPath
@@ -42,6 +43,7 @@ func RunProviderStartupIfNeeded() (ProviderStartupResult, error) {
 	}
 	if next, changed := captureLoginShell(settings, loginshell.Detect); changed {
 		result.LoginShellChanged = true
+		result.SettingsChanged = true
 		settings = next
 		if err := config.Save(settings); err != nil {
 			return result, err
@@ -54,6 +56,7 @@ func RunProviderStartupIfNeeded() (ProviderStartupResult, error) {
 	switch plan.kind {
 	case providerStartupContinue:
 		if plan.changed {
+			result.SettingsChanged = true
 			return result, config.Save(plan.settings)
 		}
 		return result, nil
@@ -62,14 +65,18 @@ func RunProviderStartupIfNeeded() (ProviderStartupResult, error) {
 			if err := config.Save(plan.settings); err != nil {
 				return result, err
 			}
+			result.SettingsChanged = true
 		}
-		p := tea.NewProgram(NewProviderInstallRequiredModel(onboardingProviders))
+		model := NewProviderInstallRequiredModel(onboardingProviders)
+		model.showBanner = true
+		p := tea.NewProgram(model)
 		if _, err := p.Run(); err != nil {
 			return result, err
 		}
 		return result, errPreflightCancelled
 	case providerStartupPrompt:
 		model := NewProviderSelectionModel(plan.providers, plan.preselected)
+		model.showBanner = true
 		p := tea.NewProgram(model)
 		final, err := p.Run()
 		if err != nil {
@@ -80,8 +87,9 @@ func RunProviderStartupIfNeeded() (ProviderStartupResult, error) {
 			return result, errPreflightCancelled
 		}
 		selected := finalModel.SelectedPlugins()
-		next, changed := applyProviderSelection(settings, installed, selected, discovered, onboardingProviders)
+		next, changed := applyProviderOnboarding(settings, installed, selected, finalModel.DangerousModeDefault(), discovered, onboardingProviders)
 		if changed {
+			result.SettingsChanged = true
 			return result, config.Save(next)
 		}
 		return result, nil
@@ -125,7 +133,7 @@ func planProviderStartup(settings config.Settings, installedPlugins []string, di
 
 	known := normalizeProviderPlugins(settings.KnownAgentProviders, providers)
 	enabled := enabledInstalledProviders(settings, installed, providers)
-	if !slices.Equal(known, installed) || len(enabled) == 0 {
+	if !settings.ProvidersAcknowledged || !slices.Equal(known, installed) || len(enabled) == 0 {
 		return providerStartupPlan{
 			kind:        providerStartupPrompt,
 			providers:   providersForPlugins(installed, providers),
@@ -134,6 +142,15 @@ func planProviderStartup(settings config.Settings, installedPlugins []string, di
 		}
 	}
 	return providerStartupPlan{kind: providerStartupContinue, settings: settings}
+}
+
+func applyProviderOnboarding(settings config.Settings, installedPlugins, enabledPlugins []string, dangerousModeDefault bool, discovered []config.PluginConfig, providers []onboardingProvider) (config.Settings, bool) {
+	next, _ := applyProviderSelection(settings, installedPlugins, enabledPlugins, discovered, providers)
+	if dangerousModeDefault {
+		config.SetPluginConfigBool(&next, "claude", "dangerously_skip_permissions", true)
+		config.SetPluginConfigBool(&next, "codex", "dangerously_bypass_approvals_and_sandbox", true)
+	}
+	return next, !reflect.DeepEqual(settings, next)
 }
 
 func applyProviderSelection(settings config.Settings, installedPlugins, enabledPlugins []string, discovered []config.PluginConfig, providers []onboardingProvider) (config.Settings, bool) {
@@ -164,6 +181,9 @@ func applyProviderSelection(settings config.Settings, installedPlugins, enabledP
 		next.DefaultAgent = enabled[0]
 	}
 	next.KnownAgentProviders = installed
+	if len(installed) > 0 {
+		next.ProvidersAcknowledged = true
+	}
 	return next, !reflect.DeepEqual(settings, next)
 }
 

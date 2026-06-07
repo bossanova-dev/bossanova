@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -10,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/recurser/boss/internal/client"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/vcs"
 )
 
 // repoSettingsLoadedMsg carries the loaded repo for the settings view.
@@ -24,6 +26,23 @@ type repoSettingsSavedMsg struct {
 	err  error
 }
 
+type repoSettingsGitHubStatusMsg struct {
+	repos []*pb.GitHubAppRepoStatus
+	err   error
+}
+
+type repoSettingsGitHubInstallURLMsg struct {
+	url     string
+	err     error
+	attempt int
+}
+
+type repoSettingsGitHubOpenedMsg struct {
+	url     string
+	err     error
+	attempt int
+}
+
 const (
 	repoSettingsRowName                    = 0
 	repoSettingsRowSetupScript             = 1
@@ -34,6 +53,14 @@ const (
 	repoSettingsRowCanAutoResolveConflicts = 6
 	repoSettingsRowLinearApiKey            = 7
 	repoSettingsRowCount                   = 8
+)
+
+type repoSettingsGitHubMode int
+
+const (
+	repoSettingsGitHubModeNone repoSettingsGitHubMode = iota
+	repoSettingsGitHubModePrompt
+	repoSettingsGitHubModeOpening
 )
 
 // mergeStrategies is the cycle order for the merge strategy setting.
@@ -73,6 +100,15 @@ type RepoSettingsModel struct {
 	done   bool
 	err    error
 
+	githubAppClient      GitHubAppClient
+	githubAppStatus      *pb.GitHubAppRepoStatus
+	githubAppStatusErr   error
+	githubAppMode        repoSettingsGitHubMode
+	githubAppAttempt     int
+	githubAppInstallURL  string
+	githubAppInstallErr  error
+	githubAppInstallOpen bool
+
 	// Inline editing (-1 = not editing, otherwise the row being edited)
 	editingField      int
 	nameInput         textinput.Model
@@ -105,6 +141,10 @@ func NewRepoSettingsModel(c client.BossClient, ctx context.Context, repoID strin
 		setupInput:        si,
 		linearApiKeyInput: aki,
 	}
+}
+
+func (m *RepoSettingsModel) SetGitHubAppInstall(c GitHubAppClient) {
+	m.githubAppClient = c
 }
 
 func (m RepoSettingsModel) Init() tea.Cmd {
@@ -143,7 +183,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nameInput.SetValue(m.repo.DisplayName)
 		m.setupInput.SetValue(m.repo.GetSetupScript())
 		// Note: API key is NOT pre-filled (always full replace for security)
-		return m, nil
+		return m, m.loadGitHubAppStatus()
 
 	case repoSettingsSavedMsg:
 		if msg.err != nil {
@@ -154,11 +194,48 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		return m, nil
 
+	case repoSettingsGitHubStatusMsg:
+		if msg.err != nil {
+			m.githubAppStatusErr = msg.err
+			return m, nil
+		}
+		m.githubAppStatusErr = nil
+		m.githubAppStatus = githubAppStatusForRepo(msg.repos, m.githubRepoNWO())
+		return m, nil
+
+	case repoSettingsGitHubInstallURLMsg:
+		if msg.attempt != m.githubAppAttempt || m.githubAppMode != repoSettingsGitHubModeOpening {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.githubAppInstallErr = msg.err
+			return m, nil
+		}
+		m.githubAppInstallURL = msg.url
+		m.githubAppInstallOpen = true
+		return m, m.openGitHubAppURL(msg.url, msg.attempt)
+
+	case repoSettingsGitHubOpenedMsg:
+		if msg.attempt != m.githubAppAttempt || m.githubAppMode != repoSettingsGitHubModeOpening {
+			return m, nil
+		}
+		m.githubAppInstallURL = msg.url
+		m.githubAppInstallErr = msg.err
+		if msg.err == nil {
+			m.githubAppMode = repoSettingsGitHubModeNone
+		}
+		return m, nil
+
 	case tea.KeyMsg:
+		if m.githubAppMode != repoSettingsGitHubModeNone {
+			return m.updateGitHubMode(msg)
+		}
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
 			return m, nil
+		case "g":
+			return m.activateGitHubAction()
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -172,6 +249,33 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m, nil
+}
+
+func (m RepoSettingsModel) updateGitHubMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.githubAppMode = repoSettingsGitHubModeNone
+		m.githubAppInstallErr = nil
+		return m, nil
+	case "enter":
+		if m.githubAppMode == repoSettingsGitHubModePrompt {
+			if m.githubAppInstalled() {
+				// Confirmed: open the installation settings page in the browser.
+				m.githubAppMode = repoSettingsGitHubModeOpening
+				m.githubAppAttempt++
+				m.githubAppInstallErr = nil
+				m.githubAppInstallOpen = true
+				return m, m.openGitHubAppURL(m.githubAppInstallURL, m.githubAppAttempt)
+			}
+			return m.startGitHubConnect()
+		}
+		if m.githubAppMode == repoSettingsGitHubModeOpening && m.githubAppInstallURL != "" {
+			m.githubAppInstallErr = nil
+			m.githubAppInstallOpen = true
+			return m, m.openGitHubAppURL(m.githubAppInstallURL, m.githubAppAttempt)
+		}
+	}
 	return m, nil
 }
 
@@ -319,6 +423,112 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m RepoSettingsModel) activateGitHubAction() (tea.Model, tea.Cmd) {
+	if m.githubRepoNWO() == "" {
+		return m, nil
+	}
+	if m.githubAppInstalled() {
+		rawURL := githubAppInstallationSettingsURL(m.githubAppStatus)
+		if rawURL == "" {
+			m.err = fmt.Errorf("github app installation id unavailable")
+			return m, nil
+		}
+		// Confirm before opening the browser, mirroring the connect flow, so a
+		// single keystroke on a focused row never spawns a browser window.
+		m.githubAppMode = repoSettingsGitHubModePrompt
+		m.githubAppInstallURL = rawURL
+		m.githubAppInstallErr = nil
+		return m, nil
+	}
+	if m.githubAppClient == nil {
+		m.err = fmt.Errorf("github app connection unavailable")
+		return m, nil
+	}
+	m.githubAppMode = repoSettingsGitHubModePrompt
+	m.githubAppInstallErr = nil
+	return m, nil
+}
+
+func (m RepoSettingsModel) loadGitHubAppStatus() tea.Cmd {
+	if m.githubAppClient == nil || m.githubRepoNWO() == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		repos, err := m.githubAppClient.ListGitHubAppRepos(m.ctx)
+		return repoSettingsGitHubStatusMsg{repos: repos, err: err}
+	}
+}
+
+func (m RepoSettingsModel) startGitHubConnect() (RepoSettingsModel, tea.Cmd) {
+	m.githubAppMode = repoSettingsGitHubModeOpening
+	m.githubAppAttempt++
+	m.githubAppInstallURL = ""
+	m.githubAppInstallErr = nil
+	m.githubAppInstallOpen = false
+	return m, m.requestGitHubAppInstallURL(m.githubAppAttempt)
+}
+
+func (m RepoSettingsModel) requestGitHubAppInstallURL(attempt int) tea.Cmd {
+	return func() tea.Msg {
+		url, err := m.githubAppClient.GetGitHubAppInstallURL(m.ctx, "")
+		if err == nil {
+			url = enrichGitHubAppInstallURL(m.ctx, url, m.repo.GetOriginUrl())
+		}
+		return repoSettingsGitHubInstallURLMsg{url: url, err: err, attempt: attempt}
+	}
+}
+
+func (m RepoSettingsModel) openGitHubAppURL(rawURL string, attempt int) tea.Cmd {
+	return func() tea.Msg {
+		err := openGitHubAppInstallURL(rawURL)
+		return repoSettingsGitHubOpenedMsg{url: rawURL, err: err, attempt: attempt}
+	}
+}
+
+func (m RepoSettingsModel) githubRepoNWO() string {
+	if m.repo == nil {
+		return ""
+	}
+	return vcs.GitHubNWO(m.repo.GetOriginUrl())
+}
+
+func (m RepoSettingsModel) githubAppInstalled() bool {
+	if m.githubAppStatus == nil || !m.githubAppStatus.GetInstalled() {
+		return false
+	}
+	return strings.EqualFold(m.githubAppStatus.GetOwner()+"/"+m.githubAppStatus.GetName(), m.githubRepoNWO())
+}
+
+func (m RepoSettingsModel) githubAppActionLabel() string {
+	if m.githubRepoNWO() == "" {
+		return ""
+	}
+	if m.githubAppInstalled() {
+		return "[g]ithub app"
+	}
+	return "[g] connect Github"
+}
+
+func githubAppStatusForRepo(repos []*pb.GitHubAppRepoStatus, nwo string) *pb.GitHubAppRepoStatus {
+	for _, repo := range repos {
+		if repo.GetInstalled() && strings.EqualFold(repo.GetOwner()+"/"+repo.GetName(), nwo) {
+			return repo
+		}
+	}
+	return nil
+}
+
+func githubAppInstallationSettingsURL(status *pb.GitHubAppRepoStatus) string {
+	if status == nil || status.GetInstallationId() <= 0 {
+		return ""
+	}
+	owner := strings.TrimSpace(status.GetOwner())
+	if owner == "" {
+		return fmt.Sprintf("https://github.com/settings/installations/%d", status.GetInstallationId())
+	}
+	return fmt.Sprintf("https://github.com/organizations/%s/settings/installations/%d", url.PathEscape(owner), status.GetInstallationId())
+}
+
 func (m RepoSettingsModel) saveSettings(req *pb.UpdateRepoRequest) tea.Cmd {
 	return func() tea.Msg {
 		repo, err := m.client.UpdateRepo(m.ctx, req)
@@ -333,6 +543,15 @@ func (m RepoSettingsModel) Cancelled() bool { return m.cancel }
 func (m RepoSettingsModel) Done() bool { return m.done }
 
 func (m RepoSettingsModel) View() tea.View {
+	if m.githubAppMode == repoSettingsGitHubModePrompt {
+		if m.githubAppInstalled() {
+			return tea.NewView(m.githubAppSettingsPromptContent())
+		}
+		return tea.NewView(githubAppInstallPromptContent(m.githubAppRepoLabel()))
+	}
+	if m.githubAppMode == repoSettingsGitHubModeOpening {
+		return tea.NewView(m.githubAppOpeningView())
+	}
 	if m.repo == nil {
 		if m.err != nil {
 			return tea.NewView(
@@ -461,8 +680,46 @@ func (m RepoSettingsModel) View() tea.View {
 	if m.editingField >= 0 {
 		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
 	} else {
-		b.WriteString(actionBar([]string{"[enter/space] toggle/edit"}, []string{"[esc] back"}))
+		actions := []string{"[enter/space] toggle/edit"}
+		if label := m.githubAppActionLabel(); label != "" {
+			actions = append(actions, label)
+		}
+		b.WriteString(actionBar(actions, []string{"[esc] back"}))
 	}
 
 	return tea.NewView(b.String())
+}
+
+func (m RepoSettingsModel) githubAppRepoLabel() string {
+	label := m.githubRepoNWO()
+	if label == "" && m.repo != nil {
+		label = m.repo.DisplayName
+	}
+	if label == "" {
+		label = "this repository"
+	}
+	return label
+}
+
+func (m RepoSettingsModel) githubAppSettingsPromptContent() string {
+	padding := lipgloss.NewStyle().Padding(0, 2)
+	body := "Open the Bossanova GitHub App settings for " + m.githubAppRepoLabel() + " in your browser?"
+	return padding.Render(body) + "\n" +
+		styleActionBar.Render("[enter] open  [esc] back")
+}
+
+func (m RepoSettingsModel) githubAppOpeningView() string {
+	padding := lipgloss.NewStyle().Padding(0, 2)
+	body := "Opening GitHub App installation page..."
+	if m.githubAppInstallOpen {
+		body = "GitHub App installation page opened for " + m.githubAppRepoLabel() + "."
+	}
+	if m.githubAppInstallErr != nil && m.githubAppInstallURL != "" {
+		body += "\nOpen this GitHub App URL: " + m.githubAppInstallURL
+	}
+	if m.githubAppInstallErr != nil && m.githubAppInstallURL == "" {
+		body = "Could not start GitHub App installation: " + m.githubAppInstallErr.Error()
+	}
+	return padding.Render(body) + "\n" +
+		styleActionBar.Render("[enter] re-open  [esc] back")
 }

@@ -64,24 +64,46 @@ func serviceDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..")
 }
 
+// configDirForHome returns the bossanova config directory under a per-test
+// HOME. config.Path() resolves through os.UserConfigDir(), which is HOME-derived
+// on every supported platform.
+func configDirForHome(home string) string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "bossanova")
+	}
+	return filepath.Join(home, ".config", "bossanova")
+}
+
 // seedSettingsAcknowledged writes a minimal settings.json with
 // ProvidersAcknowledged=true into the per-test HOME so the boss subprocess
-// skips the first-run onboarding gate. config.Path() resolves through
-// os.UserConfigDir(), which is HOME-derived on every supported platform.
+// skips the first-run onboarding gate.
 func seedSettingsAcknowledged(t *testing.T, home string) {
 	t.Helper()
-	var configDir string
-	if runtime.GOOS == "darwin" {
-		configDir = filepath.Join(home, "Library", "Application Support", "bossanova")
-	} else {
-		configDir = filepath.Join(home, ".config", "bossanova")
-	}
+	writeSeedSettings(t, home, map[string]any{
+		"providers_acknowledged": true,
+	})
+}
+
+// seedFirstRunSettings writes a settings.json that points boss at the test
+// daemon socket but leaves providers unacknowledged. This makes the first-run
+// onboarding gate fire (boss skips the daemon-startup preflight only when
+// BOSS_SOCKET is set, so onboarding harnesses leave it unset) while boss still
+// resolves the mock daemon directly via socket_path — no socket proxy needed.
+func seedFirstRunSettings(t *testing.T, home, socketPath string) {
+	t.Helper()
+	writeSeedSettings(t, home, map[string]any{
+		"providers_acknowledged": false,
+		"socket_path":            socketPath,
+	})
+}
+
+func writeSeedSettings(t *testing.T, home string, settings map[string]any) {
+	t.Helper()
+	configDir := configDirForHome(home)
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("seed settings dir: %v", err)
 	}
-	contents, _ := json.Marshal(map[string]any{
-		"providers_acknowledged": true,
-	})
+	contents, _ := json.Marshal(settings)
 	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), contents, 0o644); err != nil {
 		t.Fatalf("seed settings file: %v", err)
 	}
@@ -108,23 +130,28 @@ const (
 )
 
 type harnessConfig struct {
-	repos                   []*pb.Repo
-	sessions                []*pb.Session
-	chats                   []*pb.ClaudeChat
-	cronJobs                []*pb.CronJob
-	prs                     map[string][]*pb.PRSummary
-	trackerIssues           map[string][]*pb.TrackerIssue
-	agents                  []*pb.AgentInfo
-	args                    []string
-	loggedInEmail           string
-	e2eLoginEmail           string
-	e2eCloudAccessSequence  []E2ECloudAccessState
-	e2eCloudCheckoutURL     string
-	e2eCloudCheckoutError   bool
-	e2eCloudRefreshInterval string
-	terminalWidth           int
-	terminalHeight          int
-	archiveDelay            time.Duration
+	repos                         []*pb.Repo
+	sessions                      []*pb.Session
+	chats                         []*pb.ClaudeChat
+	cronJobs                      []*pb.CronJob
+	prs                           map[string][]*pb.PRSummary
+	trackerIssues                 map[string][]*pb.TrackerIssue
+	agents                        []*pb.AgentInfo
+	args                          []string
+	loggedInEmail                 string
+	e2eLoginEmail                 string
+	e2eCloudAccessSequence        []E2ECloudAccessState
+	e2eCloudCheckoutURL           string
+	e2eCloudCheckoutError         bool
+	e2eCloudRefreshInterval       string
+	e2eGitHubAppInstalledRepos    []string
+	e2eGitHubAppInstallAfterPolls string
+	terminalWidth                 int
+	terminalHeight                int
+	archiveDelay                  time.Duration
+	env                           []string
+	skipSettingsAcknowledgedSeed  bool
+	firstRunOnboarding            bool
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -239,12 +266,53 @@ func WithE2ECloudRefreshInterval(interval string) Option {
 	}
 }
 
+// WithE2EGitHubAppInstalledRepos configures the e2e cloud client to report
+// installed GitHub App repositories by owner/name.
+func WithE2EGitHubAppInstalledRepos(repos ...string) Option {
+	return func(c *harnessConfig) {
+		c.e2eGitHubAppInstalledRepos = append(c.e2eGitHubAppInstalledRepos, repos...)
+	}
+}
+
+// WithE2EGitHubAppInstallAfterPolls delays the fake GitHub App installed repo
+// list until the Nth poll.
+func WithE2EGitHubAppInstallAfterPolls(polls string) Option {
+	return func(c *harnessConfig) {
+		c.e2eGitHubAppInstallAfterPolls = polls
+	}
+}
+
 // WithTerminalSize overrides the PTY dimensions for the TUI driver.
 // Useful for tests that need more screen real estate (e.g. long forms).
 func WithTerminalSize(width, height int) Option {
 	return func(c *harnessConfig) {
 		c.terminalWidth = width
 		c.terminalHeight = height
+	}
+}
+
+// WithEnv appends environment overrides for the boss subprocess.
+func WithEnv(vars ...string) Option {
+	return func(c *harnessConfig) {
+		c.env = append(c.env, vars...)
+	}
+}
+
+// WithoutSettingsAcknowledgedSeed skips the default ProvidersAcknowledged seed.
+func WithoutSettingsAcknowledgedSeed() Option {
+	return func(c *harnessConfig) {
+		c.skipSettingsAcknowledgedSeed = true
+	}
+}
+
+// WithFirstRunOnboarding launches boss into the first-run onboarding gate. It
+// seeds a settings file that leaves providers unacknowledged but points
+// socket_path at the mock daemon, and leaves BOSS_SOCKET unset so boss runs the
+// local daemon-startup preflight (which hosts onboarding) while still dialing
+// the mock daemon directly.
+func WithFirstRunOnboarding() Option {
+	return func(c *harnessConfig) {
+		c.firstRunOnboarding = true
 	}
 }
 
@@ -305,7 +373,12 @@ func New(t *testing.T, opts ...Option) *Harness {
 	// their own settings file before launch (or omit the seed via a future
 	// option if we add one).
 	tempHome := t.TempDir()
-	seedSettingsAcknowledged(t, tempHome)
+	switch {
+	case cfg.firstRunOnboarding:
+		seedFirstRunSettings(t, tempHome, daemon.SocketPath())
+	case !cfg.skipSettingsAcknowledgedSeed:
+		seedSettingsAcknowledged(t, tempHome)
+	}
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.
 	var env []string
@@ -318,6 +391,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=") ||
 			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL=") ||
+			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALLED_REPOS=") ||
+			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS=") ||
+			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_URL=") ||
 			strings.HasPrefix(e, "HOME=") ||
 			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
 			continue
@@ -325,11 +401,17 @@ func New(t *testing.T, opts ...Option) *Harness {
 		env = append(env, e)
 	}
 	env = append(env,
-		"BOSS_SOCKET="+daemon.SocketPath(),
 		"BOSS_SKIP_SKILLS=1",
 		"TERM=xterm-256color",
 		"HOME="+tempHome,
 	)
+	if !cfg.firstRunOnboarding {
+		// With BOSS_SOCKET set, boss skips the local daemon-startup preflight
+		// (and therefore first-run onboarding) and dials this socket directly.
+		// First-run onboarding harnesses leave it unset and resolve the mock
+		// daemon via the seeded settings' socket_path instead.
+		env = append(env, "BOSS_SOCKET="+daemon.SocketPath())
+	}
 	if runtime.GOOS != "darwin" {
 		env = append(env, "XDG_CONFIG_HOME="+filepath.Join(tempHome, ".config"))
 	}
@@ -355,6 +437,13 @@ func New(t *testing.T, opts ...Option) *Harness {
 	if cfg.e2eCloudRefreshInterval != "" {
 		env = append(env, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL="+cfg.e2eCloudRefreshInterval)
 	}
+	if len(cfg.e2eGitHubAppInstalledRepos) > 0 {
+		env = append(env, "BOSS_GITHUB_APP_E2E_INSTALLED_REPOS="+strings.Join(cfg.e2eGitHubAppInstalledRepos, ","))
+	}
+	if cfg.e2eGitHubAppInstallAfterPolls != "" {
+		env = append(env, "BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS="+cfg.e2eGitHubAppInstallAfterPolls)
+	}
+	env = append(env, cfg.env...)
 
 	width := 120
 	if cfg.terminalWidth > 0 {

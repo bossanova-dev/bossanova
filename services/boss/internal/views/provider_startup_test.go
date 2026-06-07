@@ -78,6 +78,9 @@ func TestPlanProviderStartupAutoEnablesSingleInstalledProvider(t *testing.T) {
 	if !reflect.DeepEqual(plan.settings.KnownAgentProviders, []string{"claude"}) {
 		t.Fatalf("KnownAgentProviders = %v, want [claude]", plan.settings.KnownAgentProviders)
 	}
+	if !plan.settings.ProvidersAcknowledged {
+		t.Fatal("ProvidersAcknowledged = false, want true")
+	}
 	assertPluginEnabled(t, plan.settings, "claude", true)
 	assertPluginPath(t, plan.settings, "claude", "/plugins/bossd-plugin-claude")
 	assertPluginEnabled(t, plan.settings, "codex", false)
@@ -134,10 +137,35 @@ func TestPlanProviderStartupPromptsWhenInstalledProviderSetChanges(t *testing.T)
 	}
 }
 
+func TestPlanProviderStartupPromptsWhenProvidersNotAcknowledged(t *testing.T) {
+	settings := config.Settings{
+		DefaultAgent:          "claude",
+		KnownAgentProviders:   []string{"claude", "codex"},
+		ProvidersAcknowledged: false,
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "codex", Enabled: true},
+		},
+	}
+
+	plan := planProviderStartup(settings, []string{"claude", "codex"}, nil, []onboardingProvider{
+		testProvider("Claude", "claude", "claude"),
+		testProvider("Codex", "codex", "codex"),
+	})
+
+	if plan.kind != providerStartupPrompt {
+		t.Fatalf("kind = %v, want providerStartupPrompt", plan.kind)
+	}
+	if !plan.preselected["claude"] || !plan.preselected["codex"] {
+		t.Fatalf("all enabled providers should be preselected; got %v", plan.preselected)
+	}
+}
+
 func TestPlanProviderStartupContinuesWhenMultipleInstalledProvidersAreUnchanged(t *testing.T) {
 	settings := config.Settings{
-		DefaultAgent:        "claude",
-		KnownAgentProviders: []string{"claude", "codex"},
+		DefaultAgent:          "claude",
+		KnownAgentProviders:   []string{"claude", "codex"},
+		ProvidersAcknowledged: true,
 		Plugins: []config.PluginConfig{
 			{Name: "claude", Enabled: true},
 			{Name: "codex", Enabled: false},
@@ -154,6 +182,55 @@ func TestPlanProviderStartupContinuesWhenMultipleInstalledProvidersAreUnchanged(
 	}
 	if plan.changed {
 		t.Fatal("changed = true, want false")
+	}
+}
+
+func TestApplyProviderOnboardingAcknowledgesDefaultSelection(t *testing.T) {
+	settings := config.Settings{
+		DefaultAgent:          "claude",
+		KnownAgentProviders:   []string{"claude", "codex"},
+		ProvidersAcknowledged: false,
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "codex", Enabled: true},
+		},
+	}
+	providers := []onboardingProvider{
+		testProvider("Claude", "claude", "claude"),
+		testProvider("Codex", "codex", "codex"),
+	}
+
+	got, changed := applyProviderOnboarding(settings, []string{"claude", "codex"}, []string{"claude", "codex"}, false, nil, providers)
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	if !got.ProvidersAcknowledged {
+		t.Fatal("ProvidersAcknowledged = false, want true")
+	}
+}
+
+func TestApplyProviderOnboardingDangerousModeEnablesClaudeAndCodex(t *testing.T) {
+	settings := config.Settings{DefaultAgent: "claude"}
+	discovered := []config.PluginConfig{
+		{Name: "claude", Path: "/plugins/bossd-plugin-claude"},
+		{Name: "codex", Path: "/plugins/bossd-plugin-codex"},
+	}
+	providers := []onboardingProvider{
+		testProvider("Claude", "claude", "claude"),
+		testProvider("Codex", "codex", "codex"),
+	}
+
+	got, changed := applyProviderOnboarding(settings, []string{"claude", "codex"}, []string{"claude"}, true, discovered, providers)
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	if !config.PluginConfigBool(&got, "claude", "dangerously_skip_permissions") {
+		t.Fatalf("claude dangerously_skip_permissions not enabled: %+v", got.Plugins)
+	}
+	if !config.PluginConfigBool(&got, "codex", "dangerously_bypass_approvals_and_sandbox") {
+		t.Fatalf("codex dangerously_bypass_approvals_and_sandbox not enabled: %+v", got.Plugins)
 	}
 }
 

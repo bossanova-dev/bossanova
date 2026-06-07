@@ -141,7 +141,7 @@ func (a *App) SetInitialView(v View) {
 	case ViewNewSession:
 		a.newSession = a.newSessionModel()
 	case ViewRepoAdd:
-		a.repoAdd = NewRepoAddModel(a.client, a.ctx)
+		a.repoAdd = a.newRepoAddModel()
 	case ViewRepoList:
 		a.repoList = NewRepoListModel(a.client, a.ctx)
 	default:
@@ -166,7 +166,7 @@ func (a App) newSessionModel() NewSessionModel {
 	m.SetTelemetry(a.telemetry)
 	settings, err := config.Load()
 	if err == nil {
-		m.SetPreferredAgent(settings.DefaultAgent)
+		m.SetAgentSettings(settings)
 	}
 	m.SetAgentSelectionHandler(saveDefaultAgent)
 	return m
@@ -211,8 +211,9 @@ type switchViewMsg struct {
 }
 
 type repoAddCompletedMsg struct {
-	repos []*pb.Repo
-	err   error
+	repos       []*pb.Repo
+	err         error
+	highlightID string
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -267,12 +268,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case repoAddCompletedMsg:
 		a.repoAddCompleting = false
-		if msg.err == nil && len(msg.repos) == 1 {
+		if msg.err == nil && len(msg.repos) <= 1 {
 			return a, a.switchToHome()
 		}
-		var highlightID string
-		if cursor := a.repoList.table.Cursor(); cursor >= 0 && cursor < len(a.repoList.repos) {
-			highlightID = a.repoList.repos[cursor].Id
+		highlightID := msg.highlightID
+		if highlightID == "" {
+			cursor := a.repoList.table.Cursor()
+			if cursor >= 0 && cursor < len(a.repoList.repos) {
+				highlightID = a.repoList.repos[cursor].Id
+			}
 		}
 		a.repoList = NewRepoListModel(a.client, a.ctx)
 		a.repoList.highlightRepoID = highlightID
@@ -295,7 +299,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.chatPicker.height = a.height
 			return a, a.chatPicker.Init()
 		case ViewRepoAdd:
-			a.repoAdd = NewRepoAddModel(a.client, a.ctx)
+			a.repoAdd = a.newRepoAddModel()
 			a.repoAdd.width = a.width
 			return a, a.repoAdd.Init()
 		case ViewRepoList:
@@ -305,6 +309,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.repoList.Init()
 		case ViewRepoSettings:
 			a.repoSettings = NewRepoSettingsModel(a.client, a.ctx, msg.sessionID)
+			if githubAppClient, ok := a.cloudAccess.(GitHubAppClient); ok {
+				a.repoSettings.SetGitHubAppInstall(githubAppClient)
+			}
 			a.repoSettings.width = a.width
 			return a, a.repoSettings.Init()
 		case ViewSessionSettings:
@@ -417,8 +424,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.repoAddCompleting {
 				return a, cmd
 			}
+			highlightID := ""
+			if a.repoAdd.createdRepo != nil {
+				highlightID = a.repoAdd.createdRepo.Id
+			}
 			a.repoAddCompleting = true
-			return a, tea.Batch(cmd, fetchReposAfterRepoAdd(a.client, a.ctx))
+			return a, tea.Batch(cmd, fetchReposAfterRepoAdd(a.client, a.ctx, highlightID))
 		}
 		if a.repoAdd.Cancelled() {
 			var highlightID string
@@ -603,11 +614,19 @@ func resumeTickCmd(v View) tea.Cmd {
 	return nil
 }
 
-func fetchReposAfterRepoAdd(c client.BossClient, ctx context.Context) tea.Cmd {
+func fetchReposAfterRepoAdd(c client.BossClient, ctx context.Context, highlightID string) tea.Cmd {
 	return func() tea.Msg {
 		repos, err := c.ListRepos(ctx)
-		return repoAddCompletedMsg{repos: repos, err: err}
+		return repoAddCompletedMsg{repos: repos, err: err, highlightID: highlightID}
 	}
+}
+
+func (a App) newRepoAddModel() RepoAddModel {
+	m := NewRepoAddModel(a.client, a.ctx)
+	if githubAppClient, ok := a.cloudAccess.(GitHubAppClient); ok {
+		m.SetGitHubAppInstall(a.auth, githubAppClient)
+	}
+	return m
 }
 
 func (a *App) switchToHome() tea.Cmd {

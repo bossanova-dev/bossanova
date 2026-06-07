@@ -655,6 +655,64 @@ func TestDiscoverPluginsFallsBackToSameDir(t *testing.T) {
 	}
 }
 
+func TestDiscoverPluginsFindsDevBinFromWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	pluginPath := filepath.Join(binDir, "bossd-plugin-codex")
+	if err := os.WriteFile(pluginPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write plugin: %v", err)
+	}
+	serviceDir := filepath.Join(root, "services", "boss")
+	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+		t.Fatalf("mkdir service dir: %v", err)
+	}
+	t.Chdir(serviceDir)
+
+	plugins := discoverDevPluginsFromCWD()
+	if len(plugins) != 1 {
+		t.Fatalf("plugins = %v, want one plugin", plugins)
+	}
+	if plugins[0].Name != "codex" || plugins[0].Path != pluginPath || !plugins[0].Enabled {
+		t.Fatalf("plugin = %+v, want enabled codex at %s", plugins[0], pluginPath)
+	}
+}
+
+func TestDiscoverPluginsFallsBackToUserPluginDirWhenNoDevPluginsExist(t *testing.T) {
+	root := t.TempDir()
+	settingsPath := filepath.Join(root, "settings.json")
+	appDataDir := filepath.Join(root, "appdata")
+	pluginDir := filepath.Join(appDataDir, "plugins")
+	pluginPath := filepath.Join(pluginDir, "bossd-plugin-codex")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin dir: %v", err)
+	}
+	if err := os.WriteFile(pluginPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write plugin: %v", err)
+	}
+	settings := DefaultSettings()
+	settings.AppDataDir = appDataDir
+	if err := SaveTo(settingsPath, settings); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	t.Setenv(settingsPathEnv, settingsPath)
+	cwd := filepath.Join(root, "workspace", "services", "boss")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	t.Chdir(cwd)
+
+	plugins := DiscoverPlugins()
+	if len(plugins) != 1 {
+		t.Fatalf("plugins = %v, want one user plugin", plugins)
+	}
+	if plugins[0].Name != "codex" || plugins[0].Path != pluginPath || !plugins[0].Enabled {
+		t.Fatalf("plugin = %+v, want enabled codex at %s", plugins[0], pluginPath)
+	}
+}
+
 func TestRepairConfig_IdleRepairThreshold(t *testing.T) {
 	t.Run("returns default when unset", func(t *testing.T) {
 		c := RepairConfig{}

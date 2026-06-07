@@ -336,6 +336,49 @@ func TestServer_BuildInteractiveCommand_DangerouslySkipPermissions(t *testing.T)
 	}
 }
 
+func TestServer_ResolveInteractiveSessionID(t *testing.T) {
+	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
+
+	tests := []struct {
+		name               string
+		requestedSessionID string
+		wantFound          bool
+		wantSessionID      string
+		wantReason         string
+	}{
+		{
+			name:       "empty",
+			wantReason: "requested_session_id empty",
+		},
+		{
+			name:               "requested",
+			requestedSessionID: "abc-123",
+			wantFound:          true,
+			wantSessionID:      "abc-123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := srv.ResolveInteractiveSessionID(context.Background(), &bossanovav1.ResolveInteractiveSessionIDRequest{
+				RequestedSessionId: tt.requestedSessionID,
+			})
+			if err != nil {
+				t.Fatalf("ResolveInteractiveSessionID: %v", err)
+			}
+			if resp.Found != tt.wantFound {
+				t.Fatalf("Found: got %v, want %v", resp.Found, tt.wantFound)
+			}
+			if resp.SessionId != tt.wantSessionID {
+				t.Fatalf("SessionId: got %q, want %q", resp.SessionId, tt.wantSessionID)
+			}
+			if resp.Reason != tt.wantReason {
+				t.Fatalf("Reason: got %q, want %q", resp.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestHasQuestionPromptDelegatesToStatusdetect(t *testing.T) {
 	s := newServer(nil, zerolog.Nop())
 	pane := []byte("question?\n❯ pick one\n  option a\n  option b\n")

@@ -180,6 +180,34 @@ func TestRepairFailureHint(t *testing.T) {
 			},
 			want: "⚠ repair failed (3×)",
 		},
+		{
+			name: "passing PR suppresses stale failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "",
+		},
+		{
+			name: "checking PR without known errors suppresses stale failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "",
+		},
+		{
+			name: "checking PR with known failures keeps failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_CHECKING,
+				DisplayHasFailures:     true,
+				LastRepairAttemptCount: 2,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "⚠ repair failed (2×)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

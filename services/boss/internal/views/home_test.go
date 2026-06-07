@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1068,6 +1069,28 @@ func TestHomeViewShowsCloudDiscoveryWithActiveSessions(t *testing.T) {
 	}
 }
 
+func TestHomeViewShowsCloudDiscoveryWithoutExtraBlankLinesWhenNoSessions(t *testing.T) {
+	h := HomeModel{
+		ctx:       context.Background(),
+		authMgr:   &auth.Manager{},
+		repoCount: 1,
+		loading:   false,
+		loggedIn:  false,
+		sessions:  []*pb.Session{},
+	}
+
+	content := h.View().Content
+	menuIdx := strings.Index(content, "[q]uit")
+	promptIdx := strings.Index(content, "[l]ogin to try Bossanova Cloud for free")
+	if menuIdx == -1 || promptIdx == -1 || promptIdx < menuIdx {
+		t.Fatalf("home view should render cloud prompt under bottom menu; got: %q", content)
+	}
+	separator := content[menuIdx:promptIdx]
+	if !strings.Contains(separator, "\n") || strings.Contains(separator, "\n\n") {
+		t.Fatalf("home view should leave one newline between bottom menu and cloud prompt; got: %q", content)
+	}
+}
+
 func TestHomeViewHidesCloudDiscoveryWhenOfferHiddenInSettings(t *testing.T) {
 	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	settings := config.DefaultSettings()
@@ -1192,6 +1215,83 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 	if strings.Contains(content, "[n]ew session") {
 		t.Errorf("should not offer [n]ew session when no repos exist, got: %s", content)
 	}
+}
+
+func TestHomeLogoutConfirmationVisibleInEmptyNoRepoState(t *testing.T) {
+	h := HomeModel{
+		ctx:           context.Background(),
+		loading:       false,
+		sessions:      []*pb.Session{},
+		repoCount:     0,
+		authMgr:       &auth.Manager{},
+		loggedIn:      true,
+		loggedInEmail: "dev@example.com",
+	}
+
+	updated, _ := h.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	h = updated.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "Log out dev@example.com?") {
+		t.Fatalf("expected visible logout confirmation in empty no-repo state, got: %s", content)
+	}
+	if !strings.Contains(content, "[y/enter] confirm") {
+		t.Fatalf("expected logout confirmation actions in empty no-repo state, got: %s", content)
+	}
+	// While confirming, the [l]ogout action must be suppressed so the control
+	// and its confirmation prompt aren't shown at once (mirrors the list view).
+	if strings.Contains(content, "[l]ogout") {
+		t.Fatalf("expected [l]ogout action to be hidden while confirming logout, got: %s", content)
+	}
+	// The logout confirmation must be visually separated from the action bar
+	// above it (the separation comes from styleActionBar's bottom padding plus
+	// the helper's leading newline). Assert at least one blank line so the two
+	// blocks aren't glued together, without over-coupling to the exact padding.
+	got := blankLinesBetween(content, "[q]uit", "Log out dev@example.com?")
+	if got == markersNotFound {
+		t.Fatalf("could not locate action bar and logout confirmation markers in: %s", content)
+	}
+	if got < 1 {
+		t.Fatalf("blank lines between action bar and logout confirmation = %d, want >= 1; got: %s", got, content)
+	}
+
+	updated, _ = h.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	h = updated.(HomeModel)
+
+	if h.logoutConfirming {
+		t.Fatal("expected n to cancel logout confirmation")
+	}
+}
+
+// markersNotFound is returned by blankLinesBetween when either marker is
+// missing (or out of order), distinguishing a lookup failure from a real
+// count of zero blank lines.
+const markersNotFound = -1
+
+func blankLinesBetween(content, from, to string) int {
+	plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(content, "")
+	lines := strings.Split(plain, "\n")
+	fromIdx, toIdx := -1, -1
+findTarget:
+	for i, line := range lines {
+		switch {
+		case fromIdx == -1 && strings.Contains(line, from):
+			fromIdx = i
+		case fromIdx != -1 && strings.Contains(line, to):
+			toIdx = i
+			break findTarget
+		}
+	}
+	if fromIdx == -1 || toIdx == -1 || toIdx <= fromIdx {
+		return markersNotFound
+	}
+	count := 0
+	for _, line := range lines[fromIdx+1 : toIdx] {
+		if strings.TrimSpace(line) == "" {
+			count++
+		}
+	}
+	return count
 }
 
 func TestHomeViewDoesNotOfferHistoryAction(t *testing.T) {

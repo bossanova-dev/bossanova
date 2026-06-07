@@ -263,6 +263,22 @@ func (c *authCloudAccessClient) RefreshCloudEntitlements(ctx context.Context) (*
 	return remote.RefreshCloudEntitlements(ctx)
 }
 
+func (c *authCloudAccessClient) GetGitHubAppInstallURL(ctx context.Context, returnURL string) (string, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return "", err
+	}
+	return remote.GetGitHubAppInstallURL(ctx, returnURL)
+}
+
+func (c *authCloudAccessClient) ListGitHubAppRepos(ctx context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+	remote, err := c.remote(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remote.ListGitHubAppRepos(ctx)
+}
+
 func runLoginCloudGate(ctx context.Context, c cloudAccessClient, out io.Writer) {
 	checkLoginCloudGate(ctx, c, out)
 }

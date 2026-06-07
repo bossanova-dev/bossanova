@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/recurser/boss/internal/client"
+	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
 )
@@ -1485,6 +1486,33 @@ func TestNewSession_MultiAgent_RoutesToAgentSelect(t *testing.T) {
 	}
 }
 
+func TestNewSession_MultiAgent_RoutesToAgentSelectWhenReposLoadFirst(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+			{Name: "codex", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want type select before delayed agents arrive", m.phase)
+	}
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+
+	if m.phase != newSessionPhaseAgentSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseAgentSelect (%d)", m.phase, newSessionPhaseAgentSelect)
+	}
+	view := m.View().Content
+	for _, want := range []string{"claude", "codex"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("agent-select view missing %q in:\n%s", want, view)
+		}
+	}
+}
+
 func TestNewSession_SingleAgent_SkipsAgentSelect(t *testing.T) {
 	sc := &stubClient{
 		repos: oneRepo(),
@@ -1498,6 +1526,37 @@ func TestNewSession_SingleAgent_SkipsAgentSelect(t *testing.T) {
 
 	if m.phase != newSessionPhaseTypeSelect {
 		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect; one agent should skip the picker", m.phase)
+	}
+}
+
+func TestNewSession_DisabledAgent_SkipsAgentSelect(t *testing.T) {
+	sc := &stubClient{
+		repos: oneRepo(),
+		agents: []client.AgentInfo{
+			{Name: "claude", Version: "v1"},
+			{Name: "codex", Version: "v0.1"},
+		},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m.SetAgentSettings(config.Settings{
+		DefaultAgent: "claude",
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "codex", Enabled: false},
+		},
+	})
+
+	m = sendMsg(t, m, agentsMsg{agents: sc.agents})
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	if m.phase != newSessionPhaseTypeSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseTypeSelect; disabled agents should not appear in picker", m.phase)
+	}
+	if m.initialAgent != "claude" {
+		t.Fatalf("initialAgent = %q, want claude", m.initialAgent)
+	}
+	if len(m.agents) != 1 || m.agents[0].Name != "claude" {
+		t.Fatalf("agents = %+v, want only claude", m.agents)
 	}
 }
 

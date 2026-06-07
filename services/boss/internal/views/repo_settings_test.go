@@ -2,6 +2,8 @@ package views
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -123,6 +125,235 @@ func TestRepoSettings_CursorNavigatesToLinearRows(t *testing.T) {
 	}
 }
 
+func TestRepoSettings_GitHubActionLabels(t *testing.T) {
+	stub := &stubRepoClient{
+		repos: []*pb.Repo{{
+			Id:          "repo-1",
+			DisplayName: "Test Repo",
+			OriginUrl:   "https://github.com/freshclaim/widgets.git",
+		}},
+	}
+	gh := &fakeRepoSettingsGitHubAppClient{
+		repos: []*pb.GitHubAppRepoStatus{{
+			Owner:          "freshclaim",
+			Name:           "widgets",
+			Installed:      true,
+			InstallationId: 133291047,
+		}},
+	}
+
+	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
+	m.SetGitHubAppInstall(gh)
+	initCmd := m.Init()
+	updated, statusCmd := m.Update(initCmd())
+	m = updated.(RepoSettingsModel)
+	if statusCmd == nil {
+		t.Fatal("expected GitHub App status load command")
+	}
+	updated, _ = m.Update(statusCmd())
+	m = updated.(RepoSettingsModel)
+
+	view := m.View().Content
+	if !strings.Contains(view, "[g]ithub app") {
+		t.Fatalf("expected github app action; view:\n%s", view)
+	}
+	if strings.Contains(view, "[g] connect Github") {
+		t.Fatalf("did not expect connect action for installed repo; view:\n%s", view)
+	}
+}
+
+func TestRepoSettings_GitHubConnectPromptOpensInstallURL(t *testing.T) {
+	stub := &stubRepoClient{
+		repos: []*pb.Repo{{
+			Id:          "repo-1",
+			DisplayName: "Test Repo",
+			OriginUrl:   "https://github.com/freshclaim/widgets.git",
+		}},
+	}
+	gh := &fakeRepoSettingsGitHubAppClient{
+		installURL: "https://github.com/apps/bossanova-dev/installations/new",
+	}
+
+	originalOpen := openGitHubAppInstallURL
+	originalLookup := lookupGitHubAppInstallTarget
+	var openedURL string
+	openGitHubAppInstallURL = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+	lookupGitHubAppInstallTarget = func(context.Context, string) (githubAppInstallTarget, error) {
+		return githubAppInstallTarget{}, nil
+	}
+	t.Cleanup(func() {
+		openGitHubAppInstallURL = originalOpen
+		lookupGitHubAppInstallTarget = originalLookup
+	})
+
+	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
+	m.SetGitHubAppInstall(gh)
+	initCmd := m.Init()
+	updated, statusCmd := m.Update(initCmd())
+	m = updated.(RepoSettingsModel)
+	if statusCmd != nil {
+		updated, _ = m.Update(statusCmd())
+		m = updated.(RepoSettingsModel)
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
+	m = updated.(RepoSettingsModel)
+	if cmd != nil {
+		t.Fatal("expected prompt before opening GitHub App URL")
+	}
+	if !strings.Contains(m.View().Content, "Install the Bossanova Github App on freshclaim/widgets?") {
+		t.Fatalf("expected GitHub App prompt; view:\n%s", m.View().Content)
+	}
+
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(RepoSettingsModel)
+	if cmd == nil {
+		t.Fatal("expected install URL request command")
+	}
+	updated, cmd = m.Update(cmd())
+	m = updated.(RepoSettingsModel)
+	if cmd == nil {
+		t.Fatal("expected browser open command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(RepoSettingsModel)
+
+	if openedURL != gh.installURL {
+		t.Fatalf("opened URL = %q, want %q", openedURL, gh.installURL)
+	}
+	if m.githubAppMode != repoSettingsGitHubModeNone {
+		t.Fatalf("githubAppMode = %v, want none after successful open", m.githubAppMode)
+	}
+}
+
+func TestRepoSettings_GitHubInstalledOpensInstallationSettingsURL(t *testing.T) {
+	stub := &stubRepoClient{
+		repos: []*pb.Repo{{
+			Id:          "repo-1",
+			DisplayName: "Test Repo",
+			OriginUrl:   "https://github.com/freshclaim/widgets.git",
+		}},
+	}
+	gh := &fakeRepoSettingsGitHubAppClient{
+		repos: []*pb.GitHubAppRepoStatus{{
+			Owner:          "freshclaim",
+			Name:           "widgets",
+			Installed:      true,
+			InstallationId: 133291047,
+		}},
+	}
+	originalOpen := openGitHubAppInstallURL
+	var openedURL string
+	openGitHubAppInstallURL = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+	t.Cleanup(func() { openGitHubAppInstallURL = originalOpen })
+
+	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
+	m.SetGitHubAppInstall(gh)
+	initCmd := m.Init()
+	updated, statusCmd := m.Update(initCmd())
+	m = updated.(RepoSettingsModel)
+	if statusCmd == nil {
+		t.Fatal("expected GitHub App status load command")
+	}
+	updated, _ = m.Update(statusCmd())
+	m = updated.(RepoSettingsModel)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
+	m = updated.(RepoSettingsModel)
+	if cmd != nil {
+		t.Fatal("expected confirmation prompt before opening installed settings page")
+	}
+	if !strings.Contains(m.View().Content, "Open the Bossanova GitHub App settings for freshclaim/widgets") {
+		t.Fatalf("expected settings-open prompt; view:\n%s", m.View().Content)
+	}
+	if openedURL != "" {
+		t.Fatalf("opened URL = %q, want none before confirmation", openedURL)
+	}
+
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(RepoSettingsModel)
+	if cmd == nil {
+		t.Fatal("expected browser open command after confirmation")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(RepoSettingsModel)
+
+	want := "https://github.com/organizations/freshclaim/settings/installations/133291047"
+	if openedURL != want {
+		t.Fatalf("opened URL = %q, want %q", openedURL, want)
+	}
+	if m.githubAppMode != repoSettingsGitHubModeNone {
+		t.Fatalf("githubAppMode = %v, want none after successful open", m.githubAppMode)
+	}
+	if gh.installURLCalls != 0 {
+		t.Fatalf("install URL calls = %d, want 0 for installed settings path", gh.installURLCalls)
+	}
+}
+
+func TestRepoSettings_GitHubConnectSurfacesInstallURLLookupFailure(t *testing.T) {
+	stub := &stubRepoClient{
+		repos: []*pb.Repo{{
+			Id:          "repo-1",
+			DisplayName: "Test Repo",
+			OriginUrl:   "https://github.com/freshclaim/widgets.git",
+		}},
+	}
+	lookupErr := errors.New("lookup failed")
+	gh := &fakeRepoSettingsGitHubAppClient{installErr: lookupErr}
+
+	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
+	m.SetGitHubAppInstall(gh)
+	initCmd := m.Init()
+	updated, statusCmd := m.Update(initCmd())
+	m = updated.(RepoSettingsModel)
+	if statusCmd != nil {
+		updated, _ = m.Update(statusCmd())
+		m = updated.(RepoSettingsModel)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'g', Text: "g"})
+	m = updated.(RepoSettingsModel)
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(RepoSettingsModel)
+	if cmd == nil {
+		t.Fatal("expected install URL request command")
+	}
+	updated, followup := m.Update(cmd())
+	m = updated.(RepoSettingsModel)
+	if followup != nil {
+		t.Fatal("unexpected follow-up command after install URL failure")
+	}
+	if !errors.Is(m.githubAppInstallErr, lookupErr) {
+		t.Fatalf("githubAppInstallErr = %v, want %v", m.githubAppInstallErr, lookupErr)
+	}
+	if gh.installURLCalls != 1 {
+		t.Fatalf("install URL calls = %d, want 1", gh.installURLCalls)
+	}
+	if m.githubAppMode != repoSettingsGitHubModeOpening {
+		t.Fatalf("githubAppMode = %v, want opening so retry remains available", m.githubAppMode)
+	}
+	if !strings.Contains(m.View().Content, "Could not start GitHub App installation: lookup failed") {
+		t.Fatalf("view did not surface lookup failure:\n%s", m.View().Content)
+	}
+}
+
+func TestGitHubAppInstallationSettingsURL(t *testing.T) {
+	status := &pb.GitHubAppRepoStatus{
+		Owner:          "freshclaim",
+		InstallationId: 133291047,
+	}
+	got := githubAppInstallationSettingsURL(status)
+	want := "https://github.com/organizations/freshclaim/settings/installations/133291047"
+	if got != want {
+		t.Fatalf("githubAppInstallationSettingsURL() = %q, want %q", got, want)
+	}
+}
+
 // stubRepoClient implements client.BossClient for testing RepoSettingsModel.
 type stubRepoClient struct {
 	repos     []*pb.Repo
@@ -130,6 +361,22 @@ type stubRepoClient struct {
 	updated   *pb.Repo
 	updateErr error
 	updateReq *pb.UpdateRepoRequest // captures the last UpdateRepo request
+}
+
+type fakeRepoSettingsGitHubAppClient struct {
+	installURL      string
+	installErr      error
+	installURLCalls int
+	repos           []*pb.GitHubAppRepoStatus
+}
+
+func (f *fakeRepoSettingsGitHubAppClient) GetGitHubAppInstallURL(context.Context, string) (string, error) {
+	f.installURLCalls++
+	return f.installURL, f.installErr
+}
+
+func (f *fakeRepoSettingsGitHubAppClient) ListGitHubAppRepos(context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+	return f.repos, nil
 }
 
 func (s *stubRepoClient) ListRepos(context.Context) ([]*pb.Repo, error) {

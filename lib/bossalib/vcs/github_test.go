@@ -29,3 +29,30 @@ func TestIsGitHubURL(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubNWO(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"SSH with .git", "git@github.com:owner/repo.git", "owner/repo"},
+		{"HTTPS with .git", "https://github.com/owner/repo.git", "owner/repo"},
+		{"HTTPS no .git", "https://github.com/owner/repo", "owner/repo"},
+		{"with whitespace", "  https://github.com/owner/repo.git  ", "owner/repo"},
+		{"extra path segments", "https://github.com/owner/repo/tree/main", "owner/repo"},
+		{"SSH extra segments", "git@github.com:owner/repo/extra", "owner/repo"},
+		{"owner only", "https://github.com/owner", ""},
+		{"non-github", "https://gitlab.com/owner/repo.git", ""},
+		{"empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GitHubNWO(tt.url)
+			if got != tt.want {
+				t.Errorf("GitHubNWO(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
+}

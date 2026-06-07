@@ -23,6 +23,7 @@ import (
 
 	"github.com/recurser/bossalib/buildinfo"
 	"github.com/recurser/bossalib/config"
+	"github.com/recurser/bossalib/daemonstate"
 	"github.com/recurser/bossalib/errortrack"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
@@ -225,6 +226,35 @@ func run(opts runOpts) error {
 		return fmt.Errorf("acquire singleton lock: %w", err)
 	}
 	defer func() { _ = lockFile.Close() }()
+
+	socketPath := opts.socketPath
+	if socketPath == "" {
+		p, err := server.DefaultSocketPathForSettings(settings)
+		if err != nil {
+			return fmt.Errorf("socket path: %w", err)
+		}
+		socketPath = p
+	}
+
+	settingsPath, err := config.Path()
+	if err != nil {
+		return fmt.Errorf("settings path: %w", err)
+	}
+	executablePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	appDataDir := filepath.Dir(dbPath)
+	if err := daemonstate.Write(appDataDir, daemonstate.Metadata{
+		PID:            os.Getpid(),
+		ExecutablePath: executablePath,
+		SettingsPath:   settingsPath,
+		SocketPath:     socketPath,
+		StartedAt:      time.Now().UTC(),
+	}); err != nil {
+		return err
+	}
+	defer func() { _ = daemonstate.Remove(appDataDir) }()
 
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -714,15 +744,6 @@ func run(opts runOpts) error {
 	tmuxStatusPoller := status.NewTmuxStatusPoller(chatStatusTracker, agentChats, sessions, tmuxClient, agentClients, log.Logger)
 
 	// --- Server ---
-
-	socketPath := opts.socketPath
-	if socketPath == "" {
-		p, err := server.DefaultSocketPathForSettings(settings)
-		if err != nil {
-			return fmt.Errorf("socket path: %w", err)
-		}
-		socketPath = p
-	}
 
 	// --- Upstream (optional, cloud mode) ---
 	//

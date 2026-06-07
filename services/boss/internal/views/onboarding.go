@@ -41,18 +41,28 @@ var onboardingProviders = []onboardingProvider{
 	},
 }
 
+type onboardingStep int
+
+const (
+	onboardingStepProviders onboardingStep = iota
+	onboardingStepDangerousMode
+)
+
 // OnboardingModel is the startup provider screen. In selection mode it lets
 // the user choose from installed provider CLIs. In install-required mode it
 // blocks startup with installation instructions when no provider CLI exists.
 type OnboardingModel struct {
 	providers       []onboardingProvider
+	step            onboardingStep
 	cursor          int
 	selected        map[int]bool
+	dangerousMode   bool
 	installRequired bool
 	done            bool
 	cancel          bool
 	err             error
 	width           int
+	showBanner      bool
 }
 
 // NewOnboardingModel keeps the old constructor available for tests and any
@@ -66,8 +76,11 @@ func NewOnboardingModel() OnboardingModel {
 func NewProviderSelectionModel(providers []onboardingProvider, preselected map[string]bool) OnboardingModel {
 	selected := make(map[int]bool)
 	for i, p := range providers {
-		if preselected[p.Plugin] {
-			selected[i] = true
+		selected[i] = true
+		if preselected != nil {
+			if enabled, ok := preselected[p.Plugin]; ok {
+				selected[i] = enabled
+			}
 		}
 	}
 	return OnboardingModel{
@@ -119,6 +132,9 @@ func (m OnboardingModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.step == onboardingStepDangerousMode {
+		return m.handleDangerousModeKey(msg)
+	}
 
 	switch msg.String() {
 	case "esc", "q", "ctrl+c":
@@ -142,6 +158,28 @@ func (m OnboardingModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("select at least one provider")
 			return m, nil
 		}
+		m.step = onboardingStepDangerousMode
+		m.err = nil
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m OnboardingModel) handleDangerousModeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Skip dangerous mode: finish onboarding with it left disabled. This
+		// preserves the provider selection already made rather than quitting
+		// and discarding it, matching the "[esc] skip" action hint.
+		m.dangerousMode = false
+		m.done = true
+		return m, tea.Quit
+	case "q", "ctrl+c":
+		m.cancel = true
+		return m, tea.Quit
+	case " ", "space", "x":
+		m.dangerousMode = !m.dangerousMode
+	case "enter":
 		m.done = true
 		return m, tea.Quit
 	}
@@ -158,6 +196,10 @@ func (m OnboardingModel) SelectedPlugins() []string {
 	}
 	return out
 }
+
+// DangerousModeDefault reports whether onboarding should enable each agent's
+// unsafe no-prompts mode by default.
+func (m OnboardingModel) DangerousModeDefault() bool { return m.dangerousMode }
 
 func (m OnboardingModel) View() tea.View {
 	var b strings.Builder
@@ -179,7 +221,11 @@ func (m OnboardingModel) View() tea.View {
 			b.WriteString("\n\n")
 		}
 		b.WriteString(styleActionBar.Render("Press q to quit."))
-		return tea.NewView(b.String())
+		return m.withStartupBanner(tea.NewView(b.String()))
+	}
+
+	if m.step == onboardingStepDangerousMode {
+		return m.dangerousModeView()
 	}
 
 	b.WriteString(styleTitle.Render("Choose providers to enable"))
@@ -210,13 +256,47 @@ func (m OnboardingModel) View() tea.View {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).PaddingLeft(8).Foreground(colorMuted).Render(p.Description))
 		b.WriteString("\n")
-		b.WriteString("\n")
+		if i < len(m.providers)-1 {
+			b.WriteString("\n")
+		}
 	}
 
 	b.WriteString(actionBar(
 		[]string{"[space] toggle", "[enter] continue"},
+		[]string{"[esc] quit"},
+	))
+
+	return m.withStartupBanner(tea.NewView(b.String()))
+}
+
+func (m OnboardingModel) dangerousModeView() tea.View {
+	var b strings.Builder
+
+	b.WriteString(styleTitle.Render("Dangerous mode"))
+	b.WriteString("\n\n")
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(
+		"Do you want to skip permissions prompts and use 'dangerous mode' by default?"))
+	b.WriteString("\n\n")
+
+	check := " "
+	if m.dangerousMode {
+		check = "x"
+	}
+	line := fmt.Sprintf("[%s] Use 'dangerous mode' by default", check)
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleSelected.Render(line)))
+	b.WriteString("\n")
+	b.WriteString(actionBar(
+		[]string{"[space] toggle", "[enter] next"},
 		[]string{"[esc] skip"},
 	))
 
-	return tea.NewView(b.String())
+	return m.withStartupBanner(tea.NewView(b.String()))
+}
+
+func (m OnboardingModel) withStartupBanner(v tea.View) tea.View {
+	if !m.showBanner || v.Content == "" {
+		return v
+	}
+	v.Content = renderBanner(ViewOnboarding, bannerOpts{line1: "Welcome to Bossanova"}) + "\n" + v.Content
+	return v
 }

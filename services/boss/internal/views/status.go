@@ -134,6 +134,9 @@ func repairFailureHint(sess *pb.Session) string {
 	if sess.GetLastRepairRunnerError() == "" && sess.GetLastRepairExitError() == "" {
 		return ""
 	}
+	if repairFailureResolved(sess) {
+		return ""
+	}
 	base := fmt.Sprintf("⚠ repair failed (%d×)", count)
 	if count == 1 {
 		base = "⚠ repair failed"
@@ -147,6 +150,17 @@ func repairFailureHint(sess *pb.Session) string {
 		return base
 	}
 	return fmt.Sprintf("%s, retry in ~%s", base, shortDuration(remaining))
+}
+
+func repairFailureResolved(sess *pb.Session) bool {
+	switch sess.GetDisplayStatus() {
+	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
+		return true
+	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING:
+		return !sess.GetDisplayHasFailures() && !sess.GetDisplayHasChangesRequested()
+	default:
+		return false
+	}
 }
 
 // repairRetryRemaining mirrors the repair plugin's cooldownFor()

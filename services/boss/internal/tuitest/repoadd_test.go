@@ -209,6 +209,59 @@ func TestTUI_RepoAddView_FirstRepoReturnsHome(t *testing.T) {
 	}
 }
 
+func TestTUI_RepoAddView_LoggedInWaitsForGitHubAppInstall(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithLoggedInUser("dev@example.test"),
+		tuitest.WithE2ECloudAccessSequence(tuitest.E2ECloudAccessActive),
+		tuitest.WithE2ECloudRefreshInterval("25ms"),
+		tuitest.WithE2EGitHubAppInstalledRepos("acme/widgets"),
+		tuitest.WithE2EGitHubAppInstallAfterPolls("8"),
+	)
+	h.Daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{
+		IsValid:       true,
+		IsGithub:      true,
+		OriginUrl:     "https://github.com/acme/widgets.git",
+		DefaultBranch: "develop",
+	})
+
+	navigateToRepoAddInput(t, h)
+
+	if err := h.Driver.SendString("widgets"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Add this repository?"); err != nil {
+		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Install the Bossanova Github App on acme/widgets?"); err != nil {
+		t.Fatalf("expected GitHub App install prompt; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.WaitForText(waitTimeout, "Waiting for GitHub App installation on acme/widgets"); err != nil {
+		t.Fatalf("expected GitHub App install wait screen; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "PATH") && strings.Contains(screen, "my-app") && strings.Contains(screen, "@acme/widgets")
+	}); err != nil {
+		t.Fatalf("expected repo list after GitHub App install; screen:\n%s", h.Driver.Screen())
+	}
+}
+
 // TestTUI_RepoAddView_Cancel asserts esc on the source phase pops back to the
 // repo list (not home). app.go swaps the active view to ViewRepoList whenever
 // the wizard signals Cancelled(), preserving the previous cursor highlight.

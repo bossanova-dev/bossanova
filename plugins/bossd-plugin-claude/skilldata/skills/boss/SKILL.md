@@ -243,10 +243,11 @@ boss daemon start
 
 ### `boss daemon stop`
 
-Stop the bossd daemon via the platform service manager. Idempotent — quietly succeeds if the daemon is already stopped or not installed. Does not reap orphan bossd processes started manually outside the LaunchAgent.
+Stop the bossd daemon for the current profile via the platform service manager or profile metadata. Idempotent — quietly succeeds if the daemon is already stopped or not installed. Use `--all-standalone` only for explicit cleanup of every user-owned standalone bossd process across profiles.
 
 ```bash
 boss daemon stop
+boss daemon stop --all-standalone
 ```
 
 ### `boss daemon restart`

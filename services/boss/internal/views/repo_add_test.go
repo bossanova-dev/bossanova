@@ -3,11 +3,66 @@ package views
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/recurser/boss/internal/auth"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
+
+type repoAddTokenStore struct {
+	tokens *auth.Tokens
+}
+
+func (s *repoAddTokenStore) Save(tokens *auth.Tokens) error {
+	s.tokens = tokens
+	return nil
+}
+
+func (s *repoAddTokenStore) Load() (*auth.Tokens, error) {
+	if s.tokens == nil {
+		return nil, fmt.Errorf("no tokens stored")
+	}
+	return s.tokens, nil
+}
+
+func (s *repoAddTokenStore) Delete() error {
+	s.tokens = nil
+	return nil
+}
+
+type fakeGitHubAppClient struct {
+	installURL      string
+	installErr      error
+	installURLCalls int
+	repos           []*pb.GitHubAppRepoStatus
+	listErr         error
+	listCalls       int
+}
+
+func (f *fakeGitHubAppClient) GetGitHubAppInstallURL(context.Context, string) (string, error) {
+	f.installURLCalls++
+	return f.installURL, f.installErr
+}
+
+func (f *fakeGitHubAppClient) ListGitHubAppRepos(context.Context) ([]*pb.GitHubAppRepoStatus, error) {
+	f.listCalls++
+	return f.repos, f.listErr
+}
+
+func signedInRepoAddAuth() *auth.Manager {
+	store := &repoAddTokenStore{
+		tokens: &auth.Tokens{
+			AccessToken:  "access",
+			RefreshToken: "refresh",
+			Email:        "dev@example.test",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		},
+	}
+	return auth.NewManager(store, auth.Config{})
+}
 
 // repoAddStubClient extends stubClient with repo-add specific behavior.
 type repoAddStubClient struct {
@@ -369,6 +424,182 @@ func TestRepoAdd_RegisteredMsg_SetsDone(t *testing.T) {
 	}
 	if m.createdRepo == nil || m.createdRepo.Id != "repo-1" {
 		t.Fatalf("createdRepo = %v, want repo-1", m.createdRepo)
+	}
+}
+
+func TestRepoAdd_RegisteredMsg_SignedInGitHubRepoPromptsGitHubAppInstall(t *testing.T) {
+	sc := &repoAddStubClient{}
+	gh := &fakeGitHubAppClient{installURL: "https://github.com/apps/bossanova-dev/installations/new"}
+	m := NewRepoAddModel(sc, context.Background())
+	m.SetGitHubAppInstall(signedInRepoAddAuth(), gh)
+	m.detectedOriginURL = "https://github.com/acme/widgets.git"
+
+	updated, cmd := m.Update(repoRegisteredMsg{
+		repo: &pb.Repo{Id: "repo-1", DisplayName: "@acme/widgets"},
+	})
+	rm := updated.(RepoAddModel)
+
+	if rm.Done() {
+		t.Fatal("expected install follow-up before Done()")
+	}
+	if rm.phase != repoAddPhaseGitHubAppPrompt {
+		t.Fatalf("phase = %d, want repoAddPhaseGitHubAppPrompt", rm.phase)
+	}
+	if rm.githubAppInstallNWO != "acme/widgets" {
+		t.Fatalf("githubAppInstallNWO = %q, want acme/widgets", rm.githubAppInstallNWO)
+	}
+	if cmd != nil {
+		t.Fatal("expected no install URL command before user accepts prompt")
+	}
+	if gh.installURLCalls != 0 {
+		t.Fatalf("install URL calls = %d, want 0 before prompt accepted", gh.installURLCalls)
+	}
+	if view := rm.View().Content; !strings.Contains(view, "Install the Bossanova Github App on acme/widgets?") ||
+		!strings.Contains(view, "This enables automated realtime response to conflicts, failing tests and code reviews.") ||
+		!strings.Contains(view, "You can always set this up later if you don't want to decide yet.") ||
+		!strings.Contains(view, "[enter] install  [esc] skip") {
+		t.Fatalf("prompt view = %q", view)
+	}
+}
+
+func TestRepoAdd_GitHubAppPrompt_EscSkipsInstall(t *testing.T) {
+	sc := &repoAddStubClient{}
+	gh := &fakeGitHubAppClient{installURL: "https://github.com/apps/bossanova-dev/installations/new"}
+	m := NewRepoAddModel(sc, context.Background())
+	m.SetGitHubAppInstall(signedInRepoAddAuth(), gh)
+	m.detectedOriginURL = "https://github.com/acme/widgets.git"
+	m = sendRepoAddMsg(t, m, repoRegisteredMsg{repo: &pb.Repo{Id: "repo-1", DisplayName: "@acme/widgets"}})
+
+	m = sendRepoAddMsg(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if !m.Done() {
+		t.Fatal("expected skip to complete add flow")
+	}
+	if gh.installURLCalls != 0 {
+		t.Fatalf("install URL calls = %d, want 0 after skip", gh.installURLCalls)
+	}
+}
+
+func TestRepoAdd_GitHubAppPrompt_EnterStartsGitHubAppInstall(t *testing.T) {
+	sc := &repoAddStubClient{}
+	gh := &fakeGitHubAppClient{installURL: "https://github.com/apps/bossanova-dev/installations/new"}
+	m := NewRepoAddModel(sc, context.Background())
+	m.SetGitHubAppInstall(signedInRepoAddAuth(), gh)
+	m.detectedOriginURL = "https://github.com/acme/widgets.git"
+	m = sendRepoAddMsg(t, m, repoRegisteredMsg{repo: &pb.Repo{Id: "repo-1", DisplayName: "@acme/widgets"}})
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	rm := updated.(RepoAddModel)
+
+	if rm.phase != repoAddPhaseGitHubApp {
+		t.Fatalf("phase = %d, want repoAddPhaseGitHubApp", rm.phase)
+	}
+	if rm.Done() {
+		t.Fatal("expected install wait screen before Done()")
+	}
+	if cmd == nil {
+		t.Fatal("expected install URL command")
+	}
+}
+
+func TestRepoAdd_GitHubAppPrompt_InstallURLFailureStaysInInstallFlow(t *testing.T) {
+	sc := &repoAddStubClient{}
+	gh := &fakeGitHubAppClient{installErr: fmt.Errorf("install URL unavailable")}
+	m := NewRepoAddModel(sc, context.Background())
+	m.SetGitHubAppInstall(signedInRepoAddAuth(), gh)
+	m.detectedOriginURL = "https://github.com/acme/widgets.git"
+	m = sendRepoAddMsg(t, m, repoRegisteredMsg{repo: &pb.Repo{Id: "repo-1", DisplayName: "@acme/widgets"}})
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	rm := updated.(RepoAddModel)
+	if cmd == nil {
+		t.Fatal("expected install URL command")
+	}
+	updated, followup := rm.Update(rm.requestGitHubAppInstallURL(rm.githubAppAttempt)())
+	rm = updated.(RepoAddModel)
+
+	if followup != nil {
+		t.Fatal("unexpected follow-up command after install URL failure")
+	}
+	if rm.Done() {
+		t.Fatal("install URL failure should not silently complete repo add")
+	}
+	if rm.phase != repoAddPhaseGitHubApp {
+		t.Fatalf("phase = %d, want repoAddPhaseGitHubApp", rm.phase)
+	}
+	if rm.githubAppInstallErr == nil || !strings.Contains(rm.githubAppInstallErr.Error(), "install URL unavailable") {
+		t.Fatalf("githubAppInstallErr = %v, want install URL error", rm.githubAppInstallErr)
+	}
+	if gh.installURLCalls != 1 {
+		t.Fatalf("install URL calls = %d, want 1", gh.installURLCalls)
+	}
+	if view := rm.View().Content; !strings.Contains(view, "Could not start GitHub App installation: install URL unavailable") {
+		t.Fatalf("view did not surface install URL failure:\n%s", view)
+	}
+}
+
+func TestRepoAdd_RegisteredMsg_UnsignedSkipsGitHubAppInstall(t *testing.T) {
+	sc := &repoAddStubClient{}
+	gh := &fakeGitHubAppClient{installURL: "https://github.com/apps/bossanova-dev/installations/new"}
+	m := NewRepoAddModel(sc, context.Background())
+	m.SetGitHubAppInstall(auth.NewManager(&repoAddTokenStore{}, auth.Config{}), gh)
+	m.detectedOriginURL = "https://github.com/acme/widgets.git"
+
+	m = sendRepoAddMsg(t, m, repoRegisteredMsg{
+		repo: &pb.Repo{Id: "repo-1", DisplayName: "@acme/widgets"},
+	})
+
+	if !m.Done() {
+		t.Fatal("expected unsigned registration to complete without GitHub App follow-up")
+	}
+	if m.phase == repoAddPhaseGitHubApp {
+		t.Fatal("unexpected GitHub App install phase")
+	}
+}
+
+func TestRepoAdd_GitHubAppReposMsg_CompletesWhenRepoInstalled(t *testing.T) {
+	sc := &repoAddStubClient{}
+	m := NewRepoAddModel(sc, context.Background())
+	m.phase = repoAddPhaseGitHubApp
+	m.githubAppAttempt = 3
+	m.githubAppInstallNWO = "acme/widgets"
+
+	m = sendRepoAddMsg(t, m, githubAppReposMsg{
+		attempt: 3,
+		repos: []*pb.GitHubAppRepoStatus{{
+			Owner:     "acme",
+			Name:      "widgets",
+			Installed: true,
+		}},
+	})
+
+	if !m.Done() {
+		t.Fatal("expected installed repo to complete follow-up")
+	}
+}
+
+func TestRepoAdd_GitHubAppReposMsg_KeepsWaitingUntilTargetRepoInstalled(t *testing.T) {
+	sc := &repoAddStubClient{}
+	m := NewRepoAddModel(sc, context.Background())
+	m.phase = repoAddPhaseGitHubApp
+	m.githubAppAttempt = 3
+	m.githubAppInstallNWO = "acme/widgets"
+
+	updated, cmd := m.Update(githubAppReposMsg{
+		attempt: 3,
+		repos: []*pb.GitHubAppRepoStatus{{
+			Owner:     "acme",
+			Name:      "other",
+			Installed: true,
+		}},
+	})
+	rm := updated.(RepoAddModel)
+
+	if rm.Done() {
+		t.Fatal("expected unrelated installed repo to keep waiting")
+	}
+	if cmd == nil {
+		t.Fatal("expected next poll command")
 	}
 }
 

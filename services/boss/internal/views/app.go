@@ -54,6 +54,7 @@ type App struct {
 	newSession        NewSessionModel
 	chatPicker        ChatPickerModel
 	repoAdd           RepoAddModel
+	repoAddCompleting bool
 	repoList          RepoListModel
 	repoSettings      RepoSettingsModel
 	sessionSettings   SessionSettingsModel
@@ -209,6 +210,11 @@ type switchViewMsg struct {
 	agentName string // optional per-chat agent override (ViewAttach only); empty = inherit session
 }
 
+type repoAddCompletedMsg struct {
+	repos []*pb.Repo
+	err   error
+}
+
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -258,6 +264,22 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sendHeartbeatsCmd(a.ctx, a.client, a.ptyManager),
 			heartbeatTickCmd(),
 		)
+
+	case repoAddCompletedMsg:
+		a.repoAddCompleting = false
+		if msg.err == nil && len(msg.repos) == 1 {
+			return a, a.switchToHome()
+		}
+		var highlightID string
+		if cursor := a.repoList.table.Cursor(); cursor >= 0 && cursor < len(a.repoList.repos) {
+			highlightID = a.repoList.repos[cursor].Id
+		}
+		a.repoList = NewRepoListModel(a.client, a.ctx)
+		a.repoList.highlightRepoID = highlightID
+		a.repoList.width = a.width
+		a.repoList.height = a.height
+		a.activeView = ViewRepoList
+		return a, a.repoList.Init()
 
 	case switchViewMsg:
 		a.activeView = msg.view
@@ -391,7 +413,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewRepoAdd:
 		updated, cmd := a.repoAdd.Update(msg)
 		a.repoAdd = updated.(RepoAddModel)
-		if a.repoAdd.Cancelled() || a.repoAdd.Done() {
+		if a.repoAdd.Done() {
+			if a.repoAddCompleting {
+				return a, cmd
+			}
+			a.repoAddCompleting = true
+			return a, tea.Batch(cmd, fetchReposAfterRepoAdd(a.client, a.ctx))
+		}
+		if a.repoAdd.Cancelled() {
 			var highlightID string
 			if cursor := a.repoList.table.Cursor(); cursor >= 0 && cursor < len(a.repoList.repos) {
 				highlightID = a.repoList.repos[cursor].Id
@@ -572,6 +601,13 @@ func resumeTickCmd(v View) tea.Cmd {
 		return tickCmd()
 	}
 	return nil
+}
+
+func fetchReposAfterRepoAdd(c client.BossClient, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		repos, err := c.ListRepos(ctx)
+		return repoAddCompletedMsg{repos: repos, err: err}
+	}
 }
 
 func (a *App) switchToHome() tea.Cmd {

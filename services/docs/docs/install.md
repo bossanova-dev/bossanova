@@ -16,7 +16,7 @@ name points Homebrew at the Bossanova tap during install.
 
 ## Prerequisites
 
-- A coding-agent CLI matching the agent runner plugin you intend to
+- A coding-agent CLI matching the agent plugin you intend to
   use. The bundled `claude` plugin requires the
   [Claude Code CLI](https://claude.ai/download); the bundled `codex`
   plugin requires the
@@ -66,10 +66,10 @@ your `PATH`, `make deps` will print the command to add it.
 ## Verify your install
 
 Run `boss repair doctor`. It checks that the daemon can find a working
-agent runner plugin and reports any failures it sees.
+agent plugin and reports any failures it sees.
 
 If the `agent runner client wired` check fails, confirm that at least
-one runner binary (`bossd-plugin-claude` or `bossd-plugin-codex`) sits
+one plugin binary (`bossd-plugin-claude` or `bossd-plugin-codex`) sits
 next to `bossd` or in the Homebrew plugin directory. Then make sure the
 matching CLI (`claude` or `codex`) is on `bossd`'s `PATH`. Re-run
 `boss repair doctor` and confirm all checks pass before launching

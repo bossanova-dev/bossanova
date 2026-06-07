@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: 'A runbook for the most common Bossanova failures: auth, setup scripts, the agent runner, worktrees, auto-merge, and the repair loop.'
+description: 'A runbook for the most common Bossanova failures: auth, setup scripts, the agent plugin, worktrees, auto-merge, and the repair loop.'
 ---
 
 # Troubleshooting
@@ -109,18 +109,18 @@ daemon uses `keyringutil` and falls back to a file-backed store only when
 you pass `--allow-insecure-keyring` explicitly. Don't hand-edit the
 keyring file.
 
-## Agent runner plugins
+## Agent plugins
 
 ### Daemon healthy but `boss new` fails fast
 
 If `bossd` is up but every session-start fails immediately with
 `no AgentRunner plugin loaded; install bossd-plugin-claude (or another
-agent runner) and restart`, no runner plugin loaded.
+agent runner) and restart`, no agent plugin loaded.
 
 The error message itself is the signal. `bossd` discovers plugins
 next to its own binary or in `../libexec/plugins/` (the Homebrew
 layout), so the fix is to make sure `bossd-plugin-claude` (or another
-agent runner) sits in one of those locations:
+agent plugin) sits in one of those locations:
 
 ```bash
 which bossd
@@ -128,7 +128,7 @@ which bossd-plugin-claude
 which bossd-plugin-codex
 ```
 
-If the runner binary is missing or in a different directory, build it
+If the plugin binary is missing or in a different directory, build it
 (`make plugins`) or install the package so it lands next to `bossd`,
 then restart the daemon. Install the matching agent CLI (`claude` or
 `codex`) and make sure it is on `bossd`'s `PATH`.
@@ -346,7 +346,7 @@ URL in `settings.json`:
 ```
 
 Or export `BOSSD_ORCHESTRATOR_URL=""` before starting `bossd`. The TUI,
-daemon, and agent runner work identically. You give up the web
+daemon, and agent plugin work identically. You give up the web
 app.
 
 ## Reporting bugs

@@ -430,6 +430,16 @@ func agentDisplayName(name string) string {
 	}
 }
 
+func (m AttachModel) displayAgentName() string {
+	if m.overrideAgent != "" {
+		return m.overrideAgent
+	}
+	if m.session != nil {
+		return m.session.GetAgentName()
+	}
+	return ""
+}
+
 func (m AttachModel) View() tea.View {
 	if m.err != nil {
 		return tea.NewView(
@@ -441,25 +451,17 @@ func (m AttachModel) View() tea.View {
 	if m.launching {
 		var b strings.Builder
 		title := m.sessionID
-		agentName := m.overrideAgent
 		if m.session != nil {
 			title = m.session.Title
-			if m.session.GetAgentName() != "" {
-				agentName = m.session.GetAgentName()
-			}
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(
-			fmt.Sprintf("Launching %s for %s...  Press Ctrl+X to detach", agentDisplayName(agentName), title)))
+			fmt.Sprintf("Launching %s for %s...  Press Ctrl+X to detach", agentDisplayName(m.displayAgentName()), title)))
 		return tea.NewView(b.String())
 	}
 
 	if m.returned {
 		var b strings.Builder
-		agentName := m.overrideAgent
-		if m.session != nil && m.session.GetAgentName() != "" {
-			agentName = m.session.GetAgentName()
-		}
-		agentLabel := agentDisplayName(agentName)
+		agentLabel := agentDisplayName(m.displayAgentName())
 		if m.agentErr != nil {
 			b.WriteString(renderError(fmt.Sprintf("%s exited with error: %v", agentLabel, m.agentErr), m.width))
 		} else {

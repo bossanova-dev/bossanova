@@ -1,17 +1,18 @@
 ---
-title: Agent Runners
-description: Choose and configure the Claude Code or OpenAI Codex runner plugin.
+title: Agent Plugins
+description: Choose and configure the Claude Code or OpenAI Codex agent plugin.
+slug: /guides/agent-runners
 ---
 
-# Agent Runners
+# Agent Plugins
 
-Bossanova starts coding-agent sessions through runner plugins. Each runner owns
+Bossanova starts coding-agent sessions through agent plugins. Each plugin owns
 one CLI subprocess inside the session worktree, while `bossd` owns worktree
 creation, repo setup, PR polling, and plugin dispatch.
 
-## Bundled runners
+## Bundled plugins
 
-| Runner   | Plugin                  | CLI        | Status    |
+| Agent    | Plugin                  | CLI        | Status    |
 | -------- | ----------------------- | ---------- | --------- |
 | Claude   | `bossd-plugin-claude`   | `claude`   | Available |
 | Codex    | `bossd-plugin-codex`    | `codex`    | Available |
@@ -19,7 +20,7 @@ creation, repo setup, PR polling, and plugin dispatch.
 
 ## Install the matching CLI
 
-Install and authenticate the CLI for the runner you intend to use:
+Install and authenticate the CLI for the agent you intend to use:
 
 - Claude Code: install from [claude.ai/download](https://claude.ai/download),
   then confirm `claude` works in a terminal.
@@ -27,11 +28,11 @@ Install and authenticate the CLI for the runner you intend to use:
   [OpenAI Codex CLI guide](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started),
   then confirm `codex` works in a terminal.
 
-Bossanova does not log in to provider accounts for you. The runner shells out to
+Bossanova does not log in to provider accounts for you. The plugin shells out to
 the local CLI, so any provider authentication, approvals mode, model choice, or
 account policy comes from that CLI's own configuration.
 
-## Pick the default runner
+## Pick the default agent
 
 Unattended sessions:
 
@@ -42,10 +43,10 @@ Unattended sessions:
 ```
 
 Use `claude` to make Claude Code the default, or `codex` to make OpenAI Codex
-CLI the default. The daemon refuses to start sessions when no agent runner
-plugin is loaded.
+CLI the default. The daemon refuses to start sessions when no agent plugin is
+loaded.
 
-## Verify runners are loaded
+## Verify plugins are loaded
 
 Run:
 
@@ -53,7 +54,7 @@ Run:
 boss repair doctor
 ```
 
-If session start fails with `no AgentRunner plugin loaded`, confirm the runner
+If session start fails with `no AgentRunner plugin loaded`, confirm the plugin
 binary sits next to `bossd` or in the Homebrew plugin directory:
 
 ```bash

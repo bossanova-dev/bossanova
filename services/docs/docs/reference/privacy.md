@@ -14,7 +14,7 @@ third parties get involved, and how to disconnect.
 - `bossd` sends **session metadata** to Boss Cloud: IDs, branch names,
   PR URLs, state, and short status labels. **bossd does not send full
   chat transcripts, code, or diffs.**
-- The agent runner talks to its provider directly: Claude Code talks to
+- The agent plugin talks to its provider directly: Claude Code talks to
   Anthropic, and OpenAI Codex CLI talks to OpenAI. Bossanova does not
   proxy or log that traffic.
 - Bug reports (the `ctrl+b` modal) are **opt-in**: they only leave your

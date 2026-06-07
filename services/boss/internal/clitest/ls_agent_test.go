@@ -10,8 +10,8 @@ import (
 )
 
 // agentTestSessions returns two sessions with explicit AgentName values used
-// by the ls AGENT-column tests. The agent values are set per-test by mutating
-// the returned slice in place.
+// by the ls session-list tests. The session list intentionally omits an AGENT
+// column because a session may have multiple chats with different agents.
 func agentTestSessions(agents ...string) []*pb.Session {
 	base := []*pb.Session{
 		{
@@ -40,12 +40,6 @@ func agentTestSessions(agents ...string) []*pb.Session {
 	return base
 }
 
-// TestCLI_Ls_AgentColumnHidden_WhenAllMatchDefault verifies that the ls table
-// keeps its compact 5-column shape when every session's agent matches the
-// user's Settings.DefaultAgent. We assert on the column header rather than
-// the row values because "claude" can legitimately appear in row data
-// (e.g. inside a branch name) — only the AGENT header proves the column
-// itself was rendered.
 func TestCLI_Ls_AgentColumnHidden_WhenAllMatchDefault(t *testing.T) {
 	home := t.TempDir()
 	h := clitest.New(t,
@@ -58,7 +52,7 @@ func TestCLI_Ls_AgentColumnHidden_WhenAllMatchDefault(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
 	if strings.Contains(res.Stdout, "AGENT") {
-		t.Errorf("AGENT column should be hidden when all sessions match default agent; got:\n%s", res.Stdout)
+		t.Errorf("AGENT column should be hidden from session list; got:\n%s", res.Stdout)
 	}
 	// Sanity-check that other expected columns are present.
 	for _, want := range []string{"ID", "TITLE", "STATE", "BRANCH", "PR"} {
@@ -68,12 +62,7 @@ func TestCLI_Ls_AgentColumnHidden_WhenAllMatchDefault(t *testing.T) {
 	}
 }
 
-// TestCLI_Ls_AgentColumnShown_WhenSessionDeviates verifies that the AGENT
-// column appears as soon as at least one session uses a non-default agent.
-// We seed the daemon with two sessions — one "claude", one "opencode" — and
-// rely on the default fallback (DefaultAgent="claude" when settings are absent
-// or the file omits the field) so the deviation triggers the column.
-func TestCLI_Ls_AgentColumnShown_WhenSessionDeviates(t *testing.T) {
+func TestCLI_Ls_AgentColumnHidden_WhenSessionDeviates(t *testing.T) {
 	home := t.TempDir()
 	h := clitest.New(t,
 		clitest.WithRepos(testRepos()...),
@@ -84,18 +73,14 @@ func TestCLI_Ls_AgentColumnShown_WhenSessionDeviates(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if !strings.Contains(res.Stdout, "AGENT") {
-		t.Errorf("expected AGENT column header in output; got:\n%s", res.Stdout)
+	if strings.Contains(res.Stdout, "AGENT") {
+		t.Errorf("AGENT column should be hidden from session list; got:\n%s", res.Stdout)
 	}
-	if !strings.Contains(res.Stdout, "opencode") {
-		t.Errorf("expected non-default agent value 'opencode' in output; got:\n%s", res.Stdout)
+	if strings.Contains(res.Stdout, "opencode") {
+		t.Errorf("session list should not render session agent values; got:\n%s", res.Stdout)
 	}
 }
 
-// TestCLI_Ls_AgentColumnRespectsCustomDefault verifies that the column hides
-// when DefaultAgent is set to something other than "claude" but every session
-// matches that custom default. This guards against a regression where the
-// hide/show logic accidentally hard-codes "claude".
 func TestCLI_Ls_AgentColumnRespectsCustomDefault(t *testing.T) {
 	home := t.TempDir()
 	h := clitest.New(t,
@@ -115,6 +100,6 @@ func TestCLI_Ls_AgentColumnRespectsCustomDefault(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
 	if strings.Contains(res.Stdout, "AGENT") {
-		t.Errorf("AGENT column should be hidden when all sessions match custom DefaultAgent=opencode; got:\n%s", res.Stdout)
+		t.Errorf("AGENT column should be hidden from session list; got:\n%s", res.Stdout)
 	}
 }

@@ -77,25 +77,19 @@ You can open an existing checkout or clone from a URL.
 ## 4. Configure repo settings
 
 Open the repo settings before your first serious session. Confirm the base
-branch, worktree directory, agent runner, and PR behavior match how this repo
+branch, worktree directory, agent, and PR behavior match how this repo
 ships.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-repo-settings.cast" />
 
-Bossanova works best when each repo has a predictable default runner:
-
-- **Claude Code**: install `bossd-plugin-claude`.
-- **Codex**: install `bossd-plugin-codex`.
-- **Custom runner**: configure the command in repo settings.
-
-See [Agent Runners](./guides/agent-runners.md) and
+See [Agent Plugins](/guides/agent-runners) and
 [Settings](./reference/settings.md) for the full configuration surface.
 
 ## 5. Start a session
 
 Press `n` from the home screen.
 
-The new-session flow asks for the repo, agent runner, and task. Bossanova creates
+The new-session flow asks for the repo, agent, and task. Bossanova creates
 the branch and worktree before handing the prompt to the agent.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-new-session.cast" />

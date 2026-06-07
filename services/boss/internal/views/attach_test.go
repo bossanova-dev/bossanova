@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 
 	bosspty "github.com/recurser/boss/internal/pty"
@@ -69,6 +70,25 @@ type attachTelemetryStub struct {
 
 func (s *attachTelemetryStub) RecordChat(context.Context, string, string, string, string, bool) (*pb.ClaudeChat, error) {
 	return &pb.ClaudeChat{TmuxSessionName: "boss-test-chat"}, nil
+}
+
+func TestAttach_ViewUsesOverrideAgentForLaunchLabel(t *testing.T) {
+	m := NewAttachModel(&attachTelemetryStub{}, context.Background(), bosspty.NewManager(), "session-1", "")
+	m.SetOverrideAgent("claude")
+	m.session = &pb.Session{
+		Id:        "session-1",
+		Title:     "debug release action issue",
+		AgentName: "codex",
+	}
+	m.launching = true
+
+	view := m.View().Content
+	if !strings.Contains(view, "Launching Claude Code for debug release action issue") {
+		t.Fatalf("launch view = %q, want Claude Code override label", view)
+	}
+	if strings.Contains(view, "Launching Codex") {
+		t.Fatalf("launch view = %q, must not prefer session agent over override", view)
+	}
 }
 
 func TestAttach_CapturesChatCreatedAndAttachedTelemetry(t *testing.T) {

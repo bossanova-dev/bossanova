@@ -185,7 +185,7 @@ func (m OnboardingModel) View() tea.View {
 	b.WriteString(styleTitle.Render("Choose providers to enable"))
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorMuted).Render(
-		"Choose the installed agent runners you want Bossanova to use. You can change this later."))
+		"Choose the installed agents you want Bossanova to use. You can change this later."))
 	b.WriteString("\n\n")
 
 	if m.err != nil {

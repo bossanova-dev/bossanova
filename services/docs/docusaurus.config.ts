@@ -9,7 +9,7 @@ const buildSha = process.env.PUBLIC_BUILD_SHA;
 
 const config: Config = {
   title: 'Bossanova',
-  tagline: 'Manage multiple AI coding-agent sessions from one terminal.',
+  tagline: 'Hyper efficient orchestration for AI coding agents — fast, lightweight, no Electron.',
   favicon: 'img/favicon.svg',
 
   url: 'https://docs.bossanova.dev',

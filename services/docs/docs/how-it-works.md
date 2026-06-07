@@ -25,10 +25,10 @@ creation, CI failures, and merge conflicts, then take autonomous actions.
   and with plugins via gRPC.
 - **Plugins (`bossd-plugin-*`):** out-of-process binaries that
   subscribe to bossd events. There are two flavors:
-  - _Agent runner plugins_ own a coding-agent CLI subprocess for each
+  - _Agent plugins_ own a coding-agent CLI subprocess for each
     session. The bundled `claude` plugin runs Claude Code, and the
     bundled `codex` plugin runs OpenAI Codex CLI. `opencode` remains
-    on the roadmap. The daemon needs at least one agent runner loaded
+    on the roadmap. The daemon needs at least one agent plugin loaded
     to start sessions.
   - _Automation plugins_ react to PR events. `dependabot`, `linear`,
     and `repair` are bundled and optional.
@@ -40,7 +40,7 @@ creation, CI failures, and merge conflicts, then take autonomous actions.
    `~/.bossanova/worktrees`).
 2. If the repository has a setup script configured, the daemon runs it
    inside the new worktree.
-3. The configured agent runner plugin spawns its agent CLI inside the
+3. The configured agent plugin spawns its agent CLI inside the
    worktree.
 4. As the agent works, the daemon watches for PR events and notifies
    plugins.

@@ -12,7 +12,7 @@ func TestOnboardingShowsProviderListWithInstallInstructions(t *testing.T) {
 	out := m.View().Content
 	for _, want := range []string{
 		"Choose providers",
-		"Choose the installed agent runners you want Bossanova to use.",
+		"Choose the installed agents you want Bossanova to use.",
 		"Claude",
 		"Codex",
 	} {

@@ -12,6 +12,44 @@ and respond to reviews automatically. Run scheduled tasks. Control remote Claude
 Code and Codex sessions from the web (remote control requires a Bossanova Cloud
 subscription).
 
+## Installation
+
+### Prerequisites
+
+- [Claude Code](https://claude.ai/download) or
+  [OpenAI Codex](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started)
+  CLI.
+- [GitHub CLI](https://cli.github.com/): required for PR operations.
+
+### Via Homebrew (recommended)
+
+```bash
+brew install bossanova-dev/tap/bossanova
+```
+
+### Manual installation via curl
+
+```bash
+curl -fsSL https://bossanova.dev/install.sh | sh
+```
+
+The curl installer downloads the latest GitHub Release binaries for macOS and
+Linux.
+
+### Open the TUI
+
+```bash
+boss
+```
+
+See the docs for [installation](https://docs.bossanova.dev/install),
+[quick start](https://docs.bossanova.dev/quick-start), and
+[CLI reference](https://docs.bossanova.dev/reference/cli-reference).
+
+- [Automation troubleshooting](docs/automation-troubleshooting.md) covers common
+  auto-repair and auto-merge failures, including GitHub workflow permission
+  errors.
+
 ## Getting Started
 
 Start with one command:
@@ -118,44 +156,6 @@ multiple machines in one place. Sessions are securely streamed to the browser so
 you can work from anywhere.
 
 <img src="https://bossanova.dev/screenshots/tour/gifs/boss-cloud-sign-in.gif" alt="signing in to Bossanova Cloud from the TUI" width="900">
-
-## Installation
-
-### Prerequisites
-
-- [Claude Code](https://claude.ai/download) or
-  [OpenAI Codex](https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started)
-  CLI.
-- [GitHub CLI](https://cli.github.com/): required for PR operations.
-
-### Via Homebrew (recommended)
-
-```bash
-brew install bossanova-dev/tap/bossanova
-```
-
-### Manual installation via curl
-
-```bash
-curl -fsSL https://bossanova.dev/install.sh | sh
-```
-
-The curl installer downloads the latest GitHub Release binaries for macOS and
-Linux.
-
-### Open the TUI
-
-```bash
-boss
-```
-
-See the docs for [installation](https://docs.bossanova.dev/install),
-[quick start](https://docs.bossanova.dev/quick-start), and
-[CLI reference](https://docs.bossanova.dev/reference/cli-reference).
-
-- [Automation troubleshooting](docs/automation-troubleshooting.md) covers common
-  auto-repair and auto-merge failures, including GitHub workflow permission
-  errors.
 
 ## What It Runs
 

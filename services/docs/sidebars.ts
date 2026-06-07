@@ -19,7 +19,7 @@ const sidebars: SidebarsConfig = {
       label: 'Guides',
       collapsed: false,
       items: [
-        'guides/agent-runners',
+        'guides/agent-plugins',
         'guides/setup-scripts',
         'guides/pr-lifecycle',
         'guides/scheduled-sessions',

@@ -89,7 +89,7 @@ The flow lives in
    so the worktree starts from the latest remote state.
 2. **Setup:** if the repo has a setup script configured, it runs inside
    the new worktree. See [Setup Scripts](../guides/setup-scripts.md).
-3. **Run:** the agent runner plugin starts its CLI inside the worktree.
+3. **Run:** the agent plugin starts its CLI inside the worktree.
 4. **Archive:** `ArchiveSession` runs `git worktree remove --force`,
    which deletes the directory but leaves the branch in place. You can
    resurrect the session later (re-creates the worktree from the branch)

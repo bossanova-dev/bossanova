@@ -94,7 +94,7 @@ runs `fire()`:
    (`DefaultMaxConcurrent` in `scheduler.go`). Extra fires block
    until a slot frees up.
 4. **Spawn.** A worktree is created on a fresh branch, your repo's
-   [setup script](setup-scripts.md) runs, and the agent runner starts
+   [setup script](setup-scripts.md) runs, and the agent plugin starts
    the agent inside it with the cron job's prompt as the first turn.
 5. **Persist.** `last_run_session_id`, `last_run_at`, and
    `next_run_at` are written to the cron job row, so the list view's

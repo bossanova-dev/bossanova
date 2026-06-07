@@ -56,10 +56,9 @@ var upgradeCachePath = func() string {
 // sessionListMsg carries the result of a ListSessions RPC call,
 // along with daemon-side heartbeat statuses for cross-instance display.
 type sessionListMsg struct {
-	sessions        []*pb.Session
-	daemonStatuses  map[string]string // session_id → status string
-	availableAgents []client.AgentInfo
-	err             error
+	sessions       []*pb.Session
+	daemonStatuses map[string]string // session_id → status string
+	err            error
 }
 
 // repoCountMsg carries the number of registered repos.
@@ -119,19 +118,18 @@ type upgradeCheckFunc func(context.Context, string) (upgrade.CheckResult, error)
 
 // HomeModel is the main dashboard view showing active sessions.
 type HomeModel struct {
-	client          client.BossClient
-	ctx             context.Context
-	spinner         spinner.Model
-	sessions        []*pb.Session
-	daemonStatuses  map[string]string // session_id → status string from daemon heartbeats
-	availableAgents []client.AgentInfo
-	table           table.Model
-	err             error
-	status          string
-	loading         bool
-	width           int
-	height          int
-	repoCount       int // number of registered repos (for empty state guidance)
+	client         client.BossClient
+	ctx            context.Context
+	spinner        spinner.Model
+	sessions       []*pb.Session
+	daemonStatuses map[string]string // session_id → status string from daemon heartbeats
+	table          table.Model
+	err            error
+	status         string
+	loading        bool
+	width          int
+	height         int
+	repoCount      int // number of registered repos (for empty state guidance)
 
 	// pollFailures counts consecutive failed session polls. The "Cannot
 	// connect to daemon" screen is only shown once it reaches
@@ -498,8 +496,6 @@ func (h *HomeModel) buildTableRows() {
 	names := make([]string, len(h.sessions))       // plain text for width calc
 	linkedNames := make([]string, len(h.sessions)) // may contain OSC 8 hyperlinks
 	nameWidthLabels := make([]string, 0, len(h.sessions)*2)
-	agents := make([]string, len(h.sessions))
-	showAgentColumn := shouldShowSessionAgentColumn(h.availableAgents, h.sessions)
 	prLabels := make([]string, len(h.sessions)) // visible text for width calc
 	prs := make([]string, len(h.sessions))      // may contain OSC 8 hyperlinks
 	for i, sess := range h.sessions {
@@ -510,10 +506,6 @@ func (h *HomeModel) buildTableRows() {
 			names[i] = sess.BranchName
 		}
 		nameWidthLabels = append(nameWidthLabels, names[i])
-		agents[i] = sess.GetAgentName()
-		if agents[i] == "" {
-			agents[i] = "-"
-		}
 		nameWidthLabels = append(nameWidthLabels, sessionWarningHints(sess)...)
 		linkedNames[i] = renderTrackerLink(sess, names[i])
 		if sess.PrNumber != nil {
@@ -530,14 +522,9 @@ func (h *HomeModel) buildTableRows() {
 		{Title: " ", Width: 1},
 		{Title: "REPO", Width: maxColWidth("REPO", repos, 20) + tableColumnSep},
 		{Title: "NAME", Width: maxColWidth("NAME", nameWidthLabels, 60) + tableColumnSep},
+		{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
+		{Title: "STATUS", Width: 16 + tableColumnSep},
 	}
-	if showAgentColumn {
-		cols = append(cols, table.Column{Title: "AGENT", Width: maxColWidth("AGENT", agents, 12) + tableColumnSep})
-	}
-	cols = append(cols,
-		table.Column{Title: "PR", Width: maxColWidth("PR", prLabels, 8) + tableColumnSep},
-		table.Column{Title: "STATUS", Width: 16 + tableColumnSep},
-	)
 
 	mutedStrike := lipgloss.NewStyle().Foreground(colorMuted).Strikethrough(true)
 
@@ -563,18 +550,10 @@ func (h *HomeModel) buildTableRows() {
 		if rowIndex == cursor {
 			indicator = cursorChevron
 		}
-		row := table.Row{indicator, attn, repo, name}
-		if showAgentColumn {
-			row = append(row, agents[i])
-		}
-		row = append(row, pr, statusStyled)
+		row := table.Row{indicator, attn, repo, name, pr, statusStyled}
 		rows = append(rows, row)
 		for _, hint := range sessionWarningHints(sess) {
-			hintRow := table.Row{"", "", "", styleStatusMuted.Render(hint)}
-			if showAgentColumn {
-				hintRow = append(hintRow, "")
-			}
-			hintRow = append(hintRow, "", "")
+			hintRow := table.Row{"", "", "", styleStatusMuted.Render(hint), "", ""}
 			rows = append(rows, hintRow)
 		}
 	}
@@ -586,36 +565,6 @@ func (h *HomeModel) buildTableRows() {
 	h.table.SetCursor(cursor)
 	h.normalizeTableCursor(cursor)
 	updateCursorColumn(&h.table)
-}
-
-func hasMultipleSessionAgents(sessions []*pb.Session) bool {
-	seen := map[string]struct{}{}
-	for _, sess := range sessions {
-		agent := sess.GetAgentName()
-		if agent == "" {
-			continue
-		}
-		seen[agent] = struct{}{}
-		if len(seen) > 1 {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldShowSessionAgentColumn(availableAgents []client.AgentInfo, sessions []*pb.Session) bool {
-	seen := map[string]struct{}{}
-	for _, agent := range availableAgents {
-		name := agent.Name
-		if name == "" {
-			continue
-		}
-		seen[name] = struct{}{}
-		if len(seen) > 1 {
-			return true
-		}
-	}
-	return hasMultipleSessionAgents(sessions)
 }
 
 func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -742,7 +691,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.err = nil
 		h.sessions = msg.sessions
 		h.daemonStatuses = msg.daemonStatuses
-		h.availableAgents = msg.availableAgents
 		h.applyMergedOptimisticOverride()
 		h.buildTableRows()
 		if h.highlightSessionID != "" {
@@ -1308,12 +1256,9 @@ func fetchSessions(c client.BossClient, ctx context.Context) tea.Cmd {
 			}
 		}
 
-		availableAgents, _ := c.ListAgents(ctx)
-
 		return sessionListMsg{
-			sessions:        sessions,
-			daemonStatuses:  daemonStatuses,
-			availableAgents: availableAgents,
+			sessions:       sessions,
+			daemonStatuses: daemonStatuses,
 		}
 	}
 }

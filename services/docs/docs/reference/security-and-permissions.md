@@ -149,7 +149,7 @@ plugins list in `settings.json` and restart the daemon
 (set `enabled: false` for the `repair` entry in `settings.json`).
 
 The same pattern applies to any other plugin: `bossd-plugin-dependabot`,
-`bossd-plugin-linear`, future agent runners. They live as autonomous
+`bossd-plugin-linear`, future agent plugins. They live as autonomous
 processes, supervised by bossd. Removing the binary is the durable kill.
 
 ## Setup scripts run as you

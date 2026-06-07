@@ -12,15 +12,15 @@ plugin does not bring down the daemon.
 
 There are two flavors:
 
-- **Agent runner plugins** own the subprocess lifecycle for one
-  coding-agent CLI. At least one agent runner must be loaded before
+- **Agent plugins** own the subprocess lifecycle for one
+  coding-agent CLI. At least one agent plugin must be loaded before
   the daemon will start sessions.
 - **Automation plugins** react to PR / CI events and dispatch agent
   sessions to handle them.
 
 ## Bundled plugins
 
-### Agent runners
+### Agent plugins
 
 | Plugin     | Status      | Purpose                                                                                                                |
 | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------- |

@@ -134,6 +134,79 @@ func TestTUI_RepoAddView_CreatesRepo(t *testing.T) {
 	if req.SetupScript != nil {
 		t.Fatalf("RegisterRepo.SetupScript = %v, want nil when setup left blank", req.SetupScript)
 	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "PATH") &&
+			strings.Contains(screen, "my-app") &&
+			strings.Contains(screen, "@acme/widgets")
+	}); err != nil {
+		t.Fatalf("expected repo list after adding second repo; screen:\n%s", h.Driver.Screen())
+	}
+	if screen := h.Driver.Screen(); strings.Contains(screen, "You have no active sessions") {
+		t.Fatalf("second repo add should stay on repo list; screen:\n%s", screen)
+	}
+}
+
+func TestTUI_RepoAddView_FirstRepoReturnsHome(t *testing.T) {
+	h := tuitest.New(t)
+	h.Daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{
+		IsValid:       true,
+		IsGithub:      true,
+		OriginUrl:     "https://github.com/acme/widgets.git",
+		DefaultBranch: "main",
+	})
+
+	if err := h.Driver.WaitForText(waitTimeout, "Welcome to Bossanova"); err != nil {
+		t.Fatalf("expected empty home before repo add; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('r'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Press 'a' to add your first repository"); err != nil {
+		t.Fatalf("expected empty repo list; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('a'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Open project"); err != nil {
+		t.Fatalf("expected source phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Add a local repository"); err != nil {
+		t.Fatalf("expected input phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendString("widgets"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Add this repository?"); err != nil {
+		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "You have no active sessions") &&
+			strings.Contains(screen, "Press 'n' to create a new session")
+	}); err != nil {
+		t.Fatalf("expected home after adding only repo; screen:\n%s", h.Driver.Screen())
+	}
+	if screen := h.Driver.Screen(); strings.Contains(screen, "Repositories") || strings.Contains(screen, "PATH") {
+		t.Fatalf("first repo add should not leave user on repo list; screen:\n%s", screen)
+	}
+	if got := len(h.Daemon.Repos()); got != 1 {
+		t.Fatalf("registered repos = %d, want 1", got)
+	}
 }
 
 // TestTUI_RepoAddView_Cancel asserts esc on the source phase pops back to the

@@ -45,7 +45,7 @@ subprocess. They do not log in for you. If you can run `claude` or
 `codex` from a terminal, the matching plugin can drive it. See
 [Plugins](../plugins.md) for the contract.
 
-The same model will hold for the future OpenCode runner plugin: each
+The same model will hold for the future OpenCode plugin: each
 plugin shells out to the agent CLI you already have authenticated.
 
 ## Automation
@@ -74,19 +74,19 @@ attempt completes and the SHA hasn't moved, it doesn't re-fire on the same
 commit. So in practice it can attempt a fix, see the same failure, and back
 off rather than spin.
 
-### Why does the daemon need an agent runner plugin to start sessions?
+### Why does the daemon need an agent plugin to start sessions?
 
 Bossd itself doesn't know how to talk to Claude, Codex, or OpenCode. That
-job lives in a runner plugin: `bossd-plugin-claude` for Claude Code,
+job lives in an agent plugin: `bossd-plugin-claude` for Claude Code,
 `bossd-plugin-codex` for OpenAI Codex CLI, and `bossd-plugin-opencode`
 on the roadmap. The plugin
 satisfies the `AgentRunnerService` gRPC contract and owns the subprocess
 lifecycle for its agent.
 
-If no runner plugin loads, `bossd` stays healthy but every session-start
+If no agent plugin loads, `bossd` stays healthy but every session-start
 attempt fails fast with `no AgentRunner plugin loaded; install
 bossd-plugin-claude (or another agent runner) and restart`.
-Bossanova ships the `claude` and `codex` runners today; install the
+Bossanova ships the `claude` and `codex` plugins today; install the
 matching agent CLI first.
 
 ## Cloud, privacy, and local-only
@@ -109,7 +109,7 @@ opt-out paths are in [Privacy](../reference/privacy.md).
 Yes. Set `cloud.orchestrator_url` to the empty string in your
 [settings file](../reference/settings.md) (or export
 `BOSSD_ORCHESTRATOR_URL=""`) and don't run `boss login`. The TUI, daemon, and
-runner plugins all work without any upstream connection. You give up the web
+agent plugins all work without any upstream connection. You give up the web
 app and any future cross-machine features that depend on it.
 
 The full local-only posture, including what the daemon binds to and what it

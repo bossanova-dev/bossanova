@@ -11,7 +11,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/auth"
-	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/boss/internal/upgrade"
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -619,7 +618,7 @@ func TestHomeBuildTableRows_RendersAttentionWarningUnderName(t *testing.T) {
 	}
 }
 
-func TestHomeBuildTableRows_ShowsAgentAfterNameWhenMultipleAgentsPresent(t *testing.T) {
+func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsPresent(t *testing.T) {
 	h := HomeModel{
 		sessions: []*pb.Session{
 			{
@@ -639,18 +638,23 @@ func TestHomeBuildTableRows_ShowsAgentAfterNameWhenMultipleAgentsPresent(t *test
 
 	h.buildTableRows()
 
-	rows := h.table.Rows()
-	if got := rows[0][4]; got != "claude" {
-		t.Fatalf("session row AGENT column = %q, want claude", got)
+	cols := h.table.Columns()
+	for _, col := range cols {
+		if col.Title == "AGENT" {
+			t.Fatalf("session table should not render AGENT column: %#v", cols)
+		}
 	}
-	if got := rows[1][4]; got != "codex" {
-		t.Fatalf("session row AGENT column = %q, want codex", got)
+	rows := h.table.Rows()
+	if got := rows[0][4]; got != "-" {
+		t.Fatalf("session row PR column = %q, want -", got)
+	}
+	if got := rows[1][4]; got != "-" {
+		t.Fatalf("session row PR column = %q, want -", got)
 	}
 }
 
-func TestHomeBuildTableRows_ShowsAgentWhenMultipleAgentsAvailable(t *testing.T) {
+func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsAvailable(t *testing.T) {
 	h := HomeModel{
-		availableAgents: []client.AgentInfo{{Name: "claude"}, {Name: "codex"}},
 		sessions: []*pb.Session{
 			{
 				Id:              "sess-1",
@@ -663,9 +667,15 @@ func TestHomeBuildTableRows_ShowsAgentWhenMultipleAgentsAvailable(t *testing.T) 
 
 	h.buildTableRows()
 
+	cols := h.table.Columns()
+	for _, col := range cols {
+		if col.Title == "AGENT" {
+			t.Fatalf("session table should not render AGENT column: %#v", cols)
+		}
+	}
 	rows := h.table.Rows()
-	if got := rows[0][4]; got != "codex" {
-		t.Fatalf("session row AGENT column = %q, want codex", got)
+	if got := rows[0][4]; got != "-" {
+		t.Fatalf("session row PR column = %q, want -", got)
 	}
 }
 

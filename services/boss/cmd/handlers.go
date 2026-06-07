@@ -584,23 +584,11 @@ func runLS(cmd *cobra.Command) error {
 		return nil
 	}
 
-	// Determine the user's default agent so we can decide whether the AGENT
-	// column needs to be rendered. config.LoadFrom already normalises an
-	// empty DefaultAgent to "claude" via DefaultSettings(); we re-apply the
-	// same normalisation here for the rare error path (corrupt settings
-	// file etc.) so a read-only listing never fails on bad config.
-	defaultAgent := config.DefaultSettings().DefaultAgent
-	if cfg, err := config.Load(); err == nil && cfg.DefaultAgent != "" {
-		defaultAgent = cfg.DefaultAgent
-	}
-
 	ids := make([]string, len(sessions))
 	titles := make([]string, len(sessions))
 	stateStrs2 := make([]string, len(sessions))
 	branchStrs := make([]string, len(sessions))
 	prStrs := make([]string, len(sessions))
-	agentStrs := make([]string, len(sessions))
-	showAgentCol := false
 	for i, sess := range sessions {
 		id := sess.Id
 		if len(id) > 8 {
@@ -622,14 +610,6 @@ func runLS(cmd *cobra.Command) error {
 		} else {
 			prStrs[i] = "-"
 		}
-		if sess.AgentName == "" {
-			agentStrs[i] = "-"
-		} else {
-			agentStrs[i] = sess.AgentName
-			if sess.AgentName != defaultAgent {
-				showAgentCol = true
-			}
-		}
 	}
 
 	cols := []table.Column{
@@ -639,17 +619,10 @@ func runLS(cmd *cobra.Command) error {
 		{Title: "BRANCH", Width: views.MaxColWidth("BRANCH", branchStrs, 40)},
 		{Title: "PR", Width: views.MaxColWidth("PR", prStrs, 8)},
 	}
-	if showAgentCol {
-		cols = append(cols, table.Column{Title: "AGENT", Width: views.MaxColWidth("AGENT", agentStrs, 12)})
-	}
 
 	rows := make([]table.Row, len(sessions))
 	for i := range sessions {
-		row := table.Row{ids[i], titles[i], stateStrs2[i], branchStrs[i], prStrs[i]}
-		if showAgentCol {
-			row = append(row, agentStrs[i])
-		}
-		rows[i] = row
+		rows[i] = table.Row{ids[i], titles[i], stateStrs2[i], branchStrs[i], prStrs[i]}
 	}
 
 	t := table.New(

@@ -452,7 +452,7 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 	}
 	advanceCronFormPrompt(t, h)
 
-	if err := h.Driver.SendString("@daily"); err != nil {
+	if err := h.Driver.SendString("0 9 1 1 1"); err != nil {
 		t.Fatal(err)
 	}
 	advanceCronFormField(t, h)

@@ -285,7 +285,7 @@ func runTUI(cmd *cobra.Command) error {
 
 func runLocalProviderStartupBeforeClient() error {
 	result, err := runProviderStartupIfNeeded()
-	if result.LoginShellChanged || result.SettingsChanged {
+	if (result.LoginShellChanged || result.SettingsChanged) && os.Getenv("BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART") == "" {
 		if restartErr := restartDaemonAfterLoginShellCapture(); restartErr != nil {
 			return restartErr
 		}

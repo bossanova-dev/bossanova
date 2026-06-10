@@ -1755,7 +1755,7 @@ func TestE2E_CreateSession_LinearBranchDuplicateReturnsExistingSession(t *testin
 	}
 }
 
-func TestE2E_CreateSession_LinearBranchDuplicateWhileStartingReturnsAlreadyExists(t *testing.T) {
+func TestE2E_CreateSession_LinearBranchDuplicateWhileStartingWaitsForDurableSession(t *testing.T) {
 	ctx := context.Background()
 	h := testharness.New(t)
 	defer h.Close()
@@ -1823,22 +1823,35 @@ func TestE2E_CreateSession_LinearBranchDuplicateWhileStartingReturnsAlreadyExist
 	}()
 	<-started
 
-	stream, err := h.Client.CreateSession(ctx, connect.NewRequest(req))
-	if err != nil {
-		t.Fatalf("unexpected stream-open error: %v", err)
-	}
-	for stream.Receive() {
-		t.Fatal("duplicate in-progress CreateSession should not stream a response")
-	}
-	streamErr := stream.Err()
-	if streamErr == nil {
-		t.Fatal("expected AlreadyExists for duplicate in-progress Linear branch")
-	}
-	if code := connect.CodeOf(streamErr); code != connect.CodeAlreadyExists {
-		t.Fatalf("expected CodeAlreadyExists, got %v (%v)", code, streamErr)
-	}
-	if err := stream.Close(); err != nil {
-		t.Fatalf("close duplicate stream: %v", err)
+	secondDone := make(chan createResult, 1)
+	go func() {
+		stream, err := h.Client.CreateSession(ctx, connect.NewRequest(req))
+		if err != nil {
+			secondDone <- createResult{err: fmt.Errorf("create session: %w", err)}
+			return
+		}
+		defer stream.Close() //nolint:errcheck // test cleanup
+		var sess *pb.Session
+		for stream.Receive() {
+			if sc := stream.Msg().GetSessionCreated(); sc != nil {
+				sess = sc.GetSession()
+			}
+		}
+		if err := stream.Err(); err != nil {
+			secondDone <- createResult{err: fmt.Errorf("create session stream: %w", err)}
+			return
+		}
+		if sess == nil {
+			secondDone <- createResult{err: fmt.Errorf("missing SessionCreated")}
+			return
+		}
+		secondDone <- createResult{session: sess}
+	}()
+
+	select {
+	case second := <-secondDone:
+		t.Fatalf("duplicate CreateSession returned before first startup was durable: %+v", second)
+	case <-time.After(50 * time.Millisecond):
 	}
 
 	close(release)
@@ -1846,8 +1859,15 @@ func TestE2E_CreateSession_LinearBranchDuplicateWhileStartingReturnsAlreadyExist
 	if first.err != nil {
 		t.Fatal(first.err)
 	}
+	second := <-secondDone
+	if second.err != nil {
+		t.Fatal(second.err)
+	}
 	if first.session.BranchName != branch {
 		t.Fatalf("first branch = %q, want %q", first.session.BranchName, branch)
+	}
+	if second.session.Id != first.session.Id {
+		t.Fatalf("second session ID = %q, want existing session %q", second.session.Id, first.session.Id)
 	}
 	if got := len(h.Git.CreateFromExistingBranchCalls); got != 1 {
 		t.Fatalf("CreateFromExistingBranch calls = %d, want 1", got)
@@ -1992,7 +2012,7 @@ func TestE2E_PluginSession_DeferPRDefaultsFalse(t *testing.T) {
 	}
 	repoID := repoResp.Msg.Repo.Id
 
-	creator := taskorchestrator.NewSessionCreator(h.Sessions, h.Lifecycle, zerolog.Nop())
+	creator := taskorchestrator.NewSessionCreator(h.Sessions, h.Lifecycle, "claude", zerolog.Nop())
 
 	// Simulate exactly what orchestrator.handleCreateSession builds for a
 	// plugin-discovered task: no DeferPR, no CronJobID, no HookToken.

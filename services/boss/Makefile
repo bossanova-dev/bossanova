@@ -27,12 +27,8 @@ format:
 	fi
 	golangci-lint run ./...
 
-# Race detector is opt-in locally (slow). CI sets RACE=1; locally use `RACE=1 make test`.
-RACE_FLAG := $(if $(RACE),-race,)
-
-## test: Run tests with coverage (set RACE=1 to enable race detector; 300s timeout covers E2E TUI tests under race instrumentation)
-test:
-	go test $(RACE_FLAG) -timeout 300s -coverprofile=coverage.out ./...
+GO_TEST_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk
 
 ## dev: Run the boss CLI TUI in dev mode (generates protos first if needed)
 dev:

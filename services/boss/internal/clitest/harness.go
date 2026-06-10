@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,9 +26,10 @@ import (
 
 // Harness runs boss CLI commands against a mock daemon and captures output.
 type Harness struct {
-	Daemon  *tuitest.MockDaemon
-	binPath string
-	env     []string
+	Daemon       *tuitest.MockDaemon
+	binPath      string
+	env          []string
+	settingsPath string
 }
 
 // Option configures a Harness.
@@ -87,12 +89,32 @@ func New(t *testing.T, opts ...Option) *Harness {
 		daemon.AddChat(c)
 	}
 
+	// Default every harness to an isolated, per-test HOME and settings file so a
+	// CLI command that writes settings.json can never touch the developer's real
+	// file. Tests that need specific values (e.g. settings_profile_test, the
+	// daemon-install tests' HOME) append their own via WithEnv, which wins
+	// because os/exec dedups cmd.Env last-wins and extraEnv is appended last.
+	tmp := t.TempDir()
+	homeDir := filepath.Join(tmp, "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("create temp HOME: %v", err)
+	}
+	settingsPath := filepath.Join(tmp, "settings.json")
+
 	var env []string
 	for _, e := range os.Environ() {
+		// Strip vars the harness owns or that could leak the developer's real
+		// config location into the subprocess: HOME/XDG_CONFIG_HOME resolve the
+		// default settings path, and an inherited BOSS_SETTINGS_PATH would point
+		// at the real file.
 		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
 			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
 			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
-			strings.HasPrefix(e, "BOSS_DAEMON_SKIP_LAUNCHCTL=") {
+			strings.HasPrefix(e, "BOSS_DAEMON_SKIP_LAUNCHCTL=") ||
+			strings.HasPrefix(e, "BOSS_SETTINGS_PATH=") ||
+			strings.HasPrefix(e, "BOSS_REFUSE_DEFAULT_SETTINGS=") ||
+			strings.HasPrefix(e, "HOME=") ||
+			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
 			continue
 		}
 		env = append(env, e)
@@ -100,15 +122,27 @@ func New(t *testing.T, opts ...Option) *Harness {
 	env = append(env,
 		"BOSS_SOCKET="+daemon.SocketPath(),
 		"BOSS_SKIP_SKILLS=1",
+		"HOME="+homeDir,
+		"XDG_CONFIG_HOME="+filepath.Join(homeDir, ".config"),
+		"BOSS_SETTINGS_PATH="+settingsPath,
+		// Refuse the real default path in the subprocess too (testing.Testing()
+		// is false there), so a test that overrides BOSS_SETTINGS_PATH with a
+		// bad value still can't fall back to clobbering the real file.
+		"BOSS_REFUSE_DEFAULT_SETTINGS=1",
 	)
 	env = append(env, cfg.extraEnv...)
 
 	return &Harness{
-		Daemon:  daemon,
-		binPath: binPath,
-		env:     env,
+		Daemon:       daemon,
+		binPath:      binPath,
+		env:          env,
+		settingsPath: settingsPath,
 	}
 }
+
+// SettingsPath returns the per-harness settings.json path injected into the
+// subprocess via BOSS_SETTINGS_PATH. Tests read settings back from here.
+func (h *Harness) SettingsPath() string { return h.settingsPath }
 
 // Result is the outcome of running a boss CLI command.
 type Result struct {

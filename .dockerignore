@@ -1,0 +1,44 @@
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+**/overlays/*/.env-*
+!**/overlays/*/.env-*.example
+
+# Terraform state and local variable files are never needed in image builds.
+**/.terraform
+**/.terraform/**
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example
+**/terraform.tfvars
+**/terraform.tfvars.json
+
+# Private keys, certificates, and local credentials.
+**/*private-key*
+**/*private_key*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+**/*.cer
+**/*credentials*.json
+**/*service-account*.json
+**/application_default_credentials.json
+
+# Local tooling caches and build outputs.
+.git
+.git/**
+.boss
+.boss/**
+.worktrees
+.worktrees/**
+.gstack
+.gstack/**
+node_modules
+node_modules/**
+bin
+bin/**
+*.log

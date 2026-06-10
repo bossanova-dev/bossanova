@@ -82,6 +82,9 @@ func waitForCronListPopulated(t *testing.T, h *tuitest.Harness) {
 // TestCron_HomeC_OpensList verifies that pressing 'c' from home opens the cron
 // list with the empty-state copy when no cron jobs exist.
 func TestCron_HomeC_OpensList(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 	)
@@ -112,12 +115,15 @@ func advanceCronFormPrompt(t *testing.T, h *tuitest.Harness) {
 	if err := h.Driver.SendKey('\t'); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 }
 
 // TestCron_NewForm_LivePreview verifies that the form shows a live "Next fire:"
 // preview when the schedule field contains a valid cron expression.
 func TestCron_NewForm_LivePreview(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	// Use a taller terminal so the live-preview line (rendered below the form)
 	// is visible. The cron form has ~30 rows of content at the default height.
 	h := tuitest.New(t,
@@ -171,6 +177,9 @@ func TestCron_NewForm_LivePreview(t *testing.T) {
 
 // TestCron_FormValidation verifies that invalid inputs prevent form submission.
 func TestCron_FormValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	t.Run("bad_schedule", func(t *testing.T) {
 		h := tuitest.New(t,
 			tuitest.WithRepos(testRepos()...),
@@ -343,6 +352,9 @@ func TestCron_FormValidation(t *testing.T) {
 // TestCron_CreateRoundtrip verifies that a valid form submission results in a
 // CreateCronJob RPC call and the new job appears in the list.
 func TestCron_CreateRoundtrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 	)
@@ -375,8 +387,10 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 	}
 	advanceCronFormPrompt(t, h)
 
-	// Field 4: Schedule — use a named expression to avoid '*' PTY quirks.
-	if err := h.Driver.SendString("@daily"); err != nil {
+	// Field 4: Schedule — use a numeric expression. The '@' aliases are valid,
+	// but the leading character can race with the text-area focus transition in
+	// PTY tests and land in the previous prompt field.
+	if err := h.Driver.SendString("0 9 * * 1-5"); err != nil {
 		t.Fatal(err)
 	}
 	advanceCronFormField(t, h)
@@ -409,6 +423,9 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 }
 
 func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithAgents(
@@ -477,6 +494,9 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 // TestCron_EditRoundtrip verifies that the edit form pre-populates from the
 // existing job and calls UpdateCronJob with only the changed field.
 func TestCron_EditRoundtrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithCronJobs(testCronJob()),
@@ -566,6 +586,9 @@ func TestCron_EditRoundtrip(t *testing.T) {
 // TestCron_ToggleEnabled verifies that pressing space toggles the enabled
 // field and calls UpdateCronJob once per press.
 func TestCron_ToggleEnabled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithCronJobs(testCronJob()), // enabled = true
@@ -633,6 +656,9 @@ func TestCron_ToggleEnabled(t *testing.T) {
 // TestCron_RunNow verifies that pressing 'r' fires RunCronJobNow and shows a
 // toast. It also tests the skip-reason path.
 func TestCron_RunNow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	t.Run("alwaysRun", func(t *testing.T) {
 		h := tuitest.New(t,
 			tuitest.WithRepos(testRepos()...),
@@ -709,6 +735,9 @@ func cronJobWithStatus(id, name string, status pb.CronJobStatus) *pb.CronJob {
 // each derived state: Running (server-side), Failed, Idle, and the local
 // m.running bridge that fires immediately on 'r' press.
 func TestCron_StatusColumn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	t.Run("server_running", func(t *testing.T) {
 		h := tuitest.New(t,
 			tuitest.WithRepos(testRepos()...),
@@ -804,6 +833,9 @@ func TestCron_StatusColumn(t *testing.T) {
 
 // TestCron_DeleteConfirm verifies the delete overlay behaviour.
 func TestCron_DeleteConfirm(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	t.Run("cancel_with_n", func(t *testing.T) {
 		h := tuitest.New(t,
 			tuitest.WithRepos(testRepos()...),
@@ -950,6 +982,9 @@ func TestCron_DeleteConfirm(t *testing.T) {
 // keybindings (n, p, r, s, t, l, c) still dispatch correctly after the cron
 // feature was added.
 func TestHome_KeysStillWork(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),

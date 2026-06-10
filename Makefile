@@ -2,9 +2,11 @@
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
-	plugins plugins-all readme-gifs release release-codex-check \
-	setup-worktree split stage-release test test-race \
-	test-bosso-scale test-docs test-integration-bossd test-public-mirror test-readme test-scripts
+	plugins plugins-all proof proof-plan proof-test readme-gifs release release-codex-check \
+	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke \
+	test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
+	test-public-mirror test-readme test-scripts \
+	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
 all:
@@ -79,6 +81,30 @@ codex-skills:
 
 codex-skills-check:
 	node scripts/sync-codex-skills.mjs --root . --check
+
+deploy-staging:
+	$(MAKE) -C services/bosso/kustomize deploy-staging
+
+deploy-production:
+	$(MAKE) -C services/bosso/kustomize deploy-production
+
+db-staging:
+	$(MAKE) -C services/bosso/kustomize db-staging
+
+db-production:
+	$(MAKE) -C services/bosso/kustomize db-production
+
+connect-staging:
+	$(MAKE) -C services/bosso/kustomize connect-staging
+
+connect-production:
+	$(MAKE) -C services/bosso/kustomize connect-production
+
+verify-staging:
+	$(MAKE) -C services/bosso/kustomize verify-staging
+
+verify-production:
+	$(MAKE) -C services/bosso/kustomize verify-production
 
 ## deps: Install required build/dev tools via Homebrew (macOS)
 deps:
@@ -236,6 +262,54 @@ test: $(GEN_STAMP) copy-skills codex-skills-check
 		$(MAKE) -C services/docs test; \
 	fi
 
+test-full:
+	$(MAKE) test
+
+## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
+test-smoke: $(GEN_STAMP) copy-skills codex-skills-check
+	$(MAKE) -C lib/bossalib test-fast GO_TEST_PACKAGES="./config ./cronutil ./displaystatus ./sessionreason ./statusdetect"
+	$(MAKE) -C services/boss test-fast GO_TEST_PACKAGES="./internal/agent ./internal/auth ./internal/client ./internal/preflight"
+	$(MAKE) -C services/bossd test-fast GO_TEST_PACKAGES="./internal/agent ./internal/cron ./internal/mergepolicy ./internal/status ./internal/tmux"
+	$(MAKE) -C services/bosso test-fast GO_TEST_PACKAGES="./internal/auth ./internal/config ./internal/routing"
+
+## test-profile: Run full Go modules with JSON output and print only the slowest results.
+test-profile:
+	@log=$$(mktemp); \
+	trap 'rm -f "$$log"' EXIT; \
+	test_status=0; \
+	for mod in lib/bossalib services/boss services/bossd services/bosso; do \
+		echo "==> $$mod"; \
+		(cd $$mod && go test -json -timeout 300s ./...) >>"$$log" 2>&1; \
+		mod_status=$$?; \
+		if [ "$$mod_status" -ne 0 ] && [ "$$test_status" -eq 0 ]; then \
+			test_status=$$mod_status; \
+		fi; \
+	done; \
+	node scripts/test-profile-summary.mjs "$$log"; \
+	summary_status=$$?; \
+	if [ "$$test_status" -ne 0 ]; then \
+		exit "$$test_status"; \
+	fi; \
+	exit "$$summary_status"
+
+test-affected:
+	@commands="$$(node scripts/select-affected-tests.mjs)" || exit $$?; \
+	if [ -z "$$commands" ]; then \
+		echo "make test-smoke"; \
+		$(MAKE) test-smoke || exit $$?; \
+	else \
+		printf '%s\n' "$$commands" | while IFS= read -r command; do \
+			[ -z "$$command" ] && continue; \
+			echo "$$command"; \
+			if { [ "$$command" = "make test-smoke" ] && ! grep -Eq '^test-smoke:' Makefile; }; then \
+				echo "Pending target fallback: make test-scripts"; \
+				$(MAKE) test-scripts || exit $$?; \
+			else \
+				eval "$$command" || exit $$?; \
+			fi; \
+		done; \
+	fi
+
 ## test-race: Run the full test suite under -race (sets RACE=1 for sub-makes).
 ## Race detector is opt-in: `make test` skips it; `make test-race` or `RACE=1 make test` enables it.
 test-race:
@@ -314,7 +388,6 @@ lint-boss: lint-check-version
 lint-bossd: lint-check-version
 	cd services/bossd && golangci-lint run ./...
 
-## Per-module docs targets
 test-readme:
 	node scripts/check-readme-assets.mjs
 
@@ -346,8 +419,26 @@ readme-gifs:
 test-public-mirror:
 	node scripts/check-public-mirror-workflows.mjs
 
+## test-manifest-update: Regenerate the checked-in test command manifest.
+test-manifest-update:
+	mkdir -p docs/testing
+	node scripts/generate-test-command-manifest.mjs > docs/testing/test-command-manifest.md
+
+## test-manifest: Fail if agent test guidance manifest is stale.
+test-manifest:
+	node scripts/check-test-command-manifest.mjs
+
 test-docs:
 	$(MAKE) -C services/docs test
+
+proof:
+	node scripts/proof.mjs run
+
+proof-plan:
+	node scripts/proof.mjs plan
+
+proof-test:
+	node --test scripts/proof-lib.test.mjs
 
 test-scripts:
 	$(MAKE) -C scripts test

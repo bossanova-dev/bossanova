@@ -30,6 +30,9 @@ func (m *mockCommandFactory) lastCall() []string {
 }
 
 func TestAvailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -45,6 +48,9 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestNotAvailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		mock.calls = append(mock.calls, append([]string{name}, args...))
@@ -59,6 +65,9 @@ func TestNotAvailable(t *testing.T) {
 }
 
 func TestNewSession_Args(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	tests := []struct {
 		name     string
 		opts     NewSessionOpts
@@ -119,6 +128,9 @@ func TestNewSession_Args(t *testing.T) {
 }
 
 func TestNewSession_RequiredFields(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	tests := []struct {
 		name string
 		opts NewSessionOpts
@@ -158,6 +170,9 @@ func TestNewSession_RequiredFields(t *testing.T) {
 }
 
 func TestSessionName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	tests := []struct {
 		name      string
 		repoID    string
@@ -201,6 +216,9 @@ func TestSessionName(t *testing.T) {
 }
 
 func TestNewSession_ExtendedKeysAlways(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -230,6 +248,9 @@ func TestNewSession_ExtendedKeysAlways(t *testing.T) {
 }
 
 func TestNewSession_EnablesMouse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -258,6 +279,9 @@ func TestNewSession_EnablesMouse(t *testing.T) {
 }
 
 func TestNewSession_ExtendedKeysFormatCSIU(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -287,6 +311,9 @@ func TestNewSession_ExtendedKeysFormatCSIU(t *testing.T) {
 }
 
 func TestNewSession_PreservesTermProgram(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	// Set TERM_PROGRAM to simulate running under a real terminal.
 	t.Setenv("TERM_PROGRAM", "ghostty")
 
@@ -318,6 +345,9 @@ func TestNewSession_PreservesTermProgram(t *testing.T) {
 }
 
 func TestNewSession_SkipsTermProgramWhenTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	// When TERM_PROGRAM is already "tmux", we should NOT set it
 	// (that's the value we're trying to override).
 	t.Setenv("TERM_PROGRAM", "tmux")
@@ -346,6 +376,9 @@ func TestNewSession_SkipsTermProgramWhenTmux(t *testing.T) {
 // session-level tmux set-option commands in the expected order with the
 // expected arguments.
 func TestSetAttachOptions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -372,6 +405,9 @@ func TestSetAttachOptions(t *testing.T) {
 // twice issues the same set of commands the second time — tmux's set-option
 // is naturally idempotent, so the wrapper just needs to not get clever.
 func TestSetAttachOptions_Idempotent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -402,6 +438,9 @@ func TestSetAttachOptions_Idempotent(t *testing.T) {
 // TestSetAttachOptions_Error verifies that a tmux invocation failure surfaces
 // as an error (not swallowed). Catches mutations like err != nil → err == nil.
 func TestSetAttachOptions_Error(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		// Simulate tmux failure.
 		return exec.CommandContext(ctx, "false")
@@ -417,6 +456,9 @@ func TestSetAttachOptions_Error(t *testing.T) {
 // with the configured session name. Used by the web-tmux-attach client after
 // a ring-buffer overflow to force tmux to repaint all attached viewers.
 func TestRefreshClient(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -437,6 +479,9 @@ func TestRefreshClient(t *testing.T) {
 // TestRefreshClient_EmptySessionName guards the empty-name validation so
 // callers can't accidentally invoke `tmux refresh-client -t` with no target.
 func TestRefreshClient_EmptySessionName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -453,6 +498,9 @@ func TestRefreshClient_EmptySessionName(t *testing.T) {
 // error rather than being swallowed. Catches mutations like err != nil →
 // err == nil that would silently break the resync repaint flow.
 func TestRefreshClient_Error(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "false")
 	}))
@@ -469,6 +517,9 @@ func TestRefreshClient_Error(t *testing.T) {
 // agent's stdout a non-TTY pipe; pipe-pane lives outside the agent
 // process so its PTY is unaffected.
 func TestPipePane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -491,6 +542,9 @@ func TestPipePane(t *testing.T) {
 // raw (which would prematurely close the shell-quoted string and let
 // the rest of the path be interpreted as a shell command).
 func TestPipePane_QuotesLogPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -513,6 +567,9 @@ func TestPipePane_QuotesLogPath(t *testing.T) {
 // (which would apply pipe-pane to the most recently active tmux pane,
 // almost certainly not the chat session we meant).
 func TestPipePane_EmptySessionName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -528,6 +585,9 @@ func TestPipePane_EmptySessionName(t *testing.T) {
 // `cat >> ”` — that would shell-error on every byte the pane wrote.
 // Better to fail loud at the call site.
 func TestPipePane_EmptyLogPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -543,6 +603,9 @@ func TestPipePane_EmptyLogPath(t *testing.T) {
 // error rather than being swallowed. Catches mutations like err != nil →
 // err == nil that would silently leave the chat with no on-disk log.
 func TestPipePane_Error(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "false")
 	}))
@@ -553,6 +616,9 @@ func TestPipePane_Error(t *testing.T) {
 }
 
 func TestHasSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -569,6 +635,9 @@ func TestHasSession(t *testing.T) {
 }
 
 func TestHasSessionStatusDistinguishesTmuxErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 
 	missing := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
@@ -609,6 +678,9 @@ func TestHasSessionStatusDistinguishesTmuxErrors(t *testing.T) {
 }
 
 func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	pane := strings.Join([]string{
 		"❯ /boss-repair",
 		"repair output",
@@ -624,6 +696,9 @@ func TestLineStillAtPromptIgnoresScrollback(t *testing.T) {
 }
 
 func TestKillSession_NotExist(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	tests := []struct {
 		name   string
 		stderr string
@@ -667,6 +742,9 @@ func TestKillSession_NotExist(t *testing.T) {
 }
 
 func TestKillSession_ReturnsLivenessErrorWhenFallbackCannotVerify(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		mock.calls = append(mock.calls, append([]string{name}, args...))
@@ -696,6 +774,9 @@ func TestKillSession_ReturnsLivenessErrorWhenFallbackCannotVerify(t *testing.T) 
 }
 
 func TestCapturePane_ScrollbackFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &mockCommandFactory{}
 	c := NewClient(WithCommandFactory(mock.factory))
 	ctx := context.Background()
@@ -714,6 +795,9 @@ func TestCapturePane_ScrollbackFlag(t *testing.T) {
 // TestChatSessionName covers the same > 8 truncation logic as SessionName,
 // applied to the chat-id path.
 func TestChatSessionName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	tests := []struct {
 		name           string
 		repoID         string
@@ -739,6 +823,9 @@ func TestChatSessionName(t *testing.T) {
 // TestSessionName_NineCharBoundary covers the boundary mutation `len > 8`.
 // At exactly 9 characters, the boundary mutates differently than at 8.
 func TestSessionName_NineCharBoundary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	// 9-char IDs must be truncated to 8.
 	got := SessionName("123456789", "abcdefghi")
 	want := "boss-12345678-abcdefgh"
@@ -751,6 +838,9 @@ func TestSessionName_NineCharBoundary(t *testing.T) {
 // returns the captured pane content with no error.
 // Catches mutation: err != nil → err == nil (would return error on success).
 func TestCapturePane_Success(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	mock := &captureOutputFactory{output: "pane content line 1\npane content line 2\n"}
 	c := NewClient(WithCommandFactory(mock.factory))
 
@@ -766,6 +856,9 @@ func TestCapturePane_Success(t *testing.T) {
 // TestCapturePane_Error verifies that a tmux command failure surfaces as an
 // error. Catches mutation: err != nil → err == nil (would swallow error).
 func TestCapturePane_Error(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	c := NewClient(WithCommandFactory(func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		// Simulate command failure.
 		return exec.CommandContext(ctx, "false")
@@ -890,6 +983,9 @@ func (f *sendPlanRecordingFactory) callsCopy() []sendPlanCall {
 // TestSendPlan_HappyPath_Order verifies SendPlan issues capture-pane (poll
 // loop), load-buffer, paste-buffer, send-keys in order with the right args.
 func TestSendPlan_HappyPath_Order(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	fake := &sendPlanRecordingFactory{
 		// Marker missing on first poll, present on second — exercises the
 		// poll loop without waiting the full deadline.
@@ -952,6 +1048,9 @@ func TestSendPlan_HappyPath_Order(t *testing.T) {
 }
 
 func TestSendPlan_CustomReadyMarker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{
 			"Welcome to Codex\n",
@@ -971,6 +1070,9 @@ func TestSendPlan_CustomReadyMarker(t *testing.T) {
 }
 
 func TestSendLineWithReadyMarker_UsesLiteralKeysAndEnter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{
 			"Welcome to Codex\n›\n",
@@ -1010,6 +1112,9 @@ func TestSendLineWithReadyMarker_UsesLiteralKeysAndEnter(t *testing.T) {
 }
 
 func TestSendLineWithReadyMarker_ReturnsErrorWhenCommandRemainsAtPrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	t.Parallel()
 
 	var calls []sendPlanCall
@@ -1047,6 +1152,9 @@ func TestSendLineWithReadyMarker_ReturnsErrorWhenCommandRemainsAtPrompt(t *testi
 }
 
 func TestSendLineWithReadyMarker_SucceedsWhenCommandLeavesPrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	t.Parallel()
 
 	captureCount := 0
@@ -1112,6 +1220,9 @@ func assertTmuxLiteralEnterOrder(t *testing.T, calls []sendPlanCall, line string
 // if capture-pane never returns the marker, SendPlan returns an error
 // without trying load-buffer / paste-buffer / send-keys.
 func TestSendPlan_ReadyMarkerNeverAppears_Errors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Claude — still loading\n"},
 	}
@@ -1147,6 +1258,9 @@ func TestSendPlan_ReadyMarkerNeverAppears_Errors(t *testing.T) {
 // only stable readiness signal in the captured pane is the input-box
 // prompt indicator (❯). SendPlan must detect that and proceed.
 func TestSendPlan_CustomStatuslineReady_Succeeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	const customStatuslinePane = ` ▐▛███▜▌   Claude Code v2.1.126
 ▝▜█████▛▘  Opus 4.7 (1M context) · Claude Max
   ▘▘ ▝▝    ~/.bossanova/worktrees/bossanova/add-a-scheduling-feature
@@ -1193,6 +1307,9 @@ func TestSendPlan_CustomStatuslineReady_Succeeds(t *testing.T) {
 // failure path was opaque ("ready marker not seen") because the daemon
 // also kills the tmux session as cleanup, leaving nothing to attach to.
 func TestSendPlan_TimeoutErrorIncludesPaneContents(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	const fingerprint = "AUTH-PROMPT-VISIBLE-IN-PANE"
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Claude\n" + fingerprint + "\nplease re-authenticate"},
@@ -1216,6 +1333,9 @@ func TestSendPlan_TimeoutErrorIncludesPaneContents(t *testing.T) {
 // of the tmux subcommands (paste-buffer) returns non-zero. SendPlan must
 // surface that as an error.
 func TestSendPlan_PasteBufferFails_Errors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	fake := &sendPlanRecordingFactory{
 		capturePaneOutputs: []string{"Welcome to Claude\n❯\n"},
 		failOnSubcommand: map[string]int{
@@ -1239,6 +1359,9 @@ func TestSendPlan_PasteBufferFails_Errors(t *testing.T) {
 // TestSendPlan_EmptySessionName_Errors guards the input validation so a
 // caller can't accidentally send a plan to no target.
 func TestSendPlan_EmptySessionName_Errors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	c := NewClient()
 	err := c.SendPlan(context.Background(), "", "plan body")
 	if err == nil {
@@ -1250,6 +1373,9 @@ func TestSendPlan_EmptySessionName_Errors(t *testing.T) {
 // the plan through tmux load-buffer's stdin (rather than as an argv).
 // We use a real shell command (`cat > tmpfile`) to capture stdin.
 func TestSendPlan_LoadBufferReceivesPlanStdin(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	tmpFile := t.TempDir() + "/load-buffer-stdin"
 
 	captureCalls := atomic.Int32{}

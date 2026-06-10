@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -154,8 +156,9 @@ func TestLocalDistinctIDUsesHyphenatedSharedHelper(t *testing.T) {
 }
 
 func TestTelemetryDistinctIDUsesSignedInEmail(t *testing.T) {
-	enableCommandTelemetryForTest(t)
+	testEnv := enableCommandTelemetryForTest(t)
 	writeAuthTokensForTest(t, "person@example.com")
+	assertAuthTokensStoredInTestHome(t, testEnv)
 
 	got := commandDistinctID()
 	want := telemetry.UserDistinctID("person@example.com")
@@ -165,8 +168,9 @@ func TestTelemetryDistinctIDUsesSignedInEmail(t *testing.T) {
 }
 
 func TestIdentifySignedInUserSendsEmailProperty(t *testing.T) {
-	enableCommandTelemetryForTest(t)
+	testEnv := enableCommandTelemetryForTest(t)
 	writeAuthTokensForTest(t, "person@example.com")
+	assertAuthTokensStoredInTestHome(t, testEnv)
 	rec := &fakeTelemetry{}
 
 	identifyCommandUser(context.Background(), rec)
@@ -184,8 +188,9 @@ func TestIdentifySignedInUserSendsEmailProperty(t *testing.T) {
 }
 
 func TestCaptureAuthChangedAliasesLocalUserOnLogin(t *testing.T) {
-	enableCommandTelemetryForTest(t)
+	testEnv := enableCommandTelemetryForTest(t)
 	writeAuthTokensForTest(t, "person@example.com")
+	assertAuthTokensStoredInTestHome(t, testEnv)
 	rec := &fakeTelemetry{}
 
 	captureAuthChanged(context.Background(), rec, "login")
@@ -242,8 +247,20 @@ func TestCaptureAuthChangedWithEmailPreservesLogoutUserIdentity(t *testing.T) {
 	}
 }
 
-func enableCommandTelemetryForTest(t *testing.T) {
+type commandTelemetryTestEnv struct {
+	home         string
+	originalHome string
+}
+
+func enableCommandTelemetryForTest(t *testing.T) commandTelemetryTestEnv {
 	t.Helper()
+	originalHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	testHome := t.TempDir()
+	t.Setenv("HOME", testHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
 	_, cleanup := setupTestConfigEnv(t)
 	t.Cleanup(cleanup)
 	t.Setenv("BOSS_KEYRING_BACKEND", "file")
@@ -252,6 +269,7 @@ func enableCommandTelemetryForTest(t *testing.T) {
 	if err := config.Save(settings); err != nil {
 		t.Fatalf("config.Save: %v", err)
 	}
+	return commandTelemetryTestEnv{home: testHome, originalHome: originalHome}
 }
 
 func writeAuthTokensForTest(t *testing.T, email string) {
@@ -267,6 +285,25 @@ func writeAuthTokensForTest(t *testing.T, email string) {
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}); err != nil {
 		t.Fatalf("save tokens: %v", err)
+	}
+}
+
+func assertAuthTokensStoredInTestHome(t *testing.T, testEnv commandTelemetryTestEnv) {
+	t.Helper()
+	tokenPath := filepath.Join(testEnv.home, ".config", "bossanova", "keyring", "workos-tokens")
+	if _, err := os.Stat(tokenPath); err != nil {
+		t.Fatalf("auth tokens file = %q, stat: %v", tokenPath, err)
+	}
+	originalTokenPath := filepath.Join(testEnv.originalHome, ".config", "bossanova", "keyring", "workos-tokens")
+	if filepath.Clean(tokenPath) == filepath.Clean(originalTokenPath) {
+		t.Fatalf("auth tokens file = %q, want path outside caller home %q", tokenPath, testEnv.originalHome)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("os.UserHomeDir: %v", err)
+	}
+	if home != testEnv.home {
+		t.Fatalf("os.UserHomeDir() = %q, want test home %q", home, testEnv.home)
 	}
 }
 

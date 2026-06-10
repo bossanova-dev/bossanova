@@ -17,6 +17,7 @@ import (
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/plugin"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // --- mock types ---
@@ -610,6 +611,44 @@ func TestRouteTask_AutoMerge_RebaseFailureCreatesRepairSession(t *testing.T) {
 	}
 	if updatedStatus != models.TaskMappingStatusInProgress {
 		t.Fatalf("status = %d, want InProgress", updatedStatus)
+	}
+}
+
+func TestHandleCreateSession_DependabotTaskLeavesAgentResolutionToSessionCreator(t *testing.T) {
+	var capturedOpts CreateSessionOpts
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, opts CreateSessionOpts) (*models.Session, error) {
+				capturedOpts = opts
+				return &models.Session{ID: "session-1"}, nil
+			},
+		}
+	})
+
+	orch.handleCreateSession(context.Background(), &bossanovav1.TaskItem{
+		ExternalId:     "dependabot:pr:git@github.com:recurser/bossanova.git:426",
+		Title:          "chore(web)(deps-dev): bump @apollo/client",
+		Plan:           "Repair failing Dependabot check.",
+		Action:         bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+		ExistingBranch: "dependabot/npm_and_yarn/apollo-client-4.2.2",
+		Labels:         []string{"dependabot"},
+	}, repoInfo{
+		id:         "r1",
+		originURL:  "git@github.com:recurser/bossanova.git",
+		baseBranch: "main",
+	}, &models.TaskMapping{ID: "tm-1"}, false)
+
+	if got := capturedOpts.AgentName; got != "" {
+		t.Fatalf("AgentName = %q, want empty so SessionCreator applies daemon default", got)
+	}
+	if got := capturedOpts.SkipSetupScript; !got {
+		t.Fatalf("SkipSetupScript = false, want true for dependabot task")
+	}
+	if got := capturedOpts.HeadBranch; got != "dependabot/npm_and_yarn/apollo-client-4.2.2" {
+		t.Fatalf("HeadBranch = %q, want dependabot branch", got)
+	}
+	if got := capturedOpts.BaseBranch; got != "main" {
+		t.Fatalf("BaseBranch = %q, want repo default main", got)
 	}
 }
 
@@ -1888,6 +1927,104 @@ func TestRouteTask_CreateSession_Error(t *testing.T) {
 	}
 }
 
+func TestRouteTask_CreateSession_DuplicateActiveSessionDeletesMapping(t *testing.T) {
+	var updatedStatus models.TaskMappingStatus
+	var statusUpdated bool
+	var deletedMappingID string
+	prNumber := 77
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, _ CreateSessionOpts) (*models.Session, error) {
+				return nil, fmt.Errorf("create session: %w", &session.DuplicateActivePRSessionError{
+					ExistingSessionID: "sess-existing",
+					RepoID:            "r1",
+					PRNumber:          prNumber,
+				})
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					updatedStatus = *params.Status
+					statusUpdated = true
+				}
+				return &models.TaskMapping{}, nil
+			},
+			deleteFn: func(_ context.Context, id string) error {
+				deletedMappingID = id
+				return nil
+			},
+		}
+	})
+
+	orch.routeTask(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:77",
+		Title:      "Bump failing-pkg",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+	}, repoInfo{id: "r1", originURL: "repo"}, "dependabot")
+
+	if statusUpdated {
+		t.Errorf("expected no terminal status update when duplicate session exists, got %d", updatedStatus)
+	}
+	if deletedMappingID == "" {
+		t.Fatal("expected duplicate task mapping to be deleted")
+	}
+}
+
+func TestHandleCreateSession_AutoMergeFallbackDuplicatePreservesMappingCooldown(t *testing.T) {
+	prNumber := 77
+	var updatedStatus models.TaskMappingStatus
+	var persistedLastError *string
+	var deletedMappingID string
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sessionCreator = &mockSessionCreatorOrch{
+			createFn: func(_ context.Context, _ CreateSessionOpts) (*models.Session, error) {
+				return nil, fmt.Errorf("create session: %w", &session.DuplicateActivePRSessionError{
+					ExistingSessionID: "sess-existing",
+					RepoID:            "r1",
+					PRNumber:          prNumber,
+				})
+			},
+		}
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			updateFn: func(_ context.Context, _ string, params db.UpdateTaskMappingParams) (*models.TaskMapping, error) {
+				if params.Status != nil {
+					updatedStatus = *params.Status
+				}
+				if params.LastError != nil {
+					persistedLastError = *params.LastError
+				}
+				return &models.TaskMapping{}, nil
+			},
+			deleteFn: func(_ context.Context, id string) error {
+				deletedMappingID = id
+				return nil
+			},
+		}
+	})
+
+	orch.handleCreateSession(context.Background(), &bossanovav1.TaskItem{
+		ExternalId: "dependabot:pr:repo:77",
+		Title:      "Repair rebase: Bump failing-pkg",
+		Action:     bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
+		Labels:     []string{"dependabot"},
+	}, repoInfo{id: "r1", originURL: "repo"}, &models.TaskMapping{ID: "tm-auto-merge"}, true)
+
+	if updatedStatus != models.TaskMappingStatusFailed {
+		t.Fatalf("status = %d, want Failed to preserve auto-merge retry cooldown", updatedStatus)
+	}
+	if persistedLastError == nil || !strings.Contains(*persistedLastError, "sess-existing") {
+		t.Fatalf("LastError = %v, want duplicate session details", persistedLastError)
+	}
+	if deletedMappingID != "" {
+		t.Fatalf("mapping was deleted: %q", deletedMappingID)
+	}
+}
+
 func TestRouteTask_CreateSession_Error_DequeuesNext(t *testing.T) {
 	dequeued := false
 
@@ -2018,6 +2155,9 @@ func TestRouteTask_CreateSession_DependabotLabel_SetsSkipSetupScript(t *testing.
 	if !capturedOpts.SkipSetupScript {
 		t.Error("expected SkipSetupScript=true for task with dependabot label")
 	}
+	if !capturedOpts.PreventDuplicateActiveSession {
+		t.Error("expected PreventDuplicateActiveSession=true for task with dependabot label")
+	}
 }
 
 func TestRouteTask_CreateSession_NoDependabotLabel_NoSkipSetupScript(t *testing.T) {
@@ -2044,6 +2184,9 @@ func TestRouteTask_CreateSession_NoDependabotLabel_NoSkipSetupScript(t *testing.
 
 	if capturedOpts.SkipSetupScript {
 		t.Error("expected SkipSetupScript=false for task without dependabot label")
+	}
+	if capturedOpts.PreventDuplicateActiveSession {
+		t.Error("expected PreventDuplicateActiveSession=false for task without dependabot label")
 	}
 }
 

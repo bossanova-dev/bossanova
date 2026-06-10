@@ -66,6 +66,9 @@ func (m *hookMockSessionStore) ListActiveWithRepo(context.Context, string) ([]*d
 func (m *hookMockSessionStore) ListWithRepo(context.Context, string) ([]*db.SessionWithRepo, error) {
 	panic("not used")
 }
+func (m *hookMockSessionStore) ListByRepoAndPR(context.Context, string, int) ([]*db.SessionWithRepo, error) {
+	panic("not used")
+}
 func (m *hookMockSessionStore) ListArchived(context.Context, string) ([]*models.Session, error) {
 	panic("not used")
 }

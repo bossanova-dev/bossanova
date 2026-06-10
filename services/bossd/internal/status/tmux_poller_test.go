@@ -313,6 +313,9 @@ func (m *mockSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*d
 func (m *mockSessionStore) ListWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
 	return nil, nil
 }
+func (m *mockSessionStore) ListByRepoAndPR(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+	return nil, nil
+}
 func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }
@@ -390,6 +393,9 @@ func (f *mockTmuxFactory) factory(ctx context.Context, name string, args ...stri
 }
 
 func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-chat1"
 	agentSessionID := "claude-1"
@@ -423,6 +429,9 @@ func TestTmuxStatusPoller_QuestionDetected(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-chat2"
 	agentSessionID := "claude-2"
@@ -456,6 +465,9 @@ func TestTmuxStatusPoller_WorkingDetected(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_RegisterChatEmptyPaneSeedsLastOutputAt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-empty"
 	agentSessionID := "claude-empty"
@@ -500,6 +512,9 @@ func TestTmuxStatusPoller_RegisterChatEmptyPaneSeedsLastOutputAt(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-chat3"
 	agentSessionID := "claude-3"
@@ -554,6 +569,9 @@ func TestTmuxStatusPoller_IdleDetected(t *testing.T) {
 // plugin must be the provider session ID (codex's rollout key), not the
 // daemon-internal AgentSessionID.
 func TestTmuxStatusPoller_RefreshesPlaceholderChatTitle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-title"
 	agentSessionID := "codex-local"
@@ -611,6 +629,9 @@ func TestTmuxStatusPoller_RefreshesPlaceholderChatTitle(t *testing.T) {
 // refresh placeholder titles — once a real title is set (either by an
 // earlier refresh or a user rename), the plugin must not be asked again.
 func TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-title-custom"
 	agentSessionID := "codex-custom"
@@ -661,6 +682,9 @@ func TestTmuxStatusPoller_DoesNotOverwriteCustomChatTitle(t *testing.T) {
 // user_message envelope, and overwriting "New chat" with "" would be a
 // regression.
 func TestTmuxStatusPoller_LeavesTitleWhenPluginReturnsEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-title-empty"
 	agentSessionID := "codex-empty"
@@ -706,6 +730,9 @@ func TestTmuxStatusPoller_LeavesTitleWhenPluginReturnsEmpty(t *testing.T) {
 }
 
 func TestShouldRefreshChatTitle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tests := []struct {
 		title string
 		want  bool
@@ -730,6 +757,9 @@ func TestShouldRefreshChatTitle(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	agentSessionID := "claude-dead"
 	tmuxName := "boss-test-dead"
@@ -761,6 +791,9 @@ func TestTmuxStatusPoller_DeadSessionCleanup(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_DeadSessionStopsTracker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	agentSessionID := "claude-dead-working"
 	tmuxName := "boss-test-dead-working"
@@ -807,6 +840,9 @@ func TestTmuxStatusPoller_DeadSessionStopsTracker(t *testing.T) {
 // from polling until daemon restart, leaving the UI showing IDLE while the pane
 // actually displayed a question prompt.
 func TestTmuxStatusPoller_RediscoversDroppedChat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-test-rediscover"
 	agentSessionID := "claude-rediscover"
@@ -847,6 +883,9 @@ func TestTmuxStatusPoller_RediscoversDroppedChat(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxClient := tmux.NewClient()
 	poller := NewTmuxStatusPoller(tracker, &mockChatStore{chats: map[string]*models.AgentChat{}}, nil, tmuxClient, claudeAgentClients(), zerolog.Nop())
@@ -867,6 +906,9 @@ func TestTmuxStatusPoller_RegisterUnregister(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-boot-idle"
 	agentSessionID := "claude-boot-idle"
@@ -907,6 +949,9 @@ func TestTmuxStatusPoller_Bootstrap_IdleByDefault(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-boot-question"
 	agentSessionID := "claude-boot-question"
@@ -944,6 +989,9 @@ func TestTmuxStatusPoller_Bootstrap_QuestionDetected(t *testing.T) {
 // has already answered, Bootstrap must report WORKING (not IDLE) so the UI
 // doesn't flash IDLE before the first poll corrects it.
 func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tmuxName := "boss-boot-suppress"
 	agentSessionID := "claude-boot-suppress"
 	sessionID := "sess-boot-suppress"
@@ -998,6 +1046,9 @@ func TestTmuxStatusPoller_Bootstrap_QuestionSuppressedReportsWorking(t *testing.
 }
 
 func TestTmuxStatusPoller_LastTurnIsUserUsesProviderSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tmuxName := "boss-provider-status"
 	providerSessionID := "codex-real-id"
 	sessionID := "sess-provider-status"
@@ -1034,6 +1085,9 @@ func TestTmuxStatusPoller_LastTurnIsUserUsesProviderSessionID(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 	tmuxName := "boss-boot-dead"
 	agentSessionID := "claude-boot-dead"
@@ -1068,6 +1122,9 @@ func TestTmuxStatusPoller_Bootstrap_DeadSessionSkipped(t *testing.T) {
 }
 
 func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tracker := NewTracker()
 
 	chatStore := &mockChatStore{
@@ -1097,6 +1154,9 @@ func TestTmuxStatusPoller_Bootstrap_NoChatsTmux(t *testing.T) {
 // JSONL transcript's last meaningful turn is a user message, status is
 // downgraded out of QUESTION and falls through to normal working detection.
 func TestTmuxStatusPoller_QuestionSuppressedWhenUserAnswered(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	tmuxName := "boss-test-suppress"
 	agentSessionID := "claude-suppress"
 	sessionID := "sess-suppress"
@@ -1250,6 +1310,9 @@ func (c *recordingAgentClient) TranscriptExists(context.Context, *pb.TranscriptE
 // claude/codex pane formats. With two clients in the registry and two chats
 // (one per agent), each client's HasQuestionPrompt should fire exactly once.
 func TestPollOnceDispatchesQuestionPromptByAgent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	t.Parallel()
 
 	claudeName := "boss-dispatch-claude"
@@ -1300,6 +1363,9 @@ func TestPollOnceDispatchesQuestionPromptByAgent(t *testing.T) {
 // stuck IDLE-forever loop). The pane is treated as not-a-question, so the
 // chat falls through to working/idle detection based on capture diffs.
 func TestPollOnceMissingAgentClientFallsThroughToIdle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux status poller test in -short; run make test-bossd for coverage")
+	}
 	t.Parallel()
 	tracker := NewTracker()
 	tmuxName := "boss-missing-agent"

@@ -273,8 +273,14 @@ func (m LoginModel) View() tea.View {
 		content = padding.Render(m.spinner.View() + "Requesting device code...")
 
 	case loginPhasePolling:
+		authCodeLine := lipgloss.NewStyle().Foreground(colorInfo).Render(
+			fmt.Sprintf(
+				"Your authentication code: %s",
+				lipgloss.NewStyle().Bold(true).Foreground(colorInfo).Render(m.userCode),
+			),
+		)
 		content = padding.Render(
-			fmt.Sprintf("Your authentication code: %s\n\n", styleSelected.Render(m.userCode))+
+			authCodeLine+"\n\n"+
 				fmt.Sprintf("Visit: %s\n\n", m.verifyURL)+
 				m.spinner.View()+"Waiting for authentication...",
 		) + "\n" +

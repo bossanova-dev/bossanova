@@ -514,6 +514,37 @@ func TestSubscriptionPollCommandUsesBoundedAttempt(t *testing.T) {
 	}
 }
 
+func TestSubscriptionPollTickRequiresCurrentWaitingAttempt(t *testing.T) {
+	fake := &fakeSubscriptionCloudAccess{
+		statuses: []*pb.CloudAccessStatus{{State: pb.CloudAccessState_CLOUD_ACCESS_STATE_PENDING_ENTITLEMENT_REFRESH}},
+	}
+	m := newSubscriptionTestLoginModel(fake)
+	m.subscription = subscriptionState{phase: subscriptionPhaseWaiting, attempt: 2}
+
+	if _, cmd := m.updateSubscriptionPollTick(subscriptionPollTickMsg{attempt: 1}); cmd != nil {
+		t.Fatalf("stale attempt returned command %T, want nil", cmd)
+	}
+
+	m.subscription.phase = subscriptionPhaseChecking
+	if _, cmd := m.updateSubscriptionPollTick(subscriptionPollTickMsg{attempt: 2}); cmd != nil {
+		t.Fatalf("non-waiting phase returned command %T, want nil", cmd)
+	}
+
+	m.subscription.phase = subscriptionPhaseWaiting
+	_, cmd := m.updateSubscriptionPollTick(subscriptionPollTickMsg{attempt: 2})
+	if cmd == nil {
+		t.Fatal("current waiting attempt returned nil command")
+	}
+	msg := cmd()
+	got, ok := msg.(subscriptionAccessMsg)
+	if !ok {
+		t.Fatalf("poll command returned %T, want subscriptionAccessMsg", msg)
+	}
+	if got.attempt != 2 {
+		t.Fatalf("attempt = %d, want 2", got.attempt)
+	}
+}
+
 func TestSubscriptionTimeoutCommandUsesBoundedAttempt(t *testing.T) {
 	m := newSubscriptionTestLoginModel(&fakeSubscriptionCloudAccess{})
 	msg := m.subscriptionTimeout(3, time.Nanosecond)(time.Now())

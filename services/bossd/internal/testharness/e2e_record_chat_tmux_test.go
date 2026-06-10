@@ -155,6 +155,9 @@ func recordChatSetup(t *testing.T, fake *fakeTmux) (*testharness.Harness, contex
 // (resume=false) drives `tmux new-session` with `claude --session-id <id>`
 // and persists the resulting session name on the chat row + response.
 func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	fake := &fakeTmux{} // hasSess=false, so new-session must fire
 	h, ctx, sessionID := recordChatSetup(t, fake)
 
@@ -203,6 +206,9 @@ func TestE2E_RecordChat_CreatesTmuxSession(t *testing.T) {
 // stat in spawnChatTmux requires the JSONL fixture to actually exist on
 // disk for --resume to fire; without it, --session-id is the safe fallback.
 func TestE2E_RecordChat_ResumePassesResumeFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	fake := &fakeTmux{}
 	h, ctx, sessionID := recordChatSetup(t, fake)
 	writeFakeTranscript(t, "/tmp/worktrees/tmux-app/tmux-recordchat", "claude-resume-007")
@@ -236,6 +242,9 @@ func TestE2E_RecordChat_ResumePassesResumeFlag(t *testing.T) {
 // already alive — exactly the behavior boss attach relies on for "kill
 // bossd, restart, reattach" to work without losing chat state.
 func TestE2E_RecordChat_IdempotentReuseExistingSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	fake := &fakeTmux{}
 	h, ctx, sessionID := recordChatSetup(t, fake)
 
@@ -289,6 +298,9 @@ func TestE2E_RecordChat_IdempotentReuseExistingSession(t *testing.T) {
 // tmux session and skips re-creation. This is the property the user lost
 // in PR #179 and is what this whole change exists to restore.
 func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	dbPath := t.TempDir() + "/bossd.db"
 
 	// --- First daemon "lifetime" ---
@@ -372,6 +384,9 @@ func TestE2E_RecordChat_SurvivesDaemonRestart(t *testing.T) {
 // hardcoded "claude" inside spawnChatTmux and ignored the agent name on
 // the chat row entirely.
 func TestE2E_RecordChat_CodexAgentSpawnsCodexCmd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	fake := &fakeTmux{}
 	h, ctx, sessionID := recordChatSetup(t, fake)
 
@@ -403,6 +418,9 @@ func TestE2E_RecordChat_CodexAgentSpawnsCodexCmd(t *testing.T) {
 }
 
 func TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	tmuxFactory := realTmuxFactory(t)
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
@@ -473,6 +491,9 @@ func TestE2E_RecordChat_CodexRealTmuxDiscoversProviderSessionID(t *testing.T) {
 // LogTeeArgv when logPath is empty; this test asserts the resulting
 // tmux argv is well-formed (no empty `tee ”` appendage).
 func TestE2E_RecordChat_EmptyLogPathDoesNotInvokeTee(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	fake := &fakeTmux{}
 	h, ctx, sessionID := recordChatSetup(t, fake)
 
@@ -505,6 +526,9 @@ func TestE2E_RecordChat_EmptyLogPathDoesNotInvokeTee(t *testing.T) {
 // not error. This keeps the daemon usable in CI / headless environments
 // without tmux.
 func TestE2E_RecordChat_TmuxUnavailableSkipsCreate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux e2e test in -short; run make test-bossd for coverage")
+	}
 	fake := &fakeTmux{availErr: true}
 	h, ctx, sessionID := recordChatSetup(t, fake)
 

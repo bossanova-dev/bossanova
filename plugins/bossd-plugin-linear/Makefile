@@ -15,12 +15,8 @@ format:
 	gofmt -w .
 	golangci-lint run ./...
 
-# Race detector is opt-in locally (slow). CI sets RACE=1; locally use `RACE=1 make test`.
-RACE_FLAG := $(if $(RACE),-race,)
-
-## test: Run tests with coverage (set RACE=1 to enable race detector)
-test:
-	go test $(RACE_FLAG) -timeout 300s -coverprofile=coverage.out ./...
+GO_TEST_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk
 
 ## build: Build the plugin binary
 build:

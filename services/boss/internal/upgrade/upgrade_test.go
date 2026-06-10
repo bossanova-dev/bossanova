@@ -633,6 +633,54 @@ func TestInstallerInstallRollsBackOnReplaceFailure(t *testing.T) {
 	assertFileContent(t, filepath.Join(binDir, "bossd"), "old bossd")
 }
 
+func TestInstallerDownloadTextRetriesTransientGatewayTimeout(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
+			return
+		}
+		_, _ = fmt.Fprint(w, "checksum")
+	}))
+	defer server.Close()
+
+	got, err := (Installer{}).downloadText(context.Background(), server.URL+"/boss.sha256")
+	if err != nil {
+		t.Fatalf("downloadText() error = %v", err)
+	}
+	if got != "checksum" {
+		t.Fatalf("downloadText() = %q, want checksum", got)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestInstallerDownloadTextDoesNotRetryPermanentNotFound(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	err := error(nil)
+	if _, err = (Installer{}).downloadText(context.Background(), server.URL+"/missing.sha256"); err == nil {
+		t.Fatal("downloadText() error = nil, want 404")
+	}
+	if !strings.Contains(err.Error(), "HTTP status 404") {
+		t.Fatalf("downloadText() error = %v, want 404 status", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
 func TestVerifyReleaseTag(t *testing.T) {
 	t.Parallel()
 

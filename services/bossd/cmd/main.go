@@ -700,7 +700,6 @@ func run(opts runOpts) error {
 
 	// --- Task Orchestrator ---
 
-	sessionCreator := taskorchestrator.NewSessionCreator(sessions, lifecycle, log.Logger)
 	// Warn if tmux is not available — interactive sessions will fail at attach
 	// time, and cron fires will record fire_failed (cron-spawned sessions are
 	// hosted in tmux with no headless fallback).
@@ -717,6 +716,14 @@ func run(opts runOpts) error {
 		return agentRunner
 	}
 	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
+	sessionCreator := taskorchestrator.NewSessionCreatorWithDefaultAgentProviderAndLiveness(sessions, lifecycle, func() string {
+		loaded, err := config.Load()
+		if err != nil {
+			log.Warn().Err(err).Msg("load config for orchestrated session default agent")
+			return settings.DefaultAgent
+		}
+		return loaded.DefaultAgent
+	}, livenessChecker, log.Logger)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,

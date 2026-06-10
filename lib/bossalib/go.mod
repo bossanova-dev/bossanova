@@ -1,20 +1,20 @@
 module github.com/recurser/bossalib
 
-go 1.25.0
+go 1.25.7
 
 require (
-	connectrpc.com/connect v1.19.1
+	connectrpc.com/connect v1.20.0
 	github.com/99designs/keyring v1.2.2
 	github.com/getsentry/sentry-go v0.46.2
 	github.com/gofrs/flock v0.13.0
-	github.com/hashicorp/go-plugin v1.7.0
-	github.com/posthog/posthog-go v1.12.5
-	github.com/pressly/goose/v3 v3.27.0
+	github.com/hashicorp/go-plugin v1.8.0
+	github.com/posthog/posthog-go v1.14.0
+	github.com/pressly/goose/v3 v3.27.1
 	github.com/qmuntal/stateless v1.8.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/zerolog v1.35.1
 	go.uber.org/goleak v1.3.0
-	google.golang.org/grpc v1.79.3
+	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
@@ -35,7 +35,7 @@ require (
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/oklog/run v1.1.0 // indirect
@@ -44,10 +44,10 @@ require (
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260217215200-42d3e9bedb6d // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260420184626-e10c466a9529 // indirect
 )

@@ -83,7 +83,7 @@ func TestE2ECron_DaemonRestart_ReloadsAndFires(t *testing.T) {
 	// Build a fresh scheduler from the second harness — this mirrors the
 	// daemon boot path. Use MaxConcurrent=1 for determinism.
 	logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
-	creator := taskorchestrator.NewSessionCreator(h2.Sessions, h2.Lifecycle, logger)
+	creator := taskorchestrator.NewSessionCreator(h2.Sessions, h2.Lifecycle, "claude", logger)
 	sched2 := cron.New(cron.Config{
 		Store:         h2.CronJobs,
 		Sessions:      h2.Sessions,
@@ -450,7 +450,7 @@ func TestE2ECron_ConcurrencyCap(t *testing.T) {
 
 	// Use MaxConcurrent=3 (the production default) to match the plan.
 	logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
-	creator := taskorchestrator.NewSessionCreator(h.Sessions, h.Lifecycle, logger)
+	creator := taskorchestrator.NewSessionCreator(h.Sessions, h.Lifecycle, "claude", logger)
 	sched := cron.New(cron.Config{
 		Store:         h.CronJobs,
 		Sessions:      h.Sessions,

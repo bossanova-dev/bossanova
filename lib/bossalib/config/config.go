@@ -5,14 +5,57 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"testing"
 	"time"
 )
 
 const settingsPathEnv = "BOSS_SETTINGS_PATH"
+
+// refuseDefaultEnv, when set to "1", marks the process as running under test so
+// SaveTo refuses to overwrite the developer's real settings.json. The test
+// harnesses set it in the boss subprocess (where testing.Testing() is false) so
+// an E2E test that forgets to point BOSS_SETTINGS_PATH at a temp file fails
+// loudly instead of clobbering the real file. It has no effect on shipped
+// binaries (unset). Reads are never blocked — only writes to the real default.
+// Intended only for test harnesses: do not set it in a real shell, or the
+// shipped binary will refuse to save its settings.
+const refuseDefaultEnv = "BOSS_REFUSE_DEFAULT_SETTINGS"
+
+// realDefaultPath is the OS default settings path computed once at package init,
+// before any t.Setenv can redirect HOME. It is the path the under-test guard
+// refuses. Empty if it cannot be resolved (the guard then no-ops).
+var realDefaultPath = func() string {
+	if dir, err := DefaultAppDataDir(); err == nil {
+		return filepath.Join(dir, "settings.json")
+	}
+	return ""
+}()
+
+// underTest reports whether we are running inside the test suite, either in the
+// test binary itself (testing.Testing()) or in a subprocess spawned by a test
+// harness (refuseDefaultEnv sentinel, since testing.Testing() is false there).
+func underTest() bool {
+	return testing.Testing() || os.Getenv(refuseDefaultEnv) == "1"
+}
+
+// guardRealDefaultWrite returns an error when a test would overwrite the
+// developer's real settings.json. It is the pure, unit-testable core of the
+// write guard: reads are never blocked, only a write whose resolved path equals
+// the real default location while running under test. Tests must isolate via
+// BOSS_SETTINGS_PATH (a temp file) or a redirected HOME so path != realDefault.
+func guardRealDefaultWrite(path string, inTest bool, realDefault string) error {
+	if inTest && realDefault != "" && filepath.Clean(path) == realDefault {
+		return fmt.Errorf(
+			"refusing to overwrite the real settings path %q under test: set %s to an absolute temp path or redirect HOME to a temp dir",
+			realDefault, settingsPathEnv)
+	}
+	return nil
+}
 
 // PluginConfig describes a single plugin to load.
 type PluginConfig struct {
@@ -188,16 +231,29 @@ func scanForPlugins(dir string) []PluginConfig {
 		if e.IsDir() || !strings.HasPrefix(name, pluginPrefix) {
 			continue
 		}
+		path := filepath.Join(dir, name)
+		if !isExecutableFile(path) {
+			continue
+		}
 		if hasPlatformSuffix(name) {
 			continue
 		}
 		plugins = append(plugins, PluginConfig{
 			Name:    name[len(pluginPrefix):],
-			Path:    filepath.Join(dir, name),
+			Path:    path,
 			Enabled: true,
 		})
 	}
 	return plugins
+}
+
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	mode := info.Mode()
+	return mode.IsRegular() && mode.Perm()&0o111 != 0
 }
 
 func hasPlatformSuffix(name string) bool {
@@ -522,7 +578,11 @@ func Save(s Settings) error {
 
 // SaveTo writes settings to a specific path, creating parent directories as needed.
 func SaveTo(path string, s Settings) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := guardRealDefaultWrite(path, underTest(), realDefaultPath); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -530,5 +590,50 @@ func SaveTo(path string, s Settings) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
+	_ = syncDir(dir)
+	return nil
+}
+
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Sync(); err != nil && err != io.ErrUnexpectedEOF {
+		return err
+	}
+	return nil
 }

@@ -154,6 +154,9 @@ func repairFailureHint(sess *pb.Session) string {
 
 func repairFailureResolved(sess *pb.Session) bool {
 	switch sess.GetDisplayStatus() {
+	case pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+		pb.DisplayStatus_DISPLAY_STATUS_CLOSED:
+		return true
 	case pb.DisplayStatus_DISPLAY_STATUS_PASSING:
 		return true
 	case pb.DisplayStatus_DISPLAY_STATUS_CHECKING:

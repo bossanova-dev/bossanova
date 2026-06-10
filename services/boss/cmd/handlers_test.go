@@ -469,6 +469,48 @@ func TestEnabledAgentProvidersUsesLoadedAgentMetadata(t *testing.T) {
 	}
 }
 
+func TestEnabledAgentProvidersFiltersSelectedSessionAgent(t *testing.T) {
+	settings := config.Settings{
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: true},
+			{Name: "codex", Enabled: true},
+			{Name: "codex", Enabled: true},
+		},
+	}
+	agents := []client.AgentInfo{
+		{Name: "claude"},
+		{Name: "codex"},
+	}
+
+	got := enabledAgentProviders(settings, agents, "codex")
+
+	if !reflect.DeepEqual(got, []string{"codex"}) {
+		t.Fatalf("enabledAgentProviders = %v, want [codex]", got)
+	}
+}
+
+func TestEnabledAgentProvidersRequiresEnabledLoadedCLIBackedProvider(t *testing.T) {
+	settings := config.Settings{
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Enabled: false},
+			{Name: "codex", Enabled: true},
+			{Name: "opencode", Enabled: true},
+			{Name: "repair", Enabled: true},
+		},
+	}
+	agents := []client.AgentInfo{
+		{Name: "claude"},
+		{Name: "opencode"},
+		{Name: "repair"},
+	}
+
+	got := enabledAgentProviders(settings, agents, "")
+
+	if len(got) != 0 {
+		t.Fatalf("enabledAgentProviders = %v, want empty", got)
+	}
+}
+
 func TestRunAgentPreflightsUsesSelectedSessionWorktree(t *testing.T) {
 	oldCheck := checkAgentResolvableForPreflight
 	defer func() { checkAgentResolvableForPreflight = oldCheck }()

@@ -25,7 +25,11 @@ type CreateSessionOpts struct {
 	SkipSetupScript bool   // if true, skip running the repo's setup script (e.g. for dependabot PRs)
 	PRNumber        *int
 	PRURL           *string
-	AgentName       string // Agent plugin name; empty falls back to "claude".
+	AgentName       string // Agent plugin name; empty means use the daemon default agent.
+
+	// PreventDuplicateActiveSession is set for Dependabot repair sessions so
+	// one active PR/branch session covers repeated plugin emissions.
+	PreventDuplicateActiveSession bool
 
 	// Cron-session fields. Populated when the scheduler spawns a session.
 	// DeferPR and HookToken are persisted through to StartSession; they take
@@ -50,37 +54,99 @@ type SessionCreator interface {
 // lifecycleSessionCreator implements SessionCreator by creating a
 // session record in the DB and starting it via the Lifecycle.
 type lifecycleSessionCreator struct {
-	sessions  db.SessionStore
-	lifecycle SessionStarter
-	logger    zerolog.Logger
+	sessions             db.SessionStore
+	lifecycle            SessionStarter
+	defaultAgentProvider func() string
+	duplicateLiveness    SessionLivenessChecker
+	logger               zerolog.Logger
 }
 
 // NewSessionCreator creates a SessionCreator backed by the DB and Lifecycle.
 func NewSessionCreator(
 	sessions db.SessionStore,
 	lifecycle SessionStarter,
+	defaultAgent string,
+	logger zerolog.Logger,
+) SessionCreator {
+	return NewSessionCreatorWithDefaultAgentProvider(sessions, lifecycle, func() string {
+		return defaultAgent
+	}, logger)
+}
+
+// NewSessionCreatorWithDefaultAgentProvider creates a SessionCreator that
+// resolves the default agent at session creation time.
+func NewSessionCreatorWithDefaultAgentProvider(
+	sessions db.SessionStore,
+	lifecycle SessionStarter,
+	defaultAgentProvider func() string,
+	logger zerolog.Logger,
+) SessionCreator {
+	return NewSessionCreatorWithDefaultAgentProviderAndLiveness(sessions, lifecycle, defaultAgentProvider, nil, logger)
+}
+
+// NewSessionCreatorWithDefaultAgentProviderAndLiveness creates a SessionCreator
+// that can ignore stale early-state sessions during duplicate detection.
+func NewSessionCreatorWithDefaultAgentProviderAndLiveness(
+	sessions db.SessionStore,
+	lifecycle SessionStarter,
+	defaultAgentProvider func() string,
+	duplicateLiveness SessionLivenessChecker,
 	logger zerolog.Logger,
 ) SessionCreator {
 	return &lifecycleSessionCreator{
-		sessions:  sessions,
-		lifecycle: lifecycle,
-		logger:    logger.With().Str("component", "session-creator").Logger(),
+		sessions:             sessions,
+		lifecycle:            lifecycle,
+		defaultAgentProvider: defaultAgentProvider,
+		duplicateLiveness:    duplicateLiveness,
+		logger:               logger.With().Str("component", "session-creator").Logger(),
 	}
+}
+
+func (c *lifecycleSessionCreator) resolveAgentName(requested string) string {
+	if requested != "" {
+		return requested
+	}
+	if c.defaultAgentProvider != nil {
+		if defaultAgent := c.defaultAgentProvider(); defaultAgent != "" {
+			return defaultAgent
+		}
+	}
+	return "claude"
 }
 
 // CreateSession creates a session record and starts the lifecycle.
 // If HeadBranch is set, the lifecycle checks out the existing branch
 // (used for dependabot PRs that already have a branch).
 func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts CreateSessionOpts) (*models.Session, error) {
-	sess, err := c.sessions.Create(ctx, db.CreateSessionParams{
-		RepoID:     opts.RepoID,
-		Title:      opts.Title,
-		Plan:       opts.Plan,
-		BaseBranch: opts.BaseBranch,
-		PRNumber:   opts.PRNumber,
-		PRURL:      opts.PRURL,
-		AgentName:  opts.AgentName,
-	})
+	var sess *models.Session
+	agentName := c.resolveAgentName(opts.AgentName)
+	unlockStart := session.LockStartPath()
+	startLocked := true
+	defer func() {
+		if startLocked {
+			unlockStart()
+		}
+	}()
+	var err error
+	branchName := opts.BranchName
+	if branchName == "" {
+		branchName = opts.HeadBranch
+	}
+	if opts.PreventDuplicateActiveSession {
+		err = session.EnsureNoActivePROrBranchSessionWithLiveness(ctx, c.sessions, opts.RepoID, opts.PRNumber, opts.HeadBranch, c.isDuplicateSessionAlive)
+	}
+	if err == nil {
+		sess, err = c.sessions.Create(ctx, db.CreateSessionParams{
+			RepoID:     opts.RepoID,
+			Title:      opts.Title,
+			Plan:       opts.Plan,
+			BaseBranch: opts.BaseBranch,
+			PRNumber:   opts.PRNumber,
+			PRURL:      opts.PRURL,
+			AgentName:  agentName,
+			BranchName: branchName,
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -97,7 +163,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		CronJobID:       opts.CronJobID,
 		DeferPR:         opts.DeferPR,
 		HookToken:       opts.HookToken,
-		BranchName:      opts.BranchName,
+		BranchName:      branchName,
 	}); err != nil {
 		// StartSession failed mid-flight (e.g. worktree create, hook config
 		// write, or claude.Start). Drop the half-started session row so it
@@ -111,6 +177,8 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 		}
 		return nil, fmt.Errorf("start session %s: %w", sess.ID, err)
 	}
+	unlockStart()
+	startLocked = false
 
 	// Re-fetch to get updated fields from StartSession (worktree path, branch, state).
 	sess, err = c.sessions.Get(ctx, sess.ID)
@@ -119,4 +187,11 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 	}
 
 	return sess, nil
+}
+
+func (c *lifecycleSessionCreator) isDuplicateSessionAlive(ctx context.Context, sessionID string) bool {
+	if c.duplicateLiveness == nil {
+		return true
+	}
+	return c.duplicateLiveness.IsSessionAlive(ctx, sessionID)
 }

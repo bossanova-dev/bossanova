@@ -106,6 +106,18 @@ func (m *mockSessionStore) ListWithRepo(_ context.Context, _ string) ([]*db.Sess
 	return result, nil
 }
 
+func (m *mockSessionStore) ListByRepoAndPR(_ context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []*db.SessionWithRepo
+	for _, s := range m.sessions {
+		if s.RepoID == repoID && s.PRNumber != nil && *s.PRNumber == prNumber && s.ArchivedAt == nil {
+			result = append(result, &db.SessionWithRepo{Session: s})
+		}
+	}
+	return result, nil
+}
+
 func (m *mockSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }

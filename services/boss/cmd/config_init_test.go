@@ -3,42 +3,21 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/recurser/bossalib/config"
 	"github.com/spf13/cobra"
 )
 
-// setupTestConfigEnv creates a temporary config directory and sets env vars
-// to make config.Path() use it. Returns cleanup function.
+// setupTestConfigEnv points config.Path() at an isolated temp settings file via
+// BOSS_SETTINGS_PATH so the test can never touch the developer's real
+// settings.json. It uses t.Setenv, so the env is restored automatically; the
+// returned cleanup is a no-op kept for call-site compatibility.
 func setupTestConfigEnv(t *testing.T) (settingsPath string, cleanup func()) {
 	t.Helper()
-	tempHome := t.TempDir()
-
-	var configDir string
-	if runtime.GOOS == "darwin" {
-		configDir = filepath.Join(tempHome, "Library", "Application Support", "bossanova")
-	} else {
-		configDir = filepath.Join(tempHome, ".config", "bossanova")
-	}
-	settingsPath = filepath.Join(configDir, "settings.json")
-
-	// Set USER_CONFIG_DIR or HOME to make config.Path() use our temp dir
-	oldHome := os.Getenv("HOME")
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-
-	_ = os.Setenv("HOME", tempHome)
-	if runtime.GOOS != "darwin" {
-		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(tempHome, ".config"))
-	}
-
-	cleanup = func() {
-		_ = os.Setenv("HOME", oldHome)
-		_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
-	}
-
-	return settingsPath, cleanup
+	settingsPath = filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("BOSS_SETTINGS_PATH", settingsPath)
+	return settingsPath, func() {}
 }
 
 func TestConfigInitValidPlugins(t *testing.T) {

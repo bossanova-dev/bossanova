@@ -18,6 +18,9 @@ func waitForSubscriptionWaitingView(t *testing.T, h *tuitest.Harness) {
 }
 
 func TestTUI_LoginFlow_ActiveSubscriptionReachesHome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -43,6 +46,9 @@ func TestTUI_LoginFlow_ActiveSubscriptionReachesHome(t *testing.T) {
 }
 
 func TestTUI_LoginFlow_NeedsSubscriptionShowsWaitingView(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -58,14 +64,19 @@ func TestTUI_LoginFlow_NeedsSubscriptionShowsWaitingView(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForSubscriptionWaitingView(t, h)
+	// The action bar renders a frame after the loading view, so poll for each
+	// action rather than checking the screen the instant the loading text appears.
 	for _, want := range []string{"[enter] re-open subscription page", "[esc] cancel"} {
-		if !h.Driver.ScreenContains(want) {
+		if err := h.Driver.WaitForText(waitTimeout, want); err != nil {
 			t.Fatalf("expected %q in subscription waiting view; screen:\n%s", want, h.Driver.Screen())
 		}
 	}
 }
 
 func TestTUI_LoginFlow_SubscriptionEnterReopensExistingCheckout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -94,6 +105,9 @@ func TestTUI_LoginFlow_SubscriptionEnterReopensExistingCheckout(t *testing.T) {
 }
 
 func TestTUI_LoginFlow_SubscriptionActivationReturnsHome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -124,6 +138,9 @@ func TestTUI_LoginFlow_SubscriptionActivationReturnsHome(t *testing.T) {
 }
 
 func TestTUI_LoginFlow_SubscriptionCancelIsRecoverable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -139,7 +156,7 @@ func TestTUI_LoginFlow_SubscriptionCancelIsRecoverable(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForSubscriptionWaitingView(t, h)
-	if !h.Driver.ScreenContains("[esc] cancel") {
+	if err := h.Driver.WaitForText(waitTimeout, "[esc] cancel"); err != nil {
 		t.Fatalf("expected subscription cancel action; screen:\n%s", h.Driver.Screen())
 	}
 	if err := h.Driver.SendEscape(); err != nil {
@@ -154,6 +171,9 @@ func TestTUI_LoginFlow_SubscriptionCancelIsRecoverable(t *testing.T) {
 }
 
 func TestTUI_LoginFlow_BillingUnavailableAllowsFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),

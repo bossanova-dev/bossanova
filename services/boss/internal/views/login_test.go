@@ -30,6 +30,24 @@ func TestLoginModelPollingUsesSingleSpinnerGap(t *testing.T) {
 	}
 }
 
+func TestLoginModelPollingAuthCodeLineIsBlue(t *testing.T) {
+	m := LoginModel{
+		spinner:   newStatusSpinner(),
+		phase:     loginPhasePolling,
+		userCode:  "DTPB-CZRQ",
+		verifyURL: "https://example.com/device?user_code=DTPB-CZRQ",
+	}
+
+	view := m.View().Content
+	authLine := "Your authentication code: DTPB-CZRQ"
+	if !strings.Contains(view, "38;2;76;167;248") {
+		t.Fatalf("polling view missing blue auth-code line styling:\n%q", view)
+	}
+	if !strings.Contains(stripANSI(view), authLine) {
+		t.Fatalf("polling view missing auth-code line text:\n%q", view)
+	}
+}
+
 func TestLoginModelRunsAfterAuthHookOnSuccess(t *testing.T) {
 	called := false
 	m := LoginModel{ctx: context.Background()}

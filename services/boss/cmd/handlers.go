@@ -372,6 +372,25 @@ var installUpgrade = func(ctx context.Context, plan upgrade.InstallPlan) error {
 	return upgrade.Installer{}.Install(ctx, plan)
 }
 
+var brewUpgradeBossanova = func(ctx context.Context, binDir string) (string, error) {
+	brew := brewExecutableForBinDir(binDir)
+	cmd := exec.CommandContext(ctx, brew, "upgrade", "bossanova-dev/tap/bossanova")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("brew upgrade bossanova-dev/tap/bossanova failed: %w\noutput:\n%s\nRun manually: brew upgrade bossanova-dev/tap/bossanova", err, strings.TrimSpace(string(out)))
+	}
+
+	prefixCmd := exec.CommandContext(ctx, brew, "--prefix", "bossanova-dev/tap/bossanova")
+	out, err := prefixCmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("brew --prefix bossanova-dev/tap/bossanova failed: %w\noutput:\n%s\nRun manually: brew --prefix bossanova-dev/tap/bossanova", err, strings.TrimSpace(string(out)))
+	}
+	prefix := strings.TrimSpace(string(out))
+	if prefix == "" {
+		return "", fmt.Errorf("brew --prefix bossanova-dev/tap/bossanova returned empty prefix")
+	}
+	return filepath.Join(prefix, "libexec", "plugins"), nil
+}
+
 // verifyUpgradeVersion confirms a user-supplied --version actually exists on
 // GitHub. Indirected through a var so tests can stub it without hitting the
 // network.
@@ -402,6 +421,16 @@ var loadSettings = config.Load
 var saveSettings = config.Save
 
 var discoverPlugins = config.DiscoverPlugins
+
+var upgradeLockPath = defaultUpgradeLockPath
+
+var installedPluginNames = []string{
+	"claude",
+	"codex",
+	"dependabot",
+	"linear",
+	"repair",
+}
 
 func launchSettings(now time.Time) config.Settings {
 	settings, err := loadSettings()
@@ -440,25 +469,64 @@ func defaultPluginDir(goos string) (string, error) {
 	}
 }
 
-func upgradePluginDir(goos string) (string, error) {
+func upgradePluginDir(goos, binDir string) (string, error) {
 	settings, err := loadSettings()
 	if err != nil {
 		return "", fmt.Errorf("load settings: %w", err)
 	}
-	if dir, ok, err := commonEnabledPluginDir(settings.Plugins); err != nil {
+	homebrewPluginDir, homebrewInstall := homebrewPluginDirForBinDir(binDir)
+	if dir, ok, err := commonEnabledPluginDir(settings.Plugins, homebrewPluginDir); err != nil {
 		return "", err
 	} else if ok {
 		return dir, nil
 	}
-	if dir, ok, err := commonEnabledPluginDir(discoverPlugins()); err != nil {
+	if dir, ok, err := commonEnabledPluginDir(discoverPlugins(), homebrewPluginDir); err != nil {
 		return "", err
 	} else if ok {
+		if homebrewInstall && isHomebrewCellarPluginDir(dir) {
+			return homebrewPluginDir, nil
+		}
 		if isCWDDevPluginDir(dir) {
 			return defaultPluginDir(goos)
 		}
 		return dir, nil
 	}
 	return defaultPluginDir(goos)
+}
+
+func homebrewPluginDirForBinDir(binDir string) (string, bool) {
+	formulaPrefix, _, ok := homebrewPrefixesForBinDir(binDir)
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(formulaPrefix, "libexec", "plugins"), true
+}
+
+func brewExecutableForBinDir(binDir string) string {
+	_, homebrewPrefix, ok := homebrewPrefixesForBinDir(binDir)
+	if ok && homebrewPrefix != "" {
+		candidate := filepath.Join(homebrewPrefix, "bin", "brew")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "brew"
+}
+
+func homebrewPrefixesForBinDir(binDir string) (string, string, bool) {
+	clean := filepath.Clean(binDir)
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	for i := 0; i+3 < len(parts); i++ {
+		if parts[i] == "Cellar" && parts[i+1] == "bossanova" && parts[i+3] == "bin" {
+			return filepath.FromSlash(strings.Join(parts[:i+3], "/")), filepath.FromSlash(strings.Join(parts[:i], "/")), true
+		}
+	}
+	return "", "", false
+}
+
+func isHomebrewCellarBinDir(binDir string) bool {
+	_, ok := homebrewPluginDirForBinDir(binDir)
+	return ok
 }
 
 func isCWDDevPluginDir(dir string) bool {
@@ -492,22 +560,60 @@ func isCWDDevPluginDir(dir string) bool {
 	}
 }
 
-func commonEnabledPluginDir(plugins []config.PluginConfig) (string, bool, error) {
-	dir := ""
+func commonEnabledPluginDir(plugins []config.PluginConfig, currentHomebrewPluginDir string) (string, bool, error) {
+	dirs := make(map[string]struct{})
+	homebrewDirs := make(map[string]struct{})
+	customDirs := make(map[string]struct{})
 	for _, plugin := range plugins {
 		if !plugin.Enabled || plugin.Path == "" {
 			continue
 		}
 		pluginDir := filepath.Clean(filepath.Dir(plugin.Path))
-		if dir == "" {
-			dir = pluginDir
-			continue
-		}
-		if pluginDir != dir {
-			return "", false, fmt.Errorf("enabled plugin paths span multiple directories (%s and %s); upgrade via your package manager or configure plugins in one directory", dir, pluginDir)
+		dirs[pluginDir] = struct{}{}
+		if currentHomebrewPluginDir != "" && isHomebrewCellarPluginDir(pluginDir) {
+			homebrewDirs[pluginDir] = struct{}{}
+		} else {
+			customDirs[pluginDir] = struct{}{}
 		}
 	}
-	return dir, dir != "", nil
+	if len(dirs) == 0 {
+		return "", false, nil
+	}
+	if currentHomebrewPluginDir != "" && len(homebrewDirs) > 0 && len(customDirs) == 0 {
+		return currentHomebrewPluginDir, true, nil
+	}
+	if len(dirs) == 1 {
+		for dir := range dirs {
+			return dir, true, nil
+		}
+	}
+	first, second := firstTwoDirs(dirs)
+	return "", false, fmt.Errorf("enabled plugin paths span multiple directories (%s and %s); upgrade via your package manager or configure plugins in one directory", first, second)
+}
+
+func isHomebrewCellarPluginDir(dir string) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(dir)), "/")
+	for i := 0; i+4 < len(parts); i++ {
+		if parts[i] == "Cellar" &&
+			parts[i+1] == "bossanova" &&
+			parts[i+3] == "libexec" &&
+			parts[i+4] == "plugins" {
+			return true
+		}
+	}
+	return false
+}
+
+func firstTwoDirs(dirs map[string]struct{}) (string, string) {
+	first := ""
+	for dir := range dirs {
+		if first == "" {
+			first = dir
+			continue
+		}
+		return first, dir
+	}
+	return first, first
 }
 
 func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
@@ -559,7 +665,34 @@ func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
 	if err != nil {
 		return err
 	}
-	pluginDir, err := upgradePluginDir(runtime.GOOS)
+	if isHomebrewCellarBinDir(binDir) {
+		if opts.Version != "" {
+			return fmt.Errorf("homebrew installs upgrade through the tap; exact --version installs are not supported. Run manually: brew upgrade bossanova-dev/tap/bossanova")
+		}
+		return withUpgradeLock(func() error {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "upgrading bossanova with Homebrew")
+			pluginDir, err := brewUpgradeBossanova(ctx, binDir)
+			if err != nil {
+				return err
+			}
+			if pluginDir != "" {
+				if err := persistInstalledPluginPaths(pluginDir); err != nil {
+					return fmt.Errorf("persist plugin settings: %w", err)
+				}
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Homebrew upgrade completed")
+			if opts.NoRestart {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restart skipped (--no-restart)")
+			} else {
+				if err := restartDaemon(); err != nil {
+					return fmt.Errorf("restart daemon: %w", err)
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restarted")
+			}
+			return nil
+		})
+	}
+	pluginDir, err := upgradePluginDir(runtime.GOOS, binDir)
 	if err != nil {
 		return err
 	}
@@ -574,20 +707,94 @@ func runUpgrade(cmd *cobra.Command, opts upgradeOptions) error {
 	if err := plan.Validate(); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "installing %s assets into %s\n", targetVersion, plan.BinDir)
-	if err := installUpgrade(ctx, plan); err != nil {
-		return fmt.Errorf("install upgrade: %w", err)
-	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "upgrade installed %s\n", targetVersion)
-	if opts.NoRestart {
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restart skipped (--no-restart)")
-	} else {
-		if err := restartDaemon(); err != nil {
-			return fmt.Errorf("restart daemon: %w", err)
+	return withUpgradeLock(func() error {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "installing %s assets into %s\n", targetVersion, plan.BinDir)
+		if err := installUpgrade(ctx, plan); err != nil {
+			return fmt.Errorf("install upgrade: %w", err)
 		}
-		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restarted")
+		if err := persistInstalledPluginPaths(plan.PluginDir); err != nil {
+			return fmt.Errorf("persist plugin settings: %w", err)
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "upgrade installed %s\n", targetVersion)
+		if opts.NoRestart {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restart skipped (--no-restart)")
+		} else {
+			if err := restartDaemon(); err != nil {
+				return fmt.Errorf("restart daemon: %w", err)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "daemon restarted")
+		}
+		return nil
+	})
+}
+
+func defaultUpgradeLockPath() (string, error) {
+	dir, err := config.DefaultAppDataDir()
+	if err != nil {
+		return "", err
 	}
-	return nil
+	return filepath.Join(dir, "upgrade.lock"), nil
+}
+
+func withUpgradeLock(fn func() error) error {
+	path, err := upgradeLockPath()
+	if err != nil {
+		return fmt.Errorf("upgrade lock path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create upgrade lock dir: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("upgrade already in progress")
+		}
+		return fmt.Errorf("acquire upgrade lock: %w", err)
+	}
+	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(path)
+	}()
+	return fn()
+}
+
+func persistInstalledPluginPaths(pluginDir string) error {
+	settings, err := loadSettings()
+	if err != nil {
+		return err
+	}
+	rewriteInstalledPluginPaths(&settings, pluginDir)
+	return saveSettings(settings)
+}
+
+func rewriteInstalledPluginPaths(settings *config.Settings, pluginDir string) {
+	seen := make(map[string]struct{}, len(settings.Plugins))
+	for i := range settings.Plugins {
+		seen[settings.Plugins[i].Name] = struct{}{}
+		if installedPluginName(settings.Plugins[i].Name) {
+			settings.Plugins[i].Path = filepath.Join(pluginDir, "bossd-plugin-"+settings.Plugins[i].Name)
+		}
+	}
+	for _, name := range installedPluginNames {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		settings.Plugins = append(settings.Plugins, config.PluginConfig{
+			Name:    name,
+			Path:    filepath.Join(pluginDir, "bossd-plugin-"+name),
+			Enabled: true,
+		})
+	}
+}
+
+func installedPluginName(name string) bool {
+	for _, pluginName := range installedPluginNames {
+		if pluginName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func runLS(cmd *cobra.Command) error {

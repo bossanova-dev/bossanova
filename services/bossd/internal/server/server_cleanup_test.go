@@ -144,6 +144,9 @@ func (s *cleanupSessionStore) ListActiveWithRepo(context.Context, string) ([]*db
 func (s *cleanupSessionStore) ListWithRepo(context.Context, string) ([]*db.SessionWithRepo, error) {
 	panic("not used")
 }
+func (s *cleanupSessionStore) ListByRepoAndPR(context.Context, string, int) ([]*db.SessionWithRepo, error) {
+	panic("not used")
+}
 func (s *cleanupSessionStore) ListArchived(context.Context, string) ([]*models.Session, error) {
 	panic("not used")
 }

@@ -29,6 +29,9 @@ import (
 // same coverage.
 
 func TestChatInputRenderCommandUsesAgentPrefix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	input := ChatInput{Command: "boss-repair"}
 	if got := input.render("$"); got != "$boss-repair" {
 		t.Fatalf("rendered command = %q, want $boss-repair", got)
@@ -36,6 +39,9 @@ func TestChatInputRenderCommandUsesAgentPrefix(t *testing.T) {
 }
 
 func TestChatInputRenderCommandDefaultsToSlashPrefix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	input := ChatInput{Command: "boss-repair"}
 	if got := input.render(""); got != "/boss-repair" {
 		t.Fatalf("rendered command = %q, want /boss-repair", got)
@@ -43,6 +49,9 @@ func TestChatInputRenderCommandDefaultsToSlashPrefix(t *testing.T) {
 }
 
 func TestChatInputRenderPromptPreservesRawText(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	input := ChatInput{Prompt: "/boss-repair"}
 	if got := input.render("$"); got != "/boss-repair" {
 		t.Fatalf("rendered prompt = %q, want /boss-repair", got)
@@ -50,6 +59,9 @@ func TestChatInputRenderPromptPreservesRawText(t *testing.T) {
 }
 
 func TestCronChatInputFromPromptConvertsLeadingSlashCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	input := cronChatInputFromPrompt("/bs-technical-debt")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
@@ -60,6 +72,9 @@ func TestCronChatInputFromPromptConvertsLeadingSlashCommand(t *testing.T) {
 }
 
 func TestCronChatInputFromPromptConvertsLeadingDollarCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	input := cronChatInputFromPrompt("$bs-mutation-test")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
@@ -70,6 +85,9 @@ func TestCronChatInputFromPromptConvertsLeadingDollarCommand(t *testing.T) {
 }
 
 func TestCronChatInputFromPromptTrimsSurroundingWhitespace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	input := cronChatInputFromPrompt("  /bs-mutation-test  ")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
@@ -82,6 +100,9 @@ func TestCronChatInputFromPromptTrimsSurroundingWhitespace(t *testing.T) {
 // Embedded commands must NOT be extracted: doing so silently truncates the
 // surrounding free-text instruction, which is the user's actual cron plan.
 func TestCronChatInputFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	prompt := "Run /bs-mutation-test"
 	input := cronChatInputFromPrompt(prompt)
 	if input.Prompt != prompt {
@@ -95,6 +116,9 @@ func TestCronChatInputFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {
 // A single-line free-text prompt containing a slash (path/URL) or dollar
 // (price) must stay a prompt rather than being truncated into a bogus command.
 func TestCronChatInputFromPromptKeepsFreeTextWithSlashOrDollar(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	for _, prompt := range []string{
 		"Review the auth changes in /internal/auth",
 		"Add a $5 discount banner",
@@ -111,6 +135,9 @@ func TestCronChatInputFromPromptKeepsFreeTextWithSlashOrDollar(t *testing.T) {
 }
 
 func TestCronChatInputFromPromptKeepsMultilinePrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	prompt := "/bs-mutation-test\nwith extra notes"
 	input := cronChatInputFromPrompt(prompt)
 	if input.Prompt != prompt {
@@ -122,6 +149,9 @@ func TestCronChatInputFromPromptKeepsMultilinePrompt(t *testing.T) {
 }
 
 func TestCronChatInputFromPromptKeepsEmptyAndWhitespace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	for _, prompt := range []string{"", "   ", "\t"} {
 		input := cronChatInputFromPrompt(prompt)
 		if input.Command != "" {
@@ -217,6 +247,9 @@ func ptr[T any](v T) *T {
 }
 
 func TestRepairChatStaleForReclaim_DefaultThresholdAndFailClosedCases(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -285,6 +318,9 @@ func TestRepairChatStaleForReclaim_DefaultThresholdAndFailClosedCases(t *testing
 }
 
 func TestKillChatTmuxSession_KillsLiveTmuxThenClearsChatPointer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	h := newStartTmuxChatHarness(t)
 	tmuxName := "bossd-agent-run-existing"
 	h.chats.chatsBySession = map[string][]*models.AgentChat{
@@ -319,6 +355,9 @@ func TestKillChatTmuxSession_KillsLiveTmuxThenClearsChatPointer(t *testing.T) {
 }
 
 func TestKillChatTmuxSession_DoesNotClearChatPointerWhenKillFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	h := newStartTmuxChatHarness(t)
 	tmuxName := "bossd-agent-run-existing"
 	h.tmuxFake.failSubcommand["kill-session"] = true
@@ -347,6 +386,9 @@ func TestKillChatTmuxSession_DoesNotClearChatPointerWhenKillFails(t *testing.T) 
 // (NOT cron's `Run "..."` template) and that the argv came from the agent
 // plugin rather than a hardcoded slice.
 func TestStartTmuxChat_HappyPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
@@ -440,6 +482,9 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 }
 
 func TestStartTmuxChat_UsesAgentReadyMarker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.agentFake.ReadyMarker = "›"
@@ -456,6 +501,9 @@ func TestStartTmuxChat_UsesAgentReadyMarker(t *testing.T) {
 // TestStartTmuxChat_TmuxUnavailable verifies fail-closed behavior when tmux
 // isn't on PATH: typed FailedPrecondition error, no chat row created.
 func TestStartTmuxChat_TmuxUnavailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.available = false
@@ -475,6 +523,9 @@ func TestStartTmuxChat_TmuxUnavailable(t *testing.T) {
 // TestStartTmuxChat_AgentRunnerNotLoaded verifies fail-closed behavior when
 // the session's AgentName has no registered AgentRunnerClient.
 func TestStartTmuxChat_AgentRunnerNotLoaded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	// Replace the agent registry with an empty map so claude is unloaded.
@@ -495,6 +546,9 @@ func TestStartTmuxChat_AgentRunnerNotLoaded(t *testing.T) {
 // TestStartTmuxChat_NewSessionFails verifies that a tmux NewSession failure
 // returns an error before any agent_chats row is created.
 func TestStartTmuxChat_NewSessionFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.tmuxFake.failSubcommand["new-session"] = true
@@ -520,6 +574,9 @@ func TestStartTmuxChat_NewSessionFails(t *testing.T) {
 // BuildInteractiveCommand is treated as a hard precondition failure
 // before any tmux process is spawned.
 func TestStartTmuxChat_EmptyArgvFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	// Make BuildInteractiveCommand return empty argv.
@@ -543,6 +600,9 @@ func TestStartTmuxChat_EmptyArgvFails(t *testing.T) {
 // TestStartTmuxChat_ChatCreateFails verifies that an agentChats.Create
 // failure after tmux is live tears tmux back down and leaves no row.
 func TestStartTmuxChat_ChatCreateFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.chats.createErr = fmt.Errorf("simulated DB failure")
@@ -569,6 +629,9 @@ func TestStartTmuxChat_ChatCreateFails(t *testing.T) {
 // the chat list entirely; the row is now kept so the operator can see
 // the attempt and read why it failed.
 func TestStartTmuxChat_UpdateTmuxSessionNameFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.chats.updateTmuxNameErr = fmt.Errorf("simulated update failure")
@@ -600,6 +663,9 @@ func TestStartTmuxChat_UpdateTmuxSessionNameFails(t *testing.T) {
 // Preserving the row is what surfaces the "(failed to start)" badge in
 // the chat list so the operator can finally see what each attempt did.
 func TestStartTmuxChat_SendPlanFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	// Force load-buffer (the first stage of SendPlan) to fail. The
@@ -631,6 +697,9 @@ func TestStartTmuxChat_SendPlanFails(t *testing.T) {
 // success-shaped string slot alongside the typed error. No new row, no new
 // tmux session.
 func TestStartTmuxChat_AlreadyExists_LiveTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
@@ -674,6 +743,9 @@ func TestStartTmuxChat_AlreadyExists_LiveTmux(t *testing.T) {
 }
 
 func TestStartTmuxChat_AllowSiblingChatBypassesLiveChatIdempotency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
@@ -718,6 +790,9 @@ func TestStartTmuxChat_AllowSiblingChatBypassesLiveChatIdempotency(t *testing.T)
 // stale row stays in the chat list (visible as a "stopped" historical
 // chat) and only its tmux pointer is unlinked.
 func TestStartTmuxChat_StaleTmux_PreservesRowAndStartsFresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
@@ -778,6 +853,9 @@ func TestStartTmuxChat_StaleTmux_PreservesRowAndStartsFresh(t *testing.T) {
 }
 
 func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "repair-agent-1"
@@ -828,6 +906,9 @@ func TestReclaimRepairChat_KillsTmuxAndMarksRow(t *testing.T) {
 }
 
 func TestReplaceBlockingChatForRepair_KillsTmuxAndMarksRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "agent-blocking-finalize"
@@ -880,6 +961,9 @@ func TestReplaceBlockingChatForRepair_KillsTmuxAndMarksRow(t *testing.T) {
 }
 
 func TestReplaceBlockingChatForRepair_RefusesLiveRecentRepairChat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "repair-replace-recent-agent"
@@ -918,6 +1002,9 @@ func TestReplaceBlockingChatForRepair_RefusesLiveRecentRepairChat(t *testing.T) 
 }
 
 func TestReplaceBlockingChatForRepair_RejectsDifferentSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "agent-blocking-finalize"
@@ -958,6 +1045,9 @@ func TestReplaceBlockingChatForRepair_RejectsDifferentSession(t *testing.T) {
 }
 
 func TestReclaimRepairChat_RefusesLiveRecentRepairChat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "repair-recent-agent"
@@ -996,6 +1086,9 @@ func TestReclaimRepairChat_RefusesLiveRecentRepairChat(t *testing.T) {
 }
 
 func TestReclaimRepairChat_RefusesLiveRepairWhenLogMissing(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "repair-missing-log-agent"
@@ -1033,6 +1126,9 @@ func TestReclaimRepairChat_RefusesLiveRepairWhenLogMissing(t *testing.T) {
 }
 
 func TestReclaimRepairChat_RefusesWhenTmuxLivenessErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "repair-agent-tmux-error"
@@ -1064,6 +1160,9 @@ func TestReclaimRepairChat_RefusesWhenTmuxLivenessErrors(t *testing.T) {
 }
 
 func TestReclaimRepairChat_RefusesNonRepairChat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "manual-agent-1"
@@ -1104,6 +1203,9 @@ func TestReclaimRepairChat_RefusesNonRepairChat(t *testing.T) {
 }
 
 func TestReclaimRepairChat_ClearsDeadTmuxReference(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	agentSessionID := "repair-agent-dead"
@@ -1153,6 +1255,9 @@ func TestReclaimRepairChat_ClearsDeadTmuxReference(t *testing.T) {
 // an unconfigured agentLogsDir returns FailedPrecondition before any
 // side effects.
 func TestStartTmuxChat_MissingAgentLogsDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetAgentLogsDir("") // explicitly clear
@@ -1172,6 +1277,9 @@ func TestStartTmuxChat_MissingAgentLogsDir(t *testing.T) {
 // TestStartTmuxChat_NoWorktreePath verifies that a session with an empty
 // worktree path can't host a tmux chat — fail-closed FailedPrecondition.
 func TestStartTmuxChat_NoWorktreePath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.sessions.sessions["sess-1"].WorktreePath = ""
@@ -1190,6 +1298,9 @@ func TestStartTmuxChat_NoWorktreePath(t *testing.T) {
 // StartTmuxChat with prompt=session.Plan and title=`Run "<cron name>"`,
 // regardless of how the underlying method evolves.
 func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
@@ -1219,6 +1330,9 @@ func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 }
 
 func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.agentFake.CommandPrefix = "$"
@@ -1262,6 +1376,9 @@ func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
 }
 
 func TestStartTmuxChat_CommandUsesLiteralKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.agentFake.CommandPrefix = "$"
@@ -1302,6 +1419,9 @@ func TestStartTmuxChat_CommandUsesLiteralKeys(t *testing.T) {
 }
 
 func TestStartTmuxChat_ConsumedStartupInputSkipsPaneInjection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.agentFake.CommandPrefix = "$"
@@ -1328,6 +1448,9 @@ func TestStartTmuxChat_ConsumedStartupInputSkipsPaneInjection(t *testing.T) {
 }
 
 func TestStartTmuxChat_ConfiguresHookBeforeLaunchForConsumedStartupInput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(12345)
@@ -1355,6 +1478,9 @@ func TestStartTmuxChat_ConfiguresHookBeforeLaunchForConsumedStartupInput(t *test
 }
 
 func TestStartTmuxChat_HooklessCommandDoesNotArmPollFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1387,6 +1513,9 @@ func TestStartTmuxChat_HooklessCommandDoesNotArmPollFallback(t *testing.T) {
 // the lifecycle's recorded hook port. This is the run-keyed hook the
 // repair plugin's StartChatRun relies on for its WaitChatRun signal.
 func TestStartTmuxChat_HookOptsToken_ConfiguresRunKeyedHook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(54321)
@@ -1420,6 +1549,9 @@ func TestStartTmuxChat_HookOptsToken_ConfiguresRunKeyedHook(t *testing.T) {
 // path's invariant: when HookOpts is zero, ConfigureFinalizeHook is NOT
 // called from StartTmuxChat (cron wires its session-keyed hook earlier).
 func TestStartTmuxChat_HookOptsEmpty_DoesNotConfigureHook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(12345)
@@ -1438,6 +1570,9 @@ func TestStartTmuxChat_HookOptsEmpty_DoesNotConfigureHook(t *testing.T) {
 // (with a start_error reason) rather than deleted so the chat list still
 // shows the attempt.
 func TestStartTmuxChat_HookOptsTokenWithoutHookPort_FailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	// Deliberately don't call SetHookPort.
@@ -1469,6 +1604,9 @@ func TestStartTmuxChat_HookOptsTokenWithoutHookPort_FailsClosed(t *testing.T) {
 // preservation path, so all StartTmuxChat failures surface in the chat
 // list rather than vanishing.
 func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(12345)
@@ -1500,6 +1638,9 @@ func TestStartTmuxChat_HookConfigureFails_TearsDown(t *testing.T) {
 // interactive tmux chats do not poll plugin ExitStatus, which only observes
 // plugin-runner processes rather than tmux-spawned processes.
 func TestStartTmuxChatDoesNotArmPollWhenHookUnsupported(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(54321)
@@ -1540,6 +1681,9 @@ func TestStartTmuxChatDoesNotArmPollWhenHookUnsupported(t *testing.T) {
 // TestStartTmuxChatDoesNotArmPollWhenHookSupported verifies the existing
 // claude path does NOT trigger the poll fallback.
 func TestStartTmuxChatDoesNotArmPollWhenHookSupported(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(54321)
@@ -1561,6 +1705,9 @@ func TestStartTmuxChatDoesNotArmPollWhenHookSupported(t *testing.T) {
 // reuses the supplied agent session id (instead of minting a fresh one) and
 // asks the agent plugin to resume rather than start fresh.
 func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
@@ -1588,6 +1735,9 @@ func TestStartTmuxChat_ResumeReusesIDAndSetsResume(t *testing.T) {
 // deletes the stale prior chat row (whose agent_session_id is non-unique)
 // before re-creating, so exactly one row carries the reused id.
 func TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 
@@ -1629,6 +1779,9 @@ func TestStartTmuxChat_ResumeDeletesPriorRowNoDuplicate(t *testing.T) {
 // that is still alive at the prompt is reused instead of being rejected by the
 // live-chat idempotency guard.
 func TestStartTmuxChat_ResumeReusesLivePane(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(54321)
@@ -1699,6 +1852,9 @@ func TestStartTmuxChat_ResumeReusesLivePane(t *testing.T) {
 }
 
 func TestStartTmuxChat_ResumeReusesLivePaneByProviderSessionID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(54321)
@@ -1749,6 +1905,9 @@ func TestStartTmuxChat_ResumeReusesLivePaneByProviderSessionID(t *testing.T) {
 // resumed, hookless run must still arm completion using the reused id so a
 // later WaitChatRun resolves when tmux reports the pane dead.
 func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.lc.SetHookPort(54321)
@@ -1791,6 +1950,9 @@ func TestStartTmuxChat_ResumeStillArmsCompletion(t *testing.T) {
 // tmux session back down and returns an error, and that no Create call is made
 // (the delete failed before we reached Create).
 func TestStartTmuxChat_ResumeDeleteErrorTearsDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
 	h.chats.deleteErr = errors.New("boom")

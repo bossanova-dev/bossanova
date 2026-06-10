@@ -99,14 +99,7 @@ func (c *hostServiceClient) ListDependabotPRs(ctx context.Context, repoOriginURL
 	if err != nil {
 		return nil, err
 	}
-
-	var filtered []*bossanovav1.PRSummary
-	for _, pr := range prs {
-		if pr.GetAuthor() == dependabotAuthor {
-			filtered = append(filtered, pr)
-		}
-	}
-	return filtered, nil
+	return filterDependabotPRs(prs), nil
 }
 
 func (c *hostServiceClient) ListOpenPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {
@@ -138,14 +131,17 @@ func (c *hostServiceClient) ListClosedDependabotPRs(ctx context.Context, repoOri
 	if err != nil {
 		return nil, err
 	}
+	return filterDependabotPRs(prs), nil
+}
 
+func filterDependabotPRs(prs []*bossanovav1.PRSummary) []*bossanovav1.PRSummary {
 	var filtered []*bossanovav1.PRSummary
 	for _, pr := range prs {
 		if pr.GetAuthor() == dependabotAuthor {
 			filtered = append(filtered, pr)
 		}
 	}
-	return filtered, nil
+	return filtered
 }
 
 func (c *hostServiceClient) ListClosedPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error) {

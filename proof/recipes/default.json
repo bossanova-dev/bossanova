@@ -1,0 +1,231 @@
+{
+  "$schema": "./schema.json",
+  "version": 1,
+  "recipes": [
+    {
+      "id": "tui-home",
+      "surface": "tui",
+      "title": "Boss TUI Home",
+      "description": "Home screen showing active sessions and action bar.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "waitForText": "Add dark mode"
+    },
+    {
+      "id": "tui-settings",
+      "surface": "tui",
+      "title": "Boss TUI Settings",
+      "description": "Settings screen reached from the home view.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "keys": ["s"],
+      "waitForText": "Settings"
+    },
+    {
+      "id": "tui-new-session",
+      "surface": "tui",
+      "title": "Boss TUI New Session",
+      "description": "New session wizard reached from the home view.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "keys": ["n"],
+      "waitForReadyText": "Add dark mode",
+      "waitForText": "New Session"
+    },
+    {
+      "id": "tui-repo-list",
+      "surface": "tui",
+      "title": "Boss TUI Repositories",
+      "description": "Registered repositories list.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "keys": ["r"],
+      "waitForText": "PATH"
+    },
+    {
+      "id": "tui-repo-add",
+      "surface": "tui",
+      "title": "Boss TUI Add Repository",
+      "description": "Add-repository wizard reached from the repo list.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "fixture": "demo",
+      "steps": [
+        { "keys": ["r"], "waitForText": "Repositories" },
+        { "keys": ["a"], "waitForText": "Add Repository" }
+      ],
+      "waitForText": "Add Repository"
+    },
+    {
+      "id": "tui-repo-settings",
+      "surface": "tui",
+      "title": "Boss TUI Repository Settings",
+      "description": "Repository settings reached by selecting a repo.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "fixture": "demo",
+      "steps": [
+        { "keys": ["r"], "waitForText": "Repositories" },
+        { "keys": ["enter"], "waitForReadyText": "my-app", "waitForText": "Setup command" }
+      ],
+      "waitForText": "Setup command"
+    },
+    {
+      "id": "tui-trash",
+      "surface": "tui",
+      "title": "Boss TUI Trash",
+      "description": "Archived sessions (trash) with a restorable session.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "keys": ["t"],
+      "waitForText": "Old caching spike"
+    },
+    {
+      "id": "tui-chat-picker",
+      "surface": "tui",
+      "title": "Boss TUI Chat Picker",
+      "description": "Chat list for a session reached with Enter.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "keys": ["enter"],
+      "waitForReadyText": "Add dark mode",
+      "waitForText": "Initial implementation"
+    },
+    {
+      "id": "tui-session-settings",
+      "surface": "tui",
+      "title": "Boss TUI Session Settings",
+      "description": "Session settings reached from the chat picker.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "fixture": "demo",
+      "steps": [
+        { "keys": ["enter"], "waitForReadyText": "Add dark mode", "waitForText": "Initial implementation" },
+        { "keys": ["s"], "waitForText": "Name:" }
+      ],
+      "waitForText": "Name:"
+    },
+    {
+      "id": "tui-login",
+      "surface": "tui",
+      "title": "Boss TUI Login",
+      "description": "Device-code login screen (logged-out fixture).",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "fixture": "login",
+      "keys": ["l"],
+      "waitForText": "Login"
+    },
+    {
+      "id": "tui-bug-report",
+      "surface": "tui",
+      "title": "Boss TUI Bug Report",
+      "description": "Bug-report modal opened with Ctrl+B.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "keys": ["ctrl+b"],
+      "waitForText": "Report a bug"
+    },
+    {
+      "id": "tui-cron",
+      "surface": "tui",
+      "title": "Boss TUI Scheduled Jobs",
+      "description": "Cron job list with a scheduled job.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "keys": ["c"],
+      "waitForText": "Daily dependency update"
+    },
+    {
+      "id": "tui-cron-form",
+      "surface": "tui",
+      "title": "Boss TUI Cron Form",
+      "description": "Create-cron-job form reached from the cron list.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "fixture": "demo",
+      "steps": [
+        { "keys": ["c"], "waitForText": "Scheduled Jobs" },
+        { "keys": ["n"], "waitForText": "Name" }
+      ],
+      "waitForText": "Name"
+    },
+    {
+      "id": "tui-onboarding",
+      "surface": "tui",
+      "title": "Boss TUI Onboarding",
+      "description": "First-run provider onboarding screen.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "fixture": "onboarding",
+      "waitForText": "Welcome to Bossanova"
+    },
+    {
+      "id": "web-sessions",
+      "surface": "web",
+      "title": "Web Sessions",
+      "description": "Product web sessions list using e2e fixture data.",
+      "privacy": "fixture",
+      "route": "/",
+      "cropToSelector": ".data-table-wrap",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-chat-terminal",
+      "surface": "web",
+      "title": "Web Chat Terminal",
+      "description": "Product web terminal route with xterm mounted.",
+      "privacy": "fixture",
+      "route": "/sessions/sess-e2e-1/chats/claude-1",
+      "selector": "[data-testid='chat-terminal-canvas']",
+      "canvas": true,
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "marketing-home",
+      "surface": "marketing",
+      "title": "Marketing Home",
+      "description": "Marketing homepage first viewport.",
+      "privacy": "fixture",
+      "route": "/",
+      "selector": "main",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "marketing-pricing",
+      "surface": "marketing",
+      "title": "Marketing Pricing",
+      "description": "Marketing pricing page first viewport.",
+      "privacy": "fixture",
+      "route": "/pricing",
+      "selector": "main",
+      "viewport": { "width": 1440, "height": 1000 }
+    }
+  ],
+  "pathRules": [
+    {
+      "name": "TUI views",
+      "patterns": [
+        "services/boss/internal/views/",
+        "services/boss/internal/tuitest/",
+        "services/boss/internal/fixtures/"
+      ],
+      "recipeIds": [
+        "tui-home", "tui-settings", "tui-new-session", "tui-repo-list",
+        "tui-repo-add", "tui-repo-settings", "tui-trash", "tui-chat-picker",
+        "tui-session-settings", "tui-login", "tui-bug-report", "tui-cron",
+        "tui-cron-form", "tui-onboarding"
+      ]
+    },
+    {
+      "name": "Product web",
+      "patterns": ["services/web/"],
+      "recipeIds": ["web-sessions", "web-chat-terminal"]
+    },
+    {
+      "name": "Marketing site",
+      "patterns": ["services/marketing/", "lib/ui-tokens/"],
+      "recipeIds": ["marketing-home", "marketing-pricing"]
+    }
+  ]
+}

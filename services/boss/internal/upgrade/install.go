@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/semver"
 )
@@ -27,6 +30,11 @@ var pluginBins = []string{
 // cannot fill the disk before checksum verification rejects the payload.
 // 512 MiB is well above any plausible Go binary size for this project.
 const MaxAssetSize = 512 * 1024 * 1024
+
+const (
+	downloadMaxAttempts = 3
+	downloadRetryDelay  = 100 * time.Millisecond
+)
 
 func AssetNames(goos, goarch string) []string {
 	suffix := "-" + goos + "-" + goarch
@@ -252,49 +260,81 @@ func (i Installer) client() *http.Client {
 }
 
 func (i Installer) downloadFile(ctx context.Context, url, path string) error {
-	resp, err := i.get(ctx, url)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
+	return withDownloadRetries(ctx, func() error {
+		resp, err := i.getOnce(ctx, url)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	// Cap the download — a compromised release host could otherwise fill
-	// the disk before checksum verification rejects the payload.
-	limited := io.LimitReader(resp.Body, MaxAssetSize+1)
-	n, err := io.Copy(f, limited)
-	if err != nil {
-		_ = f.Close()
-		return err
-	}
-	if n > MaxAssetSize {
-		_ = f.Close()
-		return fmt.Errorf("asset exceeds %d byte limit", MaxAssetSize)
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return nil
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		// Cap the download — a compromised release host could otherwise fill
+		// the disk before checksum verification rejects the payload.
+		limited := io.LimitReader(resp.Body, MaxAssetSize+1)
+		n, err := io.Copy(f, limited)
+		if err != nil {
+			_ = f.Close()
+			return err
+		}
+		if n > MaxAssetSize {
+			_ = f.Close()
+			return fmt.Errorf("asset exceeds %d byte limit", MaxAssetSize)
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (i Installer) downloadText(ctx context.Context, url string) (string, error) {
-	resp, err := i.get(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
+	var text string
+	err := withDownloadRetries(ctx, func() error {
+		resp, err := i.getOnce(ctx, url)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return err
+		}
+		text = string(body)
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
-	return string(body), nil
+	return text, nil
 }
 
-func (i Installer) get(ctx context.Context, url string) (*http.Response, error) {
+func withDownloadRetries(ctx context.Context, fn func() error) error {
+	var lastErr error
+	for attempt := 1; attempt <= downloadMaxAttempts; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt == downloadMaxAttempts || !isTransientDownloadError(err) {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(attempt) * downloadRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+func (i Installer) getOnce(ctx context.Context, url string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -305,9 +345,57 @@ func (i Installer) get(ctx context.Context, url string) (*http.Response, error) 
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_ = resp.Body.Close()
+		if isTransientHTTPStatus(resp.StatusCode) {
+			return nil, transientHTTPStatusError{statusCode: resp.StatusCode, status: resp.Status}
+		}
 		return nil, fmt.Errorf("unexpected HTTP status %s", resp.Status)
 	}
 	return resp, nil
+}
+
+type transientHTTPStatusError struct {
+	statusCode int
+	status     string
+}
+
+func (e transientHTTPStatusError) Error() string {
+	return fmt.Sprintf("unexpected HTTP status %s", e.status)
+}
+
+func isTransientDownloadError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var statusErr transientHTTPStatusError
+	if errors.As(err, &statusErr) {
+		return isTransientHTTPStatus(statusErr.statusCode)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
+	}
+	type temporary interface {
+		Temporary() bool
+	}
+	var tempErr temporary
+	if errors.As(err, &tempErr) {
+		return tempErr.Temporary()
+	}
+	return false
+}
+
+func isTransientHTTPStatus(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseSHA256(content string) (string, error) {

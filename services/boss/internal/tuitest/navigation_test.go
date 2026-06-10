@@ -9,6 +9,9 @@ import (
 )
 
 func TestTUI_ViewNavigation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -62,6 +65,9 @@ func TestTUI_ViewNavigation(t *testing.T) {
 }
 
 func TestTUI_NavigationRoundTrip_AllViews(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -127,6 +133,9 @@ func chevronOnLine(screen, text string) bool {
 }
 
 func TestTUI_HomeCursorPreserved_AfterSettings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -165,6 +174,9 @@ func TestTUI_HomeCursorPreserved_AfterSettings(t *testing.T) {
 }
 
 func TestTUI_HomeCursorPreserved_AfterTrash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -203,6 +215,9 @@ func TestTUI_HomeCursorPreserved_AfterTrash(t *testing.T) {
 }
 
 func TestTUI_HomeCursorPreserved_AfterRepoList(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -241,6 +256,9 @@ func TestTUI_HomeCursorPreserved_AfterRepoList(t *testing.T) {
 }
 
 func TestTUI_QuitWithQ(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -262,6 +280,9 @@ func TestTUI_QuitWithQ(t *testing.T) {
 }
 
 func TestTUI_CtrlC_QuitsFromHome(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),
@@ -283,6 +304,9 @@ func TestTUI_CtrlC_QuitsFromHome(t *testing.T) {
 }
 
 func TestTUI_CtrlC_QuitsFromSettings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 	)
@@ -310,6 +334,9 @@ func TestTUI_CtrlC_QuitsFromSettings(t *testing.T) {
 }
 
 func TestTUI_CtrlC_QuitsFromTrash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithSessions(testSessions()...),

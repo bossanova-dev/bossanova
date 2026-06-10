@@ -35,6 +35,7 @@ type sessionDeletedMsg struct {
 
 // allSessionsDeletedMsg carries the result of emptying the entire trash.
 type allSessionsDeletedMsg struct {
+	ids []string
 	err error
 }
 
@@ -45,10 +46,13 @@ type TrashModel struct {
 	spinner spinner.Model
 
 	sessions []*pb.Session
-	table    table.Model
-	err      error
-	cancel   bool
-	loading  bool
+	filter   listFilter
+
+	filteredSessions []int
+	table            table.Model
+	err              error
+	cancel           bool
+	loading          bool
 
 	// Delete confirmation / in-progress states
 	confirming    bool
@@ -57,6 +61,7 @@ type TrashModel struct {
 	deletingAll   bool
 	restoring     bool
 	restoredID    string
+	deleteAllIDs  []string
 
 	// Layout
 	width  int
@@ -69,6 +74,7 @@ func NewTrashModel(c client.BossClient, ctx context.Context) TrashModel {
 		client:  c,
 		ctx:     ctx,
 		spinner: newStatusSpinner(),
+		filter:  newListFilter(),
 		loading: true,
 		table:   newBossTable(nil, nil, 0),
 	}
@@ -97,33 +103,30 @@ func (m TrashModel) fetchArchived() tea.Cmd {
 
 func (m *TrashModel) buildTable() {
 	if len(m.sessions) == 0 {
+		// Nothing left to filter; drop any applied query so the view does not
+		// strand an invisible filter that swallows the first esc.
+		m.filter.Deactivate()
+		m.filteredSessions = nil
+		m.filter.SetCounts(0, 0)
+		m.table.SetRows(nil)
+		m.table.SetHeight(m.tableHeight())
 		return
 	}
 
-	repos := make([]string, len(m.sessions))
-	names := make([]string, len(m.sessions))
-	prLabels := make([]string, len(m.sessions))
-	prs := make([]string, len(m.sessions))
-	archiveds := make([]string, len(m.sessions))
-	for i, sess := range m.sessions {
+	m.applyFilter()
+
+	repos := make([]string, len(m.filteredSessions))
+	names := make([]string, len(m.filteredSessions))
+	prLabels := make([]string, len(m.filteredSessions))
+	prs := make([]string, len(m.filteredSessions))
+	archiveds := make([]string, len(m.filteredSessions))
+	for i, sessionIndex := range m.filteredSessions {
+		sess := m.sessions[sessionIndex]
 		repos[i] = sess.RepoDisplayName
-		if sess.Title != "" {
-			names[i] = sess.Title
-		} else {
-			names[i] = sess.BranchName
-		}
-		if sess.PrNumber != nil {
-			prLabels[i] = fmt.Sprintf("#%d", *sess.PrNumber)
-			prs[i] = renderPRLink(sess)
-		} else {
-			prLabels[i] = "-"
-			prs[i] = "-"
-		}
-		if sess.ArchivedAt != nil {
-			archiveds[i] = RelativeTime(sess.ArchivedAt.AsTime())
-		} else {
-			archiveds[i] = "-"
-		}
+		names[i] = trashSessionName(sess)
+		prLabels[i] = trashSessionPRLabel(sess)
+		prs[i] = trashSessionPR(sess)
+		archiveds[i] = trashSessionArchived(sess)
 	}
 
 	cols := []table.Column{
@@ -135,8 +138,11 @@ func (m *TrashModel) buildTable() {
 	}
 
 	cursor := m.table.Cursor()
-	rows := make([]table.Row, len(m.sessions))
-	for i := range m.sessions {
+	if cursor >= len(m.filteredSessions) && len(m.filteredSessions) > 0 {
+		cursor = len(m.filteredSessions) - 1
+	}
+	rows := make([]table.Row, len(m.filteredSessions))
+	for i := range m.filteredSessions {
 		indicator := ""
 		if i == cursor {
 			indicator = cursorChevron
@@ -150,6 +156,16 @@ func (m *TrashModel) buildTable() {
 	m.table.SetCursor(cursor)
 }
 
+func (m *TrashModel) applyFilter() {
+	m.filteredSessions = m.filteredSessions[:0]
+	for i, sess := range m.sessions {
+		if m.filter.Matches(m.trashFilterHaystack(sess)) {
+			m.filteredSessions = append(m.filteredSessions, i)
+		}
+	}
+	m.filter.SetCounts(len(m.filteredSessions), len(m.sessions))
+}
+
 func (m *TrashModel) removeSession(id string) {
 	for i, s := range m.sessions {
 		if s.Id == id {
@@ -157,11 +173,78 @@ func (m *TrashModel) removeSession(id string) {
 			break
 		}
 	}
+	// buildTable already clamps the cursor into range and calls SetCursor.
 	m.buildTable()
-	// Clamp cursor after rebuild.
-	if m.table.Cursor() >= len(m.sessions) && len(m.sessions) > 0 {
-		m.table.SetCursor(len(m.sessions) - 1)
+	updateCursorColumn(&m.table)
+}
+
+func (m TrashModel) selectedSession() *pb.Session {
+	cursor := m.table.Cursor()
+	if cursor < 0 || cursor >= len(m.filteredSessions) {
+		return nil
 	}
+	sessionIndex := m.filteredSessions[cursor]
+	if sessionIndex < 0 || sessionIndex >= len(m.sessions) {
+		return nil
+	}
+	return m.sessions[sessionIndex]
+}
+
+func (m TrashModel) filteredSessionIDs() []string {
+	ids := make([]string, 0, len(m.filteredSessions))
+	for _, sessionIndex := range m.filteredSessions {
+		if sessionIndex >= 0 && sessionIndex < len(m.sessions) {
+			ids = append(ids, m.sessions[sessionIndex].Id)
+		}
+	}
+	return ids
+}
+
+func (m TrashModel) trashFilterHaystack(sess *pb.Session) string {
+	return strings.Join([]string{
+		sess.RepoDisplayName,
+		trashSessionName(sess),
+		trashSessionPRLabel(sess),
+		trashSessionArchived(sess),
+	}, " ")
+}
+
+func trashSessionName(sess *pb.Session) string {
+	if sess.Title != "" {
+		return sess.Title
+	}
+	return sess.BranchName
+}
+
+func trashSessionPRLabel(sess *pb.Session) string {
+	if sess.PrNumber == nil {
+		return "-"
+	}
+	return fmt.Sprintf("#%d", *sess.PrNumber)
+}
+
+func trashSessionPR(sess *pb.Session) string {
+	if sess.PrNumber == nil {
+		return "-"
+	}
+	return renderPRLink(sess)
+}
+
+func trashSessionArchived(sess *pb.Session) string {
+	if sess.ArchivedAt == nil {
+		return "-"
+	}
+	return RelativeTime(sess.ArchivedAt.AsTime())
+}
+
+func (m *TrashModel) updateTrashFilterInput(msg tea.Msg) tea.Cmd {
+	cmd, changed := m.filter.Update(msg)
+	if changed {
+		m.buildTable()
+		m.table.SetCursor(0)
+		updateCursorColumn(&m.table)
+	}
+	return cmd
 }
 
 func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -211,27 +294,99 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.deleting = false
 		m.deletingAll = false
 		m.restoring = false
+		if len(msg.ids) == 0 {
+			// EmptyTrash path: clear everything, but only on success. An empty
+			// id set with an error is a batch delete that failed on its first
+			// session, so there is nothing to prune.
+			if msg.err == nil {
+				m.sessions = nil
+			}
+		} else {
+			// Batch delete: prune the sessions that were actually removed. On a
+			// partial failure this is only the prefix that succeeded.
+			deleted := make(map[string]struct{}, len(msg.ids))
+			for _, id := range msg.ids {
+				deleted[id] = struct{}{}
+			}
+			kept := m.sessions[:0]
+			for _, sess := range m.sessions {
+				if _, ok := deleted[sess.Id]; !ok {
+					kept = append(kept, sess)
+				}
+			}
+			m.sessions = kept
+		}
+		m.deleteAllIDs = nil
+		m.buildTable()
 		if msg.err != nil {
 			m.err = msg.err
-			return m, nil
 		}
-		m.sessions = nil
-		m.buildTable()
+		return m, nil
+
+	case tea.PasteMsg:
+		if m.filter.Active() {
+			cmd := m.updateTrashFilterInput(msg)
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.err != nil {
+			if msg.String() == "esc" {
+				m.cancel = true
+			}
+			return m, nil
+		}
+
 		if m.confirming || m.confirmingAll {
 			return m.updateDeleteConfirm(msg)
 		}
 
+		if m.filter.Active() {
+			switch msg.String() {
+			case "enter":
+				if !m.filter.Commit() {
+					m.filter.Deactivate()
+					m.buildTable()
+				}
+				return m, nil
+			case "esc":
+				m.filter.Deactivate()
+				m.buildTable()
+				m.table.SetCursor(0)
+				updateCursorColumn(&m.table)
+				return m, nil
+			case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
+				var cmd tea.Cmd
+				m.table, cmd = m.table.Update(msg)
+				updateCursorColumn(&m.table)
+				return m, cmd
+			}
+			cmd := m.updateTrashFilterInput(msg)
+			return m, cmd
+		}
+
 		switch msg.String() {
+		case "/":
+			if len(m.sessions) == 0 {
+				return m, nil
+			}
+			cmd := m.filter.Activate()
+			m.buildTable()
+			return m, cmd
 		case "esc":
+			if m.filter.Applied() {
+				m.filter.Deactivate()
+				m.buildTable()
+				m.table.SetCursor(0)
+				updateCursorColumn(&m.table)
+				return m, nil
+			}
 			m.cancel = true
 			return m, nil
 		case "r":
-			if len(m.sessions) > 0 && !m.deletingAll {
+			if sess := m.selectedSession(); sess != nil && !m.deletingAll {
 				m.restoring = true
-				sess := m.sessions[m.table.Cursor()]
 				return m, func() tea.Msg {
 					_, err := m.client.ResurrectSession(m.ctx, sess.Id)
 					return sessionRestoredMsg{id: sess.Id, err: err}
@@ -239,13 +394,18 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "d":
-			if len(m.sessions) > 0 && !m.deletingAll {
+			if m.selectedSession() != nil && !m.deletingAll {
 				m.confirming = true
 				m.table.SetHeight(m.tableHeight())
 			}
 			return m, nil
 		case "a":
-			if len(m.sessions) > 0 && !m.deletingAll {
+			if len(m.filteredSessions) > 0 && !m.deletingAll {
+				if m.filter.Engaged() {
+					m.deleteAllIDs = m.filteredSessionIDs()
+				} else {
+					m.deleteAllIDs = nil
+				}
 				m.confirmingAll = true
 				m.table.SetHeight(m.tableHeight())
 			}
@@ -269,6 +429,21 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmingAll = false
 			m.deletingAll = true
 			m.table.SetHeight(m.tableHeight())
+			ids := append([]string(nil), m.deleteAllIDs...)
+			if len(ids) > 0 {
+				return m, func() tea.Msg {
+					// Track what actually succeeded so a mid-batch failure
+					// only prunes the sessions that were really deleted.
+					deleted := make([]string, 0, len(ids))
+					for _, id := range ids {
+						if err := m.client.RemoveSession(m.ctx, id); err != nil {
+							return allSessionsDeletedMsg{ids: deleted, err: err}
+						}
+						deleted = append(deleted, id)
+					}
+					return allSessionsDeletedMsg{ids: deleted}
+				}
+			}
 			return m, func() tea.Msg {
 				_, err := m.client.EmptyTrash(m.ctx, &pb.EmptyTrashRequest{})
 				return allSessionsDeletedMsg{err: err}
@@ -277,7 +452,11 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirming = false
 		m.deleting = true
 		m.table.SetHeight(m.tableHeight())
-		sess := m.sessions[m.table.Cursor()]
+		sess := m.selectedSession()
+		if sess == nil {
+			m.deleting = false
+			return m, nil
+		}
 		return m, func() tea.Msg {
 			err := m.client.RemoveSession(m.ctx, sess.Id)
 			return sessionDeletedMsg{id: sess.Id, err: err}
@@ -285,6 +464,7 @@ func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "esc":
 		m.confirming = false
 		m.confirmingAll = false
+		m.deleteAllIDs = nil
 		m.table.SetHeight(m.tableHeight())
 	}
 	return m, nil
@@ -299,10 +479,11 @@ func (m TrashModel) RestoredSessionID() string { return m.restoredID }
 // tableHeight returns the height to pass to table.SetHeight.
 func (m TrashModel) tableHeight() int {
 	overhead := bannerOverhead + 1 + actionBarPadY + 1 // gap + actionbar padding + actionbar
+	overhead += m.filter.Height()
 	if m.confirming || m.confirmingAll {
 		overhead += 3 // confirmation prompt + surrounding blank lines
 	}
-	return clampedTableHeight(len(m.sessions), m.height, overhead)
+	return clampedTableHeight(len(m.filteredSessions), m.height, overhead)
 }
 
 func (m TrashModel) View() tea.View {
@@ -326,8 +507,18 @@ func (m TrashModel) View() tea.View {
 		return tea.NewView(b.String())
 	}
 
-	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
-	b.WriteString("\n")
+	if len(m.filteredSessions) == 0 {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("No archived sessions match filter."))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
+		b.WriteString("\n")
+	}
+	// Table-backed filters render below their content, matching PR and Linear issue selectors.
+	if m.filter.Engaged() {
+		b.WriteString(m.filter.View())
+		b.WriteString("\n")
+	}
 
 	if m.deleting {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
@@ -340,23 +531,46 @@ func (m TrashModel) View() tea.View {
 			m.spinner.View() + "Restoring..."))
 	} else if m.confirmingAll {
 		b.WriteString("\n")
+		prompt := fmt.Sprintf("Permanently delete all %d archived sessions?", len(m.sessions))
+		if len(m.deleteAllIDs) > 0 {
+			prompt = fmt.Sprintf("Permanently delete %d filtered archived sessions?", len(m.deleteAllIDs))
+		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-			fmt.Sprintf("Permanently delete all %d archived sessions?", len(m.sessions))))
+			prompt))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else if m.confirming {
 		b.WriteString("\n")
-		sess := m.sessions[m.table.Cursor()]
+		sess := m.selectedSession()
+		name := ""
+		if sess != nil {
+			name = trashSessionName(sess)
+		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-			fmt.Sprintf("Permanently delete %q?", sess.Title)))
+			fmt.Sprintf("Permanently delete %q?", name)))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
-		b.WriteString(actionBar(
-			[]string{"[d]elete", "[a] delete all", "[r]estore"},
-			[]string{"[esc] back"},
-		))
+		b.WriteString(trashActionBar(m.filter, len(m.filteredSessions) > 0))
 	}
 
 	return tea.NewView(b.String())
+}
+
+func trashActionBar(f listFilter, hasRows bool) string {
+	if f.Active() {
+		return actionBar(f.ActionBar())
+	}
+	primary := []string{}
+	if hasRows {
+		primary = []string{"[d]elete", "[a] delete all", "[r]estore"}
+	}
+	if f.Applied() {
+		return actionBar(primary, []string{"[/] edit filter", "[esc] clear"})
+	}
+	if hasRows {
+		primary = append(primary, "[/] filter")
+		return actionBar(primary, []string{"[esc] back"})
+	}
+	return actionBar([]string{"[esc] back"})
 }

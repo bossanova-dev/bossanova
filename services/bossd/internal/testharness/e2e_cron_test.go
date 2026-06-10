@@ -102,7 +102,7 @@ func useTempWorktrees(t *testing.T, h *testharness.Harness) {
 // lifecycle. It uses MaxConcurrent=1 for predictable behaviour in these tests.
 func newCronScheduler(h *testharness.Harness) *cron.Scheduler {
 	logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
-	creator := taskorchestrator.NewSessionCreator(h.Sessions, h.Lifecycle, logger)
+	creator := taskorchestrator.NewSessionCreator(h.Sessions, h.Lifecycle, "claude", logger)
 	return cron.New(cron.Config{
 		Store:         h.CronJobs,
 		Sessions:      h.Sessions,

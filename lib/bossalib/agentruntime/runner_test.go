@@ -359,7 +359,7 @@ exit 0
 
 const fakeBinThreadStartedThenSleeps = `#!/usr/bin/env bash
 echo '{"type":"thread.started","thread_id":"fast-1234"}'
-sleep 3
+sleep 10
 exit 0
 `
 
@@ -457,8 +457,11 @@ func TestRunnerSessionIDFromOutputReturnsWhenIDArrives(t *testing.T) {
 	if sid != "fast-1234" {
 		t.Fatalf("Start returned sid=%q, want fast-1234", sid)
 	}
-	if elapsed > 1500*time.Millisecond {
-		t.Fatalf("Start took %s after session ID output; want under 1.5s", elapsed)
+	if elapsed > 6*time.Second {
+		t.Fatalf("Start took %s after session ID output; want under 6s", elapsed)
+	}
+	if !r.IsRunning(sid) {
+		t.Fatal("Start returned after fake-thread subprocess exited; want return while process is still running")
 	}
 
 	if err := r.Stop(sid); err != nil {

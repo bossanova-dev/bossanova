@@ -3,10 +3,14 @@ package taskorchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
+	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/session"
@@ -14,10 +18,13 @@ import (
 
 // mockSessionStore implements db.SessionStore for testing.
 type mockSessionStore struct {
-	createFn  func(ctx context.Context, params db.CreateSessionParams) (*models.Session, error)
-	getFn     func(ctx context.Context, id string) (*models.Session, error)
-	deleted   []string
-	deleteErr error
+	createFn             func(ctx context.Context, params db.CreateSessionParams) (*models.Session, error)
+	getFn                func(ctx context.Context, id string) (*models.Session, error)
+	listActiveWithRepoFn func(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error)
+	listByRepoAndPRFn    func(ctx context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error)
+	deleteFn             func(ctx context.Context, id string) error
+	deleted              []string
+	deleteErr            error
 }
 
 func (m *mockSessionStore) Create(ctx context.Context, params db.CreateSessionParams) (*models.Session, error) {
@@ -37,10 +44,20 @@ func (m *mockSessionStore) ListActive(ctx context.Context, repoID string) ([]*mo
 }
 
 func (m *mockSessionStore) ListActiveWithRepo(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	if m.listActiveWithRepoFn != nil {
+		return m.listActiveWithRepoFn(ctx, repoID)
+	}
 	return nil, nil
 }
 
 func (m *mockSessionStore) ListWithRepo(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+	return nil, nil
+}
+
+func (m *mockSessionStore) ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+	if m.listByRepoAndPRFn != nil {
+		return m.listByRepoAndPRFn(ctx, repoID, prNumber)
+	}
 	return nil, nil
 }
 
@@ -61,6 +78,9 @@ func (m *mockSessionStore) Resurrect(ctx context.Context, id string) error {
 }
 
 func (m *mockSessionStore) Delete(ctx context.Context, id string) error {
+	if m.deleteFn != nil {
+		return m.deleteFn(ctx, id)
+	}
 	m.deleted = append(m.deleted, id)
 	return m.deleteErr
 }
@@ -88,6 +108,14 @@ type mockSessionStarter struct {
 
 func (m *mockSessionStarter) StartSession(ctx context.Context, sessionID string, opts session.StartSessionOpts) error {
 	return m.startSessionFn(ctx, sessionID, opts)
+}
+
+type mockDuplicateLiveness struct {
+	alive map[string]bool
+}
+
+func (m *mockDuplicateLiveness) IsSessionAlive(_ context.Context, sessionID string) bool {
+	return m.alive[sessionID]
 }
 
 func TestCreateSession_Success(t *testing.T) {
@@ -118,7 +146,7 @@ func TestCreateSession_Success(t *testing.T) {
 		},
 	}
 
-	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
 
 	sess, err := creator.CreateSession(context.Background(), CreateSessionOpts{
 		RepoID:     "repo-1",
@@ -140,6 +168,9 @@ func TestCreateSession_Success(t *testing.T) {
 	if capturedParams.Plan != "Fix the tests" {
 		t.Errorf("got Plan %q, want %q", capturedParams.Plan, "Fix the tests")
 	}
+	if capturedParams.BranchName != "dependabot/npm/lodash-4.17.21" {
+		t.Errorf("got BranchName %q, want %q", capturedParams.BranchName, "dependabot/npm/lodash-4.17.21")
+	}
 	if capturedSessionID != "sess-123" {
 		t.Errorf("StartSession called with ID %q, want %q", capturedSessionID, "sess-123")
 	}
@@ -148,7 +179,7 @@ func TestCreateSession_Success(t *testing.T) {
 	}
 }
 
-func TestCreateSession_PersistsAgentName(t *testing.T) {
+func TestSessionCreatorPreservesExplicitAgent(t *testing.T) {
 	var capturedParams db.CreateSessionParams
 
 	store := &mockSessionStore{
@@ -166,7 +197,7 @@ func TestCreateSession_PersistsAgentName(t *testing.T) {
 		},
 	}
 
-	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
 	sess, err := creator.CreateSession(context.Background(), CreateSessionOpts{
 		RepoID:     "repo-1",
 		Title:      "Cron job",
@@ -186,16 +217,16 @@ func TestCreateSession_PersistsAgentName(t *testing.T) {
 	}
 }
 
-func TestCreateSession_BlankAgentNameUsesStoreDefault(t *testing.T) {
+func TestSessionCreatorUsesLatestDefaultAgentFromProvider(t *testing.T) {
 	var capturedParams db.CreateSessionParams
 
 	store := &mockSessionStore{
 		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
 			capturedParams = params
-			return &models.Session{ID: "sess-123", RepoID: params.RepoID, AgentName: "claude"}, nil
+			return &models.Session{ID: "sess-123", RepoID: params.RepoID, AgentName: params.AgentName}, nil
 		},
 		getFn: func(_ context.Context, id string) (*models.Session, error) {
-			return &models.Session{ID: id, RepoID: "repo-1", AgentName: "claude"}, nil
+			return &models.Session{ID: id, RepoID: "repo-1", AgentName: capturedParams.AgentName}, nil
 		},
 	}
 	starter := &mockSessionStarter{
@@ -204,7 +235,12 @@ func TestCreateSession_BlankAgentNameUsesStoreDefault(t *testing.T) {
 		},
 	}
 
-	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	defaultAgent := "claude"
+	creator := NewSessionCreatorWithDefaultAgentProvider(store, starter, func() string {
+		return defaultAgent
+	}, zerolog.Nop())
+	defaultAgent = "codex"
+
 	sess, err := creator.CreateSession(context.Background(), CreateSessionOpts{
 		RepoID:     "repo-1",
 		Title:      "Cron job",
@@ -215,11 +251,85 @@ func TestCreateSession_BlankAgentNameUsesStoreDefault(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	if capturedParams.AgentName != "" {
-		t.Errorf("Create params AgentName = %q, want blank so store applies default", capturedParams.AgentName)
+	if capturedParams.AgentName != "codex" {
+		t.Errorf("Create params AgentName = %q, want latest default 'codex'", capturedParams.AgentName)
+	}
+	if sess.AgentName != "codex" {
+		t.Errorf("session AgentName = %q, want latest default 'codex'", sess.AgentName)
+	}
+}
+
+func TestSessionCreatorUsesConfiguredDefaultAgentWhenTaskAgentEmpty(t *testing.T) {
+	var capturedParams db.CreateSessionParams
+
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			capturedParams = params
+			return &models.Session{ID: "sess-123", RepoID: params.RepoID, AgentName: params.AgentName}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1", AgentName: capturedParams.AgentName}, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			return nil
+		},
+	}
+
+	creator := NewSessionCreator(store, starter, "codex", zerolog.Nop())
+	sess, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:     "repo-1",
+		Title:      "Cron job",
+		Plan:       "Run scheduled task",
+		BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if capturedParams.AgentName != "codex" {
+		t.Errorf("Create params AgentName = %q, want configured default 'codex'", capturedParams.AgentName)
+	}
+	if sess.AgentName != "codex" {
+		t.Errorf("session AgentName = %q, want configured default 'codex'", sess.AgentName)
+	}
+}
+
+func TestSessionCreatorFallsBackToClaudeWhenConfiguredDefaultEmpty(t *testing.T) {
+	var capturedParams db.CreateSessionParams
+
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			capturedParams = params
+			return &models.Session{ID: "sess-123", RepoID: params.RepoID, AgentName: params.AgentName}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1", AgentName: capturedParams.AgentName}, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			return nil
+		},
+	}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	sess, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:     "repo-1",
+		Title:      "Cron job",
+		Plan:       "Run scheduled task",
+		BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if capturedParams.AgentName != "claude" {
+		t.Errorf("Create params AgentName = %q, want fallback 'claude'", capturedParams.AgentName)
 	}
 	if sess.AgentName != "claude" {
-		t.Errorf("session AgentName = %q, want default 'claude'", sess.AgentName)
+		t.Errorf("session AgentName = %q, want fallback 'claude'", sess.AgentName)
 	}
 }
 
@@ -242,7 +352,7 @@ func TestCreateSession_NoHeadBranch(t *testing.T) {
 		},
 	}
 
-	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
 
 	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
 		RepoID:     "repo-1",
@@ -255,6 +365,320 @@ func TestCreateSession_NoHeadBranch(t *testing.T) {
 
 	if capturedBranch != "" {
 		t.Errorf("expected empty branch for new session, got %q", capturedBranch)
+	}
+}
+
+func TestCreateSession_DuplicateActivePRReturnsTypedErrorBeforeCreate(t *testing.T) {
+	prNumber := 42
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: &models.Session{ID: "sess-existing", RepoID: repoID, PRNumber: &prNumber}}}, nil
+		},
+		createFn: func(_ context.Context, _ db.CreateSessionParams) (*models.Session, error) {
+			t.Fatal("Create should not be called for duplicate PR")
+			return nil, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			t.Fatal("StartSession should not be called for duplicate PR")
+			return nil
+		},
+	}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:                        "repo-1",
+		Title:                         "Repair PR",
+		BaseBranch:                    "main",
+		PRNumber:                      &prNumber,
+		PreventDuplicateActiveSession: true,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate error, got nil")
+	}
+	var duplicate *session.DuplicateActivePRSessionError
+	if !errors.As(err, &duplicate) {
+		t.Fatalf("error %T = %v, want DuplicateActivePRSessionError", err, err)
+	}
+	if duplicate.ExistingSessionID != "sess-existing" || duplicate.RepoID != "repo-1" || duplicate.PRNumber != 42 {
+		t.Fatalf("duplicate = %+v, want existing sess-existing repo-1 PR 42", duplicate)
+	}
+}
+
+func TestCreateSession_AllowsSamePRNumberInDifferentRepo(t *testing.T) {
+	prNumber := 42
+	created := false
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, repoID string, _ int) ([]*db.SessionWithRepo, error) {
+			if repoID == "repo-2" {
+				return nil, nil
+			}
+			return []*db.SessionWithRepo{{Session: &models.Session{ID: "sess-existing", RepoID: "repo-1", PRNumber: &prNumber}}}, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			created = true
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-2"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-2", Title: "Repair PR", BaseBranch: "main", PRNumber: &prNumber, PreventDuplicateActiveSession: true}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if !created {
+		t.Fatal("Create was not called")
+	}
+}
+
+func TestCreateSession_AllowsArchivedPriorPRSession(t *testing.T) {
+	prNumber := 42
+	archivedAt := time.Now()
+	created := false
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: &models.Session{ID: "sess-archived", RepoID: repoID, PRNumber: &prNumber, ArchivedAt: &archivedAt}}}, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			created = true
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "Repair PR", BaseBranch: "main", PRNumber: &prNumber, PreventDuplicateActiveSession: true}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if !created {
+		t.Fatal("Create was not called")
+	}
+}
+
+func TestCreateSession_AllowsBlockedPriorPRSession(t *testing.T) {
+	prNumber := 42
+	created := false
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: &models.Session{ID: "sess-blocked", RepoID: repoID, PRNumber: &prNumber, State: machine.Blocked}}}, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			created = true
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "Repair PR", BaseBranch: "main", PRNumber: &prNumber, PreventDuplicateActiveSession: true}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if !created {
+		t.Fatal("Create was not called")
+	}
+}
+
+func TestCreateSession_NilPRNumberDoesNotCheckDuplicates(t *testing.T) {
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+			t.Fatal("ListByRepoAndPR should not be called without PRNumber")
+			return nil, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "Quick task", BaseBranch: "main"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+}
+
+func TestCreateSession_DoesNotCheckDuplicatePRWithoutOptIn(t *testing.T) {
+	prNumber := 42
+	created := false
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+			t.Fatal("ListByRepoAndPR should not be called without duplicate prevention opt-in")
+			return nil, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			created = true
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{RepoID: "repo-1", Title: "Normal PR", BaseBranch: "main", PRNumber: &prNumber}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if !created {
+		t.Fatal("Create was not called")
+	}
+}
+
+func TestCreateSession_DuplicateActiveBranchReturnsTypedErrorBeforeCreate(t *testing.T) {
+	store := &mockSessionStore{
+		listActiveWithRepoFn: func(_ context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: &models.Session{ID: "sess-existing", RepoID: repoID, BranchName: "dependabot/npm/lodash-4.17.21"}}}, nil
+		},
+		createFn: func(_ context.Context, _ db.CreateSessionParams) (*models.Session, error) {
+			t.Fatal("Create should not be called for duplicate branch")
+			return nil, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			t.Fatal("StartSession should not be called for duplicate branch")
+			return nil
+		},
+	}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:                        "repo-1",
+		Title:                         "Repair branch",
+		BaseBranch:                    "main",
+		HeadBranch:                    "dependabot/npm/lodash-4.17.21",
+		PreventDuplicateActiveSession: true,
+	})
+	if err == nil {
+		t.Fatal("expected duplicate error, got nil")
+	}
+	var duplicate *session.DuplicateActiveBranchSessionError
+	if !errors.As(err, &duplicate) {
+		t.Fatalf("error %T = %v, want DuplicateActiveBranchSessionError", err, err)
+	}
+	if duplicate.ExistingSessionID != "sess-existing" || duplicate.RepoID != "repo-1" || duplicate.BranchName != "dependabot/npm/lodash-4.17.21" {
+		t.Fatalf("duplicate = %+v, want existing sess-existing repo-1 branch", duplicate)
+	}
+}
+
+func TestCreateSession_AllowsBlockedPriorBranchSession(t *testing.T) {
+	created := false
+	store := &mockSessionStore{
+		listActiveWithRepoFn: func(_ context.Context, repoID string) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: &models.Session{ID: "sess-blocked", RepoID: repoID, BranchName: "dependabot/npm/lodash-4.17.21", State: machine.Blocked}}}, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			created = true
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:                        "repo-1",
+		Title:                         "Repair branch",
+		BaseBranch:                    "main",
+		HeadBranch:                    "dependabot/npm/lodash-4.17.21",
+		PreventDuplicateActiveSession: true,
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if !created {
+		t.Fatal("Create was not called")
+	}
+}
+
+func TestCreateSession_ConcurrentSameRepoPRCreatesOneSession(t *testing.T) {
+	prNumber := 42
+	type concurrentStore struct {
+		*mockSessionStore
+		mu       sync.Mutex
+		next     int
+		sessions map[string]*models.Session
+	}
+	store := &concurrentStore{sessions: map[string]*models.Session{}}
+	store.mockSessionStore = &mockSessionStore{}
+	store.listByRepoAndPRFn = func(_ context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		var rows []*db.SessionWithRepo
+		for _, sess := range store.sessions {
+			if sess.RepoID == repoID && sess.PRNumber != nil && *sess.PRNumber == prNumber && sess.ArchivedAt == nil {
+				rows = append(rows, &db.SessionWithRepo{Session: sess})
+			}
+		}
+		return rows, nil
+	}
+	store.createFn = func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		store.next++
+		id := fmt.Sprintf("sess-%d", store.next)
+		sess := &models.Session{ID: id, RepoID: params.RepoID, PRNumber: params.PRNumber}
+		store.sessions[id] = sess
+		return sess, nil
+	}
+	store.getFn = func(_ context.Context, id string) (*models.Session, error) {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.sessions[id], nil
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil }}
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+				RepoID:                        "repo-1",
+				Title:                         "Repair PR",
+				BaseBranch:                    "main",
+				PRNumber:                      &prNumber,
+				PreventDuplicateActiveSession: true,
+			})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var success, duplicate int
+	for err := range errs {
+		if err == nil {
+			success++
+			continue
+		}
+		var dup *session.DuplicateActivePRSessionError
+		if errors.As(err, &dup) {
+			duplicate++
+			continue
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if success != 1 || duplicate != 1 {
+		t.Fatalf("success=%d duplicate=%d, want 1 each", success, duplicate)
+	}
+	if store.next != 1 {
+		t.Fatalf("created sessions = %d, want 1", store.next)
 	}
 }
 
@@ -272,7 +696,7 @@ func TestCreateSession_CreateError(t *testing.T) {
 		},
 	}
 
-	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
 
 	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
 		RepoID:     "repo-1",
@@ -304,7 +728,7 @@ func TestCreateSession_StartSessionError(t *testing.T) {
 		},
 	}
 
-	creator := NewSessionCreator(store, starter, zerolog.Nop())
+	creator := NewSessionCreator(store, starter, "claude", zerolog.Nop())
 
 	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
 		RepoID:     "repo-1",
@@ -323,5 +747,255 @@ func TestCreateSession_StartSessionError(t *testing.T) {
 	// no PR, stuck in CreatingWorktree) that the user can't recover.
 	if len(store.deleted) != 1 || store.deleted[0] != "sess-789" {
 		t.Errorf("expected Delete(\"sess-789\") to be called once, got %v", store.deleted)
+	}
+}
+
+func TestCreateSession_ConcurrentDuplicateWaitsForFailedStartCleanup(t *testing.T) {
+	prNumber := 42
+	firstStartEntered := make(chan struct{})
+
+	var (
+		mu          sync.Mutex
+		next        int
+		sessions    = map[string]*models.Session{}
+		deleted     []string
+		startErrors []error
+	)
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			var rows []*db.SessionWithRepo
+			for _, sess := range sessions {
+				if sess.RepoID == repoID && sess.PRNumber != nil && *sess.PRNumber == prNumber && sess.ArchivedAt == nil {
+					rows = append(rows, &db.SessionWithRepo{Session: sess})
+				}
+			}
+			return rows, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			next++
+			id := fmt.Sprintf("sess-%d", next)
+			sess := &models.Session{ID: id, RepoID: params.RepoID, PRNumber: params.PRNumber}
+			sessions[id] = sess
+			return sess, nil
+		},
+		deleteFn: func(_ context.Context, id string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			delete(sessions, id)
+			deleted = append(deleted, id)
+			return nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return sessions[id], nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, sessionID string, _ session.StartSessionOpts) error {
+			if sessionID == "sess-1" {
+				close(firstStartEntered)
+				time.Sleep(100 * time.Millisecond)
+				return errors.New("worktree conflict")
+			}
+			return nil
+		},
+	}
+	creator := NewSessionCreator(store, starter, "", zerolog.Nop())
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+			RepoID:                        "repo-1",
+			Title:                         "Repair PR",
+			BaseBranch:                    "main",
+			PRNumber:                      &prNumber,
+			PreventDuplicateActiveSession: true,
+		})
+		firstErr <- err
+	}()
+
+	select {
+	case <-firstStartEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first session did not enter StartSession")
+	}
+
+	_, secondErr := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:                        "repo-1",
+		Title:                         "Repair PR",
+		BaseBranch:                    "main",
+		PRNumber:                      &prNumber,
+		PreventDuplicateActiveSession: true,
+	})
+	startErrors = append(startErrors, <-firstErr, secondErr)
+
+	var duplicates int
+	for _, err := range startErrors {
+		if session.IsDuplicateActiveSessionError(err) {
+			duplicates++
+		}
+	}
+	if duplicates != 0 {
+		t.Fatalf("expected overlapping duplicate to wait for cleanup, got %d duplicate errors: %v", duplicates, startErrors)
+	}
+	if startErrors[0] == nil || startErrors[1] != nil {
+		t.Fatalf("expected first start to fail and second create to succeed, got %v", startErrors)
+	}
+	if next != 2 {
+		t.Fatalf("expected second create after first cleanup, created %d sessions", next)
+	}
+	if len(deleted) != 1 || deleted[0] != "sess-1" {
+		t.Fatalf("expected first half-started session to be deleted, got %v", deleted)
+	}
+}
+
+func TestCreateSession_DuplicatePreventionIgnoresDeadEarlySession(t *testing.T) {
+	prNumber := 42
+	agentSessionID := "agent-dead"
+	existing := &models.Session{
+		ID:             "sess-dead",
+		RepoID:         "repo-1",
+		BranchName:     "dependabot/npm/lodash-4.17.21",
+		State:          machine.ImplementingPlan,
+		AgentSessionID: &agentSessionID,
+		PRNumber:       &prNumber,
+	}
+	created := false
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: existing}}, nil
+		},
+		listActiveWithRepoFn: func(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: existing}}, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			created = true
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+		return nil
+	}}
+	creator := NewSessionCreatorWithDefaultAgentProviderAndLiveness(
+		store, starter, func() string { return "claude" },
+		&mockDuplicateLiveness{alive: map[string]bool{"sess-dead": false}},
+		zerolog.Nop(),
+	)
+
+	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:                        "repo-1",
+		Title:                         "Repair PR",
+		BaseBranch:                    "main",
+		HeadBranch:                    "dependabot/npm/lodash-4.17.21",
+		PRNumber:                      &prNumber,
+		PreventDuplicateActiveSession: true,
+	})
+
+	if err != nil {
+		t.Fatalf("CreateSession returned error for dead duplicate: %v", err)
+	}
+	if !created {
+		t.Fatal("expected new session to be created after ignoring dead duplicate")
+	}
+}
+
+func TestCreateSession_DuplicatePreventionIgnoresIdentifierlessStartupSession(t *testing.T) {
+	prNumber := 42
+	existing := &models.Session{
+		ID:         "sess-starting",
+		RepoID:     "repo-1",
+		BranchName: "dependabot/npm/lodash-4.17.21",
+		State:      machine.StartingAgent,
+		PRNumber:   &prNumber,
+	}
+	created := false
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: existing}}, nil
+		},
+		listActiveWithRepoFn: func(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: existing}}, nil
+		},
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			created = true
+			return &models.Session{ID: "sess-new", RepoID: params.RepoID}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, RepoID: "repo-1"}, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+		return nil
+	}}
+	creator := NewSessionCreatorWithDefaultAgentProviderAndLiveness(
+		store, starter, func() string { return "claude" },
+		&mockDuplicateLiveness{alive: map[string]bool{"sess-starting": true}},
+		zerolog.Nop(),
+	)
+
+	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:                        "repo-1",
+		Title:                         "Repair PR",
+		BaseBranch:                    "main",
+		HeadBranch:                    "dependabot/npm/lodash-4.17.21",
+		PRNumber:                      &prNumber,
+		PreventDuplicateActiveSession: true,
+	})
+
+	if err != nil {
+		t.Fatalf("CreateSession returned error for identifierless startup duplicate: %v", err)
+	}
+	if !created {
+		t.Fatal("expected new session to be created after ignoring identifierless startup duplicate")
+	}
+}
+
+func TestCreateSession_DuplicatePreventionKeepsLiveEarlySessionActive(t *testing.T) {
+	prNumber := 42
+	agentSessionID := "agent-live"
+	existing := &models.Session{
+		ID:             "sess-live",
+		RepoID:         "repo-1",
+		State:          machine.ImplementingPlan,
+		AgentSessionID: &agentSessionID,
+		PRNumber:       &prNumber,
+	}
+	store := &mockSessionStore{
+		listByRepoAndPRFn: func(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+			return []*db.SessionWithRepo{{Session: existing}}, nil
+		},
+		createFn: func(_ context.Context, _ db.CreateSessionParams) (*models.Session, error) {
+			t.Fatal("Create should not be called when duplicate session is live")
+			return nil, nil
+		},
+	}
+	starter := &mockSessionStarter{startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+		t.Fatal("StartSession should not be called when duplicate session is live")
+		return nil
+	}}
+	creator := NewSessionCreatorWithDefaultAgentProviderAndLiveness(
+		store, starter, func() string { return "claude" },
+		&mockDuplicateLiveness{alive: map[string]bool{"sess-live": true}},
+		zerolog.Nop(),
+	)
+
+	_, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID:                        "repo-1",
+		Title:                         "Repair PR",
+		BaseBranch:                    "main",
+		PRNumber:                      &prNumber,
+		PreventDuplicateActiveSession: true,
+	})
+
+	if !session.IsDuplicateActiveSessionError(err) {
+		t.Fatalf("expected live duplicate error, got %v", err)
 	}
 }

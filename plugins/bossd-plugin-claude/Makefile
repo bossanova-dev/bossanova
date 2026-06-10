@@ -15,11 +15,8 @@ format:
 	gofmt -w .
 	golangci-lint run ./...
 
-RACE_FLAG := $(if $(RACE),-race,)
-
-## test: Run tests with coverage
-test:
-	go test $(RACE_FLAG) -timeout 300s -coverprofile=coverage.out ./...
+GO_TEST_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+include $(dir $(lastword $(MAKEFILE_LIST)))../../mk/go-test.mk
 
 ## build: Build the plugin binary
 build:

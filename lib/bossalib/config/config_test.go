@@ -463,6 +463,65 @@ func TestPluginsOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestSaveToWritesAtomicWholeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	original := Settings{
+		WorktreeBaseDir: "/test",
+		Plugins: []PluginConfig{
+			{Name: "claude", Path: "/old/bossd-plugin-claude", Enabled: true},
+		},
+	}
+	if err := SaveTo(path, original); err != nil {
+		t.Fatalf("initial SaveTo: %v", err)
+	}
+
+	updated := Settings{
+		WorktreeBaseDir: "/test",
+		Plugins: []PluginConfig{
+			{Name: "claude", Path: "/new/bossd-plugin-claude", Enabled: true},
+			{Name: "codex", Path: "/new/bossd-plugin-codex", Enabled: false},
+		},
+	}
+	if err := SaveTo(path, updated); err != nil {
+		t.Fatalf("updated SaveTo: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var loaded Settings
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("settings JSON is not a whole valid file: %v\n%s", err, data)
+	}
+	if len(loaded.Plugins) != 2 {
+		t.Fatalf("loaded %d plugins, want whole rewritten plugin list", len(loaded.Plugins))
+	}
+	if loaded.Plugins[0].Path != "/new/bossd-plugin-claude" || loaded.Plugins[1].Path != "/new/bossd-plugin-codex" {
+		t.Fatalf("loaded plugin paths = %+v, want updated paths", loaded.Plugins)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp") {
+			t.Fatalf("temporary settings file left behind: %s", entry.Name())
+		}
+	}
+}
+
+func TestSyncDirReturnsOpenError(t *testing.T) {
+	err := syncDir(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("syncDir() error = nil, want missing directory error")
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("syncDir() error = %v, want not-exist error", err)
+	}
+}
+
 func TestPollIntervalOmittedFromJSON(t *testing.T) {
 	// When PollIntervalSeconds is 0, it should be omitted from JSON (omitempty).
 	path := filepath.Join(t.TempDir(), "settings.json")
@@ -600,6 +659,35 @@ func TestDiscoverPluginsFindsPlugins(t *testing.T) {
 		if !filepath.IsAbs(p.Path) {
 			t.Errorf("plugin %q: path should be absolute, got %q", p.Name, p.Path)
 		}
+	}
+}
+
+func TestDiscoverPluginsIgnoresNonExecutablePluginFiles(t *testing.T) {
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	pluginDir := filepath.Join(tmp, "libexec", "plugins")
+
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	executablePath := filepath.Join(pluginDir, "bossd-plugin-alpha")
+	if err := os.WriteFile(executablePath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "bossd-plugin-stale"), []byte("not runnable\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plugins := discoverPluginsFrom(binDir)
+	if len(plugins) != 1 {
+		t.Fatalf("got %d plugins, want 1: %+v", len(plugins), plugins)
+	}
+	if plugins[0].Name != "alpha" || plugins[0].Path != executablePath || !plugins[0].Enabled {
+		t.Fatalf("plugin = %+v, want enabled alpha at %s", plugins[0], executablePath)
 	}
 }
 

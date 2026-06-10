@@ -82,7 +82,7 @@ type CreateSessionParams struct {
 	WorktreePath string
 	BranchName   string
 	BaseBranch   string
-	AgentName    string // Agent plugin name; empty falls back to "claude".
+	AgentName    string // Agent plugin name; daemon callers should pass a resolved name. Empty falls back to "claude" for legacy callers.
 	PRNumber     *int
 	PRURL        *string
 	TrackerID    *string
@@ -136,6 +136,7 @@ type SessionStore interface {
 	ListActive(ctx context.Context, repoID string) ([]*models.Session, error)
 	ListActiveWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error)
 	ListWithRepo(ctx context.Context, repoID string) ([]*SessionWithRepo, error)
+	ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*SessionWithRepo, error)
 	ListArchived(ctx context.Context, repoID string) ([]*models.Session, error)
 	Update(ctx context.Context, id string, params UpdateSessionParams) (*models.Session, error)
 	// UpdateStateConditional runs the conditional `UPDATE sessions SET

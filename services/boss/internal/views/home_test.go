@@ -396,6 +396,26 @@ func TestHomeUpgradeKeyWinsWhenUpgradeAvailable(t *testing.T) {
 	}
 }
 
+func TestHomeUpgradeFailureShowsCapturedOutput(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.loading = false
+	h.repoCount = 1
+	h.upgradeAvailable = true
+
+	model, _ := h.Update(upgradeRunMsg{
+		err:    errors.New("exit status 1"),
+		output: "download failed\npermission denied\n",
+	})
+	h = model.(HomeModel)
+
+	content := h.View().Content
+	if !strings.Contains(content, "exit status 1") ||
+		!strings.Contains(content, "download failed") ||
+		!strings.Contains(content, "permission denied") {
+		t.Fatalf("upgrade failure output not persisted in home view: %q", content)
+	}
+}
+
 func TestHomeCloudGateExplainsUpgradeBeforeSubscribe(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.SetCloudSubscription(&fakeHomeCloudAccessClient{}, "bossanova://billing/return", "bossanova://billing/cancel")

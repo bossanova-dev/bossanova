@@ -3,8 +3,6 @@ package clitest_test
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -12,23 +10,16 @@ import (
 	"github.com/recurser/bossalib/config"
 )
 
-// settingsPath returns the settings.json path for the given HOME dir, matching
-// config.Path()'s os.UserConfigDir() logic.
-func settingsPath(home string) string {
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "bossanova", "settings.json")
-	}
-	return filepath.Join(home, ".config", "bossanova", "settings.json")
-}
-
 type testSettings struct {
 	WorktreeBaseDir     string `json:"worktree_base_dir"`
 	PollIntervalSeconds int    `json:"poll_interval_seconds"`
 }
 
-func readSettings(t *testing.T, home string) testSettings {
+// readSettings reads the settings.json the harness isolated the subprocess to
+// (BOSS_SETTINGS_PATH), not a HOME-derived path.
+func readSettings(t *testing.T, h *clitest.Harness) testSettings {
 	t.Helper()
-	p := settingsPath(home)
+	p := h.SettingsPath()
 	data, err := os.ReadFile(p)
 	if err != nil {
 		t.Fatalf("read settings %s: %v", p, err)
@@ -41,10 +32,10 @@ func readSettings(t *testing.T, home string) testSettings {
 }
 
 // readSkipPermissions reads the dangerously_skip_permissions value from
-// the claude plugin's Config map in the settings.json file.
-func readSkipPermissions(t *testing.T, home string) bool {
+// the claude plugin's Config map in the harness settings.json file.
+func readSkipPermissions(t *testing.T, h *clitest.Harness) bool {
 	t.Helper()
-	loaded, err := config.LoadFrom(settingsPath(home))
+	loaded, err := config.LoadFrom(h.SettingsPath())
 	if err != nil {
 		t.Fatalf("config.LoadFrom: %v", err)
 	}
@@ -52,8 +43,7 @@ func readSkipPermissions(t *testing.T, home string) bool {
 }
 
 func TestCLI_Settings_Show(t *testing.T) {
-	home := t.TempDir()
-	h := clitest.New(t, clitest.WithEnv("HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config")))
+	h := clitest.New(t)
 	res := h.Run("settings")
 
 	if res.ExitCode != 0 {
@@ -67,14 +57,13 @@ func TestCLI_Settings_Show(t *testing.T) {
 }
 
 func TestCLI_Settings_Toggle_SkipPermissions(t *testing.T) {
-	home := t.TempDir()
-	h := clitest.New(t, clitest.WithEnv("HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config")))
+	h := clitest.New(t)
 
 	res := h.Run("settings", "--skip-permissions")
 	if res.ExitCode != 0 {
 		t.Fatalf("enable: exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if !readSkipPermissions(t, home) {
+	if !readSkipPermissions(t, h) {
 		t.Errorf("expected dangerously_skip_permissions=true after enable")
 	}
 
@@ -82,36 +71,34 @@ func TestCLI_Settings_Toggle_SkipPermissions(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("disable: exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	if readSkipPermissions(t, home) {
+	if readSkipPermissions(t, h) {
 		t.Errorf("expected dangerously_skip_permissions=false after disable")
 	}
 }
 
 func TestCLI_Settings_SetWorktreeDir(t *testing.T) {
-	home := t.TempDir()
-	h := clitest.New(t, clitest.WithEnv("HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config")))
+	h := clitest.New(t)
 
-	custom := filepath.Join(home, "custom", "worktrees")
+	custom := t.TempDir()
 	res := h.Run("settings", "--worktree-dir", custom)
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
 
-	if s := readSettings(t, home); s.WorktreeBaseDir != custom {
+	if s := readSettings(t, h); s.WorktreeBaseDir != custom {
 		t.Errorf("expected WorktreeBaseDir=%q, got %q", custom, s.WorktreeBaseDir)
 	}
 }
 
 func TestCLI_Settings_SetDefaultAgent(t *testing.T) {
-	home := t.TempDir()
-	h := clitest.New(t, clitest.WithEnv("HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config")))
+	h := clitest.New(t)
 
 	res := h.Run("settings", "--default-agent", "opencode")
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
 
-	loaded, err := config.LoadFrom(settingsPath(home))
+	loaded, err := config.LoadFrom(h.SettingsPath())
 	if err != nil {
 		t.Fatalf("config.LoadFrom: %v", err)
 	}
@@ -121,15 +108,14 @@ func TestCLI_Settings_SetDefaultAgent(t *testing.T) {
 }
 
 func TestCLI_Settings_SetPollInterval(t *testing.T) {
-	home := t.TempDir()
-	h := clitest.New(t, clitest.WithEnv("HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config")))
+	h := clitest.New(t)
 
 	res := h.Run("settings", "--poll-interval", "45")
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
 
-	if s := readSettings(t, home); s.PollIntervalSeconds != 45 {
+	if s := readSettings(t, h); s.PollIntervalSeconds != 45 {
 		t.Errorf("expected PollIntervalSeconds=45, got %d", s.PollIntervalSeconds)
 	}
 }

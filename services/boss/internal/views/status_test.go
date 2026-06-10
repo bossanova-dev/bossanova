@@ -190,6 +190,15 @@ func TestRepairFailureHint(t *testing.T) {
 			want: "",
 		},
 		{
+			name: "merged PR suppresses stale failed attempt",
+			sess: &pb.Session{
+				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_MERGED,
+				LastRepairAttemptCount: 3,
+				LastRepairExitError:    "exit status 1",
+			},
+			want: "",
+		},
+		{
 			name: "checking PR without known errors suppresses stale failed attempt",
 			sess: &pb.Session{
 				DisplayStatus:          pb.DisplayStatus_DISPLAY_STATUS_CHECKING,

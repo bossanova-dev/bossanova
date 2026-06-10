@@ -107,7 +107,8 @@ type upgradeCheckMsg struct {
 }
 
 type upgradeRunMsg struct {
-	err error
+	output string
+	err    error
 }
 
 type daemonRestartMsg struct {
@@ -435,10 +436,11 @@ func checkUpgradeCmdForVersion(ctx context.Context, current string, check upgrad
 }
 
 var runUpgradeCmd = func(executable string) tea.Cmd {
-	return tea.ExecProcess(
-		exec.Command(executable, "upgrade", "--yes", "--no-restart"),
-		func(err error) tea.Msg { return upgradeRunMsg{err: err} },
-	)
+	return func() tea.Msg {
+		cmd := exec.Command(executable, "upgrade", "--yes", "--no-restart")
+		output, err := cmd.CombinedOutput()
+		return upgradeRunMsg{output: string(output), err: err}
+	}
 }
 
 func restartDaemonCmd() tea.Cmd {
@@ -654,7 +656,7 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case upgradeRunMsg:
 		if msg.err != nil {
-			h.upgradeError = msg.err.Error()
+			h.upgradeError = upgradeRunError(msg)
 			return h, nil
 		}
 		h.upgradeError = ""
@@ -922,6 +924,14 @@ func (h HomeModel) upgradeStatusView() string {
 		)))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func upgradeRunError(msg upgradeRunMsg) string {
+	output := strings.TrimSpace(msg.output)
+	if output == "" {
+		return msg.err.Error()
+	}
+	return msg.err.Error() + "\n" + output
 }
 
 func (h HomeModel) withUpgradeStatus(content string) string {

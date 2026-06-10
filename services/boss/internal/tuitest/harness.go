@@ -77,11 +77,15 @@ func configDirForHome(home string) string {
 // seedSettingsAcknowledged writes a minimal settings.json with
 // ProvidersAcknowledged=true into the per-test HOME so the boss subprocess
 // skips the first-run onboarding gate.
-func seedSettingsAcknowledged(t *testing.T, home string) {
+func seedSettingsAcknowledged(t *testing.T, home, worktreeBaseDir string) {
 	t.Helper()
-	writeSeedSettings(t, home, map[string]any{
+	settings := map[string]any{
 		"providers_acknowledged": true,
-	})
+	}
+	if worktreeBaseDir != "" {
+		settings["worktree_base_dir"] = worktreeBaseDir
+	}
+	writeSeedSettings(t, home, settings)
 }
 
 // seedFirstRunSettings writes a settings.json that points boss at the test
@@ -152,6 +156,7 @@ type harnessConfig struct {
 	env                           []string
 	skipSettingsAcknowledgedSeed  bool
 	firstRunOnboarding            bool
+	worktreeBaseDir               string
 }
 
 // WithRepos seeds the mock daemon with repos.
@@ -165,6 +170,16 @@ func WithRepos(repos ...*pb.Repo) Option {
 func WithSessions(sessions ...*pb.Session) Option {
 	return func(c *harnessConfig) {
 		c.sessions = append(c.sessions, sessions...)
+	}
+}
+
+// WithWorktreeBaseDir seeds settings.json with a fixed worktree_base_dir so the
+// rendered settings screen is deterministic. Without it the value defaults to
+// `$HOME/.bossanova/worktrees`, which under a per-test temp HOME leaks a
+// machine-specific, high-entropy path into captured screens.
+func WithWorktreeBaseDir(dir string) Option {
+	return func(c *harnessConfig) {
+		c.worktreeBaseDir = dir
 	}
 }
 
@@ -377,7 +392,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	case cfg.firstRunOnboarding:
 		seedFirstRunSettings(t, tempHome, daemon.SocketPath())
 	case !cfg.skipSettingsAcknowledgedSeed:
-		seedSettingsAcknowledged(t, tempHome)
+		seedSettingsAcknowledged(t, tempHome, cfg.worktreeBaseDir)
 	}
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.

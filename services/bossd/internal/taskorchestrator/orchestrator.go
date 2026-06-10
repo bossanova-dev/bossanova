@@ -18,6 +18,7 @@ import (
 	"github.com/recurser/bossd/internal/db"
 	"github.com/recurser/bossd/internal/mergepolicy"
 	"github.com/recurser/bossd/internal/plugin"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // DefaultPollInterval is the default interval between task source polls.
@@ -397,7 +398,7 @@ func (o *Orchestrator) enqueueMappedCreateSession(ctx context.Context, task *bos
 	o.active[repo.id] = true
 	o.mu.Unlock()
 
-	o.handleCreateSession(ctx, task, repo, mapping)
+	o.handleCreateSession(ctx, task, repo, mapping, true)
 }
 
 // dequeueNext processes the next queued task for a repo, if any.
@@ -415,7 +416,7 @@ func (o *Orchestrator) dequeueNext(ctx context.Context, repoID string) {
 	o.mu.Unlock()
 
 	if next.mapping != nil {
-		o.handleCreateSession(ctx, next.task, next.repo, next.mapping)
+		o.handleCreateSession(ctx, next.task, next.repo, next.mapping, true)
 		return
 	}
 	o.routeTask(ctx, next.task, next.repo, next.pluginName)
@@ -710,7 +711,7 @@ func (o *Orchestrator) routeTask(ctx context.Context, task *bossanovav1.TaskItem
 		o.handleAutoMerge(ctx, task, repo, mapping)
 
 	case bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION:
-		o.handleCreateSession(ctx, task, repo, mapping)
+		o.handleCreateSession(ctx, task, repo, mapping, false)
 
 	case bossanovav1.TaskAction_TASK_ACTION_NOTIFY_USER:
 		o.handleNotifyUser(ctx, task, repo, mapping)
@@ -832,7 +833,7 @@ func (o *Orchestrator) handleAutoMerge(ctx context.Context, task *bossanovav1.Ta
 // The session runs asynchronously — HandleSessionCompleted dequeues the
 // next task when it finishes. We only dequeue here on the error path so
 // the queue advances if session creation fails.
-func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping) {
+func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav1.TaskItem, repo repoInfo, mapping *models.TaskMapping, preserveMappingOnDuplicate bool) {
 	// The task's base_branch is advisory: plugins that don't know the repo
 	// configuration set the repo's default branch (or "main" as a historical
 	// fallback). Always prefer the repo's configured default so repos with
@@ -845,13 +846,15 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 		baseBranch = "main"
 	}
 
+	isDependabotTask := strings.HasPrefix(task.GetExternalId(), "dependabot:") || slices.Contains(task.GetLabels(), "dependabot")
 	opts := CreateSessionOpts{
-		RepoID:          repo.id,
-		Title:           task.GetTitle(),
-		Plan:            task.GetPlan(),
-		BaseBranch:      baseBranch,
-		HeadBranch:      task.GetExistingBranch(),
-		SkipSetupScript: slices.Contains(task.GetLabels(), "dependabot"),
+		RepoID:                        repo.id,
+		Title:                         task.GetTitle(),
+		Plan:                          task.GetPlan(),
+		BaseBranch:                    baseBranch,
+		HeadBranch:                    task.GetExistingBranch(),
+		SkipSetupScript:               isDependabotTask,
+		PreventDuplicateActiveSession: isDependabotTask,
 	}
 
 	// Extract PR number from the external ID so the session displays
@@ -866,6 +869,19 @@ func (o *Orchestrator) handleCreateSession(ctx context.Context, task *bossanovav
 
 	sess, err := o.sessionCreator.CreateSession(ctx, opts)
 	if err != nil {
+		if session.IsDuplicateActiveSessionError(err) {
+			o.logger.Info().Err(err).
+				Str("external_id", task.GetExternalId()).
+				Str("title", task.GetTitle()).
+				Msg("create session skipped because active session already covers task")
+			if preserveMappingOnDuplicate {
+				o.updateMappingStatusWithDetails(ctx, mapping.ID, models.TaskMappingStatusFailed, err.Error())
+			} else {
+				o.deleteDuplicateTaskMapping(ctx, mapping.ID)
+			}
+			o.dequeueNext(ctx, repo.id)
+			return
+		}
 		o.logger.Error().Err(err).
 			Str("external_id", task.GetExternalId()).
 			Str("title", task.GetTitle()).
@@ -948,6 +964,14 @@ Repair objective:
 		Labels:         labels,
 		Action:         bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION,
 		ExistingBranch: task.GetExistingBranch(),
+	}
+}
+
+func (o *Orchestrator) deleteDuplicateTaskMapping(ctx context.Context, mappingID string) {
+	if err := o.taskMappings.Delete(ctx, mappingID); err != nil {
+		o.logger.Error().Err(err).
+			Str("mapping", mappingID).
+			Msg("delete duplicate task mapping failed")
 	}
 }
 

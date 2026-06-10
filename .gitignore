@@ -47,6 +47,9 @@ docs/handoffs/
 # Mutation testing reports
 .mutate/
 
+# Proof-of-implementation screenshot bundles (uploaded to a public bucket, never committed)
+.proof/
+
 # Beads
 .beads/interactions.jsonl
 .beads/issues.jsonl
@@ -58,3 +61,8 @@ docs/handoffs/
 # Local Bossanova development profile
 /.config/
 /config/
+
+# Kubernetes secrets
+services/bosso/kustomize/overlays/*/.env-bosso
+services/bosso/kustomize/overlays/*/.env-cloudflared
+services/bosso/kustomize/overlays/*/.env-redis

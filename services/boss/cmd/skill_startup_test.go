@@ -17,6 +17,11 @@ func setupSkillStartupTest(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	// Give each skill-startup test its own settings file. maybeInstallSkills
+	// persists installed/declined manifest state via config.Save, so sharing the
+	// package-wide BOSS_SETTINGS_PATH default would leak state between tests and
+	// make them order-dependent. t.Setenv restores the default afterward.
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(home, "settings.json"))
 	t.Setenv("BOSS_SKIP_SKILLS", "")
 
 	origAgents := skillInstallAgents

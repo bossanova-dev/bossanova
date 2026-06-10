@@ -11,6 +11,9 @@ import (
 )
 
 func TestTUI_NewSessionView_RepoSelect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testMultiRepos()...),
 	)
@@ -39,6 +42,9 @@ func TestTUI_NewSessionView_RepoSelect(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_TypeSelect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testMultiRepos()...),
 	)
@@ -69,6 +75,9 @@ func TestTUI_NewSessionView_TypeSelect(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_SingleRepoSkipsSelect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...), // Only 1 repo.
 	)
@@ -92,6 +101,9 @@ func TestTUI_NewSessionView_SingleRepoSkipsSelect(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_FormPhase_EscGoesBackToTypeSelect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...), // Single repo — skips repo select.
 	)
@@ -147,6 +159,9 @@ func TestTUI_NewSessionView_FormPhase_EscGoesBackToTypeSelect(t *testing.T) {
 // captured request rather than a view transition (see FilterSelectsCorrectPR
 // for the same pattern).
 func TestTUI_NewSessionView_SubmitCreatesSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...), // single repo skips repo select
 	)
@@ -245,6 +260,9 @@ func navigateToQuickChatForm(t *testing.T, h *tuitest.Harness) {
 // → Quick Chat, name entry, submit. Asserts the captured CreateSessionRequest
 // has the typed Title and QuickChat == true.
 func TestTUI_NewSessionView_QuickChat_NameTyped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...), // single repo skips repo select
 	)
@@ -280,6 +298,9 @@ func TestTUI_NewSessionView_QuickChat_NameTyped(t *testing.T) {
 // TestTUI_NewSessionView_QuickChat_EmptyName confirms that submitting the
 // Quick Chat form with no input falls back to a timestamped default title.
 func TestTUI_NewSessionView_QuickChat_EmptyName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...), // single repo skips repo select
 	)
@@ -318,6 +339,9 @@ func TestTUI_NewSessionView_QuickChat_EmptyName(t *testing.T) {
 // from the Quick Chat name-entry form returns the user to the type-select
 // table rather than firing a session create or popping back home.
 func TestTUI_NewSessionView_QuickChat_EscReturnsToTypeSelect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...), // single repo skips repo select
 	)
@@ -344,6 +368,9 @@ func TestTUI_NewSessionView_QuickChat_EscReturnsToTypeSelect(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_Cancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testMultiRepos()...),
 	)
@@ -409,6 +436,9 @@ func navigateToPRSelect(t *testing.T, h *tuitest.Harness) {
 }
 
 func TestTUI_NewSessionView_PRSelect_FilterActivates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithPRs("repo-1", manyPRs()...),
@@ -430,6 +460,9 @@ func TestTUI_NewSessionView_PRSelect_FilterActivates(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_PRSelect_FilterNarrows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithPRs("repo-1", manyPRs()...),
@@ -461,6 +494,9 @@ func TestTUI_NewSessionView_PRSelect_FilterNarrows(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_PRSelect_FilterAcceptsPaste(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithPRs("repo-1", manyPRs()...),
@@ -486,6 +522,9 @@ func TestTUI_NewSessionView_PRSelect_FilterAcceptsPaste(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_PRSelect_FilterEscClears(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithPRs("repo-1", manyPRs()...),
@@ -520,6 +559,9 @@ func TestTUI_NewSessionView_PRSelect_FilterEscClears(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_PRSelect_FilterNoMatches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithPRs("repo-1", manyPRs()...),
@@ -545,6 +587,9 @@ func TestTUI_NewSessionView_PRSelect_FilterNoMatches(t *testing.T) {
 // to a single match, pressing enter must create a session for that PR's
 // original number, not the first PR in the unfiltered slice.
 func TestTUI_NewSessionView_PRSelect_FilterSelectsCorrectPR(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
 		tuitest.WithPRs("repo-1", manyPRs()...),
@@ -611,6 +656,9 @@ func manyIssues() []*pb.TrackerIssue {
 }
 
 func TestTUI_NewSessionView_IssueSelect_FilterNarrows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepoWithLinear()...),
 		tuitest.WithTrackerIssues("repo-1", manyIssues()...),
@@ -658,6 +706,9 @@ func TestTUI_NewSessionView_IssueSelect_FilterNarrows(t *testing.T) {
 }
 
 func TestTUI_NewSessionView_IssueSelect_FilterAcceptsPaste(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepoWithLinear()...),
 		tuitest.WithTrackerIssues("repo-1", manyIssues()...),

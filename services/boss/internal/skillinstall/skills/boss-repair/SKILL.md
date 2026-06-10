@@ -55,7 +55,7 @@ Before running local checks, discover this repo's commands from project instruct
 
 **Resolution**:
 
-1. Fetch and merge the PR base branch:
+1. Fetch and rebase onto the PR base branch:
 
    ```bash
    BASE_BRANCH=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
@@ -78,8 +78,27 @@ Before running local checks, discover this repo's commands from project instruct
    fi
    test -n "$BASE_BRANCH" || { echo "Could not determine PR base branch"; exit 1; }
    git fetch origin "$BASE_BRANCH"
-   git merge "origin/$BASE_BRANCH"
+   MERGE_AMENDMENTS=$(
+     git rev-list --merges "origin/$BASE_BRANCH"..HEAD |
+       while read -r merge_commit; do
+         if [ -n "$(git show --remerge-diff --format= "$merge_commit")" ]; then
+           echo "$merge_commit"
+         fi
+       done
+   )
+   if [ -n "$MERGE_AMENDMENTS" ]; then
+     echo "Merge commit amendments detected; automatic rebase could drop manual conflict-resolution edits:"
+     echo "$MERGE_AMENDMENTS"
+     echo "Resolve manually or convert those amendments into normal commits before rebasing."
+     exit 1
+   fi
+   git rebase --rebase-merges "origin/$BASE_BRANCH"
    ```
+
+   Use the preflight guard because `--rebase-merges` recreates merge commits
+   but does not preserve manual conflict-resolution edits or files added
+   directly in merge commits. Only rebase automatically when the guard finds no
+   merge-commit amendments.
 
 2. Identify conflicting files:
 
@@ -89,14 +108,41 @@ Before running local checks, discover this repo's commands from project instruct
 
 3. For each conflicting file:
    - Read the file to see conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`)
-   - Understand both versions (ours vs theirs)
+   - Understand both versions. During rebase conflicts, Git labels can feel
+     reversed from a merge: `ours` is the upstream/base branch being rebased
+     onto, and `theirs` is the replayed PR commit.
    - Resolve by:
      - Keeping both changes if they're independent
      - Choosing the correct version if they conflict
      - Merging logic intelligently if needed
    - Use Edit tool to remove conflict markers and apply resolution
 
-4. Test the resolution with the repo's formatting and test gates:
+4. Continue the rebase:
+
+   ```bash
+   git add <resolved-files>
+   GIT_EDITOR=true git rebase --continue
+   ```
+
+   Set `GIT_EDITOR=true` so automated repair accepts the existing replayed
+   commit message instead of blocking or failing when no interactive editor is
+   available.
+
+   If `git rebase --continue` reports that the replayed commit became empty,
+   inspect the resolution and confirm the base branch already contains the
+   commit's intended change. When the patch is genuinely redundant, skip that
+   replayed commit:
+
+   ```bash
+   git rebase --skip
+   ```
+
+   Do not preserve empty commits with `git commit --allow-empty` unless the PR
+   intentionally needs an empty marker commit.
+
+   Repeat steps 2-4 until the rebase completes. Do not create a merge commit.
+
+5. Test the rebased branch with the repo's formatting and test gates:
 
    ```bash
    # Examples only; use the commands discovered for this repo
@@ -105,23 +151,9 @@ Before running local checks, discover this repo's commands from project instruct
    cargo test
    ```
 
-5. Commit the resolution:
-
+6. Push the rebased branch:
    ```bash
-   git add <resolved-files>
-   git commit -m "$(cat <<'EOF'
-   fix(merge): resolve conflicts with base branch
-
-   Resolved merge conflicts by [brief description of strategy].
-
-   Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
-   EOF
-   )"
-   ```
-
-6. Push the resolution:
-   ```bash
-   git push
+   git push --force-with-lease
    ```
 
 #### Strategy B: Failing Checks
@@ -364,6 +396,10 @@ If fixing one issue causes another (e.g., fixing a conflict causes tests to fail
 1. Continue with the next repair strategy
 2. Don't give up after the first fix
 3. Iterate through strategies until stable
+4. If the repair began by rebasing the PR branch, keep using
+   `git push --force-with-lease` after any follow-up fixes. The branch history
+   was already rewritten, so a plain `git push` will fail or leave the repair
+   unpushed.
 
 ### Missing Context
 
@@ -393,7 +429,7 @@ If the repair requires information not available (e.g., design decisions, extern
 | Accepting all "ours" or "theirs" blindly | Loses important changes             | Review each conflict individually |
 | Skipping tests after conflict resolution | Introduces bugs                     | Always run full test suite        |
 | Commenting out failing tests             | Hides problems                      | Fix the root cause                |
-| Force pushing                            | Loses history, breaks collaboration | Normal push only                  |
+| Plain force pushing                      | Loses history, breaks collaboration | Use `--force-with-lease` after rebase |
 | Making unrelated "improvements"          | Scope creep                         | Fix only the reported issue       |
 | Retrying immediately after failure       | Triggers cooldown loops             | Fix the root cause first          |
 
@@ -401,18 +437,18 @@ If the repair requires information not available (e.g., design decisions, extern
 
 ## Example Scenarios
 
-### Scenario 1: Simple Merge Conflict
+### Scenario 1: Simple Rebase Conflict
 
 ```
 Problem: PR shows conflict status, git reports conflicts in server.go
 
 Resolution:
-1. Fetch and merge the PR base branch
+1. Fetch and rebase onto the PR base branch
 2. Read server.go, see conflict in import statements
 3. Keep both imports (they're independent)
-4. Run repo formatting and test gates (passes)
-5. git add server.go && git commit -m "fix(merge): resolve import conflicts"
-6. git push
+4. git add server.go && GIT_EDITOR=true git rebase --continue
+5. Run repo formatting and test gates (passes)
+6. git push --force-with-lease
 
 Result: ✓ Conflict resolved, checks passing
 ```

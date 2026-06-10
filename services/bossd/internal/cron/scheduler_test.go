@@ -215,6 +215,9 @@ func (f *fakeSessionStore) ListActiveWithRepo(ctx context.Context, repoID string
 func (f *fakeSessionStore) ListWithRepo(ctx context.Context, repoID string) ([]*db.SessionWithRepo, error) {
 	panic("not used")
 }
+func (f *fakeSessionStore) ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*db.SessionWithRepo, error) {
+	panic("not used")
+}
 func (f *fakeSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
 	panic("not used")
 }

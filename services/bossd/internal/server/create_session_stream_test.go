@@ -115,6 +115,43 @@ func TestCreateSessionStreamsSetupOutputBeforeSessionCreated(t *testing.T) {
 	}
 }
 
+func TestCreateSessionDuplicateActivePRReturnsAlreadyExists(t *testing.T) {
+	t.Parallel()
+
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, &setupStreamAgent{})
+	prNumber := 123
+	otherBranch := "dependabot/npm/other-1.0.0"
+	if _, err := h.sessions.Create(context.Background(), db.CreateSessionParams{
+		RepoID:     h.repo.ID,
+		Title:      "first repair",
+		Plan:       "do work",
+		BaseBranch: "main",
+		BranchName: otherBranch,
+		PRNumber:   &prNumber,
+		AgentName:  "claude",
+	}); err != nil {
+		t.Fatalf("create existing session: %v", err)
+	}
+
+	_, err := h.createSession(t, "second repair")
+	if err == nil {
+		t.Fatal("second CreateSession error = nil, want AlreadyExists")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("Connect code = %v, want %v; err = %v", got, connect.CodeAlreadyExists, err)
+	}
+	if want := fmt.Sprintf("active session already exists for repo %s PR #123", h.repo.ID); !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want to contain %q", err.Error(), want)
+	}
+	sessions, listErr := h.sessions.List(context.Background(), h.repo.ID)
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1", len(sessions))
+	}
+}
+
 func TestCreateSessionStreamsLongSetupOutputLine(t *testing.T) {
 	t.Parallel()
 
@@ -202,6 +239,77 @@ func TestCreateSessionStartErrorAfterSetupOutputReturnsConnectError(t *testing.T
 	}
 }
 
+func TestCreateSessionConcurrentDuplicateWaitsForFailedInteractiveStartupCleanup(t *testing.T) {
+	t.Parallel()
+
+	firstStartEntered := make(chan struct{})
+	releaseFirstStart := make(chan struct{})
+
+	var (
+		mu         sync.Mutex
+		startCalls int
+	)
+	runner := &setupStreamAgent{
+		startFn: func(context.Context, string, string, *string, string) (string, error) {
+			mu.Lock()
+			startCalls++
+			call := startCalls
+			mu.Unlock()
+
+			if call == 1 {
+				close(firstStartEntered)
+				<-releaseFirstStart
+				return "", errors.New("agent failed")
+			}
+			return "agent-session", nil
+		},
+	}
+	h := newCreateSessionStreamHarness(t, &setupStreamWorktree{}, runner)
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := h.createSession(t, "first repair")
+		firstErr <- err
+	}()
+
+	select {
+	case <-firstStartEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first session did not enter Start")
+	}
+
+	secondErr := make(chan error, 1)
+	go func() {
+		_, err := h.createSession(t, "second repair")
+		secondErr <- err
+	}()
+
+	select {
+	case err := <-secondErr:
+		t.Fatalf("second CreateSession returned before first startup cleanup: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseFirstStart)
+
+	if err := <-firstErr; err == nil {
+		t.Fatal("first CreateSession error = nil, want startup failure")
+	}
+	if err := <-secondErr; err != nil {
+		t.Fatalf("second CreateSession error = %v, want nil", err)
+	}
+	sessions, err := h.sessions.List(context.Background(), h.repo.ID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions len = %d, want 1", len(sessions))
+	}
+	if sessions[0].Title != "second repair" {
+		t.Fatalf("remaining session title = %q, want second repair", sessions[0].Title)
+	}
+}
+
 func TestCreateSessionQuickChatAllowsEmptyDefaultBaseBranch(t *testing.T) {
 	t.Parallel()
 
@@ -244,6 +352,7 @@ func newCreateSessionStreamHarness(t *testing.T, worktrees *setupStreamWorktree,
 	repo, err := repos.Create(context.Background(), db.CreateRepoParams{
 		DisplayName:       "repo",
 		LocalPath:         "/tmp/repo",
+		OriginURL:         "https://github.com/org/repo",
 		DefaultBaseBranch: "main",
 		WorktreeBaseDir:   "/tmp/worktrees",
 		SetupScript:       &setupScript,
@@ -431,9 +540,13 @@ func (w *setupStreamWorktree) MergeLocalBranch(context.Context, string, string, 
 
 type setupStreamAgent struct {
 	startErr error
+	startFn  func(context.Context, string, string, *string, string) (string, error)
 }
 
-func (a *setupStreamAgent) Start(context.Context, string, string, *string, string) (string, error) {
+func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+	if a.startFn != nil {
+		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
+	}
 	return "agent-session", a.startErr
 }
 func (a *setupStreamAgent) Stop(string) error                 { return nil }
@@ -445,7 +558,10 @@ func (a *setupStreamAgent) Subscribe(context.Context, string) (<-chan agent.Outp
 	close(ch)
 	return ch, nil
 }
-func (a *setupStreamAgent) StartByAgent(context.Context, string, string, string, *string, string) (string, error) {
+func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+	if a.startFn != nil {
+		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
+	}
 	return "agent-session", a.startErr
 }
 func (a *setupStreamAgent) StopByAgent(string, string) error     { return nil }
@@ -457,7 +573,7 @@ func (setupStreamProvider) CreateDraftPR(context.Context, vcs.CreatePROpts) (*vc
 	return &vcs.PRInfo{}, nil
 }
 func (setupStreamProvider) GetPRStatus(context.Context, string, int) (*vcs.PRStatus, error) {
-	return &vcs.PRStatus{}, nil
+	return &vcs.PRStatus{HeadBranch: "dependabot/npm/pkg-1.0.0", BaseBranch: "main"}, nil
 }
 func (setupStreamProvider) GetCheckResults(context.Context, string, int) ([]vcs.CheckResult, error) {
 	return nil, nil

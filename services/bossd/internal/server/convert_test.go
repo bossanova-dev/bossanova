@@ -471,6 +471,9 @@ func (f *fakeSessionStore) ListActiveWithRepo(_ context.Context, _ string) ([]*d
 func (f *fakeSessionStore) ListWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
 	panic("not used")
 }
+func (f *fakeSessionStore) ListByRepoAndPR(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+	panic("not used")
+}
 func (f *fakeSessionStore) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	panic("not used")
 }

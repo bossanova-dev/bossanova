@@ -17,4 +17,5 @@ lint:
 
 ## test: Run script tests
 test:
-	node --test *.test.mjs
+	cd .. && node --test scripts/*.test.mjs
+	cd .. && node scripts/check-test-command-manifest.mjs

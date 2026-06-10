@@ -53,6 +53,7 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 	oldInstallUpgrade := installUpgrade
 	oldRestartDaemon := restartDaemon
 	oldLoadSettings := loadSettings
+	oldSaveSettings := saveSettings
 	oldDiscoverPlugins := discoverPlugins
 	defer func() {
 		upgradeCurrentVersion = oldCurrentVersion
@@ -61,6 +62,7 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 		installUpgrade = oldInstallUpgrade
 		restartDaemon = oldRestartDaemon
 		loadSettings = oldLoadSettings
+		saveSettings = oldSaveSettings
 		discoverPlugins = oldDiscoverPlugins
 	}()
 
@@ -105,6 +107,7 @@ func TestRunUpgradeYesInstallsWithResolvedExecutableDir(t *testing.T) {
 	}
 	executablePath = func() (string, error) { return linkExe, nil }
 	loadSettings = func() (config.Settings, error) { return config.Settings{}, nil }
+	saveSettings = func(config.Settings) error { return nil }
 	discoverPlugins = config.DiscoverPlugins
 	var gotPlan upgrade.InstallPlan
 	installUpgrade = func(_ context.Context, plan upgrade.InstallPlan) error {
@@ -202,6 +205,307 @@ func TestRunUpgradeExplicitVersionInstallsWithoutCheckingLatest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "upgrade installed v1.2.4") {
 		t.Fatalf("runUpgrade() output = %q, want success message", out.String())
+	}
+}
+
+func TestRunUpgradeHomebrewRoutesToBrewUpgrade(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldExecutablePath := executablePath
+	oldInstallUpgrade := installUpgrade
+	oldBrewUpgradeBossanova := brewUpgradeBossanova
+	oldRestartDaemon := restartDaemon
+	oldUpgradeLockPath := upgradeLockPath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		executablePath = oldExecutablePath
+		installUpgrade = oldInstallUpgrade
+		brewUpgradeBossanova = oldBrewUpgradeBossanova
+		restartDaemon = oldRestartDaemon
+		upgradeLockPath = oldUpgradeLockPath
+	}()
+
+	dir := t.TempDir()
+	exe := testHomebrewExecutable(t, dir)
+	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	installUpgrade = func(context.Context, upgrade.InstallPlan) error {
+		t.Fatal("installUpgrade called for Homebrew install")
+		return nil
+	}
+	brewCalled := false
+	brewUpgradeBossanova = func(context.Context, string) (string, error) {
+		brewCalled = true
+		return "", nil
+	}
+	restartCalled := false
+	restartDaemon = func() error {
+		restartCalled = true
+		return nil
+	}
+	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runUpgrade(cmd, upgradeOptions{Yes: true}); err != nil {
+		t.Fatalf("runUpgrade() error = %v", err)
+	}
+	if !brewCalled {
+		t.Fatal("brewUpgradeBossanova was not called")
+	}
+	if !restartCalled {
+		t.Fatal("restartDaemon was not called")
+	}
+	if strings.Contains(out.String(), "assets into") || strings.Contains(out.String(), "Cellar") {
+		t.Fatalf("runUpgrade() output = %q, want no direct Cellar asset install", out.String())
+	}
+	if !strings.Contains(out.String(), "Homebrew upgrade completed") || !strings.Contains(out.String(), "daemon restarted") {
+		t.Fatalf("runUpgrade() output = %q, want Homebrew success and restart", out.String())
+	}
+}
+
+func TestRunUpgradeHomebrewPersistsPostUpgradePluginPaths(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldExecutablePath := executablePath
+	oldInstallUpgrade := installUpgrade
+	oldBrewUpgradeBossanova := brewUpgradeBossanova
+	oldRestartDaemon := restartDaemon
+	oldLoadSettings := loadSettings
+	oldSaveSettings := saveSettings
+	oldUpgradeLockPath := upgradeLockPath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		executablePath = oldExecutablePath
+		installUpgrade = oldInstallUpgrade
+		brewUpgradeBossanova = oldBrewUpgradeBossanova
+		restartDaemon = oldRestartDaemon
+		loadSettings = oldLoadSettings
+		saveSettings = oldSaveSettings
+		upgradeLockPath = oldUpgradeLockPath
+	}()
+
+	dir := t.TempDir()
+	oldPluginDir := filepath.Join(dir, "opt", "homebrew", "Cellar", "bossanova", "v1.2.3", "libexec", "plugins")
+	newPluginDir := filepath.Join(dir, "opt", "homebrew", "opt", "bossanova", "libexec", "plugins")
+	executablePath = func() (string, error) { return testHomebrewExecutable(t, dir), nil }
+	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
+	}
+	installUpgrade = func(context.Context, upgrade.InstallPlan) error {
+		t.Fatal("installUpgrade called for Homebrew install")
+		return nil
+	}
+	brewUpgradeBossanova = func(context.Context, string) (string, error) {
+		return newPluginDir, nil
+	}
+	restartDaemon = func() error { return nil }
+	loadSettings = func() (config.Settings, error) {
+		return config.Settings{
+			Plugins: []config.PluginConfig{
+				{Name: "claude", Path: filepath.Join(oldPluginDir, "bossd-plugin-claude"), Enabled: false},
+				{Name: "linear", Path: filepath.Join(oldPluginDir, "bossd-plugin-linear"), Enabled: true},
+			},
+		}, nil
+	}
+	var saved config.Settings
+	saveCount := 0
+	saveSettings = func(s config.Settings) error {
+		saveCount++
+		saved = s
+		return nil
+	}
+	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runUpgrade(cmd, upgradeOptions{Yes: true}); err != nil {
+		t.Fatalf("runUpgrade() error = %v", err)
+	}
+	if saveCount != 1 {
+		t.Fatalf("saveSettings called %d times, want 1", saveCount)
+	}
+	assertPluginSaved(t, saved, "claude", filepath.Join(newPluginDir, "bossd-plugin-claude"), false)
+	assertPluginSaved(t, saved, "codex", filepath.Join(newPluginDir, "bossd-plugin-codex"), true)
+	assertPluginSaved(t, saved, "linear", filepath.Join(newPluginDir, "bossd-plugin-linear"), true)
+}
+
+func TestRunUpgradeHomebrewNoRestartSkipsDaemonRestart(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldExecutablePath := executablePath
+	oldBrewUpgradeBossanova := brewUpgradeBossanova
+	oldRestartDaemon := restartDaemon
+	oldUpgradeLockPath := upgradeLockPath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		executablePath = oldExecutablePath
+		brewUpgradeBossanova = oldBrewUpgradeBossanova
+		restartDaemon = oldRestartDaemon
+		upgradeLockPath = oldUpgradeLockPath
+	}()
+
+	dir := t.TempDir()
+	executablePath = func() (string, error) { return testHomebrewExecutable(t, dir), nil }
+	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
+	}
+	brewUpgradeBossanova = func(context.Context, string) (string, error) { return "", nil }
+	restartDaemon = func() error {
+		t.Fatal("restartDaemon called with --no-restart")
+		return nil
+	}
+	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runUpgrade(cmd, upgradeOptions{Yes: true, NoRestart: true}); err != nil {
+		t.Fatalf("runUpgrade() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "daemon restart skipped") {
+		t.Fatalf("runUpgrade() output = %q, want no-restart message", out.String())
+	}
+}
+
+func TestRunUpgradeHomebrewBrewFailureIsActionable(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldExecutablePath := executablePath
+	oldBrewUpgradeBossanova := brewUpgradeBossanova
+	oldRestartDaemon := restartDaemon
+	oldUpgradeLockPath := upgradeLockPath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		executablePath = oldExecutablePath
+		brewUpgradeBossanova = oldBrewUpgradeBossanova
+		restartDaemon = oldRestartDaemon
+		upgradeLockPath = oldUpgradeLockPath
+	}()
+
+	dir := t.TempDir()
+	executablePath = func() (string, error) { return testHomebrewExecutable(t, dir), nil }
+	upgradeCurrentVersion = func() string { return "v1.2.3" }
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		return upgrade.CheckResult{Available: true, CurrentVersion: "v1.2.3", LatestVersion: "v1.2.4"}, nil
+	}
+	brewUpgradeBossanova = func(context.Context, string) (string, error) {
+		return "", errors.New("brew upgrade bossanova-dev/tap/bossanova failed: exit status 1\nRun manually: brew upgrade bossanova-dev/tap/bossanova")
+	}
+	restartDaemon = func() error {
+		t.Fatal("restartDaemon called after brew failure")
+		return nil
+	}
+	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
+
+	err := runUpgrade(&cobra.Command{}, upgradeOptions{Yes: true})
+	if err == nil {
+		t.Fatal("runUpgrade() error = nil, want brew failure")
+	}
+	if !strings.Contains(err.Error(), "brew upgrade bossanova-dev/tap/bossanova failed") ||
+		!strings.Contains(err.Error(), "Run manually: brew upgrade bossanova-dev/tap/bossanova") {
+		t.Fatalf("runUpgrade() error = %v, want failed command and manual command", err)
+	}
+}
+
+func TestBrewUpgradeBossanovaUsesDetectedHomebrewBrewOutsidePath(t *testing.T) {
+	dir := t.TempDir()
+	exe := testHomebrewExecutable(t, dir)
+	binDir := filepath.Dir(exe)
+	brewDir := filepath.Join(dir, "opt", "homebrew", "bin")
+	if err := os.MkdirAll(brewDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	brewLog := filepath.Join(dir, "brew.log")
+	prefix := filepath.Join(dir, "opt", "homebrew", "opt", "bossanova")
+	brew := filepath.Join(brewDir, "brew")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$BREW_LOG"
+case "$1" in
+upgrade)
+	exit 0
+	;;
+--prefix)
+	printf '%s\n' "$BREW_PREFIX"
+	exit 0
+	;;
+*)
+	exit 2
+	;;
+esac
+`
+	if err := os.WriteFile(brew, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BREW_LOG", brewLog)
+	t.Setenv("BREW_PREFIX", prefix)
+	t.Setenv("PATH", filepath.Join(dir, "empty-path"))
+
+	pluginDir, err := brewUpgradeBossanova(context.Background(), binDir)
+	if err != nil {
+		t.Fatalf("brewUpgradeBossanova() error = %v", err)
+	}
+	if pluginDir != filepath.Join(prefix, "libexec", "plugins") {
+		t.Fatalf("brewUpgradeBossanova() pluginDir = %q, want prefix libexec plugins", pluginDir)
+	}
+	log, err := os.ReadFile(brewLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "upgrade bossanova-dev/tap/bossanova") ||
+		!strings.Contains(string(log), "--prefix bossanova-dev/tap/bossanova") {
+		t.Fatalf("brew log = %q, want upgrade and --prefix commands", string(log))
+	}
+}
+
+func TestRunUpgradeHomebrewExplicitVersionErrors(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldExecutablePath := executablePath
+	oldInstallUpgrade := installUpgrade
+	oldBrewUpgradeBossanova := brewUpgradeBossanova
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		executablePath = oldExecutablePath
+		installUpgrade = oldInstallUpgrade
+		brewUpgradeBossanova = oldBrewUpgradeBossanova
+	}()
+
+	dir := t.TempDir()
+	upgradeCurrentVersion = func() string { return "dev" }
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		t.Fatal("checkUpgrade called for explicit version")
+		return upgrade.CheckResult{}, nil
+	}
+	executablePath = func() (string, error) { return testHomebrewExecutable(t, dir), nil }
+	installUpgrade = func(context.Context, upgrade.InstallPlan) error {
+		t.Fatal("installUpgrade called for Homebrew --version")
+		return nil
+	}
+	brewUpgradeBossanova = func(context.Context, string) (string, error) {
+		t.Fatal("brewUpgradeBossanova called for Homebrew --version")
+		return "", nil
+	}
+
+	err := runUpgrade(&cobra.Command{}, upgradeOptions{Yes: true, Version: "v1.2.4"})
+	if err == nil {
+		t.Fatal("runUpgrade() error = nil, want Homebrew --version error")
+	}
+	if !strings.Contains(err.Error(), "exact --version installs are not supported") ||
+		!strings.Contains(err.Error(), "brew upgrade bossanova-dev/tap/bossanova") {
+		t.Fatalf("runUpgrade() error = %v, want Homebrew version guidance", err)
 	}
 }
 
@@ -522,11 +826,211 @@ func TestRunUpgradeInstallsPluginsIntoDiscoveredPluginDir(t *testing.T) {
 	}
 }
 
+func TestUpgradePluginDirRepairsMixedHomebrewCellarPluginDirs(t *testing.T) {
+	oldLoadSettings := loadSettings
+	oldDiscoverPlugins := discoverPlugins
+	defer func() {
+		loadSettings = oldLoadSettings
+		discoverPlugins = oldDiscoverPlugins
+	}()
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "opt", "homebrew", "Cellar", "bossanova", "v1.2.4", "bin")
+	currentPluginDir := filepath.Join(dir, "opt", "homebrew", "Cellar", "bossanova", "v1.2.4", "libexec", "plugins")
+	loadSettings = func() (config.Settings, error) {
+		return config.Settings{
+			Plugins: []config.PluginConfig{
+				{Name: "claude", Path: filepath.Join(dir, "opt", "homebrew", "Cellar", "bossanova", "v1.2.2", "libexec", "plugins", "bossd-plugin-claude"), Enabled: true},
+				{Name: "codex", Path: filepath.Join(dir, "opt", "homebrew", "Cellar", "bossanova", "v1.2.3", "libexec", "plugins", "bossd-plugin-codex"), Enabled: true},
+			},
+		}, nil
+	}
+	discoverPlugins = func() []config.PluginConfig { return nil }
+
+	got, err := upgradePluginDir(runtime.GOOS, binDir)
+	if err != nil {
+		t.Fatalf("upgradePluginDir() error = %v", err)
+	}
+	if got != currentPluginDir {
+		t.Fatalf("upgradePluginDir() = %q, want %q", got, currentPluginDir)
+	}
+}
+
+func TestUpgradePluginDirRejectsMixedCustomPluginDirs(t *testing.T) {
+	oldLoadSettings := loadSettings
+	oldDiscoverPlugins := discoverPlugins
+	defer func() {
+		loadSettings = oldLoadSettings
+		discoverPlugins = oldDiscoverPlugins
+	}()
+
+	dir := t.TempDir()
+	loadSettings = func() (config.Settings, error) {
+		return config.Settings{
+			Plugins: []config.PluginConfig{
+				{Name: "claude", Path: filepath.Join(dir, "custom-a", "bossd-plugin-claude"), Enabled: true},
+				{Name: "codex", Path: filepath.Join(dir, "custom-b", "bossd-plugin-codex"), Enabled: true},
+			},
+		}, nil
+	}
+	discoverPlugins = func() []config.PluginConfig { return nil }
+
+	_, err := upgradePluginDir(runtime.GOOS, filepath.Join(dir, "bin"))
+	if err == nil {
+		t.Fatal("upgradePluginDir() error = nil, want mixed custom plugin dir error")
+	}
+	if !strings.Contains(err.Error(), "span multiple directories") {
+		t.Fatalf("upgradePluginDir() error = %v, want mixed directory error", err)
+	}
+}
+
+func TestRunUpgradeRewritesInstalledPluginPathsPreservingEnabledState(t *testing.T) {
+	oldCurrentVersion := upgradeCurrentVersion
+	oldCheck := checkUpgrade
+	oldExecutablePath := executablePath
+	oldInstallUpgrade := installUpgrade
+	oldRestartDaemon := restartDaemon
+	oldLoadSettings := loadSettings
+	oldSaveSettings := saveSettings
+	oldDiscoverPlugins := discoverPlugins
+	oldUpgradeLockPath := upgradeLockPath
+	defer func() {
+		upgradeCurrentVersion = oldCurrentVersion
+		checkUpgrade = oldCheck
+		executablePath = oldExecutablePath
+		installUpgrade = oldInstallUpgrade
+		restartDaemon = oldRestartDaemon
+		loadSettings = oldLoadSettings
+		saveSettings = oldSaveSettings
+		discoverPlugins = oldDiscoverPlugins
+		upgradeLockPath = oldUpgradeLockPath
+	}()
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	exe := filepath.Join(binDir, "boss")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPluginDir := filepath.Join(dir, "old-plugins")
+	currentPluginDir := filepath.Join(dir, "new-plugins")
+	settings := config.Settings{
+		Plugins: []config.PluginConfig{
+			{Name: "claude", Path: filepath.Join(oldPluginDir, "bossd-plugin-claude"), Enabled: false, Config: map[string]string{"k": "v"}},
+			{Name: "codex", Path: filepath.Join(oldPluginDir, "bossd-plugin-codex"), Enabled: false},
+			{Name: "linear", Path: filepath.Join(currentPluginDir, "bossd-plugin-linear"), Enabled: true},
+		},
+	}
+	loadSettings = func() (config.Settings, error) { return settings, nil }
+	discoverPlugins = func() []config.PluginConfig {
+		return []config.PluginConfig{{
+			Name:    "claude",
+			Path:    filepath.Join(currentPluginDir, "bossd-plugin-claude"),
+			Enabled: true,
+		}}
+	}
+	executablePath = func() (string, error) { return exe, nil }
+	upgradeCurrentVersion = func() string { return "dev" }
+	checkUpgrade = func(context.Context, string) (upgrade.CheckResult, error) {
+		t.Fatal("checkUpgrade called for explicit version")
+		return upgrade.CheckResult{}, nil
+	}
+	installUpgrade = func(context.Context, upgrade.InstallPlan) error { return nil }
+	restartDaemon = func() error {
+		t.Fatal("restartDaemon called with --no-restart")
+		return nil
+	}
+	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
+	saveCount := 0
+	var saved config.Settings
+	saveSettings = func(s config.Settings) error {
+		saveCount++
+		saved = s
+		return nil
+	}
+
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	if err := runUpgrade(cmd, upgradeOptions{Version: "v1.2.4", Yes: true, NoRestart: true}); err != nil {
+		t.Fatalf("runUpgrade(): %v", err)
+	}
+	if saveCount != 1 {
+		t.Fatalf("saveSettings called %d times, want 1", saveCount)
+	}
+	assertPluginSaved(t, saved, "claude", filepath.Join(currentPluginDir, "bossd-plugin-claude"), false)
+	assertPluginSaved(t, saved, "codex", filepath.Join(currentPluginDir, "bossd-plugin-codex"), false)
+	assertPluginSaved(t, saved, "dependabot", filepath.Join(currentPluginDir, "bossd-plugin-dependabot"), true)
+	assertPluginSaved(t, saved, "linear", filepath.Join(currentPluginDir, "bossd-plugin-linear"), true)
+	assertPluginSaved(t, saved, "repair", filepath.Join(currentPluginDir, "bossd-plugin-repair"), true)
+	if saved.Plugins[0].Config["k"] != "v" {
+		t.Fatalf("claude config = %v, want preserved config", saved.Plugins[0].Config)
+	}
+}
+
+func TestWithUpgradeLockRejectsConcurrentAttempt(t *testing.T) {
+	oldUpgradeLockPath := upgradeLockPath
+	defer func() { upgradeLockPath = oldUpgradeLockPath }()
+
+	dir := t.TempDir()
+	upgradeLockPath = func() (string, error) { return filepath.Join(dir, "upgrade.lock"), nil }
+	innerCalled := false
+	err := withUpgradeLock(func() error {
+		innerErr := withUpgradeLock(func() error {
+			innerCalled = true
+			return nil
+		})
+		if innerErr == nil {
+			t.Fatal("inner withUpgradeLock() error = nil, want concurrent lock rejection")
+		}
+		if !strings.Contains(innerErr.Error(), "already in progress") {
+			t.Fatalf("inner withUpgradeLock() error = %v, want already in progress", innerErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withUpgradeLock() error = %v", err)
+	}
+	if innerCalled {
+		t.Fatal("inner lock body ran")
+	}
+}
+
+func assertPluginSaved(t *testing.T, settings config.Settings, name, path string, enabled bool) {
+	t.Helper()
+	for _, plugin := range settings.Plugins {
+		if plugin.Name != name {
+			continue
+		}
+		if plugin.Path != path || plugin.Enabled != enabled {
+			t.Fatalf("plugin %s = %+v, want path %q enabled %v", name, plugin, path, enabled)
+		}
+		return
+	}
+	t.Fatalf("plugin %s not saved in %+v", name, settings.Plugins)
+}
+
 func testExecutable(t *testing.T, dir string) string {
 	t.Helper()
 
 	exeDir := filepath.Join(dir, "bin")
 	if err := os.Mkdir(exeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe := filepath.Join(exeDir, "boss")
+	if err := os.WriteFile(exe, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return exe
+}
+
+func testHomebrewExecutable(t *testing.T, dir string) string {
+	t.Helper()
+
+	exeDir := filepath.Join(dir, "opt", "homebrew", "Cellar", "bossanova", "v1.2.3", "bin")
+	if err := os.MkdirAll(exeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	exe := filepath.Join(exeDir, "boss")

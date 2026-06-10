@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,6 +204,26 @@ func TestWorkOSRefreshLockPathIgnoresConfiguredAppDataDir(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("workOSRefreshLockPath() = %q, want %q", got, want)
+	}
+}
+
+func TestWorkOSRefreshLockPathRejectsInvalidConfiguredAppDataDir(t *testing.T) {
+	_, err := workOSRefreshLockPath(config.Settings{AppDataDir: "relative/data"})
+	if err == nil {
+		t.Fatal("workOSRefreshLockPath() error = nil, want invalid app_data_dir error")
+	}
+	if !strings.Contains(err.Error(), "app_data_dir must be absolute") {
+		t.Fatalf("workOSRefreshLockPath() error = %q, want app_data_dir absolute error", err.Error())
+	}
+}
+
+func TestAcquireWorkOSRefreshLockForSettingsRejectsInvalidConfiguredAppDataDir(t *testing.T) {
+	_, err := AcquireWorkOSRefreshLockForSettings(context.Background(), config.Settings{AppDataDir: "relative/data"})
+	if err == nil {
+		t.Fatal("AcquireWorkOSRefreshLockForSettings() error = nil, want invalid app_data_dir error")
+	}
+	if !strings.Contains(err.Error(), "app_data_dir must be absolute") {
+		t.Fatalf("AcquireWorkOSRefreshLockForSettings() error = %q, want app_data_dir absolute error", err.Error())
 	}
 }
 

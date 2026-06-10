@@ -751,6 +751,17 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 	return false, nil
 }
 
+func createSessionConnectError(err error) error {
+	if session.IsDuplicateActiveSessionError(err) {
+		return connect.NewError(connect.CodeAlreadyExists, err)
+	}
+	return connect.NewError(connect.CodeInternal, err)
+}
+
+func isDependabotBranch(branch string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(branch)), "dependabot/")
+}
+
 func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID string) {
 	if failedSess, getErr := s.sessions.Get(ctx, sessionID); getErr == nil {
 		if failedSess.RepoID != "" && failedSess.BranchName != "" {
@@ -825,6 +836,14 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo %s has no default base branch; update repo settings before creating a session", repo.ID))
 	}
 
+	unlockStart := session.LockStartPath()
+	startLocked := true
+	defer func() {
+		if startLocked {
+			unlockStart()
+		}
+	}()
+
 	unlockBranch := s.lockBranchStart(msg.RepoId, headBranch)
 	branchLocked := true
 	defer func() {
@@ -835,6 +854,12 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 
 	if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, stream); handled || err != nil {
 		return err
+	}
+
+	if prNumber != nil && isDependabotBranch(headBranch) {
+		if err := session.EnsureNoActivePRSession(ctx, s.sessions, msg.RepoId, prNumber); err != nil {
+			return createSessionConnectError(err)
+		}
 	}
 
 	// Resolve the agent name. The proto field is a oneof (*string), so an
@@ -915,8 +940,10 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 			Str("session", sess.ID).
 			Str("title", msg.Title).
 			Msg("start session failed")
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("start session: %w", err))
+		return createSessionConnectError(fmt.Errorf("start session: %w", err))
 	}
+	unlockStart()
+	startLocked = false
 
 	// Re-fetch the session to get updated fields from lifecycle.
 	sess, err = s.sessions.Get(ctx, sess.ID)

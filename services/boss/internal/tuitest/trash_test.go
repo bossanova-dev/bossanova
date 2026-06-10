@@ -143,8 +143,11 @@ func TestTUI_TrashEmptyState(t *testing.T) {
 
 func TestTUI_TrashEmptyAll(t *testing.T) {
 	sessions := testSessions()
-	sessions[0].ArchivedAt = timestamppb.Now()
-	sessions[1].ArchivedAt = timestamppb.Now()
+	// Archive every session so the home screen is empty regardless of how many
+	// sessions the shared fixture provides.
+	for _, s := range sessions {
+		s.ArchivedAt = timestamppb.Now()
+	}
 
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
@@ -222,8 +225,11 @@ func TestTUI_TrashDeleteCancel(t *testing.T) {
 
 func TestTUI_TrashEmptyAllCancel(t *testing.T) {
 	sessions := testSessions()
-	sessions[0].ArchivedAt = timestamppb.Now()
-	sessions[1].ArchivedAt = timestamppb.Now()
+	// Archive every session so the home screen is empty regardless of how many
+	// sessions the shared fixture provides.
+	for _, s := range sessions {
+		s.ArchivedAt = timestamppb.Now()
+	}
 
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),

@@ -38,6 +38,9 @@ func (m *mockSessionStoreLiveness) ListActiveWithRepo(_ context.Context, _ strin
 func (m *mockSessionStoreLiveness) ListWithRepo(_ context.Context, _ string) ([]*db.SessionWithRepo, error) {
 	return nil, nil
 }
+func (m *mockSessionStoreLiveness) ListByRepoAndPR(_ context.Context, _ string, _ int) ([]*db.SessionWithRepo, error) {
+	return nil, nil
+}
 func (m *mockSessionStoreLiveness) ListArchived(_ context.Context, _ string) ([]*models.Session, error) {
 	return nil, nil
 }

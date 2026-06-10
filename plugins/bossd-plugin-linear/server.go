@@ -15,16 +15,34 @@ type hostClient interface {
 	ListOpenPRs(ctx context.Context, repoOriginURL string) ([]*bossanovav1.PRSummary, error)
 }
 
+// issueFetcher fetches Linear issues for a query. *linearClient implements it;
+// the seam lets ListAvailableIssues be unit-tested without hitting the real
+// Linear API (whose endpoint is otherwise baked in at non-e2e build time).
+type issueFetcher interface {
+	FetchIssues(ctx context.Context, titleQuery string) ([]linearIssue, error)
+}
+
+var _ issueFetcher = (*linearClient)(nil)
+
 // server implements the TaskSourceService gRPC server for the Linear
 // plugin. It uses a hostClient to call back into the daemon for
 // PR data, then matches Linear issues to existing PRs.
 type server struct {
 	host   hostClient
 	logger zerolog.Logger
+	// newFetcher builds an issueFetcher for the per-request API key. It defaults
+	// to a real Linear client; tests override it to inject canned issues.
+	newFetcher func(apiKey string) issueFetcher
 }
 
 func newServer(host hostClient, logger zerolog.Logger) *server {
-	return &server{host: host, logger: logger}
+	return &server{
+		host:   host,
+		logger: logger,
+		newFetcher: func(apiKey string) issueFetcher {
+			return newLinearClient(apiKey)
+		},
+	}
 }
 
 func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
@@ -70,8 +88,7 @@ func (s *server) ListAvailableIssues(ctx context.Context, req *bossanovav1.ListA
 	// Create Linear client and fetch issues. When query is set, it's pushed down
 	// to the GraphQL filter so search reaches the full backlog instead of only
 	// the first page that Linear returns by default.
-	linearClient := newLinearClient(apiKey)
-	issues, err := linearClient.FetchIssues(ctx, req.GetQuery())
+	issues, err := s.newFetcher(apiKey).FetchIssues(ctx, req.GetQuery())
 	if err != nil {
 		return nil, fmt.Errorf("fetch Linear issues: %w", err)
 	}

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KUSTOMIZE_DIR="infra/kustomize"
 SUITE="${1:-all}"
 
 fail() {
@@ -33,7 +34,7 @@ require_absent() {
 check_terraform_env() {
   require_file "infra/environments/variables.tf"
   require_file "infra/environments/main.tf"
-  require_file "services/bosso/kustomize/overlays/production/.env-bosso.example"
+  require_file "${KUSTOMIZE_DIR}/overlays/production/.env-bosso.example"
   require_file "docs/plans/2026-05-28-gke-orchestrator-migration.md"
 
   local variables=(
@@ -141,14 +142,14 @@ check_smoke_script() {
 }
 
 check_k8s_hardening() {
-  require_file "services/bosso/kustomize/base/statefulset-bosso.yml"
-  require_file "services/bosso/kustomize/base/deployment-cloudflared.yml"
-  require_file "services/bosso/kustomize/base/deployment-redis.yml"
+  require_file "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml"
+  require_file "${KUSTOMIZE_DIR}/base/deployment-cloudflared.yml"
+  require_file "${KUSTOMIZE_DIR}/base/deployment-redis.yml"
 
   local workload_files=(
-    "services/bosso/kustomize/base/statefulset-bosso.yml"
-    "services/bosso/kustomize/base/deployment-cloudflared.yml"
-    "services/bosso/kustomize/base/deployment-redis.yml"
+    "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml"
+    "${KUSTOMIZE_DIR}/base/deployment-cloudflared.yml"
+    "${KUSTOMIZE_DIR}/base/deployment-redis.yml"
   )
   for file in "${workload_files[@]}"; do
     require_grep "$file" "runAsNonRoot: true" "workload must run as non-root"
@@ -159,18 +160,18 @@ check_k8s_hardening() {
     require_grep "$file" "- ALL" "container must drop all Linux capabilities"
   done
 
-  require_grep "services/bosso/kustomize/base/deployment-cloudflared.yml" "readOnlyRootFilesystem: true" "cloudflared should have read-only root filesystem"
-  require_grep "services/bosso/kustomize/base/statefulset-bosso.yml" "runAsUser: 65532" "Bosso workload must set numeric non-root user"
-  require_grep "services/bosso/kustomize/base/statefulset-bosso.yml" "runAsGroup: 65532" "Bosso workload must set numeric non-root group"
-  require_grep "services/bosso/kustomize/base/deployment-redis.yml" "redis:7.4-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" "Redis image must be digest-pinned"
+  require_grep "${KUSTOMIZE_DIR}/base/deployment-cloudflared.yml" "readOnlyRootFilesystem: true" "cloudflared should have read-only root filesystem"
+  require_grep "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "runAsUser: 65532" "Bosso workload must set numeric non-root user"
+  require_grep "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "runAsGroup: 65532" "Bosso workload must set numeric non-root group"
+  require_grep "${KUSTOMIZE_DIR}/base/deployment-redis.yml" "redis:7.4-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" "Redis image must be digest-pinned"
 }
 
 check_cloudflared_config() {
-  require_file "services/bosso/kustomize/base/kustomization.yml"
-  if [ -f "${ROOT_DIR}/services/bosso/kustomize/base/configmap-cloudflared.yml" ]; then
-    fail "unused services/bosso/kustomize/base/configmap-cloudflared.yml still exists"
+  require_file "${KUSTOMIZE_DIR}/base/kustomization.yml"
+  if [ -f "${ROOT_DIR}/${KUSTOMIZE_DIR}/base/configmap-cloudflared.yml" ]; then
+    fail "unused ${KUSTOMIZE_DIR}/base/configmap-cloudflared.yml still exists"
   fi
-  require_absent "services/bosso/kustomize/base/kustomization.yml" "configmap-cloudflared.yml" "unused Cloudflared ConfigMap resource must not render"
+  require_absent "${KUSTOMIZE_DIR}/base/kustomization.yml" "configmap-cloudflared.yml" "unused Cloudflared ConfigMap resource must not render"
 }
 
 check_parallel_fly_k8s_release() {

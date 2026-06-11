@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KUSTOMIZE_DIR="infra/kustomize"
 K8S_IMAGE="europe-west1-docker.pkg.dev/madverts-operations/services/bosso"
 K8S_REGISTRY="europe-west1-docker.pkg.dev"
 
@@ -62,12 +63,18 @@ check_k8s_has_separate_image() {
   require_file "services/bosso/Dockerfile.k8s"
   require_grep "services/bosso/Dockerfile.k8s" 'ENTRYPOINT ["bosso"]' "K8s image must run bosso directly"
   require_absent "services/bosso/Dockerfile.k8s" "litestream" "K8s image must not include Litestream"
-  require_grep "services/bosso/kustomize/Makefile" "Dockerfile.k8s" "K8s Makefile must build from Dockerfile.k8s"
-  require_grep "services/bosso/kustomize/base/statefulset-bosso.yml" "image: ${K8S_IMAGE}:production" "K8s default image must use Artifact Registry"
-  require_grep "services/bosso/kustomize/Makefile" "IMAGE ?= ${K8S_IMAGE}" "K8s Makefile default image must use Artifact Registry"
-  require_grep "services/bosso/kustomize/Makefile" "\$(KUSTOMIZE) edit set image ${K8S_IMAGE}=\$(IMAGE_REF)" "K8s Makefile must rewrite Artifact Registry image"
-  require_absent "services/bosso/kustomize/base/statefulset-bosso.yml" "ghcr.io/recurser/bosso" "K8s base image must not use GHCR"
-  require_absent "services/bosso/kustomize/Makefile" "ghcr.io/recurser/bosso" "K8s Makefile must not rewrite GHCR image"
+  require_grep "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "image: ${K8S_IMAGE}:production" "K8s default image must use Artifact Registry"
+  require_absent "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "ghcr.io/recurser/bosso" "K8s base image must not use GHCR"
+  require_absent "${KUSTOMIZE_DIR}/Makefile" "ghcr.io/recurser/bosso" "K8s Makefile must not rewrite GHCR image"
+  # GitOps: CI builds and pushes the image, then pins the tag into the overlay
+  # on the env branch. The Makefile must NOT build images at deploy time, and
+  # each overlay must carry a committed Artifact Registry pin.
+  require_absent "${KUSTOMIZE_DIR}/Makefile" "docker build" "K8s Makefile must not build images at deploy time (CI builds them)"
+  require_absent "${KUSTOMIZE_DIR}/Makefile" "Dockerfile.k8s" "K8s Makefile must not reference Dockerfile.k8s (CI builds the image)"
+  for env in staging production; do
+    require_grep "${KUSTOMIZE_DIR}/overlays/${env}/kustomization.yml" "name: ${K8S_IMAGE}" "K8s ${env} overlay must pin the Artifact Registry image"
+    require_grep "${KUSTOMIZE_DIR}/overlays/${env}/kustomization.yml" "# bosso" "K8s ${env} overlay must tag the bosso pin for CI to rewrite"
+  done
 }
 
 check_release_workflows() {
@@ -85,20 +92,26 @@ check_release_workflows() {
     require_grep "$file" "services/bosso/Dockerfile.k8s" "release workflow must build K8s image from Dockerfile.k8s"
     require_no_kubectl_apply_in_workflow "$file"
   done
-  require_grep ".github/workflows/perform-staging-release.yml" "${K8S_IMAGE}:staging-\${{ github.sha }}" "staging K8s image must keep SHA tag"
-  require_grep ".github/workflows/perform-staging-release.yml" "${K8S_IMAGE}:staging-latest" "staging K8s image must keep latest tag"
-  require_grep ".github/workflows/perform-production-release.yml" "${K8S_IMAGE}:\${{ github.sha }}" "production K8s image must keep SHA tag"
-  require_grep ".github/workflows/perform-production-release.yml" "${K8S_IMAGE}:production-latest" "production K8s image must keep latest tag"
+  require_grep ".github/workflows/perform-staging-release.yml" "type=sha,prefix=staging-" "staging K8s image must keep immutable SHA tag"
+  require_absent ".github/workflows/perform-staging-release.yml" "staging-latest" "staging K8s image must not publish mutable latest tag"
+  require_grep ".github/workflows/perform-production-release.yml" "type=sha,prefix=production-" "production K8s image must keep immutable SHA tag"
+  require_absent ".github/workflows/perform-production-release.yml" "production-latest" "production K8s image must not publish mutable latest tag"
+  # GitOps pin: each release must commit the rewritten overlay back to its env
+  # branch, marked [skip ci] so the pin commit does not re-trigger the release.
+  require_grep ".github/workflows/perform-staging-release.yml" "git push origin staging" "staging release must commit the image pin to the staging branch"
+  require_grep ".github/workflows/perform-staging-release.yml" "[skip ci]" "staging pin commit must be marked [skip ci]"
+  require_grep ".github/workflows/perform-production-release.yml" "git push origin production" "production release must commit the image pin to the production branch"
+  require_grep ".github/workflows/perform-production-release.yml" "[skip ci]" "production pin commit must be marked [skip ci]"
 }
 
 check_kustomize_staging_and_production() {
-  require_file "services/bosso/kustomize/overlays/staging/kustomization.yml"
-  require_file "services/bosso/kustomize/overlays/staging/namespace.yml"
-  require_file "services/bosso/kustomize/overlays/production/namespace.yml"
-  require_grep "services/bosso/kustomize/overlays/staging/namespace.yml" "name: bs-staging" "staging namespace must be bs-staging"
-  require_grep "services/bosso/kustomize/overlays/production/namespace.yml" "name: bs-production" "production namespace must be bs-production"
-  require_absent "services/bosso/kustomize/base/kustomization.yml" "namespace.yml" "base must not include environment namespace"
-  require_absent "services/bosso/kustomize/base/kustomization.yml" "namespace: bs-production" "base must not force production namespace"
+  require_file "${KUSTOMIZE_DIR}/overlays/staging/kustomization.yml"
+  require_file "${KUSTOMIZE_DIR}/overlays/staging/namespace.yml"
+  require_file "${KUSTOMIZE_DIR}/overlays/production/namespace.yml"
+  require_grep "${KUSTOMIZE_DIR}/overlays/staging/namespace.yml" "name: bs-staging" "staging namespace must be bs-staging"
+  require_grep "${KUSTOMIZE_DIR}/overlays/production/namespace.yml" "name: bs-production" "production namespace must be bs-production"
+  require_absent "${KUSTOMIZE_DIR}/base/kustomization.yml" "namespace.yml" "base must not include environment namespace"
+  require_absent "${KUSTOMIZE_DIR}/base/kustomization.yml" "namespace: bs-production" "base must not force production namespace"
 }
 
 check_dns_cutover_safety() {

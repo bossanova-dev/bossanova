@@ -63,6 +63,5 @@ docs/handoffs/
 /config/
 
 # Kubernetes secrets
-services/bosso/kustomize/overlays/*/.env-bosso
-services/bosso/kustomize/overlays/*/.env-cloudflared
-services/bosso/kustomize/overlays/*/.env-redis
+infra/kustomize/overlays/*/.env-bosso
+infra/kustomize/overlays/*/.env-cloudflared

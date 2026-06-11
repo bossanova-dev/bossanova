@@ -83,28 +83,28 @@ codex-skills-check:
 	node scripts/sync-codex-skills.mjs --root . --check
 
 deploy-staging:
-	$(MAKE) -C services/bosso/kustomize deploy-staging
+	$(MAKE) -C infra/kustomize deploy-staging
 
 deploy-production:
-	$(MAKE) -C services/bosso/kustomize deploy-production
+	$(MAKE) -C infra/kustomize deploy-production
 
 db-staging:
-	$(MAKE) -C services/bosso/kustomize db-staging
+	$(MAKE) -C infra/kustomize db-staging
 
 db-production:
-	$(MAKE) -C services/bosso/kustomize db-production
+	$(MAKE) -C infra/kustomize db-production
 
 connect-staging:
-	$(MAKE) -C services/bosso/kustomize connect-staging
+	$(MAKE) -C infra/kustomize connect-staging
 
 connect-production:
-	$(MAKE) -C services/bosso/kustomize connect-production
+	$(MAKE) -C infra/kustomize connect-production
 
 verify-staging:
-	$(MAKE) -C services/bosso/kustomize verify-staging
+	$(MAKE) -C infra/kustomize verify-staging
 
 verify-production:
-	$(MAKE) -C services/bosso/kustomize verify-production
+	$(MAKE) -C infra/kustomize verify-production
 
 ## deps: Install required build/dev tools via Homebrew (macOS)
 deps:

@@ -50,6 +50,9 @@ docs/handoffs/
 # Proof-of-implementation screenshot bundles (uploaded to a public bucket, never committed)
 .proof/
 
+# Linear plan scratch dir (bs-linear-plan skill; plans are uploaded to R2, not committed)
+.linear-plans/
+
 # Beads
 .beads/interactions.jsonl
 .beads/issues.jsonl

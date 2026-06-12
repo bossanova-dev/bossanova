@@ -14,6 +14,11 @@ import "google/protobuf/timestamp.proto";
 service OrchestratorService {
   // Daemon registry
   rpc RegisterDaemon(RegisterDaemonRequest) returns (RegisterDaemonResponse);
+  // PublishDaemonSnapshot is a unary fallback for networks that proxy normal
+  // HTTPS but do not support Connect bidirectional streaming end-to-end.
+  // Daemons authenticate with their RegisterDaemon session token and publish
+  // the same snapshot shape used as the first DaemonStream event.
+  rpc PublishDaemonSnapshot(PublishDaemonSnapshotRequest) returns (PublishDaemonSnapshotResponse);
   // DaemonStream is the long-lived bidirectional channel between a daemon
   // and the orchestrator. Daemons push session deltas and other events;
   // the orchestrator pushes commands (proxy RPC invocations, transfer
@@ -101,6 +106,12 @@ message RegisterDaemonResponse {
   // Token for subsequent authenticated requests.
   string session_token = 2;
 }
+
+message PublishDaemonSnapshotRequest {
+  DaemonSnapshot snapshot = 1;
+}
+
+message PublishDaemonSnapshotResponse {}
 
 message ListDaemonsRequest {}
 

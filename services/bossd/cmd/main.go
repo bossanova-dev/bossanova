@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
 
 	"github.com/recurser/bossalib/buildinfo"
@@ -123,6 +124,14 @@ func filterSessionsByPR(rows []*db.SessionWithRepo, prNumber int) []*db.SessionW
 		out = append(out, row)
 	}
 	return out
+}
+
+// snapshotFallbackEnabled reports whether the periodic unary
+// PublishDaemonSnapshot publisher should run. It is a break-glass
+// fallback for transports that cannot carry the DaemonStream bidi
+// stream; steady state must be stream-fed, so it is opt-in.
+func snapshotFallbackEnabled(getenv func(string) string) bool {
+	return getenv("BOSSD_SNAPSHOT_FALLBACK") == "true"
 }
 
 func main() {
@@ -807,10 +816,12 @@ func run(opts runOpts) error {
 
 	var streamClient *upstream.StreamClient
 	var terminalStreamClient *upstream.TerminalStreamClient
+	var snapshotPublisher func(context.Context)
 	var authNotifier server.AuthNotifier
 	var cmdHandlerStream *upstream.CommandHandlerAdapter
 	webhookEventCh := make(chan session.SessionEvent, 64)
 	emitter := session.NewSessionEventEmitter(&displayPollerSessionLookup{sessions: sessions, repos: repos}, webhookEventCh, log.Logger)
+	_, upstreamURLExplicit := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
 	if cfg := upstream.ConfigFromEnv(); cfg != nil {
 		// ConnectRPC bidi streams (DaemonStream) require HTTP/2. Over
 		// TLS that's handled via ALPN automatically; over plain HTTP
@@ -1070,6 +1081,16 @@ func run(opts runOpts) error {
 			AuthState:      authState,
 			Logger:         log.Logger,
 		})
+		if upstreamURLExplicit && snapshotFallbackEnabled(os.Getenv) {
+			snapshotPublisher = func(ctx context.Context) {
+				runSnapshotPublisher(ctx, client, sessionTokenHolder, upstream.StreamStores{
+					Sessions: snapshotSessions,
+					Chats:    snapshotChats,
+					Repos:    snapshotRepos,
+					Statuses: snapshotStatuses,
+				}, cfg.DaemonID, cfg.Hostname, httpClient.CloseIdleConnections, log.Logger)
+			}
+		}
 
 		authNotifier = &streamAuthAdapter{
 			streamClient:  streamClient,
@@ -1310,6 +1331,11 @@ func run(opts runOpts) error {
 			streamClient.Run(streamCtx)
 		})
 	}
+	if snapshotPublisher != nil {
+		trackedGo(func() {
+			snapshotPublisher(streamCtx)
+		})
+	}
 	// Run the TerminalStream client alongside the DaemonStream client.
 	// Each owns its own connect/reconnect loop so a transient bosso
 	// outage on one bidi can't bring the other down — both sit in their
@@ -1516,6 +1542,92 @@ func (a claudeAttachAdapter) Subscribe(ctx context.Context, claudeSessionID stri
 		}
 	}()
 	return out, nil
+}
+
+func runSnapshotPublisher(
+	ctx context.Context,
+	client bossanovav1connect.OrchestratorServiceClient,
+	sessionToken *upstream.SessionTokenHolder,
+	stores upstream.StreamStores,
+	daemonID, hostname string,
+	closeIdle func(),
+	logger zerolog.Logger,
+) {
+	publish := func() {
+		if closeIdle != nil {
+			defer closeIdle()
+		}
+		token := ""
+		if sessionToken != nil {
+			token = sessionToken.Get()
+		}
+		if token == "" {
+			logger.Debug().Msg("snapshot publisher waiting for daemon session token")
+			return
+		}
+		pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		snap, err := buildSnapshotForPublish(pubCtx, stores, daemonID, hostname)
+		if err != nil {
+			logger.Warn().Err(err).Msg("snapshot publisher: build snapshot")
+			return
+		}
+		req := connect.NewRequest(&bossanovav1.PublishDaemonSnapshotRequest{Snapshot: snap})
+		req.Header().Set("Authorization", "Bearer "+token)
+		if _, err := client.PublishDaemonSnapshot(pubCtx, req); err != nil {
+			logger.Warn().Err(err).Msg("snapshot publisher: publish failed")
+			return
+		}
+		logger.Debug().Int("sessions", len(snap.GetSessions())).Msg("snapshot publisher: published")
+	}
+
+	publish()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			publish()
+		}
+	}
+}
+
+func buildSnapshotForPublish(ctx context.Context, stores upstream.StreamStores, daemonID, hostname string) (*bossanovav1.DaemonSnapshot, error) {
+	snap := &bossanovav1.DaemonSnapshot{
+		DaemonId: daemonID,
+		Hostname: hostname,
+	}
+	if stores.Repos != nil {
+		repos, err := stores.Repos.SnapshotRepoIDs(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot repos: %w", err)
+		}
+		snap.RepoIds = repos
+	}
+	if stores.Sessions != nil {
+		sessions, err := stores.Sessions.SnapshotSessions(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot sessions: %w", err)
+		}
+		snap.Sessions = sessions
+	}
+	if stores.Chats != nil {
+		chats, err := stores.Chats.SnapshotChats(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot chats: %w", err)
+		}
+		snap.Chats = chats
+	}
+	if stores.Statuses != nil {
+		statuses, err := stores.Statuses.SnapshotStatuses(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("snapshot statuses: %w", err)
+		}
+		snap.Statuses = statuses
+	}
+	return snap, nil
 }
 
 // streamAuthAdapter implements server.AuthNotifier by reloading

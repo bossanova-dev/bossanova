@@ -5,7 +5,7 @@
 	plugins plugins-all proof proof-plan proof-test readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke \
 	test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
-	test-public-mirror test-readme test-scripts \
+	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
@@ -252,6 +252,7 @@ $(BIN_DIR)/bossd-plugin-claude: copy-skills
 test: $(GEN_STAMP) copy-skills codex-skills-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
+	$(MAKE) test-no-inline-stop-hooks
 	$(MAKE) test-public-mirror
 	@for mod in $(MODULES); do \
 		echo "==> Testing $$mod"; \
@@ -419,6 +420,9 @@ readme-gifs:
 test-public-mirror:
 	node scripts/check-public-mirror-workflows.mjs
 
+test-no-inline-stop-hooks:
+	node scripts/check-no-inline-stop-hooks.mjs
+
 ## test-manifest-update: Regenerate the checked-in test command manifest.
 test-manifest-update:
 	mkdir -p docs/testing
@@ -514,7 +518,7 @@ format: lint-check-version
 
 ## build-all: Cross-platform builds for distribution (generates protos first if needed)
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64
-# Only boss and bossd are distributed (bosso is deployed to Fly.io directly)
+# Only boss and bossd are distributed to users (bosso deploys as a GKE service)
 DIST_BINS := boss bossd
 # Plugins for distribution (auto-detected)
 DIST_PLUGINS := $(PLUGIN_BINS)

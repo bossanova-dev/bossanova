@@ -207,7 +207,7 @@ Subscribe to these events:
 
 Required environment variables:
 
-| Terraform Cloud variable                 | Fly runtime secret                | Source                                                                     |
+| Terraform Cloud variable                 | Kubernetes runtime env            | Source                                                                     |
 | ---------------------------------------- | --------------------------------- | -------------------------------------------------------------------------- |
 | `TF_VAR_bosso_github_app_id`             | `BOSSO_GITHUB_APP_ID`             | GitHub App settings page, App ID                                           |
 | `TF_VAR_bosso_github_app_slug`           | `BOSSO_GITHUB_APP_SLUG`           | GitHub App URL slug                                                        |
@@ -219,62 +219,30 @@ Required environment variables:
 
 Mark the private key, webhook secret, and client secret as sensitive in
 Terraform Cloud. Terraform stores the desired GitHub App values for
-configuration wiring, but it does not run `flyctl` or apply Fly secrets. Do not
-pass secret values as command-line arguments; process argv can be inspected.
-
-To sync Fly runtime secrets, create a local `0600` env file from the same secret
-source, then import it through stdin:
+configuration wiring and exposes the runtime values through the
+`kubernetes_secret_bosso` output. Do not pass secret values as command-line
+arguments; process argv can be inspected.
 
 ```bash
-chmod 0600 bosso-github-app.env
-flyctl secrets import --stage -a bosso-production < bosso-github-app.env
-flyctl secrets deploy -a bosso-production
+cd infra/kustomize
+./pull-secrets.sh production
 ```
 
-For staging, use `-a bosso-staging`. The env file must contain the runtime
-`BOSSO_GITHUB_APP_*` names, not the `TF_VAR_bosso_github_app_*` Terraform Cloud
-wrapper names. Never commit the env file.
+For staging, run `./pull-secrets.sh staging`. The generated `.env-bosso` file is
+gitignored and must not be committed.
 
-### Deferred Bosso Postgres Scale-Up
+### Bosso GKE Runtime
 
-Keep bosso on SQLite until the service is ready to run multiple orchestrator
-instances:
-
-```bash
-BOSSO_DB_DRIVER=sqlite
-# BOSSO_DATABASE_URL unset
-# BOSSO_REDIS_URL unset
-# BOSSO_INTERNAL_WEBHOOK_TOKEN unset
-# BOSSO_MULTI_INSTANCE unset or false
-```
-
-When scaling horizontally, manually provision one Fly Managed Postgres cluster
-in `ams`, then create separate `bosso_prod` and `bosso_stg` databases inside
-that cluster. Use separate production and staging users, and grant each user
-access only to its matching database.
-
-Terraform may manage the databases, users, passwords, and grants inside the
-existing cluster through the PostgreSQL provider. The Fly Managed Postgres
-cluster itself remains a manual one-time resource. Add a negative permission
-check before rollout: connecting as the staging user must not allow access to
-`bosso_prod`.
-
-Set runtime secrets per Fly app only after the databases and grants exist:
+Bosso runs on GKE with Cloud SQL Postgres, Redis, Google Artifact Registry, and
+the Google external ALB. Terraform writes the Kubernetes secret values:
 
 ```bash
-flyctl secrets set -a bosso-production \
-  BOSSO_DATABASE_URL='postgres://<prod-user>:<password>@<host>:5432/bosso_prod?sslmode=require' \
-  BOSSO_REDIS_URL='redis://<prod-redis-url>' \
-  BOSSO_INTERNAL_WEBHOOK_TOKEN='<generated-prod-token>' \
-  BOSSO_DB_DRIVER=postgres \
-  BOSSO_MULTI_INSTANCE=true
-
-flyctl secrets set -a bosso-staging \
-  BOSSO_DATABASE_URL='postgres://<stg-user>:<password>@<host>:5432/bosso_stg?sslmode=require' \
-  BOSSO_REDIS_URL='redis://<stg-redis-url>' \
-  BOSSO_INTERNAL_WEBHOOK_TOKEN='<generated-stg-token>' \
-  BOSSO_DB_DRIVER=postgres \
-  BOSSO_MULTI_INSTANCE=true
+BOSSO_DB_DRIVER=postgres
+BOSSO_DATABASE_URL=postgres://...
+BOSSO_MULTI_INSTANCE=true
+BOSSO_REDIS_URL=redis://bs-redis-service.<namespace>.svc.cluster.local:6379/0
+BOSSO_ROUTING_PROVIDER=kubernetes
+BOSSO_WEBHOOK_ROUTING_URL=http://bs-bosso-service.<namespace>.svc.cluster.local:80
 ```
 
 Generate each `BOSSO_INTERNAL_WEBHOOK_TOKEN` as a high-entropy secret, for
@@ -286,8 +254,8 @@ the target daemon stream.
 Use this token only for internal routed webhook delivery between bosso
 instances; it is separate from the GitHub App webhook secret.
 
-Fly supplies `FLY_MACHINE_ID` for production instance identity. Local or manual
-multi-instance runs can set `BOSSO_INSTANCE_ID` on each process to a distinct
+Kubernetes sets `BOSSO_INSTANCE_ID` from the pod name. Local or manual
+multi-instance runs must set `BOSSO_INSTANCE_ID` on each process to a distinct
 stable value.
 
 Webhook behavior:

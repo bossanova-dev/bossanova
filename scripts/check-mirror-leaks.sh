@@ -31,7 +31,7 @@ FORBIDDEN_PATH_RE='^(AGENTS\.md|CLAUDE\.md|bossd-plugin-[^/]+|\.env\.example\.pu
 
 # Private env-var assignment prefixes. Only meaningful inside .env* files, so we
 # never false-match these tokens where they legitimately appear in source code.
-FORBIDDEN_ENV_RE='^(TF_VAR_|FLY_API_TOKEN|CLOUDFLARE_|LITESTREAM_|BOSSO_|VITE_)'
+FORBIDDEN_ENV_RE='^(TF_VAR_|CLOUDFLARE_|BOSSO_|VITE_)'
 
 if git rev-parse --verify --quiet "$BASE" >/dev/null; then
   RANGE="$BASE..$HEAD"

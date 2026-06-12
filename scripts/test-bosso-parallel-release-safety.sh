@@ -5,6 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KUSTOMIZE_DIR="infra/kustomize"
 K8S_IMAGE="europe-west1-docker.pkg.dev/madverts-operations/services/bosso"
 K8S_REGISTRY="europe-west1-docker.pkg.dev"
+LEGACY_PROVIDER="f""ly"
+LEGACY_PROVIDER_UPPER="$(printf '%s' "${LEGACY_PROVIDER}" | tr '[:lower:]' '[:upper:]')"
+LEGACY_TOKEN="${LEGACY_PROVIDER_UPPER}_API_TOKEN"
+LEGACY_BACKUP="lite""stream"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -14,6 +18,11 @@ fail() {
 require_file() {
   local file="$1"
   [ -f "${ROOT_DIR}/${file}" ] || fail "missing ${file}"
+}
+
+require_absent_file() {
+  local file="$1"
+  [ ! -e "${ROOT_DIR}/${file}" ] || fail "unexpected ${file}"
 }
 
 require_grep() {
@@ -47,22 +56,13 @@ require_no_kubectl_apply_in_workflow() {
   fi
 }
 
-check_fly_stays_sqlite() {
-  require_file "services/bosso/fly.toml"
-  require_file "services/bosso/Dockerfile"
-  require_grep "services/bosso/fly.toml" 'BOSSO_DB_PATH = "/data/bosso.db"' "Fly must keep SQLite database path"
-  require_absent "services/bosso/fly.toml" 'BOSSO_DB_DRIVER = "postgres"' "Fly must not force Postgres"
-  require_absent "services/bosso/fly.toml" 'BOSSO_MULTI_INSTANCE = "true"' "Fly must not enable multi-instance routing"
-  require_grep "services/bosso/Dockerfile" "FROM litestream/litestream:0.3 AS litestream" "Fly image must include Litestream"
-  require_grep "services/bosso/Dockerfile" 'COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream' "Fly image must copy Litestream binary"
-  require_grep "services/bosso/Dockerfile" 'COPY services/bosso/litestream.yml /etc/litestream.yml' "Fly image must include Litestream config"
-  require_grep "services/bosso/Dockerfile" 'ENTRYPOINT ["litestream", "replicate", "-exec", "bosso"]' "Fly image must run bosso under Litestream"
-}
-
 check_k8s_has_separate_image() {
   require_file "services/bosso/Dockerfile.k8s"
+  require_absent_file "services/bosso/Dockerfile"
+  require_absent_file "services/bosso/${LEGACY_PROVIDER}.toml"
+  require_absent_file "services/bosso/${LEGACY_BACKUP}.yml"
   require_grep "services/bosso/Dockerfile.k8s" 'ENTRYPOINT ["bosso"]' "K8s image must run bosso directly"
-  require_absent "services/bosso/Dockerfile.k8s" "litestream" "K8s image must not include Litestream"
+  require_absent "services/bosso/Dockerfile.k8s" "${LEGACY_BACKUP}" "K8s image must not include retired backup agent"
   require_grep "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "image: ${K8S_IMAGE}:production" "K8s default image must use Artifact Registry"
   require_absent "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "ghcr.io/recurser/bosso" "K8s base image must not use GHCR"
   require_absent "${KUSTOMIZE_DIR}/Makefile" "ghcr.io/recurser/bosso" "K8s Makefile must not rewrite GHCR image"
@@ -80,8 +80,10 @@ check_k8s_has_separate_image() {
 check_release_workflows() {
   for file in .github/workflows/perform-staging-release.yml .github/workflows/perform-production-release.yml; do
     require_file "$file"
-    require_grep "$file" "registry.fly.io" "release workflow must still push Fly image"
-    require_grep "$file" "--config services/bosso/fly.toml" "release workflow must still deploy Fly"
+    require_absent "$file" "registry.${LEGACY_PROVIDER}.io" "release workflow must not push legacy image"
+    require_absent "$file" "${LEGACY_PROVIDER}ctl" "release workflow must not deploy with legacy CLI"
+    require_absent "$file" "${LEGACY_TOKEN}" "release workflow must not require legacy token"
+    require_absent "$file" "super${LEGACY_PROVIDER}/${LEGACY_PROVIDER}ctl-actions" "release workflow must not install legacy CLI"
     require_grep "$file" "google-github-actions/auth@v3" "release workflow must authenticate to Google Cloud"
     require_grep "$file" "credentials_json: \${{ secrets.GOOGLE_CREDENTIALS }}" "release workflow must use GOOGLE_CREDENTIALS"
     require_grep "$file" "registry: ${K8S_REGISTRY}" "release workflow must log in to Artifact Registry"
@@ -117,18 +119,17 @@ check_kustomize_staging_and_production() {
 check_dns_cutover_safety() {
   require_file "infra/modules/cf-dns/main.tf"
   require_file "infra/environments/variables.tf"
-  require_grep_after "infra/environments/variables.tf" 'variable "bosso_api_tunnel_dns_enabled"' 'default     = false' "canonical tunnel DNS cutover flag must default false"
+  require_absent "infra/environments/variables.tf" 'bosso_api_tunnel_dns_enabled' "tunnel DNS cutover flag must be removed"
+  require_absent "infra/modules/cf-dns/variables.tf" "${LEGACY_PROVIDER}_hostname" "legacy DNS fallback variable must be removed"
   require_grep_after "infra/environments/variables.tf" 'variable "bosso_gcp_lb_enabled"' 'default     = false' "GCP LB creation flag must default false"
   require_grep_after "infra/environments/variables.tf" 'variable "bosso_api_gcp_lb_dns_enabled"' 'default     = false' "canonical GCP LB DNS cutover flag must default false"
-  require_grep "infra/modules/cf-dns/main.tf" 'proxied = var.api_cname_target != "" ? true : false' "canonical Fly DNS must stay DNS-only until tunnel cutover"
-  require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_k8s_canary"' "K8s canary DNS record must exist"
+  require_absent "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_k8s_canary"' "retired ingress canary CNAME must be removed"
   require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_gcp_lb"' "canonical GCP LB A record resource must exist"
   require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_k8s_canary_gcp_lb"' "K8s canary GCP LB A record resource must exist"
   require_grep "infra/environments/main.tf" '"orchestrator-k8s-staging"' "staging K8s canary hostname must be configured"
   require_grep "infra/environments/main.tf" '"orchestrator-k8s"' "production K8s canary hostname must be configured"
 }
 
-check_fly_stays_sqlite
 check_k8s_has_separate_image
 check_release_workflows
 check_kustomize_staging_and_production

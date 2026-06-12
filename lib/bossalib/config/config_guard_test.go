@@ -9,49 +9,87 @@ import (
 
 func TestGuardRealDefaultWrite(t *testing.T) {
 	realDefault := filepath.Join("/home", "dev", "Library", "Application Support", "bossanova", "settings.json")
+	envPath := filepath.Join("/home", "dev", "code", "bossanova", ".config", "settings.json")
 	tests := []struct {
-		name        string
-		path        string
-		inTest      bool
-		realDefault string
-		wantErr     bool
+		name          string
+		path          string
+		inProcessTest bool
+		sentinelSet   bool
+		realDefault   string
+		envPath       string
+		wantErr       bool
 	}{
 		{
-			name:        "real default under test is refused",
+			name:          "real default under in-process test is refused",
+			path:          realDefault,
+			inProcessTest: true,
+			realDefault:   realDefault,
+			envPath:       envPath,
+			wantErr:       true,
+		},
+		{
+			name:        "real default under subprocess sentinel is refused",
 			path:        realDefault,
-			inTest:      true,
+			sentinelSet: true,
 			realDefault: realDefault,
+			envPath:     envPath,
 			wantErr:     true,
 		},
 		{
-			name:        "real default not under test is allowed",
+			name:        "real default with no test markers is allowed",
 			path:        realDefault,
-			inTest:      false,
 			realDefault: realDefault,
+			envPath:     envPath,
 		},
 		{
-			name:        "temp path under test is allowed",
-			path:        "/tmp/some/settings.json",
-			inTest:      true,
-			realDefault: realDefault,
+			name:          "env path under in-process test is refused",
+			path:          envPath,
+			inProcessTest: true,
+			realDefault:   realDefault,
+			envPath:       envPath,
+			wantErr:       true,
 		},
 		{
-			name:        "uncleaned real default under test is refused",
-			path:        filepath.Join("/home", "dev", "Library", "Application Support", "bossanova", "..", "bossanova", "settings.json"),
-			inTest:      true,
+			name:        "env path under subprocess sentinel is allowed (its own temp target)",
+			path:        envPath,
+			sentinelSet: true,
 			realDefault: realDefault,
-			wantErr:     true,
+			envPath:     envPath,
 		},
 		{
-			name:        "no real default known is allowed",
-			path:        realDefault,
-			inTest:      true,
-			realDefault: "",
+			name:          "temp path under in-process test is allowed",
+			path:          "/tmp/some/settings.json",
+			inProcessTest: true,
+			realDefault:   realDefault,
+			envPath:       envPath,
+		},
+		{
+			name:          "uncleaned real default under in-process test is refused",
+			path:          filepath.Join("/home", "dev", "Library", "Application Support", "bossanova", "..", "bossanova", "settings.json"),
+			inProcessTest: true,
+			realDefault:   realDefault,
+			envPath:       envPath,
+			wantErr:       true,
+		},
+		{
+			name:          "uncleaned env path under in-process test is refused",
+			path:          filepath.Join("/home", "dev", "code", "bossanova", ".config", "..", ".config", "settings.json"),
+			inProcessTest: true,
+			realDefault:   realDefault,
+			envPath:       envPath,
+			wantErr:       true,
+		},
+		{
+			name:          "no real default and no env path is allowed",
+			path:          realDefault,
+			inProcessTest: true,
+			realDefault:   "",
+			envPath:       "",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := guardRealDefaultWrite(tt.path, tt.inTest, tt.realDefault)
+			err := guardRealDefaultWrite(tt.path, tt.inProcessTest, tt.sentinelSet, tt.realDefault, tt.envPath)
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("guardRealDefaultWrite() err = %v, wantErr = %v", err, tt.wantErr)
 			}

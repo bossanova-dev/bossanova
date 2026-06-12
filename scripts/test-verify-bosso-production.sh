@@ -35,11 +35,6 @@ if [[ "$*" == *"get namespace bs-production"* || "$*" == *"get namespace bs-stag
   exit 0
 fi
 
-if [[ "$*" == *"get deployment/bs-deploy-cloudflared"* ]]; then
-  echo "deployment.apps/bs-deploy-cloudflared"
-  exit 0
-fi
-
 if [[ "$*" == *"get deployment/bs-deploy-redis"* ]]; then
   echo "deployment.apps/bs-deploy-redis"
   exit 0
@@ -62,11 +57,6 @@ fi
 
 if [[ "$*" == *"rollout status"*"statefulset/bs-bosso"* ]]; then
   echo "statefulset rolling"
-  exit 0
-fi
-
-if [[ "$*" == *"rollout status"*"deployment/bs-deploy-cloudflared"* ]]; then
-  echo "deployment rolling"
   exit 0
 fi
 
@@ -120,11 +110,6 @@ fi
 
 if [[ "$*" == *"wait"*"app=bs-bosso"* ]]; then
   echo "pod/bs-bosso-0 condition met"
-  exit 0
-fi
-
-if [[ "$*" == *"wait"*"app=bs-cloudflared"* ]]; then
-  echo "pod/bs-cloudflared-0 condition met"
   exit 0
 fi
 

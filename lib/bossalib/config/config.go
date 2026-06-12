@@ -36,23 +36,45 @@ var realDefaultPath = func() string {
 	return ""
 }()
 
-// underTest reports whether we are running inside the test suite, either in the
-// test binary itself (testing.Testing()) or in a subprocess spawned by a test
-// harness (refuseDefaultEnv sentinel, since testing.Testing() is false there).
-func underTest() bool {
-	return testing.Testing() || os.Getenv(refuseDefaultEnv) == "1"
-}
+// initEnvSettingsPath is BOSS_SETTINGS_PATH as it was at process start, captured
+// once at package init before any t.Setenv can change it. For an in-process test
+// binary launched from a developer shell (e.g. via direnv) this is the
+// developer's real settings.json, so the under-test guard refuses writes to it —
+// catching tests that redirect HOME but forget BOSS_SETTINGS_PATH (which
+// config.Path() consults before HOME). Empty when the env var is unset (CI) or
+// relative, in which case the guard no-ops. It is NOT refused for the subprocess
+// sentinel: a test harness deliberately points BOSS_SETTINGS_PATH at its own temp
+// file before spawning, so there this path IS the legitimate write target.
+var initEnvSettingsPath = func() string {
+	if p := os.Getenv(settingsPathEnv); p != "" && filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return ""
+}()
 
-// guardRealDefaultWrite returns an error when a test would overwrite the
-// developer's real settings.json. It is the pure, unit-testable core of the
-// write guard: reads are never blocked, only a write whose resolved path equals
-// the real default location while running under test. Tests must isolate via
-// BOSS_SETTINGS_PATH (a temp file) or a redirected HOME so path != realDefault.
-func guardRealDefaultWrite(path string, inTest bool, realDefault string) error {
-	if inTest && realDefault != "" && filepath.Clean(path) == realDefault {
+// guardRealDefaultWrite returns an error when a test would overwrite a real
+// settings.json. It is the pure, unit-testable core of the write guard: reads
+// are never blocked, only a write whose resolved path equals a real settings
+// location while running under test. Tests must isolate via BOSS_SETTINGS_PATH (a
+// temp file) or a redirected HOME so the resolved path matches neither location.
+//
+// Two locations are guarded:
+//   - realDefault: the OS-default path (HOME-derived). Refused for both the
+//     in-process test binary and the subprocess sentinel.
+//   - envPath: BOSS_SETTINGS_PATH captured at process start. Refused only for the
+//     in-process test binary (inProcessTest); the subprocess sentinel points
+//     BOSS_SETTINGS_PATH at its own temp file, so there envPath is legitimate.
+func guardRealDefaultWrite(path string, inProcessTest, sentinelSet bool, realDefault, envPath string) error {
+	clean := filepath.Clean(path)
+	if (inProcessTest || sentinelSet) && realDefault != "" && clean == realDefault {
 		return fmt.Errorf(
 			"refusing to overwrite the real settings path %q under test: set %s to an absolute temp path or redirect HOME to a temp dir",
 			realDefault, settingsPathEnv)
+	}
+	if inProcessTest && envPath != "" && clean == envPath {
+		return fmt.Errorf(
+			"refusing to overwrite the developer's %s path %q under test: point %s at an absolute temp file (a redirected HOME alone is not enough — %s takes precedence)",
+			settingsPathEnv, envPath, settingsPathEnv, settingsPathEnv)
 	}
 	return nil
 }
@@ -578,7 +600,13 @@ func Save(s Settings) error {
 
 // SaveTo writes settings to a specific path, creating parent directories as needed.
 func SaveTo(path string, s Settings) error {
-	if err := guardRealDefaultWrite(path, underTest(), realDefaultPath); err != nil {
+	if err := guardRealDefaultWrite(
+		path,
+		testing.Testing(),
+		os.Getenv(refuseDefaultEnv) == "1",
+		realDefaultPath,
+		initEnvSettingsPath,
+	); err != nil {
 		return err
 	}
 	dir := filepath.Dir(path)

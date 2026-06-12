@@ -42,6 +42,12 @@ export function selectTargets(files) {
       continue;
     }
 
+    if (isSkillPath(file)) {
+      selectWholeTarget(selections, 'test-manifest');
+      selectWholeTarget(selections, 'test-no-inline-stop-hooks');
+      continue;
+    }
+
     if (isManifestPath(file)) {
       selectWholeTarget(selections, 'test-manifest');
       continue;
@@ -118,11 +124,13 @@ function isManifestPath(file) {
     file === 'CLAUDE.md' ||
     file === '.claude/docs/testing.md' ||
     file.startsWith('.claude/docs/testing/') ||
-    file.startsWith('.claude/skills/') ||
-    file.startsWith('.codex/skills/') ||
     file.startsWith('docs/guidance/') ||
     file.startsWith('docs/testing/')
   );
+}
+
+function isSkillPath(file) {
+  return file.startsWith('.claude/skills/') || file.startsWith('.codex/skills/');
 }
 
 function normalizePath(file) {

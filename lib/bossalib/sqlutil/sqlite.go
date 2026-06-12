@@ -27,10 +27,10 @@ const maxFilePoolConns = 8
 // transient write-lock contention before SQLITE_BUSY surfaces to the caller.
 //
 // Why one shared pool, not separate read/write *sql.DB handles:
-// Litestream (used in production by bosso) replicates from the same WAL file
-// the application writes to — it's an OS-level reader, not an in-process
-// driver. Multiple in-process connections via modernc.org/sqlite are fully
-// compatible with WAL + Litestream. The split read/write handle pattern is
+// Backup tooling may read from the same WAL file the application writes to as
+// an OS-level reader, not an in-process driver. Multiple in-process
+// connections via modernc.org/sqlite are fully compatible with WAL. The split
+// read/write handle pattern is
 // the right fix only when writer concurrency is high enough that
 // busy_timeout would mask real contention; bossanova's workload (a handful
 // of daemon-side workers + batched orchestrator requests) does not warrant

@@ -54,18 +54,22 @@ test('selects scripts tests for proof recipe changes', () => {
 
 test('selectTargets maps manifest and agent instruction changes to manifest checks', () => {
   assert.deepEqual(
-    selectTargets([
-      'AGENTS.md',
-      '.claude/skills/agent-fast-testing/SKILL.md',
-      '.codex/skills/golang-pro/SKILL.md',
-    ]),
+    selectTargets(['AGENTS.md', 'CLAUDE.md', 'docs/testing/test-command-manifest.md']),
     [{ kind: 'make', target: 'test-manifest', env: {} }],
   );
 });
 
-test('selectTargets maps Codex skills to manifest checks', () => {
+test('selectTargets maps skill docs to manifest and Stop-hook guard checks', () => {
+  assert.deepEqual(selectTargets(['.claude/skills/agent-fast-testing/SKILL.md']), [
+    { kind: 'make', target: 'test-manifest', env: {} },
+    { kind: 'make', target: 'test-no-inline-stop-hooks', env: {} },
+  ]);
+});
+
+test('selectTargets maps Codex skills to manifest and Stop-hook guard checks', () => {
   assert.deepEqual(selectTargets(['.codex/skills/golang-pro/SKILL.md']), [
     { kind: 'make', target: 'test-manifest', env: {} },
+    { kind: 'make', target: 'test-no-inline-stop-hooks', env: {} },
   ]);
 });
 

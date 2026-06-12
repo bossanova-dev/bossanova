@@ -69,7 +69,6 @@ fi
 echo "Checking Kubernetes objects in namespace ${NAMESPACE}"
 kubectl get namespace "${NAMESPACE}"
 kubectl get statefulset/bs-bosso -n "${NAMESPACE}"
-kubectl get deployment/bs-deploy-cloudflared -n "${NAMESPACE}"
 kubectl get deployment/bs-deploy-redis -n "${NAMESPACE}"
 kubectl get service/bs-bosso-headless -n "${NAMESPACE}"
 kubectl get service/bs-bosso-service -n "${NAMESPACE}"
@@ -106,12 +105,10 @@ done
 
 echo "Checking rollout status"
 kubectl rollout status -n "${NAMESPACE}" statefulset/bs-bosso --timeout=5m
-kubectl rollout status -n "${NAMESPACE}" deployment/bs-deploy-cloudflared --timeout=5m
 kubectl rollout status -n "${NAMESPACE}" deployment/bs-deploy-redis --timeout=5m
 
 echo "Waiting for pod readiness"
 kubectl wait -n "${NAMESPACE}" --for=condition=Ready pod -l app=bs-bosso --timeout=120s
-kubectl wait -n "${NAMESPACE}" --for=condition=Ready pod -l app=bs-cloudflared --timeout=120s
 kubectl wait -n "${NAMESPACE}" --for=condition=Ready pod -l app=bs-redis --timeout=120s
 
 echo "Checking public canary health endpoint"

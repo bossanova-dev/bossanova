@@ -66,7 +66,7 @@ describe('sync-codex-skills', () => {
       assert.match(skill, /Push at most one PR-worthy session-branch commit per run/);
       assert.match(skill, /Windows WSL/);
       assert.match(skill, /macOS, Linux, and Windows WSL/);
-      assert.match(skill, /\$boss-finalize/);
+      assert.match(skill, /`\/boss-finalize`/);
       assert.match(skill, /READY_GREEN_PR/);
       assert.match(skill, /NO_CHANGE/);
       assert.match(skill, /gh pr ready/);
@@ -205,6 +205,49 @@ Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a 
     assert.match(rewritten, /file-reading tool/);
     assert.match(rewritten, /apply_patch/);
     assert.match(rewritten, /Codex browser automation/);
+  });
+
+  it('rewrites leading-slash skill references to the Codex $ prefix', () => {
+    const rewritten = rewriteClaudeSkillMarkdown(`---
+name: example
+description: example description
+---
+
+Run \`/bs-linear-plan\` then **/boss-finalize**.
+Also run /bs-proof now and use /superpowers:writing-plans for plans.
+`);
+
+    assert.match(rewritten, /`\$bs-linear-plan`/);
+    assert.match(rewritten, /\*\*\$boss-finalize\*\*/);
+    assert.match(rewritten, /run \$bs-proof now/);
+    assert.match(rewritten, /use \$superpowers:writing-plans for plans/);
+    assert.doesNotMatch(rewritten, /\/bs-linear-plan/);
+    assert.doesNotMatch(rewritten, /\/boss-finalize/);
+  });
+
+  it('leaves paths, URLs, redirects, and or-constructs untouched', () => {
+    const rewritten = rewriteClaudeSkillMarkdown(`---
+name: example
+description: example description
+---
+
+Edit /Users/dave/x and docs/plans/a.md, fetch https://proof.bossanova.dev/x,
+run \`gh\`/network checks, redirect 2>/dev/null, press [y/enter], pick and/or.
+Score is /20 then /5 out of 5.
+`);
+
+    assert.match(rewritten, /\/Users\/dave\/x/);
+    assert.match(rewritten, /docs\/plans\/a\.md/);
+    assert.match(rewritten, /https:\/\/proof\.bossanova\.dev\/x/);
+    assert.match(rewritten, /`gh`\/network checks/);
+    assert.match(rewritten, /2>\/dev\/null/);
+    assert.match(rewritten, /\[y\/enter\]/);
+    assert.match(rewritten, /and\/or/);
+    assert.match(rewritten, /Score is \/20 then \/5 out of 5/);
+    assert.doesNotMatch(rewritten, /\$Users/);
+    assert.doesNotMatch(rewritten, /\$network/);
+    assert.doesNotMatch(rewritten, /\$dev/);
+    assert.doesNotMatch(rewritten, /\$20/);
   });
 
   it('check mode reports stale generated output without changing it', () => {

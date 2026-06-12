@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KUSTOMIZE_DIR="infra/kustomize"
 SUITE="${1:-all}"
+LEGACY_PROVIDER="f""ly"
+LEGACY_INGRESS="cloud""flared"
+LEGACY_BACKUP="lite""stream"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -13,6 +16,11 @@ fail() {
 require_file() {
   local file="$1"
   [ -f "${ROOT_DIR}/${file}" ] || fail "missing ${file}"
+}
+
+require_absent_file() {
+  local file="$1"
+  [ ! -e "${ROOT_DIR}/${file}" ] || fail "unexpected ${file}"
 }
 
 require_grep() {
@@ -143,12 +151,10 @@ check_smoke_script() {
 
 check_k8s_hardening() {
   require_file "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml"
-  require_file "${KUSTOMIZE_DIR}/base/deployment-cloudflared.yml"
   require_file "${KUSTOMIZE_DIR}/base/deployment-redis.yml"
 
   local workload_files=(
     "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml"
-    "${KUSTOMIZE_DIR}/base/deployment-cloudflared.yml"
     "${KUSTOMIZE_DIR}/base/deployment-redis.yml"
   )
   for file in "${workload_files[@]}"; do
@@ -160,32 +166,31 @@ check_k8s_hardening() {
     require_grep "$file" "- ALL" "container must drop all Linux capabilities"
   done
 
-  require_grep "${KUSTOMIZE_DIR}/base/deployment-cloudflared.yml" "readOnlyRootFilesystem: true" "cloudflared should have read-only root filesystem"
   require_grep "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "runAsUser: 65532" "Bosso workload must set numeric non-root user"
   require_grep "${KUSTOMIZE_DIR}/base/statefulset-bosso.yml" "runAsGroup: 65532" "Bosso workload must set numeric non-root group"
   require_grep "${KUSTOMIZE_DIR}/base/deployment-redis.yml" "redis:7.4-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" "Redis image must be digest-pinned"
 }
 
-check_cloudflared_config() {
+check_retired_ingress_removed() {
   require_file "${KUSTOMIZE_DIR}/base/kustomization.yml"
-  if [ -f "${ROOT_DIR}/${KUSTOMIZE_DIR}/base/configmap-cloudflared.yml" ]; then
-    fail "unused ${KUSTOMIZE_DIR}/base/configmap-cloudflared.yml still exists"
-  fi
-  require_absent "${KUSTOMIZE_DIR}/base/kustomization.yml" "configmap-cloudflared.yml" "unused Cloudflared ConfigMap resource must not render"
+  require_absent_file "${KUSTOMIZE_DIR}/base/deployment-${LEGACY_INGRESS}.yml"
+  require_absent_file "${KUSTOMIZE_DIR}/overlays/production/.env-${LEGACY_INGRESS}.example"
+  require_absent_file "${KUSTOMIZE_DIR}/overlays/staging/.env-${LEGACY_INGRESS}.example"
+  require_absent "${KUSTOMIZE_DIR}/base/kustomization.yml" "${LEGACY_INGRESS}" "retired ingress resource must not render"
+  require_absent "${KUSTOMIZE_DIR}/overlays/production/kustomization.yml" "bs-${LEGACY_INGRESS}-secret" "production overlay must not generate retired ingress secret"
+  require_absent "${KUSTOMIZE_DIR}/overlays/staging/kustomization.yml" "bs-${LEGACY_INGRESS}-secret" "staging overlay must not generate retired ingress secret"
 }
 
-check_parallel_fly_k8s_release() {
-  require_file "services/bosso/Dockerfile"
+check_gcp_only_release() {
   require_file "services/bosso/Dockerfile.k8s"
-  require_file "services/bosso/fly.toml"
   require_file "scripts/test-bosso-parallel-release-safety.sh"
 
-  require_grep "services/bosso/Dockerfile" 'ENTRYPOINT ["litestream", "replicate", "-exec", "bosso"]' "Fly Dockerfile must keep Litestream entrypoint"
+  require_absent_file "services/bosso/Dockerfile"
+  require_absent_file "services/bosso/${LEGACY_PROVIDER}.toml"
+  require_absent_file "services/bosso/${LEGACY_BACKUP}.yml"
   require_grep "services/bosso/Dockerfile.k8s" 'ENTRYPOINT ["bosso"]' "K8s Dockerfile must run bosso directly"
-  require_grep "services/bosso/fly.toml" 'BOSSO_DB_PATH = "/data/bosso.db"' "Fly config must keep SQLite database path"
-  require_absent "services/bosso/fly.toml" 'BOSSO_DB_DRIVER =' "Fly config must not set a Postgres database driver"
-  require_absent "services/bosso/fly.toml" 'BOSSO_DATABASE_URL =' "Fly config must not set a Postgres database URL"
-  require_absent "services/bosso/fly.toml" 'BOSSO_MULTI_INSTANCE =' "Fly config must not enable K8s routing"
+  require_absent ".github/workflows/perform-production-release.yml" "${LEGACY_PROVIDER}ctl" "production release must not deploy with legacy CLI"
+  require_absent ".github/workflows/perform-staging-release.yml" "${LEGACY_PROVIDER}ctl" "staging release must not deploy with legacy CLI"
 }
 
 run_suite() {
@@ -194,18 +199,18 @@ run_suite() {
     dockerignore) check_dockerignore ;;
     smoke-script) check_smoke_script ;;
     k8s-hardening) check_k8s_hardening ;;
-    cloudflared-config) check_cloudflared_config ;;
-    parallel-release) check_parallel_fly_k8s_release ;;
+    retired-ingress) check_retired_ingress_removed ;;
+    parallel-release) check_gcp_only_release ;;
     all)
       check_terraform_env
       check_dockerignore
       check_smoke_script
       check_k8s_hardening
-      check_cloudflared_config
-      check_parallel_fly_k8s_release
+      check_retired_ingress_removed
+      check_gcp_only_release
       ;;
     *)
-      echo "Usage: $0 [all|terraform-env|dockerignore|smoke-script|k8s-hardening|cloudflared-config|parallel-release]" >&2
+      echo "Usage: $0 [all|terraform-env|dockerignore|smoke-script|k8s-hardening|retired-ingress|parallel-release]" >&2
       exit 2
       ;;
   esac

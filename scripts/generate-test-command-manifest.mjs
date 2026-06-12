@@ -16,6 +16,7 @@ const defaultRootTargets = [
   'test-race',
   'test-profile',
   'test-scripts',
+  'test-no-inline-stop-hooks',
   'test-readme',
   'test-public-mirror',
 ];

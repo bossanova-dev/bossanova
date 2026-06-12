@@ -27,6 +27,16 @@ const BODY_REWRITES = [
   [/\bWebFetch\b/g, 'web fetch'],
   [/\bPlaywright MCP server\b/g, 'Codex browser automation'],
   [/\bPlaywright MCP\b/g, 'Codex browser automation'],
+  // Skill/command references: Claude `/name` -> Codex `$name` (same ref, different prefix).
+  // The name must start with a letter (so numeric score denominators like /20 are ignored)
+  // and forbids slashes, so multi-segment paths (e.g. /Users/dave/x, docs/plans/x) never
+  // match. Code-span form: `/skill-name` wrapped in backticks (backtick-closed).
+  [/`\/((?:[a-z][a-z0-9-]*:)?[a-z][a-z0-9-]*)`/g, '`$$$1`'],
+  // Prose / bold / italic / paren / bracket form, at a word boundary with no inner slash.
+  // The leading slash must sit at a command boundary (start, whitespace, or ([*_), and the
+  // token must end at a boundary that is not another slash, so or-constructs (`gh`/network),
+  // redirects (2>/dev/null), URLs (https://...), and key combos ([y/enter]) are left intact.
+  [/(^|[\s(\[*_])\/((?:[a-z][a-z0-9-]*:)?[a-z][a-z0-9-]*)(?=[\s)\]*_.,;:!?]|$)/gm, '$1$$$2'],
 ];
 
 function normalizePath(filePath) {

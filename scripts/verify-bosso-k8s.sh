@@ -118,6 +118,18 @@ echo "Checking public canary health endpoint"
 curl -fsS --connect-timeout "${CURL_CONNECT_TIMEOUT}" --max-time "${CURL_MAX_TIME}" "${BASE_URL}/healthz" >/dev/null
 echo
 
+echo "Checking streaming transport duplex (streamprobe)"
+(cd services/bossd && go run ./cmd/streamprobe -url "${BASE_URL}")
+
+echo "Checking NEG endpoint attachment"
+if gcloud compute network-endpoint-groups describe "bs-bosso-neg-${ENVIRONMENT}" \
+  --zone europe-west1-b --project madverts-production \
+  --format="value(size)" 2>/dev/null | grep -qv '^0$'; then
+  echo "NEG has endpoints"
+else
+  echo "WARN: NEG bs-bosso-neg-${ENVIRONMENT} missing or empty (expected until GCP LB is enabled)"
+fi
+
 echo "Checking internal headless DNS"
 kubectl_exec -n "${NAMESPACE}" statefulset/bs-bosso -- \
   getent hosts "bs-bosso-0.bs-bosso-headless.${NAMESPACE}.svc.cluster.local"

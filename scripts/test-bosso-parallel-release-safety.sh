@@ -118,8 +118,12 @@ check_dns_cutover_safety() {
   require_file "infra/modules/cf-dns/main.tf"
   require_file "infra/environments/variables.tf"
   require_grep_after "infra/environments/variables.tf" 'variable "bosso_api_tunnel_dns_enabled"' 'default     = false' "canonical tunnel DNS cutover flag must default false"
+  require_grep_after "infra/environments/variables.tf" 'variable "bosso_gcp_lb_enabled"' 'default     = false' "GCP LB creation flag must default false"
+  require_grep_after "infra/environments/variables.tf" 'variable "bosso_api_gcp_lb_dns_enabled"' 'default     = false' "canonical GCP LB DNS cutover flag must default false"
   require_grep "infra/modules/cf-dns/main.tf" 'proxied = var.api_cname_target != "" ? true : false' "canonical Fly DNS must stay DNS-only until tunnel cutover"
   require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_k8s_canary"' "K8s canary DNS record must exist"
+  require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_gcp_lb"' "canonical GCP LB A record resource must exist"
+  require_grep "infra/modules/cf-dns/main.tf" 'resource "cloudflare_record" "api_k8s_canary_gcp_lb"' "K8s canary GCP LB A record resource must exist"
   require_grep "infra/environments/main.tf" '"orchestrator-k8s-staging"' "staging K8s canary hostname must be configured"
   require_grep "infra/environments/main.tf" '"orchestrator-k8s"' "production K8s canary hostname must be configured"
 }

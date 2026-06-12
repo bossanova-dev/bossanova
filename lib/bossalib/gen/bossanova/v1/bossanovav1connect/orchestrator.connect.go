@@ -36,6 +36,9 @@ const (
 	// OrchestratorServiceRegisterDaemonProcedure is the fully-qualified name of the
 	// OrchestratorService's RegisterDaemon RPC.
 	OrchestratorServiceRegisterDaemonProcedure = "/bossanova.v1.OrchestratorService/RegisterDaemon"
+	// OrchestratorServicePublishDaemonSnapshotProcedure is the fully-qualified name of the
+	// OrchestratorService's PublishDaemonSnapshot RPC.
+	OrchestratorServicePublishDaemonSnapshotProcedure = "/bossanova.v1.OrchestratorService/PublishDaemonSnapshot"
 	// OrchestratorServiceDaemonStreamProcedure is the fully-qualified name of the OrchestratorService's
 	// DaemonStream RPC.
 	OrchestratorServiceDaemonStreamProcedure = "/bossanova.v1.OrchestratorService/DaemonStream"
@@ -117,6 +120,11 @@ const (
 type OrchestratorServiceClient interface {
 	// Daemon registry
 	RegisterDaemon(context.Context, *connect.Request[v1.RegisterDaemonRequest]) (*connect.Response[v1.RegisterDaemonResponse], error)
+	// PublishDaemonSnapshot is a unary fallback for networks that proxy normal
+	// HTTPS but do not support Connect bidirectional streaming end-to-end.
+	// Daemons authenticate with their RegisterDaemon session token and publish
+	// the same snapshot shape used as the first DaemonStream event.
+	PublishDaemonSnapshot(context.Context, *connect.Request[v1.PublishDaemonSnapshotRequest]) (*connect.Response[v1.PublishDaemonSnapshotResponse], error)
 	// DaemonStream is the long-lived bidirectional channel between a daemon
 	// and the orchestrator. Daemons push session deltas and other events;
 	// the orchestrator pushes commands (proxy RPC invocations, transfer
@@ -192,6 +200,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceRegisterDaemonProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("RegisterDaemon")),
+			connect.WithClientOptions(opts...),
+		),
+		publishDaemonSnapshot: connect.NewClient[v1.PublishDaemonSnapshotRequest, v1.PublishDaemonSnapshotResponse](
+			httpClient,
+			baseURL+OrchestratorServicePublishDaemonSnapshotProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("PublishDaemonSnapshot")),
 			connect.WithClientOptions(opts...),
 		),
 		daemonStream: connect.NewClient[v1.DaemonEvent, v1.OrchestratorCommand](
@@ -350,6 +364,7 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 // orchestratorServiceClient implements OrchestratorServiceClient.
 type orchestratorServiceClient struct {
 	registerDaemon             *connect.Client[v1.RegisterDaemonRequest, v1.RegisterDaemonResponse]
+	publishDaemonSnapshot      *connect.Client[v1.PublishDaemonSnapshotRequest, v1.PublishDaemonSnapshotResponse]
 	daemonStream               *connect.Client[v1.DaemonEvent, v1.OrchestratorCommand]
 	listDaemons                *connect.Client[v1.ListDaemonsRequest, v1.ListDaemonsResponse]
 	transferSession            *connect.Client[v1.TransferSessionRequest, v1.TransferSessionResponse]
@@ -380,6 +395,11 @@ type orchestratorServiceClient struct {
 // RegisterDaemon calls bossanova.v1.OrchestratorService.RegisterDaemon.
 func (c *orchestratorServiceClient) RegisterDaemon(ctx context.Context, req *connect.Request[v1.RegisterDaemonRequest]) (*connect.Response[v1.RegisterDaemonResponse], error) {
 	return c.registerDaemon.CallUnary(ctx, req)
+}
+
+// PublishDaemonSnapshot calls bossanova.v1.OrchestratorService.PublishDaemonSnapshot.
+func (c *orchestratorServiceClient) PublishDaemonSnapshot(ctx context.Context, req *connect.Request[v1.PublishDaemonSnapshotRequest]) (*connect.Response[v1.PublishDaemonSnapshotResponse], error) {
+	return c.publishDaemonSnapshot.CallUnary(ctx, req)
 }
 
 // DaemonStream calls bossanova.v1.OrchestratorService.DaemonStream.
@@ -511,6 +531,11 @@ func (c *orchestratorServiceClient) ReportBug(ctx context.Context, req *connect.
 type OrchestratorServiceHandler interface {
 	// Daemon registry
 	RegisterDaemon(context.Context, *connect.Request[v1.RegisterDaemonRequest]) (*connect.Response[v1.RegisterDaemonResponse], error)
+	// PublishDaemonSnapshot is a unary fallback for networks that proxy normal
+	// HTTPS but do not support Connect bidirectional streaming end-to-end.
+	// Daemons authenticate with their RegisterDaemon session token and publish
+	// the same snapshot shape used as the first DaemonStream event.
+	PublishDaemonSnapshot(context.Context, *connect.Request[v1.PublishDaemonSnapshotRequest]) (*connect.Response[v1.PublishDaemonSnapshotResponse], error)
 	// DaemonStream is the long-lived bidirectional channel between a daemon
 	// and the orchestrator. Daemons push session deltas and other events;
 	// the orchestrator pushes commands (proxy RPC invocations, transfer
@@ -582,6 +607,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceRegisterDaemonProcedure,
 		svc.RegisterDaemon,
 		connect.WithSchema(orchestratorServiceMethods.ByName("RegisterDaemon")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServicePublishDaemonSnapshotHandler := connect.NewUnaryHandler(
+		OrchestratorServicePublishDaemonSnapshotProcedure,
+		svc.PublishDaemonSnapshot,
+		connect.WithSchema(orchestratorServiceMethods.ByName("PublishDaemonSnapshot")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceDaemonStreamHandler := connect.NewBidiStreamHandler(
@@ -738,6 +769,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		switch r.URL.Path {
 		case OrchestratorServiceRegisterDaemonProcedure:
 			orchestratorServiceRegisterDaemonHandler.ServeHTTP(w, r)
+		case OrchestratorServicePublishDaemonSnapshotProcedure:
+			orchestratorServicePublishDaemonSnapshotHandler.ServeHTTP(w, r)
 		case OrchestratorServiceDaemonStreamProcedure:
 			orchestratorServiceDaemonStreamHandler.ServeHTTP(w, r)
 		case OrchestratorServiceListDaemonsProcedure:
@@ -799,6 +832,10 @@ type UnimplementedOrchestratorServiceHandler struct{}
 
 func (UnimplementedOrchestratorServiceHandler) RegisterDaemon(context.Context, *connect.Request[v1.RegisterDaemonRequest]) (*connect.Response[v1.RegisterDaemonResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.RegisterDaemon is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) PublishDaemonSnapshot(context.Context, *connect.Request[v1.PublishDaemonSnapshotRequest]) (*connect.Response[v1.PublishDaemonSnapshotResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.PublishDaemonSnapshot is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) DaemonStream(context.Context, *connect.BidiStream[v1.DaemonEvent, v1.OrchestratorCommand]) error {

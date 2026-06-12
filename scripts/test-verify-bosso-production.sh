@@ -5,9 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 KUBECTL_LOG="${TMP_DIR}/kubectl.log"
 CURL_LOG="${TMP_DIR}/curl.log"
+GO_LOG="${TMP_DIR}/go.log"
+GCLOUD_LOG="${TMP_DIR}/gcloud.log"
 SECRET_KEY_LOG="${TMP_DIR}/secret-keys.log"
 export KUBECTL_LOG
 export CURL_LOG
+export GO_LOG
+export GCLOUD_LOG
 export SECRET_KEY_LOG
 
 cleanup() {
@@ -157,6 +161,49 @@ echo "ok"
 FAKE_CURL
 chmod +x "${TMP_DIR}/curl"
 
+cat >"${TMP_DIR}/go" <<'FAKE_GO'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "go $*" >>"${GO_LOG}"
+
+if [ "$#" -eq 4 ] && [ "$1" = "run" ] && [ "$2" = "./cmd/streamprobe" ] && [ "$3" = "-url" ]; then
+  case "$4" in
+    https://orchestrator-k8s.bossanova.dev|https://orchestrator-k8s-staging.bossanova.dev)
+      echo "PASS: streamprobe full-duplex transport healthy for $4"
+      exit 0
+      ;;
+  esac
+fi
+
+echo "unexpected go invocation: $*" >&2
+exit 99
+FAKE_GO
+chmod +x "${TMP_DIR}/go"
+
+cat >"${TMP_DIR}/gcloud" <<'FAKE_GCLOUD'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "gcloud $*" >>"${GCLOUD_LOG}"
+
+if [ "$#" -eq 9 ] \
+  && [ "$1" = "compute" ] \
+  && [ "$2" = "network-endpoint-groups" ] \
+  && [ "$3" = "describe" ] \
+  && [[ "$4" =~ ^bs-bosso-neg-(production|staging)$ ]] \
+  && [ "$5" = "--zone" ] \
+  && [ "$6" = "europe-west1-b" ] \
+  && [ "$7" = "--project" ] \
+  && [ "$8" = "madverts-production" ] \
+  && [ "$9" = "--format=value(size)" ]; then
+  echo "1"
+  exit 0
+fi
+
+echo "unexpected gcloud invocation: $*" >&2
+exit 99
+FAKE_GCLOUD
+chmod +x "${TMP_DIR}/gcloud"
+
 export PATH="${TMP_DIR}:${PATH}"
 export DEPLOYED_IMAGE_REF="us-central1-docker.pkg.dev/example/bs/bosso:expected"
 export EXPECTED_IMAGE_REF="${DEPLOYED_IMAGE_REF}"
@@ -168,6 +215,10 @@ grep -Fq "statefulset/bs-bosso" "${KUBECTL_LOG}" || fail "kubectl log missing st
 grep -Fq "secret bs-bosso-secret" "${KUBECTL_LOG}" || fail "kubectl log missing secret bs-bosso-secret"
 grep -Fq "https://orchestrator-k8s.bossanova.dev/healthz" "${CURL_LOG}" \
   || fail "curl log missing production canary health URL"
+grep -Fq "go run ./cmd/streamprobe -url https://orchestrator-k8s.bossanova.dev" "${GO_LOG}" \
+  || fail "go log missing production streamprobe URL"
+grep -Fq "gcloud compute network-endpoint-groups describe bs-bosso-neg-production" "${GCLOUD_LOG}" \
+  || fail "gcloud log missing production NEG describe"
 
 export DEPLOYED_IMAGE_REF="europe-west1-docker.pkg.dev/madverts-operations/services/bosso:staging-test"
 export EXPECTED_IMAGE_REF="${DEPLOYED_IMAGE_REF}"
@@ -176,6 +227,10 @@ OUTPUT="$(ENVIRONMENT=staging NAMESPACE=bs-staging "${ROOT_DIR}/scripts/verify-b
   || fail "verify-bosso-k8s staging failed unexpectedly: ${OUTPUT}"
 grep -Fq "https://orchestrator-k8s-staging.bossanova.dev/healthz" "${CURL_LOG}" \
   || fail "curl log missing staging canary health URL"
+grep -Fq "go run ./cmd/streamprobe -url https://orchestrator-k8s-staging.bossanova.dev" "${GO_LOG}" \
+  || fail "go log missing staging streamprobe URL"
+grep -Fq "gcloud compute network-endpoint-groups describe bs-bosso-neg-staging" "${GCLOUD_LOG}" \
+  || fail "gcloud log missing staging NEG describe"
 
 REQUIRED_BOSSO_SECRET_KEYS=(
   BOSSO_DB_DRIVER

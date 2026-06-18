@@ -118,6 +118,68 @@ func TestDeleteChat_KillsTmuxSessionBeforeDeletingRow(t *testing.T) {
 	}
 }
 
+func TestDeleteChat_RejectsChatFromADifferentSession(t *testing.T) {
+	ctx := context.Background()
+	agentSessionID := "agent-5678"
+	operations := []string{}
+
+	srv := &Server{
+		agentChats: &deleteChatStoreFake{
+			operations: &operations,
+			chat: &models.AgentChat{
+				SessionID:      "session-OWNER",
+				AgentSessionID: agentSessionID,
+			},
+		},
+		chatStatus: status.NewTracker(),
+	}
+
+	// Caller authorized "session-OTHER" but the chat belongs to
+	// "session-OWNER": the daemon must refuse and must NOT delete anything.
+	_, err := srv.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
+		AgentSessionId: agentSessionID,
+		SessionId:      "session-OTHER",
+	}))
+	if err == nil {
+		t.Fatal("expected DeleteChat to reject cross-session delete, got nil error")
+	}
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("error code = %v, want NotFound", connect.CodeOf(err))
+	}
+	if len(operations) != 0 {
+		t.Fatalf("expected no delete/kill operations on rejection, got %#v", operations)
+	}
+}
+
+func TestDeleteChat_AllowsMatchingSessionScope(t *testing.T) {
+	ctx := context.Background()
+	agentSessionID := "agent-5678"
+	operations := []string{}
+
+	srv := &Server{
+		agentChats: &deleteChatStoreFake{
+			operations: &operations,
+			chat: &models.AgentChat{
+				SessionID:      "session-1",
+				AgentSessionID: agentSessionID,
+			},
+		},
+		chatStatus: status.NewTracker(),
+	}
+
+	_, err := srv.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
+		AgentSessionId: agentSessionID,
+		SessionId:      "session-1",
+	}))
+	if err != nil {
+		t.Fatalf("DeleteChat with matching scope: %v", err)
+	}
+	want := []string{"delete:" + agentSessionID}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("operations = %#v, want %#v", operations, want)
+	}
+}
+
 func TestDeleteChat_MissingChatIsIdempotentAndDoesNotKillTmux(t *testing.T) {
 	ctx := context.Background()
 	agentSessionID := "agent-missing"

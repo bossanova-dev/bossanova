@@ -31,7 +31,7 @@ type AttentionStatus struct {
 func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionStatus {
 	switch sess.State {
 	case machine.Blocked:
-		summary := "fix loop exhausted, needs human intervention"
+		summary := "blocked — needs human intervention"
 		if sess.BlockedReason != nil {
 			summary = *sess.BlockedReason
 		}

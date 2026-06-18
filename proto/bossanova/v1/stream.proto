@@ -45,6 +45,9 @@ message DaemonEvent {
     TokenRefresh token_refresh = 7;
     // Stdout/stderr chunk from an active AttachSession.
     SessionAttachChunk attach_chunk = 8;
+    // Streaming frame from an in-flight CreateSession (setup output, then a
+    // terminal created/error).
+    SessionCreateChunk create_chunk = 9;
   }
 }
 
@@ -83,6 +86,22 @@ message OrchestratorCommand {
     // bosso → daemon: bring a chat's tmux+claude back to life. Replies
     // with CommandResult{WakeChatResult} carrying the Outcome enum.
     WakeChatCommand wake_chat = 10;
+    // bosso → daemon: merge a session's PR. Replies CommandResult{Session}.
+    MergeSessionCommand merge = 11;
+    // bosso → daemon: archive a session. Replies CommandResult{Session}.
+    ArchiveSessionCommand archive = 12;
+    // bosso → daemon: record/resume a chat. Replies CommandResult{record_chat}.
+    RecordChatCommand record_chat = 13;
+    // bosso → daemon: delete a chat. Replies CommandResult{Ok} with no payload.
+    DeleteChatCommand delete_chat = 14;
+    // bosso → daemon: create a new session. The daemon replies with a STREAM of
+    // SessionCreateChunk events (live setup output, then a terminal
+    // created/error) correlated by command_id.
+    CreateSessionCommand create_session = 15;
+    // bosso → daemon: list the daemon's repos. Replies CommandResult{list_repos}.
+    ListReposCommand list_repos = 16;
+    // bosso → daemon: list the daemon's agents. Replies CommandResult{list_agents}.
+    ListAgentsCommand list_agents = 17;
   }
 }
 
@@ -206,6 +225,12 @@ message CommandResult {
     TransferConfirmed transfer_confirmed = 5;
     // WakeChat returns the Outcome enum + the persisted tmux session name.
     WakeChatResult wake_chat = 6;
+    // RecordChat returns the created/resumed chat.
+    ClaudeChat record_chat = 8;
+    // ListRepos returns the daemon's full Repo set (reuses daemon.proto type).
+    ListReposResponse list_repos = 9;
+    // ListAgents returns the daemon's installed agents (reuses daemon.proto type).
+    ListAgentsResponse list_agents = 10;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -221,6 +246,24 @@ message CommandResult {
 message TokenRefresh {
   // Newly-obtained WorkOS JWT.
   string access_token = 1;
+}
+
+// SessionCreateChunk is one streaming frame from an in-flight CreateSession,
+// correlated to the originating CreateSessionCommand by command_id. Mirrors
+// SessionAttachChunk. Terminal frame is `created` (success) or `error`.
+message SessionCreateChunk {
+  string command_id = 1;
+  oneof body {
+    string setup_output = 2;
+    Session created = 3;
+    CreateError error = 4;
+  }
+}
+
+// CreateError carries a human-readable failure reason for a CreateSession that
+// could not complete. It is the terminal frame on the error path.
+message CreateError {
+  string message = 1;
 }
 
 // SessionAttachChunk is a single streaming event from an active AttachSession.
@@ -265,6 +308,20 @@ message AttachSessionCommand {
   string session_id = 1;
 }
 
+// CreateSessionCommand asks the daemon to create a new session. The daemon
+// replies with a STREAM of SessionCreateChunk events (live setup output, then
+// a terminal created/error) correlated by command_id — mirroring
+// AttachSessionCommand/SessionAttachChunk. Fields are a wizard-relevant subset
+// of daemon.proto's CreateSessionRequest.
+message CreateSessionCommand {
+  string repo_id = 1;
+  string title = 2;
+  string plan = 3;
+  string base_branch = 4;
+  bool quick_chat = 5;
+  string agent_name = 6;
+}
+
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to
 // life. The daemon replies with CommandResult carrying a WakeChatResult
 // payload. Idempotent under concurrent calls (per-chat singleflight on
@@ -293,6 +350,44 @@ message WakeChatResult {
   // Stable machine-readable reason when outcome is OUTCOME_FRESH_FALLBACK.
   string reason = 3;
 }
+
+// MergeSessionCommand asks the daemon to merge a session's PR.
+// Replies with CommandResult carrying the updated Session.
+message MergeSessionCommand { string session_id = 1; }
+
+// ArchiveSessionCommand asks the daemon to archive a session.
+// Replies with CommandResult carrying the updated Session.
+message ArchiveSessionCommand { string session_id = 1; }
+
+// RecordChatCommand asks the daemon to record or resume a chat.
+// Replies with CommandResult carrying a ClaudeChat payload (record_chat = 8).
+message RecordChatCommand {
+  string session_id = 1;
+  string agent_session_id = 2;
+  string title = 3;
+  bool resume = 4;
+  string agent_name = 5;
+}
+
+// DeleteChatCommand asks the daemon to delete a chat.
+// Replies with CommandResult{ok:true} and no payload.
+message DeleteChatCommand {
+  string agent_session_id = 1;
+  // session_id scopes the delete to a session the caller owns. The daemon
+  // rejects the delete when the chat does not belong to this session, so the
+  // bosso-side authz scoping (FindSessionDaemon) is enforced end-to-end rather
+  // than being advisory. Empty session_id skips the check (backward compat for
+  // callers that predate scoping).
+  string session_id = 2;
+}
+
+// bosso → daemon: list the daemon's managed repos.
+// Replies with CommandResult carrying a ListReposResponse (list_repos = 9).
+message ListReposCommand {}
+
+// bosso → daemon: list the daemon's installed agents.
+// Replies with CommandResult carrying a ListAgentsResponse (list_agents = 10).
+message ListAgentsCommand {}
 
 // TransferSessionCommand asks a daemon to take part in a coordinated transfer
 // protocol (decision #14). Source daemon receives this first, pauses, emits a

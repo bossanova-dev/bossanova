@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/safego"
 )
@@ -48,8 +49,22 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchWebhook(ctx, cmdID, cmd.GetWebhook())
 	case *pb.OrchestratorCommand_Attach:
 		return c.dispatchAttach(ctx, cmdID, cmd.GetAttach(), outbound)
+	case *pb.OrchestratorCommand_CreateSession:
+		return c.dispatchCreate(ctx, cmdID, cmd.GetCreateSession(), outbound)
 	case *pb.OrchestratorCommand_WakeChat:
 		return c.dispatchWakeChat(ctx, cmdID, cmd.GetWakeChat())
+	case *pb.OrchestratorCommand_Merge:
+		return c.dispatchMerge(ctx, cmdID, cmd.GetMerge())
+	case *pb.OrchestratorCommand_Archive:
+		return c.dispatchArchive(ctx, cmdID, cmd.GetArchive())
+	case *pb.OrchestratorCommand_RecordChat:
+		return c.dispatchRecordChat(ctx, cmdID, cmd.GetRecordChat())
+	case *pb.OrchestratorCommand_DeleteChat:
+		return c.dispatchDeleteChat(ctx, cmdID, cmd.GetDeleteChat())
+	case *pb.OrchestratorCommand_ListRepos:
+		return c.dispatchListRepos(ctx, cmdID)
+	case *pb.OrchestratorCommand_ListAgents:
+		return c.dispatchListAgents(ctx, cmdID)
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -235,6 +250,42 @@ func (c *StreamClient) dispatchAttach(
 	return commandOK(cmdID, nil)
 }
 
+// dispatchCreate kicks off a streaming session creation and returns an
+// immediate CommandResult{Ok:true} handshake. The creator goroutine emits
+// SessionCreateChunk events (live setup output, then a terminal created/error)
+// onto outbound until creation finishes or ctx is cancelled. Each chunk is
+// already correlated via command_id by the creator. Mirrors dispatchAttach.
+func (c *StreamClient) dispatchCreate(
+	ctx context.Context,
+	cmdID string,
+	req *pb.CreateSessionCommand,
+	outbound chan<- *pb.DaemonEvent,
+) *pb.DaemonEvent {
+	if c.creator == nil {
+		return commandErr(cmdID, "creator not wired")
+	}
+
+	ch, err := c.creator.Create(ctx, req, cmdID)
+	if err != nil {
+		return commandErr(cmdID, fmt.Sprintf("create: %v", err))
+	}
+
+	// Pump chunks in a background goroutine so the command reader can keep
+	// processing subsequent commands while this creation streams.
+	safego.Go(c.logger, func() {
+		for chunk := range ch {
+			select {
+			case <-ctx.Done():
+				return
+			case outbound <- &pb.DaemonEvent{Event: &pb.DaemonEvent_CreateChunk{CreateChunk: chunk}}:
+			}
+		}
+	})
+
+	// Immediate ack — creation is in flight.
+	return commandOK(cmdID, nil)
+}
+
 // dispatchWakeChat routes the WakeChatCommand to the configured handler
 // and packages the (outcome, tmuxName) into a CommandResult{WakeChatResult}
 // payload. Failures attach the handler-classified ErrorCode so bosso can
@@ -259,6 +310,112 @@ func (c *StreamClient) dispatchWakeChat(ctx context.Context, cmdID string, req *
 					Reason:          reason,
 				},
 			},
+		},
+	}}
+}
+
+func (c *StreamClient) dispatchMerge(ctx context.Context, cmdID string, req *pb.MergeSessionCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.MergeSession(ctx, req.GetSessionId())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
+func (c *StreamClient) dispatchArchive(ctx context.Context, cmdID string, req *pb.ArchiveSessionCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	sess, err := c.commandHandler.ArchiveSession(ctx, req.GetSessionId())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, sess)
+}
+
+func (c *StreamClient) dispatchRecordChat(ctx context.Context, cmdID string, req *pb.RecordChatCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	chat, err := c.commandHandler.RecordChat(ctx, req.GetSessionId(), req.GetAgentSessionId(), req.GetTitle(), req.GetResume(), req.GetAgentName())
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+		Result: &pb.CommandResult{
+			CommandId: cmdID,
+			Ok:        true,
+			Payload:   &pb.CommandResult_RecordChat{RecordChat: chat},
+		},
+	}}
+}
+
+func (c *StreamClient) dispatchDeleteChat(ctx context.Context, cmdID string, req *pb.DeleteChatCommand) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	if err := c.commandHandler.DeleteChat(ctx, req.GetSessionId(), req.GetAgentSessionId()); err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return commandOK(cmdID, nil)
+}
+
+// classifyCommandError maps a connect-coded daemon error to the typed
+// CommandResult_ErrorCode so bosso can translate it back to the right
+// ConnectRPC code without parsing the human-readable message. The adapters
+// wrap the daemon's *connect.Error with %w, so connect.CodeOf recovers the
+// original code. Codes the reverse-stream protocol doesn't model collapse to
+// UNSPECIFIED, which bosso treats as CodeAborted. Mirrors the typed-code path
+// dispatchWakeChat already uses.
+func classifyCommandError(err error) pb.CommandResult_ErrorCode {
+	switch connect.CodeOf(err) {
+	case connect.CodeNotFound:
+		return pb.CommandResult_ERROR_CODE_NOT_FOUND
+	case connect.CodeFailedPrecondition:
+		return pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION
+	default:
+		return pb.CommandResult_ERROR_CODE_UNSPECIFIED
+	}
+}
+
+// dispatchListRepos routes a (non-session-scoped) ListReposCommand to the
+// handler and wraps the daemon's full Repo set in a CommandResult{list_repos}.
+func (c *StreamClient) dispatchListRepos(ctx context.Context, cmdID string) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	out, err := c.commandHandler.ListRepos(ctx)
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+		Result: &pb.CommandResult{
+			CommandId: cmdID,
+			Ok:        true,
+			Payload:   &pb.CommandResult_ListRepos{ListRepos: out},
+		},
+	}}
+}
+
+// dispatchListAgents routes a (non-session-scoped) ListAgentsCommand to the
+// handler and wraps the daemon's installed agents in a
+// CommandResult{list_agents}.
+func (c *StreamClient) dispatchListAgents(ctx context.Context, cmdID string) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	out, err := c.commandHandler.ListAgents(ctx)
+	if err != nil {
+		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	}
+	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+		Result: &pb.CommandResult{
+			CommandId: cmdID,
+			Ok:        true,
+			Payload:   &pb.CommandResult_ListAgents{ListAgents: out},
 		},
 	}}
 }

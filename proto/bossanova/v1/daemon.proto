@@ -450,6 +450,10 @@ message UpdateChatTitleResponse {}
 
 message DeleteChatRequest {
   string agent_session_id = 1;  // Agent session UUID
+  // session_id, when set, scopes the delete: the daemon rejects the request
+  // (NotFound) if the chat does not belong to this session. Empty skips the
+  // check for backward-compatible callers.
+  string session_id = 2;
 }
 
 message DeleteChatResponse {}

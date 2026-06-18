@@ -10,6 +10,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -221,8 +222,11 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 		AttemptCount:   &attemptCount,
 	}
 
+	// Reaching Blocked from these handlers means the fix loop exhausted its
+	// max attempts (the only path here is fixOrBlock). Use the shared reason
+	// so every genuine fix-loop exhaustion reads identically in the UI.
 	if sm.State() == machine.Blocked {
-		reason := sm.Context().BlockedReason
+		reason := sessionreason.FixLoopExhausted()
 		reasonPtr := &reason
 		update.BlockedReason = &reasonPtr
 	}
@@ -270,8 +274,11 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 		AttemptCount: &attemptCount,
 	}
 
+	// Reaching Blocked from these handlers means the fix loop exhausted its
+	// max attempts (the only path here is fixOrBlock). Use the shared reason
+	// so every genuine fix-loop exhaustion reads identically in the UI.
 	if sm.State() == machine.Blocked {
-		reason := sm.Context().BlockedReason
+		reason := sessionreason.FixLoopExhausted()
 		reasonPtr := &reason
 		update.BlockedReason = &reasonPtr
 	}
@@ -338,8 +345,11 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 		LastObservedReviewState: &reviewState,
 	}
 
+	// Reaching Blocked from these handlers means the fix loop exhausted its
+	// max attempts (the only path here is fixOrBlock). Use the shared reason
+	// so every genuine fix-loop exhaustion reads identically in the UI.
 	if sm.State() == machine.Blocked {
-		reason := sm.Context().BlockedReason
+		reason := sessionreason.FixLoopExhausted()
 		reasonPtr := &reason
 		update.BlockedReason = &reasonPtr
 	}

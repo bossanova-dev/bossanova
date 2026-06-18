@@ -9,6 +9,7 @@ import (
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	libvcs "github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -128,11 +129,19 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 	}
 
 	// Step 6: on failure outcomes (except deleted_no_changes, which removed
-	// the session entirely), transition to Blocked so the session surfaces
-	// as attention-needed in the UI. Finalizing itself is suppressed in
-	// ComputeAttentionStatus, so leaving a failed session there would hide
-	// the problem.
+	// the session entirely), persist a descriptive blocked reason and then
+	// transition to Blocked so the session surfaces as attention-needed in
+	// the UI. Finalizing itself is suppressed in ComputeAttentionStatus, so
+	// leaving a failed session there would hide the problem.
 	if needsAttention(result.Outcome) {
+		reason := sessionreason.FinalizeFailure(string(result.Outcome), result.Err)
+		reasonPtr := &reason
+		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+			BlockedReason: &reasonPtr,
+		}); err != nil {
+			l.logger.Error().Err(err).Str("session", sessionID).
+				Msg("failed to persist finalize blocked reason")
+		}
 		if _, err := l.sessions.UpdateStateConditional(
 			ctx, sessionID, int(machine.Blocked), int(machine.Finalizing),
 		); err != nil {
@@ -323,12 +332,32 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	// EnsurePR is idempotent: it no-ops when the session already has a PR,
 	// and otherwise pushes the branch and opens a draft PR.
 	if err := l.EnsurePR(ctx, session.ID); err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", session.ID).
-			Msg("finalize: EnsurePR failed for dirty cron output; preserving worktree")
-		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
-			Err:     err,
+		if attached, attachErr := l.attachBranchPRAfterEnsurePRError(ctx, session, repo); attached {
+			l.logger.Warn().Err(err).
+				Str("session", session.ID).
+				Msg("finalize: EnsurePR failed after branch PR became visible; continuing finalize chat")
+		} else {
+			if attachErr != nil {
+				err = fmt.Errorf("%w; attach branch PR after EnsurePR failure: %v", err, attachErr)
+			}
+			l.logger.Warn().Err(err).
+				Str("session", session.ID).
+				Msg("finalize: EnsurePR failed for dirty cron output; preserving worktree")
+			return &FinalizeResult{
+				Outcome: models.CronJobOutcomePRFailed,
+				Err:     err,
+			}
+		}
+	}
+
+	// Safety net: EnsurePR may have created the PR on GitHub but failed to
+	// persist the number (network drop after create, race with a concurrent
+	// opener, etc.). Re-fetch the session and, if PRNumber is still unset,
+	// fall back to an active branch-PR lookup so the UI shows "#N" not "-".
+	if cur, err := l.sessions.Get(ctx, session.ID); err == nil && cur.PRNumber == nil {
+		if _, attachErr := l.attachOpenPRForBranch(ctx, session.ID, cur, repo); attachErr != nil {
+			l.logger.Warn().Err(attachErr).Str("session", session.ID).
+				Msg("finalize: post-EnsurePR PR association failed; poller will retry")
 		}
 	}
 
@@ -343,6 +372,21 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	}
 
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
+}
+
+func (l *Lifecycle) attachBranchPRAfterEnsurePRError(ctx context.Context, session *models.Session, repo *models.Repo) (bool, error) {
+	cur, err := l.sessions.Get(ctx, session.ID)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Msg("finalize: failed to refresh session before post-EnsurePR branch PR lookup")
+		cur = session
+	}
+	if cur.PRNumber != nil {
+		return true, nil
+	}
+
+	return l.attachOpenPRForBranch(ctx, session.ID, cur, repo)
 }
 
 func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, session *models.Session) *FinalizeResult {
@@ -437,12 +481,31 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 		Str("branch", session.BranchName).
 		Msg("finalize: clean branch has committed work; creating PR")
 	if err := l.EnsurePR(ctx, session.ID); err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", session.ID).
-			Msg("finalize: EnsurePR failed for clean committed branch; preserving worktree")
-		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
-			Err:     err,
+		if attached, attachErr := l.attachBranchPRAfterEnsurePRError(ctx, session, repo); attached {
+			l.logger.Warn().Err(err).
+				Str("session", session.ID).
+				Msg("finalize: EnsurePR failed after branch PR became visible; continuing finalize chat")
+		} else {
+			if attachErr != nil {
+				err = fmt.Errorf("%w; attach branch PR after EnsurePR failure: %v", err, attachErr)
+			}
+			l.logger.Warn().Err(err).
+				Str("session", session.ID).
+				Msg("finalize: EnsurePR failed for clean committed branch; preserving worktree")
+			return &FinalizeResult{
+				Outcome: models.CronJobOutcomePRFailed,
+				Err:     err,
+			}
+		}
+	}
+
+	// Safety net: same race as the dirty-output path — EnsurePR may have
+	// opened the PR on GitHub but the PRNumber write was dropped. Re-fetch
+	// and attach if still unset so the UI always shows the PR number.
+	if cur, err := l.sessions.Get(ctx, session.ID); err == nil && cur.PRNumber == nil {
+		if _, attachErr := l.attachOpenPRForBranch(ctx, session.ID, cur, repo); attachErr != nil {
+			l.logger.Warn().Err(attachErr).Str("session", session.ID).
+				Msg("finalize: post-EnsurePR PR association failed; poller will retry")
 		}
 	}
 
@@ -589,13 +652,26 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 			}
 		}
 
-		if _, err := l.sessions.UpdateStateConditional(
+		transitioned, err := l.sessions.UpdateStateConditional(
 			ctx, sess.ID, int(machine.Blocked), int(machine.Finalizing),
-		); err != nil {
+		)
+		if err != nil {
 			l.logger.Error().Err(err).
 				Str("session", sess.ID).
 				Msg("recover: failed to transition stuck Finalizing session to Blocked")
 			continue
+		}
+		if !transitioned {
+			continue
+		}
+
+		recoverReason := sessionreason.FinalizeRecovered()
+		recoverReasonPtr := &recoverReason
+		if _, err := l.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
+			BlockedReason: &recoverReasonPtr,
+		}); err != nil {
+			l.logger.Error().Err(err).Str("session", sess.ID).
+				Msg("recover: failed to persist blocked reason")
 		}
 
 		l.logger.Warn().

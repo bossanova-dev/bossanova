@@ -9,6 +9,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 )
 
@@ -152,8 +153,8 @@ func TestDispatcherChecksFailedMaxAttempts(t *testing.T) {
 	if sess.State != machine.Blocked {
 		t.Errorf("state = %v, want Blocked", sess.State)
 	}
-	if sess.BlockedReason == nil {
-		t.Error("expected blocked reason to be set")
+	if sess.BlockedReason == nil || *sess.BlockedReason != sessionreason.FixLoopExhausted() {
+		t.Errorf("BlockedReason = %v, want %q", sess.BlockedReason, sessionreason.FixLoopExhausted())
 	}
 }
 

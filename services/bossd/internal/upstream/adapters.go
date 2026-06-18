@@ -127,6 +127,18 @@ type AutomationToggler interface {
 	SetAutomationEnabled(ctx context.Context, sessionID string, enabled bool) error
 }
 
+// SessionCommandServer is the slice of *server.Server the merge/archive/
+// record-chat/delete-chat command paths need. Narrow interface avoids an
+// import cycle with the server package (same pattern as ChatWaker).
+type SessionCommandServer interface {
+	MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error)
+	ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error)
+	RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error)
+	DeleteChat(context.Context, *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error)
+	ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error)
+	ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error)
+}
+
 // CommandHandlerAdapter implements SessionCommandHandler by delegating
 // to the daemon's existing lifecycle + session store + pause-is-a-flag
 // update path. Kept as a struct with explicit dependency fields so
@@ -137,6 +149,7 @@ type CommandHandlerAdapter struct {
 	Sessions     SessionReader
 	Automation   AutomationToggler
 	Waker        ChatWaker
+	Commands     SessionCommandServer
 	OnCompletion func(ctx context.Context, sessionID string) // optional, mirrors task orchestrator hook
 }
 
@@ -217,6 +230,98 @@ func (a *CommandHandlerAdapter) Resume(ctx context.Context, sessionID string) (*
 		return nil, nil
 	}
 	return a.Sessions.GetSession(ctx, sessionID)
+}
+
+// MergeSession implements SessionCommandHandler.MergeSession.
+func (a *CommandHandlerAdapter) MergeSession(ctx context.Context, sessionID string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("merge: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("merge: command server not wired")
+	}
+	resp, err := a.Commands.MergeSession(ctx, connect.NewRequest(&pb.MergeSessionRequest{Id: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("merge session: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
+// ArchiveSession implements SessionCommandHandler.ArchiveSession.
+func (a *CommandHandlerAdapter) ArchiveSession(ctx context.Context, sessionID string) (*pb.Session, error) {
+	if sessionID == "" {
+		return nil, errors.New("archive: session_id required")
+	}
+	if a.Commands == nil {
+		return nil, errors.New("archive: command server not wired")
+	}
+	resp, err := a.Commands.ArchiveSession(ctx, connect.NewRequest(&pb.ArchiveSessionRequest{Id: sessionID}))
+	if err != nil {
+		return nil, fmt.Errorf("archive session: %w", err)
+	}
+	return resp.Msg.GetSession(), nil
+}
+
+// RecordChat implements SessionCommandHandler.RecordChat.
+func (a *CommandHandlerAdapter) RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error) {
+	if a.Commands == nil {
+		return nil, errors.New("record_chat: command server not wired")
+	}
+	req := &pb.RecordChatRequest{
+		SessionId:      sessionID,
+		AgentSessionId: agentSessionID,
+		Title:          title,
+		Resume:         resume,
+	}
+	if agentName != "" {
+		req.AgentName = &agentName
+	}
+	resp, err := a.Commands.RecordChat(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, fmt.Errorf("record chat: %w", err)
+	}
+	return resp.Msg.GetChat(), nil
+}
+
+// DeleteChat implements SessionCommandHandler.DeleteChat.
+func (a *CommandHandlerAdapter) DeleteChat(ctx context.Context, sessionID, agentSessionID string) error {
+	if a.Commands == nil {
+		return errors.New("delete_chat: command server not wired")
+	}
+	_, err := a.Commands.DeleteChat(ctx, connect.NewRequest(&pb.DeleteChatRequest{
+		AgentSessionId: agentSessionID,
+		SessionId:      sessionID,
+	}))
+	if err != nil {
+		return fmt.Errorf("delete chat: %w", err)
+	}
+	return nil
+}
+
+// ListRepos implements SessionCommandHandler.ListRepos by delegating to the
+// daemon's ListRepos connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) ListRepos(ctx context.Context) (*pb.ListReposResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_repos: command server not wired")
+	}
+	resp, err := a.Commands.ListRepos(ctx, connect.NewRequest(&pb.ListReposRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("list repos: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListAgents implements SessionCommandHandler.ListAgents by delegating to the
+// daemon's ListAgents connect handler and unwrapping the response message.
+func (a *CommandHandlerAdapter) ListAgents(ctx context.Context) (*pb.ListAgentsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_agents: command server not wired")
+	}
+	resp, err := a.Commands.ListAgents(ctx, connect.NewRequest(&pb.ListAgentsRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	return resp.Msg, nil
 }
 
 // --- Webhook dispatcher (no-op stub) ---
@@ -400,6 +505,88 @@ func (a *SessionAttacherAdapter) Attach(ctx context.Context, sessionID, commandI
 		select {
 		case out <- endChunk:
 		case <-ctx.Done():
+		}
+	})
+
+	return out, nil
+}
+
+// --- Session creator (streaming CreateSession) ---
+
+// StreamCreateSessioner is the slice of *server.Server the creator adapter
+// needs. Narrow interface keeps upstream free of an import cycle with the
+// server package (same pattern as ChatWaker / SessionCommandServer). It is
+// satisfied by *server.Server.StreamCreateSession.
+type StreamCreateSessioner interface {
+	StreamCreateSession(ctx context.Context, msg *pb.CreateSessionRequest, emit func(*pb.CreateSessionResponse) error) error
+}
+
+// SessionCreatorAdapter implements SessionCreator by driving the daemon's
+// extracted StreamCreateSession core and translating each
+// *pb.CreateSessionResponse into a SessionCreateChunk correlated by
+// commandID. On a non-nil StreamCreateSession error it emits a terminal
+// CreateError chunk. The returned channel is always closed when done.
+type SessionCreatorAdapter struct {
+	Server StreamCreateSessioner
+	Logger zerolog.Logger
+}
+
+// Create implements SessionCreator.Create. It builds a CreateSessionRequest
+// from the command, runs StreamCreateSession in a goroutine, and pumps
+// translated chunks onto the returned channel.
+func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessionCommand, commandID string) (<-chan *pb.SessionCreateChunk, error) {
+	if a.Server == nil {
+		return nil, errors.New("creator: server not wired")
+	}
+
+	req := &pb.CreateSessionRequest{
+		RepoId:     cmd.GetRepoId(),
+		Title:      cmd.GetTitle(),
+		Plan:       cmd.GetPlan(),
+		BaseBranch: cmd.GetBaseBranch(),
+		QuickChat:  cmd.GetQuickChat(),
+	}
+	if name := cmd.GetAgentName(); name != "" {
+		req.AgentName = &name
+	}
+
+	out := make(chan *pb.SessionCreateChunk, 64)
+
+	// safego.Go returns a done channel; intentionally not awaited here — the
+	// goroutine owns the channel lifecycle and closes `out` when it finishes
+	// (mirrors SessionAttacherAdapter.Attach).
+	_ = safego.Go(a.Logger, func() {
+		defer close(out)
+
+		emit := func(resp *pb.CreateSessionResponse) error {
+			chunk := &pb.SessionCreateChunk{CommandId: commandID}
+			switch {
+			case resp.GetSetupOutput() != nil:
+				chunk.Body = &pb.SessionCreateChunk_SetupOutput{SetupOutput: resp.GetSetupOutput().GetText()}
+			case resp.GetSessionCreated() != nil:
+				chunk.Body = &pb.SessionCreateChunk_Created{Created: resp.GetSessionCreated().GetSession()}
+			default:
+				// Unknown response variant — skip rather than push an empty
+				// chunk.
+				return nil
+			}
+			select {
+			case out <- chunk:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		if err := a.Server.StreamCreateSession(ctx, req, emit); err != nil {
+			terminal := &pb.SessionCreateChunk{
+				CommandId: commandID,
+				Body:      &pb.SessionCreateChunk_Error{Error: &pb.CreateError{Message: err.Error()}},
+			}
+			select {
+			case out <- terminal:
+			case <-ctx.Done():
+			}
 		}
 	})
 

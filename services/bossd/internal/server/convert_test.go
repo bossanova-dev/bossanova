@@ -598,7 +598,7 @@ func TestCronJobStatus(t *testing.T) {
 			// after a failure outcome. STATUS must surface that as FAILED so
 			// the user sees the failure rather than a frozen RUNNING row.
 			name:  "session blocked, failure outcome -> FAILED",
-			job:   &models.CronJob{LastRunSessionID: &blockedSessID, LastRunOutcome: &chatSpawnFailed},
+			job:   &models.CronJob{LastRunSessionID: &blockedSessID, LastRunOutcome: &prFailed},
 			store: store,
 			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
 		},
@@ -634,20 +634,42 @@ func TestCronJobStatus(t *testing.T) {
 			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
 		},
 		{
-			name:  "outcome chat_spawn_failed -> FAILED",
+			// chat_spawn_failed: the PR was already created; janitorial, not a failed deliverable.
+			name:  "outcome chat_spawn_failed -> IDLE",
 			job:   &models.CronJob{LastRunOutcome: &chatSpawnFailed},
 			store: store,
-			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
 		},
 		{
-			name:  "outcome cleanup_failed -> FAILED",
+			// cleanup_failed: run completed but cleanup had an error; surfaces as attention, not FAILED.
+			name:  "outcome cleanup_failed -> IDLE",
 			job:   &models.CronJob{LastRunOutcome: &cleanupFailed},
 			store: store,
-			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
 		},
 		{
 			name:  "outcome fire_failed -> FAILED",
 			job:   &models.CronJob{LastRunOutcome: &fireFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
+		},
+		// chat_spawn_failed and cleanup_failed are post-PR janitorial steps;
+		// they surface as session attention, not cron FAILED status.
+		{
+			name:  "archived, chat_spawn_failed (PR was created) -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &archivedSessID, LastRunOutcome: &chatSpawnFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "archived, cleanup_failed -> IDLE",
+			job:   &models.CronJob{LastRunSessionID: &archivedSessID, LastRunOutcome: &cleanupFailed},
+			store: store,
+			want:  pb.CronJobStatus_CRON_JOB_STATUS_IDLE,
+		},
+		{
+			name:  "archived, pr_failed -> FAILED (still a real failure)",
+			job:   &models.CronJob{LastRunSessionID: &archivedSessID, LastRunOutcome: &prFailed},
 			store: store,
 			want:  pb.CronJobStatus_CRON_JOB_STATUS_FAILED,
 		},

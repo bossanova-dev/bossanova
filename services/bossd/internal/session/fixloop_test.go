@@ -11,6 +11,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
@@ -1128,5 +1129,50 @@ func TestDispatcherReviewSubmittedMaxAttempts(t *testing.T) {
 	sess := sessions.sessions["sess-1"]
 	if sess.State != machine.Blocked {
 		t.Errorf("state = %v, want Blocked", sess.State)
+	}
+}
+
+// TestFixLoopExhaustedBlockedReason verifies that when a fix attempt drives a
+// session to Blocked because MaxAttempts is reached, the persisted BlockedReason
+// is exactly sessionreason.FixLoopExhausted() — not the generic machine string.
+func TestFixLoopExhaustedBlockedReason(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	attempts := newMockAttemptStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	cr := newMockAgentRunner()
+	cr.startErr = errors.New("agent unavailable")
+	wt := &mockWorktreeManager{}
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	// AttemptCount == MaxAttempts-1 so the next FixFailed fires retryOrBlock → Blocked.
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		State:        machine.FixingChecks,
+		AttemptCount: machine.MaxAttempts - 1,
+		WorktreePath: "/tmp/worktrees/test-repo/test",
+		BranchName:   "test",
+		BaseBranch:   "main",
+	}
+
+	fl := NewFixLoop(sessions, attempts, repos, vp, cr, wt, logger)
+
+	failure := vcs.CheckConclusionFailure
+	_ = fl.HandleCheckFailure(ctx, "sess-1", []vcs.CheckResult{
+		{ID: "ci/lint", Name: "lint", Status: vcs.CheckStatusCompleted, Conclusion: &failure},
+	})
+
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.Blocked {
+		t.Fatalf("want Blocked, got %v", sess.State)
+	}
+	if sess.BlockedReason == nil || *sess.BlockedReason != sessionreason.FixLoopExhausted() {
+		t.Fatalf("BlockedReason = %v, want %q", sess.BlockedReason, sessionreason.FixLoopExhausted())
 	}
 }

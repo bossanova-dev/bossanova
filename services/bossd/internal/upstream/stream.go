@@ -264,6 +264,21 @@ type SessionCommandHandler interface {
 	// proxy maps it back to the right ConnectRPC code without parsing
 	// the human-readable error string).
 	WakeChat(ctx context.Context, agentSessionID string, forceFresh bool) (outcome pb.WakeChatResult_Outcome, tmuxName string, reason string, errorCode pb.CommandResult_ErrorCode, err error)
+	MergeSession(ctx context.Context, sessionID string) (*pb.Session, error)
+	ArchiveSession(ctx context.Context, sessionID string) (*pb.Session, error)
+	RecordChat(ctx context.Context, sessionID, agentSessionID, title string, resume bool, agentName string) (*pb.ClaudeChat, error)
+	// DeleteChat removes a chat by agent_session_id. sessionID, when non-empty,
+	// scopes the delete: the handler rejects the request if the chat does not
+	// belong to that session (so bosso's session-level authz is enforced
+	// end-to-end, not advisory).
+	DeleteChat(ctx context.Context, sessionID, agentSessionID string) error
+	// ListRepos returns the daemon's full Repo set. Not session-scoped —
+	// used by bosso's repo-first new-session wizard to aggregate repos
+	// across every live daemon.
+	ListRepos(ctx context.Context) (*pb.ListReposResponse, error)
+	// ListAgents returns the daemon's installed agents. Not session-scoped —
+	// bosso proxies a per-daemon agent listing for the wizard.
+	ListAgents(ctx context.Context) (*pb.ListAgentsResponse, error)
 }
 
 // WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon
@@ -306,6 +321,15 @@ type TransferHandler interface {
 // closing the channel when the attach ends.
 type SessionAttacher interface {
 	Attach(ctx context.Context, sessionID, commandID string) (<-chan *pb.SessionAttachChunk, error)
+}
+
+// SessionCreator kicks off a streaming session creation for the given
+// command and streams SessionCreateChunk events on the returned channel until
+// creation completes (terminal `created`) or fails (terminal `error`).
+// Implementations are responsible for closing the channel when done. Mirrors
+// SessionAttacher.
+type SessionCreator interface {
+	Create(ctx context.Context, cmd *pb.CreateSessionCommand, commandID string) (<-chan *pb.SessionCreateChunk, error)
 }
 
 // StreamStores bundles the SQLite-backed readers the snapshot builder
@@ -422,6 +446,7 @@ type StreamClient struct {
 	transferHandler  TransferHandler
 	webhooks         WebhookCommandDispatcher
 	attacher         SessionAttacher
+	creator          SessionCreator
 	reRegister       ReRegisterFunc
 	authState        *AuthState
 	daemonID         string
@@ -475,6 +500,10 @@ type StreamClientConfig struct {
 	TransferHandler TransferHandler
 	Webhooks        WebhookCommandDispatcher
 	Attacher        SessionAttacher
+	// Creator, when set, handles streaming CreateSessionCommands from bosso.
+	// Wired the same way as Attacher. Nil is safe — the dispatcher returns a
+	// "creator not wired" CommandResult.
+	Creator SessionCreator
 
 	// ReRegister, when set, is called by the Run loop after a stream
 	// attempt fails with CodeUnauthenticated. On success the returned
@@ -553,6 +582,7 @@ func NewStreamClient(cfg StreamClientConfig) *StreamClient {
 		transferHandler:  cfg.TransferHandler,
 		webhooks:         cfg.Webhooks,
 		attacher:         cfg.Attacher,
+		creator:          cfg.Creator,
 		reRegister:       cfg.ReRegister,
 		authState:        cfg.AuthState,
 		daemonID:         cfg.DaemonID,

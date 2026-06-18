@@ -238,14 +238,21 @@ func cronStatusInactiveState(st machine.State) bool {
 }
 
 // isCronFailureOutcome reports whether a recorded outcome represents a
-// terminal failure (FAILED status). Successful and idle outcomes
-// (pr_created, deleted_no_changes, pr_skipped_no_github, failed_recovered)
-// fall through to IDLE.
+// genuinely-failed deliverable (FAILED status). Only outcomes where no useful
+// artefact was produced are red:
+//   - pr_failed: the PR creation step itself failed
+//   - fire_failed: the cron fire never got started
+//
+// The following outcomes fall through to IDLE instead, because the run either
+// succeeded or left a PR behind; any janitorial issue surfaces as a session
+// attention warning rather than cron FAILED status:
+//   - pr_created, deleted_no_changes, failed_recovered — successful outcomes
+//   - chat_spawn_failed — the PR was already created before the chat spawn step
+//   - cleanup_failed — the run completed but the cleanup step had an error
+//   - pr_skipped_no_github — no GitHub integration, not a failure
 func isCronFailureOutcome(o models.CronJobOutcome) bool {
 	switch o {
 	case models.CronJobOutcomePRFailed,
-		models.CronJobOutcomeChatSpawnFailed,
-		models.CronJobOutcomeCleanupFailed,
 		models.CronJobOutcomeFireFailed:
 		return true
 	default:

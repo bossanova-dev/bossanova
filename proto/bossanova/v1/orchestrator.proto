@@ -33,12 +33,29 @@ service OrchestratorService {
   rpc ProxyListSessions(ProxyListSessionsRequest) returns (ProxyListSessionsResponse);
   rpc ProxyGetSession(ProxyGetSessionRequest) returns (ProxyGetSessionResponse);
   rpc ProxyAttachSession(ProxyAttachSessionRequest) returns (stream ProxyAttachSessionResponse);
+  // Creates a new session on a chosen daemon, streaming setup output as it
+  // runs and terminating with the created Session or an in-band error.
+  // Routes to the daemon named by daemon_id (no session exists yet).
+  rpc ProxyCreateSession(ProxyCreateSessionRequest) returns (stream ProxyCreateSessionResponse);
   rpc ProxyStopSession(ProxyStopSessionRequest) returns (ProxyStopSessionResponse);
   rpc ProxyPauseSession(ProxyPauseSessionRequest) returns (ProxyPauseSessionResponse);
   rpc ProxyResumeSession(ProxyResumeSessionRequest) returns (ProxyResumeSessionResponse);
   // Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
   // reverse stream and waits for CommandResult{WakeChatResult}.
   rpc ProxyWakeChat(ProxyWakeChatRequest) returns (ProxyWakeChatResponse);
+  // Merges a session's PR via the owning daemon's reverse stream.
+  rpc ProxyMergeSession(ProxyMergeSessionRequest) returns (ProxyMergeSessionResponse);
+  // Archives a session via the owning daemon's reverse stream.
+  rpc ProxyArchiveSession(ProxyArchiveSessionRequest) returns (ProxyArchiveSessionResponse);
+  // Records or resumes a chat via the owning daemon's reverse stream.
+  rpc ProxyRecordChat(ProxyRecordChatRequest) returns (ProxyRecordChatResponse);
+  // Deletes a chat via the owning daemon's reverse stream.
+  rpc ProxyDeleteChat(ProxyDeleteChatRequest) returns (ProxyDeleteChatResponse);
+  // Aggregates repos across all of the caller's live daemons, deduped by
+  // origin URL, with the serving daemon IDs unioned per repo.
+  rpc ProxyListReposAggregated(ProxyListReposAggregatedRequest) returns (ProxyListReposAggregatedResponse);
+  // Lists the installed agents on a single named daemon via its reverse stream.
+  rpc ProxyListAgents(ProxyListAgentsRequest) returns (ProxyListAgentsResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -190,6 +207,29 @@ message ProxyAttachSessionResponse {
   }
 }
 
+// ProxyCreateSessionRequest names the daemon to create the session on plus
+// the creation parameters (mirrors CreateSessionCommand in stream.proto).
+message ProxyCreateSessionRequest {
+  string daemon_id = 1;
+  string repo_id = 2;
+  string title = 3;
+  string plan = 4;
+  string base_branch = 5;
+  string agent_name = 6;
+  bool quick_chat = 7;
+}
+
+// ProxyCreateSessionResponse is streamed from orchestrator to the client as
+// creation progresses: setup output lines, then a terminal created Session or
+// an in-band error message.
+message ProxyCreateSessionResponse {
+  oneof body {
+    string setup_output = 1;
+    Session created = 2;
+    string error = 3;
+  }
+}
+
 message ProxyStopSessionRequest {
   string id = 1;
 }
@@ -232,6 +272,48 @@ message ProxyWakeChatResponse {
   string tmux_session_name = 2;
   // Stable machine-readable reason when outcome is OUTCOME_FRESH_FALLBACK.
   string reason = 3;
+}
+
+message ProxyMergeSessionRequest { string id = 1; }
+message ProxyMergeSessionResponse { Session session = 1; }
+
+message ProxyArchiveSessionRequest { string id = 1; }
+message ProxyArchiveSessionResponse { Session session = 1; }
+
+message ProxyRecordChatRequest {
+  string session_id = 1;
+  string agent_session_id = 2;
+  string title = 3;
+  bool resume = 4;
+  string agent_name = 5;
+}
+message ProxyRecordChatResponse { ClaudeChat chat = 1; }
+
+message ProxyDeleteChatRequest {
+  string session_id = 1;       // for authz scoping (mirror ProxyWakeChat)
+  string agent_session_id = 2;
+}
+message ProxyDeleteChatResponse {}
+
+// AggregatedRepo is one unique repo (by origin URL) plus every live daemon
+// that serves it. daemon_ids is the union across all of the caller's daemons.
+message AggregatedRepo {
+  Repo repo = 1;
+  repeated string daemon_ids = 2;
+}
+
+message ProxyListReposAggregatedRequest {}
+
+message ProxyListReposAggregatedResponse {
+  repeated AggregatedRepo repos = 1;
+}
+
+message ProxyListAgentsRequest {
+  string daemon_id = 1;
+}
+
+message ProxyListAgentsResponse {
+  repeated AgentInfo agents = 1;
 }
 
 // ProxyStreamChatsRequest selects the session whose chat list (and per-chat

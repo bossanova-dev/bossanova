@@ -839,6 +839,7 @@ func run(opts runOpts) error {
 	var snapshotPublisher func(context.Context)
 	var authNotifier server.AuthNotifier
 	var cmdHandlerStream *upstream.CommandHandlerAdapter
+	var creatorAdapter *upstream.SessionCreatorAdapter
 	webhookEventCh := make(chan session.SessionEvent, 64)
 	emitter := session.NewSessionEventEmitter(&displayPollerSessionLookup{sessions: sessions, repos: repos}, webhookEventCh, log.Logger)
 	_, upstreamURLExplicit := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
@@ -1080,6 +1081,10 @@ func run(opts runOpts) error {
 		// clears it after a fresh `boss login`. Without this, the
 		// daemon tight-loops on a dead credential indefinitely.
 		authState := upstream.NewAuthState()
+		// creatorAdapter drives the daemon's StreamCreateSession core for
+		// reverse-stream CreateSessionCommands. Server is wired post-hoc
+		// (after srv.New, below) — same pattern as cmdHandlerStream.Waker.
+		creatorAdapter = &upstream.SessionCreatorAdapter{Logger: log.Logger}
 		streamClient = upstream.NewStreamClient(upstream.StreamClientConfig{
 			Client:       client,
 			AuthToken:    authToken,          // WorkOS JWT → Authorization header
@@ -1097,6 +1102,7 @@ func run(opts runOpts) error {
 			CommandHandler: cmdHandler,
 			Webhooks:       upstream.NewWebhookDispatcherWithEmitterAndReviewComments(displayPoller, emitter, ghProvider, log.Logger),
 			Attacher:       attacher,
+			Creator:        creatorAdapter,
 			ReRegister:     reRegister,
 			AuthState:      authState,
 			Logger:         log.Logger,
@@ -1196,6 +1202,13 @@ func run(opts runOpts) error {
 	// instance the StreamClient's interface dispatches through.
 	if cmdHandlerStream != nil {
 		cmdHandlerStream.Waker = srv
+		cmdHandlerStream.Commands = srv
+	}
+	// Wire the creator adapter's server now that srv exists (it was passed
+	// into the StreamClient config above as a pointer). *server.Server
+	// satisfies upstream.StreamCreateSessioner via StreamCreateSession.
+	if creatorAdapter != nil {
+		creatorAdapter.Server = srv
 	}
 
 	// Start poller and dispatcher.

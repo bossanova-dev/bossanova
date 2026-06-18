@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -148,11 +149,14 @@ func (m *CronFormModel) buildForm() {
 		m.fd.agentName = cronDisplayAgentName(m.job.AgentName)
 		m.fdPopulated = true
 	}
-	// Build repo select options.
+	// Build repo select options, sorted alphabetically by display name.
 	repoOpts := make([]huh.Option[string], len(m.repos))
 	for i, r := range m.repos {
 		repoOpts[i] = huh.NewOption(r.DisplayName, r.Id)
 	}
+	sort.SliceStable(repoOpts, func(i, j int) bool {
+		return strings.ToLower(repoOpts[i].Key) < strings.ToLower(repoOpts[j].Key)
+	})
 	if len(repoOpts) == 0 {
 		// Fallback: single blank option so the form doesn't panic.
 		repoOpts = []huh.Option[string]{huh.NewOption("(no repos)", "")}

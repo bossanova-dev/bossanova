@@ -913,6 +913,75 @@ func TestReconcilePRAssociations_EmptyBranchNameSkipped(t *testing.T) {
 	}
 }
 
+// TestPRsForRepo_ReusesDefaultCacheWithinTTL verifies that a second prsForRepo
+// call within the default TTL window reuses the cached PR list and does not
+// call ListOpenPRs a second time. The expected TTL is pinned via the package
+// constant defaultPRAssociationCacheTTL so any change to that constant is
+// immediately reflected here.
+func TestPRsForRepo_ReusesDefaultCacheWithinTTL(t *testing.T) {
+	ctx := context.Background()
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo",
+	}
+
+	sessions.addSession(&models.Session{
+		ID:         "sess-a",
+		RepoID:     "repo-1",
+		BranchName: "feature-a",
+		State:      machine.AwaitingChecks,
+	})
+	sessions.addSession(&models.Session{
+		ID:         "sess-b",
+		RepoID:     "repo-1",
+		BranchName: "feature-b",
+		State:      machine.AwaitingChecks,
+	})
+
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 77, HeadBranch: "feature-a", State: vcs.PRStateOpen},
+	}
+
+	// Use a fixed clock so the TTL boundary is deterministic. Advance time
+	// to just before the TTL expires — the cache should still be warm.
+	t0 := time.Date(2026, 6, 18, 10, 0, 0, 0, time.UTC)
+	current := t0
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop())
+	resolver.SetNowForTest(func() time.Time { return current })
+
+	// First reconcile populates the cache.
+	updated, err := resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("first Reconcile: %v", err)
+	}
+	if updated != 1 {
+		t.Fatalf("first Reconcile: updated = %d, want 1", updated)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("first Reconcile: ListOpenPRs calls = %d, want 1", len(provider.listOpenCalls))
+	}
+
+	// Advance time to just inside the TTL window.
+	current = t0.Add(defaultPRAssociationCacheTTL - time.Second)
+
+	// Second reconcile must reuse the cache — ListOpenPRs must not be called again.
+	updated, err = resolver.Reconcile(ctx)
+	if err != nil {
+		t.Fatalf("second Reconcile (within TTL): %v", err)
+	}
+	if updated != 0 {
+		t.Fatalf("second Reconcile (within TTL): updated = %d, want 0 (already associated)", updated)
+	}
+	if len(provider.listOpenCalls) != 1 {
+		t.Fatalf("second Reconcile (within TTL=%s): ListOpenPRs calls = %d, want 1 (cache hit)",
+			defaultPRAssociationCacheTTL, len(provider.listOpenCalls))
+	}
+}
+
 func TestConstructPRURL(t *testing.T) {
 	tests := []struct {
 		name      string

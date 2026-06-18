@@ -3292,8 +3292,12 @@ func (*UpdateChatTitleResponse) Descriptor() ([]byte, []int) {
 type DeleteChatRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	AgentSessionId string                 `protobuf:"bytes,1,opt,name=agent_session_id,json=agentSessionId,proto3" json:"agent_session_id,omitempty"` // Agent session UUID
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// session_id, when set, scopes the delete: the daemon rejects the request
+	// (NotFound) if the chat does not belong to this session. Empty skips the
+	// check for backward-compatible callers.
+	SessionId     string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeleteChatRequest) Reset() {
@@ -3329,6 +3333,13 @@ func (*DeleteChatRequest) Descriptor() ([]byte, []int) {
 func (x *DeleteChatRequest) GetAgentSessionId() string {
 	if x != nil {
 		return x.AgentSessionId
+	}
+	return ""
+}
+
+func (x *DeleteChatRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
 	}
 	return ""
 }
@@ -5647,9 +5658,11 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x16UpdateChatTitleRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"\x19\n" +
-	"\x17UpdateChatTitleResponse\"=\n" +
+	"\x17UpdateChatTitleResponse\"\\\n" +
 	"\x11DeleteChatRequest\x12(\n" +
-	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\"\x14\n" +
+	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x02 \x01(\tR\tsessionId\"\x14\n" +
 	"\x12DeleteChatResponse\"\\\n" +
 	"\x0fWakeChatRequest\x12(\n" +
 	"\x10agent_session_id\x18\x01 \x01(\tR\x0eagentSessionId\x12\x1f\n" +

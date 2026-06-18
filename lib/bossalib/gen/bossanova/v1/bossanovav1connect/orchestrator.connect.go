@@ -57,6 +57,9 @@ const (
 	// OrchestratorServiceProxyAttachSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyAttachSession RPC.
 	OrchestratorServiceProxyAttachSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyAttachSession"
+	// OrchestratorServiceProxyCreateSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyCreateSession RPC.
+	OrchestratorServiceProxyCreateSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyCreateSession"
 	// OrchestratorServiceProxyStopSessionProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStopSession RPC.
 	OrchestratorServiceProxyStopSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyStopSession"
@@ -69,6 +72,24 @@ const (
 	// OrchestratorServiceProxyWakeChatProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyWakeChat RPC.
 	OrchestratorServiceProxyWakeChatProcedure = "/bossanova.v1.OrchestratorService/ProxyWakeChat"
+	// OrchestratorServiceProxyMergeSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyMergeSession RPC.
+	OrchestratorServiceProxyMergeSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyMergeSession"
+	// OrchestratorServiceProxyArchiveSessionProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyArchiveSession RPC.
+	OrchestratorServiceProxyArchiveSessionProcedure = "/bossanova.v1.OrchestratorService/ProxyArchiveSession"
+	// OrchestratorServiceProxyRecordChatProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyRecordChat RPC.
+	OrchestratorServiceProxyRecordChatProcedure = "/bossanova.v1.OrchestratorService/ProxyRecordChat"
+	// OrchestratorServiceProxyDeleteChatProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyDeleteChat RPC.
+	OrchestratorServiceProxyDeleteChatProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteChat"
+	// OrchestratorServiceProxyListReposAggregatedProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListReposAggregated RPC.
+	OrchestratorServiceProxyListReposAggregatedProcedure = "/bossanova.v1.OrchestratorService/ProxyListReposAggregated"
+	// OrchestratorServiceProxyListAgentsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListAgents RPC.
+	OrchestratorServiceProxyListAgentsProcedure = "/bossanova.v1.OrchestratorService/ProxyListAgents"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -137,12 +158,29 @@ type OrchestratorServiceClient interface {
 	ProxyListSessions(context.Context, *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest]) (*connect.ServerStreamForClient[v1.ProxyAttachSessionResponse], error)
+	// Creates a new session on a chosen daemon, streaming setup output as it
+	// runs and terminating with the created Session or an in-band error.
+	// Routes to the daemon named by daemon_id (no session exists yet).
+	ProxyCreateSession(context.Context, *connect.Request[v1.ProxyCreateSessionRequest]) (*connect.ServerStreamForClient[v1.ProxyCreateSessionResponse], error)
 	ProxyStopSession(context.Context, *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error)
 	ProxyPauseSession(context.Context, *connect.Request[v1.ProxyPauseSessionRequest]) (*connect.Response[v1.ProxyPauseSessionResponse], error)
 	ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error)
 	// Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
 	// reverse stream and waits for CommandResult{WakeChatResult}.
 	ProxyWakeChat(context.Context, *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error)
+	// Merges a session's PR via the owning daemon's reverse stream.
+	ProxyMergeSession(context.Context, *connect.Request[v1.ProxyMergeSessionRequest]) (*connect.Response[v1.ProxyMergeSessionResponse], error)
+	// Archives a session via the owning daemon's reverse stream.
+	ProxyArchiveSession(context.Context, *connect.Request[v1.ProxyArchiveSessionRequest]) (*connect.Response[v1.ProxyArchiveSessionResponse], error)
+	// Records or resumes a chat via the owning daemon's reverse stream.
+	ProxyRecordChat(context.Context, *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error)
+	// Deletes a chat via the owning daemon's reverse stream.
+	ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error)
+	// Aggregates repos across all of the caller's live daemons, deduped by
+	// origin URL, with the serving daemon IDs unioned per repo.
+	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
+	// Lists the installed agents on a single named daemon via its reverse stream.
+	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -244,6 +282,12 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAttachSession")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyCreateSession: connect.NewClient[v1.ProxyCreateSessionRequest, v1.ProxyCreateSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyCreateSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateSession")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStopSession: connect.NewClient[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStopSessionProcedure,
@@ -266,6 +310,42 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			httpClient,
 			baseURL+OrchestratorServiceProxyWakeChatProcedure,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyWakeChat")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyMergeSession: connect.NewClient[v1.ProxyMergeSessionRequest, v1.ProxyMergeSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyMergeSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyMergeSession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyArchiveSession: connect.NewClient[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyArchiveSessionProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyArchiveSession")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyRecordChat: connect.NewClient[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyRecordChatProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRecordChat")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyDeleteChat: connect.NewClient[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyDeleteChatProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListReposAggregated: connect.NewClient[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListReposAggregatedProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListReposAggregated")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListAgents: connect.NewClient[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListAgentsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgents")),
 			connect.WithClientOptions(opts...),
 		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
@@ -371,10 +451,17 @@ type orchestratorServiceClient struct {
 	proxyListSessions          *connect.Client[v1.ProxyListSessionsRequest, v1.ProxyListSessionsResponse]
 	proxyGetSession            *connect.Client[v1.ProxyGetSessionRequest, v1.ProxyGetSessionResponse]
 	proxyAttachSession         *connect.Client[v1.ProxyAttachSessionRequest, v1.ProxyAttachSessionResponse]
+	proxyCreateSession         *connect.Client[v1.ProxyCreateSessionRequest, v1.ProxyCreateSessionResponse]
 	proxyStopSession           *connect.Client[v1.ProxyStopSessionRequest, v1.ProxyStopSessionResponse]
 	proxyPauseSession          *connect.Client[v1.ProxyPauseSessionRequest, v1.ProxyPauseSessionResponse]
 	proxyResumeSession         *connect.Client[v1.ProxyResumeSessionRequest, v1.ProxyResumeSessionResponse]
 	proxyWakeChat              *connect.Client[v1.ProxyWakeChatRequest, v1.ProxyWakeChatResponse]
+	proxyMergeSession          *connect.Client[v1.ProxyMergeSessionRequest, v1.ProxyMergeSessionResponse]
+	proxyArchiveSession        *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
+	proxyRecordChat            *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
+	proxyDeleteChat            *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
+	proxyListReposAggregated   *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
+	proxyListAgents            *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
 	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -432,6 +519,11 @@ func (c *orchestratorServiceClient) ProxyAttachSession(ctx context.Context, req 
 	return c.proxyAttachSession.CallServerStream(ctx, req)
 }
 
+// ProxyCreateSession calls bossanova.v1.OrchestratorService.ProxyCreateSession.
+func (c *orchestratorServiceClient) ProxyCreateSession(ctx context.Context, req *connect.Request[v1.ProxyCreateSessionRequest]) (*connect.ServerStreamForClient[v1.ProxyCreateSessionResponse], error) {
+	return c.proxyCreateSession.CallServerStream(ctx, req)
+}
+
 // ProxyStopSession calls bossanova.v1.OrchestratorService.ProxyStopSession.
 func (c *orchestratorServiceClient) ProxyStopSession(ctx context.Context, req *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error) {
 	return c.proxyStopSession.CallUnary(ctx, req)
@@ -450,6 +542,36 @@ func (c *orchestratorServiceClient) ProxyResumeSession(ctx context.Context, req 
 // ProxyWakeChat calls bossanova.v1.OrchestratorService.ProxyWakeChat.
 func (c *orchestratorServiceClient) ProxyWakeChat(ctx context.Context, req *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error) {
 	return c.proxyWakeChat.CallUnary(ctx, req)
+}
+
+// ProxyMergeSession calls bossanova.v1.OrchestratorService.ProxyMergeSession.
+func (c *orchestratorServiceClient) ProxyMergeSession(ctx context.Context, req *connect.Request[v1.ProxyMergeSessionRequest]) (*connect.Response[v1.ProxyMergeSessionResponse], error) {
+	return c.proxyMergeSession.CallUnary(ctx, req)
+}
+
+// ProxyArchiveSession calls bossanova.v1.OrchestratorService.ProxyArchiveSession.
+func (c *orchestratorServiceClient) ProxyArchiveSession(ctx context.Context, req *connect.Request[v1.ProxyArchiveSessionRequest]) (*connect.Response[v1.ProxyArchiveSessionResponse], error) {
+	return c.proxyArchiveSession.CallUnary(ctx, req)
+}
+
+// ProxyRecordChat calls bossanova.v1.OrchestratorService.ProxyRecordChat.
+func (c *orchestratorServiceClient) ProxyRecordChat(ctx context.Context, req *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error) {
+	return c.proxyRecordChat.CallUnary(ctx, req)
+}
+
+// ProxyDeleteChat calls bossanova.v1.OrchestratorService.ProxyDeleteChat.
+func (c *orchestratorServiceClient) ProxyDeleteChat(ctx context.Context, req *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error) {
+	return c.proxyDeleteChat.CallUnary(ctx, req)
+}
+
+// ProxyListReposAggregated calls bossanova.v1.OrchestratorService.ProxyListReposAggregated.
+func (c *orchestratorServiceClient) ProxyListReposAggregated(ctx context.Context, req *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error) {
+	return c.proxyListReposAggregated.CallUnary(ctx, req)
+}
+
+// ProxyListAgents calls bossanova.v1.OrchestratorService.ProxyListAgents.
+func (c *orchestratorServiceClient) ProxyListAgents(ctx context.Context, req *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error) {
+	return c.proxyListAgents.CallUnary(ctx, req)
 }
 
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
@@ -548,12 +670,29 @@ type OrchestratorServiceHandler interface {
 	ProxyListSessions(context.Context, *connect.Request[v1.ProxyListSessionsRequest]) (*connect.Response[v1.ProxyListSessionsResponse], error)
 	ProxyGetSession(context.Context, *connect.Request[v1.ProxyGetSessionRequest]) (*connect.Response[v1.ProxyGetSessionResponse], error)
 	ProxyAttachSession(context.Context, *connect.Request[v1.ProxyAttachSessionRequest], *connect.ServerStream[v1.ProxyAttachSessionResponse]) error
+	// Creates a new session on a chosen daemon, streaming setup output as it
+	// runs and terminating with the created Session or an in-band error.
+	// Routes to the daemon named by daemon_id (no session exists yet).
+	ProxyCreateSession(context.Context, *connect.Request[v1.ProxyCreateSessionRequest], *connect.ServerStream[v1.ProxyCreateSessionResponse]) error
 	ProxyStopSession(context.Context, *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error)
 	ProxyPauseSession(context.Context, *connect.Request[v1.ProxyPauseSessionRequest]) (*connect.Response[v1.ProxyPauseSessionResponse], error)
 	ProxyResumeSession(context.Context, *connect.Request[v1.ProxyResumeSessionRequest]) (*connect.Response[v1.ProxyResumeSessionResponse], error)
 	// Wakes a stopped chat's tmux+claude. Routes to the owning daemon via the
 	// reverse stream and waits for CommandResult{WakeChatResult}.
 	ProxyWakeChat(context.Context, *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error)
+	// Merges a session's PR via the owning daemon's reverse stream.
+	ProxyMergeSession(context.Context, *connect.Request[v1.ProxyMergeSessionRequest]) (*connect.Response[v1.ProxyMergeSessionResponse], error)
+	// Archives a session via the owning daemon's reverse stream.
+	ProxyArchiveSession(context.Context, *connect.Request[v1.ProxyArchiveSessionRequest]) (*connect.Response[v1.ProxyArchiveSessionResponse], error)
+	// Records or resumes a chat via the owning daemon's reverse stream.
+	ProxyRecordChat(context.Context, *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error)
+	// Deletes a chat via the owning daemon's reverse stream.
+	ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error)
+	// Aggregates repos across all of the caller's live daemons, deduped by
+	// origin URL, with the serving daemon IDs unioned per repo.
+	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
+	// Lists the installed agents on a single named daemon via its reverse stream.
+	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -651,6 +790,12 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyAttachSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyCreateSessionHandler := connect.NewServerStreamHandler(
+		OrchestratorServiceProxyCreateSessionProcedure,
+		svc.ProxyCreateSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyCreateSession")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStopSessionHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyStopSessionProcedure,
 		svc.ProxyStopSession,
@@ -673,6 +818,42 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		OrchestratorServiceProxyWakeChatProcedure,
 		svc.ProxyWakeChat,
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyWakeChat")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyMergeSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyMergeSessionProcedure,
+		svc.ProxyMergeSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyMergeSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyArchiveSessionHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyArchiveSessionProcedure,
+		svc.ProxyArchiveSession,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyArchiveSession")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyRecordChatHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyRecordChatProcedure,
+		svc.ProxyRecordChat,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyRecordChat")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyDeleteChatHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyDeleteChatProcedure,
+		svc.ProxyDeleteChat,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListReposAggregatedHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListReposAggregatedProcedure,
+		svc.ProxyListReposAggregated,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListReposAggregated")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListAgentsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListAgentsProcedure,
+		svc.ProxyListAgents,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgents")),
 		connect.WithHandlerOptions(opts...),
 	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
@@ -783,6 +964,8 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyGetSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyAttachSessionProcedure:
 			orchestratorServiceProxyAttachSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyCreateSessionProcedure:
+			orchestratorServiceProxyCreateSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStopSessionProcedure:
 			orchestratorServiceProxyStopSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyPauseSessionProcedure:
@@ -791,6 +974,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyResumeSessionHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyWakeChatProcedure:
 			orchestratorServiceProxyWakeChatHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyMergeSessionProcedure:
+			orchestratorServiceProxyMergeSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyArchiveSessionProcedure:
+			orchestratorServiceProxyArchiveSessionHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyRecordChatProcedure:
+			orchestratorServiceProxyRecordChatHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyDeleteChatProcedure:
+			orchestratorServiceProxyDeleteChatHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListReposAggregatedProcedure:
+			orchestratorServiceProxyListReposAggregatedHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListAgentsProcedure:
+			orchestratorServiceProxyListAgentsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -862,6 +1057,10 @@ func (UnimplementedOrchestratorServiceHandler) ProxyAttachSession(context.Contex
 	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyAttachSession is not implemented"))
 }
 
+func (UnimplementedOrchestratorServiceHandler) ProxyCreateSession(context.Context, *connect.Request[v1.ProxyCreateSessionRequest], *connect.ServerStream[v1.ProxyCreateSessionResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyCreateSession is not implemented"))
+}
+
 func (UnimplementedOrchestratorServiceHandler) ProxyStopSession(context.Context, *connect.Request[v1.ProxyStopSessionRequest]) (*connect.Response[v1.ProxyStopSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyStopSession is not implemented"))
 }
@@ -876,6 +1075,30 @@ func (UnimplementedOrchestratorServiceHandler) ProxyResumeSession(context.Contex
 
 func (UnimplementedOrchestratorServiceHandler) ProxyWakeChat(context.Context, *connect.Request[v1.ProxyWakeChatRequest]) (*connect.Response[v1.ProxyWakeChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyWakeChat is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyMergeSession(context.Context, *connect.Request[v1.ProxyMergeSessionRequest]) (*connect.Response[v1.ProxyMergeSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyMergeSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyArchiveSession(context.Context, *connect.Request[v1.ProxyArchiveSessionRequest]) (*connect.Response[v1.ProxyArchiveSessionResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyArchiveSession is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyRecordChat(context.Context, *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyRecordChat is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteChat is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListReposAggregated is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAgents is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

@@ -41,7 +41,7 @@ func TestComputeAttentionStatus(t *testing.T) {
 			repo:          &models.Repo{},
 			wantAttention: true,
 			wantReason:    AttentionReasonBlockedMaxAttempts,
-			wantSummary:   "fix loop exhausted, needs human intervention",
+			wantSummary:   "blocked — needs human intervention",
 		},
 		{
 			name: "green draft with auto-merge off does not need attention",

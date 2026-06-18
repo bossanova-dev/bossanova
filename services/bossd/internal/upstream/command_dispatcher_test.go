@@ -3,21 +3,35 @@ package upstream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/rs/zerolog"
 )
 
 type fakeCommandHandler struct {
-	stopCalls   atomic.Int32
-	pauseCalls  atomic.Int32
-	resumeCalls atomic.Int32
-	wakeCalls   atomic.Int32
-	returnErr   error
-	session     *pb.Session
+	stopCalls        atomic.Int32
+	pauseCalls       atomic.Int32
+	resumeCalls      atomic.Int32
+	wakeCalls        atomic.Int32
+	mergeCalls       atomic.Int32
+	archiveCalls     atomic.Int32
+	recordChatCalls  atomic.Int32
+	deleteChatCalls  atomic.Int32
+	deleteChatScope  string // last sessionID passed to DeleteChat
+	listReposCalls   atomic.Int32
+	listAgentsCalls  atomic.Int32
+	returnErr        error
+	session          *pb.Session
+	mergeSession     *pb.Session
+	archiveSession   *pb.Session
+	recordChatResult *pb.ClaudeChat
+	listReposResult  *pb.ListReposResponse
+	listAgentsResult *pb.ListAgentsResponse
 	// WakeChat-specific knobs.
 	wakeOutcome   pb.WakeChatResult_Outcome
 	wakeTmuxName  string
@@ -41,6 +55,31 @@ func (f *fakeCommandHandler) Resume(_ context.Context, _ string) (*pb.Session, e
 func (f *fakeCommandHandler) WakeChat(_ context.Context, _ string, _ bool) (pb.WakeChatResult_Outcome, string, string, pb.CommandResult_ErrorCode, error) {
 	f.wakeCalls.Add(1)
 	return f.wakeOutcome, f.wakeTmuxName, f.wakeReason, f.wakeErrorCode, f.wakeErr
+}
+func (f *fakeCommandHandler) MergeSession(_ context.Context, _ string) (*pb.Session, error) {
+	f.mergeCalls.Add(1)
+	return f.mergeSession, f.returnErr
+}
+func (f *fakeCommandHandler) ArchiveSession(_ context.Context, _ string) (*pb.Session, error) {
+	f.archiveCalls.Add(1)
+	return f.archiveSession, f.returnErr
+}
+func (f *fakeCommandHandler) RecordChat(_ context.Context, _, _, _ string, _ bool, _ string) (*pb.ClaudeChat, error) {
+	f.recordChatCalls.Add(1)
+	return f.recordChatResult, f.returnErr
+}
+func (f *fakeCommandHandler) DeleteChat(_ context.Context, sessionID, _ string) error {
+	f.deleteChatCalls.Add(1)
+	f.deleteChatScope = sessionID
+	return f.returnErr
+}
+func (f *fakeCommandHandler) ListRepos(_ context.Context) (*pb.ListReposResponse, error) {
+	f.listReposCalls.Add(1)
+	return f.listReposResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListAgents(_ context.Context) (*pb.ListAgentsResponse, error) {
+	f.listAgentsCalls.Add(1)
+	return f.listAgentsResult, f.returnErr
 }
 
 type fakeWebhookDispatcher struct {
@@ -74,6 +113,29 @@ func (f *fakeAttacher) Attach(_ context.Context, sessionID, commandID string) (<
 	return ch, nil
 }
 
+type fakeCreator struct {
+	calls     atomic.Int32
+	chunks    []*pb.SessionCreateChunk
+	createErr error
+	lastCmd   *pb.CreateSessionCommand
+	lastCmdID string
+}
+
+func (f *fakeCreator) Create(_ context.Context, cmd *pb.CreateSessionCommand, commandID string) (<-chan *pb.SessionCreateChunk, error) {
+	f.calls.Add(1)
+	f.lastCmd = cmd
+	f.lastCmdID = commandID
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	ch := make(chan *pb.SessionCreateChunk, len(f.chunks)+1)
+	for _, c := range f.chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch, nil
+}
+
 // newDispatcherClient wires a StreamClient with just the command-side
 // collaborators. Other fields stay nil; the dispatcher functions under
 // test never touch them.
@@ -87,6 +149,15 @@ func newDispatcherClient(
 		Webhooks:       webhooks,
 		Attacher:       attacher,
 		Logger:         zerolog.Nop(),
+	})
+}
+
+// newDispatcherClientWithCreator wires a StreamClient with a SessionCreator
+// for the CreateSession streaming tests.
+func newDispatcherClientWithCreator(creator SessionCreator) *StreamClient {
+	return NewStreamClient(StreamClientConfig{
+		Creator: creator,
+		Logger:  zerolog.Nop(),
 	})
 }
 
@@ -480,5 +551,361 @@ func TestDispatchCommand_AttachSession_StreamsChunksUntilClose(t *testing.T) {
 	}
 	if attacher.calls.Load() != 1 {
 		t.Fatalf("attacher calls = %d, want 1", attacher.calls.Load())
+	}
+}
+
+func createSetupChunk(cmdID, text string) *pb.SessionCreateChunk {
+	return &pb.SessionCreateChunk{
+		CommandId: cmdID,
+		Body:      &pb.SessionCreateChunk_SetupOutput{SetupOutput: text},
+	}
+}
+
+func TestDispatchCommand_CreateSession_StreamsThenCreated(t *testing.T) {
+	const cmdID = "c-create"
+	chunks := []*pb.SessionCreateChunk{
+		createSetupChunk(cmdID, "cloning\n"),
+		createSetupChunk(cmdID, "setup.sh\n"),
+		{CommandId: cmdID, Body: &pb.SessionCreateChunk_Created{Created: &pb.Session{Id: "s9"}}},
+	}
+	creator := &fakeCreator{chunks: chunks}
+	client := newDispatcherClientWithCreator(creator)
+
+	out := make(chan *pb.DaemonEvent, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ev := client.dispatchCommand(ctx,
+		&pb.OrchestratorCommand{
+			CommandId: cmdID,
+			Cmd: &pb.OrchestratorCommand_CreateSession{CreateSession: &pb.CreateSessionCommand{
+				RepoId: "r1",
+				Title:  "x",
+			}},
+		}, out)
+
+	// Immediate ok handshake ack.
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != cmdID {
+		t.Fatalf("expected ok handshake result, got %+v", ev)
+	}
+	if creator.lastCmdID != cmdID {
+		t.Fatalf("creator command id = %q, want %q", creator.lastCmdID, cmdID)
+	}
+
+	// Drain the streamed chunks in order.
+	got := make([]*pb.SessionCreateChunk, 0, len(chunks))
+	deadline := time.After(500 * time.Millisecond)
+	for len(got) < len(chunks) {
+		select {
+		case ev := <-out:
+			if c := ev.GetCreateChunk(); c != nil {
+				got = append(got, c)
+			}
+		case <-deadline:
+			t.Fatalf("expected %d chunks, got %d", len(chunks), len(got))
+		}
+	}
+
+	if got[0].GetSetupOutput() != "cloning\n" {
+		t.Fatalf("chunk[0] setup_output = %q", got[0].GetSetupOutput())
+	}
+	if got[1].GetSetupOutput() != "setup.sh\n" {
+		t.Fatalf("chunk[1] setup_output = %q", got[1].GetSetupOutput())
+	}
+	if got[len(got)-1].GetCreated().GetId() != "s9" {
+		t.Fatalf("last chunk created id = %q, want s9", got[len(got)-1].GetCreated().GetId())
+	}
+	for i, c := range got {
+		if c.GetCommandId() != cmdID {
+			t.Fatalf("chunk[%d] command_id = %q, want %q", i, c.GetCommandId(), cmdID)
+		}
+	}
+}
+
+func TestDispatchCommand_CreateSession_ErrorChunk(t *testing.T) {
+	const cmdID = "c-create-err"
+	chunks := []*pb.SessionCreateChunk{
+		createSetupChunk(cmdID, "cloning\n"),
+		{CommandId: cmdID, Body: &pb.SessionCreateChunk_Error{Error: &pb.CreateError{Message: "boom"}}},
+	}
+	creator := &fakeCreator{chunks: chunks}
+	client := newDispatcherClientWithCreator(creator)
+
+	out := make(chan *pb.DaemonEvent, 8)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ev := client.dispatchCommand(ctx,
+		&pb.OrchestratorCommand{
+			CommandId: cmdID,
+			Cmd:       &pb.OrchestratorCommand_CreateSession{CreateSession: &pb.CreateSessionCommand{RepoId: "r1", Title: "x"}},
+		}, out)
+	if r := ev.GetResult(); r == nil || !r.GetOk() {
+		t.Fatalf("expected ok handshake result, got %+v", ev)
+	}
+
+	got := make([]*pb.SessionCreateChunk, 0, len(chunks))
+	deadline := time.After(500 * time.Millisecond)
+	for len(got) < len(chunks) {
+		select {
+		case ev := <-out:
+			if c := ev.GetCreateChunk(); c != nil {
+				got = append(got, c)
+			}
+		case <-deadline:
+			t.Fatalf("expected %d chunks, got %d", len(chunks), len(got))
+		}
+	}
+
+	last := got[len(got)-1]
+	if last.GetError().GetMessage() != "boom" {
+		t.Fatalf("terminal chunk error = %q, want boom", last.GetError().GetMessage())
+	}
+	if last.GetCreated() != nil {
+		t.Fatalf("expected no created on error path, got %+v", last.GetCreated())
+	}
+}
+
+func TestDispatchCommand_CreateSession_CreatorNotWired(t *testing.T) {
+	client := newDispatcherClientWithCreator(nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-nw",
+			Cmd:       &pb.OrchestratorCommand_CreateSession{CreateSession: &pb.CreateSessionCommand{RepoId: "r1", Title: "x"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result with Ok=false, got %+v", ev)
+	}
+	if r.GetCommandId() != "c-nw" {
+		t.Fatalf("command id = %q, want c-nw", r.GetCommandId())
+	}
+}
+
+func TestDispatchCommand_Merge_CallsHandler(t *testing.T) {
+	sess := &pb.Session{Id: "s-merge"}
+	handler := &fakeCommandHandler{mergeSession: sess}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-m1",
+			Cmd:       &pb.OrchestratorCommand_Merge{Merge: &pb.MergeSessionCommand{SessionId: "s-merge"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.mergeCalls.Load() != 1 {
+		t.Fatalf("merge calls = %d, want 1", handler.mergeCalls.Load())
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-m1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetSession().GetId() != "s-merge" {
+		t.Fatalf("expected session id s-merge, got %q", r.GetSession().GetId())
+	}
+}
+
+func TestDispatchCommand_Merge_MapsConnectCodeToErrorCode(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want pb.CommandResult_ErrorCode
+	}{
+		{"failed_precondition", connect.NewError(connect.CodeFailedPrecondition, errors.New("PR is not passing")), pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION},
+		{"not_found", connect.NewError(connect.CodeNotFound, errors.New("session not found")), pb.CommandResult_ERROR_CODE_NOT_FOUND},
+		{"plain_error", errors.New("boom"), pb.CommandResult_ERROR_CODE_UNSPECIFIED},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Adapters wrap the connect error with %w; emulate that so the
+			// dispatcher's connect.CodeOf still recovers the code.
+			handler := &fakeCommandHandler{returnErr: fmt.Errorf("merge session: %w", tc.err)}
+			client := newDispatcherClient(handler, nil, nil)
+			ev := client.dispatchCommand(context.Background(),
+				&pb.OrchestratorCommand{
+					CommandId: "c-merr",
+					Cmd:       &pb.OrchestratorCommand_Merge{Merge: &pb.MergeSessionCommand{SessionId: "s1"}},
+				}, make(chan *pb.DaemonEvent, 4))
+			r := ev.GetResult()
+			if r == nil || r.GetOk() {
+				t.Fatalf("expected failed result, got %+v", ev)
+			}
+			if r.GetErrorCode() != tc.want {
+				t.Fatalf("error_code = %v, want %v", r.GetErrorCode(), tc.want)
+			}
+		})
+	}
+}
+
+func TestDispatchCommand_Archive_CallsHandler(t *testing.T) {
+	sess := &pb.Session{Id: "s-arch"}
+	handler := &fakeCommandHandler{archiveSession: sess}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-a1",
+			Cmd:       &pb.OrchestratorCommand_Archive{Archive: &pb.ArchiveSessionCommand{SessionId: "s-arch"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.archiveCalls.Load() != 1 {
+		t.Fatalf("archive calls = %d, want 1", handler.archiveCalls.Load())
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-a1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetSession().GetId() != "s-arch" {
+		t.Fatalf("expected session id s-arch, got %q", r.GetSession().GetId())
+	}
+}
+
+func TestDispatchCommand_RecordChat_CallsHandler(t *testing.T) {
+	chat := &pb.ClaudeChat{Id: "chat-1"}
+	handler := &fakeCommandHandler{recordChatResult: chat}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-rc1",
+			Cmd: &pb.OrchestratorCommand_RecordChat{RecordChat: &pb.RecordChatCommand{
+				SessionId:      "s1",
+				AgentSessionId: "agent-1",
+				Title:          "my chat",
+				Resume:         true,
+				AgentName:      "claude",
+			}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.recordChatCalls.Load() != 1 {
+		t.Fatalf("record_chat calls = %d, want 1", handler.recordChatCalls.Load())
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-rc1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetRecordChat().GetId() != "chat-1" {
+		t.Fatalf("expected record_chat.id chat-1, got %q", r.GetRecordChat().GetId())
+	}
+}
+
+func TestDispatchCommand_DeleteChat_CallsHandler(t *testing.T) {
+	handler := &fakeCommandHandler{}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-dc1",
+			Cmd: &pb.OrchestratorCommand_DeleteChat{DeleteChat: &pb.DeleteChatCommand{
+				AgentSessionId: "agent-1",
+				SessionId:      "s1",
+			}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.deleteChatCalls.Load() != 1 {
+		t.Fatalf("delete_chat calls = %d, want 1", handler.deleteChatCalls.Load())
+	}
+	// The session_id must reach the handler so the daemon can enforce that the
+	// chat belongs to the authorized session (scoping, not advisory).
+	if handler.deleteChatScope != "s1" {
+		t.Fatalf("delete_chat session scope = %q, want s1", handler.deleteChatScope)
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-dc1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	if r.GetSession() != nil {
+		t.Fatalf("expected no session payload for delete_chat, got %+v", r.GetSession())
+	}
+	if r.GetRecordChat() != nil {
+		t.Fatalf("expected no record_chat payload for delete_chat, got %+v", r.GetRecordChat())
+	}
+}
+
+func TestDispatchCommand_ListRepos_CallsHandler(t *testing.T) {
+	repos := &pb.ListReposResponse{Repos: []*pb.Repo{{Id: "r1", OriginUrl: "git@github.com:acme/app.git"}}}
+	handler := &fakeCommandHandler{listReposResult: repos}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-lr1",
+			Cmd:       &pb.OrchestratorCommand_ListRepos{ListRepos: &pb.ListReposCommand{}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.listReposCalls.Load() != 1 {
+		t.Fatalf("list_repos calls = %d, want 1", handler.listReposCalls.Load())
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-lr1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	got := r.GetListRepos().GetRepos()
+	if len(got) != 1 || got[0].GetId() != "r1" {
+		t.Fatalf("expected list_repos payload with r1, got %+v", got)
+	}
+}
+
+func TestDispatchCommand_ListRepos_HandlerError_ReturnsCommandErr(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: errors.New("list repos boom")}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-lr-err",
+			Cmd:       &pb.OrchestratorCommand_ListRepos{ListRepos: &pb.ListReposCommand{}},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	if r.GetError() != "list repos boom" {
+		t.Fatalf("expected error %q, got %q", "list repos boom", r.GetError())
+	}
+}
+
+func TestDispatchCommand_ListAgents_CallsHandler(t *testing.T) {
+	agents := &pb.ListAgentsResponse{Agents: []*pb.AgentInfo{{Name: "claude", Version: "1.2.3"}}}
+	handler := &fakeCommandHandler{listAgentsResult: agents}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-la1",
+			Cmd:       &pb.OrchestratorCommand_ListAgents{ListAgents: &pb.ListAgentsCommand{}},
+		}, make(chan *pb.DaemonEvent, 4))
+	if handler.listAgentsCalls.Load() != 1 {
+		t.Fatalf("list_agents calls = %d, want 1", handler.listAgentsCalls.Load())
+	}
+	r := ev.GetResult()
+	if r == nil || !r.GetOk() || r.GetCommandId() != "c-la1" {
+		t.Fatalf("expected ok result with command_id, got %+v", ev)
+	}
+	got := r.GetListAgents().GetAgents()
+	if len(got) != 1 || got[0].GetName() != "claude" {
+		t.Fatalf("expected list_agents payload with claude, got %+v", got)
+	}
+}
+
+func TestDispatchCommand_ListAgents_HandlerError_ReturnsCommandErr(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: errors.New("list agents boom")}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-la-err",
+			Cmd:       &pb.OrchestratorCommand_ListAgents{ListAgents: &pb.ListAgentsCommand{}},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	if r.GetError() != "list agents boom" {
+		t.Fatalf("expected error %q, got %q", "list agents boom", r.GetError())
+	}
+}
+
+func TestDispatchCommand_Merge_HandlerError_ReturnsCommandErr(t *testing.T) {
+	handler := &fakeCommandHandler{returnErr: errors.New("merge failed: conflict")}
+	client := newDispatcherClient(handler, nil, nil)
+	ev := client.dispatchCommand(context.Background(),
+		&pb.OrchestratorCommand{
+			CommandId: "c-m-err",
+			Cmd:       &pb.OrchestratorCommand_Merge{Merge: &pb.MergeSessionCommand{SessionId: "s1"}},
+		}, make(chan *pb.DaemonEvent, 4))
+	r := ev.GetResult()
+	if r == nil || r.GetOk() {
+		t.Fatalf("expected error result, got %+v", ev)
+	}
+	if r.GetError() != "merge failed: conflict" {
+		t.Fatalf("expected error message %q, got %q", "merge failed: conflict", r.GetError())
 	}
 }

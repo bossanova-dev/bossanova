@@ -11,6 +11,7 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/db"
@@ -501,8 +502,8 @@ func (f *FixLoop) fireFixFailed(ctx context.Context, sess *models.Session, reaso
 	}
 
 	if sm.State() == machine.Blocked {
-		blockedReason := sm.Context().BlockedReason
-		reasonPtr := &blockedReason
+		reason := sessionreason.FixLoopExhausted()
+		reasonPtr := &reason
 		update.BlockedReason = &reasonPtr
 	}
 

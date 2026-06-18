@@ -1091,6 +1091,111 @@ func TestFinalizeSession_ChatSpawnFailed(t *testing.T) {
 	}
 }
 
+// TestFinalizeSession_ChatSpawnFailed_SetsBlockedReason asserts that a
+// chat_spawn_failed outcome persists a descriptive BlockedReason on the
+// session so the UI can surface it instead of falling back to the generic
+// "fix loop exhausted" message.
+func TestFinalizeSession_ChatSpawnFailed_SetsBlockedReason(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "fix(cron): preserve PR-backed clean sessions",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
+		},
+	}
+	cr := newMockAgentRunner()
+	cr.startErr = fmt.Errorf("claude binary not found")
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomeChatSpawnFailed {
+		t.Fatalf("outcome = %q, want chat_spawn_failed", res.Outcome)
+	}
+
+	sess, _ := sessions.Get(ctx, "sess-1")
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %v, want Blocked", sess.State)
+	}
+	if sess.BlockedReason == nil || !strings.Contains(*sess.BlockedReason, "chat_spawn_failed") {
+		t.Fatalf("BlockedReason = %v, want contains chat_spawn_failed", sess.BlockedReason)
+	}
+}
+
+// TestRecoverFinalizingSessions_SetsBlockedReason asserts that daemon-restart
+// recovery persists a descriptive BlockedReason on each recovered session so
+// the UI explains why the session is blocked.
+func TestRecoverFinalizingSessions_SetsBlockedReason(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	cronJobID := "cron-1"
+	sessions.sessions["sess-stuck"] = &models.Session{
+		ID:           "sess-stuck",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-stuck",
+		State:        machine.Finalizing,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	n, err := lc.RecoverFinalizingSessions(ctx)
+	if err != nil {
+		t.Fatalf("RecoverFinalizingSessions: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("recovered count = %d, want 1", n)
+	}
+
+	sess := sessions.sessions["sess-stuck"]
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %v, want Blocked", sess.State)
+	}
+	if sess.BlockedReason == nil || *sess.BlockedReason == "" {
+		t.Fatalf("BlockedReason = %v, want non-empty recovery reason", sess.BlockedReason)
+	}
+}
+
 // TestFinalizeSession_CleanupFailed covers the no-changes branch where
 // worktree archival errors out: the session row must be PRESERVED (so the
 // operator can see the failed cleanup), the worktree path is unchanged, and
@@ -1338,6 +1443,308 @@ func TestRecoverFinalizingSessions_NoneStuck(t *testing.T) {
 	if len(cron.lastRunCalls) != 0 {
 		t.Errorf("expected no UpdateLastRun calls, got %d", len(cron.lastRunCalls))
 	}
+}
+
+// TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace covers the race
+// where EnsurePR runs and creates/pushes the PR but the session row's PRNumber
+// is not persisted (e.g. a network drop after the GitHub create succeeded but
+// before the DB write committed). The fallback post-EnsurePR association must
+// detect PRNumber==nil and call attachOpenPRForBranch to recover the number
+// from the live branch PR list so the UI shows "#N" instead of "-".
+func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	inner := newMockSessionStore()
+	// suppressPRNumberStore wraps the inner store and silently drops the first
+	// PRNumber update, simulating the race where EnsurePR's openDraftPRForBranch
+	// succeeds on GitHub but the DB write that persists the PR number is lost.
+	sessions := &suppressPRNumberStore{mockSessionStore: inner}
+
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		latestCommitSubject: "fix(bossd): cron job run",
+	}
+	vp := newMockVCSProvider()
+	// Branch has an open PR on GitHub; the fallback should find it.
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 55, HeadBranch: "cron-br-1", State: vcs.PRStateOpen},
+	}
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	inner.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Nightly cron",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+		AgentName:    "claude",
+	}
+
+	runner := newRecordingFinalizeAgentRunner()
+	tmuxFake := newFakeTmux()
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgentLogsDir(t.TempDir())
+
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
+	}
+	sess, getErr := inner.Get(ctx, "sess-1")
+	if getErr != nil {
+		t.Fatalf("Get session: %v", getErr)
+	}
+	if sess.PRNumber == nil {
+		t.Fatalf("PRNumber still nil after finalize; expected branch PR (55) to be associated")
+	}
+	if *sess.PRNumber != 55 {
+		t.Fatalf("PRNumber = %d, want 55", *sess.PRNumber)
+	}
+}
+
+// TestFinalizeSession_CleanCommittedBranch_PRNumberSetAfterEnsurePRRace covers
+// the same race for the createPRIfCleanBranchHasCommittedWork path: a clean
+// branch with committed work calls EnsurePR, but the PRNumber write is lost.
+// The post-EnsurePR fallback must recover the number from the branch PR list.
+//
+// The mock uses a deferredPRVCSProvider that starts with no open PRs (so
+// attachExistingPRIfCleanBranchHasOne returns nil and the committed-work path
+// runs), then exposes the new PR only after CreateDraftPR fires (simulating the
+// race: GitHub accepted the PR, but the DB write was dropped).
+func TestFinalizeSession_CleanCommittedBranch_PRNumberSetAfterEnsurePRRace(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	inner := newMockSessionStore()
+	sessions := &suppressPRNumberStore{mockSessionStore: inner}
+
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "fix(cron): do the thing",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil // branch HAS committed work
+			}
+			return true, nil
+		},
+	}
+	// deferredPRVCSProvider starts with no open PRs so that
+	// attachExistingPRIfCleanBranchHasOne does not intercept. After
+	// CreateDraftPR fires (simulating GitHub accepting the PR), it exposes PR
+	// 77 so the post-EnsurePR fallback can recover the number.
+	base := newMockVCSProvider()
+	vp := &deferredPRVCSProvider{
+		mockVCSProvider: base,
+		deferred: []vcs.PRSummary{
+			{Number: 77, HeadBranch: "cron-br-1", State: vcs.PRStateOpen},
+		},
+	}
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	inner.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Nightly cron",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+		AgentName:    "claude",
+	}
+
+	runner := newRecordingFinalizeAgentRunner()
+	tmuxFake := newFakeTmux()
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgentLogsDir(t.TempDir())
+
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
+	}
+	sess, getErr := inner.Get(ctx, "sess-1")
+	if getErr != nil {
+		t.Fatalf("Get session: %v", getErr)
+	}
+	if sess.PRNumber == nil {
+		t.Fatalf("PRNumber still nil after finalize; expected branch PR (77) to be associated")
+	}
+	if *sess.PRNumber != 77 {
+		t.Fatalf("PRNumber = %d, want 77", *sess.PRNumber)
+	}
+}
+
+// TestFinalizeSession_CleanCommittedBranch_AttachesPRAfterPRInfoUpdateError
+// covers the production-shaped failure where CreateDraftPR succeeds on GitHub
+// but persisting PR metadata returns an error. Finalize must recover by finding
+// the now-visible branch PR, attach it, and continue to the finalize chat
+// instead of reporting pr_failed.
+func TestFinalizeSession_CleanCommittedBranch_AttachesPRAfterPRInfoUpdateError(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	firstPRNumberUpdate := true
+	sessions.updateHook = func(_ string, params db.UpdateSessionParams) error {
+		if params.PRNumber != nil && firstPRNumberUpdate {
+			firstPRNumberUpdate = false
+			return fmt.Errorf("db write failed after PR create")
+		}
+		return nil
+	}
+
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           "",
+		latestCommitSubject: "fix(cron): do the thing",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
+		},
+	}
+	base := newMockVCSProvider()
+	vp := &deferredPRVCSProvider{
+		mockVCSProvider: base,
+		deferred: []vcs.PRSummary{
+			{Number: 88, HeadBranch: "cron-br-1", State: vcs.PRStateOpen},
+		},
+	}
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Nightly cron",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+		AgentName:    "claude",
+	}
+
+	runner := newRecordingFinalizeAgentRunner()
+	tmuxFake := newFakeTmux()
+	tmuxClient := tmux.NewClient(tmux.WithCommandFactory(tmuxFake.factory))
+	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
+	lc.SetAgentLogsDir(t.TempDir())
+
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
+	}
+	if firstPRNumberUpdate {
+		t.Fatal("test did not exercise failing first PRNumber update")
+	}
+	sess, getErr := sessions.Get(ctx, "sess-1")
+	if getErr != nil {
+		t.Fatalf("Get session: %v", getErr)
+	}
+	if sess.PRNumber == nil {
+		t.Fatalf("PRNumber still nil after finalize; expected branch PR (88) to be associated")
+	}
+	if *sess.PRNumber != 88 {
+		t.Fatalf("PRNumber = %d, want 88", *sess.PRNumber)
+	}
+	if len(base.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(base.createPRCalls))
+	}
+}
+
+// deferredPRVCSProvider wraps mockVCSProvider and starts with no open PRs.
+// After the first CreateDraftPR call (simulating GitHub accepting the PR while
+// the DB write is about to be dropped), it exposes deferred PRs on subsequent
+// ListOpenPRs calls — the post-EnsurePR fallback can then recover the number.
+type deferredPRVCSProvider struct {
+	*mockVCSProvider
+	deferred  []vcs.PRSummary
+	prCreated bool
+}
+
+func (d *deferredPRVCSProvider) CreateDraftPR(ctx context.Context, opts vcs.CreatePROpts) (*vcs.PRInfo, error) {
+	d.prCreated = true
+	return d.mockVCSProvider.CreateDraftPR(ctx, opts)
+}
+
+func (d *deferredPRVCSProvider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
+	if d.prCreated {
+		return d.deferred, nil
+	}
+	return nil, nil // no PRs until CreateDraftPR has fired
+}
+
+// suppressPRNumberStore wraps a mockSessionStore and silently drops the FIRST
+// PRNumber write, simulating a lost local write after EnsurePR creates the PR
+// on GitHub.
+// Subsequent PRNumber writes (e.g. from the fallback attachOpenPRForBranch)
+// are allowed through so the fallback can demonstrate it recovered the number.
+type suppressPRNumberStore struct {
+	*mockSessionStore
+	prNumberDropped bool
+}
+
+func (s *suppressPRNumberStore) Update(ctx context.Context, id string, params db.UpdateSessionParams) (*models.Session, error) {
+	// Drop only the first PRNumber update (the one from EnsurePR's
+	// openDraftPRForBranch), leaving the fallback write intact.
+	if params.PRNumber != nil && !s.prNumberDropped {
+		s.prNumberDropped = true
+		params.PRNumber = nil
+	}
+	return s.mockSessionStore.Update(ctx, id, params)
 }
 
 // --- helpers ---

@@ -121,7 +121,7 @@ type listSessionsPRAssociationResult struct {
 var (
 	providerSessionIDBackgroundDiscoveryTimeout      = time.Minute
 	providerSessionIDBackgroundDiscoveryPollInterval = time.Second
-	listSessionsPRAssociationTimeout                 = 3 * time.Second
+	listSessionsPRAssociationTimeout                 = 10 * time.Second
 )
 
 // Config holds all dependencies for creating a new Server.
@@ -789,7 +789,7 @@ func (s *Server) lockBranchStart(repoID, branch string) func() {
 	}
 }
 
-func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branch string, stream *connect.ServerStream[pb.CreateSessionResponse]) (bool, error) {
+func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branch string, emit createSessionSender) (bool, error) {
 	if branch == "" {
 		return false, nil
 	}
@@ -810,7 +810,7 @@ func (s *Server) sendExistingSessionForBranch(ctx context.Context, repoID, branc
 			}
 			return true, connect.NewError(connect.CodeInternal, fmt.Errorf("stat existing session worktree: %w", err))
 		}
-		return true, stream.Send(&pb.CreateSessionResponse{
+		return true, emit.Send(&pb.CreateSessionResponse{
 			Event: &pb.CreateSessionResponse_SessionCreated{
 				SessionCreated: &pb.SessionCreated{
 					Session: SessionToProto(sess),
@@ -858,8 +858,20 @@ func (s *Server) cleanupFailedCreateSession(ctx context.Context, sessionID strin
 	}
 }
 
+// CreateSession is the thin ConnectRPC handler: it delegates to the
+// streaming core StreamCreateSession, wiring the connect server stream's
+// Send as the emit sink. All validation/behaviour lives in the core so the
+// reverse-stream path (bosso → daemon CreateSessionCommand) can reuse it
+// without a non-mockable *connect.ServerStream.
 func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.CreateSessionRequest], stream *connect.ServerStream[pb.CreateSessionResponse]) error {
-	msg := req.Msg
+	return s.StreamCreateSession(ctx, req.Msg, stream.Send)
+}
+
+// StreamCreateSession holds the full CreateSession body. Each result frame is
+// delivered through emit (the connect handler passes stream.Send; the reverse-
+// stream adapter passes a channel-pushing closure). Behaviour and validation
+// are identical to the original handler — this is a pure extract-method.
+func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionRequest, emit func(*pb.CreateSessionResponse) error) error {
 	if msg.RepoId == "" {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("repo_id is required"))
 	}
@@ -922,7 +934,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		}
 	}()
 
-	if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, stream); handled || err != nil {
+	if handled, err := s.sendExistingSessionForBranch(ctx, msg.RepoId, headBranch, emitSender{emit}); handled || err != nil {
 		return err
 	}
 
@@ -984,7 +996,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 			done <- lifecycleResult{err: err}
 		}()
 
-		if err := streamSetupOutput(pr, stream); err != nil {
+		if err := streamSetupOutput(pr, emitSender{emit}); err != nil {
 			// Client disconnected or the setup-output pipe failed — close the
 			// pipe reader to unblock the goroutine if it's blocked on pw.Write(),
 			// then wait for it to finish before removing the persisted session.
@@ -1021,7 +1033,7 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return stream.Send(&pb.CreateSessionResponse{
+	return emit(&pb.CreateSessionResponse{
 		Event: &pb.CreateSessionResponse_SessionCreated{
 			SessionCreated: &pb.SessionCreated{
 				Session: SessionToProto(sess),
@@ -1033,6 +1045,16 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[pb.Crea
 type createSessionSender interface {
 	Send(*pb.CreateSessionResponse) error
 }
+
+// emitSender adapts an emit func(*pb.CreateSessionResponse) error to the
+// createSessionSender interface so the extracted streaming core can pass its
+// sink to helpers (sendExistingSessionForBranch, streamSetupOutput) that were
+// written against the Send-method shape.
+type emitSender struct {
+	emit func(*pb.CreateSessionResponse) error
+}
+
+func (e emitSender) Send(resp *pb.CreateSessionResponse) error { return e.emit(resp) }
 
 func streamSetupOutput(r io.Reader, stream createSessionSender) error {
 	reader := bufio.NewReaderSize(r, maxSetupOutputLineBytes+1)
@@ -1822,6 +1844,13 @@ func (s *Server) RecordChat(ctx context.Context, req *connect.Request[pb.RecordC
 	// Idempotent: reuse the existing row if one already exists for this
 	// agent_session_id (resume case), otherwise insert a new one.
 	chat, err := s.agentChats.GetByAgentSessionID(ctx, msg.AgentSessionId)
+	if err == nil && chat != nil && chat.SessionID != msg.SessionId {
+		// The chat exists but under a different session than the caller
+		// authorized. Reject rather than resume it into the wrong session —
+		// the bosso proxy routes by the session's owning daemon, so a
+		// mismatch here means the requested session_id never owned this chat.
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat does not belong to session %q", msg.SessionId))
+	}
 	if err != nil {
 		// Prefer an explicit override on the request, falling back to the
 		// parent session's agent_name. Without the fallback, the SQLite
@@ -2088,6 +2117,15 @@ func (s *Server) DeleteChat(ctx context.Context, req *connect.Request[pb.DeleteC
 	chat, err := s.agentChats.GetByAgentSessionID(ctx, req.Msg.AgentSessionId)
 	if err != nil && !isAgentChatNotFound(err) {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get chat: %w", err))
+	}
+	// Enforce session scoping when the caller provided a session_id: the chat
+	// must belong to that session. This makes bosso's session-level authz
+	// (it routes by the session's owning daemon) actually binding rather than
+	// advisory — without it the daemon would delete any chat with this
+	// agent_session_id regardless of which session was authorized. A nil chat
+	// is left to the idempotent no-op delete below.
+	if req.Msg.SessionId != "" && chat != nil && chat.SessionID != req.Msg.SessionId {
+		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("chat does not belong to session %q", req.Msg.SessionId))
 	}
 	s.killChatTmuxSession(ctx, chat)
 

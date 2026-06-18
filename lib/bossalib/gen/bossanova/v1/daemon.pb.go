@@ -764,6 +764,8 @@ type UpdateRepoRequest struct {
 	MergeStrategy           *string                `protobuf:"bytes,7,opt,name=merge_strategy,json=mergeStrategy,proto3,oneof" json:"merge_strategy,omitempty"`
 	SetupScript             *string                `protobuf:"bytes,8,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
 	LinearApiKey            *string                `protobuf:"bytes,9,opt,name=linear_api_key,json=linearApiKey,proto3,oneof" json:"linear_api_key,omitempty"`
+	SentryApiKey            *string                `protobuf:"bytes,11,opt,name=sentry_api_key,json=sentryApiKey,proto3,oneof" json:"sentry_api_key,omitempty"`
+	SentryOrg               *string                `protobuf:"bytes,12,opt,name=sentry_org,json=sentryOrg,proto3,oneof" json:"sentry_org,omitempty"`
 	unknownFields           protoimpl.UnknownFields
 	sizeCache               protoimpl.SizeCache
 }
@@ -857,6 +859,20 @@ func (x *UpdateRepoRequest) GetSetupScript() string {
 func (x *UpdateRepoRequest) GetLinearApiKey() string {
 	if x != nil && x.LinearApiKey != nil {
 		return *x.LinearApiKey
+	}
+	return ""
+}
+
+func (x *UpdateRepoRequest) GetSentryApiKey() string {
+	if x != nil && x.SentryApiKey != nil {
+		return *x.SentryApiKey
+	}
+	return ""
+}
+
+func (x *UpdateRepoRequest) GetSentryOrg() string {
+	if x != nil && x.SentryOrg != nil {
+		return *x.SentryOrg
 	}
 	return ""
 }
@@ -994,9 +1010,11 @@ func (x *ListRepoPRsResponse) GetPullRequests() []*PRSummary {
 }
 
 type ListTrackerIssuesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RepoId        string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
-	Query         string                 `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	RepoId string                 `protobuf:"bytes,1,opt,name=repo_id,json=repoId,proto3" json:"repo_id,omitempty"`
+	Query  string                 `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
+	// Which task source to query. "linear" (default for back-compat) | "sentry".
+	Source        *string `protobuf:"bytes,3,opt,name=source,proto3,oneof" json:"source,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1041,6 +1059,13 @@ func (x *ListTrackerIssuesRequest) GetRepoId() string {
 func (x *ListTrackerIssuesRequest) GetQuery() string {
 	if x != nil {
 		return x.Query
+	}
+	return ""
+}
+
+func (x *ListTrackerIssuesRequest) GetSource() string {
+	if x != nil && x.Source != nil {
+		return *x.Source
 	}
 	return ""
 }
@@ -5447,7 +5472,7 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05repos\x18\x01 \x03(\v2\x12.bossanova.v1.RepoR\x05repos\"#\n" +
 	"\x11RemoveRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12RemoveRepoResponse\"\xf0\x04\n" +
+	"\x12RemoveRepoResponse\"\xe7\x05\n" +
 	"\x11UpdateRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12)\n" +
@@ -5457,7 +5482,10 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x1acan_auto_resolve_conflicts\x18\x06 \x01(\bH\x04R\x17canAutoResolveConflicts\x88\x01\x01\x12*\n" +
 	"\x0emerge_strategy\x18\a \x01(\tH\x05R\rmergeStrategy\x88\x01\x01\x12&\n" +
 	"\fsetup_script\x18\b \x01(\tH\x06R\vsetupScript\x88\x01\x01\x12)\n" +
-	"\x0elinear_api_key\x18\t \x01(\tH\aR\flinearApiKey\x88\x01\x01B\x0f\n" +
+	"\x0elinear_api_key\x18\t \x01(\tH\aR\flinearApiKey\x88\x01\x01\x12)\n" +
+	"\x0esentry_api_key\x18\v \x01(\tH\bR\fsentryApiKey\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"sentry_org\x18\f \x01(\tH\tR\tsentryOrg\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x11\n" +
 	"\x0f_can_auto_mergeB\x1c\n" +
 	"\x1a_can_auto_merge_dependabotB\x1b\n" +
@@ -5465,17 +5493,21 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x1b_can_auto_resolve_conflictsB\x11\n" +
 	"\x0f_merge_strategyB\x0f\n" +
 	"\r_setup_scriptB\x11\n" +
-	"\x0f_linear_api_keyJ\x04\b\n" +
-	"\x10\v\"<\n" +
+	"\x0f_linear_api_keyB\x11\n" +
+	"\x0f_sentry_api_keyB\r\n" +
+	"\v_sentry_orgJ\x04\b\n" +
+	"\x10\vJ\x04\b\r\x10\x0e\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
 	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"-\n" +
 	"\x12ListRepoPRsRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\"S\n" +
 	"\x13ListRepoPRsResponse\x12<\n" +
-	"\rpull_requests\x18\x01 \x03(\v2\x17.bossanova.v1.PRSummaryR\fpullRequests\"I\n" +
+	"\rpull_requests\x18\x01 \x03(\v2\x17.bossanova.v1.PRSummaryR\fpullRequests\"q\n" +
 	"\x18ListTrackerIssuesRequest\x12\x17\n" +
 	"\arepo_id\x18\x01 \x01(\tR\x06repoId\x12\x14\n" +
-	"\x05query\x18\x02 \x01(\tR\x05query\"O\n" +
+	"\x05query\x18\x02 \x01(\tR\x05query\x12\x1b\n" +
+	"\x06source\x18\x03 \x01(\tH\x00R\x06source\x88\x01\x01B\t\n" +
+	"\a_source\"O\n" +
 	"\x19ListTrackerIssuesResponse\x122\n" +
 	"\x06issues\x18\x01 \x03(\v2\x1a.bossanova.v1.TrackerIssueR\x06issues\"\xbe\x03\n" +
 	"\x14CreateSessionRequest\x12\x17\n" +
@@ -6120,6 +6152,7 @@ func file_bossanova_v1_daemon_proto_init() {
 	file_bossanova_v1_daemon_proto_msgTypes[4].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[6].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[12].OneofWrappers = []any{}
+	file_bossanova_v1_daemon_proto_msgTypes[16].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[18].OneofWrappers = []any{}
 	file_bossanova_v1_daemon_proto_msgTypes[19].OneofWrappers = []any{
 		(*CreateSessionResponse_SetupOutput)(nil),

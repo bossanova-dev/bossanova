@@ -495,6 +495,51 @@ func TestDisplayPoller_ChangesRequested(t *testing.T) {
 	}
 }
 
+func TestDisplayPoller_CodexBotCommentedReviewCommentsRejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	prNum := 10
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	success := vcs.CheckConclusionSuccess
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Mergeable: boolPtr(true), LatestReviewState: vcs.ReviewStateCommented}
+	vp.nextCheckResults = []vcs.CheckResult{
+		{Status: vcs.CheckStatusCompleted, Conclusion: &success},
+	}
+	vp.nextReviewComments = []vcs.ReviewComment{
+		{Author: "chatgpt-codex-connector[bot]", Body: "handle the nil case", State: vcs.ReviewStateChangesRequested},
+	}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
+	poller.Run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	e := tracker.Get("sess-1")
+	if e == nil {
+		t.Fatal("expected tracker entry, got nil")
+		return
+	}
+	if e.Status != vcs.DisplayStatusRejected {
+		t.Errorf("Status = %d, want %d (Rejected)", e.Status, vcs.DisplayStatusRejected)
+	}
+}
+
 func TestDisplayPoller_CheckResultsError_NoUpdate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -571,6 +616,57 @@ func TestDisplayPoller_CheckResultsError_PreservesPrevious(t *testing.T) {
 	}
 	if e.Status != vcs.DisplayStatusFailing {
 		t.Errorf("Status = %d, want %d (Failing — previous status sticks on error)", e.Status, vcs.DisplayStatusFailing)
+	}
+}
+
+// TestDisplayPoller_ClearsStaleDraftWhenReadyWithNoChecks reproduces WON-1118:
+// a PR created as draft (tracker holds "Draft") becomes ready-for-review, but
+// its head commit has no CI checks. With the GetCheckResults fix, the provider
+// returns an empty (non-error) check set, so the poller must recompute and
+// clear the stale "Draft" rather than leaving it frozen for hours.
+func TestDisplayPoller_ClearsStaleDraftWhenReadyWithNoChecks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	tracker := status.NewDisplayTracker()
+	logger := zerolog.Nop()
+
+	prNum := 299
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "owner/repo",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:       "sess-1",
+		RepoID:   "repo-1",
+		PRNumber: &prNum,
+	}
+
+	// Seed a stale "Draft" entry from when the PR really was a draft.
+	tracker.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusDraft})
+
+	// PR is now ready (Draft=false) and mergeable, with no checks reported.
+	vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Draft: false, Mergeable: boolPtr(true)}
+	vp.nextCheckResults = []vcs.CheckResult{}
+
+	poller := NewDisplayPoller(sessions, repos, vp, tracker, 50*time.Millisecond, logger)
+	poller.Run(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+
+	e := tracker.Get("sess-1")
+	if e == nil {
+		t.Fatal("expected tracker entry, got nil")
+		return
+	}
+	if e.Status == vcs.DisplayStatusDraft {
+		t.Errorf("Status still Draft (%d) — stale draft was not cleared", e.Status)
+	}
+	if e.Status != vcs.DisplayStatusIdle {
+		t.Errorf("Status = %d, want %d (Idle — ready PR with no checks)", e.Status, vcs.DisplayStatusIdle)
 	}
 }
 
@@ -841,14 +937,14 @@ func TestPollIntervalStretchesAfterRecentWebhookRefresh(t *testing.T) {
 	)
 	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 
-	poller.recordRefresh("owner/repo", now)
+	poller.recordRefresh("sess-1", now)
 
-	if got := poller.intervalFor("owner/repo", now.Add(time.Minute)); got != webhookHealthyInterval {
+	if got := poller.intervalFor("sess-1", now.Add(time.Minute)); got != webhookHealthyInterval {
 		t.Fatalf("intervalFor = %s, want %s", got, webhookHealthyInterval)
 	}
 }
 
-func TestPollIntervalRevertsAfterStaleWebhook(t *testing.T) {
+func TestPollIntervalReturnsConfiguredAfterWebhookWindow(t *testing.T) {
 	configured := 30 * time.Second
 	poller := NewDisplayPoller(
 		newMockSessionStore(),
@@ -860,10 +956,38 @@ func TestPollIntervalRevertsAfterStaleWebhook(t *testing.T) {
 	)
 	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 
-	poller.recordRefresh("owner/repo", now.Add(-webhookHealthyWindow-time.Nanosecond))
+	poller.recordRefresh("sess-1", now.Add(-webhookHealthyWindow-time.Nanosecond))
 
-	if got := poller.intervalFor("owner/repo", now); got != configured {
+	if got := poller.intervalFor("sess-1", now); got != configured {
 		t.Fatalf("intervalFor = %s, want %s", got, configured)
+	}
+}
+
+func TestShouldPollSessionBackoffIsPerSessionNotPerRepo(t *testing.T) {
+	configured := 30 * time.Second
+	poller := NewDisplayPoller(
+		newMockSessionStore(),
+		newMockRepoStore(),
+		newMockVCSProvider(),
+		status.NewDisplayTracker(),
+		configured,
+		zerolog.Nop(),
+	)
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+
+	poller.markPolled("sess-A", now)
+	poller.markPolled("sess-B", now)
+
+	// Session A received a webhook; it should back off to the healthy interval.
+	poller.recordRefresh("sess-A", now)
+	if got := poller.shouldPollSession("sess-A", now.Add(time.Minute)); got {
+		t.Fatal("sess-A shouldPollSession = true, want false (webhook healthy)")
+	}
+
+	// Session B shares the same repo but got no webhook of its own; it must keep
+	// the configured (fast) interval rather than being starved by sess-A's webhook.
+	if got := poller.shouldPollSession("sess-B", now.Add(time.Minute)); !got {
+		t.Fatalf("sess-B shouldPollSession = false, want true after configured interval %s", configured)
 	}
 }
 
@@ -898,7 +1022,7 @@ func TestPollIntervalSkipsRecentlyPolledSessionWhenWebhookHealthy(t *testing.T) 
 		t.Fatalf("first poll GetPRStatus calls = %d, want 1", len(vp.getPRStatusPRNumbers))
 	}
 
-	poller.recordRefresh("owner/repo", time.Now())
+	poller.recordRefresh("sess-1", time.Now())
 	poller.poll(ctx)
 
 	if len(vp.getPRStatusPRNumbers) != 1 {

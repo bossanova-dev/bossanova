@@ -193,6 +193,9 @@ message UpdateRepoRequest {
   optional string setup_script = 8;
   optional string linear_api_key = 9;
   reserved 10;
+  optional string sentry_api_key = 11;
+  optional string sentry_org = 12;
+  reserved 13; // was sentry_project (removed: issues are listed org-wide)
 }
 
 message UpdateRepoResponse {
@@ -210,6 +213,8 @@ message ListRepoPRsResponse {
 message ListTrackerIssuesRequest {
   string repo_id = 1;
   string query = 2;
+  // Which task source to query. "linear" (default for back-compat) | "sentry".
+  optional string source = 3;
 }
 
 message ListTrackerIssuesResponse {

@@ -189,7 +189,10 @@ type PluginInfo struct {
 	// user_settings describes plugin-tunable settings that the boss TUI
 	// renders as a section in the settings page. Empty list = no user-
 	// facing settings for this plugin.
-	UserSettings  []*UserSetting `protobuf:"bytes,4,rep,name=user_settings,json=userSettings,proto3" json:"user_settings,omitempty"`
+	UserSettings []*UserSetting `protobuf:"bytes,4,rep,name=user_settings,json=userSettings,proto3" json:"user_settings,omitempty"`
+	// user_initiated marks a task source that is driven on-demand rather than
+	// polled. When true, the task orchestrator skips PollTasks for this plugin.
+	UserInitiated bool `protobuf:"varint,5,opt,name=user_initiated,json=userInitiated,proto3" json:"user_initiated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -250,6 +253,13 @@ func (x *PluginInfo) GetUserSettings() []*UserSetting {
 		return x.UserSettings
 	}
 	return nil
+}
+
+func (x *PluginInfo) GetUserInitiated() bool {
+	if x != nil {
+		return x.UserInitiated
+	}
+	return false
 }
 
 type TaskSourceServiceGetInfoRequest struct {
@@ -4055,13 +4065,14 @@ var File_bossanova_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/plugin.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/models.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x9e\x01\n" +
+	"\x19bossanova/v1/plugin.proto\x12\fbossanova.v1\x1a\x19bossanova/v1/models.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc5\x01\n" +
 	"\n" +
 	"PluginInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
 	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\x12>\n" +
-	"\ruser_settings\x18\x04 \x03(\v2\x19.bossanova.v1.UserSettingR\fuserSettings\"!\n" +
+	"\ruser_settings\x18\x04 \x03(\v2\x19.bossanova.v1.UserSettingR\fuserSettings\x12%\n" +
+	"\x0euser_initiated\x18\x05 \x01(\bR\ruserInitiated\"!\n" +
 	"\x1fTaskSourceServiceGetInfoRequest\"P\n" +
 	" TaskSourceServiceGetInfoResponse\x12,\n" +
 	"\x04info\x18\x01 \x01(\v2\x18.bossanova.v1.PluginInfoR\x04info\"\"\n" +

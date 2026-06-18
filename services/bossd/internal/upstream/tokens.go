@@ -21,6 +21,7 @@ import (
 
 	"github.com/99designs/keyring"
 	"github.com/recurser/bossalib/authlock"
+	"github.com/recurser/bossalib/authtoken"
 	"github.com/recurser/bossalib/keyringutil"
 )
 
@@ -179,7 +180,7 @@ func refreshWorkOSToken(ctx context.Context, clientID, refreshToken string) (*ke
 	return &keychainTokens{
 		AccessToken:  result.AccessToken,
 		RefreshToken: result.RefreshToken,
-		ExpiresAt:    time.Now().Add(time.Duration(result.ExpiresIn) * time.Second),
+		ExpiresAt:    authtoken.AccessTokenExpiry(result.AccessToken, result.ExpiresIn, time.Now()),
 		Email:        result.User.Email,
 	}, nil
 }

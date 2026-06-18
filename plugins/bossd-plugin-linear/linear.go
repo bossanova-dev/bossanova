@@ -108,8 +108,9 @@ type graphqlData struct {
 // first page. If titleQuery also contains digits, the integer is OR'd in as
 // a number filter so searching by issue number (e.g. "1181" or "FRE-1181")
 // finds the matching issue even when the title doesn't contain those digits.
-// An empty titleQuery returns the most recently updated active issues
-// (Linear's default page size, currently 50).
+// An empty titleQuery returns the most recently created active issues, ordered
+// by createdAt descending and capped at Linear's default page size (currently
+// 50).
 func (c *linearClient) FetchIssues(ctx context.Context, titleQuery string) ([]linearIssue, error) {
 	// GraphQL query to fetch issues across all accessible teams, filtered by
 	// state type and (optionally) by title and/or issue number. The filter
@@ -119,7 +120,7 @@ func (c *linearClient) FetchIssues(ctx context.Context, titleQuery string) ([]li
 	// canceled.
 	query := `
 		query Issues($filter: IssueFilter!) {
-			issues(filter: $filter, orderBy: updatedAt) {
+			issues(filter: $filter, orderBy: createdAt) {
 				nodes {
 					identifier
 					title

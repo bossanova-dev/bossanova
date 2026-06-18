@@ -31,11 +31,17 @@ func (m *mockTaskSourceProvider) GetTaskSources() []plugin.TaskSource {
 }
 
 type mockTaskSource struct {
-	pollFn func(ctx context.Context, repoOriginURL string) ([]*bossanovav1.TaskItem, error)
+	name          string
+	userInitiated bool
+	pollFn        func(ctx context.Context, repoOriginURL string) ([]*bossanovav1.TaskItem, error)
 }
 
 func (m *mockTaskSource) GetInfo(_ context.Context) (*bossanovav1.PluginInfo, error) {
-	return &bossanovav1.PluginInfo{Name: "test-plugin"}, nil
+	name := m.name
+	if name == "" {
+		name = "test-plugin"
+	}
+	return &bossanovav1.PluginInfo{Name: name, UserInitiated: m.userInitiated}, nil
 }
 
 func (m *mockTaskSource) PollTasks(ctx context.Context, repoOriginURL string) ([]*bossanovav1.TaskItem, error) {
@@ -401,6 +407,37 @@ func TestPoll_MultipleSources(t *testing.T) {
 	}
 	if polls[0] != "src1:repo1" || polls[1] != "src2:repo1" {
 		t.Errorf("unexpected polls: %v", polls)
+	}
+}
+
+func TestPoll_SkipsUserInitiatedSources(t *testing.T) {
+	userInit := &mockTaskSource{
+		name:          "linear",
+		userInitiated: true,
+		pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
+			t.Fatal("PollTasks must not be called on a user-initiated source")
+			return nil, nil
+		},
+	}
+	polledNormal := false
+	normal := &mockTaskSource{
+		name: "dependabot",
+		pollFn: func(_ context.Context, _ string) ([]*bossanovav1.TaskItem, error) {
+			polledNormal = true
+			return nil, nil
+		},
+	}
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.sources = &mockTaskSourceProvider{sources: []plugin.TaskSource{userInit, normal}}
+		o.repos = &mockRepoStore{repos: []*models.Repo{
+			{ID: "r1", OriginURL: "repo1", CanAutoMergeDependabot: true},
+		}}
+	})
+	orch.poll(context.Background())
+
+	if !polledNormal {
+		t.Fatal("normal source PollTasks was not called")
 	}
 }
 

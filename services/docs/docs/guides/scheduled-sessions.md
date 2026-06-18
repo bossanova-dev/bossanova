@@ -15,8 +15,8 @@ dependency scans, nightly stale-issue triage, periodic docs sweeps.
 
 ## Open the cron list
 
-From the home view, press `c` (or press `?` from any screen for the
-keymap). The list shows every job the daemon knows about,
+From the home view, press `s` to open Settings, then `c` (or press `?` from any
+screen for the keymap). The list shows every job the daemon knows about,
 one row per job, sorted by next fire time. The columns are:
 
 | Column     | Meaning                                                       |
@@ -30,7 +30,7 @@ one row per job, sorted by next fire time. The columns are:
 | `STATUS`   | `Running` (with spinner), `failed`, or `idle`.                |
 
 The action bar shows the available keys: `[n]ew`, `[e]dit`,
-`[d]elete`, `[space] toggle`, `[r]un now`. `esc` returns to home.
+`[d]elete`, `[space] toggle`, `[r]un now`. `esc` returns to Settings.
 
 ## Add a cron job
 
@@ -187,6 +187,7 @@ sessions exactly as it does to manual sessions. See
   parallelism story.
 - [Setup scripts](setup-scripts.md): what runs in the worktree
   before the cron prompt does.
-- your repo's settings (open the Repos screen with `r` from home,
-  then `enter` on the repo): per-repo automation flags that apply
+- your repo's settings (open Settings with `s` from home, then `r`
+  for the Repos screen, then `enter` on the repo): per-repo
+  automation flags that apply
   to cron-spawned PRs same as manual ones.

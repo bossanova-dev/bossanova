@@ -56,6 +56,9 @@ message PluginInfo {
   // renders as a section in the settings page. Empty list = no user-
   // facing settings for this plugin.
   repeated UserSetting user_settings = 4;
+  // user_initiated marks a task source that is driven on-demand rather than
+  // polled. When true, the task orchestrator skips PollTasks for this plugin.
+  bool user_initiated = 5;
 }
 
 // Per-service GetInfo request/response types to satisfy buf lint uniqueness.

@@ -13,6 +13,16 @@ you can see at a glance which slot still needs a real screenshot.
 
 (none yet)
 
+## Navigation note (re-capture needed)
+
+The TUI navigation was reorganized: Repos, Cron, and Trash now live behind the
+**Settings** hub (press `s` from the home screen, then `r` / `c` / `t`), and
+session **Archive** moved into the per-session chat picker (beside Merge). Any
+screenshot or asciinema cast below that shows reaching these screens directly
+from the home action bar is stale and must be re-captured against the new flow.
+This applies to the `tour/*.cast` recordings and the GIFs hosted on
+`bossanova.dev` that the root `README.md` embeds.
+
 ## Placeholders
 
 | File                                | Pages                        | Should depict                                                                              |

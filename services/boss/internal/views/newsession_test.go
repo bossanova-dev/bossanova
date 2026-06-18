@@ -16,20 +16,21 @@ import (
 // stubClient implements client.BossClient for testing NewSessionModel.
 // Only the methods used by the wizard are implemented; the rest panic.
 type stubClient struct {
-	repos            []*pb.Repo
-	reposErr         error
-	created          *pb.Session
-	createErr        error
-	createReq        *pb.CreateSessionRequest // captures the last CreateSession request
-	createCalls      int
-	prs              []*pb.PRSummary
-	prsErr           error
-	trackerIssues    []*pb.TrackerIssue
-	trackerIssuesErr error
-	agents           []client.AgentInfo
-	agentsErr        error
-	createdCronReq   *pb.CreateCronJobRequest
-	updatedCronReq   *pb.UpdateCronJobRequest
+	repos             []*pb.Repo
+	reposErr          error
+	created           *pb.Session
+	createErr         error
+	createReq         *pb.CreateSessionRequest // captures the last CreateSession request
+	createCalls       int
+	prs               []*pb.PRSummary
+	prsErr            error
+	trackerIssues     []*pb.TrackerIssue
+	trackerIssuesErr  error
+	trackerLastSource string // captures the source arg of the last ListTrackerIssues call
+	agents            []client.AgentInfo
+	agentsErr         error
+	createdCronReq    *pb.CreateCronJobRequest
+	updatedCronReq    *pb.UpdateCronJobRequest
 }
 
 func (s *stubClient) ListRepos(context.Context) ([]*pb.Repo, error) {
@@ -49,7 +50,8 @@ func (s *stubClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, erro
 	return s.prs, s.prsErr
 }
 
-func (s *stubClient) ListTrackerIssues(context.Context, string, string) ([]*pb.TrackerIssue, error) {
+func (s *stubClient) ListTrackerIssues(_ context.Context, _, _, source string) ([]*pb.TrackerIssue, error) {
+	s.trackerLastSource = source
 	return s.trackerIssues, s.trackerIssuesErr
 }
 

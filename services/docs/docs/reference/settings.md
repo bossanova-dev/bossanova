@@ -15,6 +15,10 @@ The file is optional. When it's absent, defaults apply. Both `boss` and
 `bossd` read the same file. Use `BOSS_SETTINGS_PATH` when you want a dev
 build and an installed build to run in parallel without sharing local state.
 
+Press `s` from the home screen to open the Settings view. It hosts the global
+toggles (such as the _Skip permissions_ checkbox) and is also the gateway to the
+Repos (`r`), Cron (`c`), and Trash (`t`) screens.
+
 ![Bossanova settings view](/img/screenshots/tui-settings.png)
 
 ## Example

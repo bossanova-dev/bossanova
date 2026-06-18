@@ -452,6 +452,93 @@ func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 	}
 }
 
+// TestGetPRStatus_ReviewStateResolution pins how GetPRStatus reconciles the
+// per-review states in the "reviews" array against the overall reviewDecision.
+// The existing coverage only exercises an empty reviews array; this locks in the
+// two behaviors that drive repair/merge gating: an individual review state wins
+// when the decision is non-definitive, but a definitive APPROVED/CHANGES_REQUESTED
+// decision always overrides a later individual review so a stale review cannot
+// mask the authoritative decision.
+func TestGetPRStatus_ReviewStateResolution(t *testing.T) {
+	tests := []struct {
+		name              string
+		reviewDecision    string
+		reviewStates      []string
+		wantDecisionState vcs.ReviewState
+		wantLatestState   vcs.ReviewState
+	}{
+		{
+			name:              "non-definitive decision lets latest individual review win",
+			reviewDecision:    "REVIEW_REQUIRED",
+			reviewStates:      []string{"COMMENTED", "APPROVED"},
+			wantDecisionState: vcs.ReviewStateRequired,
+			wantLatestState:   vcs.ReviewStateApproved,
+		},
+		{
+			name:              "pending review is ignored when picking latest",
+			reviewDecision:    "REVIEW_REQUIRED",
+			reviewStates:      []string{"APPROVED", "PENDING"},
+			wantDecisionState: vcs.ReviewStateRequired,
+			wantLatestState:   vcs.ReviewStateApproved,
+		},
+		{
+			name:              "changes-requested decision overrides a later approval",
+			reviewDecision:    "CHANGES_REQUESTED",
+			reviewStates:      []string{"APPROVED"},
+			wantDecisionState: vcs.ReviewStateChangesRequested,
+			wantLatestState:   vcs.ReviewStateChangesRequested,
+		},
+		{
+			name:              "approved decision overrides a later changes-requested review",
+			reviewDecision:    "APPROVED",
+			reviewStates:      []string{"CHANGES_REQUESTED"},
+			wantDecisionState: vcs.ReviewStateApproved,
+			wantLatestState:   vcs.ReviewStateApproved,
+		},
+		{
+			name:              "no decision falls back to the latest individual review",
+			reviewDecision:    "",
+			reviewStates:      []string{"APPROVED", "COMMENTED"},
+			wantDecisionState: vcs.ReviewStateUnspecified,
+			wantLatestState:   vcs.ReviewStateCommented,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviewsJSON := make([]string, 0, len(tt.reviewStates))
+			for _, s := range tt.reviewStates {
+				reviewsJSON = append(reviewsJSON, fmt.Sprintf(`{"state":%q}`, s))
+			}
+			fakeGH := func(_ context.Context, args ...string) (string, error) {
+				if len(args) >= 3 && args[0] == "pr" && args[1] == "view" {
+					return fmt.Sprintf(
+						`{"state":"OPEN","mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","isDraft":false,`+
+							`"title":"Review resolution","headRefName":"feature","baseRefName":"main",`+
+							`"headRefOid":"abc123","reviewDecision":%q,"reviews":[%s]}`,
+						tt.reviewDecision, strings.Join(reviewsJSON, ","),
+					), nil
+				}
+				// A CONFLICTING PR is not mergeable, so GetPRStatus must not make
+				// the secondary mergeability API call; surface it as a failure.
+				return "", fmt.Errorf("unexpected gh args: %v", args)
+			}
+
+			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			status, err := p.GetPRStatus(context.Background(), "owner/repo", 42)
+			if err != nil {
+				t.Fatalf("GetPRStatus: %v", err)
+			}
+			if status.ReviewDecisionState != tt.wantDecisionState {
+				t.Errorf("ReviewDecisionState = %v, want %v", status.ReviewDecisionState, tt.wantDecisionState)
+			}
+			if status.LatestReviewState != tt.wantLatestState {
+				t.Errorf("LatestReviewState = %v, want %v", status.LatestReviewState, tt.wantLatestState)
+			}
+		})
+	}
+}
+
 func TestGetPRStatus_RestMergeabilityMapsRebaseConflict(t *testing.T) {
 	apiCalled := false
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
@@ -821,6 +908,47 @@ func TestGetReviewComments_BotWithUnresolvedThreads(t *testing.T) {
 	}
 }
 
+func TestGetReviewComments_CodexBotCommentedReviewWithInlineCommentsPromotesToChangesRequested(t *testing.T) {
+	fakeGH := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "api" && args[1] == "graphql" {
+			return graphqlThreadsResponse(
+				struct {
+					resolved bool
+					author   string
+				}{false, "chatgpt-codex-connector"},
+			), nil
+		}
+		if args[0] == "api" && strings.Contains(args[1], "/reviews/987/comments") {
+			return `[
+				{"user":{"login":"chatgpt-codex-connector[bot]"},"body":"handle the nil case","path":"session.go","line":87}
+			]`, nil
+		}
+		return `[
+			{"id":987,"user":{"login":"chatgpt-codex-connector[bot]"},"body":"reviewed","state":"COMMENTED"}
+		]`, nil
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+	comments, err := p.GetReviewComments(context.Background(), "owner/repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want promoted summary plus inline comment", len(comments))
+	}
+	for i, comment := range comments {
+		if comment.State != vcs.ReviewStateChangesRequested {
+			t.Fatalf("comment[%d].State = %v, want ChangesRequested", i, comment.State)
+		}
+	}
+	if comments[1].Path == nil || *comments[1].Path != "session.go" {
+		t.Fatalf("inline comment path = %v, want session.go", comments[1].Path)
+	}
+	if comments[1].Line == nil || *comments[1].Line != 87 {
+		t.Fatalf("inline comment line = %v, want 87", comments[1].Line)
+	}
+}
+
 func TestGetReviewComments_BotWithUnresolvedThreadOnSecondPage(t *testing.T) {
 	graphQLCalls := 0
 	fakeGH := func(_ context.Context, args ...string) (string, error) {
@@ -1133,6 +1261,41 @@ func TestListOpenPRs_EmptyPayloadYieldsNoPRs(t *testing.T) {
 	}
 	if len(prs) != 0 {
 		t.Errorf("got %d PRs, want 0", len(prs))
+	}
+}
+
+func TestGetCheckResults_NoChecksReportedIsEmptyNotError(t *testing.T) {
+	// `gh pr checks` exits non-zero when the head commit has no check runs.
+	// That is a normal empty state — GetCheckResults must surface it as an
+	// empty slice with no error, so the display poller still recomputes and
+	// clears any stale status (e.g. a "draft" left over from before the PR
+	// became ready). Regression test for the stuck-draft bug (WON-1118).
+	fakeGH := func(_ context.Context, _ ...string) (string, error) {
+		return "", fmt.Errorf("gh pr checks 299 --repo IKHOR/wondercanvas-mono --json name,state,workflow: exit status 1: no checks reported on the 'dave/won-1118-fable-02' branch")
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	results, err := p.GetCheckResults(context.Background(), "IKHOR/wondercanvas-mono", 299)
+	if err != nil {
+		t.Fatalf("GetCheckResults: unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("got %d check results, want 0", len(results))
+	}
+}
+
+func TestGetCheckResults_RealErrorPropagates(t *testing.T) {
+	// A genuine gh failure (e.g. rate limit) must still surface as an error so
+	// the poller preserves the previous status instead of collapsing it.
+	fakeGH := func(_ context.Context, _ ...string) (string, error) {
+		return "", fmt.Errorf("gh pr checks 299 --repo IKHOR/wondercanvas-mono --json name,state,workflow: exit status 1: GraphQL: API rate limit already exceeded for user ID 96322")
+	}
+
+	p := New(zerolog.Nop(), WithRunGH(fakeGH))
+
+	if _, err := p.GetCheckResults(context.Background(), "IKHOR/wondercanvas-mono", 299); err == nil {
+		t.Fatal("expected error for a real gh failure, got nil")
 	}
 }
 

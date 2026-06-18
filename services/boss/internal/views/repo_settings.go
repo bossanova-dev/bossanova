@@ -43,16 +43,26 @@ type repoSettingsGitHubOpenedMsg struct {
 	attempt int
 }
 
+// rowID is a stable identity for each logical row in the settings view. Rows are
+// referenced by identity rather than position because collapsing an integration
+// hides its child rows, so on-screen positions are dynamic.
+type rowID int
+
 const (
-	repoSettingsRowName                    = 0
-	repoSettingsRowSetupScript             = 1
-	repoSettingsRowMergeStrategy           = 2
-	repoSettingsRowCanAutoMerge            = 3
-	repoSettingsRowCanAutoMergeDependabot  = 4
-	repoSettingsRowCanAutoAddressReviews   = 5
-	repoSettingsRowCanAutoResolveConflicts = 6
-	repoSettingsRowLinearApiKey            = 7
-	repoSettingsRowCount                   = 8
+	repoSettingsRowNone rowID = iota - 1 // sentinel: not editing / no row
+
+	repoSettingsRowName
+	repoSettingsRowSetupScript
+	repoSettingsRowMergeStrategy
+	repoSettingsRowCanAutoMerge
+	repoSettingsRowCanAutoMergeDependabot
+	repoSettingsRowCanAutoAddressReviews
+	repoSettingsRowCanAutoResolveConflicts
+	repoSettingsRowLinearHeader
+	repoSettingsRowLinearApiKey
+	repoSettingsRowSentryHeader
+	repoSettingsRowSentryApiKey
+	repoSettingsRowSentryOrg
 )
 
 type repoSettingsGitHubMode int
@@ -89,16 +99,30 @@ func maskAPIKey(key string) string {
 	return strings.Repeat("*", len(key)-4) + key[len(key)-4:]
 }
 
+// valueOrNotSet renders a plain-text setting value, or "(not set)" when empty.
+// Used for non-secret fields (the Sentry organization slug) shown unmasked.
+func valueOrNotSet(v string) string {
+	if v == "" {
+		return "(not set)"
+	}
+	return v
+}
+
 // RepoSettingsModel is the TUI view for editing per-repo settings.
 type RepoSettingsModel struct {
 	client client.BossClient
 	ctx    context.Context
 	repoID string
 	repo   *pb.Repo
-	cursor int
+	cursor int // index into visibleRows()
 	cancel bool
 	done   bool
 	err    error
+
+	// Integration expansion state. Initialized from credential presence when the
+	// repo loads, then driven solely by the user toggling the checkbox header.
+	linearExpanded bool
+	sentryExpanded bool
 
 	githubAppClient      GitHubAppClient
 	githubAppStatus      *pb.GitHubAppRepoStatus
@@ -109,11 +133,13 @@ type RepoSettingsModel struct {
 	githubAppInstallErr  error
 	githubAppInstallOpen bool
 
-	// Inline editing (-1 = not editing, otherwise the row being edited)
-	editingField      int
+	// Inline editing (repoSettingsRowNone = not editing, otherwise the row being edited)
+	editingField      rowID
 	nameInput         textinput.Model
 	setupInput        textinput.Model
 	linearApiKeyInput textinput.Model
+	sentryApiKeyInput textinput.Model
+	sentryOrgInput    textinput.Model
 
 	width int
 }
@@ -132,19 +158,109 @@ func NewRepoSettingsModel(c client.BossClient, ctx context.Context, repoID strin
 	aki.Placeholder = "lin_api_..."
 	aki.SetWidth(60)
 
+	ski := textinput.New()
+	ski.Placeholder = "sntrys_..."
+	ski.SetWidth(60)
+
+	soi := textinput.New()
+	soi.Placeholder = "your-org-slug"
+	soi.SetWidth(60)
+
 	return RepoSettingsModel{
 		client:            c,
 		ctx:               ctx,
 		repoID:            repoID,
-		editingField:      -1,
+		editingField:      repoSettingsRowNone,
 		nameInput:         ni,
 		setupInput:        si,
 		linearApiKeyInput: aki,
+		sentryApiKeyInput: ski,
+		sentryOrgInput:    soi,
 	}
 }
 
 func (m *RepoSettingsModel) SetGitHubAppInstall(c GitHubAppClient) {
 	m.githubAppClient = c
+}
+
+// visibleRows returns the ordered list of navigable rows given the current
+// expansion state. Headers and non-integration rows are always present;
+// integration child rows are appended only when their parent is expanded. The
+// non-navigable "Integrations" heading label is not a row.
+func (m RepoSettingsModel) visibleRows() []rowID {
+	rows := []rowID{
+		repoSettingsRowName,
+		repoSettingsRowSetupScript,
+		repoSettingsRowMergeStrategy,
+		repoSettingsRowCanAutoMerge,
+		repoSettingsRowCanAutoMergeDependabot,
+		repoSettingsRowCanAutoAddressReviews,
+		repoSettingsRowCanAutoResolveConflicts,
+		repoSettingsRowLinearHeader,
+	}
+	if m.linearExpanded {
+		rows = append(rows, repoSettingsRowLinearApiKey)
+	}
+	rows = append(rows, repoSettingsRowSentryHeader)
+	if m.sentryExpanded {
+		rows = append(rows,
+			repoSettingsRowSentryApiKey,
+			repoSettingsRowSentryOrg,
+		)
+	}
+	return rows
+}
+
+// currentRow returns the rowID the cursor is currently on, or repoSettingsRowNone
+// if the cursor is out of range.
+func (m RepoSettingsModel) currentRow() rowID {
+	rows := m.visibleRows()
+	if m.cursor < 0 || m.cursor >= len(rows) {
+		return repoSettingsRowNone
+	}
+	return rows[m.cursor]
+}
+
+// clampCursor keeps the cursor within the bounds of the current visible row set,
+// e.g. after a collapse shrinks the list.
+func (m *RepoSettingsModel) clampCursor() {
+	n := len(m.visibleRows())
+	if m.cursor >= n {
+		m.cursor = n - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+}
+
+// initExpansionState derives initial integration expansion from credential
+// presence: an integration starts expanded if any of its credential fields is
+// non-empty. Called once when the repo loads.
+func (m *RepoSettingsModel) initExpansionState() {
+	if m.repo == nil {
+		return
+	}
+	m.linearExpanded = m.repo.GetLinearApiKey() != ""
+	m.sentryExpanded = m.repo.GetSentryApiKey() != "" ||
+		m.repo.GetSentryOrg() != ""
+}
+
+// sentryMissingFields reports which Sentry fields render red. A field is red only
+// when Sentry is partially configured — exactly one of {API key, organization
+// slug} is set. When both are set or both are empty, nothing is red.
+func (m RepoSettingsModel) sentryMissingFields() (apiKey, org bool) {
+	if m.repo == nil {
+		return false, false
+	}
+	hasKey := m.repo.GetSentryApiKey() != ""
+	hasOrg := m.repo.GetSentryOrg() != ""
+
+	anySet := hasKey || hasOrg
+	allSet := hasKey && hasOrg
+	if !anySet || allSet {
+		return false, false
+	}
+	return !hasKey, !hasOrg
 }
 
 func (m RepoSettingsModel) Init() tea.Cmd {
@@ -165,7 +281,7 @@ func (m RepoSettingsModel) Init() tea.Cmd {
 func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// When editing a text field, forward all message types (not just KeyMsg)
 	// to the textinput so that paste messages are handled correctly.
-	if m.editingField >= 0 {
+	if m.editingField != repoSettingsRowNone {
 		return m.updateEditing(msg)
 	}
 
@@ -182,6 +298,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repo = msg.repo
 		m.nameInput.SetValue(m.repo.DisplayName)
 		m.setupInput.SetValue(m.repo.GetSetupScript())
+		m.initExpansionState()
 		// Note: API key is NOT pre-filled (always full replace for security)
 		return m, m.loadGitHubAppStatus()
 
@@ -241,7 +358,7 @@ func (m RepoSettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < repoSettingsRowCount-1 {
+			if m.cursor < len(m.visibleRows())-1 {
 				m.cursor++
 			}
 		case "enter", "space":
@@ -297,6 +414,12 @@ func (m RepoSettingsModel) updateEditing(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setupInput, cmd = m.setupInput.Update(msg)
 	case repoSettingsRowLinearApiKey:
 		m.linearApiKeyInput, cmd = m.linearApiKeyInput.Update(msg)
+	case repoSettingsRowSentryApiKey:
+		m.sentryApiKeyInput, cmd = m.sentryApiKeyInput.Update(msg)
+	case repoSettingsRowSentryOrg:
+		m.sentryOrgInput, cmd = m.sentryOrgInput.Update(msg)
+	default:
+		// Other rows are not editable text fields.
 	}
 	return m, cmd
 }
@@ -309,7 +432,7 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("name cannot be empty")
 			return m, nil
 		}
-		m.editingField = -1
+		m.editingField = repoSettingsRowNone
 		m.err = nil
 		m.nameInput.Blur()
 		return m, m.saveSettings(&pb.UpdateRepoRequest{
@@ -318,7 +441,7 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 		})
 	case repoSettingsRowSetupScript:
 		val := strings.TrimSpace(m.setupInput.Value())
-		m.editingField = -1
+		m.editingField = repoSettingsRowNone
 		m.err = nil
 		m.setupInput.Blur()
 		// Empty string clears the setup command.
@@ -328,13 +451,33 @@ func (m RepoSettingsModel) commitEdit() (tea.Model, tea.Cmd) {
 		})
 	case repoSettingsRowLinearApiKey:
 		val := strings.TrimSpace(m.linearApiKeyInput.Value())
-		m.editingField = -1
+		m.editingField = repoSettingsRowNone
 		m.err = nil
 		m.linearApiKeyInput.Blur()
 		return m, m.saveSettings(&pb.UpdateRepoRequest{
 			Id:           m.repoID,
 			LinearApiKey: &val,
 		})
+	case repoSettingsRowSentryApiKey:
+		val := strings.TrimSpace(m.sentryApiKeyInput.Value())
+		m.editingField = repoSettingsRowNone
+		m.err = nil
+		m.sentryApiKeyInput.Blur()
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:           m.repoID,
+			SentryApiKey: &val,
+		})
+	case repoSettingsRowSentryOrg:
+		val := strings.TrimSpace(m.sentryOrgInput.Value())
+		m.editingField = repoSettingsRowNone
+		m.err = nil
+		m.sentryOrgInput.Blur()
+		return m, m.saveSettings(&pb.UpdateRepoRequest{
+			Id:        m.repoID,
+			SentryOrg: &val,
+		})
+	default:
+		// Other rows have no committable edit state.
 	}
 	return m, nil
 }
@@ -354,8 +497,18 @@ func (m RepoSettingsModel) cancelEdit() RepoSettingsModel {
 	case repoSettingsRowLinearApiKey:
 		m.linearApiKeyInput.Blur()
 		m.linearApiKeyInput.SetValue("") // Always empty (full replace)
+	case repoSettingsRowSentryApiKey:
+		m.sentryApiKeyInput.Blur()
+		m.sentryApiKeyInput.SetValue("") // Always empty (full replace)
+	case repoSettingsRowSentryOrg:
+		m.sentryOrgInput.Blur()
+		if m.repo != nil {
+			m.sentryOrgInput.SetValue(m.repo.GetSentryOrg())
+		}
+	default:
+		// Other rows have no editable input to reset.
 	}
-	m.editingField = -1
+	m.editingField = repoSettingsRowNone
 	m.err = nil
 	return m
 }
@@ -365,7 +518,7 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	switch m.cursor {
+	switch m.currentRow() {
 	case repoSettingsRowName:
 		m.editingField = repoSettingsRowName
 		return m, m.nameInput.Focus()
@@ -415,10 +568,30 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			Id:                      m.repoID,
 			CanAutoResolveConflicts: &v,
 		})
+	case repoSettingsRowLinearHeader:
+		// UI-only expand/collapse toggle; never reads or writes credentials.
+		m.linearExpanded = !m.linearExpanded
+		m.clampCursor()
+		return m, nil
+	case repoSettingsRowSentryHeader:
+		// UI-only expand/collapse toggle; never reads or writes credentials.
+		m.sentryExpanded = !m.sentryExpanded
+		m.clampCursor()
+		return m, nil
 	case repoSettingsRowLinearApiKey:
 		m.editingField = repoSettingsRowLinearApiKey
 		m.linearApiKeyInput.SetValue("") // Full replace, not edit
 		return m, m.linearApiKeyInput.Focus()
+	case repoSettingsRowSentryApiKey:
+		m.editingField = repoSettingsRowSentryApiKey
+		m.sentryApiKeyInput.SetValue("") // Full replace, not edit
+		return m, m.sentryApiKeyInput.Focus()
+	case repoSettingsRowSentryOrg:
+		m.editingField = repoSettingsRowSentryOrg
+		m.sentryOrgInput.SetValue(m.repo.SentryOrg) // Plain text, edit in place
+		return m, m.sentryOrgInput.Focus()
+	default:
+		// repoSettingsRowNone or any unmapped row: no action.
 	}
 	return m, nil
 }
@@ -569,6 +742,9 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
+	// cur is the rowID under the cursor; rows compare against it for focus.
+	cur := m.currentRow()
+
 	// Row 0: Name
 	if m.editingField == repoSettingsRowName {
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Name:"))
@@ -577,11 +753,11 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString("\n")
 	} else {
 		cursor := "  "
-		if m.cursor == repoSettingsRowName {
+		if cur == repoSettingsRowName {
 			cursor = cursorChevron + " "
 		}
 		line := fmt.Sprintf("%sName: %s", cursor, m.repo.DisplayName)
-		if m.cursor == repoSettingsRowName {
+		if cur == repoSettingsRowName {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
@@ -596,7 +772,7 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString("\n")
 	} else {
 		cursor := "  "
-		if m.cursor == repoSettingsRowSetupScript {
+		if cur == repoSettingsRowSetupScript {
 			cursor = cursorChevron + " "
 		}
 		val := m.repo.GetSetupScript()
@@ -604,7 +780,7 @@ func (m RepoSettingsModel) View() tea.View {
 			val = "(none)"
 		}
 		line := fmt.Sprintf("%sSetup command: %s", cursor, val)
-		if m.cursor == repoSettingsRowSetupScript {
+		if cur == repoSettingsRowSetupScript {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
@@ -614,11 +790,11 @@ func (m RepoSettingsModel) View() tea.View {
 	// Row 2: Merge strategy
 	{
 		cursor := "  "
-		if m.cursor == repoSettingsRowMergeStrategy {
+		if cur == repoSettingsRowMergeStrategy {
 			cursor = cursorChevron + " "
 		}
 		line := fmt.Sprintf("%sMerge strategy: %s", cursor, mergeStrategyLabel(m.repo.MergeStrategy))
-		if m.cursor == repoSettingsRowMergeStrategy {
+		if cur == repoSettingsRowMergeStrategy {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
@@ -631,7 +807,7 @@ func (m RepoSettingsModel) View() tea.View {
 	checkboxes := []struct {
 		label   string
 		checked bool
-		row     int
+		row     rowID
 	}{
 		{"Auto-merge PRs", m.repo.CanAutoMerge, repoSettingsRowCanAutoMerge},
 		{"Auto-merge Dependabot PRs", m.repo.CanAutoMergeDependabot, repoSettingsRowCanAutoMergeDependabot},
@@ -645,11 +821,11 @@ func (m RepoSettingsModel) View() tea.View {
 			check = "x"
 		}
 		cursor := "  "
-		if m.cursor == cb.row && m.editingField < 0 {
+		if cur == cb.row && m.editingField == repoSettingsRowNone {
 			cursor = cursorChevron + " "
 		}
 		line := fmt.Sprintf("%s[%s] %s", cursor, check, cb.label)
-		if m.cursor == cb.row && m.editingField < 0 {
+		if cur == cb.row && m.editingField == repoSettingsRowNone {
 			line = styleSelected.Render(line)
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
@@ -658,26 +834,52 @@ func (m RepoSettingsModel) View() tea.View {
 
 	b.WriteString("\n")
 
-	// Row 7: Linear API key
-	if m.editingField == repoSettingsRowLinearApiKey {
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Linear API key:"))
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render(m.linearApiKeyInput.View()))
-		b.WriteString("\n")
-	} else {
-		cursor := "  "
-		if m.cursor == repoSettingsRowLinearApiKey {
-			cursor = cursorChevron + " "
+	// Integrations section. Non-navigable heading label.
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Integrations"))
+	b.WriteString("\n")
+
+	// Linear checkbox header (expand/collapse) + child field when expanded.
+	b.WriteString(m.renderIntegrationHeader("Linear", m.linearExpanded, repoSettingsRowLinearHeader, cur))
+	if m.linearExpanded {
+		// Linear API key (masked, full-replace). Single field, never red.
+		if m.editingField == repoSettingsRowLinearApiKey {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render("API key:"))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.linearApiKeyInput.View()))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.LinearApiKey), repoSettingsRowLinearApiKey, cur, false))
 		}
-		line := fmt.Sprintf("%sLinear API key: %s", cursor, maskAPIKey(m.repo.LinearApiKey))
-		if m.cursor == repoSettingsRowLinearApiKey {
-			line = styleSelected.Render(line)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
-		b.WriteString("\n")
 	}
 
-	if m.editingField >= 0 {
+	// Sentry checkbox header (expand/collapse) + child fields when expanded.
+	b.WriteString(m.renderIntegrationHeader("Sentry", m.sentryExpanded, repoSettingsRowSentryHeader, cur))
+	if m.sentryExpanded {
+		missingKey, missingOrg := m.sentryMissingFields()
+
+		// Sentry API key (masked, full-replace like the Linear key).
+		if m.editingField == repoSettingsRowSentryApiKey {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render("API key:"))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.sentryApiKeyInput.View()))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(m.renderChildField("API key", maskAPIKey(m.repo.SentryApiKey), repoSettingsRowSentryApiKey, cur, missingKey))
+		}
+
+		// Organization slug (plain text). Issues are listed org-wide across every
+		// project, so no project slug is needed.
+		if m.editingField == repoSettingsRowSentryOrg {
+			b.WriteString(lipgloss.NewStyle().Padding(0, 4).Render("Organization slug:"))
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Padding(0, 6).Render(m.sentryOrgInput.View()))
+			b.WriteString("\n")
+		} else {
+			b.WriteString(m.renderChildField("Organization slug", valueOrNotSet(m.repo.SentryOrg), repoSettingsRowSentryOrg, cur, missingOrg))
+		}
+	}
+
+	if m.editingField != repoSettingsRowNone {
 		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
 	} else {
 		actions := []string{"[enter/space] toggle/edit"}
@@ -688,6 +890,44 @@ func (m RepoSettingsModel) View() tea.View {
 	}
 
 	return tea.NewView(b.String())
+}
+
+// renderIntegrationHeader renders an integration checkbox header row
+// (`[x] Label` / `[ ] Label`) matching the automation checkbox style. The
+// checkbox reflects expansion state, not a persisted enabled flag.
+func (m RepoSettingsModel) renderIntegrationHeader(label string, expanded bool, row, cur rowID) string {
+	check := " "
+	if expanded {
+		check = "x"
+	}
+	cursor := "  "
+	focused := cur == row && m.editingField == repoSettingsRowNone
+	if focused {
+		cursor = cursorChevron + " "
+	}
+	line := fmt.Sprintf("%s[%s] %s", cursor, check, label)
+	if focused {
+		line = styleSelected.Render(line)
+	}
+	return lipgloss.NewStyle().Padding(0, 2).Render(line) + "\n"
+}
+
+// renderChildField renders an indented integration child field row. When missing
+// is true (partial-config validation), the value is shown in red.
+func (m RepoSettingsModel) renderChildField(label, value string, row, cur rowID, missing bool) string {
+	cursor := "    "
+	focused := cur == row && m.editingField == repoSettingsRowNone
+	if focused {
+		cursor = "  " + cursorChevron + " "
+	}
+	if missing {
+		value = styleStatusDanger.Render(value)
+	}
+	line := fmt.Sprintf("%s%s: %s", cursor, label, value)
+	if focused {
+		line = styleSelected.Render(line)
+	}
+	return lipgloss.NewStyle().Padding(0, 2).Render(line) + "\n"
 }
 
 func (m RepoSettingsModel) githubAppRepoLabel() string {

@@ -116,15 +116,7 @@ func (s *SQLiteSessionStore) ListActiveWithRepo(ctx context.Context, repoID stri
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []*SessionWithRepo
-	for rows.Next() {
-		sess, repoName, repoOriginURL, err := scanSessionWithRepo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName, RepoOriginURL: repoOriginURL})
-	}
-	return out, rows.Err()
+	return collectSessionsWithRepo(rows)
 }
 
 // ListWithRepo returns both active and archived sessions with their repo
@@ -146,15 +138,7 @@ func (s *SQLiteSessionStore) ListWithRepo(ctx context.Context, repoID string) ([
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []*SessionWithRepo
-	for rows.Next() {
-		sess, repoName, repoOriginURL, err := scanSessionWithRepo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName, RepoOriginURL: repoOriginURL})
-	}
-	return out, rows.Err()
+	return collectSessionsWithRepo(rows)
 }
 
 func (s *SQLiteSessionStore) ListByRepoAndPR(ctx context.Context, repoID string, prNumber int) ([]*SessionWithRepo, error) {
@@ -165,15 +149,7 @@ func (s *SQLiteSessionStore) ListByRepoAndPR(ctx context.Context, repoID string,
 	}
 	defer func() { _ = rows.Close() }()
 
-	var out []*SessionWithRepo
-	for rows.Next() {
-		sess, repoName, repoOriginURL, err := scanSessionWithRepo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName, RepoOriginURL: repoOriginURL})
-	}
-	return out, rows.Err()
+	return collectSessionsWithRepo(rows)
 }
 
 func (s *SQLiteSessionStore) ListArchived(ctx context.Context, repoID string) ([]*models.Session, error) {
@@ -461,6 +437,21 @@ const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.wor
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint,
 	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
 	FROM sessions s LEFT JOIN repos r ON r.id = s.repo_id`
+
+// collectSessionsWithRepo drains rows produced by a sessionSelectWithRepoSQL
+// query into SessionWithRepo values. Shared by the List*WithRepo queries, whose
+// iteration loops were previously copy-pasted verbatim.
+func collectSessionsWithRepo(rows *sql.Rows) ([]*SessionWithRepo, error) {
+	var out []*SessionWithRepo
+	for rows.Next() {
+		sess, repoName, repoOriginURL, err := scanSessionWithRepo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &SessionWithRepo{Session: sess, RepoDisplayName: repoName, RepoOriginURL: repoOriginURL})
+	}
+	return out, rows.Err()
+}
 
 func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, error) {
 	var sess models.Session

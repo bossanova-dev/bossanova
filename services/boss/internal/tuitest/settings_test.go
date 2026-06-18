@@ -225,3 +225,188 @@ func TestTUI_SettingsView_BackWithQ(t *testing.T) {
 		t.Fatalf("expected to return to home after esc from settings; screen:\n%s", h.Driver.Screen())
 	}
 }
+
+func TestTUI_Settings_TrashReturnsToSettings(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "[s]ettings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('s'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[r]epos") &&
+			strings.Contains(screen, "[c]ron") &&
+			strings.Contains(screen, "[t]rash")
+	}); err != nil {
+		t.Fatalf("expected settings hub actions; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('t'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
+		t.Fatalf("expected trash view from settings; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "[esc] back"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[r]epos") &&
+			strings.Contains(screen, "[c]ron")
+	}); err != nil {
+		t.Fatalf("expected to return to settings after esc from trash; screen:\n%s", h.Driver.Screen())
+	}
+}
+
+func TestTUI_Settings_ReposReturnsToSettings(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "[s]ettings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('s'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[r]epos") &&
+			strings.Contains(screen, "[c]ron") &&
+			strings.Contains(screen, "[t]rash")
+	}); err != nil {
+		t.Fatalf("expected settings hub actions; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('r'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
+		t.Fatalf("expected repos view from settings; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "[esc] back"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[c]ron")
+	}); err != nil {
+		t.Fatalf("expected to return to settings after esc from repos; screen:\n%s", h.Driver.Screen())
+	}
+}
+
+func TestTUI_Settings_CronReturnsToSettings(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "[s]ettings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('s'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[c]ron")
+	}); err != nil {
+		t.Fatalf("expected settings cron action; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('c'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "No cron jobs"); err != nil {
+		t.Fatalf("expected cron view from settings; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[r]epos") &&
+			strings.Contains(screen, "[t]rash")
+	}); err != nil {
+		t.Fatalf("expected to return to settings after esc from cron; screen:\n%s", h.Driver.Screen())
+	}
+}
+
+func TestTUI_Settings_RepoAddFirstRepoReturnsToSettings(t *testing.T) {
+	h := tuitest.New(t)
+	h.Daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{
+		IsValid:       true,
+		IsGithub:      true,
+		OriginUrl:     "https://github.com/acme/widgets.git",
+		DefaultBranch: "main",
+	})
+
+	if err := h.Driver.WaitForText(waitTimeout, "[s]ettings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendKey('s'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[r]epos")
+	}); err != nil {
+		t.Fatalf("expected settings repos action; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('r'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Press 'a' to add your first repository"); err != nil {
+		t.Fatalf("expected empty repo list from settings; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendKey('a'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Open project"); err != nil {
+		t.Fatalf("expected source phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Add a local repository"); err != nil {
+		t.Fatalf("expected input phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendString("widgets"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Add this repository?"); err != nil {
+		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[r]epos") &&
+			strings.Contains(screen, "[c]ron")
+	}); err != nil {
+		t.Fatalf("expected settings after adding first repo from settings; screen:\n%s", h.Driver.Screen())
+	}
+	if got := len(h.Daemon.Repos()); got != 1 {
+		t.Fatalf("registered repos = %d, want 1", got)
+	}
+}

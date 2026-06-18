@@ -3,6 +3,7 @@ package views
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -204,10 +205,11 @@ func (a App) Init() tea.Cmd {
 
 // switchViewMsg requests the app to switch to a different view.
 type switchViewMsg struct {
-	view      View
-	sessionID string // used for ViewAttach and ViewChatPicker
-	resumeID  string // Claude Code session UUID to resume (ViewAttach only)
-	agentName string // optional per-chat agent override (ViewAttach only); empty = inherit session
+	view       View
+	sessionID  string // used for ViewAttach and ViewChatPicker
+	resumeID   string // Claude Code session UUID to resume (ViewAttach only)
+	agentName  string // optional per-chat agent override (ViewAttach only); empty = inherit session
+	returnView View   // optional view to return to when the target view is cancelled
 }
 
 type repoAddCompletedMsg struct {
@@ -268,7 +270,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case repoAddCompletedMsg:
 		a.repoAddCompleting = false
+		returnView := a.repoList.returnView
 		if msg.err == nil && len(msg.repos) <= 1 {
+			if returnView == ViewSettings {
+				return a, a.switchToReturn(returnView)
+			}
 			return a, a.switchToHome()
 		}
 		highlightID := msg.highlightID
@@ -279,6 +285,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		a.repoList = NewRepoListModel(a.client, a.ctx)
+		a.repoList.returnView = returnView
 		a.repoList.highlightRepoID = highlightID
 		a.repoList.width = a.width
 		a.repoList.height = a.height
@@ -304,6 +311,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.repoAdd.Init()
 		case ViewRepoList:
 			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.repoList.returnView = msg.returnView
 			a.repoList.width = a.width
 			a.repoList.height = a.height
 			return a, a.repoList.Init()
@@ -320,11 +328,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.sessionSettings.Init()
 		case ViewTrash:
 			a.trash = NewTrashModel(a.client, a.ctx)
+			a.trash.returnView = msg.returnView
 			a.trash.width = a.width
 			a.trash.height = a.height
 			return a, a.trash.Init()
 		case ViewSettings:
 			a.settings = NewSettingsModel(a.client, a.ctx, a.auth)
+			if a.cloudAccess != nil {
+				a.settings.SetCloudAccess(a.cloudAccess, accountSettingsReturnURL(a.checkoutReturnURL))
+			}
 			a.settings.width = a.width
 			return a, a.settings.Init()
 		case ViewAttach:
@@ -346,6 +358,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.home.Init()
 		case ViewCron:
 			a.cronList = NewCronListModel(a.client, a.ctx)
+			a.cronList.returnView = msg.returnView
 			a.cronList.width = a.width
 			a.cronList.height = a.height
 			return a, a.cronList.Init()
@@ -405,7 +418,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewChatPicker:
 		updated, cmd := a.chatPicker.Update(msg)
 		a.chatPicker = updated.(ChatPickerModel)
-		if a.chatPicker.Cancelled() || a.chatPicker.Merged() {
+		if a.chatPicker.Cancelled() || a.chatPicker.Merged() || a.chatPicker.Archived() {
 			sessionID := a.chatPicker.sessionID
 			merged := a.chatPicker.Merged()
 			a.activeView = ViewHome
@@ -432,11 +445,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Batch(cmd, fetchReposAfterRepoAdd(a.client, a.ctx, highlightID))
 		}
 		if a.repoAdd.Cancelled() {
+			returnView := a.repoList.returnView
 			var highlightID string
 			if cursor := a.repoList.table.Cursor(); cursor >= 0 && cursor < len(a.repoList.repos) {
 				highlightID = a.repoList.repos[cursor].Id
 			}
 			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.repoList.returnView = returnView
 			a.repoList.highlightRepoID = highlightID
 			a.repoList.width = a.width
 			a.repoList.height = a.height
@@ -448,7 +463,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.repoList.Update(msg)
 		a.repoList = updated.(RepoListModel)
 		if a.repoList.Cancelled() {
-			return a, a.switchToHome()
+			return a, a.switchToReturn(a.repoList.returnView)
 		}
 		return a, cmd
 	case ViewRepoSettings:
@@ -456,7 +471,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.repoSettings = updated.(RepoSettingsModel)
 		if a.repoSettings.Cancelled() || a.repoSettings.Done() {
 			// Return to repo list, highlighting the repo we came from.
+			returnView := a.repoList.returnView
 			a.repoList = NewRepoListModel(a.client, a.ctx)
+			a.repoList.returnView = returnView
 			a.repoList.highlightRepoID = a.repoSettings.repoID
 			a.repoList.width = a.width
 			a.repoList.height = a.height
@@ -493,7 +510,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.chatPicker.Init()
 		}
 		if a.trash.Cancelled() {
-			return a, a.switchToHome()
+			return a, a.switchToReturn(a.trash.returnView)
 		}
 		return a, cmd
 	case ViewSettings:
@@ -541,7 +558,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.cronList.Update(msg)
 		a.cronList = updated.(CronListModel)
 		if a.cronList.Cancelled() {
-			return a, a.switchToHome()
+			return a, a.switchToReturn(a.cronList.returnView)
 		}
 		// cronFormOpenMsg is emitted by CronListModel as a Cmd; when it
 		// arrives here as a message we open the cron form.
@@ -558,8 +575,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cronForm = updated.(CronFormModel)
 		if a.cronForm.Cancelled() {
 			// Return to cron list without refreshing (user cancelled).
+			returnView := a.cronList.returnView
 			a.activeView = ViewCron
 			a.cronList = NewCronListModel(a.client, a.ctx)
+			a.cronList.returnView = returnView
 			a.cronList.width = a.width
 			a.cronList.height = a.height
 			return a, a.cronList.Init()
@@ -567,8 +586,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// cronFormDoneMsg is emitted by CronFormModel as a Cmd; when it
 		// arrives here as a message we return to the cron list and refresh.
 		if _, ok := msg.(cronFormDoneMsg); ok {
+			returnView := a.cronList.returnView
 			a.activeView = ViewCron
 			a.cronList = NewCronListModel(a.client, a.ctx)
+			a.cronList.returnView = returnView
 			a.cronList.width = a.width
 			a.cronList.height = a.height
 			return a, a.cronList.Init()
@@ -637,6 +658,16 @@ func (a *App) switchToHome() tea.Cmd {
 	return a.home.Init()
 }
 
+// switchToReturn routes back to the view a sub-view was opened from. ViewHome
+// (the zero value) uses the full switchToHome rebuild; ViewSettings re-enters
+// Settings via the normal init path. Any other value falls back to Home.
+func (a *App) switchToReturn(v View) tea.Cmd {
+	if v == ViewSettings {
+		return func() tea.Msg { return switchViewMsg{view: ViewSettings} }
+	}
+	return a.switchToHome()
+}
+
 func (a *App) newHomeModel() HomeModel {
 	home := NewHomeModel(a.client, a.ctx, a.auth)
 	home.startedAt = a.startedAt
@@ -645,6 +676,20 @@ func (a *App) newHomeModel() HomeModel {
 	home.width = a.width
 	home.height = a.height
 	return home
+}
+
+func accountSettingsReturnURL(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	u.Path = "/settings/account"
+	u.RawPath = ""
+	u.Fragment = ""
+	return u.String()
 }
 
 func (a App) View() tea.View {

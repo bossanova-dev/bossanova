@@ -17,8 +17,10 @@ import (
 // DefaultPollInterval is the default interval between CI check polls.
 const DefaultPollInterval = 2 * time.Minute
 
-// DefaultPollTimeout bounds the duration of a single poll iteration so
-// a hung VCS provider call cannot wedge the polling loop indefinitely.
+// DefaultPollTimeout bounds the time spent polling a single session so a
+// hung VCS provider call cannot consume the whole sweep and starve the
+// remaining sessions. It is a per-session budget, not a per-iteration one:
+// a slow session times out on its own and the sweep proceeds to the next.
 const DefaultPollTimeout = 30 * time.Second
 
 // SessionEvent pairs a VCS event with the session it belongs to.
@@ -30,39 +32,36 @@ type SessionEvent struct {
 // Poller periodically checks CI status for sessions in AwaitingChecks state
 // and emits VCS events when status changes are detected.
 type Poller struct {
-	sessions    db.SessionStore
-	repos       db.RepoStore
-	provider    vcs.Provider
-	interval    time.Duration
-	pollTimeout time.Duration
-	logger      zerolog.Logger
-	done        chan struct{}
-
-	// timeoutCount is only accessed from the Run goroutine.
-	timeoutCount int
+	sessions       db.SessionStore
+	repos          db.RepoStore
+	provider       vcs.Provider
+	interval       time.Duration
+	sessionTimeout time.Duration
+	logger         zerolog.Logger
+	done           chan struct{}
 }
 
-// NewPoller creates a new check poller. A zero pollTimeout selects
+// NewPoller creates a new check poller. A zero sessionTimeout selects
 // DefaultPollTimeout.
 func NewPoller(
 	sessions db.SessionStore,
 	repos db.RepoStore,
 	provider vcs.Provider,
 	interval time.Duration,
-	pollTimeout time.Duration,
+	sessionTimeout time.Duration,
 	logger zerolog.Logger,
 ) *Poller {
-	if pollTimeout <= 0 {
-		pollTimeout = DefaultPollTimeout
+	if sessionTimeout <= 0 {
+		sessionTimeout = DefaultPollTimeout
 	}
 	return &Poller{
-		sessions:    sessions,
-		repos:       repos,
-		provider:    provider,
-		interval:    interval,
-		pollTimeout: pollTimeout,
-		logger:      logger,
-		done:        make(chan struct{}),
+		sessions:       sessions,
+		repos:          repos,
+		provider:       provider,
+		interval:       interval,
+		sessionTimeout: sessionTimeout,
+		logger:         logger,
+		done:           make(chan struct{}),
 	}
 }
 
@@ -79,39 +78,18 @@ func (p *Poller) Run(ctx context.Context) <-chan SessionEvent {
 		defer ticker.Stop()
 
 		// Poll immediately on start, then on each tick.
-		p.runOnce(ctx, ch)
+		p.poll(ctx, ch)
 
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				p.runOnce(ctx, ch)
+				p.poll(ctx, ch)
 			}
 		}
 	})
 	return ch
-}
-
-// runOnce executes a single poll iteration bounded by pollTimeout.
-// Consecutive timeouts are counted and logged so a slow-or-hung
-// provider becomes visible in the logs.
-func (p *Poller) runOnce(ctx context.Context, ch chan<- SessionEvent) {
-	pollCtx, cancel := context.WithTimeout(ctx, p.pollTimeout)
-	defer cancel()
-
-	p.poll(pollCtx, ch)
-
-	// Distinguish a timeout from ordinary parent-ctx cancellation.
-	if ctx.Err() == nil && errors.Is(pollCtx.Err(), context.DeadlineExceeded) {
-		p.timeoutCount++
-		p.logger.Warn().
-			Int("consecutive_timeouts", p.timeoutCount).
-			Dur("timeout", p.pollTimeout).
-			Msg("poller: poll iteration exceeded timeout")
-	} else {
-		p.timeoutCount = 0
-	}
 }
 
 // Done returns a channel that is closed when the Run goroutine exits.
@@ -132,7 +110,7 @@ func (p *Poller) Done() <-chan struct{} { return p.done }
 // excluded — either no PR exists or the lifecycle handles it elsewhere.
 func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 	// List all repos to find sessions across all repos.
-	repos, err := p.repos.List(ctx)
+	repos, err := p.listRepos(ctx)
 	if err != nil {
 		p.logger.Error().Err(err).Msg("poller: list repos")
 		return
@@ -142,7 +120,7 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 		if ctx.Err() != nil {
 			return
 		}
-		sessions, err := p.sessions.ListActive(ctx, repo.ID)
+		sessions, err := p.listActiveSessions(ctx, repo.ID)
 		if err != nil {
 			p.logger.Error().Err(err).Str("repo", repo.ID).Msg("poller: list sessions")
 			continue
@@ -159,8 +137,50 @@ func (p *Poller) poll(ctx context.Context, ch chan<- SessionEvent) {
 				continue
 			}
 
-			p.checkSession(ctx, ch, repo, sess)
+			p.checkSessionBounded(ctx, ch, repo, sess)
 		}
+	}
+}
+
+// listRepos and listActiveSessions bound each store read with the same
+// per-session timeout budget. Without this, the sweep's list phase ran on the
+// parent Run context, which only cancels on shutdown: a wedged store read (a
+// locked or stuck SQLite connection) would block the poller goroutine
+// indefinitely. Bounding here keeps the list phase from hanging the sweep,
+// while checkSessionBounded retains its own independent timeout for the
+// per-session VCS calls.
+func (p *Poller) listRepos(ctx context.Context) ([]*models.Repo, error) {
+	listCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
+	defer cancel()
+	return p.repos.List(listCtx)
+}
+
+func (p *Poller) listActiveSessions(ctx context.Context, repoID string) ([]*models.Session, error) {
+	listCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
+	defer cancel()
+	return p.sessions.ListActive(listCtx, repoID)
+}
+
+// checkSessionBounded runs checkSession under a per-session timeout derived
+// from the parent context. Bounding each session independently (rather than
+// the whole sweep) means one hung VCS provider call times out on its own and
+// the sweep continues to the remaining sessions, instead of consuming a
+// single shared budget and starving everyone after the slow session.
+func (p *Poller) checkSessionBounded(ctx context.Context, ch chan<- SessionEvent, repo *models.Repo, sess *models.Session) {
+	sessCtx, cancel := context.WithTimeout(ctx, p.sessionTimeout)
+	defer cancel()
+
+	p.checkSession(sessCtx, ch, repo, sess)
+
+	// Distinguish a per-session timeout from ordinary parent-ctx cancellation
+	// (shutdown) so a slow-or-hung provider stays visible — now naming the
+	// exact session/PR rather than just the iteration.
+	if ctx.Err() == nil && errors.Is(sessCtx.Err(), context.DeadlineExceeded) {
+		p.logger.Warn().
+			Str("session", sess.ID).
+			Int("pr", *sess.PRNumber).
+			Dur("timeout", p.sessionTimeout).
+			Msg("poller: session poll exceeded timeout")
 	}
 }
 

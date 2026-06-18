@@ -33,6 +33,20 @@
       "waitForText": "New Session"
     },
     {
+      "id": "tui-new-session-sentry",
+      "surface": "tui",
+      "title": "Boss TUI New Session — Sentry",
+      "description": "Session-type picker showing the 'Fix a Sentry issue' option for a repo with Sentry configured.",
+      "privacy": "fixture",
+      "terminal": { "width": 140, "height": 36 },
+      "fixture": "demo",
+      "steps": [
+        { "keys": ["n"], "waitForReadyText": "Add dark mode", "waitForText": "Select a repository" },
+        { "keys": ["enter"], "waitForText": "Fix a Sentry issue" }
+      ],
+      "waitForText": "Fix a Sentry issue"
+    },
+    {
       "id": "tui-repo-list",
       "surface": "tui",
       "title": "Boss TUI Repositories",
@@ -171,6 +185,16 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "web-account",
+      "surface": "web",
+      "title": "Web Account Settings",
+      "description": "Product web account settings page in the ACTIVE subscription state, showing the Manage subscription button.",
+      "privacy": "fixture",
+      "route": "/settings/account",
+      "cropToSelector": ".account-billing",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "web-chat-terminal",
       "surface": "web",
       "title": "Web Chat Terminal",
@@ -211,7 +235,8 @@
         "services/boss/internal/fixtures/"
       ],
       "recipeIds": [
-        "tui-home", "tui-settings", "tui-new-session", "tui-repo-list",
+        "tui-home", "tui-settings", "tui-new-session", "tui-new-session-sentry",
+        "tui-repo-list",
         "tui-repo-add", "tui-repo-settings", "tui-trash", "tui-chat-picker",
         "tui-session-settings", "tui-login", "tui-bug-report", "tui-cron",
         "tui-cron-form", "tui-onboarding"
@@ -220,7 +245,7 @@
     {
       "name": "Product web",
       "patterns": ["services/web/"],
-      "recipeIds": ["web-sessions", "web-chat-terminal"]
+      "recipeIds": ["web-sessions", "web-account", "web-chat-terminal"]
     },
     {
       "name": "Marketing site",

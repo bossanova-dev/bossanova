@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/recurser/bossalib/authtoken"
 )
 
 var (
@@ -136,7 +138,7 @@ func PollForToken(ctx context.Context, cfg Config, deviceCode string, interval i
 			tokens := &Tokens{
 				AccessToken:  authResp.AccessToken,
 				RefreshToken: authResp.RefreshToken,
-				ExpiresAt:    time.Now().Add(time.Duration(authResp.ExpiresIn) * time.Second),
+				ExpiresAt:    authtoken.AccessTokenExpiry(authResp.AccessToken, authResp.ExpiresIn, time.Now()),
 				Email:        authResp.User.Email,
 			}
 			return &DeviceCodeResult{
@@ -227,7 +229,7 @@ func RefreshAccessToken(ctx context.Context, cfg Config, refreshToken string) (*
 
 	tokens := &Tokens{
 		AccessToken: authResp.AccessToken,
-		ExpiresAt:   time.Now().Add(time.Duration(authResp.ExpiresIn) * time.Second),
+		ExpiresAt:   authtoken.AccessTokenExpiry(authResp.AccessToken, authResp.ExpiresIn, time.Now()),
 		Email:       authResp.User.Email,
 	}
 	// Keep old refresh token if a new one wasn't issued.
@@ -267,6 +269,9 @@ func openBrowserCommand(rawURL, goos string, wsl bool, lookPath func(string) (st
 			if _, err := lookPath("cmd.exe"); err == nil {
 				return exec.Command("cmd.exe", "/c", "start", "", quoteCmdURL(rawURL)), nil
 			}
+		}
+		if _, err := lookPath("xdg-open"); err != nil {
+			return nil, fmt.Errorf("no browser opener found: xdg-open is not installed")
 		}
 		return exec.Command("xdg-open", rawURL), nil
 	case "windows":

@@ -35,6 +35,24 @@ func TestTUI_HomeView_EmptyState(t *testing.T) {
 	}
 }
 
+func TestTUI_HomeView_NoRepoActionBarHidesNewSession(t *testing.T) {
+	h := tuitest.New(t)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Welcome to Bossanova"); err != nil {
+		t.Fatal(err)
+	}
+
+	screen := h.Driver.Screen()
+	if strings.Contains(screen, "[n]ew session") {
+		t.Fatalf("should not offer [n]ew session when no repos exist; screen:\n%s", screen)
+	}
+	for _, kept := range []string{"[s]ettings", "[q]uit"} {
+		if !strings.Contains(screen, kept) {
+			t.Fatalf("expected action bar to contain %q; screen:\n%s", kept, screen)
+		}
+	}
+}
+
 func TestTUI_HomeView_DataDisplay(t *testing.T) {
 	h := tuitest.New(t,
 		tuitest.WithRepos(testRepos()...),
@@ -51,133 +69,6 @@ func TestTUI_HomeView_DataDisplay(t *testing.T) {
 	}
 	if !strings.Contains(screen, "Bossanova") {
 		t.Fatalf("expected 'Bossanova' banner on screen:\n%s", screen)
-	}
-}
-
-func TestTUI_HomeView_ArchiveSession(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := h.Driver.SendKey('a'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archive"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendKey('y'); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := h.Driver.WaitForNoText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-
-	var found bool
-	for _, s := range h.Daemon.Sessions() {
-		if s.Id == "sess-aaa-111" {
-			found = true
-			if s.ArchivedAt == nil {
-				t.Fatal("expected session to be archived in daemon")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("session sess-aaa-111 not found in daemon state")
-	}
-}
-
-func TestTUI_HomeView_ArchiveProgressStaysInSelectedRow(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-		tuitest.WithArchiveDelay(750*time.Millisecond),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendKey('a'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archive"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendKey('y'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "archiving"); err != nil {
-		t.Fatal(err)
-	}
-	if h.Driver.ScreenContains("Archiving...") {
-		t.Fatalf("global archive footer still visible; screen:\n%s", h.Driver.Screen())
-	}
-}
-
-func TestTUI_HomeView_ArchiveCancel(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := h.Driver.SendKey('a'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archive"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendKey('n'); err != nil {
-		t.Fatal(err)
-	}
-
-	time.Sleep(500 * time.Millisecond)
-	if !h.Driver.ScreenContains("Add dark mode") {
-		t.Fatalf("session disappeared after cancel; screen:\n%s", h.Driver.Screen())
-	}
-}
-
-func TestTUI_HomeView_ArchiveSecondSession(t *testing.T) {
-	h := tuitest.New(t,
-		tuitest.WithRepos(testRepos()...),
-		tuitest.WithSessions(testSessions()...),
-	)
-
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
-
-	// Move down to second session, then archive.
-	if err := h.Driver.SendKey('j'); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(200 * time.Millisecond)
-
-	if err := h.Driver.SendKey('a'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archive"); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendKey('y'); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := h.Driver.WaitForNoText(waitTimeout, "Fix login bug"); err != nil {
-		t.Fatal(err)
-	}
-
-	// First session should still be visible.
-	if !h.Driver.ScreenContains("Add dark mode") {
-		t.Fatalf("first session disappeared; screen:\n%s", h.Driver.Screen())
 	}
 }
 
@@ -222,12 +113,125 @@ func TestTUI_HomeView_ActionBar(t *testing.T) {
 	}
 
 	screen := h.Driver.Screen()
-	// With sessions present, the action bar should show archive and new session options.
+	// With sessions present, the action bar should show session creation and selection.
 	if !strings.Contains(screen, "[n]ew") {
 		t.Fatalf("expected '[n]ew' in action bar; screen:\n%s", screen)
 	}
-	if !strings.Contains(screen, "[a]rchive") {
-		t.Fatalf("expected '[a]rchive' in action bar; screen:\n%s", screen)
+	if !strings.Contains(screen, "[enter] select") {
+		t.Fatalf("expected '[enter] select' in action bar; screen:\n%s", screen)
+	}
+}
+
+func TestTUI_HomeView_ActionBarHasNoMovedItems(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "[n]ew"); err != nil {
+		t.Fatal(err)
+	}
+
+	screen := h.Driver.Screen()
+	for _, moved := range []string{"[r]epos", "[c]ron", "[t]rash", "[a]rchive"} {
+		if strings.Contains(screen, moved) {
+			t.Fatalf("expected action bar not to contain %q; screen:\n%s", moved, screen)
+		}
+	}
+	for _, kept := range []string{"[n]ew", "[s]ettings", "[q]uit"} {
+		if !strings.Contains(screen, kept) {
+			t.Fatalf("expected action bar to contain %q; screen:\n%s", kept, screen)
+		}
+	}
+}
+
+func TestTUI_HomeView_LogoutConfirm(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+		tuitest.WithLoggedInUser("test-user@example.com"),
+	)
+
+	waitForLoggedInHome(t, h)
+
+	if err := h.Driver.SendKey('l'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Log out test-user@example.com?"); err != nil {
+		t.Fatalf("expected logout confirm; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEnter(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.WaitForText(waitTimeout, "[l]ogin"); err != nil {
+		t.Fatalf("expected [l]ogin after logout; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.WaitFor(waitTimeout, func(_ string) bool {
+		calls := h.Daemon.NotifyAuthChangeCalls()
+		return len(calls) > 0 && calls[len(calls)-1] == "logout"
+	}); err != nil {
+		t.Fatalf("NotifyAuthChange logout was never called; screen:\n%s", h.Driver.Screen())
+	}
+}
+
+func TestTUI_HomeView_LogoutCancel(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+		tuitest.WithLoggedInUser("test-user@example.com"),
+	)
+
+	waitForLoggedInHome(t, h)
+
+	if err := h.Driver.SendKey('l'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Log out test-user@example.com?"); err != nil {
+		t.Fatalf("expected logout confirm; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
+		return !strings.Contains(screen, "Log out test-user@example.com?") &&
+			strings.Contains(screen, "[l]ogout")
+	}); err != nil {
+		t.Fatalf("expected logout confirm to cancel back to home; screen:\n%s", h.Driver.Screen())
+	}
+	if calls := h.Daemon.NotifyAuthChangeCalls(); len(calls) != 0 {
+		t.Fatalf("NotifyAuthChange should not have been called on cancel; got %v", calls)
+	}
+}
+
+func TestTUI_HomeView_MovedKeysAreInert(t *testing.T) {
+	h := tuitest.New(t,
+		tuitest.WithRepos(testRepos()...),
+		tuitest.WithSessions(testSessions()...),
+	)
+
+	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []byte{'r', 't', 'c', 'a'} {
+		if err := h.Driver.SendKey(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := h.Driver.WaitForText(waitTimeout, "[n]ew"); err != nil {
+		t.Fatal(err)
+	}
+	screen := h.Driver.Screen()
+	if !strings.Contains(screen, "Add dark mode") {
+		t.Fatalf("expected to stay on home; screen:\n%s", screen)
+	}
+	for _, confirmation := range []string{"Archive this session", "[y/enter] confirm"} {
+		if strings.Contains(screen, confirmation) {
+			t.Fatalf("expected no archive confirmation %q; screen:\n%s", confirmation, screen)
+		}
 	}
 }
 

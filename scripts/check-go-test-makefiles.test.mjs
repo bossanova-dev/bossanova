@@ -18,6 +18,7 @@ const goModuleMakefiles = [
   'plugins/bossd-plugin-dependabot/Makefile',
   'plugins/bossd-plugin-linear/Makefile',
   'plugins/bossd-plugin-repair/Makefile',
+  'plugins/bossd-plugin-sentry/Makefile',
 ];
 
 test('go module Makefiles include the shared Go test rules', () => {

@@ -6,6 +6,7 @@ package statusdetect
 import (
 	"bytes"
 	"regexp"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -108,17 +109,123 @@ func stripTipLines(data []byte) []byte {
 	return tipLineRe.ReplaceAll(data, nil)
 }
 
-// userPromptLineRe matches lines that are the user's previously-submitted
-// prompt rendered in conversation history. Claude Code prefixes these with
-// "❯ " (same glyph as the AskUserQuestion selector). Any "?" in the user's
-// own words must not trigger question detection -- only Claude's questions
-// should fire the state.
+// userPromptLineRe matches lines rendered in the "❯ " input/prompt column.
+// This covers two shapes that both use the "❯ " glyph (same as the
+// AskUserQuestion selector):
+//   - the user's previously-submitted prompt in conversation history, and
+//   - Claude Code's suggested/auto-filled follow-up prompt sitting in the input
+//     box at the bottom of the pane (e.g. "❯ Want me to file the ticket now?").
+//
+// Neither is a question Claude is actively waiting on -- the suggestion is
+// Claude proposing a prompt, not asking one -- so any "?" on these lines must
+// not trigger question detection. Only Claude's own response text (prefixed
+// with ⏺, never ❯) should fire the state.
 var userPromptLineRe = regexp.MustCompile(`(?m)^[ ]*❯ [^\n]*`)
 
-// stripUserPromptLines removes the user's prompt history lines so a "?" the
-// user typed (e.g. "what does this do?") doesn't trigger question detection.
+// stripUserPromptLines removes the "❯ " input/prompt lines so a "?" the user
+// typed (e.g. "what does this do?") or a "?" in Claude's suggested follow-up
+// prompt doesn't trigger question detection.
 func stripUserPromptLines(data []byte) []byte {
 	return userPromptLineRe.ReplaceAll(data, nil)
+}
+
+// numberedSelectorOptionRe matches a selection cursor sitting on a numbered
+// option line, e.g. "❯ 1. Skip, leave open". Unlike user prompt history or a
+// suggested follow-up (free prose after "❯ "), this is the highlighted option
+// of an active AskUserQuestion card, so the structural card check (Pattern 2)
+// must keep it rather than discard it as prompt chrome.
+var numberedSelectorOptionRe = regexp.MustCompile(`^[ ]*❯ [0-9]+\.[ ]`)
+
+// stripUserPromptLinesKeepNumberedOptions behaves like stripUserPromptLines but
+// preserves "❯ N. ..." selector-on-option lines. Without this, a card whose
+// FIRST option carries the selection cursor loses option 1 before Pattern 2
+// inspects it, so the numbered run appears to start at 2 and Pattern 2's
+// strictly-increasing-from-1 check rejects a real card.
+func stripUserPromptLinesKeepNumberedOptions(data []byte) []byte {
+	var out bytes.Buffer
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		lineText := strings.TrimSuffix(line, "\n")
+		if userPromptLineRe.MatchString(lineText) && !numberedSelectorOptionRe.MatchString(lineText) {
+			continue
+		}
+		out.WriteString(line)
+	}
+	return out.Bytes()
+}
+
+// selectorCursorRe matches a leading selection cursor "❯ " (after optional
+// indentation). Pattern 2 normalizes it to blanks so the highlighted option
+// reads as an ordinary numbered option line and the run is counted from 1.
+var selectorCursorRe = regexp.MustCompile(`(?m)^([ ]*)❯ `)
+
+// normalizeSelectorCursor replaces a leading "❯ " selection cursor with two
+// spaces so numberedOptionRe matches the highlighted option line.
+func normalizeSelectorCursor(data []byte) []byte {
+	return selectorCursorRe.ReplaceAll(data, []byte("${1}  "))
+}
+
+// suggestedPromptHeaderRe matches assistant-rendered headings that introduce
+// suggested follow-up prompts. Questions inside those lists are suggestions for
+// the user's next input, not questions Claude is waiting on.
+var suggestedPromptHeaderRe = regexp.MustCompile(`(?i)^[ \t]*(?:suggested(?: next| follow[- ]?up)? prompts?|suggested follow[- ]?ups?|follow[- ]?up prompts?|next prompts?):[ \t]*$`)
+
+// suggestedPromptLineRe matches a single suggested prompt line under a
+// suggested-prompt heading. It accepts numbered, bulleted, and plain prompt
+// lines, but only strips lines that end in "?".
+var suggestedPromptLineRe = regexp.MustCompile(`^[ \t]*(?:[-*•][ \t]+|[0-9]+[.)][ \t]+)?\S.*\?[ \t]*$`)
+
+func stripSuggestedFollowUpLines(data []byte) []byte {
+	var out bytes.Buffer
+	inSuggestedPrompts := false
+	sawSuggestion := false
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		lineText := strings.TrimSuffix(line, "\n")
+		trimmed := strings.TrimSpace(lineText)
+		if suggestedPromptHeaderRe.MatchString(lineText) {
+			inSuggestedPrompts = true
+			sawSuggestion = false
+			out.WriteString(line)
+			continue
+		}
+		if inSuggestedPrompts {
+			if trimmed == "" {
+				// A blank line BEFORE any suggestion is tolerated (the UI may
+				// pad between the header and the list). A blank line AFTER the
+				// suggestion list ends the block: the list is the contiguous run
+				// after the header, so anything below the blank -- e.g. a real
+				// follow-up question in the same response -- is not a suggested
+				// prompt and must be preserved for question detection.
+				if sawSuggestion {
+					inSuggestedPrompts = false
+				}
+				out.WriteString(line)
+				continue
+			}
+			r, _ := utf8.DecodeRuneInString(trimmed)
+			switch {
+			case optionStopMarkers[r]:
+				// A Claude response / tool output / spinner / prompt marker
+				// begins new content; the suggested-prompt block has ended.
+				// Fall through to write the marker line below.
+				inSuggestedPrompts = false
+			case suggestedPromptLineRe.MatchString(lineText):
+				// Question-shaped suggestion: drop it.
+				sawSuggestion = true
+				continue
+			default:
+				// Non-question suggestion -- numbered, bulleted, or a plain
+				// unbulleted imperative line ("Run tests"). Keep it, but stay
+				// in the section so a later question-shaped suggestion in the
+				// same contiguous block is still stripped rather than leaking
+				// out and firing question detection.
+				sawSuggestion = true
+				out.WriteString(line)
+				continue
+			}
+		}
+		out.WriteString(line)
+	}
+	return out.Bytes()
 }
 
 // optionStopMarkers are the leading runes that signal the end of an
@@ -154,6 +261,29 @@ var askUserQuestionTypeSomethingRe = regexp.MustCompile(`(?m)^[ ]+[0-9]+\.[ ]+Ty
 // askUserQuestionChatAboutThisRe matches the "  N. Chat about this" final
 // option that always appears below the divider in the AskUserQuestion UI.
 var askUserQuestionChatAboutThisRe = regexp.MustCompile(`(?m)^[ ]+[0-9]+\.[ ]+Chat about this[ ]*$`)
+
+// askUserQuestionCardFooterRe matches the AskUserQuestion card terminator --
+// the "Chat about this" final option immediately followed (blank lines only in
+// between) by the instruction footer:
+//
+//	  Chat about this
+//
+//	Enter to select · ↑/↓ to navigate · Esc to cancel
+//	Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel
+//
+// The "Chat about this" option may be numbered or, in the side-by-side preview
+// layout (whose box-drawing panel desynchronizes the option numbering),
+// un-numbered. Matching the two lines as one ordered, adjacent sequence -- not
+// as two independent regexes anywhere in the tail -- is what makes this a
+// reliable live-prompt signal: the footer and terminator each render in every
+// card directly above one another, whereas assistant prose documenting the UI
+// would have to reproduce the exact two-line sequence (with only blank lines
+// between) to false-positive. The footer half matches the three stable phrases
+// in order (rather than the exact ·/arrow glyphs) to tolerate the variable
+// inter-token spacing introduced by cursor-forward (ESC[nC) rendering and the
+// optional "n to add notes" segment, and is anchored to a full line so prose
+// mentioning "Enter to select" mid-sentence cannot match.
+var askUserQuestionCardFooterRe = regexp.MustCompile(`(?m)^[ \t]*(?:[0-9]+\.[ \t]+)?Chat about this[ \t]*$\n(?:[ \t]*\n)*[ \t]*Enter to select\b[^\n]*\bto navigate\b[^\n]*\bEsc to cancel\b[ \t]*$`)
 
 // hasAskUserQuestionFooter reports whether data contains the AskUserQuestion
 // terminator: a "Type something." numbered option above the divider and a
@@ -255,6 +385,7 @@ func countConsecutiveOptionLines(data []byte) (count int, brokenByMarker bool) {
 // HasQuestionPrompt checks whether the last portion of PTY output looks like
 // a Claude Code question prompt. It detects five patterns:
 //  0. AskUserQuestion footer: "Type something." + "Chat about this" terminator
+//     0b. AskUserQuestion instruction footer: "Enter to select · … · Esc to cancel"
 //  1. AskUserQuestion/permission prompt: selector cursor + consecutive options
 //  2. Question card by structure: ☐ header + numbered options + "?", no chevron required
 //  3. Conversational question: Claude response ending with ?
@@ -273,6 +404,17 @@ func HasQuestionPrompt(data []byte) bool {
 		return false
 	}
 
+	// Remove tool-output blocks from the FULL buffer before slicing the tail.
+	// A block's ⎿ header can sit more than 30 lines above the bottom, so
+	// stripping only after LastNLines would leave orphaned continuation lines
+	// (indented 4+ spaces) in the tail that stripToolOutput can no longer
+	// anchor to and remove. A pasted fixture whose tool output ends with the
+	// card footer ("Chat about this" + "Enter to select … Esc to cancel") would
+	// then false-positive Pattern 0b. Stripping first keeps whole blocks --
+	// header and continuations -- out of the tail, and means every pattern
+	// below (including Pattern 3, which scans this buffer) sees tool-free text.
+	clean = stripToolOutput(clean)
+
 	// Only check the last ~30 lines (enough for the question UI at screen bottom).
 	tail := LastNLines(clean, 30)
 
@@ -287,13 +429,60 @@ func HasQuestionPrompt(data []byte) bool {
 		return true
 	}
 
+	// cleanedTail strips "Tip:" status lines, "❯ " input/prompt lines, and
+	// suggested-follow-up lines from the tail -- all non-prompt content that
+	// must not be mistaken for an active question. Tool-output blocks are
+	// already gone (stripped from the full buffer above). Patterns 1 and 4
+	// match against this filtered view rather than the raw tail.
+	cleanedTail := stripSuggestedFollowUpLines(stripUserPromptLines(stripTipLines(tail)))
+
+	// Pattern 0b: AskUserQuestion card-footer fast-path. The "Chat about this"
+	// terminal option immediately followed by the "Enter to select · … · Esc to
+	// cancel" instruction line renders below every question card. Unlike Pattern
+	// 0 (which keys on the "Type something." + "Chat about this" numbered
+	// options), this survives the side-by-side preview layout, where the preview
+	// panel's box-drawing characters split the option run and "Chat about this"
+	// is rendered un-numbered. Runs before Pattern 1 so it short-circuits ahead
+	// of Pattern 3's early-return-false branch.
+	//
+	// Matches footerTail, not the raw tail: the footer text is low-specificity,
+	// so when Claude reads or prints a file/test fixture that contains it the
+	// line arrives as tool-output continuation (a ⎿ block indented 4+ spaces)
+	// and would otherwise false-positive. Tool blocks are already stripped from
+	// the buffer above, so a genuine card footer -- UI chrome below the card,
+	// never inside a tool block -- survives while the fixture's does not.
+	//
+	// footerTail (unlike cleanedTail) does NOT run stripUserPromptLines and
+	// instead normalizes the selection cursor: when the user arrows onto the
+	// final action, Claude Code renders the terminator with the same "❯ "
+	// selector as any option ("❯ Chat about this" / "❯ N. Chat about this").
+	// stripUserPromptLines would delete that row, flipping an active card to
+	// non-question; normalizeSelectorCursor instead rewrites "❯ " to blanks so
+	// the terminator reads as an ordinary line and the footer regex still
+	// matches. Tip lines are still stripped so a "❯ "-free "Tip:" line cannot
+	// interpose. The regex's full-line anchoring keeps dropped prompt/suggested
+	// lines from mattering -- only an exact "Chat about this" terminator line
+	// can match.
+	//
+	// askUserQuestionCardFooterRe requires the two lines as one ordered,
+	// adjacent sequence (blank lines only between), not two independent matches
+	// anywhere in the tail. Matching them independently still fired on ordinary
+	// assistant prose that happened to mention both a standalone "Chat about
+	// this" and the footer line; requiring the exact two-line card structure
+	// rejects documented/pasted prompt fixtures while preserving the live
+	// preview-layout card, where the terminator always renders directly above
+	// the footer.
+	footerTail := normalizeSelectorCursor(stripTipLines(tail))
+	if askUserQuestionCardFooterRe.Match(footerTail) {
+		return true
+	}
+
 	// Pattern 1: AskUserQuestion / permission prompt -- selector + consecutive
 	// indented option lines. Requires a "?" somewhere in the cleaned tail (the
 	// question text above the selector). Without that gate, the user's own
 	// previously-submitted prompt (rendered as "❯ <text>" in conversation
 	// history) gets mistaken for the selector and surrounding indented lines
 	// like "  Read 4 files..." or "  ⎿  Tip: ..." get mistaken for options.
-	cleanedTail := stripUserPromptLines(stripTipLines(stripToolOutput(tail)))
 	if bytes.ContainsRune(cleanedTail, '?') {
 		selectorMatches := selectorRe.FindAllIndex(tail, -1)
 		// Iterate newest-first: AskUserQuestion is always at the bottom of the pane.
@@ -318,8 +507,15 @@ func HasQuestionPrompt(data []byte) bool {
 	// the LAST \u23FA in the buffer has no trailing "?", which would swallow this
 	// card whenever the conversation has a \u23FA marker below it (working spinner,
 	// status chrome, or post-card response text).
-	if header := cardHeaderRe.FindIndex(cleanedTail); header != nil {
-		afterHeader := cleanedTail[header[1]:]
+	//
+	// Uses its own filtered view rather than cleanedTail: cleanedTail strips
+	// every "\u276F " line, which deletes the FIRST option when the selection cursor
+	// sits on it ("\u276F 1. ..."), making the numbered run appear to start at 2.
+	// p2Tail instead keeps "\u276F N." selector-on-option lines and normalizes the
+	// cursor to blanks so the run is counted from 1.
+	p2Tail := normalizeSelectorCursor(stripSuggestedFollowUpLines(stripUserPromptLinesKeepNumberedOptions(stripTipLines(tail))))
+	if header := cardHeaderRe.FindIndex(p2Tail); header != nil {
+		afterHeader := p2Tail[header[1]:]
 		if optMatch := numberedOptionRe.FindIndex(afterHeader); optMatch != nil {
 			questionRegion := afterHeader[:optMatch[0]]
 			if bytes.ContainsRune(questionRegion, '?') {
@@ -340,7 +536,11 @@ func HasQuestionPrompt(data []byte) bool {
 	// Find the last response marker and check if the text from there to the end
 	// contains a trailing "?".
 	if idx := bytes.LastIndex(clean, []byte("\u23FA")); idx >= 0 {
-		afterMarker := stripTipLines(stripToolOutput(clean[idx:]))
+		// Strip the "\u276F " input/prompt lines too: a suggested follow-up prompt
+		// (e.g. "\u276F Want me to file the ticket now?") rendered in the input box
+		// after the last response marker is Claude proposing a prompt, not
+		// asking one, and must not fire the state.
+		afterMarker := stripSuggestedFollowUpLines(stripUserPromptLines(stripTipLines(clean[idx:])))
 		if trailingQuestionRe.Match(afterMarker) {
 			return true
 		}
@@ -355,7 +555,7 @@ func HasQuestionPrompt(data []byte) bool {
 	// Check if any line in the last 30 lines ends with "?" (excluding tool
 	// output, tip lines, and the user's prompt history -- none of those are
 	// Claude's words).
-	if trailingQuestionRe.Match(stripUserPromptLines(stripTipLines(stripToolOutput(tail)))) {
+	if trailingQuestionRe.Match(stripSuggestedFollowUpLines(stripUserPromptLines(stripTipLines(tail)))) {
 		return true
 	}
 

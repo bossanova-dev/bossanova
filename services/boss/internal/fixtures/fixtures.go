@@ -37,7 +37,15 @@ func Repos() []*pb.Repo {
 		{Id: "repo-2", DisplayName: "my-api", LocalPath: "/tmp/my-api", DefaultBaseBranch: "main", MergeStrategy: "squash"},
 		{Id: "repo-3", DisplayName: "my-web", LocalPath: "/tmp/my-web", DefaultBaseBranch: "main", MergeStrategy: "squash"},
 		{Id: "repo-4", DisplayName: "mobile-app", LocalPath: "/tmp/mobile-app", DefaultBaseBranch: "main", MergeStrategy: "merge"},
-		{Id: "repo-5", DisplayName: "design-system", LocalPath: "/tmp/design-system", DefaultBaseBranch: "main", MergeStrategy: "merge"},
+		{
+			// design-system sorts first alphabetically, so it is the default-selected
+			// repo in both the repo-settings and new-session pickers. Made-up Sentry
+			// credentials here light up the repo-settings Sentry section and the
+			// new-session "Fix a Sentry issue" option in proof captures. The API key
+			// renders masked (last 4 only), so the demo token is safe to publish.
+			Id: "repo-5", DisplayName: "design-system", LocalPath: "/tmp/design-system", DefaultBaseBranch: "main", MergeStrategy: "merge",
+			SentryApiKey: "sntryu_0f4d2c9a1b6e8740demo3a5c", SentryOrg: "acme-engineering",
+		},
 	}
 }
 

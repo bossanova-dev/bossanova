@@ -30,10 +30,11 @@ once" rather than "how fast can I type."
 holds session state, drives git worktrees, and dispatches plugin events. Boss
 Cloud is an optional managed service that pairs with your daemons so you can
 manage the same sessions from a browser. The plugins (`bossd-plugin-claude`,
-`bossd-plugin-repair`, `bossd-plugin-dependabot`, `bossd-plugin-linear`) are
-out-of-process binaries that subscribe to daemon events over gRPC and take
-specific actions: running the agent, repairing failing PRs, classifying
-Dependabot updates, syncing with Linear.
+`bossd-plugin-repair`, `bossd-plugin-dependabot`, `bossd-plugin-linear`,
+`bossd-plugin-sentry`) are out-of-process binaries that subscribe to daemon
+events over gRPC and take specific actions: running the agent, repairing
+failing PRs, classifying Dependabot updates, and surfacing Linear tickets
+or unresolved Sentry issues to start a session from.
 
 See [How It Works](../how-it-works.md) for the components and the worktree lifecycle.
 
@@ -133,8 +134,9 @@ manually, `cd` in and start typing. The agent is just a tmux pane.
 
 No. Each session owns its chats and its worktree; chats can't be moved between
 sessions. The session itself is the unit of work. When one is done, archive
-it (`a` from the home view, or `boss archive <session-id>`). The session
-lands in Trash, where you can restore or permanently delete it. Archiving
+it (`a` from the session view, or `boss archive <session-id>`). The session
+lands in Trash (open it from Settings with `t`), where you can restore or
+permanently delete it. Archiving
 keeps the branch and removes the worktree, which is usually what you want.
 
 ## Skills

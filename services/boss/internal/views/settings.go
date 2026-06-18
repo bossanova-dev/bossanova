@@ -9,11 +9,26 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/auth"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
 )
+
+// openBillingPortalURL opens the Stripe billing portal in the default
+// browser. It mirrors openSubscriptionCheckoutURL (subscription.go) so tests
+// can stub the browser-open without launching a real browser.
+var openBillingPortalURL = auth.OpenBrowser
+
+// billingPortalMsg carries the result of creating a billing portal session
+// and attempting to open it. It is emitted asynchronously so the Bubble Tea
+// update loop never blocks on the network call.
+type billingPortalMsg struct {
+	url        string
+	err        error
+	browserErr error
+}
 
 // settingsRowKind tags a row with the action it represents. The kind drives
 // behaviour on enter/space (toggle vs. edit vs. cycle vs. select).
@@ -61,6 +76,18 @@ type SettingsModel struct {
 	err               error
 	editingRow        int // index into rows; -1 = not editing
 	showCloudSettings bool
+
+	// cloudAccess opens the Stripe billing portal. It is nil for local-only
+	// daemons / logged-out users, in which case the [b]illing action is hidden.
+	cloudAccess    CloudAccessClient
+	cloudReturnURL string
+	// billingStatus holds the user-facing outcome of the most recent billing
+	// portal action (success, browser-open fallback URL, or unavailable note).
+	billingStatus string
+	// billingInFlight guards against spawning concurrent billing-portal RPCs
+	// when [b] is pressed repeatedly. It is tracked separately from
+	// billingStatus because the status string is cleared on each keypress.
+	billingInFlight bool
 
 	worktreeDirInput  textinput.Model
 	pollIntervalInput textinput.Model
@@ -119,6 +146,15 @@ func NewSettingsModel(c client.BossClient, ctx context.Context, authMgr ...*auth
 
 	m.rebuildRows()
 	return m
+}
+
+// SetCloudAccess wires the cloud access client and the Stripe return URL used
+// by the [b]illing action. Stripe requires a return URL, so callers should
+// pass the resolved cloud base URL (it may be empty for clients that don't
+// configure one). A nil client hides the billing action entirely.
+func (m *SettingsModel) SetCloudAccess(c CloudAccessClient, returnURL string) {
+	m.cloudAccess = c
+	m.cloudReturnURL = returnURL
 }
 
 func shouldShowCloudSettings(authMgr ...*auth.Manager) bool {
@@ -389,20 +425,93 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
+	case billingPortalMsg:
+		return m.updateBillingPortal(msg), nil
 	case tea.KeyMsg:
+		// A new key interaction supersedes any previously-shown billing
+		// status, so clear it before processing. The "b" case below sets
+		// "Opening the billing portal..." again, and the async billingPortalMsg
+		// (not a KeyMsg) sets the final status, so both survive until the
+		// next keypress.
+		m.billingStatus = ""
 		switch msg.String() {
 		case "esc":
 			m.cancel = true
 			return m, nil
+		case "r":
+			return m, func() tea.Msg { return switchViewMsg{view: ViewRepoList, returnView: ViewSettings} }
+		case "c":
+			return m, func() tea.Msg { return switchViewMsg{view: ViewCron, returnView: ViewSettings} }
+		case "t":
+			return m, func() tea.Msg { return switchViewMsg{view: ViewTrash, returnView: ViewSettings} }
 		case "up", "k":
 			m.moveCursor(-1)
 		case "down", "j":
 			m.moveCursor(+1)
+		case "b":
+			return m.startBillingPortal()
 		case "enter", "space", " ":
 			return m.activateRow()
 		}
 	}
 	return m, nil
+}
+
+// startBillingPortal kicks off the async billing-portal flow. It is a no-op
+// (no command) when no cloud client is wired, so the key stays inert rather
+// than dead-ending. The returned command performs the RPC + browser open off
+// the update loop and reports back via billingPortalMsg.
+func (m SettingsModel) startBillingPortal() (tea.Model, tea.Cmd) {
+	if m.cloudAccess == nil {
+		return m, nil
+	}
+	if m.billingInFlight {
+		return m, nil
+	}
+	m.billingInFlight = true
+	m.billingStatus = "Opening the billing portal..."
+	return m, m.billingPortalCmd(m.cloudAccess, m.cloudReturnURL)
+}
+
+// billingPortalCmd creates a Stripe billing portal session and opens it in the
+// browser, mirroring subscription.go's checkout command structure.
+func (m SettingsModel) billingPortalCmd(c CloudAccessClient, returnURL string) tea.Cmd {
+	ctx := m.ctx
+	return func() tea.Msg {
+		url, err := c.CreateBillingPortalSession(ctx, returnURL)
+		if err != nil {
+			return billingPortalMsg{err: err}
+		}
+		return billingPortalMsg{url: url, browserErr: openBillingPortalURL(url)}
+	}
+}
+
+// updateBillingPortal records the outcome of the billing-portal flow as a
+// user-facing status line. The "local daemon" / unimplemented error becomes a
+// clear unavailable note; a browser-open failure surfaces the URL as
+// selectable text (mirroring subscription.go's fallback).
+func (m SettingsModel) updateBillingPortal(msg billingPortalMsg) SettingsModel {
+	m.billingInFlight = false
+	switch {
+	case msg.err != nil:
+		if billingUnavailableLocal(msg.err) {
+			m.billingStatus = "Billing isn't available for a local daemon. Log in to Bossanova Cloud to manage billing."
+		} else {
+			m.billingStatus = "Couldn't open the billing portal: " + cloudAccessErrorSummary(msg.err)
+		}
+	case msg.browserErr != nil:
+		m.billingStatus = "Couldn't open a browser. Open this billing URL: " + msg.url
+	default:
+		m.billingStatus = "Opened the billing portal in your browser."
+	}
+	return m
+}
+
+// billingUnavailableLocal reports whether err is the local-only daemon error
+// returned by LocalClient.CreateBillingPortalSession (a connect Unimplemented
+// error: "cloud billing is only available on a local daemon").
+func billingUnavailableLocal(err error) bool {
+	return connect.CodeOf(err) == connect.CodeUnimplemented
 }
 
 // moveCursor advances the cursor by `delta`, skipping header pseudo-rows.
@@ -691,10 +800,24 @@ func (m SettingsModel) View() tea.View {
 		b.WriteString(cloudSettingsBlock())
 		b.WriteString("\n")
 	}
-	if editing {
+	if m.billingStatus != "" {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(m.billingStatus))
+		b.WriteString("\n")
+	}
+	switch {
+	case editing:
 		b.WriteString(actionBar([]string{"[enter] save", "[esc] cancel"}))
-	} else {
-		b.WriteString(actionBar([]string{"[enter/space] toggle/edit"}, []string{"[esc] back"}))
+	case m.cloudAccess != nil:
+		b.WriteString(actionBar(
+			[]string{"[enter/space] toggle/edit", "[r]epos", "[c]ron", "[t]rash", "[b]illing"},
+			[]string{"[esc] back"},
+		))
+	default:
+		b.WriteString(actionBar(
+			[]string{"[enter/space] toggle/edit", "[r]epos", "[c]ron", "[t]rash"},
+			[]string{"[esc] back"},
+		))
 	}
 
 	return tea.NewView(b.String())

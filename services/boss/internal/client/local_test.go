@@ -1,0 +1,332 @@
+package client
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"connectrpc.com/connect"
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/gen/bossanova/v1/bossanovav1connect"
+)
+
+// fakeDaemonRPC is a hand-rolled DaemonServiceClient used to drive LocalClient's
+// thin RPC wrappers without a live socket. It embeds the interface so any method
+// not overridden below panics if a test reaches it (a signal the test touched an
+// uncovered path). When err is non-nil the overridden methods return it, which
+// exercises each wrapper's `if err != nil { return nil, err }` propagation;
+// otherwise they return a canned response so the success-path field extraction
+// can be asserted.
+type fakeDaemonRPC struct {
+	bossanovav1connect.DaemonServiceClient
+	err error
+
+	// Captured requests for the wrappers that shape optional fields before
+	// dispatching (so the request-mutation branches can be asserted).
+	lastTrackerReq *pb.ListTrackerIssuesRequest
+	lastRecordReq  *pb.RecordChatRequest
+}
+
+var _ bossanovav1connect.DaemonServiceClient = (*fakeDaemonRPC)(nil)
+
+const fakeSessionID = "sess-1"
+
+func sessionResp[T any](f *fakeDaemonRPC, build func() *T) (*connect.Response[T], error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return connect.NewResponse(build()), nil
+}
+
+func (f *fakeDaemonRPC) GetSession(_ context.Context, _ *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {
+	return sessionResp(f, func() *pb.GetSessionResponse {
+		return &pb.GetSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) ListSessions(_ context.Context, _ *connect.Request[pb.ListSessionsRequest]) (*connect.Response[pb.ListSessionsResponse], error) {
+	return sessionResp(f, func() *pb.ListSessionsResponse {
+		return &pb.ListSessionsResponse{Sessions: []*pb.Session{{Id: fakeSessionID}}}
+	})
+}
+
+func (f *fakeDaemonRPC) StopSession(_ context.Context, _ *connect.Request[pb.StopSessionRequest]) (*connect.Response[pb.StopSessionResponse], error) {
+	return sessionResp(f, func() *pb.StopSessionResponse {
+		return &pb.StopSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) PauseSession(_ context.Context, _ *connect.Request[pb.PauseSessionRequest]) (*connect.Response[pb.PauseSessionResponse], error) {
+	return sessionResp(f, func() *pb.PauseSessionResponse {
+		return &pb.PauseSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) ResumeSession(_ context.Context, _ *connect.Request[pb.ResumeSessionRequest]) (*connect.Response[pb.ResumeSessionResponse], error) {
+	return sessionResp(f, func() *pb.ResumeSessionResponse {
+		return &pb.ResumeSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) RetrySession(_ context.Context, _ *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error) {
+	return sessionResp(f, func() *pb.RetrySessionResponse {
+		return &pb.RetrySessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) CloseSession(_ context.Context, _ *connect.Request[pb.CloseSessionRequest]) (*connect.Response[pb.CloseSessionResponse], error) {
+	return sessionResp(f, func() *pb.CloseSessionResponse {
+		return &pb.CloseSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	return sessionResp(f, func() *pb.MergeSessionResponse {
+		return &pb.MergeSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) UpdateSession(_ context.Context, _ *connect.Request[pb.UpdateSessionRequest]) (*connect.Response[pb.UpdateSessionResponse], error) {
+	return sessionResp(f, func() *pb.UpdateSessionResponse {
+		return &pb.UpdateSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) LinkSessionPR(_ context.Context, _ *connect.Request[pb.LinkSessionPRRequest]) (*connect.Response[pb.LinkSessionPRResponse], error) {
+	return sessionResp(f, func() *pb.LinkSessionPRResponse {
+		return &pb.LinkSessionPRResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) ArchiveSession(_ context.Context, _ *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
+	return sessionResp(f, func() *pb.ArchiveSessionResponse {
+		return &pb.ArchiveSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) ResurrectSession(_ context.Context, _ *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
+	return sessionResp(f, func() *pb.ResurrectSessionResponse {
+		return &pb.ResurrectSessionResponse{Session: &pb.Session{Id: fakeSessionID}}
+	})
+}
+
+func (f *fakeDaemonRPC) EmptyTrash(_ context.Context, _ *connect.Request[pb.EmptyTrashRequest]) (*connect.Response[pb.EmptyTrashResponse], error) {
+	return sessionResp(f, func() *pb.EmptyTrashResponse {
+		return &pb.EmptyTrashResponse{DeletedCount: 7}
+	})
+}
+
+func (f *fakeDaemonRPC) ListTrackerIssues(_ context.Context, req *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
+	f.lastTrackerReq = req.Msg
+	return sessionResp(f, func() *pb.ListTrackerIssuesResponse {
+		return &pb.ListTrackerIssuesResponse{Issues: []*pb.TrackerIssue{{ExternalId: "issue-1"}}}
+	})
+}
+
+func (f *fakeDaemonRPC) RecordChat(_ context.Context, req *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
+	f.lastRecordReq = req.Msg
+	return sessionResp(f, func() *pb.RecordChatResponse {
+		return &pb.RecordChatResponse{Chat: &pb.ClaudeChat{AgentSessionId: "agent-1"}}
+	})
+}
+
+var errRPC = errors.New("rpc boom")
+
+// TestLocalClientSessionWrappers drives every LocalClient wrapper that extracts
+// a *pb.Session from the daemon response. Each must return the session on the
+// success path (killing the `if err != nil` negation, which would otherwise
+// return a nil session) and propagate the error verbatim on the failure path.
+func TestLocalClientSessionWrappers(t *testing.T) {
+	ctx := context.Background()
+	wrappers := []struct {
+		name string
+		call func(*LocalClient) (*pb.Session, error)
+	}{
+		{"GetSession", func(c *LocalClient) (*pb.Session, error) { return c.GetSession(ctx, "id") }},
+		{"StopSession", func(c *LocalClient) (*pb.Session, error) { return c.StopSession(ctx, "id") }},
+		{"PauseSession", func(c *LocalClient) (*pb.Session, error) { return c.PauseSession(ctx, "id") }},
+		{"ResumeSession", func(c *LocalClient) (*pb.Session, error) { return c.ResumeSession(ctx, "id") }},
+		{"RetrySession", func(c *LocalClient) (*pb.Session, error) { return c.RetrySession(ctx, "id") }},
+		{"CloseSession", func(c *LocalClient) (*pb.Session, error) { return c.CloseSession(ctx, "id") }},
+		{"MergeSession", func(c *LocalClient) (*pb.Session, error) { return c.MergeSession(ctx, "id") }},
+		{"UpdateSession", func(c *LocalClient) (*pb.Session, error) {
+			return c.UpdateSession(ctx, &pb.UpdateSessionRequest{Id: "id"})
+		}},
+		{"LinkSessionPR", func(c *LocalClient) (*pb.Session, error) { return c.LinkSessionPR(ctx, "id", "1") }},
+		{"ArchiveSession", func(c *LocalClient) (*pb.Session, error) { return c.ArchiveSession(ctx, "id") }},
+		{"ResurrectSession", func(c *LocalClient) (*pb.Session, error) { return c.ResurrectSession(ctx, "id") }},
+	}
+
+	for _, w := range wrappers {
+		t.Run(w.name+"/success", func(t *testing.T) {
+			c := &LocalClient{rpc: &fakeDaemonRPC{}}
+			got, err := w.call(c)
+			if err != nil {
+				t.Fatalf("%s success: unexpected err %v", w.name, err)
+			}
+			if got == nil || got.Id != fakeSessionID {
+				t.Fatalf("%s success: got %v, want session %q", w.name, got, fakeSessionID)
+			}
+		})
+
+		t.Run(w.name+"/error", func(t *testing.T) {
+			c := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
+			got, err := w.call(c)
+			if !errors.Is(err, errRPC) {
+				t.Fatalf("%s error: got err %v, want %v", w.name, err, errRPC)
+			}
+			if got != nil {
+				t.Fatalf("%s error: got session %v, want nil", w.name, got)
+			}
+		})
+	}
+}
+
+// TestLocalClientListSessions covers the slice-returning wrapper separately
+// since its success value is a []*pb.Session rather than a single session.
+func TestLocalClientListSessions(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success", func(t *testing.T) {
+		c := &LocalClient{rpc: &fakeDaemonRPC{}}
+		got, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
+		if err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if len(got) != 1 || got[0].Id != fakeSessionID {
+			t.Fatalf("got %v, want one session %q", got, fakeSessionID)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		c := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
+		got, err := c.ListSessions(ctx, &pb.ListSessionsRequest{})
+		if !errors.Is(err, errRPC) {
+			t.Fatalf("got err %v, want %v", err, errRPC)
+		}
+		if got != nil {
+			t.Fatalf("got %v, want nil sessions", got)
+		}
+	})
+}
+
+// TestLocalClientEmptyTrash pins the int32 count extraction: the success path
+// returns the daemon's DeletedCount and the error path returns the zero value
+// alongside the error (so the `if err != nil` negation can't pass a stale 0 off
+// as success).
+func TestLocalClientEmptyTrash(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("success", func(t *testing.T) {
+		c := &LocalClient{rpc: &fakeDaemonRPC{}}
+		got, err := c.EmptyTrash(ctx, &pb.EmptyTrashRequest{})
+		if err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if got != 7 {
+			t.Fatalf("DeletedCount = %d, want 7", got)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		c := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
+		got, err := c.EmptyTrash(ctx, &pb.EmptyTrashRequest{})
+		if !errors.Is(err, errRPC) {
+			t.Fatalf("got err %v, want %v", err, errRPC)
+		}
+		if got != 0 {
+			t.Fatalf("DeletedCount = %d, want 0 on error", got)
+		}
+	})
+}
+
+// TestLocalClientListTrackerIssues covers both the optional-source request
+// shaping (`if source != ""`) and the error propagation. A non-empty source
+// must be threaded into the request as a pointer; an empty source must leave it
+// nil.
+func TestLocalClientListTrackerIssues(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("source set is forwarded", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		got, err := c.ListTrackerIssues(ctx, "repo", "q", "github")
+		if err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if len(got) != 1 || got[0].ExternalId != "issue-1" {
+			t.Fatalf("got %v, want one issue", got)
+		}
+		if fake.lastTrackerReq.Source == nil || fake.lastTrackerReq.GetSource() != "github" {
+			t.Fatalf("Source = %v, want pointer to %q", fake.lastTrackerReq.Source, "github")
+		}
+	})
+
+	t.Run("empty source stays nil", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		if _, err := c.ListTrackerIssues(ctx, "repo", "q", ""); err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if fake.lastTrackerReq.Source != nil {
+			t.Fatalf("Source = %v, want nil for empty source", fake.lastTrackerReq.Source)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		c := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
+		got, err := c.ListTrackerIssues(ctx, "repo", "q", "github")
+		if !errors.Is(err, errRPC) {
+			t.Fatalf("got err %v, want %v", err, errRPC)
+		}
+		if got != nil {
+			t.Fatalf("got %v, want nil issues", got)
+		}
+	})
+}
+
+// TestLocalClientRecordChat covers the optional agent-name request shaping
+// (`if agentName != ""`) plus success extraction and error propagation.
+func TestLocalClientRecordChat(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("agent name set is forwarded", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		got, err := c.RecordChat(ctx, "sess", "agent", "title", "claude", true)
+		if err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if got == nil || got.AgentSessionId != "agent-1" {
+			t.Fatalf("got %v, want chat agent-1", got)
+		}
+		if fake.lastRecordReq.AgentName == nil || fake.lastRecordReq.GetAgentName() != "claude" {
+			t.Fatalf("AgentName = %v, want pointer to %q", fake.lastRecordReq.AgentName, "claude")
+		}
+		if !fake.lastRecordReq.Resume {
+			t.Fatalf("Resume = false, want true forwarded")
+		}
+	})
+
+	t.Run("empty agent name stays nil", func(t *testing.T) {
+		fake := &fakeDaemonRPC{}
+		c := &LocalClient{rpc: fake}
+		if _, err := c.RecordChat(ctx, "sess", "agent", "title", "", false); err != nil {
+			t.Fatalf("unexpected err %v", err)
+		}
+		if fake.lastRecordReq.AgentName != nil {
+			t.Fatalf("AgentName = %v, want nil for empty name", fake.lastRecordReq.AgentName)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		c := &LocalClient{rpc: &fakeDaemonRPC{err: errRPC}}
+		got, err := c.RecordChat(ctx, "sess", "agent", "title", "claude", false)
+		if !errors.Is(err, errRPC) {
+			t.Fatalf("got err %v, want %v", err, errRPC)
+		}
+		if got != nil {
+			t.Fatalf("got %v, want nil chat", got)
+		}
+	})
+}

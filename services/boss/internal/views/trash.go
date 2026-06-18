@@ -53,15 +53,15 @@ type TrashModel struct {
 	err              error
 	cancel           bool
 	loading          bool
+	returnView       View
 
 	// Delete confirmation / in-progress states
-	confirming    bool
-	confirmingAll bool
-	deleting      bool
-	deletingAll   bool
-	restoring     bool
-	restoredID    string
-	deleteAllIDs  []string
+	confirm          confirmPrompt
+	confirmDeleteAll bool
+	deleting         bool
+	deletingAll      bool
+	restoring        bool
+	restoredID       string
 
 	// Layout
 	width  int
@@ -279,7 +279,6 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessionDeletedMsg:
-		m.confirming = false
 		m.deleting = false
 		if msg.err != nil {
 			m.err = msg.err
@@ -289,8 +288,6 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case allSessionsDeletedMsg:
-		m.confirming = false
-		m.confirmingAll = false
 		m.deleting = false
 		m.deletingAll = false
 		m.restoring = false
@@ -316,7 +313,6 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.sessions = kept
 		}
-		m.deleteAllIDs = nil
 		m.buildTable()
 		if msg.err != nil {
 			m.err = msg.err
@@ -338,8 +334,23 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.confirming || m.confirmingAll {
-			return m.updateDeleteConfirm(msg)
+		if m.confirm.active {
+			confirmed := msg.String() == "y" || msg.String() == "enter"
+			deleteAll := m.confirmDeleteAll
+			var cmd tea.Cmd
+			m.confirm, cmd = m.confirm.update(msg)
+			if !m.confirm.active {
+				m.confirmDeleteAll = false
+			}
+			if cmd != nil && confirmed {
+				if deleteAll {
+					m.deletingAll = true
+				} else {
+					m.deleting = true
+				}
+			}
+			m.table.SetHeight(m.tableHeight())
+			return m, cmd
 		}
 
 		if m.filter.Active() {
@@ -394,19 +405,47 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "d":
-			if m.selectedSession() != nil && !m.deletingAll {
-				m.confirming = true
+			if sess := m.selectedSession(); sess != nil && !m.deletingAll {
+				c := m.client
+				ctx := m.ctx
+				id := sess.Id
+				name := trashSessionName(sess)
+				m.confirmDeleteAll = false
+				m.confirm = newConfirmPrompt(fmt.Sprintf("Permanently delete %q?", name), func() tea.Msg {
+					err := c.RemoveSession(ctx, id)
+					return sessionDeletedMsg{id: id, err: err}
+				})
 				m.table.SetHeight(m.tableHeight())
 			}
 			return m, nil
 		case "a":
 			if len(m.filteredSessions) > 0 && !m.deletingAll {
+				var ids []string
+				prompt := fmt.Sprintf("Permanently delete all %d archived sessions?", len(m.sessions))
 				if m.filter.Engaged() {
-					m.deleteAllIDs = m.filteredSessionIDs()
-				} else {
-					m.deleteAllIDs = nil
+					ids = m.filteredSessionIDs()
+					prompt = fmt.Sprintf("Permanently delete %d filtered archived sessions?", len(ids))
 				}
-				m.confirmingAll = true
+				c := m.client
+				ctx := m.ctx
+				ids = append([]string(nil), ids...)
+				m.confirmDeleteAll = true
+				m.confirm = newConfirmPrompt(prompt, func() tea.Msg {
+					if len(ids) > 0 {
+						// Track what actually succeeded so a mid-batch failure
+						// only prunes the sessions that were really deleted.
+						deleted := make([]string, 0, len(ids))
+						for _, id := range ids {
+							if err := c.RemoveSession(ctx, id); err != nil {
+								return allSessionsDeletedMsg{ids: deleted, err: err}
+							}
+							deleted = append(deleted, id)
+						}
+						return allSessionsDeletedMsg{ids: deleted}
+					}
+					_, err := c.EmptyTrash(ctx, &pb.EmptyTrashRequest{})
+					return allSessionsDeletedMsg{err: err}
+				})
 				m.table.SetHeight(m.tableHeight())
 			}
 			return m, nil
@@ -422,54 +461,6 @@ func (m TrashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m TrashModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
-		if m.confirmingAll {
-			m.confirmingAll = false
-			m.deletingAll = true
-			m.table.SetHeight(m.tableHeight())
-			ids := append([]string(nil), m.deleteAllIDs...)
-			if len(ids) > 0 {
-				return m, func() tea.Msg {
-					// Track what actually succeeded so a mid-batch failure
-					// only prunes the sessions that were really deleted.
-					deleted := make([]string, 0, len(ids))
-					for _, id := range ids {
-						if err := m.client.RemoveSession(m.ctx, id); err != nil {
-							return allSessionsDeletedMsg{ids: deleted, err: err}
-						}
-						deleted = append(deleted, id)
-					}
-					return allSessionsDeletedMsg{ids: deleted}
-				}
-			}
-			return m, func() tea.Msg {
-				_, err := m.client.EmptyTrash(m.ctx, &pb.EmptyTrashRequest{})
-				return allSessionsDeletedMsg{err: err}
-			}
-		}
-		m.confirming = false
-		m.deleting = true
-		m.table.SetHeight(m.tableHeight())
-		sess := m.selectedSession()
-		if sess == nil {
-			m.deleting = false
-			return m, nil
-		}
-		return m, func() tea.Msg {
-			err := m.client.RemoveSession(m.ctx, sess.Id)
-			return sessionDeletedMsg{id: sess.Id, err: err}
-		}
-	case "n", "esc":
-		m.confirming = false
-		m.confirmingAll = false
-		m.deleteAllIDs = nil
-		m.table.SetHeight(m.tableHeight())
-	}
-	return m, nil
-}
-
 // Cancelled returns true if the user exited the trash view.
 func (m TrashModel) Cancelled() bool { return m.cancel }
 
@@ -480,7 +471,7 @@ func (m TrashModel) RestoredSessionID() string { return m.restoredID }
 func (m TrashModel) tableHeight() int {
 	overhead := bannerOverhead + 1 + actionBarPadY + 1 // gap + actionbar padding + actionbar
 	overhead += m.filter.Height()
-	if m.confirming || m.confirmingAll {
+	if m.confirm.active {
 		overhead += 3 // confirmation prompt + surrounding blank lines
 	}
 	return clampedTableHeight(len(m.filteredSessions), m.height, overhead)
@@ -529,25 +520,10 @@ func (m TrashModel) View() tea.View {
 	} else if m.restoring {
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorDanger).Render(
 			m.spinner.View() + "Restoring..."))
-	} else if m.confirmingAll {
+	} else if m.confirm.active {
 		b.WriteString("\n")
-		prompt := fmt.Sprintf("Permanently delete all %d archived sessions?", len(m.sessions))
-		if len(m.deleteAllIDs) > 0 {
-			prompt = fmt.Sprintf("Permanently delete %d filtered archived sessions?", len(m.deleteAllIDs))
-		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-			prompt))
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-	} else if m.confirming {
-		b.WriteString("\n")
-		sess := m.selectedSession()
-		name := ""
-		if sess != nil {
-			name = trashSessionName(sess)
-		}
-		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-			fmt.Sprintf("Permanently delete %q?", name)))
+			m.confirm.prompt))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {

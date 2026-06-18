@@ -102,6 +102,12 @@ func TestTranslateWebhook_PullRequestReviewChangesRequested(t *testing.T) {
 	if review.PRID != 345 {
 		t.Fatalf("ReviewSubmitted.PRID = %d, want 345", review.PRID)
 	}
+	if review.ReviewID != 987654321 {
+		t.Fatalf("ReviewSubmitted.ReviewID = %d, want 987654321", review.ReviewID)
+	}
+	if review.Author != "reviewer" {
+		t.Fatalf("ReviewSubmitted.Author = %q, want reviewer", review.Author)
+	}
 	if review.State != vcs.ReviewStateChangesRequested {
 		t.Fatalf("ReviewSubmitted.State = %v, want %v", review.State, vcs.ReviewStateChangesRequested)
 	}

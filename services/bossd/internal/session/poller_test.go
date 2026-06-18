@@ -531,6 +531,139 @@ func TestPollerPollTimeoutBoundsHungProvider(t *testing.T) {
 	}
 }
 
+// TestPollerHungSessionDoesNotStarveOthers pins the fix for the chronic
+// poll-iteration timeout: a single hung provider call must bound itself to
+// the per-session budget and let the sweep proceed to the remaining
+// sessions, rather than consuming a single shared iteration budget and
+// skipping everyone after the slow session. Two sessions are polled in one
+// sweep with a provider whose GetPRStatus blocks forever; both must still
+// receive a GetPRStatus call.
+func TestPollerHungSessionDoesNotStarveOthers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := &hungVCSProvider{mockVCSProvider: newMockVCSProvider()}
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+	pr1, pr2 := 1, 2
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", State: machine.AwaitingChecks, PRNumber: &pr1,
+	}
+	sessions.sessions["sess-2"] = &models.Session{
+		ID: "sess-2", RepoID: "repo-1", State: machine.AwaitingChecks, PRNumber: &pr2,
+	}
+
+	// Tight per-session timeout so each hung call is bounded quickly; the
+	// sweep itself runs under the generous parent ctx.
+	poller := NewPoller(sessions, repos, vp, time.Minute, 20*time.Millisecond, logger)
+	ch := make(chan SessionEvent, 4)
+	poller.poll(ctx, ch)
+
+	if got := atomic.LoadInt64(&vp.prStatusCalls); got != 2 {
+		t.Fatalf("GetPRStatus calls = %d, want 2 (both sessions polled despite first hanging)", got)
+	}
+}
+
+// blockingRepoStore makes List block until its context is cancelled, modelling
+// a wedged store read (a locked or stuck SQLite connection). It returns
+// ctx.Err() so the caller observes the timeout rather than a successful empty
+// list.
+type blockingRepoStore struct {
+	*mockRepoStore
+}
+
+func (b *blockingRepoStore) List(ctx context.Context) ([]*models.Repo, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// blockingSessionStore makes ListActive block until its context is cancelled,
+// modelling the same wedged-store-read failure on the per-repo session read.
+type blockingSessionStore struct {
+	*mockSessionStore
+}
+
+func (b *blockingSessionStore) ListActive(ctx context.Context, _ string) ([]*models.Session, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestPollerListPhaseIsBounded pins the fix for the unbounded sweep list phase.
+// The per-session-timeout change bounded the VCS calls but left the store reads
+// (repos.List / sessions.ListActive) running on the parent Run context, which
+// only cancels on shutdown — so a wedged store read would block the poller
+// goroutine indefinitely. Each list read must now time out on the per-session
+// budget, letting poll return instead of hanging until the parent ctx ends.
+func TestPollerListPhaseIsBounded(t *testing.T) {
+	t.Run("repos.List hang is bounded", func(t *testing.T) {
+		// Generous parent ctx so a return proves the budget bounded the read,
+		// not the parent deadline.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		repos := &blockingRepoStore{mockRepoStore: newMockRepoStore()}
+		sessions := newMockSessionStore()
+		vp := newMockVCSProvider()
+
+		var logBuf syncBuf
+		logger := zerolog.New(&logBuf)
+
+		poller := NewPoller(sessions, repos, vp, time.Minute, 20*time.Millisecond, logger)
+		ch := make(chan SessionEvent, 4)
+
+		done := make(chan struct{})
+		go func() {
+			poller.poll(ctx, ch)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("poll did not return; repos.List phase is not bounded")
+		}
+
+		if !strings.Contains(logBuf.String(), "poller: list repos") {
+			t.Errorf("expected list-repos error to be logged, got %q", logBuf.String())
+		}
+	})
+
+	t.Run("sessions.ListActive hang is bounded", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		repos := newMockRepoStore()
+		repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "owner/repo"}
+		sessions := &blockingSessionStore{mockSessionStore: newMockSessionStore()}
+		vp := newMockVCSProvider()
+
+		var logBuf syncBuf
+		logger := zerolog.New(&logBuf)
+
+		poller := NewPoller(sessions, repos, vp, time.Minute, 20*time.Millisecond, logger)
+		ch := make(chan SessionEvent, 4)
+
+		done := make(chan struct{})
+		go func() {
+			poller.poll(ctx, ch)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("poll did not return; sessions.ListActive phase is not bounded")
+		}
+
+		if !strings.Contains(logBuf.String(), "poller: list sessions") {
+			t.Errorf("expected list-sessions error to be logged, got %q", logBuf.String())
+		}
+	})
+}
+
 func TestPollerSkipsNonPollableStates(t *testing.T) {
 	// Pre-PR and terminal-ish states must never be polled — there is no PR
 	// to ask about, or the lifecycle has moved past CI/review (Finalizing,

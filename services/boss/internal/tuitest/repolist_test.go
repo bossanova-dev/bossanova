@@ -18,18 +18,19 @@ func TestTUI_RepoListView(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
-		t.Fatal(err)
-	}
+	openSettingsView(t, h, 'r', "PATH")
 
 	screen := h.Driver.Screen()
 	if !strings.Contains(screen, "my-app") {
 		t.Fatalf("expected repo name 'my-app' on screen:\n%s", screen)
 	}
 
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
@@ -45,6 +46,7 @@ func TestTUI_RepoListView_EmptyState(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	openSettingsHub(t, h)
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)
 	}
@@ -62,12 +64,7 @@ func TestTUI_RepoListView_RemoveConfirm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "my-app"); err != nil {
-		t.Fatal(err)
-	}
+	openSettingsView(t, h, 'r', "my-app")
 
 	// Press 'd' to delete.
 	if err := h.Driver.SendKey('d'); err != nil {
@@ -106,12 +103,7 @@ func TestTUI_RepoListView_RemoveCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "my-app"); err != nil {
-		t.Fatal(err)
-	}
+	openSettingsView(t, h, 'r', "my-app")
 
 	if err := h.Driver.SendKey('d'); err != nil {
 		t.Fatal(err)
@@ -140,12 +132,7 @@ func TestTUI_RepoListView_MultipleRepos(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
-		t.Fatal(err)
-	}
+	openSettingsView(t, h, 'r', "PATH")
 
 	screen := h.Driver.Screen()
 	if !strings.Contains(screen, "my-app") {
@@ -165,12 +152,7 @@ func TestTUI_RepoListView_NavigateToSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "my-app"); err != nil {
-		t.Fatal(err)
-	}
+	openSettingsView(t, h, 'r', "my-app")
 
 	// Press enter to open repo settings.
 	if err := h.Driver.SendEnter(); err != nil {

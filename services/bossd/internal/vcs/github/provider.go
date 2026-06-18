@@ -405,6 +405,13 @@ func (p *Provider) GetCheckResults(ctx context.Context, repoPath string, prID in
 		"--json", "name,state,workflow",
 	)
 	if err != nil {
+		// A PR whose head commit has no check runs is a normal empty result,
+		// not a failure. Returning it as an error here would make the display
+		// poller bail before updating the tracker, freezing the row on its
+		// previous status (e.g. a stale "draft" after the PR became ready).
+		if isNoChecksReported(err) {
+			return []vcs.CheckResult{}, nil
+		}
 		return nil, fmt.Errorf("get check results: %w", err)
 	}
 
@@ -513,6 +520,9 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 		// Promote bot COMMENTED reviews to CHANGES_REQUESTED only when the bot
 		// has unresolved review threads. This avoids false "rejected" status
 		// when all review issues have been addressed.
+		// This feeds the display-poller path (ComputeDisplayStatus keys off
+		// per-comment State); the realtime path performs an equivalent promotion
+		// in upstream.WebhookDispatcher.enrichReviewComments. Keep both in sync.
 		if state == vcs.ReviewStateCommented && botReviewUsers[r.User.Login] && botsWithUnresolved != nil {
 			if !botsWithUnresolved[r.User.Login] {
 				continue
@@ -537,6 +547,11 @@ func (p *Provider) GetReviewComments(ctx context.Context, repoPath string, prID 
 }
 
 func (p *Provider) getInlineReviewComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error) {
+	return p.GetReviewInlineComments(ctx, repoPath, prID, reviewID)
+}
+
+// GetReviewInlineComments returns inline comments attached to a single review.
+func (p *Provider) GetReviewInlineComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error) {
 	out, err := p.runGH(ctx,
 		"api", fmt.Sprintf("repos/%s/pulls/%d/reviews/%d/comments", repoFlag(repoPath), prID, reviewID),
 	)
@@ -842,6 +857,15 @@ func isPRAlreadyExists(err error) bool {
 	}
 	return strings.Contains(err.Error(), "a pull request for branch") &&
 		strings.Contains(err.Error(), "already exists")
+}
+
+// isNoChecksReported reports whether a gh error indicates the PR's head commit
+// simply has no check runs. `gh pr checks` exits non-zero in this case with
+// "no checks reported on the '<branch>' branch", but it is a normal empty
+// state — not a failure. Treating it as an error would freeze a PR's display
+// status (e.g. a stale "draft") because the poller bails before recomputing.
+func isNoChecksReported(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no checks reported on the")
 }
 
 // defaultRunGH executes a gh CLI command and returns stdout.

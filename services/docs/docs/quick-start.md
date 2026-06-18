@@ -65,10 +65,10 @@ On a fresh install, the repo list starts empty.
 
 ## 3. Add a repo
 
-Press `r` to load the repository list, then press `a` to add a new repository.
-Provide the path to a local folder if you already have the repository checked
-out. Provide a GitHub URL if you want to check out a repository that you do not
-yet have locally.
+Press `s` to open Settings, then `r` to load the repository list, then press
+`a` to add a new repository. Provide the path to a local folder if you already
+have the repository checked out. Provide a GitHub URL if you want to check out a
+repository that you do not yet have locally.
 
 <AsciinemaDemo src="/img/screenshots/tour/boss-add-repo.cast" />
 
@@ -99,6 +99,8 @@ Pick the session type that matches the job:
 - **PR session** for implementation work that should land through GitHub.
 - **Quick Chat** for lightweight questions or repo exploration.
 - **Linear** when you want to start from an issue.
+- **Sentry** when you want to start from an unresolved error. (Shown once
+  the repo has Sentry credentials set in its Integrations settings.)
 
 ## 6. Chat with the agent
 
@@ -125,7 +127,8 @@ For the full pull request flow, see
 
 ## 8. Set up scheduled jobs
 
-Open the scheduled sessions view to create recurring agent work.
+Press `s` to open Settings, then `c` to open the scheduled sessions view and
+create recurring agent work.
 
 Scheduled jobs are useful for repeated maintenance: dependency checks, weekly
 cleanup, release prep, or any coding task that starts from the same prompt.
@@ -137,7 +140,8 @@ failure behavior.
 
 ## 9. Archive finished work
 
-Press `a` on a completed session.
+Select a completed session with `enter`, then press `a` from the session view
+(beside the merge action).
 
 Archiving removes the local worktree while keeping the branch and pull request
 history available.
@@ -146,8 +150,8 @@ history available.
 
 ## 10. Clean up old chats
 
-Open Trash to review archived chats and permanently delete the ones you no
-longer need.
+Press `s` to open Settings, then `t` to open Trash, where you can review
+archived chats and permanently delete the ones you no longer need.
 
 Archiving keeps completed work out of the active dashboard. Trash gives you the
 final cleanup step when a branch, PR, or chat history is no longer useful.

@@ -32,6 +32,7 @@ const requiredPublicWorkflows = [
   '.github/workflows/test-plugin-dependabot.yml',
   '.github/workflows/test-plugin-linear.yml',
   '.github/workflows/test-plugin-repair.yml',
+  '.github/workflows/test-plugin-sentry.yml',
 ];
 
 const missing = requiredPublicWorkflows.filter((workflow) => !mirror.includes(workflow));

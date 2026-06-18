@@ -9,19 +9,14 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// navigateToRepoAddInput presses 'r' on home then 'a' on the repo list to open
+// navigateToRepoAddInput opens repos from Settings then presses 'a' on the repo list to open
 // the add-repo wizard, and picks "Open project" to land on the path-input form.
 func navigateToRepoAddInput(t *testing.T, h *tuitest.Harness) {
 	t.Helper()
 	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
-		t.Fatalf("expected repo list; screen:\n%s", h.Driver.Screen())
-	}
+	openSettingsView(t, h, 'r', "PATH")
 	if err := h.Driver.SendKey('a'); err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +141,7 @@ func TestTUI_RepoAddView_CreatesRepo(t *testing.T) {
 	}
 }
 
-func TestTUI_RepoAddView_FirstRepoReturnsHome(t *testing.T) {
+func TestTUI_RepoAddView_FirstRepoReturnsSettings(t *testing.T) {
 	h := tuitest.New(t)
 	h.Daemon.SetValidateRepoPathResult(&pb.ValidateRepoPathResponse{
 		IsValid:       true,
@@ -158,6 +153,7 @@ func TestTUI_RepoAddView_FirstRepoReturnsHome(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Welcome to Bossanova"); err != nil {
 		t.Fatalf("expected empty home before repo add; screen:\n%s", h.Driver.Screen())
 	}
+	openSettingsHub(t, h)
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)
 	}
@@ -196,10 +192,12 @@ func TestTUI_RepoAddView_FirstRepoReturnsHome(t *testing.T) {
 	}
 
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "You have no active sessions") &&
-			strings.Contains(screen, "Press 'n' to create a new session")
+		return strings.Contains(screen, "Settings") &&
+			strings.Contains(screen, "[r]epos") &&
+			strings.Contains(screen, "[c]ron") &&
+			strings.Contains(screen, "[t]rash")
 	}); err != nil {
-		t.Fatalf("expected home after adding only repo; screen:\n%s", h.Driver.Screen())
+		t.Fatalf("expected settings after adding only repo; screen:\n%s", h.Driver.Screen())
 	}
 	if screen := h.Driver.Screen(); strings.Contains(screen, "Repositories") || strings.Contains(screen, "PATH") {
 		t.Fatalf("first repo add should not leave user on repo list; screen:\n%s", screen)
@@ -273,12 +271,7 @@ func TestTUI_RepoAddView_Cancel(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "no active sessions"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
-		t.Fatalf("expected repo list; screen:\n%s", h.Driver.Screen())
-	}
+	openSettingsView(t, h, 'r', "PATH")
 	if err := h.Driver.SendKey('a'); err != nil {
 		t.Fatal(err)
 	}

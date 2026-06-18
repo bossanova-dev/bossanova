@@ -231,6 +231,40 @@ export function expandGeneratedTargets(makefile, pluginNames) {
   return targets;
 }
 
+// Extract the literal `<prefix>$(N):` target heads a `define <macro> ... endef`
+// block instantiates (e.g. `debt-deadcode-$(2):` -> `debt-deadcode-`). Reading
+// the prefixes from the macro body keeps the expansion truthful to the Makefile
+// instead of hand-listing them. Returns [] when the macro is absent.
+function macroTargetPrefixes(makefile, macro) {
+  const start = makefile.indexOf(`define ${macro}`);
+  if (start === -1) return [];
+
+  const end = makefile.indexOf('\nendef', start);
+  const body = makefile.slice(start, end === -1 ? undefined : end);
+
+  const prefixes = [];
+  for (const match of body.matchAll(/^([a-z][a-z0-9-]*)\$\([0-9]+\):/gm)) {
+    prefixes.push(match[1]);
+  }
+  return prefixes;
+}
+
+// Synthesize the per-module debt scanners the Makefile generates via its
+// `define-debt-targets` macro (`make debt-<kind>-<module>`), expanded over the
+// module short names so documented examples like `make debt-deadcode-bossd`
+// resolve without hand-listing every kind/module pair.
+export function expandDebtTargets(makefile, moduleShortNames) {
+  const targets = new Set();
+
+  for (const prefix of macroTargetPrefixes(makefile, 'define-debt-targets')) {
+    for (const module of moduleShortNames) {
+      targets.add(`${prefix}${module}`);
+    }
+  }
+
+  return targets;
+}
+
 // Documented targets that have no matching Makefile target, sorted for stable
 // output.
 export function findUndefinedDocumentedTargets(documented, defined) {
@@ -257,6 +291,27 @@ function discoverPluginNames(repoRoot) {
         fs.existsSync(path.join(pluginsDir, entry.name, 'go.mod')),
     )
     .map((entry) => entry.name.replace(/^bossd-plugin-/, ''));
+}
+
+// The short module names the Makefile's debt macro iterates over, mirroring
+// `MODULES := $(patsubst %/go.mod,%,$(wildcard lib/*/go.mod services/*/go.mod
+// plugins/*/go.mod))` and its `$(patsubst bossd-plugin-%,%,$(notdir ...))`
+// short-name transform.
+export function discoverModuleShortNames(repoRoot) {
+  const shortNames = new Set();
+
+  for (const parent of ['lib', 'services', 'plugins']) {
+    const parentDir = path.join(repoRoot, parent);
+    if (!fs.existsSync(parentDir)) continue;
+
+    for (const entry of fs.readdirSync(parentDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (!fs.existsSync(path.join(parentDir, entry.name, 'go.mod'))) continue;
+      shortNames.add(entry.name.replace(/^bossd-plugin-/, ''));
+    }
+  }
+
+  return [...shortNames];
 }
 
 // Find every checked-in agent skill doc (.claude/skills/**/SKILL.md). These are
@@ -289,6 +344,7 @@ export function checkDocMakeTargets(repoRoot = process.cwd()) {
   const defined = new Set([
     ...extractMakefileTargets(makefile, repoRoot),
     ...expandGeneratedTargets(makefile, discoverPluginNames(repoRoot)),
+    ...expandDebtTargets(makefile, discoverModuleShortNames(repoRoot)),
   ]);
   const definedByMakefile = new Map([[normalizeMakefilePath('.'), defined]]);
 

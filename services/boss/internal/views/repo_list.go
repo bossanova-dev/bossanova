@@ -47,6 +47,7 @@ type RepoListModel struct {
 
 	// Navigation
 	highlightRepoID string // repo to auto-highlight after returning from settings
+	returnView      View   // view to route back to on cancel
 
 	// Layout
 	width  int

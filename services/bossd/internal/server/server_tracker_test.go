@@ -10,6 +10,8 @@ import (
 
 // stubTaskSource implements plugin.TaskSource for testing
 type stubTaskSource struct {
+	name                  string // GetInfo name; defaults to "linear" when empty
+	getInfoErr            error
 	receivedRepoOriginURL string
 	receivedQuery         string
 	receivedConfig        map[string]string
@@ -18,8 +20,15 @@ type stubTaskSource struct {
 }
 
 func (s *stubTaskSource) GetInfo(context.Context) (*pb.PluginInfo, error) {
+	if s.getInfoErr != nil {
+		return nil, s.getInfoErr
+	}
+	name := s.name
+	if name == "" {
+		name = "linear"
+	}
 	return &pb.PluginInfo{
-		Name:         "linear",
+		Name:         name,
 		Version:      "test",
 		Capabilities: []string{"task_source"},
 	}, nil

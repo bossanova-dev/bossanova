@@ -88,6 +88,25 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 }
 
+// TestSaveToReturnsRenameError pins the rename error branch in SaveTo
+// (config.go:678, `os.Rename(tmpName, path); err != nil`). The temp file is
+// written and fsynced successfully, then renamed into place atomically; when the
+// destination is an existing directory that final rename fails (EISDIR/ENOTDIR on
+// both Linux and macOS). SaveTo must surface that error rather than reporting a
+// write that never landed — the CONDITIONALS_NEGATION mutant drops the failure and
+// returns nil.
+func TestSaveToReturnsRenameError(t *testing.T) {
+	// A directory at the destination path forces os.Rename(file, dir) to fail.
+	target := filepath.Join(t.TempDir(), "settings-is-a-dir")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	if err := SaveTo(target, DefaultSettings()); err == nil {
+		t.Fatal("SaveTo to an existing directory = nil, want a rename error")
+	}
+}
+
 func TestPathUsesBossSettingsPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "profile", "settings.json")
 	t.Setenv("BOSS_SETTINGS_PATH", path)
@@ -659,6 +678,65 @@ func TestDiscoverPluginsFindsPlugins(t *testing.T) {
 		if !filepath.IsAbs(p.Path) {
 			t.Errorf("plugin %q: path should be absolute, got %q", p.Name, p.Path)
 		}
+	}
+}
+
+func TestMergeDiscoveredPluginsAddsUnregistered(t *testing.T) {
+	// A plugin binary that exists on disk but isn't yet in the config (e.g. a
+	// freshly-built bossd-plugin-sentry) should be appended so it loads without
+	// a hand-edit. The existing claude entry — with a user-customized path —
+	// must be preserved untouched rather than replaced by the discovered one.
+	existing := []PluginConfig{
+		{Name: "claude", Path: "/custom/claude", Enabled: true},
+	}
+	discovered := []PluginConfig{
+		{Name: "claude", Path: "/bin/bossd-plugin-claude", Enabled: true},
+		{Name: "sentry", Path: "/bin/bossd-plugin-sentry", Enabled: true},
+	}
+
+	merged, added := MergeDiscoveredPlugins(existing, discovered)
+
+	if len(added) != 1 || added[0] != "sentry" {
+		t.Fatalf("added = %v, want [sentry]", added)
+	}
+	if len(merged) != 2 {
+		t.Fatalf("merged has %d entries, want 2: %+v", len(merged), merged)
+	}
+	if merged[0].Name != "claude" || merged[0].Path != "/custom/claude" {
+		t.Errorf("existing claude entry changed: %+v", merged[0])
+	}
+	if merged[1].Name != "sentry" || merged[1].Path != "/bin/bossd-plugin-sentry" {
+		t.Errorf("sentry entry = %+v, want discovered sentry", merged[1])
+	}
+}
+
+func TestMergeDiscoveredPluginsPreservesDisabledEntry(t *testing.T) {
+	// A user who disabled a plugin must keep it disabled even though discovery
+	// finds the binary on disk and reports Enabled: true.
+	existing := []PluginConfig{{Name: "sentry", Path: "/bin/sentry", Enabled: false}}
+	discovered := []PluginConfig{{Name: "sentry", Path: "/bin/sentry", Enabled: true}}
+
+	merged, added := MergeDiscoveredPlugins(existing, discovered)
+
+	if len(added) != 0 {
+		t.Fatalf("added = %v, want none", added)
+	}
+	if len(merged) != 1 || merged[0].Enabled {
+		t.Fatalf("merged = %+v, want sentry still disabled", merged)
+	}
+}
+
+func TestMergeDiscoveredPluginsNoChangeWhenAllRegistered(t *testing.T) {
+	existing := []PluginConfig{{Name: "claude"}, {Name: "sentry"}}
+	discovered := []PluginConfig{{Name: "sentry"}, {Name: "claude"}}
+
+	merged, added := MergeDiscoveredPlugins(existing, discovered)
+
+	if len(added) != 0 {
+		t.Errorf("added = %v, want none", added)
+	}
+	if len(merged) != 2 {
+		t.Errorf("merged has %d entries, want 2", len(merged))
 	}
 }
 
@@ -1262,5 +1340,71 @@ func TestUserPluginDirFallsBackToUserConfigDir(t *testing.T) {
 	want := filepath.Join(configDir, "bossanova", "plugins")
 	if got != want {
 		t.Fatalf("UserPluginDir() = %q, want %q", got, want)
+	}
+}
+
+// TestResolveInitEnvSettingsPath exercises the env-gating logic captured at
+// package init: an absolute BOSS_SETTINGS_PATH is cleaned and returned, while an
+// unset or relative value yields "". The absolute case pins both conditions
+// (non-empty AND absolute) so neither can be inverted without the test noticing.
+func TestResolveInitEnvSettingsPath(t *testing.T) {
+	t.Run("absolute is cleaned and returned", func(t *testing.T) {
+		t.Setenv(settingsPathEnv, "/tmp/boss/../settings.json")
+		if got, want := resolveInitEnvSettingsPath(), filepath.Clean("/tmp/boss/../settings.json"); got != want {
+			t.Fatalf("resolveInitEnvSettingsPath() = %q, want %q", got, want)
+		}
+	})
+	t.Run("relative is rejected", func(t *testing.T) {
+		t.Setenv(settingsPathEnv, "relative/settings.json")
+		if got := resolveInitEnvSettingsPath(); got != "" {
+			t.Fatalf("resolveInitEnvSettingsPath() = %q, want empty for relative path", got)
+		}
+	})
+	t.Run("empty is rejected", func(t *testing.T) {
+		t.Setenv(settingsPathEnv, "")
+		if got := resolveInitEnvSettingsPath(); got != "" {
+			t.Fatalf("resolveInitEnvSettingsPath() = %q, want empty when unset", got)
+		}
+	})
+}
+
+// TestDiscoverPluginsFromUsesOSExecutable covers the binDir=="" fallback, which
+// locates plugins relative to the running binary via os.Executable. The osExecutable
+// seam points at a real file in a temp dir holding a plugin binary; discovery must
+// resolve the executable, walk to its directory, and find the plugin. If either the
+// os.Executable error guard or the EvalSymlinks error guard were inverted, the
+// success path would return nil instead of the plugin.
+func TestDiscoverPluginsFromUsesOSExecutable(t *testing.T) {
+	tmp := t.TempDir()
+	exe := filepath.Join(tmp, "boss")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "bossd-plugin-zeta"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := osExecutable
+	t.Cleanup(func() { osExecutable = orig })
+	osExecutable = func() (string, error) { return exe, nil }
+
+	plugins := discoverPluginsFrom("")
+	if len(plugins) != 1 {
+		t.Fatalf("got %d plugins, want 1", len(plugins))
+	}
+	if plugins[0].Name != "zeta" {
+		t.Errorf("plugins[0].Name = %q, want %q", plugins[0].Name, "zeta")
+	}
+}
+
+// TestDiscoverPluginsFromOSExecutableError verifies the binDir=="" fallback bails out
+// when os.Executable fails, rather than scanning an unrelated directory.
+func TestDiscoverPluginsFromOSExecutableError(t *testing.T) {
+	orig := osExecutable
+	t.Cleanup(func() { osExecutable = orig })
+	osExecutable = func() (string, error) { return "", os.ErrNotExist }
+
+	if plugins := discoverPluginsFrom(""); plugins != nil {
+		t.Fatalf("discoverPluginsFrom(\"\") = %v, want nil when os.Executable fails", plugins)
 	}
 }

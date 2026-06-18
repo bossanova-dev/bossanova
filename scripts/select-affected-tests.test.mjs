@@ -23,6 +23,16 @@ test('selectTargets scopes bossd Go changes to the changed package', () => {
   ]);
 });
 
+test('selectTargets scopes sentry plugin Go changes to the changed package', () => {
+  assert.deepEqual(selectTargets(['plugins/bossd-plugin-sentry/sentry.go']), [
+    {
+      kind: 'make',
+      target: 'test-sentry',
+      env: { GO_TEST_PACKAGES: '.' },
+    },
+  ]);
+});
+
 test('selectTargets runs the whole module for module Makefile changes', () => {
   assert.deepEqual(selectTargets(['services/bossd/Makefile']), [
     { kind: 'make', target: 'test-bossd', env: {} },

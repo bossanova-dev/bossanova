@@ -2,6 +2,7 @@ package testharness
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,6 +67,24 @@ func fixture(t *testing.T, name string) []byte {
 	body, err := os.ReadFile(filepath.Join("..", "upstream", "testdata", name))
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	return body
+}
+
+func commentedCodexReviewFixture(t *testing.T) []byte {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(fixture(t, "pull_request_review_changes_requested.json"), &payload); err != nil {
+		t.Fatalf("unmarshal review fixture: %v", err)
+	}
+	review := payload["review"].(map[string]any)
+	review["state"] = "commented"
+	review["body"] = ""
+	user := review["user"].(map[string]any)
+	user["login"] = "chatgpt-codex-connector[bot]"
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal review fixture: %v", err)
 	}
 	return body
 }
@@ -175,6 +194,50 @@ func TestE2E_PullRequestReview_ChangesRequestedRealtime(t *testing.T) {
 	h.PostGitHubWebhook(t, "pull_request_review", fixture(t, "pull_request_review_changes_requested.json"), 345, repoURL)
 
 	h.WaitForSessionState(t, sessionID, pb.SessionState_SESSION_STATE_FIXING_CHECKS, 200*time.Millisecond)
+}
+
+func TestE2E_PullRequestReview_CommentedCodexReviewRejectedRealtime(t *testing.T) {
+	h := New(t)
+	repoURL := "https://github.com/recurser/bossanova"
+	repoID := h.SeedRepo(t, repoURL)
+	sessionID := h.SeedSession(t, repoID, 345, pb.SessionState_SESSION_STATE_READY_FOR_REVIEW)
+
+	success := vcs.CheckConclusionSuccess
+	mergeable := true
+	h.Provider.SetPRStatus(345, &vcs.PRStatus{
+		State:             vcs.PRStateOpen,
+		Mergeable:         &mergeable,
+		LatestReviewState: vcs.ReviewStateCommented,
+	})
+	h.Provider.SetCheckResults(345, []vcs.CheckResult{{
+		ID:         "ci",
+		Name:       "ci",
+		Status:     vcs.CheckStatusCompleted,
+		Conclusion: &success,
+	}})
+	h.Provider.SetReviewComments(345, []vcs.ReviewComment{{
+		Author: "chatgpt-codex-connector[bot]",
+		Body:   "handle the nil case",
+		State:  vcs.ReviewStateChangesRequested,
+	}})
+
+	h.PostGitHubWebhook(t, "pull_request_review", commentedCodexReviewFixture(t), 345, repoURL)
+
+	h.WaitForSessionState(t, sessionID, pb.SessionState_SESSION_STATE_FIXING_CHECKS, 200*time.Millisecond)
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for {
+		entry := h.DisplayTracker.Get(sessionID)
+		if entry != nil && entry.Status == vcs.DisplayStatusRejected {
+			return
+		}
+		if time.Now().After(deadline) {
+			if entry == nil {
+				t.Fatal("timed out waiting for rejected display status; no tracker entry")
+			}
+			t.Fatalf("timed out waiting for rejected display status; got %v", entry.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func TestE2E_CheckRunCompleted_FailureRealtime(t *testing.T) {

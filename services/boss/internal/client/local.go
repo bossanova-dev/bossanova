@@ -153,8 +153,12 @@ func (c *LocalClient) ListRepoPRs(ctx context.Context, repoID string) ([]*pb.PRS
 	return resp.Msg.PullRequests, nil
 }
 
-func (c *LocalClient) ListTrackerIssues(ctx context.Context, repoID, query string) ([]*pb.TrackerIssue, error) {
-	resp, err := c.rpc.ListTrackerIssues(ctx, connect.NewRequest(&pb.ListTrackerIssuesRequest{RepoId: repoID, Query: query}))
+func (c *LocalClient) ListTrackerIssues(ctx context.Context, repoID, query, source string) ([]*pb.TrackerIssue, error) {
+	req := &pb.ListTrackerIssuesRequest{RepoId: repoID, Query: query}
+	if source != "" {
+		req.Source = &source
+	}
+	resp, err := c.rpc.ListTrackerIssues(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

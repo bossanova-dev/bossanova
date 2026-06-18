@@ -852,6 +852,7 @@ func TestAssetNames(t *testing.T) {
 		"bossd-plugin-dependabot-darwin-arm64",
 		"bossd-plugin-linear-darwin-arm64",
 		"bossd-plugin-repair-darwin-arm64",
+		"bossd-plugin-sentry-darwin-arm64",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("AssetNames() = %#v, want %#v", got, want)

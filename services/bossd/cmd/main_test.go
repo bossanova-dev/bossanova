@@ -51,6 +51,7 @@ func TestRun_GracefulShutdown_NoGoroutineLeak(t *testing.T) {
 	// lookups don't touch the developer's real bossd state.
 	t.Setenv("HOME", baseDir)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(baseDir, ".config"))
+	t.Setenv("BOSS_SETTINGS_PATH", filepath.Join(baseDir, "settings.json"))
 	// Opt out of the cloud orchestrator: avoids real network I/O during
 	// the test (which would otherwise leak an http2 readLoop goroutine
 	// and hit the real keychain, popping the "allow access to Bossanova

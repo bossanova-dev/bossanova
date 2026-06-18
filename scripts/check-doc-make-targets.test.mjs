@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import {
   checkDocMakeTargets,
   discoverSkillDocs,
+  expandDebtTargets,
   expandGeneratedTargets,
   extractDocumentedMakeInvocations,
   extractDocumentedTargets,
@@ -226,6 +227,29 @@ test('expandGeneratedTargets adds per-plugin targets for present define-plugin m
   }
   // No define-plugin-build macro present, so build-* must not be synthesized.
   assert.equal(generated.has('build-claude'), false);
+});
+
+test('expandDebtTargets reads per-module debt scanners from the define-debt-targets macro', () => {
+  const makefile = [
+    'define define-debt-targets',
+    'debt-deadcode-$(2):',
+    '\tcd $(1) && go run $$(DEADCODE_PKG) -test ./...',
+    'debt-vuln-$(2):',
+    '\tcd $(1) && go run $$(GOVULNCHECK_PKG) ./...',
+    'endef',
+  ].join('\n');
+
+  const generated = expandDebtTargets(makefile, ['bossd', 'claude']);
+
+  for (const name of ['debt-deadcode-bossd', 'debt-deadcode-claude', 'debt-vuln-bossd']) {
+    assert.ok(generated.has(name), `expected generated target ${name}`);
+  }
+  // Kinds absent from the macro body must not be synthesized.
+  assert.equal(generated.has('debt-cyclo-bossd'), false);
+});
+
+test('expandDebtTargets returns nothing when the define-debt-targets macro is absent', () => {
+  assert.equal(expandDebtTargets('build:\n\t@true\n', ['bossd']).size, 0);
 });
 
 test('findUndefinedDocumentedTargets returns documented targets missing from the Makefile', () => {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -104,7 +105,15 @@ func capMessage(s string) string {
 	if len(s) <= messageCap {
 		return s
 	}
-	return s[:messageCap] + truncMarker
+	// Back the cut up to a rune boundary so truncation never splits a multi-byte
+	// rune, which would emit invalid UTF-8 as the Sentry message. For ASCII this
+	// is a no-op since every byte is a rune start. A rune is at most 4 bytes, so
+	// this backs up at most 3 positions and never reaches 0.
+	cut := messageCap
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + truncMarker
 }
 
 func scrubStacktrace(stacktrace *sentry.Stacktrace, home string) {

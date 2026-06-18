@@ -190,6 +190,54 @@ func TestTrashModel_DeleteConfirmationUsesSelectedFilteredSession(t *testing.T) 
 	}
 }
 
+func TestTrashModel_SingleDeleteTitleContainingAllDoesNotEnterDeleteAllState(t *testing.T) {
+	client := &trashStubClient{
+		stubClient: &stubClient{},
+		sessions: []*pb.Session{
+			{
+				Id:              "sess-all",
+				RepoDisplayName: "ops",
+				Title:           "remove all logs",
+				ArchivedAt:      timestamppb.New(trashArchiveTime(0)),
+			},
+			{
+				Id:              "sess-next",
+				RepoDisplayName: "ops",
+				Title:           "next cleanup",
+				ArchivedAt:      timestamppb.New(trashArchiveTime(-1 * time.Minute)),
+			},
+		},
+	}
+	m := newLoadedTrashModelWithClient(client)
+
+	m = updateTrash(t, m, keyString("d"))
+	model, cmd := m.Update(keyString("enter"))
+	m = model.(TrashModel)
+	if m.deletingAll {
+		t.Fatal("single delete should not enter delete-all state")
+	}
+	if !m.deleting {
+		t.Fatal("single delete should enter deleting state")
+	}
+
+	msg := cmd().(sessionDeletedMsg)
+	m = updateTrashMsg(t, m, msg)
+	if m.deletingAll {
+		t.Fatal("single delete should not leave delete-all state after completion")
+	}
+	if got := trashSessionIDs(m.sessions); fmt.Sprint(got) != "[sess-next]" {
+		t.Fatalf("remaining sessions = %v, want [sess-next]", got)
+	}
+	if strings.Contains(m.View().Content, "Deleting all") {
+		t.Fatalf("single delete left delete-all view active: %q", m.View().Content)
+	}
+
+	m = updateTrash(t, m, keyString("d"))
+	if !m.confirm.active {
+		t.Fatal("single delete should leave actions usable for remaining rows")
+	}
+}
+
 func TestTrashModel_FilteredDeleteAllDeletesOnlyMatchedSessions(t *testing.T) {
 	client := &trashStubClient{stubClient: &stubClient{}, sessions: trashFixtureSessions()}
 	m := newLoadedTrashModelWithClient(client)
@@ -200,7 +248,7 @@ func TestTrashModel_FilteredDeleteAllDeletesOnlyMatchedSessions(t *testing.T) {
 	m.buildTable()
 
 	m = updateTrash(t, m, keyString("a"))
-	if !m.confirmingAll {
+	if !m.confirm.active {
 		t.Fatal("model should confirm filtered delete all")
 	}
 	if got := m.View().Content; !strings.Contains(got, "Permanently delete 1 filtered archived sessions?") {

@@ -12,6 +12,7 @@ const moduleRules = [
   { root: 'plugins/bossd-plugin-dependabot/', target: 'test-dependabot' },
   { root: 'plugins/bossd-plugin-linear/', target: 'test-linear' },
   { root: 'plugins/bossd-plugin-repair/', target: 'test-repair' },
+  { root: 'plugins/bossd-plugin-sentry/', target: 'test-sentry' },
 ];
 
 const protoTargets = ['test-bossalib', 'test-boss', 'test-bossd', 'test-bosso'];

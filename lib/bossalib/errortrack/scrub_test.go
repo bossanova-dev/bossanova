@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/getsentry/sentry-go"
 )
@@ -149,6 +150,30 @@ func TestCapMessage_Boundary(t *testing.T) {
 				t.Fatalf("capMessage(len=%d) modified an at-or-below-cap string", tt.length)
 			}
 		})
+	}
+}
+
+// TestCapMessage_UTF8Boundary ensures truncation never splits a multi-byte rune.
+// Slicing at a fixed byte offset (scrub.go:107) can cut mid-rune when the message
+// contains non-ASCII text, emitting invalid UTF-8 as the Sentry message. The cut
+// must back up to a rune boundary so the result stays valid UTF-8.
+func TestCapMessage_UTF8Boundary(t *testing.T) {
+	// Place a 3-byte rune (€, U+20AC) straddling the cap so byte messageCap lands
+	// in the middle of the rune. A naive s[:messageCap] would leave a dangling
+	// continuation byte.
+	in := strings.Repeat("a", messageCap-1) + "€" + strings.Repeat("b", 10)
+	got := capMessage(in)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("capMessage produced invalid UTF-8: %q", got[len(got)-len(truncMarker)-4:])
+	}
+	if !strings.HasSuffix(got, truncMarker) {
+		t.Fatalf("capMessage = %q, want %s suffix", got, truncMarker)
+	}
+	// The whole € rune must be dropped (it started at messageCap-1 and would not
+	// fit within the cap), leaving only the ASCII prefix before it.
+	if want := strings.Repeat("a", messageCap-1) + truncMarker; got != want {
+		t.Fatalf("capMessage truncated incorrectly: got %d-byte body, want cut before the rune", len(got)-len(truncMarker))
 	}
 }
 
@@ -354,4 +379,16 @@ func testHome(t *testing.T) string {
 		t.Skip("user home unavailable")
 	}
 	return home
+}
+
+// TestCapMessageInvalidUTF8NoPanic feeds capMessage a run of UTF-8 continuation
+// bytes (each byte fails utf8.RuneStart) longer than messageCap. The rune-boundary
+// backup must stop at cut==0; if the loop guard let cut go negative it would slice
+// s[:-1] and panic. The whole prefix is dropped, leaving just the truncation marker.
+func TestCapMessageInvalidUTF8NoPanic(t *testing.T) {
+	s := strings.Repeat("\x80", messageCap+1)
+	got := capMessage(s)
+	if got != truncMarker {
+		t.Fatalf("capMessage(invalid utf8) = %q, want %q", got, truncMarker)
+	}
 }

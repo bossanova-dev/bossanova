@@ -66,6 +66,15 @@ func TestOpenBrowserCommandWSLFallsBackToCmdExe(t *testing.T) {
 	}
 }
 
+func TestOpenBrowserCommandLinuxMissingXdgOpen(t *testing.T) {
+	_, err := openBrowserCommand("https://example.test", "linux", false, func(string) (string, error) {
+		return "", errors.New("missing")
+	})
+	if err == nil {
+		t.Fatal("openBrowserCommand returned nil error when xdg-open is unavailable")
+	}
+}
+
 func TestOpenBrowserCommandUnsupportedPlatform(t *testing.T) {
 	_, err := openBrowserCommand("https://example.test", "plan9", false, exec.LookPath)
 	if err == nil {

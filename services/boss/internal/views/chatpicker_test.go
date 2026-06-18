@@ -142,7 +142,7 @@ func (s *chatPickerStub) NotifyAuthChange(context.Context, string) error { retur
 func (s *chatPickerStub) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
 }
-func (s *chatPickerStub) ListTrackerIssues(context.Context, string, string) ([]*pb.TrackerIssue, error) {
+func (s *chatPickerStub) ListTrackerIssues(context.Context, string, string, string) ([]*pb.TrackerIssue, error) {
 	panic("unused")
 }
 func (s *chatPickerStub) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {

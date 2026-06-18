@@ -153,6 +153,9 @@ type harnessConfig struct {
 	terminalWidth                 int
 	terminalHeight                int
 	archiveDelay                  time.Duration
+	archiveError                  string
+	chatListDelay                 time.Duration
+	chatListError                 string
 	env                           []string
 	skipSettingsAcknowledgedSeed  bool
 	firstRunOnboarding            bool
@@ -187,6 +190,27 @@ func WithWorktreeBaseDir(dir string) Option {
 func WithArchiveDelay(delay time.Duration) Option {
 	return func(c *harnessConfig) {
 		c.archiveDelay = delay
+	}
+}
+
+// WithArchiveError makes ArchiveSession fail with the given message.
+func WithArchiveError(message string) Option {
+	return func(c *harnessConfig) {
+		c.archiveError = message
+	}
+}
+
+// WithChatListDelay slows ListChats so tests can assert loading-state behavior.
+func WithChatListDelay(delay time.Duration) Option {
+	return func(c *harnessConfig) {
+		c.chatListDelay = delay
+	}
+}
+
+// WithChatListError makes ListChats fail with the given message.
+func WithChatListError(message string) Option {
+	return func(c *harnessConfig) {
+		c.chatListError = message
 	}
 }
 
@@ -380,6 +404,9 @@ func New(t *testing.T, opts ...Option) *Harness {
 		daemon.SetAgents(cfg.agents)
 	}
 	daemon.archiveDelay = cfg.archiveDelay
+	daemon.archiveError = cfg.archiveError
+	daemon.chatListDelay = cfg.chatListDelay
+	daemon.chatListError = cfg.chatListError
 
 	// Each tuitest gets its own HOME so the boss subprocess's settings file
 	// doesn't leak into the developer's real config (and vice versa). We
@@ -396,26 +423,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.
-	var env []string
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
-			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
-			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
-			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
-			strings.HasPrefix(e, "BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL=") ||
-			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALLED_REPOS=") ||
-			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS=") ||
-			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_URL=") ||
-			strings.HasPrefix(e, "HOME=") ||
-			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
-			continue
-		}
-		env = append(env, e)
-	}
+	env := baseHarnessEnv(os.Environ())
 	env = append(env,
 		"BOSS_SKIP_SKILLS=1",
 		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
@@ -486,4 +494,29 @@ func New(t *testing.T, opts ...Option) *Harness {
 		Driver: driver,
 		Daemon: daemon,
 	}
+}
+
+func baseHarnessEnv(environ []string) []string {
+	var env []string
+	for _, e := range environ {
+		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
+			strings.HasPrefix(e, "BOSS_SETTINGS_PATH=") ||
+			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
+			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
+			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
+			strings.HasPrefix(e, "BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=") ||
+			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL=") ||
+			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALLED_REPOS=") ||
+			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS=") ||
+			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_URL=") ||
+			strings.HasPrefix(e, "HOME=") ||
+			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	return env
 }

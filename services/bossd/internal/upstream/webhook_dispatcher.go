@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/vcs"
@@ -20,9 +21,15 @@ type SessionEventEmitter interface {
 }
 
 // ReviewCommentProvider fetches review feedback when webhook payloads only
-// report that changes were requested.
+// report review summary state. Providers also classify bot COMMENTED reviews
+// with actionable inline feedback as changes requested.
 type ReviewCommentProvider interface {
 	GetReviewComments(ctx context.Context, repoPath string, prID int) ([]vcs.ReviewComment, error)
+}
+
+// ReviewInlineCommentProvider fetches comments attached to one submitted review.
+type ReviewInlineCommentProvider interface {
+	GetReviewInlineComments(ctx context.Context, repoPath string, prID int, reviewID int64) ([]vcs.ReviewComment, error)
 }
 
 // WebhookDispatcher routes PR-scoped webhook events to the display poller.
@@ -50,6 +57,22 @@ func NewWebhookDispatcherWithEmitterAndReviewComments(refresher PRRefresher, emi
 	}
 }
 
+// eventTypeRequiresPR reports whether a GitHub webhook event type is
+// intrinsically scoped to a pull request, so a missing PR number signals a
+// resolution bug rather than routine non-PR traffic. The values match the
+// X-GitHub-Event header strings forwarded by bosso.
+func eventTypeRequiresPR(eventType string) bool {
+	switch eventType {
+	case "pull_request",
+		"pull_request_review",
+		"pull_request_review_comment",
+		"pull_request_review_thread":
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) error {
 	if ev == nil {
 		return fmt.Errorf("webhook event is nil")
@@ -68,6 +91,21 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, ev *pb.WebhookEvent) e
 		prNumber = payloadPR
 	}
 	if prNumber == 0 {
+		// Only PR-scoped event types are expected to always carry a PR
+		// number; for those a zero here points at a real resolution
+		// bug worth a WARN. Events like ping, check_suite/check_run on
+		// non-PR refs, and issue_comment on plain issues legitimately
+		// resolve to zero, so they log at Debug to avoid drowning the
+		// signal in routine traffic.
+		level := zerolog.DebugLevel
+		if eventTypeRequiresPR(ev.GetEventType()) {
+			level = zerolog.WarnLevel
+		}
+		d.logger.WithLevel(level).
+			Str("event_type", ev.GetEventType()).
+			Str("repo_origin_url", ev.GetRepoOriginUrl()).
+			Int("envelope_pull_request", int(ev.GetPullRequest())).
+			Msg("webhook: no PR number resolved; skipping dispatch")
 		return nil
 	}
 
@@ -135,11 +173,11 @@ func (d *WebhookDispatcher) enrichReviewComments(ctx context.Context, repoOrigin
 	copy(enriched, events)
 	for i, event := range enriched {
 		review, ok := event.(vcs.ReviewSubmitted)
-		if !ok || review.State != vcs.ReviewStateChangesRequested {
+		if !ok || !reviewNeedsCommentEnrichment(review.State) {
 			continue
 		}
 		if d.reviewComments == nil {
-			if len(review.Comments) > 0 {
+			if review.State == vcs.ReviewStateCommented || len(review.Comments) > 0 {
 				continue
 			}
 			d.logger.Warn().
@@ -148,7 +186,7 @@ func (d *WebhookDispatcher) enrichReviewComments(ctx context.Context, repoOrigin
 				Msg("skipping realtime review emission without review comment provider")
 			return nil, false
 		}
-		comments, err := d.reviewComments.GetReviewComments(ctx, repoOriginURL, prNumber)
+		comments, err := d.getSubmittedReviewComments(ctx, repoOriginURL, prNumber, review)
 		if err != nil {
 			d.logger.Warn().
 				Err(err).
@@ -158,7 +196,40 @@ func (d *WebhookDispatcher) enrichReviewComments(ctx context.Context, repoOrigin
 			return nil, false
 		}
 		review.Comments = append(review.Comments, comments...)
+		// Realtime-path promotion: handleReviewSubmitted gates the fix loop on the
+		// review's summary State, so a bot COMMENTED review with actionable inline
+		// feedback must be promoted here. This mirrors the provider-side promotion
+		// in github.Provider.GetReviewComments (which feeds the display-poller path
+		// that keys off per-comment State); keep both in sync.
+		if review.State == vcs.ReviewStateCommented && hasActionableBotReviewComments(review, comments) {
+			review.State = vcs.ReviewStateChangesRequested
+		}
 		enriched[i] = review
 	}
 	return enriched, true
+}
+
+func (d *WebhookDispatcher) getSubmittedReviewComments(ctx context.Context, repoOriginURL string, prNumber int, review vcs.ReviewSubmitted) ([]vcs.ReviewComment, error) {
+	if review.ReviewID != 0 {
+		if provider, ok := d.reviewComments.(ReviewInlineCommentProvider); ok {
+			return provider.GetReviewInlineComments(ctx, repoOriginURL, prNumber, review.ReviewID)
+		}
+	}
+	return d.reviewComments.GetReviewComments(ctx, repoOriginURL, prNumber)
+}
+
+func reviewNeedsCommentEnrichment(state vcs.ReviewState) bool {
+	return state == vcs.ReviewStateChangesRequested || state == vcs.ReviewStateCommented
+}
+
+func hasActionableBotReviewComments(review vcs.ReviewSubmitted, comments []vcs.ReviewComment) bool {
+	if !strings.HasSuffix(review.Author, "[bot]") {
+		return false
+	}
+	for _, comment := range comments {
+		if comment.State == vcs.ReviewStateChangesRequested {
+			return true
+		}
+	}
+	return false
 }

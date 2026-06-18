@@ -69,7 +69,7 @@ func translateReview(e *github.PullRequestReviewEvent) ([]vcs.Event, int, error)
 		return nil, pr, nil
 	}
 
-	review := vcs.ReviewSubmitted{PRID: pr, State: state}
+	review := vcs.ReviewSubmitted{PRID: pr, ReviewID: e.Review.GetID(), Author: e.Review.GetUser().GetLogin(), State: state}
 	if e.Review.GetBody() != "" {
 		review.Comments = []vcs.ReviewComment{{
 			Author: e.Review.GetUser().GetLogin(),

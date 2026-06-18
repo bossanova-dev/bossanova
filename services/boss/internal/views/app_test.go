@@ -97,6 +97,43 @@ func TestAppSwitchViewHomePreservesCloudAccessClient(t *testing.T) {
 	}
 }
 
+func TestAppSettingsBillingUsesAccountReturnURL(t *testing.T) {
+	cloud := &fakeHomeCloudAccessClient{portalURL: "https://billing.example.test/portal"}
+	a := NewApp(nil, nil)
+	a.WithCloudAccessClient(cloud)
+	a.WithCheckoutURLs(
+		"https://app.example.test/subscribe/success?source=cli",
+		"https://app.example.test/subscribe/canceled?source=cli",
+	)
+
+	openedURL := ""
+	originalOpen := openBillingPortalURL
+	openBillingPortalURL = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+	defer func() { openBillingPortalURL = originalOpen }()
+
+	model, _ := a.Update(switchViewMsg{view: ViewSettings})
+	got := model.(App)
+	model, cmd := got.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
+	got = model.(App)
+	if cmd == nil {
+		t.Fatal("billing key returned nil cmd")
+	}
+	got.Update(cmd())
+
+	if len(cloud.portalReturnURLs) != 1 {
+		t.Fatalf("portal return URLs = %v, want one call", cloud.portalReturnURLs)
+	}
+	if got, want := cloud.portalReturnURLs[0], "https://app.example.test/settings/account?source=cli"; got != want {
+		t.Fatalf("portal return URL = %q, want %q", got, want)
+	}
+	if openedURL != cloud.portalURL {
+		t.Fatalf("opened URL = %q, want %q", openedURL, cloud.portalURL)
+	}
+}
+
 func TestAppWithSettingsPassesSettingsToHome(t *testing.T) {
 	settings := config.DefaultSettings()
 	settings.BossCloudGuestOfferHidden = true

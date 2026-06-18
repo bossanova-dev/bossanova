@@ -65,7 +65,7 @@ The session record carries: session id, repo id, title, plan text,
 worktree path, branch and base branch, state, attempt count, PR
 number / URL, last check state, display label, attention status,
 created/updated timestamps, optional tracker id and URL (Linear /
-Jira), optional tmux session name, optional `blocked_reason` string,
+Sentry / Jira), optional tmux session name, optional `blocked_reason` string,
 and optional `archived_at`.
 
 **The plan text is sent.** That's the prompt the user typed when they
@@ -173,6 +173,10 @@ talk to their respective services directly:
   bytes.
 - **Linear:** the `linear` plugin talks to `api.linear.app` directly,
   using the API key stored on the repo.
+- **Sentry:** the `sentry` plugin talks to `sentry.io` directly, using
+  the API token and organization slug stored on the repo. It only reads
+  issues (when you open the new-session picker); it never writes back to
+  Sentry. Boss Cloud is not in that path.
 - **WorkOS:** the auth flow above. WorkOS sees the device-code
   request, the device-code completion, and any subsequent token
   refreshes.

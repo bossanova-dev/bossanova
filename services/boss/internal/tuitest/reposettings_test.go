@@ -9,7 +9,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// navigateToRepoSettings navigates from home → repo list → repo settings for the first repo.
+// navigateToRepoSettings navigates from home → settings → repo list → repo settings for the first repo.
 func navigateToRepoSettings(t *testing.T, h *tuitest.Harness) {
 	t.Helper()
 
@@ -19,12 +19,7 @@ func navigateToRepoSettings(t *testing.T, h *tuitest.Harness) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('r'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
-		t.Fatal(err)
-	}
+	openSettingsView(t, h, 'r', "PATH")
 
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)

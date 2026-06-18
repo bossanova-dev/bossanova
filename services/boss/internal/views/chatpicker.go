@@ -78,6 +78,22 @@ type mergeResultMsg struct {
 	err error
 }
 
+type archiveResultMsg struct {
+	err error
+}
+
+// confirmKind identifies which destructive action a y/n confirmation prompt
+// is gating. Stored as a plain enum on the model (NOT a pointer/closure) so it
+// is safe under Bubble Tea's value-copy of models between updates.
+type confirmKind int
+
+const (
+	confirmNone confirmKind = iota
+	confirmDelete
+	confirmMerge
+	confirmArchive
+)
+
 // wakeResultMsg carries the result of an async WakeChat RPC call.
 type wakeResultMsg struct {
 	agentSessionID string
@@ -117,13 +133,14 @@ type ChatPickerModel struct {
 	statusMsg   string
 	repoWebLink repoWebLink
 
-	// Remove confirmation
-	confirming             bool
+	// Active y/n confirmation (confirmNone when no prompt is showing).
+	confirm                confirmKind
 	deletingAgentSessionID string
 
-	// Merge confirmation / in-progress
-	mergeConfirming bool
-	merging         bool
+	// In-flight spinners for the async RPCs.
+	merging   bool
+	archiving bool
+	archived  bool
 
 	// Agents loaded once at picker construction. Drives the per-chat
 	// agent-select sub-phase shown when the user presses [n] (new chat)
@@ -499,6 +516,15 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.merged = true
 		return m, nil
 
+	case archiveResultMsg:
+		m.archiving = false
+		if msg.err != nil {
+			m.statusMsg = "Couldn't archive session: " + msg.err.Error()
+			return m, nil
+		}
+		m.archived = true
+		return m, nil
+
 	case wakeResultMsg:
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Wake failed: %v", msg.err)
@@ -549,21 +575,38 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// While a merge is in flight the View hides all action bars and
-		// confirmation prompts behind the spinner. Swallow key input so the
-		// user can't invisibly enter `d`/`m` confirm state and then confirm
-		// it with `y` against a prompt they can't see.
-		if m.merging {
+		if m.err != nil {
+			// Chat listing failed, but the session itself loaded, so the
+			// session can still be archived — and archiveCmd is now the only
+			// TUI archive path. Keep the archive flow reachable here; swallow
+			// everything else.
+			if m.archiving {
+				return m, nil
+			}
+			if m.confirm == confirmArchive {
+				return m.updateConfirm(msg)
+			}
+			switch msg.String() {
+			case "esc":
+				m.cancel = true
+			case "a":
+				if m.sessionID != "" {
+					m.confirm = confirmArchive
+				}
+			}
+			return m, nil
+		}
+		// While a merge/archive is in flight, swallow key input so the user
+		// can't navigate away or invisibly enter another confirm state before
+		// the async result routes the picker.
+		if m.merging || m.archiving {
 			return m, nil
 		}
 		if m.pickingAgent {
 			return m.updateAgentSelect(msg)
 		}
-		if m.confirming {
-			return m.updateDeleteConfirm(msg)
-		}
-		if m.mergeConfirming {
-			return m.updateMergeConfirm(msg)
+		if m.confirm != confirmNone {
+			return m.updateConfirm(msg)
 		}
 
 		m.statusMsg = ""
@@ -613,7 +656,12 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.canMerge() {
 				return m, nil
 			}
-			m.mergeConfirming = true
+			m.confirm = confirmMerge
+			return m, nil
+		case "a":
+			if m.sessionID != "" && !m.loading && m.confirm == confirmNone && !m.merging && !m.archiving {
+				m.confirm = confirmArchive
+			}
 			return m, nil
 		case "w":
 			chat := m.selectedChat()
@@ -643,7 +691,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "d":
 			if chat := m.selectedChat(); chat != nil && m.deletingAgentSessionID == "" {
-				m.confirming = true
+				m.confirm = confirmDelete
 			}
 			return m, nil
 		case "enter":
@@ -670,22 +718,50 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m ChatPickerModel) updateMergeConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// updateConfirm handles the y/n keys for whichever confirmKind is active.
+// It clears the prompt, flips any in-flight spinner, and returns the RPC cmd.
+func (m ChatPickerModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "enter":
-		m.mergeConfirming = false
-		m.merging = true
-		client := m.client
-		ctx := m.ctx
-		id := m.sessionID
-		return m, func() tea.Msg {
-			_, err := client.MergeSession(ctx, id)
-			return mergeResultMsg{err: err}
+		k := m.confirm
+		m.confirm = confirmNone
+		switch k {
+		case confirmMerge:
+			m.merging = true
+			return m, m.mergeCmd()
+		case confirmArchive:
+			m.archiving = true
+			return m, m.archiveCmd()
+		case confirmDelete:
+			return m.startDelete()
+		case confirmNone:
+			return m, nil
 		}
 	case "n", "esc":
-		m.mergeConfirming = false
+		m.confirm = confirmNone
 	}
 	return m, nil
+}
+
+// mergeCmd runs MergeSession off the update loop. Captures everything by value.
+func (m ChatPickerModel) mergeCmd() tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	id := m.sessionID
+	return func() tea.Msg {
+		_, err := client.MergeSession(ctx, id)
+		return mergeResultMsg{err: err}
+	}
+}
+
+func (m ChatPickerModel) archiveCmd() tea.Cmd {
+	client := m.client
+	ctx := m.ctx
+	id := m.sessionID
+	return func() tea.Msg {
+		_, err := client.ArchiveSession(ctx, id)
+		return archiveResultMsg{err: err}
+	}
 }
 
 // buildAgentTable populates m.agentTable from m.agents. Single AGENT
@@ -751,25 +827,21 @@ func (m ChatPickerModel) updateAgentSelect(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	}
 }
 
-func (m ChatPickerModel) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
-		m.confirming = false
-		chat := m.selectedChat()
-		if chat == nil {
-			return m, nil
-		}
-		agentSessionID := chat.AgentSessionId
-		m.deletingAgentSessionID = agentSessionID
-		m.buildTableRows()
-		return m, func() tea.Msg {
-			err := m.client.DeleteChat(m.ctx, agentSessionID)
-			return chatDeletedMsg{agentSessionID: agentSessionID, err: err}
-		}
-	case "n", "esc":
-		m.confirming = false
+// startDelete records the in-flight chat id (drives the table badge) and
+// returns the DeleteChat command. Returns (model, cmd) because it mutates the
+// model, unlike mergeCmd/archiveCmd which only read it.
+func (m ChatPickerModel) startDelete() (tea.Model, tea.Cmd) {
+	chat := m.selectedChat()
+	if chat == nil {
+		return m, nil
 	}
-	return m, nil
+	agentSessionID := chat.AgentSessionId
+	m.deletingAgentSessionID = agentSessionID
+	m.buildTableRows()
+	return m, func() tea.Msg {
+		err := m.client.DeleteChat(m.ctx, agentSessionID)
+		return chatDeletedMsg{agentSessionID: agentSessionID, err: err}
+	}
 }
 
 // Cancelled returns true if the user cancelled the chat picker.
@@ -778,6 +850,8 @@ func (m ChatPickerModel) Cancelled() bool { return m.cancel }
 // Merged returns true if the user just completed a successful merge from
 // this session. App uses this signal to return to the home view.
 func (m ChatPickerModel) Merged() bool { return m.merged }
+
+func (m ChatPickerModel) Archived() bool { return m.archived }
 
 // Session returns the active session, or nil if it has not been fetched yet.
 // Used by the top-level App to attach session context to a bug report.
@@ -795,10 +869,27 @@ func (m ChatPickerModel) tableHeight() int {
 
 func (m ChatPickerModel) View() tea.View {
 	if m.err != nil {
-		return tea.NewView(
-			renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n" +
-				styleActionBar.Render("[esc] back"),
-		)
+		body := renderError(fmt.Sprintf("Error: %v", m.err), m.width) + "\n"
+		switch {
+		case m.archiving:
+			body += lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
+				m.spinner.View() + "Archiving session...")
+		case m.confirm == confirmArchive:
+			body += lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?") + "\n" +
+				styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
+		default:
+			// Surface a failed archive (stored in statusMsg) so the user isn't
+			// dropped back to the bare error screen with no feedback.
+			if m.statusMsg != "" {
+				body += lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg) + "\n"
+			}
+			if m.sessionID != "" {
+				body += actionBar([]string{"[a]rchive"}, []string{"[esc] back"})
+			} else {
+				body += styleActionBar.Render("[esc] back")
+			}
+		}
+		return tea.NewView(body)
 	}
 
 	if m.loading {
@@ -835,7 +926,10 @@ func (m ChatPickerModel) View() tea.View {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
 			m.spinner.View() + label))
-	} else if m.confirming {
+	} else if m.archiving {
+		b.WriteString(lipgloss.NewStyle().Padding(actionBarPadY, 2).Foreground(colorWarning).Render(
+			m.spinner.View() + "Archiving session..."))
+	} else if m.confirm == confirmDelete {
 		chat := m.selectedChat()
 		if chat != nil {
 			chatTitle := chat.Title
@@ -848,13 +942,18 @@ func (m ChatPickerModel) View() tea.View {
 			b.WriteString("\n")
 			b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 		}
-	} else if m.mergeConfirming {
+	} else if m.confirm == confirmMerge {
 		prompt := "Merge PR?"
 		if n := m.session.GetPrNumber(); n != 0 {
 			prompt = fmt.Sprintf("Merge PR #%d?", n)
 		}
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(prompt))
+		b.WriteString("\n")
+		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
+	} else if m.confirm == confirmArchive {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render("Archive this session?"))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
 	} else {
@@ -871,6 +970,9 @@ func (m ChatPickerModel) View() tea.View {
 		}
 		if m.canMerge() {
 			middle = append(middle, "[m]erge")
+		}
+		if m.sessionID != "" {
+			middle = append(middle, "[a]rchive")
 		}
 		if chat := m.selectedChat(); chat != nil {
 			left := []string{"[enter] select", "[d]elete"}

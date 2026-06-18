@@ -53,17 +53,26 @@ func (f *fakeEmitter) EmitForPR(_ context.Context, repoOriginURL string, prNumbe
 type reviewCommentCall struct {
 	repoOriginURL string
 	prNumber      int
+	reviewID      int64
 }
 
 type fakeReviewCommentProvider struct {
-	calls    []reviewCommentCall
-	comments []vcs.ReviewComment
-	err      error
+	calls          []reviewCommentCall
+	inlineCalls    []reviewCommentCall
+	comments       []vcs.ReviewComment
+	inlineComments []vcs.ReviewComment
+	err            error
+	inlineErr      error
 }
 
 func (f *fakeReviewCommentProvider) GetReviewComments(_ context.Context, repoOriginURL string, prNumber int) ([]vcs.ReviewComment, error) {
 	f.calls = append(f.calls, reviewCommentCall{repoOriginURL: repoOriginURL, prNumber: prNumber})
 	return f.comments, f.err
+}
+
+func (f *fakeReviewCommentProvider) GetReviewInlineComments(_ context.Context, repoOriginURL string, prNumber int, reviewID int64) ([]vcs.ReviewComment, error) {
+	f.inlineCalls = append(f.inlineCalls, reviewCommentCall{repoOriginURL: repoOriginURL, prNumber: prNumber, reviewID: reviewID})
+	return f.inlineComments, f.inlineErr
 }
 
 func TestWebhookDispatcherRoutesPRPullRequestEvent(t *testing.T) {
@@ -292,7 +301,7 @@ func TestDispatch_ReviewSubmittedFetchesCommentsWhenPayloadBodyEmpty(t *testing.
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
 	reviews := &fakeReviewCommentProvider{
-		comments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
+		inlineComments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
 	}
 	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
 
@@ -305,8 +314,8 @@ func TestDispatch_ReviewSubmittedFetchesCommentsWhenPayloadBodyEmpty(t *testing.
 	if err != nil {
 		t.Fatalf("Dispatch returned error: %v", err)
 	}
-	if len(reviews.calls) != 1 {
-		t.Fatalf("GetReviewComments call count = %d, want 1", len(reviews.calls))
+	if len(reviews.inlineCalls) != 1 {
+		t.Fatalf("GetReviewInlineComments call count = %d, want 1", len(reviews.inlineCalls))
 	}
 	if len(emitter.calls) != 1 {
 		t.Fatalf("EmitForPR call count = %d, want 1", len(emitter.calls))
@@ -320,6 +329,185 @@ func TestDispatch_ReviewSubmittedFetchesCommentsWhenPayloadBodyEmpty(t *testing.
 	}
 }
 
+func TestDispatch_ReviewSubmittedCommentedBotReviewPromotesFromFetchedComments(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = ""
+		user := review["user"].(map[string]any)
+		user["login"] = "chatgpt-codex-connector[bot]"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		inlineComments: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "handle the nil case",
+			State:  vcs.ReviewStateChangesRequested,
+		}},
+	}
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(reviews.inlineCalls) != 1 {
+		t.Fatalf("GetReviewInlineComments call count = %d, want 1", len(reviews.inlineCalls))
+	}
+	if len(emitter.calls) != 1 {
+		t.Fatalf("EmitForPR call count = %d, want 1", len(emitter.calls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateChangesRequested {
+		t.Fatalf("ReviewSubmitted.State = %v, want ChangesRequested", review.State)
+	}
+	if len(review.Comments) != 1 || review.Comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Fatalf("review comments = %+v, want fetched changes-requested comment", review.Comments)
+	}
+}
+
+func TestDispatch_ReviewSubmittedCommentedBotReviewIgnoresStalePRComments(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = ""
+		user := review["user"].(map[string]any)
+		user["login"] = "chatgpt-codex-connector[bot]"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		comments: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "old unresolved review",
+			State:  vcs.ReviewStateChangesRequested,
+		}},
+	}
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(reviews.calls) != 0 {
+		t.Fatalf("GetReviewComments call count = %d, want 0", len(reviews.calls))
+	}
+	if len(reviews.inlineCalls) != 1 {
+		t.Fatalf("GetReviewInlineComments call count = %d, want 1", len(reviews.inlineCalls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateCommented {
+		t.Fatalf("ReviewSubmitted.State = %v, want Commented", review.State)
+	}
+}
+
+func TestDispatch_ReviewSubmittedCommentedHumanReviewStaysCommentedWithInlineFeedback(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = ""
+		user := review["user"].(map[string]any)
+		user["login"] = "human-reviewer"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		inlineComments: []vcs.ReviewComment{{
+			Author: "human-reviewer",
+			Body:   "non-blocking question",
+			State:  vcs.ReviewStateChangesRequested,
+		}},
+	}
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(reviews.inlineCalls) != 1 {
+		t.Fatalf("GetReviewInlineComments call count = %d, want 1", len(reviews.inlineCalls))
+	}
+	if len(emitter.calls) != 1 {
+		t.Fatalf("EmitForPR call count = %d, want 1", len(emitter.calls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateCommented {
+		t.Fatalf("ReviewSubmitted.State = %v, want Commented", review.State)
+	}
+	if len(review.Comments) != 1 || review.Comments[0].State != vcs.ReviewStateChangesRequested {
+		t.Fatalf("review comments = %+v, want fetched inline comment retained", review.Comments)
+	}
+}
+
+func TestDispatch_ReviewSubmittedCommentedBotReviewStaysCommentedWhenNoActionableComments(t *testing.T) {
+	payload := mutateJSONFixture(t, loadFixture(t, "pull_request_review_changes_requested.json"), func(body map[string]any) {
+		review := body["review"].(map[string]any)
+		review["state"] = "commented"
+		review["body"] = ""
+		user := review["user"].(map[string]any)
+		user["login"] = "chatgpt-codex-connector[bot]"
+	})
+
+	refresher := &fakePRRefresher{}
+	emitter := &fakeEmitter{}
+	reviews := &fakeReviewCommentProvider{
+		inlineComments: []vcs.ReviewComment{{
+			Author: "chatgpt-codex-connector[bot]",
+			Body:   "nice work",
+			State:  vcs.ReviewStateCommented,
+		}},
+	}
+	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request_review",
+		RepoOriginUrl: "https://github.com/recurser/bossanova",
+		PullRequest:   345,
+		Payload:       payload,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+	if len(emitter.calls) != 1 {
+		t.Fatalf("EmitForPR call count = %d, want 1", len(emitter.calls))
+	}
+	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
+	if !ok {
+		t.Fatalf("event type = %T, want vcs.ReviewSubmitted", emitter.calls[0].events[0])
+	}
+	if review.State != vcs.ReviewStateCommented {
+		t.Fatalf("ReviewSubmitted.State = %v, want Commented (benign comment must not be promoted)", review.State)
+	}
+}
+
 func TestDispatch_ReviewSubmittedMergesSummaryAndInlineComments(t *testing.T) {
 	payload, err := os.ReadFile("testdata/pull_request_review_changes_requested.json")
 	if err != nil {
@@ -329,7 +517,7 @@ func TestDispatch_ReviewSubmittedMergesSummaryAndInlineComments(t *testing.T) {
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
 	reviews := &fakeReviewCommentProvider{
-		comments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
+		inlineComments: []vcs.ReviewComment{{Body: "inline fix", State: vcs.ReviewStateChangesRequested}},
 	}
 	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
 
@@ -342,8 +530,8 @@ func TestDispatch_ReviewSubmittedMergesSummaryAndInlineComments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dispatch returned error: %v", err)
 	}
-	if len(reviews.calls) != 1 {
-		t.Fatalf("GetReviewComments call count = %d, want 1", len(reviews.calls))
+	if len(reviews.inlineCalls) != 1 {
+		t.Fatalf("GetReviewInlineComments call count = %d, want 1", len(reviews.inlineCalls))
 	}
 	review, ok := emitter.calls[0].events[0].(vcs.ReviewSubmitted)
 	if !ok {
@@ -365,7 +553,7 @@ func TestDispatch_ReviewSubmittedSkipsRealtimeWhenCommentFetchFails(t *testing.T
 
 	refresher := &fakePRRefresher{}
 	emitter := &fakeEmitter{}
-	reviews := &fakeReviewCommentProvider{err: errors.New("review comments unavailable")}
+	reviews := &fakeReviewCommentProvider{inlineErr: errors.New("review comments unavailable")}
 	dispatcher := NewWebhookDispatcherWithEmitterAndReviewComments(refresher, emitter, reviews, zerolog.Nop())
 
 	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
@@ -416,6 +604,57 @@ func TestWebhookDispatcherSkipsEventsWithoutPR(t *testing.T) {
 	}
 	if len(refresher.calls) != 0 {
 		t.Fatalf("RefreshPR call count = %d, want 0", len(refresher.calls))
+	}
+}
+
+func TestWebhookDispatcherWarnsWhenNoPRNumber(t *testing.T) {
+	refresher := &fakePRRefresher{}
+	var logs strings.Builder
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.New(&logs))
+
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "pull_request",
+		RepoOriginUrl: "owner/repo",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	if len(refresher.calls) != 0 {
+		t.Fatalf("RefreshPR called %d times, want 0 when no PR number", len(refresher.calls))
+	}
+	if !strings.Contains(logs.String(), "no PR number") {
+		t.Fatalf("expected warning about missing PR number, got: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), `"level":"warn"`) {
+		t.Fatalf("expected WARN level for PR-scoped event missing a PR number, got: %s", logs.String())
+	}
+}
+
+func TestWebhookDispatcherDebugsNonPREventWithoutPRNumber(t *testing.T) {
+	refresher := &fakePRRefresher{}
+	var logs strings.Builder
+	dispatcher := NewWebhookDispatcher(refresher, zerolog.New(&logs))
+
+	// check_suite/check_run fire on non-PR refs (e.g. CI on the default
+	// branch) and legitimately resolve to no PR number. Those must not
+	// emit WARN-level noise on routine traffic.
+	err := dispatcher.Dispatch(context.Background(), &pb.WebhookEvent{
+		EventType:     "check_suite",
+		RepoOriginUrl: "https://github.com/owner/repo",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	if len(refresher.calls) != 0 {
+		t.Fatalf("RefreshPR called %d times, want 0 when no PR number", len(refresher.calls))
+	}
+	if strings.Contains(logs.String(), `"level":"warn"`) {
+		t.Fatalf("non-PR event without a PR number should not WARN, got: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), `"level":"debug"`) {
+		t.Fatalf("expected DEBUG level for non-PR event missing a PR number, got: %s", logs.String())
 	}
 }
 

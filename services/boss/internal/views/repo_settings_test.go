@@ -54,8 +54,9 @@ func TestRepoSettings_LinearApiKeyEditIsFullReplace(t *testing.T) {
 	updatedModel, _ := m.Update(msg)
 	m = updatedModel.(RepoSettingsModel)
 
-	// Navigate to API key row and activate
-	m.cursor = repoSettingsRowLinearApiKey
+	// Navigate to API key row and activate. Linear is expanded because the key
+	// is set, so the child row is navigable.
+	cursorToRow(t, &m, repoSettingsRowLinearApiKey)
 	updatedModel, _ = m.activateRow()
 	m = updatedModel.(RepoSettingsModel)
 
@@ -70,9 +71,32 @@ func TestRepoSettings_LinearApiKeyEditIsFullReplace(t *testing.T) {
 	}
 }
 
-// TestRepoSettings_CursorNavigatesToLinearRows verifies that all rows
-// are reachable via cursor navigation.
-func TestRepoSettings_CursorNavigatesToLinearRows(t *testing.T) {
+// cursorToRow positions the cursor on the given rowID, expanding the owning
+// integration first if the row is an integration child, then failing the test if
+// the row is still not visible.
+func cursorToRow(t *testing.T, m *RepoSettingsModel, row rowID) {
+	t.Helper()
+	switch row {
+	case repoSettingsRowLinearApiKey:
+		m.linearExpanded = true
+	case repoSettingsRowSentryApiKey, repoSettingsRowSentryOrg:
+		m.sentryExpanded = true
+	default:
+		// Non-child rows are always visible; no expansion needed.
+	}
+	for i, r := range m.visibleRows() {
+		if r == row {
+			m.cursor = i
+			return
+		}
+	}
+	t.Fatalf("row %d is not visible; visibleRows = %v", row, m.visibleRows())
+}
+
+// TestRepoSettings_CollapsedNavigationSkipsChildRows verifies that when both
+// integrations are collapsed, only the headers (not their child fields) are in
+// the navigable row set, and down-navigation lands on each in order.
+func TestRepoSettings_CollapsedNavigationSkipsChildRows(t *testing.T) {
 	stub := &stubRepoClient{
 		repos: []*pb.Repo{{
 			Id:          "repo-1",
@@ -81,47 +105,85 @@ func TestRepoSettings_CursorNavigatesToLinearRows(t *testing.T) {
 	}
 
 	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
-
-	// Initialize the model
-	initCmd := m.Init()
-	msg := initCmd()
-	updatedModel, _ := m.Update(msg)
+	updatedModel, _ := m.Update(m.Init()())
 	m = updatedModel.(RepoSettingsModel)
 
-	// Navigate down through all rows
-	expectedRows := []int{
-		repoSettingsRowName,                    // 0
-		repoSettingsRowSetupScript,             // 1
-		repoSettingsRowMergeStrategy,           // 2
-		repoSettingsRowCanAutoMerge,            // 3
-		repoSettingsRowCanAutoMergeDependabot,  // 4
-		repoSettingsRowCanAutoAddressReviews,   // 5
-		repoSettingsRowCanAutoResolveConflicts, // 6
-		repoSettingsRowLinearApiKey,            // 7
+	// No credentials → both integrations collapsed. Child rows are hidden.
+	expectedRows := []rowID{
+		repoSettingsRowName,
+		repoSettingsRowSetupScript,
+		repoSettingsRowMergeStrategy,
+		repoSettingsRowCanAutoMerge,
+		repoSettingsRowCanAutoMergeDependabot,
+		repoSettingsRowCanAutoAddressReviews,
+		repoSettingsRowCanAutoResolveConflicts,
+		repoSettingsRowLinearHeader,
+		repoSettingsRowSentryHeader,
 	}
 
-	for i, expectedRow := range expectedRows {
-		if m.cursor != expectedRow {
-			t.Errorf("cursor at step %d = %d, want %d", i, m.cursor, expectedRow)
+	for i, want := range expectedRows {
+		if m.currentRow() != want {
+			t.Errorf("currentRow at step %d = %d, want %d", i, m.currentRow(), want)
 		}
-
-		// Press down arrow unless we're at the last row
 		if i < len(expectedRows)-1 {
 			updatedModel, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			m = updatedModel.(RepoSettingsModel)
 		}
 	}
 
-	// Verify we ended at the last row
-	if m.cursor != repoSettingsRowLinearApiKey {
-		t.Errorf("final cursor = %d, want %d (Linear API key row)", m.cursor, repoSettingsRowLinearApiKey)
-	}
-
-	// Try to go down one more time - cursor should stay at last row
+	// Down past the last row stays on the Sentry header.
 	updatedModel, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = updatedModel.(RepoSettingsModel)
-	if m.cursor != repoSettingsRowLinearApiKey {
-		t.Errorf("cursor after boundary = %d, want %d (should stay at last row)", m.cursor, repoSettingsRowLinearApiKey)
+	if m.currentRow() != repoSettingsRowSentryHeader {
+		t.Errorf("cursor after boundary = %d, want Sentry header", m.currentRow())
+	}
+}
+
+// TestRepoSettings_ExpandedNavigationIncludesChildRows verifies that when both
+// integrations are expanded (credentials present), the child field rows are
+// navigable in order.
+func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
+	stub := &stubRepoClient{
+		repos: []*pb.Repo{{
+			Id:           "repo-1",
+			DisplayName:  "Test Repo",
+			LinearApiKey: "lin_api_123",
+			SentryApiKey: "sntrys_123",
+			SentryOrg:    "acme",
+		}},
+	}
+
+	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
+	updatedModel, _ := m.Update(m.Init()())
+	m = updatedModel.(RepoSettingsModel)
+
+	expectedRows := []rowID{
+		repoSettingsRowName,
+		repoSettingsRowSetupScript,
+		repoSettingsRowMergeStrategy,
+		repoSettingsRowCanAutoMerge,
+		repoSettingsRowCanAutoMergeDependabot,
+		repoSettingsRowCanAutoAddressReviews,
+		repoSettingsRowCanAutoResolveConflicts,
+		repoSettingsRowLinearHeader,
+		repoSettingsRowLinearApiKey,
+		repoSettingsRowSentryHeader,
+		repoSettingsRowSentryApiKey,
+		repoSettingsRowSentryOrg,
+	}
+
+	for i, want := range expectedRows {
+		if m.currentRow() != want {
+			t.Errorf("currentRow at step %d = %d, want %d", i, m.currentRow(), want)
+		}
+		if i < len(expectedRows)-1 {
+			updatedModel, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			m = updatedModel.(RepoSettingsModel)
+		}
+	}
+
+	if m.currentRow() != repoSettingsRowSentryOrg {
+		t.Errorf("final cursor = %d, want Sentry org", m.currentRow())
 	}
 }
 
@@ -476,7 +538,7 @@ func (s *stubRepoClient) ShutdownDaemon(context.Context) error           { panic
 func (s *stubRepoClient) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
 }
-func (s *stubRepoClient) ListTrackerIssues(context.Context, string, string) ([]*pb.TrackerIssue, error) {
+func (s *stubRepoClient) ListTrackerIssues(context.Context, string, string, string) ([]*pb.TrackerIssue, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {

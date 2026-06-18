@@ -30,8 +30,11 @@ creation, CI failures, and merge conflicts, then take autonomous actions.
     bundled `codex` plugin runs OpenAI Codex CLI. `opencode` remains
     on the roadmap. The daemon needs at least one agent plugin loaded
     to start sessions.
-  - _Automation plugins_ react to PR events. `dependabot`, `linear`,
-    and `repair` are bundled and optional.
+  - _Task source plugins_ surface external issues in the new-session
+    picker. `linear` (Linear tickets) and `sentry` (unresolved Sentry
+    errors) are bundled and optional.
+  - _Automation plugins_ react to PR events. `dependabot` and `repair`
+    are bundled and optional.
 
 ## Worktree lifecycle
 

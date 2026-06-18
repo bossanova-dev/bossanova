@@ -45,12 +45,18 @@ var realDefaultPath = func() string {
 // relative, in which case the guard no-ops. It is NOT refused for the subprocess
 // sentinel: a test harness deliberately points BOSS_SETTINGS_PATH at its own temp
 // file before spawning, so there this path IS the legitimate write target.
-var initEnvSettingsPath = func() string {
+var initEnvSettingsPath = resolveInitEnvSettingsPath()
+
+// resolveInitEnvSettingsPath reads BOSS_SETTINGS_PATH and returns its cleaned
+// absolute value, or "" when the var is unset or relative. It is split out of
+// the package-init var above so the env-gating logic can be unit-tested with
+// t.Setenv without re-running package initialization.
+func resolveInitEnvSettingsPath() string {
 	if p := os.Getenv(settingsPathEnv); p != "" && filepath.IsAbs(p) {
 		return filepath.Clean(p)
 	}
 	return ""
-}()
+}
 
 // guardRealDefaultWrite returns an error when a test would overwrite a real
 // settings.json. It is the pure, unit-testable core of the write guard: reads
@@ -165,6 +171,35 @@ func DedupPluginConfigs(cfgs []PluginConfig) ([]PluginConfig, bool) {
 	return out, dropped
 }
 
+// MergeDiscoveredPlugins appends any discovered plugin whose name is not
+// already present in existing, returning the merged slice and the names that
+// were added. Existing entries always win: their path, enabled flag, and config
+// are preserved untouched, so a user who customized a plugin's path or disabled
+// it keeps that choice even when discovery finds the binary on disk.
+//
+// This is what lets a freshly-built plugin binary (e.g. a new bossd-plugin-*
+// added since settings.json was last written) load on the next daemon start
+// without a hand-edit — and self-heals a config that a clobbering save stripped
+// the entry from. The input slices are not mutated.
+func MergeDiscoveredPlugins(existing, discovered []PluginConfig) ([]PluginConfig, []string) {
+	have := make(map[string]struct{}, len(existing))
+	for _, p := range existing {
+		have[p.Name] = struct{}{}
+	}
+
+	merged := append([]PluginConfig(nil), existing...)
+	var added []string
+	for _, d := range discovered {
+		if _, ok := have[d.Name]; ok {
+			continue
+		}
+		have[d.Name] = struct{}{}
+		merged = append(merged, d)
+		added = append(added, d.Name)
+	}
+	return merged, added
+}
+
 // DiscoverPlugins scans for plugin binaries in precedence order:
 //  1. ../libexec/plugins/ relative to the running binary (Homebrew layout,
 //     resolving symlinks), then the binary's own directory (dev mode where all
@@ -191,11 +226,15 @@ func DiscoverPlugins() []PluginConfig {
 	return scanForPlugins(dir)
 }
 
+// osExecutable indirects os.Executable so the binDir=="" fallback (which
+// locates plugins relative to the running binary) is unit-testable.
+var osExecutable = os.Executable
+
 // discoverPluginsFrom is the testable core of DiscoverPlugins. When binDir is
 // empty it uses os.Executable() to locate the binary directory.
 func discoverPluginsFrom(binDir string) []PluginConfig {
 	if binDir == "" {
-		exe, err := os.Executable()
+		exe, err := osExecutable()
 		if err != nil {
 			return nil
 		}

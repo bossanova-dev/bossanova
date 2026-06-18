@@ -517,6 +517,12 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.LinearApiKey != nil {
 		params.LinearAPIKey = msg.LinearApiKey
 	}
+	if msg.SentryApiKey != nil {
+		params.SentryAPIKey = msg.SentryApiKey
+	}
+	if msg.SentryOrg != nil {
+		params.SentryOrg = msg.SentryOrg
+	}
 	repo, err := s.repos.Update(ctx, msg.Id, params)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("update repo: %w", err))
@@ -569,12 +575,45 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("repo not found: %w", err))
 	}
 
-	// Check LinearAPIKey is configured.
-	if repo.LinearAPIKey == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear_api_key not configured for this repo"))
+	// Resolve the task source. Defaults to "linear" so existing callers (and
+	// older clients that don't set the field) keep working unchanged.
+	want := req.Msg.GetSource()
+	if want == "" {
+		want = "linear"
 	}
 
-	// Find Linear plugin among TaskSource plugins.
+	// Validate credentials and build the plugin config map for the chosen
+	// source. Each source addresses its API differently, so the required fields
+	// differ; a missing field is reported by name.
+	var config map[string]string
+	switch want {
+	case "linear":
+		if repo.LinearAPIKey == "" {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear_api_key not configured for this repo"))
+		}
+		config = map[string]string{
+			"linear_api_key": repo.LinearAPIKey,
+		}
+	case "sentry":
+		var missing []string
+		if repo.SentryAPIKey == "" {
+			missing = append(missing, "sentry_api_key")
+		}
+		if repo.SentryOrg == "" {
+			missing = append(missing, "sentry_org")
+		}
+		if len(missing) > 0 {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("sentry not configured for this repo: missing %s", strings.Join(missing, ", ")))
+		}
+		config = map[string]string{
+			"sentry_api_key": repo.SentryAPIKey,
+			"sentry_org":     repo.SentryOrg,
+		}
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown tracker source %q", want))
+	}
+
+	// Find the matching task source plugin by name.
 	if s.pluginHost == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("plugin host not available"))
 	}
@@ -583,27 +622,23 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no task source plugins available"))
 	}
 
-	var source plugin.TaskSource
-	for _, src := range sources {
-		info, err := src.GetInfo(ctx)
-		if err != nil {
-			continue
-		}
-		if info.Name == "linear" {
-			source = src
-			break
-		}
-	}
+	source := selectTaskSource(ctx, sources, want)
 	if source == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("linear plugin not found"))
+		// Distinguish "no plugin by this name is loaded" from a runtime failure:
+		// the usual cause is a plugin binary that exists but isn't loaded (config
+		// stripped the entry, or the daemon wasn't restarted after it was added).
+		// List what IS loaded and point at the fix instead of a bare "not found".
+		loaded := loadedTaskSourceNames(ctx, sources)
+		available := "none"
+		if len(loaded) > 0 {
+			available = strings.Join(loaded, ", ")
+		}
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no task source plugin named %q is loaded (loaded task sources: %s); add it to settings.json and restart bossd", want, available))
 	}
 
 	// Call ListAvailableIssues. The query is optional; when set, the plugin pushes
 	// it down to the tracker API as a filter so the search isn't limited to the
 	// first page that the plugin happens to have cached locally.
-	config := map[string]string{
-		"linear_api_key": repo.LinearAPIKey,
-	}
 	query := strings.TrimSpace(req.Msg.Query)
 	issues, err := source.ListAvailableIssues(ctx, repo.OriginURL, query, config)
 	if err != nil {
@@ -611,6 +646,41 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 	}
 
 	return connect.NewResponse(&pb.ListTrackerIssuesResponse{Issues: issues}), nil
+}
+
+// selectTaskSource returns the first task source whose GetInfo name matches
+// want, or nil if none does. This is how ListTrackerIssues routes a request to
+// the Linear or Sentry plugin: the request's source name is matched against
+// each loaded plugin's self-reported name. A plugin whose GetInfo errors is
+// skipped rather than aborting the search.
+func selectTaskSource(ctx context.Context, sources []plugin.TaskSource, want string) plugin.TaskSource {
+	for _, src := range sources {
+		info, err := src.GetInfo(ctx)
+		if err != nil {
+			continue
+		}
+		if info.Name == want {
+			return src
+		}
+	}
+	return nil
+}
+
+// loadedTaskSourceNames returns the GetInfo names of every task source that
+// responds, sorted. It backs the actionable error ListTrackerIssues returns
+// when a requested source isn't loaded. Sources whose GetInfo errors are
+// skipped, matching selectTaskSource's behavior.
+func loadedTaskSourceNames(ctx context.Context, sources []plugin.TaskSource) []string {
+	names := make([]string, 0, len(sources))
+	for _, src := range sources {
+		info, err := src.GetInfo(ctx)
+		if err != nil {
+			continue
+		}
+		names = append(names, info.Name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ListAgents returns the names + GetInfo metadata of every AgentRunner

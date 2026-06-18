@@ -48,9 +48,10 @@ func newServer(host hostClient, logger zerolog.Logger) *server {
 func (s *server) GetInfo(_ context.Context, _ *bossanovav1.TaskSourceServiceGetInfoRequest) (*bossanovav1.TaskSourceServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.TaskSourceServiceGetInfoResponse{
 		Info: &bossanovav1.PluginInfo{
-			Name:         "linear",
-			Version:      "0.1.0",
-			Capabilities: []string{"task_source"},
+			Name:          "linear",
+			Version:       "0.1.0",
+			Capabilities:  []string{"task_source"},
+			UserInitiated: true,
 		},
 	}, nil
 }

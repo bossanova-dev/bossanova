@@ -24,6 +24,7 @@ var pluginBins = []string{
 	"bossd-plugin-dependabot",
 	"bossd-plugin-linear",
 	"bossd-plugin-repair",
+	"bossd-plugin-sentry",
 }
 
 // MaxAssetSize caps a single downloaded asset so a compromised release host

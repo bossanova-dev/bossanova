@@ -27,3 +27,23 @@ func TestWithEnvAppendsEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("cfg.env[1] = %q, want BOSS_TEST_FLAG override", cfg.env[1])
 	}
 }
+
+func TestBaseHarnessEnvFiltersSettingsPath(t *testing.T) {
+	env := baseHarnessEnv([]string{
+		"BOSS_SETTINGS_PATH=/real/settings.json",
+		"BOSS_SOCKET=/tmp/real.sock",
+		"PATH=/bin",
+	})
+
+	for _, got := range env {
+		if got == "BOSS_SETTINGS_PATH=/real/settings.json" {
+			t.Fatal("baseHarnessEnv kept BOSS_SETTINGS_PATH; TUI tests would load real developer settings")
+		}
+		if got == "BOSS_SOCKET=/tmp/real.sock" {
+			t.Fatal("baseHarnessEnv kept BOSS_SOCKET; TUI tests would bypass mock socket wiring")
+		}
+	}
+	if len(env) != 1 || env[0] != "PATH=/bin" {
+		t.Fatalf("baseHarnessEnv = %v, want [PATH=/bin]", env)
+	}
+}

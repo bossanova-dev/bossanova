@@ -67,12 +67,6 @@ type repoCountMsg struct {
 	err   error
 }
 
-// sessionArchivedMsg carries the result of archiving a session.
-type sessionArchivedMsg struct {
-	id  string
-	err error
-}
-
 // authStatusMsg carries the result of checking auth status.
 type authStatusMsg struct {
 	loggedIn bool
@@ -150,15 +144,11 @@ type HomeModel struct {
 	// Cleared once the daemon reports a terminal state (MERGED/CLOSED).
 	mergedOptimisticID string
 
-	// Archive confirmation / in-progress
-	confirming         bool
-	archivingSessionID string
-
 	// Auth
 	authMgr              *auth.Manager // nil means auth not configured
 	loggedIn             bool
 	loggedInEmail        string
-	logoutConfirming     bool
+	confirm              confirmPrompt
 	cloudAccess          CloudAccessClient
 	cloudStatus          *pb.CloudAccessStatus
 	cloudErr             error
@@ -321,9 +311,6 @@ func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 }
 
 func (h HomeModel) renderSessionStatus(sess *pb.Session) string {
-	if sess != nil && sess.Id != "" && sess.Id == h.archivingSessionID {
-		return renderRowPendingStatus(h.spinner, "archiving")
-	}
 	return renderDisplayStatus(sess, h.spinner)
 }
 
@@ -710,28 +697,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case sessionArchivedMsg:
-		h.confirming = false
-		h.archivingSessionID = ""
-		if msg.err != nil {
-			h.err = msg.err
-			h.buildTableRows()
-			return h, nil
-		}
-		// Remove from list and adjust cursor.
-		for i, s := range h.sessions {
-			if s.Id == msg.id {
-				h.sessions = append(h.sessions[:i], h.sessions[i+1:]...)
-				break
-			}
-		}
-		h.buildTableRows()
-		if len(h.sessions) > 0 {
-			h.normalizeTableCursor(h.table.Cursor())
-			updateCursorColumn(&h.table)
-		}
-		return h, nil
-
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		h.spinner, cmd = h.spinner.Update(msg)
@@ -758,11 +723,15 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
-		if h.logoutConfirming {
-			return h.updateLogoutConfirm(msg)
-		}
-		if h.confirming {
-			return h.updateArchiveConfirm(msg)
+		if h.confirm.active {
+			confirmed := msg.String() == "y" || msg.String() == "enter"
+			var cmd tea.Cmd
+			h.confirm, cmd = h.confirm.update(msg)
+			if confirmed && cmd != nil {
+				h.loggedIn = false
+				h.loggedInEmail = ""
+			}
+			return h, cmd
 		}
 		if h.restartPrompt {
 			switch msg.String() {
@@ -807,36 +776,35 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return h, nil
 			}
 			return h, func() tea.Msg { return switchViewMsg{view: ViewNewSession} }
-		case "r":
-			return h, func() tea.Msg { return switchViewMsg{view: ViewRepoList} }
 		case "s":
 			return h, func() tea.Msg { return switchViewMsg{view: ViewSettings} }
-		case "t":
-			return h, func() tea.Msg { return switchViewMsg{view: ViewTrash} }
-		case "c":
-			return h, func() tea.Msg { return switchViewMsg{view: ViewCron} }
 		case "l":
 			if h.authMgr == nil {
 				return h, nil
 			}
 			if h.loggedIn {
-				h.logoutConfirming = true
+				authMgr := h.authMgr
+				c := h.client
+				ctx := h.ctx
+				label := "Log out?"
+				if h.loggedInEmail != "" {
+					label = fmt.Sprintf("Log out %s?", h.loggedInEmail)
+				}
+				h.confirm = newConfirmPrompt(label, func() tea.Msg {
+					if authMgr != nil {
+						_ = authMgr.Logout()
+					}
+					_ = c.NotifyAuthChange(ctx, "logout")
+					return nil
+				})
 				return h, nil
 			}
 			return h, func() tea.Msg { return switchViewMsg{view: ViewLogin} }
 		case "enter":
 			if sess := h.selectedSession(); sess != nil {
-				if sess.Id != "" && sess.Id == h.archivingSessionID {
-					return h, nil
-				}
 				return h, func() tea.Msg {
 					return switchViewMsg{view: ViewChatPicker, sessionID: sess.Id}
 				}
-			}
-			return h, nil
-		case "a":
-			if len(h.sessions) > 0 && h.archivingSessionID == "" {
-				h.confirming = true
 			}
 			return h, nil
 		case "q":
@@ -852,46 +820,6 @@ func (h HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, cmd
 	}
 
-	return h, nil
-}
-
-func (h HomeModel) updateArchiveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
-		h.confirming = false
-		sess := h.selectedSession()
-		if sess == nil || sess.Id == "" {
-			return h, nil
-		}
-		sessionID := sess.Id
-		h.archivingSessionID = sessionID
-		h.buildTableRows()
-		return h, func() tea.Msg {
-			_, err := h.client.ArchiveSession(h.ctx, sessionID)
-			return sessionArchivedMsg{id: sessionID, err: err}
-		}
-	case "n", "esc":
-		h.confirming = false
-	}
-	return h, nil
-}
-
-func (h HomeModel) updateLogoutConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
-		h.logoutConfirming = false
-		if h.authMgr != nil {
-			_ = h.authMgr.Logout()
-		}
-		h.loggedIn = false
-		h.loggedInEmail = ""
-		return h, func() tea.Msg {
-			_ = h.client.NotifyAuthChange(h.ctx, "logout")
-			return nil
-		}
-	case "n", "esc":
-		h.logoutConfirming = false
-	}
 	return h, nil
 }
 
@@ -1134,44 +1062,45 @@ func (h HomeModel) View() tea.View {
 		}
 		if h.repoCount == 0 {
 			// No repos configured - show welcome message with setup instructions
-			actions := []string{"[r]epos", "[s]ettings"}
+			nav := []string{"[s]ettings"}
 			// Suppress the [l]ogout action while the logout confirmation is
 			// showing so the empty state doesn't display the control and its
 			// confirmation prompt at once (mirrors the session-list view).
-			if la := h.loginAction(); la != "" && !h.logoutConfirming {
-				actions = append(actions, la)
+			if la := h.loginAction(); la != "" && !h.confirm.active {
+				nav = append(nav, la)
 			}
 			if ca := h.cloudAction(); ca != "" {
-				actions = append(actions, ca)
+				nav = append(nav, ca)
 			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"Welcome to Bossanova!\n\n"+
 					"To get started, you need to add a repository for us to work on together.\n\n"+
-					lipgloss.NewStyle().Bold(true).Render("Press 'r' to open the repos menu."),
+					lipgloss.NewStyle().Bold(true).Render("Open Settings to add a repository."),
 			) + "\n" +
-				actionBar(actions, []string{"[q]uit"})
+				actionBar(nav, []string{"[q]uit"})
 		} else {
 			// Repos exist but no sessions - show simplified guidance
-			actions := []string{"[n]ew session", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
+			left := []string{"[n]ew session"}
+			nav := []string{"[s]ettings"}
 			// Suppress the [l]ogout action while the logout confirmation is
 			// showing so the empty state doesn't display the control and its
 			// confirmation prompt at once (mirrors the session-list view).
-			if la := h.loginAction(); la != "" && !h.logoutConfirming {
-				actions = append(actions, la)
+			if la := h.loginAction(); la != "" && !h.confirm.active {
+				nav = append(nav, la)
 			}
 			if ca := h.cloudAction(); ca != "" {
-				actions = append(actions, ca)
+				nav = append(nav, ca)
 			}
 			content = lipgloss.NewStyle().Padding(0, 2).Render(
 				"You have no active sessions.\n\n"+
 					lipgloss.NewStyle().Bold(true).Render("Press 'n' to create a new session."),
 			) + "\n" +
-				actionBar(actions, []string{"[q]uit"})
+				actionBar(left, nav, []string{"[q]uit"})
 		}
 		if discovery != "" {
 			content += discovery
 		}
-		if !h.logoutConfirming {
+		if !h.confirm.active {
 			if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
 				content += "\n" + upgradeStatus
 			}
@@ -1182,7 +1111,7 @@ func (h HomeModel) View() tea.View {
 		if checkoutStatus := h.cloudCheckoutStatusLine(); checkoutStatus != "" {
 			content += "\n" + checkoutStatus
 		}
-		if h.logoutConfirming {
+		if h.confirm.active {
 			content += "\n" + h.logoutConfirmationView()
 			if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
 				content += "\n" + upgradeStatus
@@ -1202,29 +1131,21 @@ func (h HomeModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	if h.confirming {
-		b.WriteString("\n")
-		if sess := h.selectedSession(); sess != nil {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-				fmt.Sprintf("Archive %q?", sess.Title)))
-		}
-		b.WriteString("\n")
-		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))
-	} else if h.logoutConfirming {
+	if h.confirm.active {
 		b.WriteString("\n")
 		b.WriteString(h.logoutConfirmationView())
 	} else {
-		navActions := []string{"[n]ew", "[r]epos", "[s]ettings", "[t]rash", "[c]ron"}
+		left := []string{"[n]ew session", "[enter] select"}
+		nav := []string{"[s]ettings"}
 		if la := h.loginAction(); la != "" {
-			navActions = append(navActions, la)
+			nav = append(nav, la)
 		}
 		if ca := h.cloudAction(); ca != "" {
-			navActions = append(navActions, ca)
+			nav = append(nav, ca)
 		}
-		sessionActions := []string{"[enter] select", "[a]rchive"}
 		b.WriteString(actionBar(
-			sessionActions,
-			navActions,
+			left,
+			nav,
 			[]string{"[q]uit"},
 		))
 		if cloudGuestOfferVisible(h.settings, h.currentTime(), h.startedAt, h.loggedIn, h.authMgr != nil) {
@@ -1245,7 +1166,7 @@ func (h HomeModel) View() tea.View {
 			b.WriteString(checkoutStatus)
 		}
 	}
-	if h.confirming || h.logoutConfirming {
+	if h.confirm.active {
 		if upgradeStatus := h.upgradeStatusView(); upgradeStatus != "" {
 			b.WriteString("\n")
 			b.WriteString(upgradeStatus)
@@ -1256,11 +1177,7 @@ func (h HomeModel) View() tea.View {
 }
 
 func (h HomeModel) logoutConfirmationView() string {
-	label := "Log out?"
-	if h.loggedInEmail != "" {
-		label = fmt.Sprintf("Log out %s?", h.loggedInEmail)
-	}
-	return lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(label) +
+	return lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(h.confirm.prompt) +
 		"\n" +
 		styleActionBar.Render("[y/enter] confirm  [n/esc] cancel")
 }

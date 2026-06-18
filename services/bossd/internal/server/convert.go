@@ -60,6 +60,8 @@ func repoToProto(r *models.Repo) *pb.Repo {
 		CanAutoResolveConflicts: r.CanAutoResolveConflicts,
 		MergeStrategy:           protoString(string(r.MergeStrategy)),
 		LinearApiKey:            protoString(r.LinearAPIKey),
+		SentryApiKey:            protoString(r.SentryAPIKey),
+		SentryOrg:               protoString(r.SentryOrg),
 		CreatedAt:               timestamppb.New(r.CreatedAt),
 		UpdatedAt:               timestamppb.New(r.UpdatedAt),
 	}

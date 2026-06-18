@@ -125,6 +125,12 @@ message Repo {
   string merge_strategy = 14;
   string linear_api_key = 15;
   reserved 16;
+  // Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
+  // address an organization, so the org slug is stored alongside it. Issues are
+  // listed org-wide (across every project), so no project slug is needed.
+  string sentry_api_key = 17;
+  string sentry_org = 18;
+  reserved 19; // was sentry_project (removed: issues are listed org-wide)
 }
 
 // Session represents a coding-agent session.

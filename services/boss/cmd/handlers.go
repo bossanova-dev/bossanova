@@ -430,6 +430,7 @@ var installedPluginNames = []string{
 	"dependabot",
 	"linear",
 	"repair",
+	"sentry",
 }
 
 func launchSettings(now time.Time) config.Settings {

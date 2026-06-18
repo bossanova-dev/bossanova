@@ -34,7 +34,27 @@ const (
 	sessionTypeExistingPR                      // Work on an existing PR
 	sessionTypeExecutePlan                     // Execute a plan (placeholder)
 	sessionTypeLinearTicket                    // Work on a Linear issue
+	sessionTypeSentryIssue                     // Fix a Sentry issue
 )
+
+// trackerSource maps the selected session type to the task source name the
+// daemon routes on. Defaults to "linear" so any non-Sentry issue flow keeps
+// its existing behaviour.
+func (m *NewSessionModel) trackerSource() string {
+	if m.selectedType == sessionTypeSentryIssue {
+		return "sentry"
+	}
+	return "linear"
+}
+
+// trackerSourceLabel returns a human-readable name for the current tracker
+// source, used in loading and empty-state copy.
+func (m *NewSessionModel) trackerSourceLabel() string {
+	if m.selectedType == sessionTypeSentryIssue {
+		return "Sentry"
+	}
+	return "Linear"
+}
 
 // newSessionPhase tracks the current phase of the wizard.
 type newSessionPhase int
@@ -128,13 +148,24 @@ func (m *NewSessionModel) buildSessionTypeOptions() []sessionTypeOption {
 		{"Quick Chat", "Work directly in the repo's base folder", sessionTypeQuickChat},
 	}
 
-	// Add Linear issue option if repo has Linear API key configured
+	// Add tracker-issue options if the repo has the relevant credentials. Each
+	// is inserted before "Quick Chat", in order, so Sentry lands directly after
+	// Linear. The slices are rebuilt explicitly to avoid aliasing surprises from
+	// append-in-place when both options are present.
 	repo := m.selectedRepo()
+	var inserts []sessionTypeOption
 	if repo != nil && repo.LinearApiKey != "" {
-		// Insert before Quick chat
-		opts = append(opts[:2], append([]sessionTypeOption{
-			{"Work on a Linear issue", "Pick an issue from your Linear board", sessionTypeLinearTicket},
-		}, opts[2:]...)...)
+		inserts = append(inserts, sessionTypeOption{"Work on a Linear issue", "Pick an issue from your Linear board", sessionTypeLinearTicket})
+	}
+	if repo != nil && repo.SentryApiKey != "" && repo.SentryOrg != "" {
+		inserts = append(inserts, sessionTypeOption{"Fix a Sentry issue", "Pick an issue from your Sentry organization", sessionTypeSentryIssue})
+	}
+	if len(inserts) > 0 {
+		merged := make([]sessionTypeOption, 0, len(opts)+len(inserts))
+		merged = append(merged, opts[:2]...)
+		merged = append(merged, inserts...)
+		merged = append(merged, opts[2:]...)
+		opts = merged
 	}
 
 	return opts
@@ -324,9 +355,9 @@ func fetchPRs(c client.BossClient, ctx context.Context, repoID string) tea.Cmd {
 	}
 }
 
-func fetchIssues(c client.BossClient, ctx context.Context, repoID, query string, seq uint64) tea.Cmd {
+func fetchIssues(c client.BossClient, ctx context.Context, repoID, query, source string, seq uint64) tea.Cmd {
 	return func() tea.Msg {
-		issues, err := c.ListTrackerIssues(ctx, repoID, query)
+		issues, err := c.ListTrackerIssues(ctx, repoID, query, source)
 		return issuesMsg{issues: issues, err: err, seq: seq, query: query}
 	}
 }
@@ -525,9 +556,21 @@ func (m NewSessionModel) prTableHeight() int {
 // applyIssueFilter rebuilds m.issuesFiltered based on the current issueFilter query.
 func (m *NewSessionModel) applyIssueFilter() {
 	m.issuesFiltered = m.issuesFiltered[:0]
+	query := m.issueFilter.Query()
+	// When the displayed issues were already fetched from the tracker with this
+	// exact query, the server has applied it. Structured/tag queries (e.g.
+	// "environment:production" for Sentry) match server-side but won't appear
+	// verbatim in the rendered columns, so re-running the local substring filter
+	// would hide valid server matches and show "no matches". Trust the server's
+	// result set in that case.
+	serverFiltered := strings.TrimSpace(query) != "" && query == m.issueSearchQuery
 	for i, issue := range m.trackerIssues {
-		hay := issue.ExternalId + " " + issue.Title + " " + issue.State
-		if m.issueFilter.Matches(hay) {
+		// Include the rendered description (culprit, tags, stacktrace) in the
+		// haystack so local narrowing — used as you type, before the debounced
+		// server fetch returns — can match tag/metadata content, not just the
+		// ID/title/state columns.
+		hay := issue.ExternalId + " " + issue.Title + " " + issue.State + " " + issue.Description
+		if serverFiltered || m.issueFilter.Matches(hay) {
 			m.issuesFiltered = append(m.issuesFiltered, i)
 		}
 	}
@@ -630,7 +673,7 @@ func (m *NewSessionModel) buildForm() {
 			),
 		).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
 
-	case sessionTypeExistingPR, sessionTypeExecutePlan, sessionTypeLinearTicket:
+	case sessionTypeExistingPR, sessionTypeExecutePlan, sessionTypeLinearTicket, sessionTypeSentryIssue:
 		// No form needed for these types.
 	}
 }
@@ -748,7 +791,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// after that we may legitimately be showing "no matches for <query>",
 		// which the table renders fine on its own.
 		if len(m.trackerIssues) == 0 && !m.issueTableReady && msg.query == "" {
-			m.err = fmt.Errorf("no issues found in Linear")
+			m.err = fmt.Errorf("no issues found in %s", m.trackerSourceLabel())
 			return m, nil
 		}
 		m.phase = newSessionPhaseIssueSelect
@@ -764,7 +807,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.issueSearchQuery = msg.query
-		return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, msg.query, msg.seq)
+		return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, msg.query, m.trackerSource(), msg.seq)
 
 	case createSessionStreamMsg:
 		if msg.err != nil {
@@ -993,7 +1036,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.issueSearchQuery = ""
 					m.issuesFetching = true
 					m.buildIssueTable()
-					return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.issueSearchSeq)
+					return m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.trackerSource(), m.issueSearchSeq)
 				case "up", "down", "ctrl+p", "ctrl+n", "ctrl+d", "ctrl+u":
 					var cmd tea.Cmd
 					m.issueTable, cmd = m.issueTable.Update(msg)
@@ -1085,11 +1128,11 @@ func (m *NewSessionModel) advanceFromTypeSelect() (tea.Model, tea.Cmd) {
 		// Fetch PRs, then show PR selector table.
 		m.phase = newSessionPhaseLoading
 		return *m, fetchPRs(m.client, m.ctx, m.selectedRepoID)
-	case sessionTypeLinearTicket:
-		// Fetch Linear issues, then show issue selector table.
+	case sessionTypeLinearTicket, sessionTypeSentryIssue:
+		// Fetch tracker issues (Linear or Sentry), then show the issue selector.
 		m.phase = newSessionPhaseLoading
 		m.issueSearchQuery = ""
-		return *m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.issueSearchSeq)
+		return *m, fetchIssues(m.client, m.ctx, m.selectedRepoID, "", m.trackerSource(), m.issueSearchSeq)
 	case sessionTypeNewPR:
 		m.phase = newSessionPhaseForm
 		m.buildForm()
@@ -1118,7 +1161,7 @@ func (m NewSessionModel) updateConfirmOverwrite(msg tea.KeyMsg) (tea.Model, tea.
 		m.forceBranch = false
 		m.err = nil
 		switch m.selectedType {
-		case sessionTypeLinearTicket:
+		case sessionTypeLinearTicket, sessionTypeSentryIssue:
 			m.phase = newSessionPhaseIssueSelect
 			return m, nil
 		case sessionTypeExistingPR:
@@ -1187,11 +1230,15 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 			req.Title = pr.Title
 			req.PrNumber = &pr.Number
 		}
-	case sessionTypeLinearTicket:
+	case sessionTypeLinearTicket, sessionTypeSentryIssue:
 		if m.selectedIssue != nil {
 			issue := m.selectedIssue
 			req.Title = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
-			req.Plan = formatLinearPrompt(issue)
+			if m.selectedType == sessionTypeSentryIssue {
+				req.Plan = formatSentryPrompt(issue)
+			} else {
+				req.Plan = formatLinearPrompt(issue)
+			}
 			req.TrackerId = &issue.ExternalId
 			if issue.Url != "" {
 				req.TrackerUrl = &issue.Url
@@ -1201,7 +1248,7 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 				prNum := issue.PrNumber
 				req.PrNumber = &prNum
 			} else if issue.BranchName != "" {
-				// New branch using Linear's suggested name
+				// New branch using the tracker's suggested name
 				req.BranchName = &issue.BranchName
 			}
 		}
@@ -1220,11 +1267,32 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 // Fields missing on the issue are individually omitted so we never render
 // blank lines for absent data.
 func formatLinearPrompt(issue *pb.TrackerIssue) string {
+	return formatTrackerPrompt(issue, "Linear issue:")
+}
+
+// formatSentryPrompt renders a Sentry tracker issue as a labeled block used for
+// the session plan. It mirrors formatLinearPrompt: the heavy lifting (culprit,
+// level, counts, permalink, latest stacktrace, tags) is already rendered into
+// issue.Description as markdown by the bossd-plugin-sentry plugin, so this stays
+// thin and only frames the header, body, and permalink.
+//
+// Fields missing on the issue are individually omitted so we never render blank
+// lines for absent data.
+func formatSentryPrompt(issue *pb.TrackerIssue) string {
+	return formatTrackerPrompt(issue, "Sentry issue:")
+}
+
+// formatTrackerPrompt renders a tracker issue as a labeled block used for the
+// session plan, framing the header, body, and permalink under the given label
+// (e.g. "Linear issue:" or "Sentry issue:"). Fields missing on the issue are
+// individually omitted so we never render blank lines for absent data.
+func formatTrackerPrompt(issue *pb.TrackerIssue, label string) string {
 	if issue == nil {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Linear issue:\n\n")
+	b.WriteString(label)
+	b.WriteString("\n\n")
 	header := issue.Title
 	if issue.ExternalId != "" {
 		if header != "" {
@@ -1336,7 +1404,7 @@ func (m NewSessionModel) View() tea.View {
 		var b strings.Builder
 		b.WriteString(m.headerView())
 		if !m.issueTableReady {
-			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Loading Linear issues..."))
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(fmt.Sprintf("Loading %s issues...", m.trackerSourceLabel())))
 		} else {
 			if m.issueFilter.Engaged() && len(m.issuesFiltered) == 0 {
 				placeholder := "no matches"

@@ -1,0 +1,3 @@
+# Agent worktrees are full repo checkouts, not tracked files — never format them
+.claude/worktrees/
+.worktrees/

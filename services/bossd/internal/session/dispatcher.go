@@ -29,6 +29,17 @@ type SessionCompletionNotifier interface {
 	HandleSessionCompleted(ctx context.Context, sessionID string, outcome models.TaskMappingStatus)
 }
 
+// DisplayStatusSetter lets the dispatcher push a terminal display status into
+// the tracker the instant a PR reaches a terminal state, instead of waiting for
+// the next display-poll cycle (which can be minutes away). Without this, the DB
+// state flips to Merged/Closed while the in-memory tracker still holds the last
+// polled status (e.g. Passing), and the STATUS column — computed from the
+// tracker, not the DB state — stays stale until the poller catches up.
+// Satisfied by *status.DisplayTracker.
+type DisplayStatusSetter interface {
+	Set(sessionID string, info vcs.DisplayInfo)
+}
+
 // Dispatcher consumes VCS events from the poller and applies the
 // corresponding state machine transitions and database updates.
 //
@@ -45,6 +56,7 @@ type Dispatcher struct {
 	provider           vcs.Provider
 	fixLoop            FixHandler
 	completionNotifier SessionCompletionNotifier
+	displayStatus      DisplayStatusSetter
 	logger             zerolog.Logger
 	mu                 sync.Mutex // see type doc: redundant given single-goroutine Run, kept as a safety net
 }
@@ -71,6 +83,15 @@ func NewDispatcher(
 // parameter because the dispatcher is created before the orchestrator.
 func (d *Dispatcher) SetCompletionNotifier(n SessionCompletionNotifier) {
 	d.completionNotifier = n
+}
+
+// SetDisplayStatusSetter wires the tracker that the dispatcher pokes when a PR
+// reaches a terminal state. Uses a setter (not a constructor param) because the
+// dispatcher is created before the tracker is fully wired in main.go. nil-safe:
+// leaving it unset simply falls back to the display poller correcting the
+// status on its next cycle.
+func (d *Dispatcher) SetDisplayStatusSetter(s DisplayStatusSetter) {
+	d.displayStatus = s
 }
 
 // notifyCompletion calls the completion notifier if one is set.
@@ -364,6 +385,14 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 		return fmt.Errorf("fire pr_merged: %w", err)
 	}
 
+	// Push the terminal display status into the tracker before the DB Update
+	// below, so the recompute that Update triggers already sees "merged"
+	// instead of the stale last-polled status. Otherwise the STATUS column
+	// lingers on e.g. "passing" until the display poller's next cycle.
+	if d.displayStatus != nil {
+		d.displayStatus.Set(sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusMerged})
+	}
+
 	mergedState := int(machine.Merged)
 	if _, err := d.sessions.Update(ctx, sess.ID, db.UpdateSessionParams{
 		State: &mergedState,
@@ -380,6 +409,12 @@ func (d *Dispatcher) handlePRMerged(ctx context.Context, sm *machine.Machine, se
 func (d *Dispatcher) handlePRClosed(ctx context.Context, sm *machine.Machine, sess *models.Session) error {
 	if err := sm.FireCtx(ctx, machine.PRClosed); err != nil {
 		return fmt.Errorf("fire pr_closed: %w", err)
+	}
+
+	// See handlePRMerged: set the tracker before the DB Update so the STATUS
+	// column reflects "closed" immediately rather than on the next poll cycle.
+	if d.displayStatus != nil {
+		d.displayStatus.Set(sess.ID, vcs.DisplayInfo{Status: vcs.DisplayStatusClosed})
 	}
 
 	closedState := int(machine.Closed)

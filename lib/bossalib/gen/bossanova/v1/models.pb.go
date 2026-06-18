@@ -1027,8 +1027,13 @@ type Repo struct {
 	CanAutoResolveConflicts bool                   `protobuf:"varint,13,opt,name=can_auto_resolve_conflicts,json=canAutoResolveConflicts,proto3" json:"can_auto_resolve_conflicts,omitempty"`
 	MergeStrategy           string                 `protobuf:"bytes,14,opt,name=merge_strategy,json=mergeStrategy,proto3" json:"merge_strategy,omitempty"`
 	LinearApiKey            string                 `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
+	// address an organization, so the org slug is stored alongside it. Issues are
+	// listed org-wide (across every project), so no project slug is needed.
+	SentryApiKey  string `protobuf:"bytes,17,opt,name=sentry_api_key,json=sentryApiKey,proto3" json:"sentry_api_key,omitempty"`
+	SentryOrg     string `protobuf:"bytes,18,opt,name=sentry_org,json=sentryOrg,proto3" json:"sentry_org,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Repo) Reset() {
@@ -1162,6 +1167,20 @@ func (x *Repo) GetMergeStrategy() string {
 func (x *Repo) GetLinearApiKey() string {
 	if x != nil {
 		return x.LinearApiKey
+	}
+	return ""
+}
+
+func (x *Repo) GetSentryApiKey() string {
+	if x != nil {
+		return x.SentryApiKey
+	}
+	return ""
+}
+
+func (x *Repo) GetSentryOrg() string {
+	if x != nil {
+		return x.SentryOrg
 	}
 	return ""
 }
@@ -3038,7 +3057,7 @@ var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xac\x05\n" +
+	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf7\x05\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -3059,8 +3078,11 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
 	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
 	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
-	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKeyB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11\"\xfe\x13\n" +
+	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKey\x12$\n" +
+	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
+	"\n" +
+	"sentry_org\x18\x12 \x01(\tR\tsentryOrgB\x0f\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xfe\x13\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +

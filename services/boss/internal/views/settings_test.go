@@ -2,10 +2,12 @@ package views
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"connectrpc.com/connect"
 	"github.com/recurser/boss/internal/client"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/telemetry"
@@ -507,5 +509,189 @@ func TestSettings_CursorSkipsHeaderRows(t *testing.T) {
 		}
 		updated, _ := m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 		m = updated.(SettingsModel)
+	}
+}
+
+// newBillingSettingsModel builds a settings model wired with a cloud client so
+// the [b]illing action is live, and overrides the browser-open hook so tests
+// observe the open call without launching a real browser. The returned cleanup
+// restores the global hook.
+func newBillingSettingsModel(t *testing.T, fake *fakeHomeCloudAccessClient, returnURL string, opened *[]string) (SettingsModel, func()) {
+	t.Helper()
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m.SetCloudAccess(fake, returnURL)
+
+	original := openBillingPortalURL
+	openBillingPortalURL = func(rawURL string) error {
+		*opened = append(*opened, rawURL)
+		return nil
+	}
+	return m, func() { openBillingPortalURL = original }
+}
+
+// pressBilling sends the [b] key and runs the resulting async command,
+// applying the emitted billingPortalMsg so the model reflects the outcome.
+func pressBilling(t *testing.T, m SettingsModel) SettingsModel {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
+	m = updated.(SettingsModel)
+	if cmd == nil {
+		t.Fatal("key b: got nil cmd, want billing portal command")
+	}
+	msg := cmd()
+	if _, ok := msg.(billingPortalMsg); !ok {
+		t.Fatalf("billing command returned %T, want billingPortalMsg", msg)
+	}
+	updated, _ = m.Update(msg)
+	return updated.(SettingsModel)
+}
+
+func TestSettings_BillingActionHiddenWithoutCloudClient(t *testing.T) {
+	withTempConfigHome(t)
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+
+	if strings.Contains(m.View().Content, "[b]illing") {
+		t.Fatalf("settings rendered [b]illing without a cloud client:\n%s", m.View().Content)
+	}
+
+	// Pressing b without a cloud client must be inert (no command, no crash).
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
+	if cmd != nil {
+		t.Fatal("key b: got a command without a cloud client, want nil")
+	}
+}
+
+func TestSettings_BillingOpensPortalURL(t *testing.T) {
+	var opened []string
+	fake := &fakeHomeCloudAccessClient{portalURL: "https://billing.example.test/portal"}
+	m, cleanup := newBillingSettingsModel(t, fake, "https://app.example.test/return", &opened)
+	defer cleanup()
+
+	if !strings.Contains(m.View().Content, "[b]illing") {
+		t.Fatalf("settings did not render [b]illing with a cloud client:\n%s", m.View().Content)
+	}
+
+	m = pressBilling(t, m)
+
+	if fake.portals != 1 {
+		t.Fatalf("CreateBillingPortalSession calls = %d, want 1", fake.portals)
+	}
+	if len(opened) != 1 || opened[0] != "https://billing.example.test/portal" {
+		t.Fatalf("browser opened with %v, want [https://billing.example.test/portal]", opened)
+	}
+	if !strings.Contains(m.View().Content, "Opened the billing portal") {
+		t.Fatalf("settings missing success status:\n%s", m.View().Content)
+	}
+}
+
+func TestSettings_BillingLocalDaemonShowsUnavailableMessage(t *testing.T) {
+	var opened []string
+	fake := &fakeHomeCloudAccessClient{
+		portalErr: connect.NewError(connect.CodeUnimplemented,
+			errors.New("cloud billing is only available on a local daemon")),
+	}
+	m, cleanup := newBillingSettingsModel(t, fake, "", &opened)
+	defer cleanup()
+
+	m = pressBilling(t, m)
+
+	if fake.portals != 1 {
+		t.Fatalf("CreateBillingPortalSession calls = %d, want 1", fake.portals)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("browser opened %v on local-daemon error, want none", opened)
+	}
+	if !strings.Contains(m.View().Content, "Billing isn't available for a local daemon") {
+		t.Fatalf("settings missing local-daemon message:\n%s", m.View().Content)
+	}
+}
+
+func TestSettings_BillingBrowserFailureSurfacesURL(t *testing.T) {
+	withTempConfigHome(t)
+	fake := &fakeHomeCloudAccessClient{portalURL: "https://billing.example.test/portal"}
+	m := NewSettingsModel(&settingsAgentStub{stubClient: &stubClient{}}, context.Background())
+	m.SetCloudAccess(fake, "")
+
+	original := openBillingPortalURL
+	openBillingPortalURL = func(string) error { return errors.New("no browser available") }
+	defer func() { openBillingPortalURL = original }()
+
+	m = pressBilling(t, m)
+
+	if fake.portals != 1 {
+		t.Fatalf("CreateBillingPortalSession calls = %d, want 1", fake.portals)
+	}
+	content := m.View().Content
+	if !strings.Contains(content, "https://billing.example.test/portal") {
+		t.Fatalf("browser-failure fallback did not surface the URL:\n%s", content)
+	}
+	if !strings.Contains(content, "Couldn't open a browser") {
+		t.Fatalf("browser-failure fallback missing explanation:\n%s", content)
+	}
+}
+
+func TestSettings_BillingInFlightGuardSkipsSecondRequest(t *testing.T) {
+	var opened []string
+	fake := &fakeHomeCloudAccessClient{portalURL: "https://billing.example.test/portal"}
+	m, cleanup := newBillingSettingsModel(t, fake, "", &opened)
+	defer cleanup()
+
+	// First [b]: dispatches the RPC command and marks the request in flight.
+	// We deliberately do NOT run the command yet, simulating a request that is
+	// still outstanding.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
+	m = updated.(SettingsModel)
+	if cmd == nil {
+		t.Fatal("first b: got nil cmd, want billing portal command")
+	}
+	if !m.billingInFlight {
+		t.Fatal("first b: billingInFlight = false, want true")
+	}
+
+	// Second [b] while the first is still in flight must be a no-op: no second
+	// command, and the RPC fake must not have been invoked a second time.
+	updated, cmd2 := m.Update(tea.KeyPressMsg{Code: 'b', Text: "b"})
+	m = updated.(SettingsModel)
+	if cmd2 != nil {
+		t.Fatal("second b while in flight: got a command, want nil")
+	}
+
+	// Complete the first request and confirm exactly one RPC fired and the
+	// in-flight flag resets so a later [b] works again.
+	if msg := cmd(); true {
+		updated, _ = m.Update(msg)
+		m = updated.(SettingsModel)
+	}
+	if fake.portals != 1 {
+		t.Fatalf("CreateBillingPortalSession calls = %d, want 1", fake.portals)
+	}
+	if m.billingInFlight {
+		t.Fatal("after completion: billingInFlight = true, want false")
+	}
+
+	// A later [b] after completion issues a fresh request.
+	m = pressBilling(t, m)
+	if fake.portals != 2 {
+		t.Fatalf("CreateBillingPortalSession calls after re-press = %d, want 2", fake.portals)
+	}
+}
+
+func TestSettings_BillingStatusClearedOnNextKey(t *testing.T) {
+	var opened []string
+	fake := &fakeHomeCloudAccessClient{portalURL: "https://billing.example.test/portal"}
+	m, cleanup := newBillingSettingsModel(t, fake, "", &opened)
+	defer cleanup()
+
+	m = pressBilling(t, m)
+	if !strings.Contains(m.View().Content, "Opened the billing portal") {
+		t.Fatalf("precondition: billing status not shown after pressing b:\n%s", m.View().Content)
+	}
+
+	// An unrelated navigation keypress should clear the lingering status.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	m = updated.(SettingsModel)
+	if strings.Contains(m.View().Content, "Opened the billing portal") {
+		t.Fatalf("billing status lingered after an unrelated keypress:\n%s", m.View().Content)
 	}
 }

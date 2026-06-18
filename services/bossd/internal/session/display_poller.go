@@ -33,7 +33,10 @@ type DisplayPoller struct {
 	logger    zerolog.Logger
 	done      chan struct{}
 
-	refreshMu            sync.Mutex
+	refreshMu sync.Mutex
+	// latestWebhookRefresh maps session ID -> the last time a webhook refreshed
+	// that session. A session only backs off its poll interval when it received
+	// a webhook recently; sibling sessions in the same repo are unaffected.
 	latestWebhookRefresh map[string]time.Time
 	lastPollMu           sync.Mutex
 	lastPoll             map[string]time.Time
@@ -94,22 +97,22 @@ func (p *DisplayPoller) Run(ctx context.Context) {
 // Done returns a channel closed when Run's goroutine exits.
 func (p *DisplayPoller) Done() <-chan struct{} { return p.done }
 
-func (p *DisplayPoller) recordRefresh(repo string, ts time.Time) {
+func (p *DisplayPoller) recordRefresh(sessionID string, ts time.Time) {
 	p.refreshMu.Lock()
 	defer p.refreshMu.Unlock()
 	if p.latestWebhookRefresh == nil {
 		p.latestWebhookRefresh = make(map[string]time.Time)
 	}
-	if prev, ok := p.latestWebhookRefresh[repo]; !ok || ts.After(prev) {
-		p.latestWebhookRefresh[repo] = ts
+	if prev, ok := p.latestWebhookRefresh[sessionID]; !ok || ts.After(prev) {
+		p.latestWebhookRefresh[sessionID] = ts
 	}
 }
 
-func (p *DisplayPoller) intervalFor(repo string, now time.Time) time.Duration {
+func (p *DisplayPoller) intervalFor(sessionID string, now time.Time) time.Duration {
 	p.refreshMu.Lock()
-	last, ok := p.latestWebhookRefresh[repo]
+	last, ok := p.latestWebhookRefresh[sessionID]
 	if ok && now.Sub(last) > webhookHealthyWindow {
-		delete(p.latestWebhookRefresh, repo)
+		delete(p.latestWebhookRefresh, sessionID)
 		ok = false
 	}
 	p.refreshMu.Unlock()
@@ -128,8 +131,8 @@ func (p *DisplayPoller) markPolled(sessionID string, ts time.Time) {
 	p.lastPoll[sessionID] = ts
 }
 
-func (p *DisplayPoller) shouldPollSession(sessionID, repo string, now time.Time) bool {
-	interval := p.intervalFor(repo, now)
+func (p *DisplayPoller) shouldPollSession(sessionID string, now time.Time) bool {
+	interval := p.intervalFor(sessionID, now)
 
 	p.lastPollMu.Lock()
 	defer p.lastPollMu.Unlock()
@@ -146,9 +149,9 @@ func (p *DisplayPoller) shouldPollSession(sessionID, repo string, now time.Time)
 func (p *DisplayPoller) pruneWebhookRefreshes(now time.Time) {
 	p.refreshMu.Lock()
 	defer p.refreshMu.Unlock()
-	for repo, last := range p.latestWebhookRefresh {
+	for sessionID, last := range p.latestWebhookRefresh {
 		if now.Sub(last) > webhookHealthyWindow {
-			delete(p.latestWebhookRefresh, repo)
+			delete(p.latestWebhookRefresh, sessionID)
 		}
 	}
 }
@@ -191,8 +194,8 @@ func (p *DisplayPoller) RefreshPR(ctx context.Context, repoOriginURL string, prN
 	if refreshed > 0 {
 		for _, sessionID := range refreshedSessions {
 			p.markPolled(sessionID, now)
+			p.recordRefresh(sessionID, now)
 		}
-		p.recordRefresh(repo.OriginURL, now)
 	}
 
 	p.logger.Info().
@@ -231,7 +234,7 @@ func (p *DisplayPoller) poll(ctx context.Context) {
 				continue
 			}
 			activeSessions[sess.ID] = struct{}{}
-			if !p.shouldPollSession(sess.ID, repo.OriginURL, now) {
+			if !p.shouldPollSession(sess.ID, now) {
 				continue
 			}
 			p.pollSession(ctx, repo, sess.ID, *sess.PRNumber)

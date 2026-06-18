@@ -106,7 +106,7 @@ func (c *RemoteClient) ListRepoPRs(_ context.Context, _ string) ([]*pb.PRSummary
 	return nil, errLocalOnly("ListRepoPRs")
 }
 
-func (c *RemoteClient) ListTrackerIssues(_ context.Context, _, _ string) ([]*pb.TrackerIssue, error) {
+func (c *RemoteClient) ListTrackerIssues(_ context.Context, _, _, _ string) ([]*pb.TrackerIssue, error) {
 	return nil, errLocalOnly("ListTrackerIssues")
 }
 

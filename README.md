@@ -80,8 +80,9 @@ the pull requests and human decisions that need attention.
 
 ### Add a repository
 
-Use the TUI to add a local checkout once. After that, Bossanova can create
-isolated worktrees for future sessions in that repository.
+Press `s` to open Settings, then `r` to open the repository list, and `a` to
+add a local checkout (or clone from a URL) once. After that, Bossanova can
+create isolated worktrees for future sessions in that repository.
 
 <img src="https://bossanova.dev/screenshots/tour/gifs/boss-add-repo.gif" alt="adding a repository in the Bossanova TUI" width="900">
 
@@ -119,7 +120,8 @@ review, blocked on CI, or ready to merge.
 
 ### Set up scheduled jobs
 
-Open the scheduled sessions view to create recurring agent work.
+Press `s` to open Settings, then `c` to open the scheduled sessions view and
+create recurring agent work.
 
 Use scheduled jobs for chores that should happen on a cadence: dependency
 checks, weekly cleanup, release prep, or any repeated coding task that starts
@@ -129,7 +131,8 @@ from the same prompt.
 
 ### Archive finished work
 
-Press `a` on a completed session.
+Select a completed session, then press `a` from the session view (beside the
+merge action).
 
 Archiving removes the local worktree while keeping the branch and pull request
 history intact.
@@ -138,8 +141,8 @@ history intact.
 
 ### Clean up old chats
 
-Open Trash to review archived chats and permanently delete the ones you no
-longer need.
+Press `s` to open Settings, then `t` to open Trash, where you can review
+archived chats and permanently delete the ones you no longer need.
 
 Archiving keeps completed work out of the active dashboard; Trash gives you the
 final cleanup step when a branch, PR, or chat history is no longer useful.

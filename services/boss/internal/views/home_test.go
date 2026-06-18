@@ -18,20 +18,21 @@ import (
 )
 
 type fakeHomeCloudAccessClient struct {
-	status      *pb.CloudAccessStatus
-	statusErr   error
-	checkoutURL string
-	checkoutErr error
-	portalURL   string
-	portalErr   error
-	refresh     *pb.CloudAccessStatus
-	refreshErr  error
-	returnURLs  []string
-	cancelURLs  []string
-	statusCalls int
-	checkouts   int
-	portals     int
-	refreshes   int
+	status           *pb.CloudAccessStatus
+	statusErr        error
+	checkoutURL      string
+	checkoutErr      error
+	portalURL        string
+	portalErr        error
+	refresh          *pb.CloudAccessStatus
+	refreshErr       error
+	returnURLs       []string
+	cancelURLs       []string
+	portalReturnURLs []string
+	statusCalls      int
+	checkouts        int
+	portals          int
+	refreshes        int
 }
 
 func (f *fakeHomeCloudAccessClient) GetCloudAccessStatus(context.Context) (*pb.CloudAccessStatus, error) {
@@ -52,8 +53,9 @@ func (f *fakeHomeCloudAccessClient) CreateCheckoutSession(_ context.Context, ret
 	return f.checkoutURL, nil
 }
 
-func (f *fakeHomeCloudAccessClient) CreateBillingPortalSession(context.Context, string) (string, error) {
+func (f *fakeHomeCloudAccessClient) CreateBillingPortalSession(_ context.Context, returnURL string) (string, error) {
 	f.portals++
+	f.portalReturnURLs = append(f.portalReturnURLs, returnURL)
 	if f.portalErr != nil {
 		return "", f.portalErr
 	}
@@ -700,33 +702,6 @@ func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsAvailable(t *testi
 	}
 }
 
-func TestHomeModelBuildTableRows_ShowsArchivingStatusForMatchingSession(t *testing.T) {
-	h := HomeModel{
-		spinner:            newStatusSpinner(),
-		archivingSessionID: "sess-1",
-		sessions: []*pb.Session{
-			{Id: "sess-1", RepoDisplayName: "repo", Title: "first"},
-			{Id: "sess-2", RepoDisplayName: "repo", Title: "second"},
-		},
-	}
-
-	h.buildTableRows()
-
-	rows := h.table.Rows()
-	if len(rows) != 2 {
-		t.Fatalf("table rows = %d, want 2", len(rows))
-	}
-	if got := rows[0][5]; !strings.Contains(got, "archiving") {
-		t.Fatalf("archiving session STATUS = %q, want archiving", got)
-	}
-	if got := rows[0][5]; strings.Contains(got, "  archiving") {
-		t.Fatalf("archiving session STATUS = %q, want one space before archiving", got)
-	}
-	if got := rows[1][5]; strings.Contains(got, "archiving") {
-		t.Fatalf("non-archiving session STATUS = %q, want normal status", got)
-	}
-}
-
 func TestHomeTableHeightCountsRepairWarningRows(t *testing.T) {
 	h := HomeModel{
 		sessions: []*pb.Session{
@@ -945,9 +920,8 @@ func TestHomeDoesNotShowRetryPRActionForDraftPRFailure(t *testing.T) {
 	}
 }
 
-// TestHomeKeyDispatch_Regression verifies that all home-list keybindings
-// dispatch the correct switchViewMsg, and that adding [c]ron did not break
-// any existing binding (n/r/s/t/l).
+// TestHomeKeyDispatch_Regression verifies that home-list keybindings dispatch
+// the correct switchViewMsg.
 func TestHomeKeyDispatch_Regression(t *testing.T) {
 	// Build a HomeModel with one repo (so [n] is enabled) and auth configured
 	// (so [l] is enabled). We drive Update() directly without a real daemon.
@@ -958,10 +932,7 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 		wantView View
 	}{
 		{"n", ViewNewSession},
-		{"r", ViewRepoList},
 		{"s", ViewSettings},
-		{"t", ViewTrash},
-		{"c", ViewCron},
 	}
 
 	for _, tt := range tests {
@@ -1032,6 +1003,25 @@ func TestHomeKeyDispatch_Regression(t *testing.T) {
 		_, cmd := h.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
 		if cmd != nil {
 			t.Fatal("key h returned command, want nil")
+		}
+	})
+
+	t.Run("moved keys are inert", func(t *testing.T) {
+		for _, key := range []string{"r", "t", "c", "a"} {
+			t.Run("key="+key, func(t *testing.T) {
+				h := HomeModel{
+					ctx:       context.Background(),
+					repoCount: 1,
+					loading:   false,
+					sessions:  []*pb.Session{{Id: "sess-1"}},
+				}
+				h.buildTableRows()
+
+				_, cmd := h.Update(tea.KeyPressMsg{Code: rune(key[0]), Text: key})
+				if cmd != nil {
+					t.Fatalf("key %q returned command, want nil", key)
+				}
+			})
 		}
 	})
 
@@ -1160,52 +1150,6 @@ func TestHomeViewHidesCloudDiscoveryAfterSessionLimit(t *testing.T) {
 	}
 }
 
-func TestHomeModelUpdate_BlocksOpeningArchivingSession(t *testing.T) {
-	h := HomeModel{
-		ctx:                context.Background(),
-		repoCount:          1,
-		loading:            false,
-		archivingSessionID: "sess-1",
-		sessions:           []*pb.Session{{Id: "sess-1"}},
-	}
-	h.buildTableRows()
-
-	_, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatalf("key enter returned command for archiving session, want nil")
-	}
-}
-
-func TestHomeModelUpdate_AllowsOpeningNonArchivingSession(t *testing.T) {
-	h := HomeModel{
-		ctx:                context.Background(),
-		repoCount:          1,
-		loading:            false,
-		archivingSessionID: "sess-2",
-		sessions: []*pb.Session{
-			{Id: "sess-1"},
-			{Id: "sess-2"},
-		},
-	}
-	h.buildTableRows()
-
-	_, cmd := h.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("key enter: got nil cmd, want switchViewMsg")
-	}
-	msg := cmd()
-	svm, ok := msg.(switchViewMsg)
-	if !ok {
-		t.Fatalf("key enter: cmd() returned %T, want switchViewMsg", msg)
-	}
-	if svm.view != ViewChatPicker {
-		t.Errorf("key enter: view = %v, want ViewChatPicker", svm.view)
-	}
-	if svm.sessionID != "sess-1" {
-		t.Errorf("key enter: sessionID = %q, want %q", svm.sessionID, "sess-1")
-	}
-}
-
 func strPtr(s string) *string { return &s }
 
 func TestViewEmptyStateNoRepos(t *testing.T) {
@@ -1227,13 +1171,18 @@ func TestViewEmptyStateNoRepos(t *testing.T) {
 	}
 
 	// Check for setup instructions
-	if !strings.Contains(content, "Press 'r' to open the repos menu") {
+	if !strings.Contains(content, "Open Settings to add a repository") {
 		t.Errorf("expected setup instructions in empty state with no repos, got: %s", content)
 	}
 
-	// 'n' (new session) should not be offered when there are no repos
 	if strings.Contains(content, "[n]ew session") {
 		t.Errorf("should not offer [n]ew session when no repos exist, got: %s", content)
+	}
+	if !strings.Contains(content, "[s]ettings") {
+		t.Errorf("expected [s]ettings in empty state action bar, got: %s", content)
+	}
+	if !strings.Contains(content, "[q]uit") {
+		t.Errorf("expected [q]uit in empty state action bar, got: %s", content)
 	}
 }
 
@@ -1278,7 +1227,7 @@ func TestHomeLogoutConfirmationVisibleInEmptyNoRepoState(t *testing.T) {
 	updated, _ = h.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	h = updated.(HomeModel)
 
-	if h.logoutConfirming {
+	if h.confirm.active {
 		t.Fatal("expected n to cancel logout confirmation")
 	}
 }

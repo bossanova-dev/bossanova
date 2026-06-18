@@ -8,7 +8,7 @@ require (
 	github.com/getsentry/sentry-go v0.46.2
 	github.com/gofrs/flock v0.13.0
 	github.com/hashicorp/go-plugin v1.8.0
-	github.com/posthog/posthog-go v1.14.0
+	github.com/posthog/posthog-go v1.15.0
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/qmuntal/stateless v1.8.0
 	github.com/robfig/cron/v3 v3.0.1

@@ -456,6 +456,10 @@ func run(opts runOpts) error {
 	// Note: FixLoop removed - repair functionality moved to plugin
 
 	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, nil, log.Logger)
+	// Let the dispatcher poke the display tracker the instant a PR merges/closes
+	// so the STATUS column flips immediately instead of waiting for the display
+	// poller's next cycle.
+	dispatcher.SetDisplayStatusSetter(displayTracker)
 	poller := session.NewPoller(sessions, repos, ghProvider, session.DefaultPollInterval, session.DefaultPollTimeout, log.Logger)
 
 	// --- Settings + Display Poller ---
@@ -526,6 +530,22 @@ func run(opts runOpts) error {
 				log.Warn().Err(err).Msg("failed to persist discovered plugins to settings")
 			} else {
 				log.Info().Msg("persisted discovered plugins to settings")
+			}
+		}
+	} else {
+		// The config already lists plugins, but a freshly-built plugin binary
+		// (e.g. a new bossd-plugin-* that isn't in settings.json yet — or whose
+		// entry a clobbering save stripped) wouldn't otherwise load. Merge any
+		// discovered-but-unregistered plugins so new plugins appear without a
+		// hand-edit. Existing entries are preserved untouched.
+		if merged, added := config.MergeDiscoveredPlugins(pluginCfgs, config.DiscoverPlugins()); len(added) > 0 {
+			log.Info().Strs("added", added).Msg("merged newly-discovered plugins into config")
+			pluginCfgs = merged
+			settings.Plugins = merged
+			if err := config.Save(settings); err != nil {
+				log.Warn().Err(err).Msg("failed to persist merged plugin list to settings")
+			} else {
+				log.Info().Msg("persisted merged plugin list to settings")
 			}
 		}
 	}

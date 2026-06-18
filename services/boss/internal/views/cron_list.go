@@ -73,8 +73,9 @@ type CronListModel struct {
 	err    error
 	cancel bool
 
-	// confirm overlay state (nil = inactive)
-	confirming bool
+	returnView View
+
+	confirm confirmPrompt
 
 	// running tracks job IDs whose RunCronJobNow RPC is in flight, so the
 	// row can show a "Running…" spinner like home.go does for Archiving.
@@ -206,14 +207,27 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cronTickMsg:
 		// Suspend polling while confirm overlay is active.
-		if m.confirming {
+		if m.confirm.active {
 			return m, nil
 		}
 		return m, tea.Batch(m.fetchJobs(), m.tickCmd())
 
 	case tea.KeyMsg:
-		if m.confirming {
-			return m.updateConfirm(msg)
+		if m.confirm.active {
+			confirmed := msg.String() == "y" || msg.String() == "enter"
+			deleteID := ""
+			if confirmed {
+				if job := m.selectedJob(); job != nil {
+					deleteID = job.Id
+				}
+			}
+			var cmd tea.Cmd
+			m.confirm, cmd = m.confirm.update(msg)
+			if cmd != nil && deleteID != "" {
+				m.deleting[deleteID] = true
+				m.rebuildTable()
+			}
+			return m, cmd
 		}
 		return m.updateNormal(msg)
 	}
@@ -238,8 +252,15 @@ func (m CronListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "d":
-		if m.selectedJob() != nil {
-			m.confirming = true
+		if job := m.selectedJob(); job != nil {
+			c := m.client
+			ctx := m.ctx
+			id := job.Id
+			name := job.Name
+			m.confirm = newConfirmPrompt(fmt.Sprintf("Delete %q?", name), func() tea.Msg {
+				err := c.DeleteCronJob(ctx, id)
+				return cronJobDeletedMsg{id: id, err: err}
+			})
 		}
 		return m, nil
 
@@ -294,27 +315,6 @@ func (m CronListModel) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	updated, cmd := m.table.Update(msg)
 	m.table = updated
 	return m, cmd
-}
-
-func (m CronListModel) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "enter":
-		job := m.selectedJob()
-		m.confirming = false
-		if job == nil {
-			return m, nil
-		}
-		id := job.Id
-		m.deleting[id] = true
-		m.rebuildTable()
-		return m, func() tea.Msg {
-			err := m.client.DeleteCronJob(m.ctx, id)
-			return cronJobDeletedMsg{id: id, err: err}
-		}
-	case "n", "esc":
-		m.confirming = false
-	}
-	return m, nil
 }
 
 // --- Helpers ---
@@ -589,15 +589,10 @@ func (m CronListModel) View() tea.View {
 	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
 	b.WriteString("\n")
 
-	if m.confirming {
-		job := m.selectedJob()
-		label := "this job"
-		if job != nil {
-			label = fmt.Sprintf("%q", job.Name)
-		}
+	if m.confirm.active {
 		b.WriteString("\n")
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(
-			fmt.Sprintf("Delete %s?", label),
+			m.confirm.prompt,
 		))
 		b.WriteString("\n")
 		b.WriteString(styleActionBar.Render("[y/enter] confirm  [n/esc] cancel"))

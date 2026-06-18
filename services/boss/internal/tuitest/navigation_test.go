@@ -35,11 +35,12 @@ func TestTUI_ViewNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Trash: t → esc (title now in banner, not inline).
-	if err := h.Driver.SendKey('t'); err != nil {
+	// Trash: settings → t → esc → esc.
+	openSettingsView(t, h, 't', "Archived Sessions")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
@@ -49,11 +50,12 @@ func TestTUI_ViewNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Repos: r → esc (q no longer works on sub-screens).
-	if err := h.Driver.SendKey('r'); err != nil {
+	// Repos: settings → r → esc → esc.
+	openSettingsView(t, h, 'r', "PATH")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
@@ -91,11 +93,12 @@ func TestTUI_NavigationRoundTrip_AllViews(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Trash: t → esc (title now in banner).
-	if err := h.Driver.SendKey('t'); err != nil {
+	// Trash: settings → t → esc → esc.
+	openSettingsView(t, h, 't', "Archived Sessions")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
@@ -105,11 +108,12 @@ func TestTUI_NavigationRoundTrip_AllViews(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Repos: r → esc (q no longer works on sub-screens).
-	if err := h.Driver.SendKey('r'); err != nil {
+	// Repos: settings → r → esc → esc.
+	openSettingsView(t, h, 'r', "PATH")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
@@ -193,10 +197,11 @@ func TestTUI_HomeCursorPreserved_AfterTrash(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Navigate to trash and back.
-	if err := h.Driver.SendKey('t'); err != nil {
+	openSettingsView(t, h, 't', "Archived Sessions")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
@@ -234,10 +239,11 @@ func TestTUI_HomeCursorPreserved_AfterRepoList(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Navigate to repo list and back.
-	if err := h.Driver.SendKey('r'); err != nil {
+	openSettingsView(t, h, 'r', "PATH")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
@@ -346,12 +352,7 @@ func TestTUI_CtrlC_QuitsFromTrash(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
-		t.Fatal(err)
-	}
+	openSettingsView(t, h, 't', "Archived Sessions")
 
 	if err := h.Driver.SendCtrlC(); err != nil {
 		t.Fatal(err)

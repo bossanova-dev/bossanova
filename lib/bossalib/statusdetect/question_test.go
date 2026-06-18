@@ -121,6 +121,50 @@ func TestHasQuestionPrompt(t *testing.T) {
 			want: false,
 		},
 		{
+			// Claude finished its turn and pre-filled the input box with a
+			// suggested follow-up prompt ("❯ ...?"). Claude is suggesting a
+			// prompt, not asking one, so this must NOT be a question. The last
+			// ⏺ marker is the stop-hook line below the answer.
+			name: "suggested follow-up prompt is not a question",
+			data: "⏺ The PR is ready for human review. The only follow-up is the Low ticket in the review body.\n\n" +
+				"⏺ Ran 1 stop hook (ctrl+o to expand)\n" +
+				"  ⎿  Stop hook error: Failed with non-blocking status code: No stderr output\n\n" +
+				"✻ Crunched for 21m 19s\n\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"❯ Want me to file the WON-1141 follow-up ticket now?\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"  Opus 4.8 (1M context) | Context: 88% remaining\n",
+			want: false,
+		},
+		{
+			// Same suggested-prompt false positive, but the last ⏺ marker is
+			// the assistant's final message itself (no stop-hook marker below
+			// it). The fix must hold regardless of which marker is last.
+			name: "suggested follow-up prompt below final response marker",
+			data: "⏺ All done. Tests pass and the branch is pushed.\n\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"❯ Want me to open a PR now?\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"  Opus 4.8 (1M context) | Context: 88% remaining\n",
+			want: false,
+		},
+		{
+			name: "numbered suggested next prompts section is not a question",
+			data: "⏺ Done. The change is implemented.\n\n" +
+				"Suggested next prompts:\n" +
+				"1. Want me to explain this?\n" +
+				"2. Should I run tests?\n",
+			want: false,
+		},
+		{
+			name: "bulleted suggested follow-up prompts section is not a question",
+			data: "⏺ Done. The branch is ready.\n\n" +
+				"Suggested follow-up prompts:\n" +
+				"- Want me to open the pull request?\n" +
+				"- Should I add release notes?\n",
+			want: false,
+		},
+		{
 			name: "real Claude Code AskUserQuestion favorite lang",
 			data: "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n ☐ Favorite lang\n\nWhich programming language is your favorite?\n\n❯ 1. Go\n     Fast, simple, great for backend services and CLI tools\n  2. TypeScript\n     Type-safe JavaScript for web and full-stack development\n  3. Python\n     Versatile and readable, great for scripting and data science\n  4. Rust\n     Memory-safe systems programming with zero-cost abstractions\n  5. Type something.\n─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n  6. Chat about this\n",
 			want: true,
@@ -405,6 +449,210 @@ func TestHasQuestionPrompt(t *testing.T) {
 				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
 			want: true,
 		},
+		{
+			// Pattern 0 (user reported miss): standard-layout AskUserQuestion
+			// where Claude prints a plain-prose lead-in line ABOVE the divider
+			// (not a ⏺ response marker) immediately before the card. The card
+			// carries a literal "?" in the question, multi-line option
+			// descriptions, the "Type something." / "Chat about this" numbered
+			// terminators, and the instruction footer. The structural footer
+			// signal (Type something. + Chat about this) catches it regardless
+			// of how far the descriptions push the ☐ header up the buffer.
+			name: "standard-layout AskUserQuestion with prose lead-in and footer",
+			data: "  One destructive fork I shouldn't assume (auto-resolving is irreversible-ish):\n" +
+				strings.Repeat("─", 200) + "\n" +
+				" ☐ Headless sub-threshold\n" +
+				"\n" +
+				"In HEADLESS triage (no human present), what should happen to a below-threshold Sentry issue? Interactive mode already asks the user and resolves on yes — but headless can't ask.\n" +
+				"\n" +
+				"❯ 1. Skip, leave open (Recommended)\n" +
+				"     Headless never resolves without consent. Below-threshold issues are left untouched in Sentry; only at-or-above-threshold issues get tickets. Safe and non-destructive.\n" +
+				"  2. Auto-resolve below-threshold\n" +
+				"     Headless resolves below-threshold issues in Sentry automatically. Maximal cleanup, but resolves real issues with no human confirmation — risky if scoring misjudges one.\n" +
+				"  3. Make it a flag\n" +
+				"     Default skip, but support an opt-in arg (e.g. `auto-resolve`) that callers pass when they explicitly want headless cleanup. More surface area to build and document.\n" +
+				"  4. Type something.\n" +
+				strings.Repeat("─", 200) + "\n" +
+				"  5. Chat about this\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: true,
+		},
+		{
+			// Pattern 0b (the reported miss): AskUserQuestion rendered in the
+			// side-by-side PREVIEW layout (options carry `preview` content, so
+			// the UI splits into a left option list + a right box-drawn panel).
+			// Every body-structure pattern fails here:
+			//   - Pattern 0: "Chat about this" is un-numbered, no "Type
+			//     something." line.
+			//   - Pattern 1: no ❯ chevron (selection is a background color,
+			//     stripped by StripANSI).
+			//   - Pattern 2: the preview panel's box-drawing chars (┌│└─) land
+			//     on column-0 lines interleaved between the numbered options,
+			//     breaking the consecutive-numbered-option run at count 1.
+			//   - Pattern 3: the ⏺ Working spinner below has no trailing "?".
+			// Only the instruction-footer fast-path catches it.
+			name: "preview-layout AskUserQuestion (instruction footer)",
+			data: " ☐ Which proof?\n" +
+				"\n" +
+				"Three identical passing proofs for WON-1174 already exist on PR #332. What should this invocation do?\n" +
+				"\n" +
+				" 1. Repeat-click (no dup\n" +
+				"   pills)\n" +
+				"┌──────────────────────────────┐\n" +
+				"│ Generate img → Load setup ... │\n" +
+				"  2. txt2img Load setup\n" +
+				"  3. Re-run same proof\n" +
+				" 4. Stop — proofs are\n" +
+				"   sufficient\n" +
+				"                                  Notes: press n to add notes\n" +
+				"\n" +
+				strings.Repeat("─", 50) + "\n" +
+				"  Chat about this\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel\n" +
+				"\n" +
+				"⏺ Working… (3s · ↑ 0 tokens)\n" +
+				"  Opus 4.7 | Context: 89% remaining\n",
+			want: true,
+		},
+		{
+			// Pattern 0b: the no-notes footer variant. Same fast-path, footer
+			// without the "n to add notes" segment.
+			name: "preview-layout AskUserQuestion (no-notes footer)",
+			data: " ☐ Pick one\n" +
+				"\n" +
+				" 1. Alpha\n" +
+				"┌──────────┐\n" +
+				"│ preview  │\n" +
+				"  2. Beta\n" +
+				"└──────────┘\n" +
+				"\n" +
+				"  Chat about this\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: true,
+		},
+		{
+			// Negative guard: prose mentioning "Enter to select" mid-sentence
+			// must NOT fire. The instruction-footer regex is anchored to a full
+			// line and requires "to navigate" + "Esc to cancel" in order on that
+			// same line, none of which a normal Claude response satisfies.
+			name: "prose mentioning enter to select is not a footer",
+			data: "⏺ To open the file, press Enter to select a file from the picker.\n",
+			want: false,
+		},
+		{
+			// Negative guard (review #692): the instruction footer appearing as
+			// a verbatim line inside a tool-output block -- e.g. Claude reads or
+			// prints a file/test fixture that literally contains
+			// "Enter to select · ↑/↓ to navigate · Esc to cancel" -- must NOT
+			// fire. The line arrives as a ⎿ continuation indented 4+ spaces,
+			// exactly the shape the footer regex accepts, but Pattern 0b matches
+			// the tool-output-filtered tail, so stripToolOutput removes the block
+			// before the regex runs. Without that filtering this returned true.
+			name: "instruction footer inside tool output is not a live prompt",
+			data: "⏺ Here is the fixture I'm referencing.\n" +
+				"  ⎿  Read footer.txt (1 line)\n" +
+				"       Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: false,
+		},
+		{
+			// Negative guard (review #692, follow-up): the instruction footer
+			// written as ordinary assistant response text -- e.g. Claude
+			// documenting the TUI footer in prose -- must NOT fire. It is not
+			// tool output, so stripToolOutput leaves it in cleanedTail, but
+			// Pattern 0b requires the full card terminator (a "Chat about this"
+			// line immediately followed by the footer), which a lone footer
+			// mention lacks, so Pattern 3 then rejects the non-question response.
+			name: "instruction footer in assistant prose without a card is not a prompt",
+			data: "⏺ The AskUserQuestion footer renders as:\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n" +
+				"\n" +
+				"That line sits below the option card.\n",
+			want: false,
+		},
+		{
+			// Negative guard (review #692, follow-up 2): a completed response
+			// that documents the TUI with a Markdown numbered list plus the
+			// footer line as prose must NOT fire. Pattern 0b now ties the footer
+			// to the AskUserQuestion card terminator ("Chat about this"), which a
+			// coincidental numbered list lacks, so the footer + a numbered item
+			// no longer satisfies the card-context requirement.
+			name: "footer with markdown numbered list but no card terminator is not a prompt",
+			data: "⏺ The picker shows a numbered list, e.g.:\n" +
+				"\n" +
+				"  1. First choice\n" +
+				"  2. Second choice\n" +
+				"\n" +
+				"and the footer reads:\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: false,
+		},
+		{
+			// Negative guard (review #692, follow-up 3): assistant prose that
+			// documents the card with a standalone "Chat about this" line AND
+			// the footer line, but with prose between them, must NOT fire.
+			// Pattern 0b requires the terminator and footer as one ordered,
+			// adjacent sequence (blank lines only between), so independent
+			// mentions anywhere in the tail no longer satisfy it. Without the
+			// adjacency requirement (two independent regex matches) this fired.
+			name: "non-adjacent chat-about-this and footer in prose is not a prompt",
+			data: "⏺ The AskUserQuestion card ends with two lines:\n" +
+				"\n" +
+				"Chat about this\n" +
+				"\n" +
+				"and then, after a divider, the footer:\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+			want: false,
+		},
+		{
+			// Review #692, follow-up: a suggested-prompt section that mixes an
+			// imperative item with a question-shaped one must have the question
+			// item stripped. The non-question "1. Run tests" must not end the
+			// section early and leak "2. Want me to open a PR?" into the tail,
+			// which would otherwise fire Pattern 3/4 on an idle, completed pane.
+			name: "mixed suggested-prompt list does not leak the question item",
+			data: "⏺ Done — all set.\n" +
+				"\n" +
+				"Suggested next prompts:\n" +
+				"1. Run tests\n" +
+				"2. Want me to open a PR?\n",
+			want: false,
+		},
+		{
+			// Review #692, follow-up: an UNBULLETED suggested-prompt block. The
+			// plain imperative line ("Run tests") must not reset the section, or
+			// the later question-shaped suggestion ("Want me to open a PR?")
+			// would leak into the tail and fire Pattern 3/4 on a completed pane.
+			// The block now runs until a stop-marker line or EOF.
+			name: "unbulleted suggested-prompt block does not leak the question item",
+			data: "⏺ Done — all set.\n" +
+				"\n" +
+				"Suggested next prompts:\n" +
+				"Run tests\n" +
+				"Want me to open a PR?\n",
+			want: false,
+		},
+		{
+			// Review #692, follow-up: a suggested-prompt block followed by a
+			// genuine follow-up question in the same response. A blank line ends
+			// the block, so the real trailing question is preserved and detected
+			// rather than stripped as if it were a suggestion. This guards
+			// against over-stripping (a false negative) introduced when the
+			// block was kept open to EOF.
+			name: "real question after suggested-prompt block is still detected",
+			data: "⏺ Here are some options.\n" +
+				"\n" +
+				"Suggested next prompts:\n" +
+				"Run tests\n" +
+				"\n" +
+				"Before I continue, should I open a PR?\n",
+			want: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -686,6 +934,66 @@ func TestHasQuestionPrompt_ChevronlessCardNegatives(t *testing.T) {
 				tail := LastNLines(clean, 30)
 				t.Errorf("should NOT detect question\n  clean: %q\n  tail: %q",
 					string(clean), string(tail))
+			}
+		})
+	}
+}
+
+func TestHasQuestionPrompt_SelectedFirstOption(t *testing.T) {
+	// Hardening: when the selection cursor sits on the FIRST option ("❯ 1."),
+	// the blanket "❯ " strip used by the other patterns deletes option 1, so
+	// Pattern 2's numbered run appeared to start at 2 and the
+	// strictly-increasing-from-1 check rejected a real card. Pattern 2 now
+	// keeps "❯ N." selector lines and normalizes the cursor to blanks.
+	//
+	// The positive inputs are crafted so EVERY other pattern fails, leaving
+	// Pattern 2 as the only possible catcher:
+	//   - 1-space-indented options (Pattern 1 requires 2-space option lines),
+	//   - a mid-line "?" (Pattern 4 requires a trailing "?"),
+	//   - no Type-something/Chat-about-this/footer (Patterns 0 and 0b),
+	//   - no ⏺ response marker (Pattern 3 is skipped).
+	positive := []struct{ name, data string }{
+		{
+			name: "selected first option, 1-space layout",
+			data: strings.Repeat("─", 50) + "\n" +
+				" ☐ Headless sub-threshold\n" +
+				"\n" +
+				"What should happen to a below-threshold Sentry issue? Pick one below.\n" +
+				"\n" +
+				"❯ 1. Skip, leave open\n" +
+				" 2. Auto-resolve\n" +
+				" 3. Make it a flag\n",
+		},
+	}
+	for _, tt := range positive {
+		t.Run(tt.name, func(t *testing.T) {
+			if !HasQuestionPrompt([]byte(tt.data)) {
+				clean := StripANSI([]byte(tt.data))
+				t.Errorf("should detect question (selected first option)\n  clean: %q", string(clean))
+			}
+		})
+	}
+
+	// Negative guard: keeping "❯ N." selector lines for Pattern 2 must not make
+	// a numbered list fire without a real card. With no "?" in the question
+	// region between the ☐ header and the options, Pattern 2 stays off.
+	negative := []struct{ name, data string }{
+		{
+			name: "selector numbered list but no question-region ?",
+			data: strings.Repeat("─", 50) + "\n" +
+				" ☐ Plan\n" +
+				"\n" +
+				"Here is the plan.\n" +
+				"\n" +
+				"❯ 1. Do the first thing\n" +
+				" 2. Do the second thing\n",
+		},
+	}
+	for _, tt := range negative {
+		t.Run(tt.name, func(t *testing.T) {
+			if HasQuestionPrompt([]byte(tt.data)) {
+				clean := StripANSI([]byte(tt.data))
+				t.Errorf("should NOT detect question\n  clean: %q", string(clean))
 			}
 		})
 	}
@@ -1095,21 +1403,24 @@ func TestHasQuestionPrompt_Pattern1ExactlyOneOptionIsolated(t *testing.T) {
 
 // TestHasQuestionPrompt_Pattern3MarkerAtIndexZeroShortCircuits covers the
 // boundary mutation on question.go:342 (`if idx := ...; idx >= 0` → `idx > 0`).
-// The ⏺ response marker sits at byte index 0. The text after it ends with a
-// trailing "?", so Pattern 3 fires and returns true. The ONLY trailing-"?"
-// line is the user's prompt history ("❯ ...?"), which Pattern 4 strips out.
+// The ⏺ response marker sits at byte index 0, and Claude's question ("...?") is
+// on the first line — pushed more than 30 lines above the bottom of the pane by
+// trailing filler, so the "?" lives in Pattern 3's full-buffer scan but OUTSIDE
+// Pattern 4's 30-line tail.
 //
-//   - Real code: idx==0 satisfies `idx >= 0`, Pattern 3 matches the trailing
-//     "?" in afterMarker (Pattern 3 does NOT strip user-prompt lines) → true.
-//   - Mutant `idx > 0`: idx==0 fails, Pattern 3 is skipped, Pattern 4 strips the
-//     "❯ ...?" line leaving no trailing "?" → false.
+//   - Real code: idx==0 satisfies `idx >= 0`, Pattern 3 scans the whole buffer
+//     after the marker and matches the trailing "?" → true.
+//   - Mutant `idx > 0`: idx==0 fails, Pattern 3 is skipped, and Pattern 4 only
+//     sees the last 30 lines (filler, no "?") → false.
 //
-// The differing result (true vs false) kills the boundary mutant, which the
-// existing index-zero test could not because Pattern 4 masked it.
+// The differing result (true vs false) kills the boundary mutant.
 func TestHasQuestionPrompt_Pattern3MarkerAtIndexZeroShortCircuits(t *testing.T) {
-	data := "⏺ Following up on your last message.\n" +
-		"❯ does this approach work for you?\n"
-	if !HasQuestionPrompt([]byte(data)) {
+	var b strings.Builder
+	b.WriteString("⏺ Does this approach work for you?\n")
+	for range 35 {
+		b.WriteString("filler status line with no trailing punctuation\n")
+	}
+	if !HasQuestionPrompt([]byte(b.String())) {
 		t.Error("should detect question via Pattern 3 when ⏺ marker is at index 0 (idx >= 0 boundary)")
 	}
 }
@@ -1168,5 +1479,97 @@ func TestHasQuestionPrompt_Pattern2OneNumberedOptionNegative(t *testing.T) {
 		"⏺ Working… (2s)\n"
 	if HasQuestionPrompt([]byte(data)) {
 		t.Error("should NOT detect Pattern 2 with only 1 numbered option (count >= 2 lower boundary)")
+	}
+}
+
+func TestHasQuestionPrompt_SelectedChatAboutThis(t *testing.T) {
+	// Review #692: when the user arrows down to the final "Chat about this"
+	// action, Claude Code renders that live option with the same "❯ " selection
+	// cursor as any other selected row ("❯ Chat about this" in the side-by-side
+	// preview layout, "❯ N. Chat about this" in the standard layout). The
+	// footer fast-path (Pattern 0b) used the cleanedTail view, whose
+	// stripUserPromptLines deleted that "❯ " row before the card-terminator
+	// regex ran -- so an active question card flipped to non-question merely by
+	// moving the selection onto the last action. Pattern 0b must still detect
+	// the card when its terminator carries the selection cursor.
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			// Preview layout (Pattern 2 broken by the side-by-side panel), with
+			// the selection cursor on the un-numbered "Chat about this".
+			name: "preview-layout selected un-numbered Chat about this",
+			data: " ☐ Pick one\n" +
+				"\n" +
+				" 1. Alpha\n" +
+				"┌──────────┐\n" +
+				"│ preview  │\n" +
+				"  2. Beta\n" +
+				"└──────────┘\n" +
+				"\n" +
+				"❯ Chat about this\n" +
+				"\n" +
+				"Enter to select · ↑/↓ to navigate · Esc to cancel\n",
+		},
+		{
+			// Standard layout with the selection cursor on the numbered
+			// "Chat about this", and the ☐ header / "?" pushed out of the tail so
+			// only the footer fast-path can catch it. Pattern 0 misses it too:
+			// the selector replaces the leading spaces its numbered-option regex
+			// requires.
+			name: "standard-layout selected numbered Chat about this",
+			data: func() string {
+				var b strings.Builder
+				for range 35 {
+					b.WriteString("  prior conversation filler line\n")
+				}
+				b.WriteString("  1. Option A\n")
+				b.WriteString("  2. Option B\n")
+				b.WriteString("  3. Type something.\n")
+				b.WriteString(strings.Repeat("─", 50))
+				b.WriteString("\n")
+				b.WriteString("❯ 4. Chat about this\n")
+				b.WriteString("\n")
+				b.WriteString("Enter to select · ↑/↓ to navigate · Esc to cancel\n")
+				return b.String()
+			}(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !HasQuestionPrompt([]byte(tt.data)) {
+				clean := StripANSI([]byte(tt.data))
+				tail := LastNLines(clean, 30)
+				t.Errorf("should detect AskUserQuestion when the selection cursor sits on Chat about this\n  clean: %q\n  tail: %q",
+					string(clean), string(tail))
+			}
+		})
+	}
+}
+
+func TestHasQuestionPrompt_FooterInsideLongToolOutput(t *testing.T) {
+	// Review #692: a long tool-output block whose ⎿ header sits more than 30
+	// lines above the bottom leaves only indented continuation lines inside the
+	// 30-line tail. If that pasted output ends with the AskUserQuestion footer
+	// ("Chat about this" + "Enter to select … Esc to cancel"), stripping tool
+	// output only AFTER tailing can no longer anchor on the (now absent) ⎿
+	// header, so the orphaned continuation lines survive and Pattern 0b
+	// false-fires. Stripping tool blocks from the full buffer before tailing
+	// keeps the whole block out of the tail.
+	var b strings.Builder
+	b.WriteString("⏺ Here is the fixture I'm referencing.\n")
+	b.WriteString("  ⎿  Read fixture.txt (38 lines)\n")
+	for range 35 {
+		b.WriteString("       a line of pasted fixture content\n")
+	}
+	b.WriteString("       Chat about this\n")
+	b.WriteString("       Enter to select · ↑/↓ to navigate · Esc to cancel\n")
+	data := b.String()
+	if HasQuestionPrompt([]byte(data)) {
+		clean := StripANSI([]byte(data))
+		tail := LastNLines(clean, 30)
+		t.Errorf("should NOT detect a question when the footer is inside a long tool-output block\n  tail: %q",
+			string(tail))
 	}
 }

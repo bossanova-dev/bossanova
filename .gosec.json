@@ -1,0 +1,7 @@
+{
+  "global": {
+    "audit": "enabled",
+    "nosec": "enabled",
+    "show-ignored": "true"
+  }
+}

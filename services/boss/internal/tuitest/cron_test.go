@@ -25,7 +25,7 @@ func testCronJob() *pb.CronJob {
 	}
 }
 
-// navigateToCronList navigates from the home screen to the cron list by pressing 'c'.
+// navigateToCronList navigates from the home screen to the cron list via Settings.
 func navigateToCronList(t *testing.T, h *tuitest.Harness) {
 	t.Helper()
 
@@ -34,6 +34,8 @@ func navigateToCronList(t *testing.T, h *tuitest.Harness) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	openSettingsHub(t, h)
 
 	if err := h.Driver.SendKey('c'); err != nil {
 		t.Fatal(err)
@@ -79,9 +81,9 @@ func waitForCronListPopulated(t *testing.T, h *tuitest.Harness) {
 	}
 }
 
-// TestCron_HomeC_OpensList verifies that pressing 'c' from home opens the cron
+// TestCron_SettingsC_OpensList verifies that pressing 'c' from Settings opens the cron
 // list with the empty-state copy when no cron jobs exist.
-func TestCron_HomeC_OpensList(t *testing.T) {
+func TestCron_SettingsC_OpensList(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
 	}
@@ -852,6 +854,9 @@ func TestCron_DeleteConfirm(t *testing.T) {
 		if err := h.Driver.WaitForText(waitTimeout, "[y/enter] confirm"); err != nil {
 			t.Fatalf("expected confirm overlay; screen:\n%s", h.Driver.Screen())
 		}
+		if err := h.Driver.WaitForText(waitTimeout, `Delete "Daily update"?`); err != nil {
+			t.Fatalf("expected confirm prompt to include job name; screen:\n%s", h.Driver.Screen())
+		}
 
 		// Press 'n' — should cancel without deleting.
 		if err := h.Driver.SendKey('n'); err != nil {
@@ -978,10 +983,9 @@ func TestCron_DeleteConfirm(t *testing.T) {
 	})
 }
 
-// TestHome_KeysStillWork is a regression test ensuring that home-screen
-// keybindings (n, p, r, s, t, l, c) still dispatch correctly after the cron
-// feature was added.
-func TestHome_KeysStillWork(t *testing.T) {
+// TestHomeAndSettings_KeysStillWork is a regression test ensuring Home keeps
+// its remaining keybindings and Settings owns moved destinations.
+func TestHomeAndSettings_KeysStillWork(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
 	}
@@ -1032,12 +1036,13 @@ func TestHome_KeysStillWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 't' → trash.
-	if err := h.Driver.SendKey('t'); err != nil {
+	// Settings 't' → trash.
+	openSettingsView(t, h, 't', "Archived Sessions")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
-		t.Fatalf("'t' did not open trash; screen:\n%s", h.Driver.Screen())
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
+		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
@@ -1046,12 +1051,13 @@ func TestHome_KeysStillWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 'r' → repo list.
-	if err := h.Driver.SendKey('r'); err != nil {
+	// Settings 'r' → repo list.
+	openSettingsView(t, h, 'r', "PATH")
+	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "PATH"); err != nil {
-		t.Fatalf("'r' did not open repo list; screen:\n%s", h.Driver.Screen())
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
+		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)
@@ -1060,7 +1066,8 @@ func TestHome_KeysStillWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 'c' → cron list.
+	// Settings 'c' → cron list.
+	openSettingsHub(t, h)
 	if err := h.Driver.SendKey('c'); err != nil {
 		t.Fatal(err)
 	}
@@ -1069,7 +1076,13 @@ func TestHome_KeysStillWork(t *testing.T) {
 			strings.Contains(screen, "CRON") ||
 			strings.Contains(screen, "[n]ew")
 	}); err != nil {
-		t.Fatalf("'c' did not open cron list; screen:\n%s", h.Driver.Screen())
+		t.Fatalf("settings 'c' did not open cron list; screen:\n%s", h.Driver.Screen())
+	}
+	if err := h.Driver.SendEscape(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "Settings"); err != nil {
+		t.Fatal(err)
 	}
 	if err := h.Driver.SendEscape(); err != nil {
 		t.Fatal(err)

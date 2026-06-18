@@ -34,6 +34,8 @@ type Repo struct {
 	CanAutoResolveConflicts bool
 	MergeStrategy           MergeStrategy
 	LinearAPIKey            string
+	SentryAPIKey            string
+	SentryOrg               string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }

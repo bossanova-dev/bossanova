@@ -870,3 +870,89 @@ func TestDispatcherNilNotifier_DoesNotPanic(t *testing.T) {
 		t.Errorf("state = %v, want Merged", sessions.sessions["sess-1"].State)
 	}
 }
+
+// --- Display status setter ---
+
+// fakeDisplayStatusSetter records Set calls so tests can assert the dispatcher
+// pushes a terminal status into the tracker on merge/close.
+type fakeDisplayStatusSetter struct {
+	calls []struct {
+		sessionID string
+		info      vcs.DisplayInfo
+	}
+}
+
+func (f *fakeDisplayStatusSetter) Set(sessionID string, info vcs.DisplayInfo) {
+	f.calls = append(f.calls, struct {
+		sessionID string
+		info      vcs.DisplayInfo
+	}{sessionID, info})
+}
+
+func TestDispatcherPRMerged_SetsDisplayStatusMerged(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	setter := &fakeDisplayStatusSetter{}
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d.SetDisplayStatusSetter(setter)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if sessions.sessions["sess-1"].State != machine.Merged {
+		t.Errorf("state = %v, want Merged", sessions.sessions["sess-1"].State)
+	}
+	if len(setter.calls) != 1 {
+		t.Fatalf("display setter calls = %d, want 1", len(setter.calls))
+	}
+	if got := setter.calls[0]; got.sessionID != "sess-1" || got.info.Status != vcs.DisplayStatusMerged {
+		t.Errorf("Set(%q, %v), want (sess-1, Merged)", got.sessionID, got.info.Status)
+	}
+}
+
+func TestDispatcherPRClosed_SetsDisplayStatusClosed(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	vp := newMockVCSProvider()
+	logger := zerolog.Nop()
+
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:     "sess-1",
+		RepoID: "repo-1",
+		State:  machine.AwaitingChecks,
+	}
+
+	setter := &fakeDisplayStatusSetter{}
+	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d.SetDisplayStatusSetter(setter)
+
+	ch := make(chan SessionEvent, 1)
+	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
+	close(ch)
+
+	d.Run(ctx, ch)
+
+	if sessions.sessions["sess-1"].State != machine.Closed {
+		t.Errorf("state = %v, want Closed", sessions.sessions["sess-1"].State)
+	}
+	if len(setter.calls) != 1 {
+		t.Fatalf("display setter calls = %d, want 1", len(setter.calls))
+	}
+	if got := setter.calls[0]; got.sessionID != "sess-1" || got.info.Status != vcs.DisplayStatusClosed {
+		t.Errorf("Set(%q, %v), want (sess-1, Closed)", got.sessionID, got.info.Status)
+	}
+}

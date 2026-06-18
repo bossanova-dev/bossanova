@@ -2,6 +2,7 @@
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
+	debt-knip \
 	plugins plugins-all proof proof-plan proof-test readme-gifs release release-codex-check \
 	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke \
 	test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
@@ -18,6 +19,18 @@ all:
 # Pinned golangci-lint version. Must match the version used in CI
 # (.github/workflows/*.yml). Bumping requires coordinated changes to both.
 GOLANGCI_LINT_VERSION := v2.11.4
+
+# Technical-debt scanner tools used by `make debt-*` (the bs-technical-debt skill).
+# These are non-blocking, informational detectors (CI runs them continue-on-error,
+# matching the existing govulncheck step), so they track `latest` like govulncheck.
+# Pin to an explicit version here if you want hermetic local runs.
+DEADCODE_PKG    := golang.org/x/tools/cmd/deadcode@latest
+DUPL_PKG        := github.com/mibk/dupl@latest
+GOCYCLO_PKG     := github.com/fzipp/gocyclo/cmd/gocyclo@latest
+GOVULNCHECK_PKG := golang.org/x/vuln/cmd/govulncheck@latest
+# Thresholds for the noisier detectors (lower = more findings).
+DEBT_DUPL_THRESHOLD  ?= 150
+DEBT_CYCLO_THRESHOLD ?= 15
 
 # Binaries output to bin/
 BIN_DIR := bin
@@ -151,6 +164,11 @@ deps:
 		echo "    protoc-gen-connect-go: installing..."; \
 		go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest; \
 	fi
+	@echo "==> Warming technical-debt scanners (make debt-*)"
+	@for pkg in "$(DEADCODE_PKG)" "$(DUPL_PKG)" "$(GOCYCLO_PKG)" "$(GOVULNCHECK_PKG)"; do \
+		echo "    $$pkg"; \
+		go install "$$pkg" || echo "    (warning: failed to install $$pkg; make debt-* will fetch it on demand)"; \
+	done
 	@gobin=$$(go env GOBIN); [ -z "$$gobin" ] && gobin=$$(go env GOPATH)/bin; \
 	case ":$$PATH:" in *":$$gobin:"*) ;; \
 		*) echo ""; echo "NOTE: $$gobin is not on your PATH — add it so buf can find protoc-gen-go."; \
@@ -468,6 +486,31 @@ lint-$(2): lint-check-version
 endef
 $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-lint,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
+
+## Technical-debt scanners (make debt-<kind>-<module>) — narrow, per-module, NON-BLOCKING
+## detectors used by the bs-technical-debt skill. Each auto-fetches its pinned tool via
+## `go run`. `<module>` is the short name: bossalib, boss, bossd, bosso, or a plugin short
+## name (claude, codex, dependabot, linear, repair, sentry). Examples:
+##   make debt-deadcode-bossd   # unreachable code (whole-program, includes tests)
+##   make debt-dupl-bossalib    # duplicated token sequences within the module
+##   make debt-cyclo-boss       # functions over the cyclomatic-complexity threshold
+##   make debt-vuln-bosso       # reachable known vulnerabilities (govulncheck)
+define define-debt-targets
+debt-deadcode-$(2):
+	cd $(1) && go run $$(DEADCODE_PKG) -test ./...
+debt-dupl-$(2):
+	cd $(1) && go run $$(DUPL_PKG) -t $$(DEBT_DUPL_THRESHOLD) .
+debt-cyclo-$(2):
+	cd $(1) && go run $$(GOCYCLO_PKG) -over $$(DEBT_CYCLO_THRESHOLD) .
+debt-vuln-$(2):
+	cd $(1) && go run $$(GOVULNCHECK_PKG) ./...
+endef
+$(foreach m,$(MODULES),$(eval \
+  $(call define-debt-targets,$(m),$(patsubst bossd-plugin-%,%,$(notdir $(m))))))
+
+## debt-knip: Report unused TS exports/files/deps in services/web (non-blocking detector).
+debt-knip:
+	$(MAKE) -C services/web knip
 
 ## Per-module build targets (no generate dep — CI uses committed gen code)
 build-boss:

@@ -209,6 +209,24 @@ func (o *Orchestrator) poll(ctx context.Context) {
 		return
 	}
 
+	// Resolve sources only once we know there is work to poll, so the
+	// per-source GetInfo RPCs are skipped when no repo is eligible.
+	var pollable []resolvedSource
+	for _, src := range sources {
+		info, err := src.GetInfo(ctx)
+		if err != nil {
+			o.logger.Warn().Err(err).Msg("get plugin info failed")
+			continue
+		}
+		if info.GetUserInitiated() {
+			continue
+		}
+		pollable = append(pollable, resolvedSource{src: src, name: info.GetName()})
+	}
+	if len(pollable) == 0 {
+		return
+	}
+
 	// Calculate stagger delay: spread repos evenly across the interval.
 	stagger := o.interval / time.Duration(len(eligibleRepos))
 
@@ -226,24 +244,21 @@ func (o *Orchestrator) poll(ctx context.Context) {
 			}
 		}
 
-		for _, src := range sources {
-			o.pollSource(ctx, src, repo)
+		for _, rs := range pollable {
+			o.pollSource(ctx, rs.src, rs.name, repo)
 		}
 	}
 }
 
-// pollSource calls PollTasks on a single source for a single repo
-// and processes the returned tasks.
-func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, repo repoInfo) {
-	info, err := src.GetInfo(ctx)
-	if err != nil {
-		o.logger.Warn().Err(err).
-			Str("repo", repo.displayName).
-			Msg("get plugin info failed")
-		return
-	}
-	pluginName := info.GetName()
+// resolvedSource pairs a pollable task source with its resolved plugin name.
+type resolvedSource struct {
+	src  plugin.TaskSource
+	name string
+}
 
+// pollSource calls PollTasks on a single source for a single repo
+// and processes the returned tasks. pluginName is resolved once per poll cycle.
+func (o *Orchestrator) pollSource(ctx context.Context, src plugin.TaskSource, pluginName string, repo repoInfo) {
 	tasks, err := src.PollTasks(ctx, repo.originURL)
 	if err != nil {
 		o.logger.Warn().Err(err).

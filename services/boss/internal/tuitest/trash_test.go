@@ -9,6 +9,12 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+func openTrashFromSettings(t *testing.T, h *tuitest.Harness, waitText string) {
+	t.Helper()
+
+	openSettingsView(t, h, 't', waitText)
+}
+
 func TestTUI_TrashView(t *testing.T) {
 	sessions := testSessions()
 	sessions[0].ArchivedAt = timestamppb.Now()
@@ -22,12 +28,7 @@ func TestTUI_TrashView(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Archived Sessions")
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
 		t.Fatal(err)
 	}
@@ -47,12 +48,7 @@ func TestTUI_TrashRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Archived Sessions")
 
 	if err := h.Driver.SendKey('r'); err != nil {
 		t.Fatal(err)
@@ -97,12 +93,7 @@ func TestTUI_TrashDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Add dark mode")
 
 	if err := h.Driver.SendKey('d'); err != nil {
 		t.Fatal(err)
@@ -133,12 +124,7 @@ func TestTUI_TrashEmptyState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Trash is empty"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Trash is empty")
 }
 
 func TestTUI_TrashEmptyAll(t *testing.T) {
@@ -158,12 +144,7 @@ func TestTUI_TrashEmptyAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Archived Sessions")
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
 		t.Fatal(err)
 	}
@@ -200,12 +181,7 @@ func TestTUI_TrashDeleteCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Add dark mode")
 
 	if err := h.Driver.SendKey('d'); err != nil {
 		t.Fatal(err)
@@ -240,12 +216,7 @@ func TestTUI_TrashEmptyAllCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Archived Sessions"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Archived Sessions")
 	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
 		t.Fatal(err)
 	}
@@ -283,12 +254,7 @@ func TestTUI_TrashRestoreAndVerifyHome(t *testing.T) {
 	}
 
 	// Navigate to trash.
-	if err := h.Driver.SendKey('t'); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.WaitForText(waitTimeout, "Add dark mode"); err != nil {
-		t.Fatal(err)
-	}
+	openTrashFromSettings(t, h, "Add dark mode")
 
 	// Restore the session.
 	if err := h.Driver.SendKey('r'); err != nil {

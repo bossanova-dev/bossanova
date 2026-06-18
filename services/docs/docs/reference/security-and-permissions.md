@@ -60,7 +60,8 @@ Bossanova exposes the toggle in two places, both of which write to
 `plugins[claude].config.dangerously_skip_permissions` in
 [`settings.json`](./settings.md#claude-plugin-config-keys):
 
-- **Terminal UI (TUI):** the _Settings_ view has a _Skip permissions_ checkbox.
+- **Terminal UI (TUI):** the _Settings_ view (press `s` from the home screen)
+  has a _Skip permissions_ checkbox.
 - **CLI:** `boss settings --skip-permissions` /
   `boss settings --no-skip-permissions`.
 
@@ -149,8 +150,9 @@ plugins list in `settings.json` and restart the daemon
 (set `enabled: false` for the `repair` entry in `settings.json`).
 
 The same pattern applies to any other plugin: `bossd-plugin-dependabot`,
-`bossd-plugin-linear`, future agent plugins. They live as autonomous
-processes, supervised by bossd. Removing the binary is the durable kill.
+`bossd-plugin-linear`, `bossd-plugin-sentry`, future agent plugins. They
+live as autonomous processes, supervised by bossd. Removing the binary is
+the durable kill.
 
 ## Setup scripts run as you
 
@@ -210,8 +212,8 @@ declaration. **A malicious plugin can do anything `bossd` can do**.
 read the SQLite DB, read the keychain, push to git, hit the network,
 delete worktrees. Trust the plugins you install.
 
-Bundled plugins (claude, dependabot, linear, repair) ship in the
-release tarball and are reviewed in the same repo as the daemon. If
+Bundled plugins (claude, codex, dependabot, linear, sentry, repair) ship
+in the release tarball and are reviewed in the same repo as the daemon. If
 you side-load a plugin from elsewhere, you've extended the trust
 boundary to its author.
 

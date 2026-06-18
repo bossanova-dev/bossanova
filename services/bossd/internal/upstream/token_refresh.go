@@ -59,6 +59,19 @@ func (c *StreamClient) runTokenRefresher(ctx context.Context, outbound chan<- *p
 			continue
 		}
 
+		// Guard against the zero-TTL refresh loop: a successful refresh that
+		// still leaves the token at/under expiry means upstream handed back a
+		// token we can't stay authenticated with (historically an expires_in:0
+		// response). Surface it loudly — this previously spun silently every
+		// refreshInterval and starved webhook delivery.
+		if newExp := c.tokenProvider.ExpiresAt(); !newExp.IsZero() {
+			if newRemaining := newExp.Sub(c.clock.Now()); newRemaining <= 0 {
+				c.logger.Warn().
+					Dur("remaining", newRemaining).
+					Msg("upstream token still expired immediately after refresh; check token exp claim / expires_in")
+			}
+		}
+
 		ev := &pb.DaemonEvent{
 			Event: &pb.DaemonEvent_TokenRefresh{
 				TokenRefresh: &pb.TokenRefresh{AccessToken: newTok},

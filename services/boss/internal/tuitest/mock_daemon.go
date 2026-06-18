@@ -98,7 +98,10 @@ type MockDaemon struct {
 	httpServer *http.Server
 	listener   net.Listener
 
-	archiveDelay time.Duration
+	archiveDelay  time.Duration
+	archiveError  string
+	chatListDelay time.Duration
+	chatListError string
 }
 
 // NewMockDaemon starts a mock daemon on a temporary Unix socket.
@@ -338,6 +341,9 @@ func (m *MockDaemon) ArchiveSession(_ context.Context, req *connect.Request[pb.A
 	if m.archiveDelay > 0 {
 		time.Sleep(m.archiveDelay)
 	}
+	if m.archiveError != "" {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s", m.archiveError))
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -391,6 +397,13 @@ func (m *MockDaemon) EmptyTrash(_ context.Context, _ *connect.Request[pb.EmptyTr
 }
 
 func (m *MockDaemon) ListChats(_ context.Context, req *connect.Request[pb.ListChatsRequest]) (*connect.Response[pb.ListChatsResponse], error) {
+	if m.chatListDelay > 0 {
+		time.Sleep(m.chatListDelay)
+	}
+	if m.chatListError != "" {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s", m.chatListError))
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []*pb.ClaudeChat

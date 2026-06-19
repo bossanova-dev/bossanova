@@ -137,6 +137,9 @@ func (m *mockSessionStore) Update(_ context.Context, id string, params db.Update
 	if params.State != nil {
 		s.State = machine.State(*params.State)
 	}
+	if params.Title != nil {
+		s.Title = *params.Title
+	}
 	if params.WorktreePath != nil {
 		s.WorktreePath = *params.WorktreePath
 	}
@@ -2943,6 +2946,179 @@ func TestEnsurePR_AttachesExistingPROnDuplicateError(t *testing.T) {
 	}
 }
 
+func TestAttachOpenPRForBranch_MatchesLiveBranchAndPersists(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	branches := &reconcileMockBranchResolver{
+		branches: map[string]string{"/wt/sess-1": "dave/won-1208-foo"},
+		errs:     map[string]error{},
+	}
+	lifecycle.SetBranchResolver(branches)
+
+	session := &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "WonderCanvas auto-implement",
+		BranchName:   "cron-stale",
+		WorktreePath: "/wt/sess-1",
+	}
+	repo := &models.Repo{ID: "repo-1", OriginURL: "https://github.com/owner/repo"}
+	sessions.sessions[session.ID] = session
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     354,
+			Title:      "[WON-1208] Fix the thing",
+			HeadBranch: "dave/won-1208-foo",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	found, err := lifecycle.attachOpenPRForBranch(ctx, session.ID, session, repo)
+	if err != nil {
+		t.Fatalf("attachOpenPRForBranch: %v", err)
+	}
+	if !found {
+		t.Fatal("expected PR to be attached via live branch")
+	}
+	got, err := sessions.Get(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if got.PRNumber == nil || *got.PRNumber != 354 {
+		t.Fatalf("PRNumber = %v, want 354", got.PRNumber)
+	}
+	if got.BranchName != "dave/won-1208-foo" {
+		t.Fatalf("BranchName = %q, want corrected", got.BranchName)
+	}
+	if got.Title != "[WON-1208] Fix the thing" {
+		t.Fatalf("Title = %q, want PR title", got.Title)
+	}
+}
+
+func TestAttachOpenPRForBranch_PrefersStoredBranchOverLiveBranch(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	branches := &reconcileMockBranchResolver{
+		branches: map[string]string{"/wt/sess-1": "live-branch"},
+		errs:     map[string]error{},
+	}
+	lifecycle.SetBranchResolver(branches)
+
+	session := &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Stored branch task",
+		BranchName:   "stored-branch",
+		WorktreePath: "/wt/sess-1",
+	}
+	repo := &models.Repo{ID: "repo-1", OriginURL: "https://github.com/owner/repo"}
+	sessions.sessions[session.ID] = session
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     200,
+			Title:      "Live branch PR",
+			HeadBranch: "live-branch",
+			State:      vcs.PRStateOpen,
+		},
+		{
+			Number:     100,
+			Title:      "Stored branch PR",
+			HeadBranch: "stored-branch",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	found, err := lifecycle.attachOpenPRForBranch(ctx, session.ID, session, repo)
+	if err != nil {
+		t.Fatalf("attachOpenPRForBranch: %v", err)
+	}
+	if !found {
+		t.Fatal("expected PR to be attached")
+	}
+	got, err := sessions.Get(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if got.PRNumber == nil || *got.PRNumber != 100 {
+		t.Fatalf("PRNumber = %v, want stored-branch PR 100", got.PRNumber)
+	}
+	if got.BranchName != "stored-branch" {
+		t.Fatalf("BranchName = %q, want stored-branch", got.BranchName)
+	}
+	if got.Title != "Stored branch PR" {
+		t.Fatalf("Title = %q, want stored-branch PR title", got.Title)
+	}
+}
+
+// TestAttachOpenPRForBranch_NonCronAdoptsDivergentPRTitle documents the
+// intended behaviour on the non-cron stored-branch path: when the matched PR's
+// title differs from the session's stored title, the attach adopts the PR
+// title (no cron UpdatePRTitle round-trip). The PRNumber==nil precondition all
+// callers enforce is what keeps this from clobbering a user edit.
+func TestAttachOpenPRForBranch_NonCronAdoptsDivergentPRTitle(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	agentChats := &mockAgentChatStore{}
+	worktrees := &mockWorktreeManager{}
+	agentRunner := newMockAgentRunner()
+	provider := newMockVCSProvider()
+	lifecycle := NewLifecycle(sessions, repos, agentChats, nil, worktrees, agentRunner, nil, provider, zerolog.Nop())
+
+	session := &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "original stored title",
+		BranchName:   "stored-branch",
+		WorktreePath: "/wt/sess-1",
+	}
+	repo := &models.Repo{ID: "repo-1", OriginURL: "https://github.com/owner/repo"}
+	sessions.sessions[session.ID] = session
+	provider.nextOpenPRs = []vcs.PRSummary{
+		{
+			Number:     100,
+			Title:      "PR-supplied title",
+			HeadBranch: "stored-branch",
+			State:      vcs.PRStateOpen,
+		},
+	}
+
+	found, err := lifecycle.attachOpenPRForBranch(ctx, session.ID, session, repo)
+	if err != nil {
+		t.Fatalf("attachOpenPRForBranch: %v", err)
+	}
+	if !found {
+		t.Fatal("expected PR to be attached")
+	}
+	if len(provider.updatePRTitleCalls) != 0 {
+		t.Fatalf("non-cron attach must not call UpdatePRTitle, got %v", provider.updatePRTitleCalls)
+	}
+	got, err := sessions.Get(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if got.BranchName != "stored-branch" {
+		t.Fatalf("BranchName = %q, want stored-branch (unchanged)", got.BranchName)
+	}
+	if got.Title != "PR-supplied title" {
+		t.Fatalf("Title = %q, want adopted PR title", got.Title)
+	}
+}
+
 func TestEnsurePR_AttachesExistingCronPRAndUpdatesMessyTitle(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -3008,6 +3184,9 @@ func TestEnsurePR_AttachesExistingCronPRAndUpdatesMessyTitle(t *testing.T) {
 	updated := sessions.sessions[session.ID]
 	if updated.PRNumber == nil || *updated.PRNumber != 493 {
 		t.Fatalf("PRNumber = %v, want 493", updated.PRNumber)
+	}
+	if got, want := updated.Title, "Cover malformed Link header without brackets"; got != want {
+		t.Fatalf("Title = %q, want updated PR title %q", got, want)
 	}
 }
 

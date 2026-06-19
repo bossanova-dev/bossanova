@@ -188,6 +188,34 @@ func TestCreateLeavesWorktreeOnCreatedBranch(t *testing.T) {
 	}
 }
 
+func TestManager_CurrentBranch_ReturnsCheckedOutBranch(t *testing.T) {
+	repoDir := initTestRepo(t)
+	wtBase := filepath.Join(t.TempDir(), "worktrees")
+	mgr := NewManager(zerolog.Nop())
+	ctx := context.Background()
+
+	result, err := mgr.Create(ctx, CreateOpts{
+		RepoPath:        repoDir,
+		WorktreeBaseDir: wtBase,
+		RepoName:        "my-repo",
+		Title:           "Fix Camera Crash",
+		BaseBranch:      "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gitOutput(t, result.WorktreePath, "checkout", "-b", "feature/x")
+
+	got, err := mgr.CurrentBranch(ctx, result.WorktreePath)
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if got != "feature/x" {
+		t.Fatalf("CurrentBranch = %q, want %q", got, "feature/x")
+	}
+}
+
 func TestCreateUsesOriginBaseWhenRootCheckoutIsDifferent(t *testing.T) {
 	repoDir := initTestRepo(t)
 	wtBase := filepath.Join(t.TempDir(), "worktrees")

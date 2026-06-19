@@ -21,6 +21,7 @@ const requiredPublicWorkflows = [
   '.github/workflows/test-plugin-linear.yml',
   '.github/workflows/test-plugin-repair.yml',
   '.github/workflows/test-plugin-sentry.yml',
+  '.github/workflows/test-plugin-stub-runner.yml',
 ];
 
 function withMirrorWorkflow(content, callback) {

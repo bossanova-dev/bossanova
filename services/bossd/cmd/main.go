@@ -442,10 +442,11 @@ func run(opts runOpts) error {
 	worktrees := gitpkg.NewManager(log.Logger)
 	tmuxClient := tmux.NewClient()
 	ghProvider := github.New(log.Logger)
-	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger)
+	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger).
+		WithBranchResolver(worktrees)
 
 	// Reconcile sessions that were created before their PR existed (or
-	// where PR creation happened out-of-band). Matches by branch name.
+	// where PR creation happened out-of-band). Uses live branch state.
 	if n, err := prAssociationResolver.Reconcile(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("failed to reconcile PR associations")
 	} else if n > 0 {
@@ -610,6 +611,7 @@ func run(opts runOpts) error {
 	if len(agentClients) > 0 {
 		lifecycle.SetAgents(agentClients)
 	}
+	lifecycle.SetBranchResolver(worktrees)
 	// Mirror HostServiceServer.SetAgentLogsDir so Lifecycle.StartTmuxChat
 	// can pass a deterministic log path to BuildInteractiveCommand. Without
 	// this, the extracted method would fail-closed with FailedPrecondition.

@@ -114,6 +114,29 @@ func (m *reconcileMockProvider) GetAllowedMergeStrategies(context.Context, strin
 	return []string{"merge", "squash", "rebase"}, nil
 }
 
+// --- reconcile-specific mock branch resolver ---
+
+type reconcileMockBranchResolver struct {
+	branches map[string]string // worktreePath -> live branch
+	errs     map[string]error  // worktreePath -> error
+	calls    []string
+}
+
+func newReconcileMockBranchResolver() *reconcileMockBranchResolver {
+	return &reconcileMockBranchResolver{
+		branches: make(map[string]string),
+		errs:     make(map[string]error),
+	}
+}
+
+func (m *reconcileMockBranchResolver) CurrentBranch(_ context.Context, worktreePath string) (string, error) {
+	m.calls = append(m.calls, worktreePath)
+	if err := m.errs[worktreePath]; err != nil {
+		return "", err
+	}
+	return m.branches[worktreePath], nil
+}
+
 // --- reconcile-specific mock session store ---
 
 type reconcileMockSessionStore struct {
@@ -215,6 +238,12 @@ func (m *reconcileMockSessionStore) Update(_ context.Context, id string, params 
 	}
 	if params.PRURL != nil {
 		s.PRURL = *params.PRURL
+	}
+	if params.BranchName != nil {
+		s.BranchName = *params.BranchName
+	}
+	if params.Title != nil {
+		s.Title = *params.Title
 	}
 	if params.BlockedReason != nil {
 		s.BlockedReason = *params.BlockedReason
@@ -424,6 +453,123 @@ func TestReconcilePRAssociations_MatchOpenPR(t *testing.T) {
 	}
 	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Fatalf("expected PR URL, got %v", sess.PRURL)
+	}
+}
+
+func TestReconcilePRAssociations_MatchesLiveWorktreeBranchWhenStoredIsStale(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+	branches := newReconcileMockBranchResolver()
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/owner/repo"}
+
+	sessions.addSession(&models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "WonderCanvas auto-implement",
+		BranchName:   "cron-wondercanvas-auto-implement-1781780400", // stale
+		WorktreePath: "/wt/sess-1",
+		State:        machine.AwaitingChecks,
+	})
+
+	// The agent switched the worktree to its own branch and opened PR #354 there.
+	branches.branches["/wt/sess-1"] = "dave/won-1208-foo"
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 354, Title: "[WON-1208] Fix the thing", HeadBranch: "dave/won-1208-foo", State: vcs.PRStateOpen},
+	}
+
+	n, err := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithBranchResolver(branches).
+		Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("updated = %d, want 1", n)
+	}
+
+	got := sessions.sessions["sess-1"]
+	if got.PRNumber == nil || *got.PRNumber != 354 {
+		t.Fatalf("PRNumber = %v, want 354", got.PRNumber)
+	}
+	if got.PRURL == nil || *got.PRURL != "https://github.com/owner/repo/pull/354" {
+		t.Fatalf("PRURL = %v, want https://github.com/owner/repo/pull/354", got.PRURL)
+	}
+	if got.BranchName != "dave/won-1208-foo" {
+		t.Fatalf("BranchName = %q, want corrected live branch", got.BranchName)
+	}
+	if got.Title != "[WON-1208] Fix the thing" {
+		t.Fatalf("Title = %q, want PR title", got.Title)
+	}
+}
+
+func TestReconcilePRAssociations_StoredBranchMatchSkipsLiveResolution(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+	branches := newReconcileMockBranchResolver()
+	// Force an error if the live branch is ever consulted.
+	branches.errs["/wt/sess-1"] = errors.New("CurrentBranch must not be called when stored branch matches")
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/owner/repo"}
+	sessions.addSession(&models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "My session",
+		BranchName:   "dave/won-1208-foo",
+		WorktreePath: "/wt/sess-1",
+		State:        machine.AwaitingChecks,
+	})
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 354, Title: "[WON-1208] Fix the thing", HeadBranch: "dave/won-1208-foo", State: vcs.PRStateOpen},
+	}
+
+	n, err := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithBranchResolver(branches).
+		Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("updated = %d, want 1", n)
+	}
+	if got := sessions.sessions["sess-1"]; got.BranchName != "dave/won-1208-foo" {
+		t.Fatalf("BranchName = %q, want unchanged", got.BranchName)
+	}
+	if len(branches.calls) != 0 {
+		t.Fatalf("CurrentBranch calls = %v, want none", branches.calls)
+	}
+}
+
+func TestReconcilePRAssociations_LiveBranchUnavailableFallsBackGracefully(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+	branches := newReconcileMockBranchResolver()
+	branches.errs["/wt/sess-1"] = errors.New("detached HEAD") // resolver fails
+
+	repos.repos["repo-1"] = &models.Repo{ID: "repo-1", OriginURL: "https://github.com/owner/repo"}
+	sessions.addSession(&models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		BranchName:   "cron-stale",
+		WorktreePath: "/wt/sess-1",
+		State:        machine.AwaitingChecks,
+	})
+	// PR exists but only on a branch we can't discover (resolver errored).
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 354, HeadBranch: "dave/won-1208-foo", State: vcs.PRStateOpen},
+	}
+
+	n, err := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithBranchResolver(branches).
+		Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err) // must NOT error
+	}
+	if n != 0 {
+		t.Fatalf("updated = %d, want 0 (graceful fallback)", n)
 	}
 }
 

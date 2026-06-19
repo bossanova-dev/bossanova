@@ -70,6 +70,11 @@ type Lifecycle struct {
 	provider    vcs.Provider
 	logger      zerolog.Logger
 
+	// branchResolver, when set, lets the finalize attach path match PRs
+	// against the worktree's live branch (the agent may have switched
+	// branches). Nil means stored-branch matching only.
+	branchResolver LiveBranchResolver
+
 	// pollArmer is retained for compatibility with older wiring, but tmux-
 	// hosted lifecycle paths no longer arm plugin ExitStatus polling.
 	pollArmer PollArmer
@@ -153,6 +158,12 @@ func (l *Lifecycle) SetHookPort(port int) {
 // Concurrency: called exactly once during daemon startup, before serving
 // begins. Not safe for concurrent re-injection alongside in-flight RPCs.
 func (l *Lifecycle) SetAgents(m map[string]agent.AgentRunnerClient) { l.agents = m }
+
+// SetBranchResolver attaches a live-branch resolver used when matching an
+// existing PR to a session whose stored branch may have drifted.
+func (l *Lifecycle) SetBranchResolver(branches LiveBranchResolver) {
+	l.branchResolver = branches
+}
 
 // Bootstrap restores supported session-keyed finalize hooks for tmux chats
 // that were alive when the daemon last shut down. Call once during daemon
@@ -1070,50 +1081,108 @@ func (l *Lifecycle) attachExistingPRForBranch(ctx context.Context, sessionID str
 	return nil
 }
 
+// attachOpenPRForBranch finds an open PR whose head matches one of the
+// session's candidate branches and persists its metadata (number, URL, and —
+// via attachPRMetadata — the corrected branch and title).
+//
+// Every caller invokes this only for a session whose PRNumber is still unset
+// (the first-time duplicate-create / safety-net paths in lifecycle.go and
+// finalize.go). That precondition is what makes the title persist in
+// attachPRMetadata safe: the stored title is still the freshly-generated one,
+// so it cannot clobber a user-edited title. Do not reuse this as a generic
+// re-attach for sessions that already have a PR without revisiting that
+// guarantee.
 func (l *Lifecycle) attachOpenPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) (bool, error) {
 	prs, err := l.provider.ListOpenPRs(ctx, repo.OriginURL)
 	if err != nil {
 		return false, fmt.Errorf("list open PRs: %w", err)
 	}
 
-	for _, pr := range prs {
-		if pr.HeadBranch != session.BranchName || pr.State != vcs.PRStateOpen {
-			continue
-		}
-
-		if session.CronJobID != nil && *session.CronJobID != "" {
-			title := l.draftPRTitle(ctx, session)
-			if err := l.provider.UpdatePRTitle(ctx, repo.OriginURL, pr.Number, title); err != nil {
-				return false, fmt.Errorf("update attached PR title: %w", err)
+	candidates := l.candidateBranches(ctx, session)
+	for _, branch := range candidates {
+		for _, pr := range prs {
+			if pr.State != vcs.PRStateOpen || pr.HeadBranch != branch {
+				continue
 			}
-		}
 
-		if err := l.attachPRMetadata(ctx, sessionID, session, repo, pr.Number); err != nil {
-			return false, err
+			prTitle := pr.Title
+			if session.CronJobID != nil && *session.CronJobID != "" {
+				title := l.draftPRTitle(ctx, session)
+				if err := l.provider.UpdatePRTitle(ctx, repo.OriginURL, pr.Number, title); err != nil {
+					return false, fmt.Errorf("update attached PR title: %w", err)
+				}
+				prTitle = title
+			}
+
+			if err := l.attachPRMetadata(ctx, sessionID, session, repo, pr.Number, pr.HeadBranch, prTitle); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
-		return true, nil
 	}
 
 	return false, nil
 }
 
-func (l *Lifecycle) attachPRMetadata(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo, prNumber int) error {
+// candidateBranches returns the branches a session's PR might live on: the
+// stored branch, plus the worktree's live branch when it differs and is
+// resolvable. Live-resolution failures are swallowed (stored branch only).
+func (l *Lifecycle) candidateBranches(ctx context.Context, session *models.Session) []string {
+	out := []string{}
+	if session.BranchName != "" {
+		out = append(out, session.BranchName)
+	}
+	if l.branchResolver == nil || session.WorktreePath == "" {
+		return out
+	}
+	live, err := l.branchResolver.CurrentBranch(ctx, session.WorktreePath)
+	if err != nil {
+		l.logger.Debug().Err(err).
+			Str("session", session.ID).
+			Str("worktree", session.WorktreePath).
+			Msg("attach PR: resolve live worktree branch")
+		return out
+	}
+	if live = strings.TrimSpace(live); live != "" && live != session.BranchName {
+		out = append(out, live)
+	}
+	return out
+}
+
+func (l *Lifecycle) attachPRMetadata(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo, prNumber int, matchedBranch, prTitle string) error {
 	prURL, err := prURLForRepo(repo.OriginURL, prNumber)
 	if err != nil {
 		return err
 	}
 	prNumberPtr := &prNumber
 	prURLPtr := &prURL
-	updated, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+	updateParams := db.UpdateSessionParams{
 		PRNumber: &prNumberPtr,
 		PRURL:    &prURLPtr,
-	})
+	}
+	if matchedBranch != "" && matchedBranch != session.BranchName {
+		branch := matchedBranch
+		updateParams.BranchName = &branch
+	}
+	// Persisting the title is safe because every caller reaches this only when
+	// the session has no PR yet (see attachOpenPRForBranch), so the stored
+	// title is still the generated one and cannot overwrite a user edit.
+	if title := strings.TrimSpace(prTitle); title != "" {
+		updateParams.Title = &title
+	}
+	updated, err := l.sessions.Update(ctx, sessionID, updateParams)
 	if err != nil {
 		return fmt.Errorf("update PR info: %w", err)
 	}
 
 	session.PRNumber = updated.PRNumber
 	session.PRURL = updated.PRURL
+	if updateParams.BranchName != nil {
+		session.BranchName = *updateParams.BranchName
+	}
+	if updateParams.Title != nil {
+		session.Title = *updateParams.Title
+	}
 	if err := l.clearDraftPRBlockedReason(ctx, sessionID, session); err != nil {
 		return err
 	}

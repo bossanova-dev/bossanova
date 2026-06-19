@@ -68,15 +68,6 @@ export function implementedState({ aheadSubjects } = {}) {
   return realAheadSubjects(aheadSubjects).length === 0 ? 'empty' : 'populated';
 }
 
-// Did HEAD advance during the preflight observation window? A live concurrent
-// writer appending commits is the one case where adopting our own PR is unsafe.
-export function isLiveWriter({ headBefore, headAfter } = {}) {
-  const before = typeof headBefore === 'string' ? headBefore.trim() : '';
-  const after = typeof headAfter === 'string' ? headAfter.trim() : '';
-  if (!before || !after) return false;
-  return before !== after;
-}
-
 // classify -> 'none' | 'foreign' | 'bootstrap-only' | 'owned'.
 //   none           no open PR and no real branch-ahead work
 //   foreign        a PR/branch carrying *real work* that matches no ownership
@@ -154,8 +145,6 @@ function parseFlags(rest) {
 //     ... --ahead-subjects-stdin    # newline-delimited subjects on stdin (no JSON wrangling)
 //   node scripts/pr-ownership.mjs number --pr-json <gh-json|"">
 //     -> prints the first open PR number, or blank when there is no open PR
-//   node scripts/pr-ownership.mjs live --head-before <sha> --head-after <sha>
-//     -> exit 0 if a live writer was detected (HEAD moved), exit 3 otherwise
 function main(argv) {
   const [cmd, ...rest] = argv;
   const flags = parseFlags(rest);
@@ -193,17 +182,7 @@ function main(argv) {
     return;
   }
 
-  if (cmd === 'live') {
-    const live = isLiveWriter({ headBefore: flags['head-before'], headAfter: flags['head-after'] });
-    console.log(live ? 'LIVE' : 'STATIC');
-    // Exit 0 == LIVE (caller bails NO_CHANGE), exit 3 == STATIC (proceed). The
-    // STATIC code is deliberately 3, distinct from the generic error exit 1
-    // below, so a caller never reads a launch/parse failure as "static/proceed".
-    process.exitCode = live ? 0 : 3;
-    return;
-  }
-
-  throw new Error(`unknown command: ${cmd ?? '(none)'} (expected "classify" or "live")`);
+  throw new Error(`unknown command: ${cmd ?? '(none)'} (expected "classify" or "number")`);
 }
 
 const invokedDirectly =

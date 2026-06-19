@@ -653,11 +653,21 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 									Str("agent_session_id", chat.AgentSessionID).
 									Msg("failed to check repair chat stale state for active chat computation")
 							} else if stale {
-								log.Debug().
-									Str("session_id", sess.ID).
-									Str("agent_session_id", chat.AgentSessionID).
-									Str("reason", staleReason).
-									Msg("ignoring stale repair chat for active chat computation")
+								// A repair chat with no live tmux pointer is the
+								// permanent end state of every completed/reclaimed
+								// repair run; those rows are preserved as history
+								// and re-evaluated on every ListSessions poll, so
+								// logging them floods the log with zero diagnostic
+								// value. Only log the case worth noticing: a chat
+								// whose tmux pane is still live but has gone idle
+								// past the reclaim threshold.
+								if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
+									log.Debug().
+										Str("session_id", sess.ID).
+										Str("agent_session_id", chat.AgentSessionID).
+										Str("reason", staleReason).
+										Msg("ignoring stale repair chat for active chat computation")
+								}
 								continue
 							}
 						}

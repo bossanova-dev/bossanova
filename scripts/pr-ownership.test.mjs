@@ -10,7 +10,6 @@ import {
   classifyPR,
   implementedState,
   isBootstrapSubject,
-  isLiveWriter,
   isOwnedPR,
   realAheadSubjects,
 } from './pr-ownership.mjs';
@@ -107,13 +106,6 @@ test('implementedState — empty vs populated', () => {
   assert.equal(implementedState({ aheadSubjects: [] }), 'empty');
   assert.equal(implementedState({ aheadSubjects: [BOOTSTRAP_COMMIT_SUBJECT] }), 'empty');
   assert.equal(implementedState({ aheadSubjects: REAL }), 'populated');
-});
-
-test('isLiveWriter — true only when HEAD advanced and both shas present', () => {
-  assert.equal(isLiveWriter({ headBefore: 'aaa', headAfter: 'bbb' }), true);
-  assert.equal(isLiveWriter({ headBefore: 'aaa', headAfter: 'aaa' }), false);
-  assert.equal(isLiveWriter({ headBefore: '', headAfter: 'bbb' }), false);
-  assert.equal(isLiveWriter({}), false);
 });
 
 test('classifyPR — none when there is no open PR and no real work ahead', () => {
@@ -423,11 +415,6 @@ test('CLI number — empty when there is no open PR', () => {
   const result = run(['number', '--pr-json', '']);
   assert.equal(result.status, 0);
   assert.equal(result.stdout.trim(), '');
-});
-
-test('CLI live — exit 0 when HEAD moved, exit 3 when static', () => {
-  assert.equal(run(['live', '--head-before', 'aaa', '--head-after', 'bbb']).status, 0);
-  assert.equal(run(['live', '--head-before', 'aaa', '--head-after', 'aaa']).status, 3);
 });
 
 test('CLI — unknown command exits 1', () => {

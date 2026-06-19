@@ -728,6 +728,12 @@ func (m *Manager) VerifyCurrentBranch(ctx context.Context, worktreePath, expecte
 	return m.verifyCurrentBranch(ctx, worktreePath, expectedBranch)
 }
 
+// CurrentBranch returns the branch currently checked out in worktreePath.
+// It errors on a detached HEAD or any git failure.
+func (m *Manager) CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
+	return m.currentBranch(ctx, worktreePath)
+}
+
 func (m *Manager) Push(ctx context.Context, worktreePath, branch string) error {
 	m.logger.Info().
 		Str("path", worktreePath).

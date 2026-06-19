@@ -8,6 +8,7 @@ use (
 	./plugins/bossd-plugin-linear
 	./plugins/bossd-plugin-repair
 	./plugins/bossd-plugin-sentry
+	./plugins/bossd-plugin-stub-runner
 	./services/boss
 	./services/bossd
 )

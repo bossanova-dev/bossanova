@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,13 @@ import (
 )
 
 const defaultPRAssociationCacheTTL = 60 * time.Second
+
+// LiveBranchResolver resolves the branch currently checked out in a worktree.
+// Implemented by *git.Manager (see Manager.CurrentBranch). Optional: when nil,
+// the reconciler matches PRs by the stored branch name only (legacy behavior).
+type LiveBranchResolver interface {
+	CurrentBranch(ctx context.Context, worktreePath string) (string, error)
+}
 
 // ReconcilePRAssociations scans active sessions that are missing a PR number
 // and attempts to match them to existing PRs by branch name. This handles
@@ -37,8 +45,9 @@ type prCacheEntry struct {
 }
 
 type prAssociationMatch struct {
-	pr        vcs.PRSummary
-	originURL string
+	pr            vcs.PRSummary
+	originURL     string
+	matchedBranch string
 }
 
 // PRAssociationResolver attaches active sessions to existing PRs by exact head
@@ -48,6 +57,7 @@ type PRAssociationResolver struct {
 	repos    db.RepoStore
 	provider vcs.Provider
 	logger   zerolog.Logger
+	branches LiveBranchResolver
 
 	mu      sync.Mutex
 	ttl     time.Duration
@@ -72,6 +82,14 @@ func NewPRAssociationResolver(
 		now:      time.Now,
 		prCache:  make(map[string]prCacheEntry),
 	}
+}
+
+// WithBranchResolver attaches a live-branch resolver so the reconciler can
+// match PRs against the worktree's current branch in addition to the stored
+// branch name. Returns the resolver for chaining.
+func (r *PRAssociationResolver) WithBranchResolver(branches LiveBranchResolver) *PRAssociationResolver {
+	r.branches = branches
+	return r
 }
 
 func (r *PRAssociationResolver) SetTTLForTest(ttl time.Duration) {
@@ -134,6 +152,24 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 			PRNumber: &prNumPtr,
 			PRURL:    &prURLPtr,
 		}
+
+		// Correct a drifted branch name. The agent may have created its own
+		// branch (e.g. cron sessions whose agent runs `git checkout -b`); the
+		// matched PR proves the live branch is the real one, so persist it. This
+		// also repairs the finalize/push path, which verifies the worktree is on
+		// session.BranchName before pushing.
+		if match.matchedBranch != "" && match.matchedBranch != sess.BranchName {
+			branch := match.matchedBranch
+			updateParams.BranchName = &branch
+		}
+
+		// Rename the session to the PR title now that we've identified the PR.
+		// One-shot: once PRNumber is set, sessionNeedsPRAssociation returns false,
+		// so this never repeatedly clobbers a later user-edited title.
+		if title := strings.TrimSpace(match.pr.Title); title != "" {
+			updateParams.Title = &title
+		}
+
 		clearDraftPRBlockedReasonUpdate(sess.BlockedReason, &updateParams)
 
 		if _, err := r.sessions.Update(ctx, sess.ID, updateParams); err != nil {
@@ -181,18 +217,55 @@ func (r *PRAssociationResolver) findPRMatchForSession(ctx context.Context, s *mo
 		return nil, err
 	}
 
-	for _, pr := range prs {
-		if pr.HeadBranch != s.BranchName {
-			continue
-		}
+	// Pass 1: the stored branch name (cheap: no git shell-out). This is the
+	// common case for ordinary sessions whose branch never drifts.
+	if m := matchPRByBranch(prs, s.BranchName, repo.OriginURL); m != nil {
+		return m, nil
+	}
 
-		return &prAssociationMatch{
-			pr:        pr,
-			originURL: repo.OriginURL,
-		}, nil
+	// Pass 2: the worktree's live branch. Cron/auto-implement agents create
+	// their own branch (e.g. `git checkout -b dave/won-...`) and open the PR
+	// there, so the stored cron branch never matches. Resolve lazily so we only
+	// shell out to git when the stored branch missed.
+	if live := r.liveBranchForSession(ctx, s); live != "" && live != s.BranchName {
+		if m := matchPRByBranch(prs, live, repo.OriginURL); m != nil {
+			return m, nil
+		}
 	}
 
 	return nil, nil
+}
+
+// matchPRByBranch returns the first open PR whose head branch equals branch.
+func matchPRByBranch(prs []vcs.PRSummary, branch, originURL string) *prAssociationMatch {
+	if branch == "" {
+		return nil
+	}
+	for _, pr := range prs {
+		if pr.HeadBranch == branch {
+			return &prAssociationMatch{pr: pr, originURL: originURL, matchedBranch: branch}
+		}
+	}
+	return nil
+}
+
+// liveBranchForSession resolves the worktree's current branch, or "" when it
+// can't be determined (no resolver, no worktree path, detached HEAD, missing or
+// archived worktree). Failures are logged at debug and swallowed so PR
+// association degrades to stored-branch matching rather than erroring.
+func (r *PRAssociationResolver) liveBranchForSession(ctx context.Context, s *models.Session) string {
+	if r.branches == nil || s.WorktreePath == "" {
+		return ""
+	}
+	branch, err := r.branches.CurrentBranch(ctx, s.WorktreePath)
+	if err != nil {
+		r.logger.Debug().Err(err).
+			Str("session", s.ID).
+			Str("worktree", s.WorktreePath).
+			Msg("reconcile: resolve live worktree branch")
+		return ""
+	}
+	return strings.TrimSpace(branch)
 }
 
 func (r *PRAssociationResolver) prsForRepo(ctx context.Context, repoID, originURL string) ([]vcs.PRSummary, error) {

@@ -87,7 +87,12 @@ function rewriteBody(body) {
     return current.replace(pattern, replacement);
   }, body);
 
-  return rewritten.replace(/\bAGENTS\.md`, `AGENTS\.md\b/g, 'AGENTS.md`, `CLAUDE.md');
+  return rewritten
+    .replace(/\bAGENTS\.md`, `AGENTS\.md\b/g, 'AGENTS.md`, `CLAUDE.md')
+    .replace(
+      /`apply_patch`\/`apply_patch` "modified since read"/g,
+      '`write`/`apply_patch` "modified since read"',
+    );
 }
 
 export function rewriteClaudeSkillMarkdown(markdown, filePath = 'SKILL.md') {

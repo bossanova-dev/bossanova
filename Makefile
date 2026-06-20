@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format generate lint \
+.PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format generate kill lint \
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -632,6 +632,33 @@ clean:
 	@if [ -d services/docs ]; then \
 		$(MAKE) -C services/docs clean; \
 	fi
+
+## kill: Stop all local boss dev processes for this repo (daemon, plugins, web/FE)
+kill:
+	@echo "==> Killing boss dev processes for $(CURDIR)"
+	@pids=""; \
+	add() { for p in $$1; do case " $$pids " in *" $$p "*) ;; *) pids="$$pids $$p" ;; esac; done; }; \
+	for sock in \
+		"$(CURDIR)/.config/bossd.sock" \
+		"$$HOME/Library/Application Support/bossanova/bossd.sock" \
+		"$$HOME/.config/bossanova/bossd.sock"; do \
+		[ -S "$$sock" ] && add "$$(lsof -t "$$sock" 2>/dev/null)"; \
+	done; \
+	add "$$(pgrep -f '$(CURDIR)/bin/boss' 2>/dev/null)"; \
+	for d in services/web services/marketing services/bosso/web services/docs; do \
+		add "$$(pgrep -f "$(CURDIR)/$$d" 2>/dev/null)"; \
+	done; \
+	for p in $$(pgrep -f '/go-build.*/exe/' 2>/dev/null); do \
+		lsof -p $$p 2>/dev/null | grep -qF '$(CURDIR)' && add "$$p"; \
+	done; \
+	self=$$$$; pids="$$(printf '%s\n' $$pids | sort -un | grep -vx $$self || true)"; \
+	if [ -z "$$pids" ]; then echo "  nothing running"; exit 0; fi; \
+	for p in $$pids; do ps -o pid=,command= -p $$p 2>/dev/null | sed 's/^/  kill /'; done; \
+	kill $$pids 2>/dev/null || true; \
+	sleep 1; \
+	still=""; for p in $$pids; do kill -0 $$p 2>/dev/null && still="$$still $$p"; done; \
+	[ -n "$$still" ] && { echo "  force -9:$$still"; kill -9 $$still 2>/dev/null || true; } || true; \
+	echo "==> Done."
 
 ## release: Trigger the production release workflow (creates a PR from main → production)
 release:

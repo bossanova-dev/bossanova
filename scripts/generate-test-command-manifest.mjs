@@ -21,6 +21,30 @@ const defaultRootTargets = [
   'test-public-mirror',
 ];
 
+// Hand-curated: the web suite is npm-script driven and cannot be derived from go.mod layout.
+const defaultWebTargets = [
+  {
+    command: 'pnpm run typecheck',
+    description: 'TypeScript type-check (includes `tests/e2e` via `tsconfig.e2e.json`)',
+    ci: 'yes',
+  },
+  { command: 'pnpm run lint', description: 'Biome lint + format check', ci: 'yes' },
+  { command: 'pnpm run test', description: 'Vitest unit tests', ci: 'yes' },
+  { command: 'pnpm run build', description: 'Vite production build', ci: 'yes' },
+  {
+    command: 'pnpm run test:e2e',
+    description:
+      'Playwright Tier-1 faked suite (all specs under `tests/e2e/specs/` + `coverage.spec.ts`)',
+    ci: 'yes',
+  },
+  {
+    command: 'pnpm run test:e2e:real',
+    description:
+      'Playwright Tier-2 real-stack smoke (local only; requires Go toolchain + `BOSS_E2E_TEST_AUTH`; tests are `test.fixme` pending repo-seeding — see docs/plans/BOS-33)',
+    ci: 'no',
+  },
+];
+
 function listGoModPaths(root = repoRoot) {
   return moduleRoots.flatMap((moduleRoot) => {
     const absoluteModuleRoot = path.join(root, moduleRoot);
@@ -107,7 +131,7 @@ function renderTable(headers, rows, alignments = []) {
   return [renderRow(headers), renderRow(separator), ...rows.map(renderRow)];
 }
 
-export function renderManifest({ rootTargets, modules }) {
+export function renderManifest({ rootTargets, modules, webTargets = defaultWebTargets }) {
   const ladderRows = [
     ['Fast local confidence', '`make test-smoke`'],
     ['Changed-file selection', '`make test-affected`'],
@@ -119,6 +143,11 @@ export function renderManifest({ rootTargets, modules }) {
     `\`${module.path}\``,
     `\`${renderCommand(module.target)}\``,
     String(module.testFiles),
+  ]);
+  const webRows = webTargets.map((target) => [
+    `\`${target.command}\``,
+    target.description,
+    target.ci,
   ]);
   const lines = [
     '# Test Command Manifest',
@@ -132,6 +161,12 @@ export function renderManifest({ rootTargets, modules }) {
     '## Root Test Targets',
     '',
     ...rootTargets.map((target) => `- \`${renderCommand(target)}\``),
+    '',
+    '## Web Targets (`services/web`)',
+    '',
+    ...renderTable(['Command', 'Description', 'CI?'], webRows),
+    '',
+    'Run from `services/web/`. `test:e2e:real` requires `E2E_REAL=1` and a running bossd+bosso stack; it is never set in CI.',
     '',
     '## Go Module Targets',
     '',

@@ -765,7 +765,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(m.prs) == 0 {
-			m.err = fmt.Errorf("no open PRs found")
+			m.err = fmt.Errorf("no open PRs without an existing session")
 			return m, nil
 		}
 		m.phase = newSessionPhasePRSelect
@@ -791,7 +791,7 @@ func (m NewSessionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// after that we may legitimately be showing "no matches for <query>",
 		// which the table renders fine on its own.
 		if len(m.trackerIssues) == 0 && !m.issueTableReady && msg.query == "" {
-			m.err = fmt.Errorf("no issues found in %s", m.trackerSourceLabel())
+			m.err = fmt.Errorf("no %s issues without an existing session", m.trackerSourceLabel())
 			return m, nil
 		}
 		m.phase = newSessionPhaseIssueSelect

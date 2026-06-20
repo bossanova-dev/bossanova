@@ -127,7 +127,7 @@ func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAl
 	if row == nil || row.Session == nil || row.ArchivedAt != nil {
 		return false
 	}
-	if duplicateSessionStateIsTerminal(row.State) {
+	if !StateBlocksDuplicateTarget(row.State) {
 		return false
 	}
 	if isAlive != nil && duplicateSessionStateNeedsStartupIdentifier(row) {
@@ -139,8 +139,10 @@ func duplicateSessionIsActive(ctx context.Context, row *db.SessionWithRepo, isAl
 	return true
 }
 
-func duplicateSessionStateIsTerminal(state machine.State) bool {
-	return state == machine.Blocked || state == machine.Merged || state == machine.Closed
+// StateBlocksDuplicateTarget reports whether a session state should reserve a
+// PR or branch target from another session.
+func StateBlocksDuplicateTarget(state machine.State) bool {
+	return state != machine.Blocked && state != machine.Merged && state != machine.Closed
 }
 
 func duplicateSessionStateNeedsLiveness(state machine.State) bool {

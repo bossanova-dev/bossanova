@@ -2,7 +2,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+import { parseTaskRanges } from './sdd-ledger.mjs';
 
 // Classify the open PR / branch state a bs-linear-implement run finds when it
 // starts inside a worktree. The point is to tell apart two situations the old
@@ -49,6 +52,29 @@ export function realAheadSubjects(aheadSubjects) {
     .filter((s) => s.length > 0 && !isBootstrapSubject(s));
 }
 
+function normalizeCommit(entry) {
+  if (typeof entry === 'string') {
+    return { subject: entry.trim() };
+  }
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const sha = typeof entry.sha === 'string' ? entry.sha.trim().toLowerCase() : '';
+  const subject = typeof entry.subject === 'string' ? entry.subject.trim() : '';
+  if (!sha && !subject) return null;
+  return { sha, subject };
+}
+
+export function realAheadCommits({ aheadCommits, aheadSubjects } = {}) {
+  const commits =
+    Array.isArray(aheadCommits) && aheadCommits.length > 0
+      ? aheadCommits.map(normalizeCommit).filter(Boolean)
+      : realAheadSubjects(aheadSubjects).map((subject) => ({ subject }));
+  return commits.filter(
+    (commit) => commit.subject.length > 0 && !isBootstrapSubject(commit.subject),
+  );
+}
+
 // Does an open PR belong to the target ticket? branch (primary) -> title -> body url.
 export function isOwnedPR({ ticketId, issueBranch, issueUrl, pr } = {}) {
   if (!pr || typeof pr !== 'object') return false;
@@ -64,8 +90,8 @@ export function isOwnedPR({ ticketId, issueBranch, issueUrl, pr } = {}) {
 // How much real (non-bootstrap) work the branch already carries. Complete vs
 // partial is NOT decidable from commit subjects alone — that is the skill's job
 // via the PR-body acceptance-criteria checklist — so this stays binary.
-export function implementedState({ aheadSubjects } = {}) {
-  return realAheadSubjects(aheadSubjects).length === 0 ? 'empty' : 'populated';
+export function implementedState({ aheadCommits, aheadSubjects } = {}) {
+  return realAheadCommits({ aheadCommits, aheadSubjects }).length === 0 ? 'empty' : 'populated';
 }
 
 // classify -> 'none' | 'foreign' | 'bootstrap-only' | 'owned'.
@@ -87,11 +113,26 @@ export function classifyPR({
   issueBranch,
   issueUrl,
   pr,
+  aheadCommits,
   aheadSubjects,
+  ledgerOwnedShas,
 } = {}) {
-  const hasRealWork = implementedState({ aheadSubjects }) === 'populated';
+  const realCommits = realAheadCommits({ aheadCommits, aheadSubjects });
+  const hasRealWork = realCommits.length > 0;
+  const ledgerSet = new Set(
+    (Array.isArray(ledgerOwnedShas) ? ledgerOwnedShas : [])
+      .map((sha) =>
+        String(sha ?? '')
+          .trim()
+          .toLowerCase(),
+      )
+      .filter(Boolean),
+  );
+  const allRealWorkLedgerOwned =
+    hasRealWork && realCommits.every((commit) => commit.sha && ledgerSet.has(commit.sha));
   if (!pr) {
     if (!hasRealWork) return 'none';
+    if (allRealWorkLedgerOwned) return 'owned';
     const session = typeof sessionBranch === 'string' ? sessionBranch.trim() : '';
     const issue = typeof issueBranch === 'string' ? issueBranch.trim() : '';
     if (session && issue && session !== issue) return 'foreign';
@@ -100,7 +141,9 @@ export function classifyPR({
   // An open PR with no real work is a reusable bootstrap PR regardless of whether
   // it names the ticket; only a PR holding real work must pass the ownership test.
   if (!hasRealWork) return 'bootstrap-only';
-  if (!isOwnedPR({ ticketId, issueBranch, issueUrl, pr })) return 'foreign';
+  if (!isOwnedPR({ ticketId, issueBranch, issueUrl, pr })) {
+    return allRealWorkLedgerOwned ? 'owned' : 'foreign';
+  }
   return 'owned';
 }
 
@@ -136,6 +179,44 @@ function parseFlags(rest) {
   return flags;
 }
 
+function parseAheadCommitsStdin(input) {
+  return input
+    .split('\n')
+    .map((line) => {
+      if (!line) return null;
+      const nul = line.indexOf('\0');
+      if (nul >= 0) {
+        return { sha: line.slice(0, nul), subject: line.slice(nul + 1) };
+      }
+      const match = /^([0-9a-f]{7,40})\s+(.+)$/i.exec(line);
+      return match ? { sha: match[1], subject: match[2] } : { subject: line };
+    })
+    .filter(Boolean);
+}
+
+function ledgerOwnedShasFromFile(ledgerPath) {
+  if (!ledgerPath || !fs.existsSync(ledgerPath)) return [];
+  const shas = new Set();
+  for (const range of parseTaskRanges(fs.readFileSync(ledgerPath, 'utf8'))) {
+    if (range.head) shas.add(String(range.head).toLowerCase());
+    try {
+      const out = execFileSync('git', ['rev-list', `${range.base}..${range.head}`], {
+        encoding: 'utf8',
+      });
+      for (const sha of out
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean)) {
+        shas.add(sha.toLowerCase());
+      }
+    } catch {
+      // If the range cannot be expanded in this checkout, keep the explicit
+      // recorded head only. That is enough for deterministic exact-head matches.
+    }
+  }
+  return [...shas];
+}
+
 // CLI:
 //   node scripts/pr-ownership.mjs classify --ticket BOS-23 --issue-branch <b> \
 //     --session-branch <b> --issue-url <url> --pr-json <gh-json|""> \
@@ -155,11 +236,21 @@ function main(argv) {
         ? normalizePr(JSON.parse(flags['pr-json']))
         : null;
     let aheadSubjects = [];
+    let aheadCommits = [];
     if ('ahead-subjects-stdin' in flags) {
       aheadSubjects = fs.readFileSync(0, 'utf8').split('\n');
     } else if (flags['ahead-subjects-json']) {
       aheadSubjects = JSON.parse(flags['ahead-subjects-json']);
     }
+    if ('ahead-commits-stdin' in flags) {
+      aheadCommits = parseAheadCommitsStdin(fs.readFileSync(0, 'utf8'));
+    } else if (flags['ahead-commits-json']) {
+      aheadCommits = JSON.parse(flags['ahead-commits-json']);
+    }
+    const ledgerOwnedShas = [
+      ...(flags['ledger-owned-shas-json'] ? JSON.parse(flags['ledger-owned-shas-json']) : []),
+      ...ledgerOwnedShasFromFile(flags.ledger),
+    ];
     process.stdout.write(
       `${classifyPR({
         ticketId: flags.ticket ?? '',
@@ -167,7 +258,9 @@ function main(argv) {
         issueBranch: flags['issue-branch'] ?? '',
         issueUrl: flags['issue-url'] ?? '',
         pr,
+        aheadCommits,
         aheadSubjects,
+        ledgerOwnedShas,
       })}\n`,
     );
     return;

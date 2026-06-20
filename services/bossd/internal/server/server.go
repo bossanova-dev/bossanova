@@ -551,6 +551,12 @@ func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRe
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list PRs: %w", err))
 	}
 
+	keys, err := s.activeSessionKeysForRepo(ctx, req.Msg.RepoId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list active sessions: %w", err))
+	}
+	prs = keys.excludePRs(prs)
+
 	pbPRs := make([]*pb.PRSummary, len(prs))
 	for i, pr := range prs {
 		pbPRs[i] = &pb.PRSummary{
@@ -644,6 +650,12 @@ func (s *Server) ListTrackerIssues(ctx context.Context, req *connect.Request[pb.
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list tracker issues: %w", err))
 	}
+
+	keys, err := s.activeSessionKeysForRepo(ctx, req.Msg.RepoId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list active sessions: %w", err))
+	}
+	issues = keys.excludeIssues(issues)
 
 	return connect.NewResponse(&pb.ListTrackerIssuesResponse{Issues: issues}), nil
 }

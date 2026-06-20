@@ -278,6 +278,23 @@ var platformSuffixes = []string{
 	"-linux-arm64", "-linux-amd64",
 }
 
+// nonDiscoverablePlugins lists plugin binaries that must never be picked up by
+// auto-discovery. bossd-plugin-stub-runner is a deterministic AgentRunnerService
+// used only by E2E tests (it launches no real agent subprocess) and is
+// NO_DISTRIBUTE. The E2E harness loads it via an explicit plugins config entry;
+// auto-discovering it would surface a non-functional "stub" agent in real and
+// dev daemons' agent pickers.
+var nonDiscoverablePlugins = []string{"bossd-plugin-stub-runner"}
+
+func isNonDiscoverablePlugin(name string) bool {
+	for _, n := range nonDiscoverablePlugins {
+		if name == n {
+			return true
+		}
+	}
+	return false
+}
+
 // scanForPlugins scans a directory for any executable matching the
 // bossd-plugin-* prefix and returns a PluginConfig for each one found.
 // Cross-compiled binaries with platform suffixes are skipped.
@@ -290,6 +307,9 @@ func scanForPlugins(dir string) []PluginConfig {
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasPrefix(name, pluginPrefix) {
+			continue
+		}
+		if isNonDiscoverablePlugin(name) {
 			continue
 		}
 		path := filepath.Join(dir, name)

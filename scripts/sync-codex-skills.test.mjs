@@ -194,6 +194,7 @@ description: example description
 ---
 
 Claude Code should update CLAUDE.md, use TodoWrite, \`Read\`, \`Edit\`, and the Playwright MCP server.
+A \`Write\`/\`Edit\` "modified since read" warning means reread before editing.
 Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a PR.
 \`AGENTS.md\`, \`CLAUDE.md\`
 `);
@@ -204,6 +205,8 @@ Run ~/.claude/skills/bossanova/boss-finalize/add-pr-numbers.sh after creating a 
     assert.match(rewritten, /update_plan/);
     assert.match(rewritten, /file-reading tool/);
     assert.match(rewritten, /apply_patch/);
+    assert.match(rewritten, /A `write`\/`apply_patch` "modified since read" warning/);
+    assert.doesNotMatch(rewritten, /`apply_patch`\/`apply_patch`/);
     assert.match(rewritten, /Codex browser automation/);
   });
 

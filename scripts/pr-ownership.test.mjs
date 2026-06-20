@@ -20,6 +20,16 @@ const TICKET = 'BOS-23';
 const BRANCH = 'dave/bos-23-implement-sentry-integration';
 const ISSUE_URL = 'https://linear.app/bossanova-dev/issue/BOS-23/implement-sentry-integration';
 const REAL = ['feat(proto): add Sentry repo credentials', 'feat(boss): add Sentry flow'];
+const REAL_COMMITS = [
+  {
+    sha: '1111111111111111111111111111111111111111',
+    subject: REAL[0],
+  },
+  {
+    sha: '2222222222222222222222222222222222222222',
+    subject: REAL[1],
+  },
+];
 
 function run(args, input) {
   return spawnSync(process.execPath, [SCRIPT_PATH, ...args], { encoding: 'utf8', input });
@@ -151,6 +161,34 @@ test('classifyPR — foreign when an open PR with real work matches no ownership
   );
 });
 
+test('classifyPR — owned when unowned PR metadata carries only ledger-covered real work', () => {
+  assert.equal(
+    classifyPR({
+      ticketId: TICKET,
+      issueBranch: BRANCH,
+      issueUrl: ISSUE_URL,
+      pr: { headBranch: 'feature/x', title: '[BOS-99]' },
+      aheadCommits: REAL_COMMITS,
+      ledgerOwnedShas: REAL_COMMITS.map((commit) => commit.sha),
+    }),
+    'owned',
+  );
+});
+
+test('classifyPR — foreign when unowned PR metadata carries any real work absent from ledger', () => {
+  assert.equal(
+    classifyPR({
+      ticketId: TICKET,
+      issueBranch: BRANCH,
+      issueUrl: ISSUE_URL,
+      pr: { headBranch: 'feature/x', title: '[BOS-99]' },
+      aheadCommits: REAL_COMMITS,
+      ledgerOwnedShas: [REAL_COMMITS[0].sha],
+    }),
+    'foreign',
+  );
+});
+
 test('classifyPR — bootstrap-only when an unowned PR carries only the bootstrap commit', () => {
   // A fresh PR with no real file changes (just bossd's placeholder commit) holds
   // nothing to clobber, so it is adoptable as a reusable bootstrap PR regardless
@@ -238,6 +276,30 @@ test('CLI classify — foreign PR with real work on the branch', () => {
   ]);
   assert.equal(result.status, 0);
   assert.equal(result.stdout.trim(), 'foreign');
+});
+
+test('CLI classify — ledger-covered real commits make unowned PR metadata adoptable', () => {
+  const prJson = JSON.stringify({
+    number: 5,
+    title: 'unrelated',
+    body: '',
+    headRefName: 'feature/x',
+  });
+  const result = run([
+    'classify',
+    '--ticket',
+    TICKET,
+    '--issue-branch',
+    BRANCH,
+    '--pr-json',
+    prJson,
+    '--ahead-commits-json',
+    JSON.stringify(REAL_COMMITS),
+    '--ledger-owned-shas-json',
+    JSON.stringify(REAL_COMMITS.map((commit) => commit.sha)),
+  ]);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.trim(), 'owned');
 });
 
 test('CLI classify — empty unowned bootstrap PR is adoptable bootstrap-only', () => {

@@ -769,6 +769,31 @@ func TestDiscoverPluginsIgnoresNonExecutablePluginFiles(t *testing.T) {
 	}
 }
 
+func TestDiscoverPluginsIgnoresStubRunner(t *testing.T) {
+	// The deterministic stub agent runner is test-only (NO_DISTRIBUTE) and is
+	// loaded via explicit config by the E2E harness -- it must never be
+	// auto-discovered into a real or dev daemon's agent picker.
+	tmp := t.TempDir()
+	binDir := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"bossd-plugin-claude", "bossd-plugin-stub-runner"} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	plugins := discoverPluginsFrom(binDir)
+	if len(plugins) != 1 {
+		t.Fatalf("got %d plugins, want 1 (stub-runner excluded): %+v", len(plugins), plugins)
+	}
+	if plugins[0].Name != "claude" {
+		t.Fatalf("plugins[0].Name = %q, want %q", plugins[0].Name, "claude")
+	}
+}
+
 func TestDiscoverPluginsEmptyWhenNoPlugins(t *testing.T) {
 	// An empty bin dir with no ../libexec/plugins/ should return nil.
 	tmp := t.TempDir()

@@ -149,8 +149,12 @@ type TaskMapping struct {
 	LastError            *string
 	PendingUpdateStatus  *TaskMappingStatus
 	PendingUpdateDetails *string
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
+	// RetryCount counts how many times a terminal mapping has been
+	// re-processed into a fresh repair attempt. Bounds sequential re-repairs
+	// of an unfixable PR (see Orchestrator.processTask).
+	RetryCount int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // AttemptTrigger represents what triggered a fix attempt.

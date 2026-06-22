@@ -56,6 +56,8 @@ service OrchestratorService {
   rpc ProxyListReposAggregated(ProxyListReposAggregatedRequest) returns (ProxyListReposAggregatedResponse);
   // Lists the installed agents on a single named daemon via its reverse stream.
   rpc ProxyListAgents(ProxyListAgentsRequest) returns (ProxyListAgentsResponse);
+  rpc ProxyListRepoPRs(ProxyListRepoPRsRequest) returns (ProxyListRepoPRsResponse);
+  rpc ProxyListTrackerIssues(ProxyListTrackerIssuesRequest) returns (ProxyListTrackerIssuesResponse);
   // Streams the live chat list (and per-chat statuses) for a session through
   // the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
   // events to subscribed web clients. Terminates with DaemonOffline if the
@@ -217,6 +219,12 @@ message ProxyCreateSessionRequest {
   string base_branch = 5;
   string agent_name = 6;
   bool quick_chat = 7;
+  optional int32 pr_number = 8;
+  optional string branch_name = 9;
+  optional string tracker_id = 10;
+  optional string tracker_url = 11;
+  optional TrackerIssue tracker_issue = 12;
+  optional string tracker_source = 13;
 }
 
 // ProxyCreateSessionResponse is streamed from orchestrator to the client as
@@ -295,11 +303,22 @@ message ProxyDeleteChatRequest {
 }
 message ProxyDeleteChatResponse {}
 
-// AggregatedRepo is one unique repo (by origin URL) plus every live daemon
-// that serves it. daemon_ids is the union across all of the caller's daemons.
+// AggregatedRepo is one logical repo (deduped by origin URL) plus a ref for
+// every live daemon that serves it. Web-safe: carries no Repo and no API keys.
 message AggregatedRepo {
-  Repo repo = 1;
-  repeated string daemon_ids = 2;
+  string origin_url = 1;
+  string display_name = 2;
+  string default_base_branch = 3;
+  repeated DaemonRepoRef daemons = 4;
+}
+
+// DaemonRepoRef ties a logical repo to one serving daemon: that daemon's local
+// repo_id plus its per-daemon tracker capability (Linear/Sentry creds present).
+message DaemonRepoRef {
+  string daemon_id = 1;
+  string repo_id = 2;
+  bool has_linear_key = 3;
+  bool has_sentry_key = 4;
 }
 
 message ProxyListReposAggregatedRequest {}
@@ -315,6 +334,20 @@ message ProxyListAgentsRequest {
 message ProxyListAgentsResponse {
   repeated AgentInfo agents = 1;
 }
+
+message ProxyListRepoPRsRequest {
+  string daemon_id = 1;
+  string repo_id = 2;
+}
+message ProxyListRepoPRsResponse { repeated PRSummary pull_requests = 1; }
+
+message ProxyListTrackerIssuesRequest {
+  string daemon_id = 1;
+  string repo_id = 2;
+  string query = 3;
+  optional string source = 4;  // "linear" (default) | "sentry"
+}
+message ProxyListTrackerIssuesResponse { repeated TrackerIssue issues = 1; }
 
 // ProxyStreamChatsRequest selects the session whose chat list (and per-chat
 // statuses) the caller wants to follow. The orchestrator resolves the owning

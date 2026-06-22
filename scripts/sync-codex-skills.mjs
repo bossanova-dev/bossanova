@@ -129,6 +129,7 @@ export function collectSkillSources(sourceRoot) {
   return fs
     .readdirSync(sourceRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
+    .filter((entry) => !entry.name.startsWith('_'))
     .map((entry) => {
       const sourcePath = path.join(sourceRoot, entry.name);
       const entryPath = findSkillEntryPath(sourcePath);
@@ -150,7 +151,16 @@ export function collectSkillSources(sourceRoot) {
     .sort((left, right) => left.dirName.localeCompare(right.dirName));
 }
 
+// Build inputs for constructed skills (see scripts/construct-skills.mjs): the
+// generated SKILL.md is the runtime artifact, so the template and manifest are
+// dead weight in the codex copy and would re-drift on every regeneration.
+const CONSTRUCT_BUILD_INPUTS = new Set(['construct.json', 'SKILL.md.tmpl']);
+
 function copyRecursive(sourcePath, destPath, skippedPath) {
+  if (CONSTRUCT_BUILD_INPUTS.has(path.basename(sourcePath))) {
+    return;
+  }
+
   const stat = fs.statSync(sourcePath);
 
   if (path.resolve(sourcePath) === path.resolve(skippedPath)) {

@@ -137,6 +137,8 @@ type SessionCommandServer interface {
 	DeleteChat(context.Context, *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error)
 	ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error)
 	ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error)
+	ListRepoPRs(context.Context, *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error)
+	ListTrackerIssues(context.Context, *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error)
 }
 
 // CommandHandlerAdapter implements SessionCommandHandler by delegating
@@ -320,6 +322,32 @@ func (a *CommandHandlerAdapter) ListAgents(ctx context.Context) (*pb.ListAgentsR
 	resp, err := a.Commands.ListAgents(ctx, connect.NewRequest(&pb.ListAgentsRequest{}))
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListRepoPRs implements SessionCommandHandler.ListRepoPRs.
+func (a *CommandHandlerAdapter) ListRepoPRs(ctx context.Context, repoID string) (*pb.ListRepoPRsResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_repo_prs: command server not wired")
+	}
+	resp, err := a.Commands.ListRepoPRs(ctx, connect.NewRequest(&pb.ListRepoPRsRequest{RepoId: repoID}))
+	if err != nil {
+		return nil, fmt.Errorf("list repo prs: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// ListTrackerIssues implements SessionCommandHandler.ListTrackerIssues.
+func (a *CommandHandlerAdapter) ListTrackerIssues(ctx context.Context, repoID, query string, source *string) (*pb.ListTrackerIssuesResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("list_tracker_issues: command server not wired")
+	}
+	resp, err := a.Commands.ListTrackerIssues(ctx, connect.NewRequest(&pb.ListTrackerIssuesRequest{
+		RepoId: repoID, Query: query, Source: source,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("list tracker issues: %w", err)
 	}
 	return resp.Msg, nil
 }
@@ -540,11 +568,17 @@ func (a *SessionCreatorAdapter) Create(ctx context.Context, cmd *pb.CreateSessio
 	}
 
 	req := &pb.CreateSessionRequest{
-		RepoId:     cmd.GetRepoId(),
-		Title:      cmd.GetTitle(),
-		Plan:       cmd.GetPlan(),
-		BaseBranch: cmd.GetBaseBranch(),
-		QuickChat:  cmd.GetQuickChat(),
+		RepoId:        cmd.GetRepoId(),
+		Title:         cmd.GetTitle(),
+		Plan:          cmd.GetPlan(),
+		BaseBranch:    cmd.GetBaseBranch(),
+		QuickChat:     cmd.GetQuickChat(),
+		PrNumber:      cmd.PrNumber,
+		BranchName:    cmd.BranchName,
+		TrackerId:     cmd.TrackerId,
+		TrackerUrl:    cmd.TrackerUrl,
+		TrackerIssue:  cmd.TrackerIssue,
+		TrackerSource: cmd.TrackerSource,
 	}
 	if name := cmd.GetAgentName(); name != "" {
 		req.AgentName = &name

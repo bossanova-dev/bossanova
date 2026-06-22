@@ -279,6 +279,11 @@ type SessionCommandHandler interface {
 	// ListAgents returns the daemon's installed agents. Not session-scoped —
 	// bosso proxies a per-daemon agent listing for the wizard.
 	ListAgents(ctx context.Context) (*pb.ListAgentsResponse, error)
+	// ListRepoPRs returns a repo's open PRs for the web "existing PR" picker.
+	ListRepoPRs(ctx context.Context, repoID string) (*pb.ListRepoPRsResponse, error)
+	// ListTrackerIssues returns a repo's tracker issues (optional server-side
+	// query + source) for the web Linear/Sentry pickers.
+	ListTrackerIssues(ctx context.Context, repoID, query string, source *string) (*pb.ListTrackerIssuesResponse, error)
 }
 
 // WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon

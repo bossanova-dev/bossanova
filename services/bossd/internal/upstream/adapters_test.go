@@ -45,6 +45,14 @@ func (f *fakeSessionCommandServer) ListAgents(_ context.Context, _ *connect.Requ
 	return connect.NewResponse(&pb.ListAgentsResponse{}), nil
 }
 
+func (f *fakeSessionCommandServer) ListRepoPRs(_ context.Context, _ *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
+	return connect.NewResponse(&pb.ListRepoPRsResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) ListTrackerIssues(_ context.Context, _ *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
+	return connect.NewResponse(&pb.ListTrackerIssuesResponse{}), nil
+}
+
 // fakeStreamCreateSessioner drives SessionCreatorAdapter.Create. emit is
 // called with a scripted sequence of responses, then returnErr is returned.
 type fakeStreamCreateSessioner struct {
@@ -168,6 +176,58 @@ func TestSessionCreatorAdapter_Create_TerminalErrorChunk(t *testing.T) {
 	}
 	if last.GetCommandId() != "cmd-3" {
 		t.Fatalf("terminal chunk command_id = %q", last.GetCommandId())
+	}
+}
+
+func TestSessionCreatorAdapter_Create_NewFieldsRoundTrip(t *testing.T) {
+	// Assert that the new PR/tracker fields on CreateSessionCommand survive
+	// the Command→Request mapping in SessionCreatorAdapter.Create.
+	pr := int32(42)
+	branch := "feat/my-branch"
+	trackerID := "FRE-1"
+	trackerURL := "https://linear.app/FRE-1"
+	issueTitle := "Do the thing"
+	source := "linear"
+
+	fake := &fakeStreamCreateSessioner{}
+	adapter := &SessionCreatorAdapter{Server: fake, Logger: zerolog.Nop()}
+
+	ch, err := adapter.Create(context.Background(), &pb.CreateSessionCommand{
+		RepoId:        "r1",
+		Title:         "x",
+		PrNumber:      &pr,
+		BranchName:    &branch,
+		TrackerId:     &trackerID,
+		TrackerUrl:    &trackerURL,
+		TrackerIssue:  &pb.TrackerIssue{Title: issueTitle},
+		TrackerSource: &source,
+	}, "cmd-rt")
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	drainCreateChunks(t, ch)
+
+	req := fake.lastReq
+	if req == nil {
+		t.Fatal("no CreateSessionRequest captured by the fake")
+	}
+	if req.PrNumber == nil || *req.PrNumber != pr {
+		t.Errorf("PrNumber: got %v, want %d", req.PrNumber, pr)
+	}
+	if req.BranchName == nil || *req.BranchName != branch {
+		t.Errorf("BranchName: got %v, want %q", req.BranchName, branch)
+	}
+	if req.TrackerId == nil || *req.TrackerId != trackerID {
+		t.Errorf("TrackerId: got %v, want %q", req.TrackerId, trackerID)
+	}
+	if req.TrackerUrl == nil || *req.TrackerUrl != trackerURL {
+		t.Errorf("TrackerUrl: got %v, want %q", req.TrackerUrl, trackerURL)
+	}
+	if req.TrackerIssue == nil || req.TrackerIssue.GetTitle() != issueTitle {
+		t.Errorf("TrackerIssue: got %v, want title %q", req.TrackerIssue, issueTitle)
+	}
+	if req.TrackerSource == nil || *req.TrackerSource != source {
+		t.Errorf("TrackerSource: got %v, want %q", req.TrackerSource, source)
 	}
 }
 

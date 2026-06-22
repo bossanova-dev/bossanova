@@ -11,6 +11,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/trackerprompt"
 )
 
 // stubClient implements client.BossClient for testing NewSessionModel.
@@ -962,9 +963,9 @@ func TestFormatLinearPrompt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatLinearPrompt(tt.issue)
+			got := trackerprompt.Format(tt.issue, "linear")
 			if got != tt.want {
-				t.Errorf("formatLinearPrompt mismatch\ngot:  %q\nwant: %q", got, tt.want)
+				t.Errorf("trackerprompt.Format mismatch\ngot:  %q\nwant: %q", got, tt.want)
 			}
 		})
 	}

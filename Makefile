@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean codex-skills codex-skills-check copy-skills deps format generate kill lint \
+.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills deps format generate kill lint \
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -94,6 +94,14 @@ codex-skills:
 
 codex-skills-check:
 	node scripts/sync-codex-skills.mjs --root . --check
+
+## construct-skills: Generate constructed SKILL.md files from templates + the installed superpowers plugin
+construct-skills:
+	node scripts/construct-skills.mjs --root .
+
+## construct-skills-check: Fail if any constructed SKILL.md is out of date (skips where superpowers is not installed)
+construct-skills-check:
+	node scripts/construct-skills.mjs --root . --check
 
 deploy-staging:
 	$(MAKE) -C infra/kustomize deploy-staging
@@ -267,7 +275,7 @@ $(BIN_DIR)/bossd-plugin-%: $(GEN_STAMP)
 $(BIN_DIR)/bossd-plugin-claude: copy-skills
 
 ## test: Run tests across all modules (generates protos first if needed)
-test: $(GEN_STAMP) copy-skills codex-skills-check
+test: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check
 	$(MAKE) test-scripts
 	$(MAKE) test-readme
 	$(MAKE) test-no-inline-stop-hooks
@@ -285,7 +293,7 @@ test-full:
 	$(MAKE) test
 
 ## test-smoke: Fast agent loop. No coverage, no race, no forced cache bypass.
-test-smoke: $(GEN_STAMP) copy-skills codex-skills-check
+test-smoke: $(GEN_STAMP) copy-skills codex-skills-check construct-skills-check
 	$(MAKE) -C lib/bossalib test-fast GO_TEST_PACKAGES="./config ./cronutil ./displaystatus ./sessionreason ./statusdetect"
 	$(MAKE) -C services/boss test-fast GO_TEST_PACKAGES="./internal/agent ./internal/auth ./internal/client ./internal/preflight"
 	$(MAKE) -C services/bossd test-fast GO_TEST_PACKAGES="./internal/agent ./internal/cron ./internal/mergepolicy ./internal/status ./internal/tmux"

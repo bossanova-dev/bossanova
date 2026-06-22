@@ -102,6 +102,10 @@ message OrchestratorCommand {
     ListReposCommand list_repos = 16;
     // bosso → daemon: list the daemon's agents. Replies CommandResult{list_agents}.
     ListAgentsCommand list_agents = 17;
+    // bosso → daemon: list a repo's open PRs. Replies CommandResult{list_repo_prs}.
+    ListRepoPRsCommand list_repo_prs = 18;
+    // bosso → daemon: list a repo's tracker issues. Replies CommandResult{list_tracker_issues}.
+    ListTrackerIssuesCommand list_tracker_issues = 19;
   }
 }
 
@@ -231,6 +235,10 @@ message CommandResult {
     ListReposResponse list_repos = 9;
     // ListAgents returns the daemon's installed agents (reuses daemon.proto type).
     ListAgentsResponse list_agents = 10;
+    // ListRepoPRs returns the repo's open PRs (reuses daemon.proto type).
+    ListRepoPRsResponse list_repo_prs = 11;
+    // ListTrackerIssues returns the repo's tracker issues (reuses daemon.proto type).
+    ListTrackerIssuesResponse list_tracker_issues = 12;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -320,6 +328,14 @@ message CreateSessionCommand {
   string base_branch = 4;
   bool quick_chat = 5;
   string agent_name = 6;
+  // PR/tracker fields (wizard "existing PR" / "Linear" / "Sentry" flows).
+  optional int32 pr_number = 7;
+  optional string branch_name = 8;
+  optional string tracker_id = 9;
+  optional string tracker_url = 10;
+  // Full selected issue + source, so the daemon can format the plan (D3).
+  optional TrackerIssue tracker_issue = 11;
+  optional string tracker_source = 12;
 }
 
 // WakeChatCommand asks the daemon to bring a chat's tmux+claude back to
@@ -388,6 +404,19 @@ message ListReposCommand {}
 // bosso → daemon: list the daemon's installed agents.
 // Replies with CommandResult carrying a ListAgentsResponse (list_agents = 10).
 message ListAgentsCommand {}
+
+// ListRepoPRsCommand asks the daemon for a repo's open PRs (new-session
+// "existing PR" picker). Reuses daemon.proto's ListRepoPRsResponse.
+message ListRepoPRsCommand { string repo_id = 1; }
+
+// ListTrackerIssuesCommand asks the daemon for a repo's tracker issues, with an
+// optional server-side search query and source ("linear"|"sentry"). Reuses
+// daemon.proto's ListTrackerIssuesResponse.
+message ListTrackerIssuesCommand {
+  string repo_id = 1;
+  string query = 2;
+  optional string source = 3;
+}
 
 // TransferSessionCommand asks a daemon to take part in a coordinated transfer
 // protocol (decision #14). Source daemon receives this first, pauses, emits a

@@ -51,6 +51,7 @@ type CreateTaskMappingParams struct {
 	ExternalID string
 	PluginName string
 	RepoID     string
+	RetryCount int
 }
 
 // UpdateTaskMappingParams holds the fields that can be updated on a task mapping.
@@ -61,6 +62,7 @@ type UpdateTaskMappingParams struct {
 	LastError            **string                   // double pointer: nil = don't update, *nil = clear
 	PendingUpdateStatus  **models.TaskMappingStatus // double pointer: nil = don't update, *nil = clear
 	PendingUpdateDetails **string                   // double pointer: nil = don't update, *nil = clear
+	RetryCount           *int                       // nil = don't update
 }
 
 // TaskMappingStore defines the interface for task mapping persistence.

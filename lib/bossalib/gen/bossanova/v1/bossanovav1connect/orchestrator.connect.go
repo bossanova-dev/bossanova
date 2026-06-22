@@ -90,6 +90,12 @@ const (
 	// OrchestratorServiceProxyListAgentsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListAgents RPC.
 	OrchestratorServiceProxyListAgentsProcedure = "/bossanova.v1.OrchestratorService/ProxyListAgents"
+	// OrchestratorServiceProxyListRepoPRsProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListRepoPRs RPC.
+	OrchestratorServiceProxyListRepoPRsProcedure = "/bossanova.v1.OrchestratorService/ProxyListRepoPRs"
+	// OrchestratorServiceProxyListTrackerIssuesProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyListTrackerIssues RPC.
+	OrchestratorServiceProxyListTrackerIssuesProcedure = "/bossanova.v1.OrchestratorService/ProxyListTrackerIssues"
 	// OrchestratorServiceProxyStreamChatsProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyStreamChats RPC.
 	OrchestratorServiceProxyStreamChatsProcedure = "/bossanova.v1.OrchestratorService/ProxyStreamChats"
@@ -181,6 +187,8 @@ type OrchestratorServiceClient interface {
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
 	// Lists the installed agents on a single named daemon via its reverse stream.
 	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
+	ProxyListRepoPRs(context.Context, *connect.Request[v1.ProxyListRepoPRsRequest]) (*connect.Response[v1.ProxyListRepoPRsResponse], error)
+	ProxyListTrackerIssues(context.Context, *connect.Request[v1.ProxyListTrackerIssuesRequest]) (*connect.Response[v1.ProxyListTrackerIssuesResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -348,6 +356,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgents")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyListRepoPRs: connect.NewClient[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListRepoPRsProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListRepoPRs")),
+			connect.WithClientOptions(opts...),
+		),
+		proxyListTrackerIssues: connect.NewClient[v1.ProxyListTrackerIssuesRequest, v1.ProxyListTrackerIssuesResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyListTrackerIssuesProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListTrackerIssues")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyStreamChats: connect.NewClient[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent](
 			httpClient,
 			baseURL+OrchestratorServiceProxyStreamChatsProcedure,
@@ -462,6 +482,8 @@ type orchestratorServiceClient struct {
 	proxyDeleteChat            *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
 	proxyListReposAggregated   *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
 	proxyListAgents            *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
+	proxyListRepoPRs           *connect.Client[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse]
+	proxyListTrackerIssues     *connect.Client[v1.ProxyListTrackerIssuesRequest, v1.ProxyListTrackerIssuesResponse]
 	proxyStreamChats           *connect.Client[v1.ProxyStreamChatsRequest, v1.ProxyChatListEvent]
 	issueAttachToken           *connect.Client[v1.IssueAttachTokenRequest, v1.IssueAttachTokenResponse]
 	terminalStream             *connect.Client[v1.TerminalServerMessage, v1.TerminalClientMessage]
@@ -572,6 +594,16 @@ func (c *orchestratorServiceClient) ProxyListReposAggregated(ctx context.Context
 // ProxyListAgents calls bossanova.v1.OrchestratorService.ProxyListAgents.
 func (c *orchestratorServiceClient) ProxyListAgents(ctx context.Context, req *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error) {
 	return c.proxyListAgents.CallUnary(ctx, req)
+}
+
+// ProxyListRepoPRs calls bossanova.v1.OrchestratorService.ProxyListRepoPRs.
+func (c *orchestratorServiceClient) ProxyListRepoPRs(ctx context.Context, req *connect.Request[v1.ProxyListRepoPRsRequest]) (*connect.Response[v1.ProxyListRepoPRsResponse], error) {
+	return c.proxyListRepoPRs.CallUnary(ctx, req)
+}
+
+// ProxyListTrackerIssues calls bossanova.v1.OrchestratorService.ProxyListTrackerIssues.
+func (c *orchestratorServiceClient) ProxyListTrackerIssues(ctx context.Context, req *connect.Request[v1.ProxyListTrackerIssuesRequest]) (*connect.Response[v1.ProxyListTrackerIssuesResponse], error) {
+	return c.proxyListTrackerIssues.CallUnary(ctx, req)
 }
 
 // ProxyStreamChats calls bossanova.v1.OrchestratorService.ProxyStreamChats.
@@ -693,6 +725,8 @@ type OrchestratorServiceHandler interface {
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
 	// Lists the installed agents on a single named daemon via its reverse stream.
 	ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error)
+	ProxyListRepoPRs(context.Context, *connect.Request[v1.ProxyListRepoPRsRequest]) (*connect.Response[v1.ProxyListRepoPRsResponse], error)
+	ProxyListTrackerIssues(context.Context, *connect.Request[v1.ProxyListTrackerIssuesRequest]) (*connect.Response[v1.ProxyListTrackerIssuesResponse], error)
 	// Streams the live chat list (and per-chat statuses) for a session through
 	// the orchestrator. Bosso fans out the daemon's ChatDelta / ChatStatusDelta
 	// events to subscribed web clients. Terminates with DaemonOffline if the
@@ -856,6 +890,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListAgents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyListRepoPRsHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListRepoPRsProcedure,
+		svc.ProxyListRepoPRs,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListRepoPRs")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxyListTrackerIssuesHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyListTrackerIssuesProcedure,
+		svc.ProxyListTrackerIssues,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyListTrackerIssues")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyStreamChatsHandler := connect.NewServerStreamHandler(
 		OrchestratorServiceProxyStreamChatsProcedure,
 		svc.ProxyStreamChats,
@@ -986,6 +1032,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyListReposAggregatedHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListAgentsProcedure:
 			orchestratorServiceProxyListAgentsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListRepoPRsProcedure:
+			orchestratorServiceProxyListRepoPRsHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyListTrackerIssuesProcedure:
+			orchestratorServiceProxyListTrackerIssuesHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyStreamChatsProcedure:
 			orchestratorServiceProxyStreamChatsHandler.ServeHTTP(w, r)
 		case OrchestratorServiceIssueAttachTokenProcedure:
@@ -1099,6 +1149,14 @@ func (UnimplementedOrchestratorServiceHandler) ProxyListReposAggregated(context.
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListAgents(context.Context, *connect.Request[v1.ProxyListAgentsRequest]) (*connect.Response[v1.ProxyListAgentsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListAgents is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListRepoPRs(context.Context, *connect.Request[v1.ProxyListRepoPRsRequest]) (*connect.Response[v1.ProxyListRepoPRsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListRepoPRs is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyListTrackerIssues(context.Context, *connect.Request[v1.ProxyListTrackerIssuesRequest]) (*connect.Response[v1.ProxyListTrackerIssuesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyListTrackerIssues is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyStreamChats(context.Context, *connect.Request[v1.ProxyStreamChatsRequest], *connect.ServerStream[v1.ProxyChatListEvent]) error {

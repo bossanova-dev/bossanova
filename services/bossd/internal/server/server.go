@@ -25,6 +25,7 @@ import (
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/safego"
+	"github.com/recurser/bossalib/trackerprompt"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/agent"
 	"github.com/recurser/bossd/internal/cron"
@@ -564,6 +565,7 @@ func (s *Server) ListRepoPRs(ctx context.Context, req *connect.Request[pb.ListRe
 			Title:      pr.Title,
 			HeadBranch: pr.HeadBranch,
 			State:      pb.PRState(pr.State),
+			Author:     pr.Author,
 		}
 	}
 
@@ -956,6 +958,14 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 		}
 	}
 
+	// When the client supplies a selected tracker issue but no explicit plan
+	// (web new-session Linear/Sentry flow), format the plan server-side from the
+	// shared formatter — single source of truth with the TUI (trackerprompt).
+	plan := msg.GetPlan()
+	if plan == "" && msg.GetTrackerIssue() != nil {
+		plan = trackerprompt.Format(msg.GetTrackerIssue(), msg.GetTrackerSource())
+	}
+
 	// Resolve the agent name. The proto field is a oneof (*string), so an
 	// unset request resolves via the shared rule (single-loaded runner, then
 	// Settings.DefaultAgent) — see resolveAgentName.
@@ -964,7 +974,7 @@ func (s *Server) StreamCreateSession(ctx context.Context, msg *pb.CreateSessionR
 	createParams := db.CreateSessionParams{
 		RepoID:     msg.RepoId,
 		Title:      msg.Title,
-		Plan:       msg.Plan,
+		Plan:       plan,
 		BranchName: headBranch,
 		BaseBranch: baseBranch,
 		AgentName:  agentName,
@@ -1452,46 +1462,43 @@ func (s *Server) StopSession(ctx context.Context, req *connect.Request[pb.StopSe
 	return connect.NewResponse(&pb.StopSessionResponse{Session: SessionToProto(sess)}), nil
 }
 
-func (s *Server) PauseSession(ctx context.Context, req *connect.Request[pb.PauseSessionRequest]) (*connect.Response[pb.PauseSessionResponse], error) {
-	if req.Msg.Id == "" {
+// setSessionAutomation validates the id, toggles the session's automation flag,
+// and returns the refreshed session proto. The action label is woven into the
+// update error so callers surface a context-specific message (e.g. "pause
+// session: ...", "resume session: ..."). State machine integration in Leg 6.
+func (s *Server) setSessionAutomation(ctx context.Context, id string, enabled bool, action string) (*pb.Session, error) {
+	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
 	}
 
-	// Pause disables automation. State machine integration in Leg 6.
-	automationEnabled := false
-	if _, err := s.sessions.Update(ctx, req.Msg.Id, db.UpdateSessionParams{
-		AutomationEnabled: &automationEnabled,
+	if _, err := s.sessions.Update(ctx, id, db.UpdateSessionParams{
+		AutomationEnabled: &enabled,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("pause session: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("%s session: %w", action, err))
 	}
 
-	session, err := s.sessions.Get(ctx, req.Msg.Id)
+	session, err := s.sessions.Get(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
-	return connect.NewResponse(&pb.PauseSessionResponse{Session: SessionToProto(session)}), nil
+	return SessionToProto(session), nil
+}
+
+func (s *Server) PauseSession(ctx context.Context, req *connect.Request[pb.PauseSessionRequest]) (*connect.Response[pb.PauseSessionResponse], error) {
+	session, err := s.setSessionAutomation(ctx, req.Msg.Id, false, "pause")
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pb.PauseSessionResponse{Session: session}), nil
 }
 
 func (s *Server) ResumeSession(ctx context.Context, req *connect.Request[pb.ResumeSessionRequest]) (*connect.Response[pb.ResumeSessionResponse], error) {
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
-	}
-
-	// Resume re-enables automation. State machine integration in Leg 6.
-	automationEnabled := true
-	if _, err := s.sessions.Update(ctx, req.Msg.Id, db.UpdateSessionParams{
-		AutomationEnabled: &automationEnabled,
-	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resume session: %w", err))
-	}
-
-	session, err := s.sessions.Get(ctx, req.Msg.Id)
+	session, err := s.setSessionAutomation(ctx, req.Msg.Id, true, "resume")
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+		return nil, err
 	}
-
-	return connect.NewResponse(&pb.ResumeSessionResponse{Session: SessionToProto(session)}), nil
+	return connect.NewResponse(&pb.ResumeSessionResponse{Session: session}), nil
 }
 
 func (s *Server) RetrySession(ctx context.Context, req *connect.Request[pb.RetrySessionRequest]) (*connect.Response[pb.RetrySessionResponse], error) {

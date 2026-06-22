@@ -117,6 +117,13 @@ type process struct {
 	done      chan struct{} // closed when process exits
 	exitErr   error
 
+	// stdinDone closes when the plan has finished being written to the
+	// subprocess's stdin; stdinErr holds any write failure. The Wait
+	// goroutine reads stdinErr only after receiving from stdinDone, so the
+	// channel close establishes the happens-before that makes the read safe.
+	stdinDone <-chan struct{}
+	stdinErr  error
+
 	// earlyOutput is a bounded ring of the first earlyOutputCap bytes of
 	// subprocess stdout+stderr, plus a one-shot signal channel that
 	// closes when the buffer is full. Used by SessionIDFromOutput to
@@ -333,16 +340,33 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 		return "", fmt.Errorf("start %s: %w", r.binName, err)
 	}
 
-	// Write plan to stdin, then close.
-	safego.Go(r.logger, func() {
+	// Write plan to stdin, then close. Capture a write failure (e.g. the agent
+	// exited before consuming its plan) so the Wait goroutine can surface it in
+	// the run log instead of letting the agent silently run without its
+	// instructions.
+	p.stdinDone = safego.Go(r.logger, func() {
 		defer func() { _ = stdin.Close() }()
-		_, _ = io.WriteString(stdin, plan)
+		if _, err := io.WriteString(stdin, plan); err != nil {
+			p.stdinErr = err
+		}
 	})
 
 	// Wait for process exit.
 	safego.Go(r.logger, func() {
 		exitErr := cmd.Wait()
 		lw.flush() // emit any trailing partial line
+
+		// The process has exited, so the stdin writer has unblocked (any
+		// blocked write fails once the read end closes). Surface a plan-write
+		// failure in the log file the repair-debug workflow reads, so an agent
+		// that never received its plan leaves a trace instead of failing
+		// silently.
+		if p.stdinDone != nil {
+			<-p.stdinDone
+			if p.stdinErr != nil {
+				writeRunnerEntry(p.logFile, fmt.Sprintf("[runner] writing plan to stdin failed: %v", p.stdinErr))
+			}
+		}
 
 		// PostExit hook: only invoked when the subprocess returned an
 		// error and the caller registered a hook. Read up to 8KB from

@@ -17,6 +17,7 @@ import (
 	"github.com/recurser/bossalib/config"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/telemetry"
+	"github.com/recurser/bossalib/trackerprompt"
 )
 
 // issueSearchDebounce is the wait between the last filter keystroke and the
@@ -1234,11 +1235,7 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 		if m.selectedIssue != nil {
 			issue := m.selectedIssue
 			req.Title = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
-			if m.selectedType == sessionTypeSentryIssue {
-				req.Plan = formatSentryPrompt(issue)
-			} else {
-				req.Plan = formatLinearPrompt(issue)
-			}
+			req.Plan = trackerprompt.Format(issue, m.trackerSource())
 			req.TrackerId = &issue.ExternalId
 			if issue.Url != "" {
 				req.TrackerUrl = &issue.Url
@@ -1257,65 +1254,6 @@ func (m *NewSessionModel) startCreating() tea.Cmd {
 	}
 
 	return openCreateStream(m.client, m.ctx, req)
-}
-
-// formatLinearPrompt renders a Linear tracker issue as a labeled block used
-// for the session plan. The returned string flows into the draft PR body
-// and the first prompt shown to Claude, so it needs to stand alone as
-// both a human-readable PR description and a usable starting prompt.
-//
-// Fields missing on the issue are individually omitted so we never render
-// blank lines for absent data.
-func formatLinearPrompt(issue *pb.TrackerIssue) string {
-	return formatTrackerPrompt(issue, "Linear issue:")
-}
-
-// formatSentryPrompt renders a Sentry tracker issue as a labeled block used for
-// the session plan. It mirrors formatLinearPrompt: the heavy lifting (culprit,
-// level, counts, permalink, latest stacktrace, tags) is already rendered into
-// issue.Description as markdown by the bossd-plugin-sentry plugin, so this stays
-// thin and only frames the header, body, and permalink.
-//
-// Fields missing on the issue are individually omitted so we never render blank
-// lines for absent data.
-func formatSentryPrompt(issue *pb.TrackerIssue) string {
-	return formatTrackerPrompt(issue, "Sentry issue:")
-}
-
-// formatTrackerPrompt renders a tracker issue as a labeled block used for the
-// session plan, framing the header, body, and permalink under the given label
-// (e.g. "Linear issue:" or "Sentry issue:"). Fields missing on the issue are
-// individually omitted so we never render blank lines for absent data.
-func formatTrackerPrompt(issue *pb.TrackerIssue, label string) string {
-	if issue == nil {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(label)
-	b.WriteString("\n\n")
-	header := issue.Title
-	if issue.ExternalId != "" {
-		if header != "" {
-			header = fmt.Sprintf("[%s] %s", issue.ExternalId, issue.Title)
-		} else {
-			header = fmt.Sprintf("[%s]", issue.ExternalId)
-		}
-	}
-	if header != "" {
-		b.WriteString(header)
-		b.WriteString("\n")
-	}
-	if desc := strings.TrimSpace(issue.Description); desc != "" {
-		b.WriteString("\n")
-		b.WriteString(desc)
-		b.WriteString("\n")
-	}
-	if issue.Url != "" {
-		b.WriteString("\n")
-		b.WriteString(issue.Url)
-		b.WriteString("\n")
-	}
-	return b.String()
 }
 
 // Cancelled returns true if the user cancelled the wizard.

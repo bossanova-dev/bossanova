@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossalib/trackerprompt"
 )
 
 // sentryRepo returns a repo configured with both Sentry credentials, plus an
@@ -177,14 +178,14 @@ func TestFormatSentryPrompt_Golden(t *testing.T) {
 		"[WEB-1A] TypeError: undefined\n\n" +
 		"**Culprit:** app/main.js\n\n### Latest stacktrace\n```\napp/a.js:fn:10\n```\n\n" +
 		"https://acme.sentry.io/issues/123/\n"
-	if got := formatSentryPrompt(issue); got != want {
-		t.Errorf("formatSentryPrompt mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	if got := trackerprompt.Format(issue, "sentry"); got != want {
+		t.Errorf("trackerprompt.Format mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 
 func TestFormatSentryPrompt_NilSafe(t *testing.T) {
-	if got := formatSentryPrompt(nil); got != "" {
-		t.Errorf("formatSentryPrompt(nil) = %q, want empty", got)
+	if got := trackerprompt.Format(nil, "sentry"); got != "" {
+		t.Errorf("trackerprompt.Format(nil, sentry) = %q, want empty", got)
 	}
 }
 

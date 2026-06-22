@@ -29,10 +29,10 @@ func (s *SQLiteTaskMappingStore) Create(ctx context.Context, params CreateTaskMa
 	}
 	now := sqlutil.TimeNow()
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO task_mappings (id, external_id, plugin_name, repo_id, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO task_mappings (id, external_id, plugin_name, repo_id, status, retry_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.ExternalID, params.PluginName, params.RepoID,
-		int(models.TaskMappingStatusPending), now, now,
+		int(models.TaskMappingStatusPending), params.RetryCount, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert task mapping: %w", err)
@@ -86,6 +86,10 @@ func (s *SQLiteTaskMappingStore) Update(ctx context.Context, id string, params U
 			sets = append(sets, "pending_update_details = ?")
 			args = append(args, **params.PendingUpdateDetails)
 		}
+	}
+	if params.RetryCount != nil {
+		sets = append(sets, "retry_count = ?")
+		args = append(args, *params.RetryCount)
 	}
 
 	args = append(args, id)
@@ -178,7 +182,7 @@ func (s *SQLiteTaskMappingStore) FailOrphanedMappings(ctx context.Context) (int6
 }
 
 const taskMappingSelectSQL = `SELECT id, external_id, plugin_name, session_id, repo_id,
-	status, last_error, pending_update_status, pending_update_details, created_at, updated_at
+	status, last_error, pending_update_status, pending_update_details, retry_count, created_at, updated_at
 	FROM task_mappings`
 
 func scanTaskMapping(s sqlutil.Scanner) (*models.TaskMapping, error) {
@@ -188,7 +192,7 @@ func scanTaskMapping(s sqlutil.Scanner) (*models.TaskMapping, error) {
 	var createdAt, updatedAt string
 	err := s.Scan(&m.ID, &m.ExternalID, &m.PluginName, &m.SessionID, &m.RepoID,
 		&status, &m.LastError, &pendingStatus, &m.PendingUpdateDetails,
-		&createdAt, &updatedAt)
+		&m.RetryCount, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}

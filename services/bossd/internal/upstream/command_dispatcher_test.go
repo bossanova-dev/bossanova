@@ -32,6 +32,16 @@ type fakeCommandHandler struct {
 	recordChatResult *pb.ClaudeChat
 	listReposResult  *pb.ListReposResponse
 	listAgentsResult *pb.ListAgentsResponse
+	// ListRepoPRs / ListTrackerIssues knobs.
+	repoPRs    *pb.ListRepoPRsResponse
+	issues     *pb.ListTrackerIssuesResponse
+	lastRepoID string
+	lastQuery  string
+	lastSource *string
+	// issuesBlock, when non-nil, makes ListTrackerIssues block until the
+	// channel is closed — used to prove a slow tracker search doesn't wedge
+	// the single-threaded command reader.
+	issuesBlock chan struct{}
 	// WakeChat-specific knobs.
 	wakeOutcome   pb.WakeChatResult_Outcome
 	wakeTmuxName  string
@@ -80,6 +90,146 @@ func (f *fakeCommandHandler) ListRepos(_ context.Context) (*pb.ListReposResponse
 func (f *fakeCommandHandler) ListAgents(_ context.Context) (*pb.ListAgentsResponse, error) {
 	f.listAgentsCalls.Add(1)
 	return f.listAgentsResult, f.returnErr
+}
+func (f *fakeCommandHandler) ListRepoPRs(_ context.Context, repoID string) (*pb.ListRepoPRsResponse, error) {
+	f.lastRepoID = repoID
+	return f.repoPRs, f.returnErr
+}
+func (f *fakeCommandHandler) ListTrackerIssues(_ context.Context, repoID, query string, source *string) (*pb.ListTrackerIssuesResponse, error) {
+	f.lastRepoID = repoID
+	f.lastQuery = query
+	f.lastSource = source
+	if f.issuesBlock != nil {
+		<-f.issuesBlock
+	}
+	return f.issues, f.returnErr
+}
+
+func strPtr(s string) *string { return &s }
+
+// recvEvent reads one DaemonEvent from out, failing if none arrives promptly.
+func recvEvent(t *testing.T, out <-chan *pb.DaemonEvent) *pb.DaemonEvent {
+	t.Helper()
+	select {
+	case ev := <-out:
+		return ev
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for daemon event on outbound")
+		return nil
+	}
+}
+
+// TestHandleCommand_SlowListDoesNotBlockReader is the regression test for the
+// new-session wizard hang: a slow tracker search (Linear/Sentry/GitHub network
+// call) must not wedge the single-threaded command reader and starve every
+// other command. A fast Stop dispatched right after a blocking ListTrackerIssues
+// must complete without waiting for the search to finish.
+func TestHandleCommand_SlowListDoesNotBlockReader(t *testing.T) {
+	release := make(chan struct{})
+	fake := &fakeCommandHandler{
+		session:     &pb.Session{Id: "s1"},
+		issues:      &pb.ListTrackerIssuesResponse{},
+		issuesBlock: release,
+	}
+	client := newDispatcherClient(fake, nil, nil)
+	out := make(chan *pb.DaemonEvent, 4)
+	ctx := context.Background()
+
+	// Slow tracker search first — handleCommand must return immediately even
+	// though the handler is still blocked inside ListTrackerIssues.
+	client.handleCommand(ctx, &pb.OrchestratorCommand{
+		CommandId: "slow",
+		Cmd: &pb.OrchestratorCommand_ListTrackerIssues{ListTrackerIssues: &pb.ListTrackerIssuesCommand{
+			RepoId: "r1",
+		}},
+	}, out)
+
+	// Fast lifecycle command right behind it. With a synchronous reader this
+	// would never run; with async list dispatch it completes at once.
+	client.handleCommand(ctx, &pb.OrchestratorCommand{
+		CommandId: "fast",
+		Cmd:       &pb.OrchestratorCommand_Stop{Stop: &pb.StopSessionCommand{SessionId: "s1"}},
+	}, out)
+
+	ev := recvEvent(t, out)
+	if got := ev.GetResult().GetCommandId(); got != "fast" {
+		t.Fatalf("expected fast command result first, got %q (slow search wedged the reader)", got)
+	}
+
+	// Let the slow search finish so its goroutine doesn't leak.
+	close(release)
+	ev = recvEvent(t, out)
+	if got := ev.GetResult().GetCommandId(); got != "slow" {
+		t.Fatalf("expected slow command result after release, got %q", got)
+	}
+}
+
+func TestDispatch_ListRepoPRs(t *testing.T) {
+	fake := &fakeCommandHandler{repoPRs: &pb.ListRepoPRsResponse{PullRequests: []*pb.PRSummary{{Number: 7, Title: "x"}}}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	// List handlers dispatch asynchronously (network-bound; must not block the
+	// reader), so the result lands on outbound rather than the return value.
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c1",
+		Cmd:       &pb.OrchestratorCommand_ListRepoPrs{ListRepoPrs: &pb.ListRepoPRsCommand{RepoId: "r1"}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+	if res.GetCommandId() != "c1" {
+		t.Fatalf("command_id = %q, want c1", res.GetCommandId())
+	}
+	prs := res.GetListRepoPrs().GetPullRequests()
+	if len(prs) == 0 || prs[0].GetNumber() != 7 {
+		t.Fatalf("expected PR number 7, got %+v", prs)
+	}
+	if fake.lastRepoID != "r1" {
+		t.Fatalf("lastRepoID = %q, want r1", fake.lastRepoID)
+	}
+}
+
+func TestDispatch_ListTrackerIssues(t *testing.T) {
+	fake := &fakeCommandHandler{issues: &pb.ListTrackerIssuesResponse{Issues: []*pb.TrackerIssue{{ExternalId: "A-1"}}}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "c2",
+		Cmd: &pb.OrchestratorCommand_ListTrackerIssues{ListTrackerIssues: &pb.ListTrackerIssuesCommand{
+			RepoId: "r1", Query: "log", Source: strPtr("linear"),
+		}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() {
+		t.Fatalf("expected ok result, got %+v", ev)
+	}
+	if res.GetCommandId() != "c2" {
+		t.Fatalf("command_id = %q, want c2", res.GetCommandId())
+	}
+	issues := res.GetListTrackerIssues().GetIssues()
+	if len(issues) == 0 || issues[0].GetExternalId() != "A-1" {
+		t.Fatalf("expected issue A-1, got %+v", issues)
+	}
+	if fake.lastQuery != "log" {
+		t.Fatalf("lastQuery = %q, want log", fake.lastQuery)
+	}
+	if fake.lastSource == nil {
+		t.Fatalf("lastSource = nil, want non-nil")
+	}
+	if *fake.lastSource != "linear" {
+		t.Fatalf("lastSource = %q, want linear", *fake.lastSource)
+	}
 }
 
 type fakeWebhookDispatcher struct {
@@ -819,11 +969,15 @@ func TestDispatchCommand_ListRepos_CallsHandler(t *testing.T) {
 	repos := &pb.ListReposResponse{Repos: []*pb.Repo{{Id: "r1", OriginUrl: "git@github.com:acme/app.git"}}}
 	handler := &fakeCommandHandler{listReposResult: repos}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-lr1",
 			Cmd:       &pb.OrchestratorCommand_ListRepos{ListRepos: &pb.ListReposCommand{}},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	if handler.listReposCalls.Load() != 1 {
 		t.Fatalf("list_repos calls = %d, want 1", handler.listReposCalls.Load())
 	}
@@ -840,11 +994,15 @@ func TestDispatchCommand_ListRepos_CallsHandler(t *testing.T) {
 func TestDispatchCommand_ListRepos_HandlerError_ReturnsCommandErr(t *testing.T) {
 	handler := &fakeCommandHandler{returnErr: errors.New("list repos boom")}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-lr-err",
 			Cmd:       &pb.OrchestratorCommand_ListRepos{ListRepos: &pb.ListReposCommand{}},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	r := ev.GetResult()
 	if r == nil || r.GetOk() {
 		t.Fatalf("expected error result, got %+v", ev)
@@ -858,11 +1016,15 @@ func TestDispatchCommand_ListAgents_CallsHandler(t *testing.T) {
 	agents := &pb.ListAgentsResponse{Agents: []*pb.AgentInfo{{Name: "claude", Version: "1.2.3"}}}
 	handler := &fakeCommandHandler{listAgentsResult: agents}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-la1",
 			Cmd:       &pb.OrchestratorCommand_ListAgents{ListAgents: &pb.ListAgentsCommand{}},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	if handler.listAgentsCalls.Load() != 1 {
 		t.Fatalf("list_agents calls = %d, want 1", handler.listAgentsCalls.Load())
 	}
@@ -879,11 +1041,15 @@ func TestDispatchCommand_ListAgents_CallsHandler(t *testing.T) {
 func TestDispatchCommand_ListAgents_HandlerError_ReturnsCommandErr(t *testing.T) {
 	handler := &fakeCommandHandler{returnErr: errors.New("list agents boom")}
 	client := newDispatcherClient(handler, nil, nil)
-	ev := client.dispatchCommand(context.Background(),
+	out := make(chan *pb.DaemonEvent, 4)
+	if ev := client.dispatchCommand(context.Background(),
 		&pb.OrchestratorCommand{
 			CommandId: "c-la-err",
 			Cmd:       &pb.OrchestratorCommand_ListAgents{ListAgents: &pb.ListAgentsCommand{}},
-		}, make(chan *pb.DaemonEvent, 4))
+		}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async list command, got %+v", ev)
+	}
+	ev := recvEvent(t, out)
 	r := ev.GetResult()
 	if r == nil || r.GetOk() {
 		t.Fatalf("expected error result, got %+v", ev)

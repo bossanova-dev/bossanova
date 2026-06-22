@@ -5,10 +5,10 @@ go 1.25.7
 require (
 	connectrpc.com/connect v1.20.0
 	github.com/99designs/keyring v1.2.2
-	github.com/getsentry/sentry-go v0.46.2
+	github.com/getsentry/sentry-go v0.47.0
 	github.com/gofrs/flock v0.13.0
 	github.com/hashicorp/go-plugin v1.8.0
-	github.com/posthog/posthog-go v1.15.0
+	github.com/posthog/posthog-go v1.16.1
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/qmuntal/stateless v1.8.0
 	github.com/robfig/cron/v3 v3.0.1
@@ -22,7 +22,6 @@ require (
 require (
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
 	github.com/danieljoos/wincred v1.1.2 // indirect
-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dvsekhvalnov/jose2go v1.7.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
@@ -39,8 +38,6 @@ require (
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/oklog/run v1.1.0 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

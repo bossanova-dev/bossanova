@@ -24,20 +24,22 @@ import (
 // DefaultPollInterval is the default interval between task source polls.
 const DefaultPollInterval = 2 * time.Minute
 
-// FailedAutoMergeRetryCooldown is the minimum time between automatic retries of
-// a failed AUTO_MERGE task. The dependabot plugin re-emits a green PR's
-// AUTO_MERGE task every poll, so a transient merge failure is worth retrying —
-// but a persistently failing PR (e.g. a branch GitHub can't rebase whose repair
-// also fails) would otherwise be re-attempted every 2-minute poll, hammering
-// the daemon with git/network/session churn (the runaway repair loop). The
-// cooldown bounds that retry rate.
-const FailedAutoMergeRetryCooldown = 30 * time.Minute
+// TerminalRetryCooldown is the minimum time between automatic re-processings of
+// a *terminal* (Completed/Failed) task mapping. The dependabot plugin re-emits a
+// task for a still-open PR every poll, so a now-green PR's AUTO_MERGE or a
+// still-red PR's repair is worth retrying — but a persistently broken PR would
+// otherwise be re-attempted every 2-minute poll, hammering the daemon (the
+// runaway loop). The cooldown bounds that rate.
+const TerminalRetryCooldown = 30 * time.Minute
 
-// failedAutoMergeRetryReady reports whether a previously-failed AUTO_MERGE
-// mapping is eligible for another automatic attempt: only once its cooldown has
-// elapsed since the last attempt (TaskMapping.UpdatedAt is bumped when the
-// status is set to Failed).
-func failedAutoMergeRetryReady(existing *models.TaskMapping, now time.Time, cooldown time.Duration) bool {
+// MaxReRepairAttempts caps how many times a terminal mapping is re-processed
+// into a fresh repair session before the PR is escalated to the user instead of
+// churning sessions on an unfixable branch.
+const MaxReRepairAttempts = 3
+
+// terminalRetryReady reports whether a terminal mapping's cooldown has elapsed
+// since its last attempt (TaskMapping.UpdatedAt is bumped on each status change).
+func terminalRetryReady(existing *models.TaskMapping, now time.Time, cooldown time.Duration) bool {
 	return now.Sub(existing.UpdatedAt) >= cooldown
 }
 
@@ -280,47 +282,93 @@ func (o *Orchestrator) processTask(ctx context.Context, task *bossanovav1.TaskIt
 	externalID := task.GetExternalId()
 
 	// Dedup: skip if we've already seen this external ID. Most statuses
-	// (Pending/InProgress/Completed/Skipped) are terminal for automatic
-	// reprocessing, so we don't re-fire sessions or previously-rejected
-	// libraries every poll.
+	// (Pending/InProgress/Skipped) block automatic reprocessing, so we don't
+	// re-fire sessions or previously-rejected libraries every poll.
 	//
 	// Orphaned is one exception: FailOrphanedMappings flips Pending/InProgress
 	// to Orphaned on daemon restart because the driving goroutines died.
-	// Failed AUTO_MERGE is another: the dependabot plugin only emits the task
-	// after re-checking that the PR is currently green and mergeable, so a
-	// previous transient merge failure should not permanently block it. For
-	// retryable statuses, delete the stale row and let routeTask insert a fresh
-	// one. The row must be deleted (not updated) because external_id is UNIQUE.
+	// Terminal (Completed/Failed) mappings are another exception: the dependabot
+	// plugin only re-emits a task for a PR that is still OPEN, so a fresh
+	// AUTO_MERGE for a now-green Completed (or previously-failed) PR means the
+	// merge still needs to happen, and a fresh CREATE_SESSION for a still-red PR
+	// means it needs another repair attempt. Re-processing is rate-limited by
+	// TerminalRetryCooldown. AUTO_MERGE deletes the stale row and lets routeTask
+	// insert a fresh one (the row must be deleted, not updated, because
+	// external_id is UNIQUE); CREATE_SESSION re-repairs in place below so the
+	// retry_count survives.
 	existing, err := o.taskMappings.GetByExternalID(ctx, externalID)
 	if err == nil && existing != nil {
-		retryFailedAutoMerge := existing.Status == models.TaskMappingStatusFailed &&
-			task.GetAction() == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE
+		action := task.GetAction()
+		if action == bossanovav1.TaskAction_TASK_ACTION_UNSPECIFIED {
+			action = bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION
+		}
 
-		// Back off failed AUTO_MERGE retries. Without this a PR that keeps
-		// failing to merge/repair is re-attempted on every poll, which (with a
-		// stale-worktree or unrebaseable branch) becomes a tight loop that
-		// saturates the daemon. Retry only after the cooldown elapses.
-		if retryFailedAutoMerge && !failedAutoMergeRetryReady(existing, time.Now(), FailedAutoMergeRetryCooldown) {
+		isTerminal := existing.Status == models.TaskMappingStatusCompleted ||
+			existing.Status == models.TaskMappingStatusFailed
+
+		// A terminal mapping is not a permanent tombstone. The dependabot plugin
+		// only re-emits a task for a PR that is still OPEN and actionable, so a
+		// fresh AUTO_MERGE means a now-green PR still needs merging (e.g. a repair
+		// session completed and CI went green) and a fresh CREATE_SESSION means a
+		// still-red PR needs another repair. Re-process, rate-limited by the
+		// cooldown; CREATE_SESSION is re-processed in place below while AUTO_MERGE
+		// falls through to delete+recreate.
+		retryTerminal := isTerminal &&
+			(action == bossanovav1.TaskAction_TASK_ACTION_AUTO_MERGE ||
+				action == bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION)
+
+		if retryTerminal && !terminalRetryReady(existing, time.Now(), TerminalRetryCooldown) {
 			o.logger.Info().
 				Str("external_id", externalID).
 				Time("last_attempt", existing.UpdatedAt).
-				Dur("cooldown", FailedAutoMergeRetryCooldown).
-				Msg("failed auto-merge within cooldown; skipping retry")
+				Dur("cooldown", TerminalRetryCooldown).
+				Msg("terminal mapping within cooldown; skipping retry")
 			return
 		}
 
-		if existing.Status != models.TaskMappingStatusOrphaned && !retryFailedAutoMerge {
+		// Re-repair path: keep the mapping in place (so retry_count persists) instead
+		// of delete+recreate. Escalate to the user once attempts are exhausted.
+		if retryTerminal && action == bossanovav1.TaskAction_TASK_ACTION_CREATE_SESSION {
+			if existing.RetryCount >= MaxReRepairAttempts {
+				o.logger.Info().
+					Str("external_id", externalID).
+					Int("attempts", existing.RetryCount).
+					Msg("re-repair attempts exhausted; escalating to user")
+				o.handleNotifyUser(ctx, task, repo, existing)
+				return
+			}
+			next := existing.RetryCount + 1
+			if _, err := o.taskMappings.Update(ctx, existing.ID, db.UpdateTaskMappingParams{
+				RetryCount: &next,
+			}); err != nil {
+				o.logger.Error().Err(err).Str("mapping", existing.ID).Msg("bump retry_count failed")
+			}
+			o.logger.Info().
+				Str("external_id", externalID).
+				Int("attempt", next).
+				Msg("re-processing terminal mapping for repair")
+			o.enqueueMappedCreateSession(ctx, task, repo, existing)
+			return
+		}
+
+		if existing.Status != models.TaskMappingStatusOrphaned && !retryTerminal {
 			o.logger.Info().
 				Str("external_id", externalID).
 				Int("status", int(existing.Status)).
 				Msg("task already tracked, skipping")
 			return
 		}
+
+		// AUTO_MERGE (and Orphaned recovery) delete the stale row so routeTask can
+		// insert a fresh one; retry_count resets to 0 here. That is intentional:
+		// an AUTO_MERGE only fires on a genuinely green+mergeable PR, so it is a
+		// distinct success-path event, not a repair retry. Only the in-place
+		// CREATE_SESSION re-repair above carries and bounds retry_count.
 		if delErr := o.taskMappings.Delete(ctx, existing.ID); delErr != nil {
 			o.logger.Error().Err(delErr).
 				Str("external_id", externalID).
 				Str("mapping_id", existing.ID).
-				Msg("failed to delete orphaned task mapping; skipping this poll")
+				Msg("failed to delete stale task mapping; skipping this poll")
 			return
 		}
 		o.logger.Info().

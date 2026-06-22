@@ -33,6 +33,29 @@ func TestWrap_PosixUsesAtAt(t *testing.T) {
 	}
 }
 
+func TestWrap_FishManyArgsPreservesEveryArg(t *testing.T) {
+	// A command with several arguments must round-trip into $argv in order.
+	// This also pins the fish branch's slice sizing: an undersized (or
+	// negative) capacity hint would either misbuild or panic on longer argv.
+	argv := []string{"codex", "--model", "gpt", "--flag", "a prompt"}
+	got := Wrap("/opt/homebrew/bin/fish", []string{"-l", "-c"}, argv)
+	want := []string{"/opt/homebrew/bin/fish", "-l", "-c", "exec $argv", "codex", "--model", "gpt", "--flag", "a prompt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fish wrap (many args):\n got=%#v\nwant=%#v", got, want)
+	}
+}
+
+func TestWrap_PosixManyArgsPreservesEveryArg(t *testing.T) {
+	// POSIX sh keeps the throwaway $0 label plus every argv entry. A longer
+	// command pins the branch's slice sizing the same way the fish case does.
+	argv := []string{"claude", "--print", "--model", "opus", "--setting", "x"}
+	got := Wrap("/bin/sh", []string{"-l", "-c"}, argv)
+	want := []string{"/bin/sh", "-l", "-c", `exec "$@"`, "sh", "claude", "--print", "--model", "opus", "--setting", "x"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sh wrap (many args):\n got=%#v\nwant=%#v", got, want)
+	}
+}
+
 func TestFlags_ZshUsesInteractiveLoginShell(t *testing.T) {
 	got := Flags("/bin/zsh")
 	want := []string{"-l", "-i", "-c"}

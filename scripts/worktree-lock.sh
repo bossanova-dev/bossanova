@@ -1,22 +1,13 @@
 #!/usr/bin/env bash
-# scripts/worktree-lock.sh — atomic, re-entrant, self-aware per-worktree mutex
-# for bs-linear-implement. Ported from wc-auto-linear's bin/worktree-lock.sh.
-#
-# WHY: bs-linear-implement runs once per worktree; file edits only collide
-# between runs that share a worktree. The old guard (a HEAD-snapshot "live
-# writer" check + a dirty-tree bail) false-positived on the run's OWN
-# backgrounded subagent and abandoned healthy work. This replaces all of that
-# with one deterministic artifact:
+# scripts/worktree-lock.sh — atomic, re-entrant per-worktree mutex for
+# bs-linear-implement. One deterministic artifact:
 #   - acquired with an ATOMIC `mkdir` (exactly one winner under a double-dispatch race),
 #   - RE-ENTRANT on the run-id (a run reading its own lock can never collide with itself),
 #   - stored OUTSIDE the worktree (~/.local/state/bossanova) so it never shows in `git status`,
 #   - heartbeat-stale so a CRASHED run's lock is taken over (resume), not wedged.
 #
-# A live peer holding the lock is the ONLY thing that means "another run owns this
-# worktree". HEAD moving, a dirty tree, or a "modified since read" is NOT evidence.
-#
 # Exit codes: 0 acquired/re-entrant/took-over/released/status, 2 usage,
-#             3 held-by-live-peer / not-owner.
+#             3 held-by-peer / not-owner.
 set -euo pipefail
 
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "ERR: not in a git worktree" >&2; exit 2; }
@@ -37,9 +28,8 @@ now() { date +%s; }
 write_meta() {
   mkdir -p "$LOCK"
   local tmp="$LOCK/.owner.$$"
-  # Field 2 (PID) is NON-LOAD-BEARING: nothing reads it for liveness (only the runid
-  # and heartbeat are), and $PPID is meaningless across the harness's per-call shells.
-  # Kept only so the 4-line meta format and `status` output stay stable.
+  # Field 2 (PID) is non-load-bearing: liveness reads only the runid + heartbeat.
+  # Kept so the 4-line meta format and `status` output stay stable.
   printf '%s\n%s\n%s\n%s\n' "$1" "$PPID" "$(now)" "$2" > "$tmp" && mv -f "$tmp" "$META"
 }
 owner_field() { [ -f "$META" ] && sed -n "${1}p" "$META" 2>/dev/null || true; }

@@ -97,6 +97,7 @@ func openDBWithMigrations(t *testing.T) *sql.DB {
 type dependabotHarness struct {
 	t              *testing.T
 	provider       *testVCSProvider
+	sqlDB          *sql.DB
 	repos          db.RepoStore
 	taskMappings   db.TaskMappingStore
 	repoID         string
@@ -183,6 +184,7 @@ func newDependabotHarness(t *testing.T, provider *testVCSProvider) *dependabotHa
 	h := &dependabotHarness{
 		t:              t,
 		provider:       provider,
+		sqlDB:          sqlDB,
 		repos:          repos,
 		taskMappings:   taskMappings,
 		repoID:         repo.ID,
@@ -260,6 +262,106 @@ func (h *dependabotHarness) waitForTaskMappingStatus(externalID string, want mod
 			h.t.Fatalf("timed out after %s waiting for mapping %q to reach status %d; last=%+v", timeout, externalID, want, last)
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// seedCompletedMapping inserts a task mapping for externalID already in the
+// Completed terminal state with an updated_at far enough in the past that
+// TerminalRetryCooldown has elapsed. This reproduces the BOS-45 scenario: a
+// repair session for the PR completed on an earlier poll, leaving a terminal
+// mapping keyed on the PR's shared external_id. We write updated_at directly
+// because the store always stamps it to now, and the cooldown must be elapsed
+// for the follow-up retry to be eligible.
+func (h *dependabotHarness) seedCompletedMapping(externalID string) {
+	h.t.Helper()
+	ctx := context.Background()
+	m, err := h.taskMappings.Create(ctx, db.CreateTaskMappingParams{
+		ExternalID: externalID,
+		PluginName: "dependabot",
+		RepoID:     h.repoID,
+	})
+	if err != nil {
+		h.t.Fatalf("seed mapping create: %v", err)
+	}
+	// updated_at is stored as a string in sqlutil.TimeNow's layout
+	// ("2006-01-02T15:04:05.000Z", UTC); scanTaskMapping parses it back with the
+	// same layout. We must match it exactly — a time.Time written raw would be
+	// formatted by the driver and parse back to the zero time, which the cooldown
+	// would read as "infinitely elapsed", silently defeating the gate.
+	cooledOff := time.Now().UTC().
+		Add(-2 * taskorchestrator.TerminalRetryCooldown).
+		Format("2006-01-02T15:04:05.000Z")
+	if _, err := h.sqlDB.ExecContext(ctx,
+		`UPDATE task_mappings SET status = ?, updated_at = ? WHERE id = ?`,
+		int(models.TaskMappingStatusCompleted), cooledOff, m.ID); err != nil {
+		h.t.Fatalf("seed mapping backdate: %v", err)
+	}
+}
+
+// TestE2E_Dependabot_CompletedRepairThenAutoMerge proves the BOS-45 fix: a PR
+// that already carries a *Completed* task mapping from a prior repair session is
+// no longer treated as a permanent tombstone. With the PR now green and
+// mergeable, the real dependabot plugin classifies it AUTO_MERGE and the
+// orchestrator's terminal-mapping carve-out re-processes the shared external_id
+// and merges it, instead of silently dropping the merge (the original bug).
+//
+// The Completed mapping is pre-seeded (with the cooldown elapsed) rather than
+// produced by a live red->repair->green drive: the CREATE_SESSION classification
+// and the HandleSessionCompleted transition are already covered by
+// TestE2E_Dependabot_CreateSessionForMajorBump and the orchestrator unit tests,
+// and mutating the provider between polls would data-race the plugin
+// subprocess's host callbacks. This keeps the E2E deterministic while still
+// exercising the full plugin+orchestrator merge-handoff end to end.
+func TestE2E_Dependabot_CompletedRepairThenAutoMerge(t *testing.T) {
+	success := vcs.CheckConclusionSuccess
+	mergeable := true
+
+	provider := &testVCSProvider{
+		prs: []vcs.PRSummary{
+			{
+				Number:     55,
+				Title:      "Bump axios from 1.6.0 to 1.6.8",
+				HeadBranch: "dependabot/npm_and_yarn/axios-1.6.8",
+				State:      vcs.PRStateOpen,
+				Author:     "app/dependabot",
+			},
+		},
+		checks: map[int][]vcs.CheckResult{
+			55: {{ID: "ci", Name: "CI", Status: vcs.CheckStatusCompleted, Conclusion: &success}},
+		},
+		status: map[int]*vcs.PRStatus{
+			55: {State: vcs.PRStateOpen, Mergeable: &mergeable},
+		},
+	}
+
+	h := newDependabotHarness(t, provider)
+
+	// A prior repair session already completed for this PR, leaving a terminal
+	// Completed mapping on the shared external_id. Before BOS-45 this dropped the
+	// follow-up AUTO_MERGE forever.
+	externalID := "dependabot:pr:" + h.repoOriginURL + ":55"
+	h.seedCompletedMapping(externalID)
+
+	h.Start()
+
+	calls := h.waitForMergeCalls(1, 10*time.Second)
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 MergePR call for the now-green PR, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].PRID != 55 {
+		t.Errorf("MergePR PRID = %d, want 55", calls[0].PRID)
+	}
+
+	// The carve-out deletes the stale Completed row and recreates a fresh mapping
+	// that ends Completed once the merge succeeds.
+	mapping := h.waitForTaskMappingStatus(externalID, models.TaskMappingStatusCompleted, 5*time.Second)
+	if mapping.PluginName != "dependabot" {
+		t.Errorf("mapping PluginName = %q, want %q", mapping.PluginName, "dependabot")
+	}
+
+	// AUTO_MERGE must not spawn a repair session.
+	if sc := h.sessionCreator.Calls(); len(sc) != 0 {
+		t.Errorf("expected 0 CreateSession calls for the AUTO_MERGE handoff, got %d: %+v", len(sc), sc)
 	}
 }
 

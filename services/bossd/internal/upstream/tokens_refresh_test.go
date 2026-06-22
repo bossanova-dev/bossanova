@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -282,6 +283,90 @@ func TestKeychainTokenProviderRefreshUsesCurrentEmailAfterKeychainChange(t *test
 	}
 	if got != "fresh-login-refresh" {
 		t.Fatalf("token = %q, want fresh-login-refresh", got)
+	}
+}
+
+// TestKeychainTokenProvider_Refresh_CoalescesConcurrentCalls verifies that
+// concurrent Refresh calls (the DaemonStream + TerminalStream openers racing on
+// an expired token) perform exactly one WorkOS exchange. Without the
+// single-flight wrapper each goroutine would acquire the refresh lock serially
+// and drive its own exchange, double-spending the rotating refresh token. See
+// BOS-44 Strand B.
+func TestKeychainTokenProvider_Refresh_CoalescesConcurrentCalls(t *testing.T) {
+	t.Setenv("BOSS_TEST_WORKOS_CLIENT_ID", "client")
+	var lockMu sync.Mutex
+	withTokenRefreshHooks(t, &lockMu)
+
+	old := &keychainTokens{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		ExpiresAt:    time.Now().Add(-time.Hour),
+	}
+	p := testProvider(old)
+	loadKeychainTokensFn = func() (*keychainTokens, error) {
+		cpy := *old
+		return &cpy, nil
+	}
+	saveKeychainTokensFn = func(*keychainTokens) error { return nil }
+
+	var exchanges int32
+	leaderInFlight := make(chan struct{})
+	release := make(chan struct{})
+	refreshWorkOSTokenFn = func(_ context.Context, _, refreshToken string) (*keychainTokens, error) {
+		// Only the single-flight leader reaches here. Signal once, then block
+		// so the followers are guaranteed to coalesce onto this in-flight call
+		// rather than starting their own exchange.
+		if atomic.AddInt32(&exchanges, 1) == 1 {
+			close(leaderInFlight)
+		}
+		<-release
+		return &keychainTokens{
+			AccessToken:  "fresh-access",
+			RefreshToken: "fresh-refresh",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		}, nil
+	}
+
+	const n = 5
+	results := make([]string, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		results[0], errs[0] = p.Refresh(context.Background())
+	}()
+
+	// Wait until the leader is inside the (single) exchange and blocked on
+	// release; it now holds the single-flight slot.
+	<-leaderInFlight
+
+	for i := 1; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = p.Refresh(context.Background())
+		}(i)
+	}
+
+	// Give the followers time to reach singleflight.Do and coalesce before the
+	// leader returns. The leader cannot proceed until release is closed, so this
+	// only bounds how long we wait for the followers to join — not correctness.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&exchanges); got != 1 {
+		t.Fatalf("WorkOS exchanges = %d, want exactly 1", got)
+	}
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("Refresh[%d] error: %v", i, errs[i])
+		}
+		if results[i] != "fresh-access" {
+			t.Fatalf("Refresh[%d] = %q, want fresh-access", i, results[i])
+		}
 	}
 }
 

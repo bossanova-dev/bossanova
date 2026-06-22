@@ -62,9 +62,13 @@ func (c *StreamClient) dispatchCommand(
 	case *pb.OrchestratorCommand_DeleteChat:
 		return c.dispatchDeleteChat(ctx, cmdID, cmd.GetDeleteChat())
 	case *pb.OrchestratorCommand_ListRepos:
-		return c.dispatchListRepos(ctx, cmdID)
+		return c.dispatchListRepos(ctx, cmdID, outbound)
 	case *pb.OrchestratorCommand_ListAgents:
-		return c.dispatchListAgents(ctx, cmdID)
+		return c.dispatchListAgents(ctx, cmdID, outbound)
+	case *pb.OrchestratorCommand_ListRepoPrs:
+		return c.dispatchListRepoPRs(ctx, cmdID, cmd.GetListRepoPrs(), outbound)
+	case *pb.OrchestratorCommand_ListTrackerIssues:
+		return c.dispatchListTrackerIssues(ctx, cmdID, cmd.GetListTrackerIssues(), outbound)
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -381,43 +385,118 @@ func classifyCommandError(err error) pb.CommandResult_ErrorCode {
 	}
 }
 
+// runAsyncCommand executes a blocking, network-bound command handler in a
+// background goroutine so the single-threaded command reader (runCommandReader)
+// keeps draining subsequent commands instead of wedging behind one slow call.
+// The handler's CommandResult is emitted on outbound when it completes, or
+// dropped if ctx is cancelled first (bosso has already timed out its
+// correlation slot). Mirrors dispatchAttach/dispatchCreate, which spawn
+// goroutines for the same reason. Returns nil: there is no synchronous result.
+//
+// build is invoked off the reader goroutine and must produce the DaemonEvent to
+// send (a success result or, via commandErrCode, a typed failure).
+func (c *StreamClient) runAsyncCommand(
+	ctx context.Context,
+	outbound chan<- *pb.DaemonEvent,
+	build func() *pb.DaemonEvent,
+) *pb.DaemonEvent {
+	safego.Go(c.logger, func() {
+		ev := build()
+		if ev == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case outbound <- ev:
+		}
+	})
+	return nil
+}
+
 // dispatchListRepos routes a (non-session-scoped) ListReposCommand to the
 // handler and wraps the daemon's full Repo set in a CommandResult{list_repos}.
-func (c *StreamClient) dispatchListRepos(ctx context.Context, cmdID string) *pb.DaemonEvent {
+// Dispatched asynchronously so it can't block the command reader.
+func (c *StreamClient) dispatchListRepos(ctx context.Context, cmdID string, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
-	out, err := c.commandHandler.ListRepos(ctx)
-	if err != nil {
-		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
-	}
-	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
-		Result: &pb.CommandResult{
-			CommandId: cmdID,
-			Ok:        true,
-			Payload:   &pb.CommandResult_ListRepos{ListRepos: out},
-		},
-	}}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListRepos(ctx)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+			Result: &pb.CommandResult{
+				CommandId: cmdID,
+				Ok:        true,
+				Payload:   &pb.CommandResult_ListRepos{ListRepos: out},
+			},
+		}}
+	})
 }
 
 // dispatchListAgents routes a (non-session-scoped) ListAgentsCommand to the
 // handler and wraps the daemon's installed agents in a
-// CommandResult{list_agents}.
-func (c *StreamClient) dispatchListAgents(ctx context.Context, cmdID string) *pb.DaemonEvent {
+// CommandResult{list_agents}. Dispatched asynchronously (plugin GetInfo calls
+// can be slow) so it can't block the command reader.
+func (c *StreamClient) dispatchListAgents(ctx context.Context, cmdID string, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
 	if c.commandHandler == nil {
 		return commandErr(cmdID, "command handler not wired")
 	}
-	out, err := c.commandHandler.ListAgents(ctx)
-	if err != nil {
-		return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListAgents(ctx)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
+			Result: &pb.CommandResult{
+				CommandId: cmdID,
+				Ok:        true,
+				Payload:   &pb.CommandResult_ListAgents{ListAgents: out},
+			},
+		}}
+	})
+}
+
+// dispatchListRepoPRs routes a ListRepoPRsCommand to the handler and wraps
+// the repo's open PRs in a CommandResult{list_repo_prs}. Dispatched
+// asynchronously: the handler hits the GitHub API, which must not block the
+// command reader.
+func (c *StreamClient) dispatchListRepoPRs(ctx context.Context, cmdID string, req *pb.ListRepoPRsCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
 	}
-	return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{
-		Result: &pb.CommandResult{
-			CommandId: cmdID,
-			Ok:        true,
-			Payload:   &pb.CommandResult_ListAgents{ListAgents: out},
-		},
-	}}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListRepoPRs(ctx, req.GetRepoId())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListRepoPrs{ListRepoPrs: out},
+		}}}
+	})
+}
+
+// dispatchListTrackerIssues routes a ListTrackerIssuesCommand to the handler
+// and wraps the tracker issues in a CommandResult{list_tracker_issues}.
+// Dispatched asynchronously: the handler hits the Linear/Sentry API via a task
+// source plugin, which must not block the command reader. A slow tracker search
+// blocking the reader is what wedged the new-session wizard.
+func (c *StreamClient) dispatchListTrackerIssues(ctx context.Context, cmdID string, req *pb.ListTrackerIssuesCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.ListTrackerIssues(ctx, req.GetRepoId(), req.GetQuery(), req.Source)
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_ListTrackerIssues{ListTrackerIssues: out},
+		}}}
+	})
 }
 
 // commandOK builds a success CommandResult. session may be nil for

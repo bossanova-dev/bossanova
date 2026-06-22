@@ -164,6 +164,11 @@ func TestRunnerStart_WritesNDJSON(t *testing.T) {
 			sawSpawn = true
 		case strings.HasPrefix(entry.Text, "[runner] exited"):
 			sawExit = true
+		case strings.HasPrefix(entry.Text, "[runner] "):
+			// Other runner diagnostics are not subprocess output. The echo
+			// fake never reads stdin, so a "[runner] writing plan to stdin
+			// failed" line races in nondeterministically when the process
+			// exits before the plan write completes; filter it out too.
 		default:
 			subprocessTexts = append(subprocessTexts, entry.Text)
 		}
@@ -220,6 +225,48 @@ func TestRunnerStart_LogsCmdStartFailure(t *testing.T) {
 	}
 	if !strings.Contains(body, "[runner] cmd.Start failed") {
 		t.Errorf("log missing cmd.Start failure marker: %s", body)
+	}
+}
+
+func TestRunnerStart_LogsStdinWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "agent.log")
+
+	// A plan far larger than the OS pipe buffer. The fake agent exits
+	// immediately without consuming stdin, so writing the plan fails once the
+	// read end closes. The runner must record that failure rather than letting
+	// the agent silently run without its instructions.
+	plan := strings.Repeat("x", 1<<20) // 1 MiB
+
+	r := agentruntime.NewRunner(zerolog.Nop(),
+		agentruntime.Options{
+			BuildArgv:  argvNoop(),
+			BinaryName: "fake",
+		},
+		agentruntime.WithCommandFactory(fakeCmd(t, "exit 0")),
+	)
+	sid, err := r.Start(context.Background(), dir, plan, nil, "stdin-session", logPath)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(runnerExitTimeout)
+	for time.Now().Before(deadline) {
+		if !r.IsRunning(sid) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if r.IsRunning(sid) {
+		t.Fatalf("runner still alive after %s", runnerExitTimeout)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if want := "[runner] writing plan to stdin failed"; !strings.Contains(string(data), want) {
+		t.Errorf("log missing stdin-write-failure marker; got:\n%s", data)
 	}
 }
 

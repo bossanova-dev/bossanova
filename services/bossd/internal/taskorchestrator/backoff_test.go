@@ -25,8 +25,8 @@ func TestFailedAutoMergeRetryReady(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := &models.TaskMapping{UpdatedAt: tt.updatedAt}
-			if got := failedAutoMergeRetryReady(m, now, cooldown); got != tt.want {
-				t.Fatalf("failedAutoMergeRetryReady = %v, want %v", got, tt.want)
+			if got := terminalRetryReady(m, now, cooldown); got != tt.want {
+				t.Fatalf("terminalRetryReady = %v, want %v", got, tt.want)
 			}
 		})
 	}

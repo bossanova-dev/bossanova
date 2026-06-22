@@ -1,3 +1,11 @@
 # Agent worktrees are full repo checkouts, not tracked files — never format them
 .claude/worktrees/
 .worktrees/
+
+# Constructed-skill support assets are copied verbatim from the installed
+# superpowers plugin at build time (see scripts/construct-skills.mjs). They must
+# stay byte-identical to upstream so the construct drift check is reproducible —
+# reformatting them locally would fight the check. The assembled SKILL.md is the
+# human-read artifact and IS Prettier-formatted during construction.
+.claude/skills/*/support/
+.codex/skills/*/support/

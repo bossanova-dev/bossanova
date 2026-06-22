@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/99designs/keyring"
+	"golang.org/x/sync/singleflight"
+
 	"github.com/recurser/bossalib/authlock"
 	"github.com/recurser/bossalib/authtoken"
 	"github.com/recurser/bossalib/keyringutil"
@@ -198,7 +200,25 @@ type KeychainTokenProvider struct {
 	// clientIDEnv is the env var that holds the WorkOS client ID. Split
 	// out so tests can point at a fake without touching the real env.
 	clientIDEnv string
+
+	// refreshGroup coalesces concurrent Refresh calls into a single WorkOS
+	// exchange. The StreamClient opens two streams (DaemonStream and
+	// TerminalStream) that each carry their own refresher; when an access
+	// token expires both can call Refresh at the same instant. WorkOS
+	// rotates the refresh token on every exchange, so two un-coalesced
+	// exchanges race: the first consumes the stored token and rotates it,
+	// then a gateway 502 can lose that rotated token in flight, and the
+	// sibling replays the now-consumed token → invalid_grant → terminal
+	// pause-until-relogin. Single-flighting guarantees exactly one exchange
+	// per rotation, so the siblings share one result instead of double-
+	// spending the token. See BOS-44 Strand B.
+	refreshGroup singleflight.Group
 }
+
+// refreshSingleflightKey is the constant single-flight key for Refresh. All
+// concurrent refreshes share one in-flight exchange, so a fixed key is
+// correct — the provider already scopes to a single keychain entry.
+const refreshSingleflightKey = "workos-refresh"
 
 // NewKeychainTokenProvider constructs a provider and populates it from
 // the keychain at construction time. A missing keychain entry is not an
@@ -245,9 +265,26 @@ func (p *KeychainTokenProvider) ExpiresAt() time.Time {
 	return p.expiresAt
 }
 
-// Refresh implements TokenProvider.Refresh by invoking the WorkOS refresh flow
-// under the shared refresh lock and persisting the new tokens back to keychain.
-func (p *KeychainTokenProvider) Refresh(ctx context.Context) (tok string, retErr error) {
+// Refresh implements TokenProvider.Refresh. Concurrent calls are coalesced via
+// refreshGroup so the two stream openers can never drive two WorkOS exchanges
+// for the same token rotation (see refreshGroup's doc). The single in-flight
+// call performs the exchange; coalesced callers receive its result. The key is
+// forgotten when the call returns, so a later Refresh starts a fresh exchange.
+func (p *KeychainTokenProvider) Refresh(ctx context.Context) (string, error) {
+	v, err, _ := p.refreshGroup.Do(refreshSingleflightKey, func() (any, error) {
+		return p.refresh(ctx)
+	})
+	// refresh may return a non-empty token alongside an error (the
+	// save-succeeded-locally-but-keychain-write-failed path), so propagate
+	// both rather than dropping the token on any error.
+	tok, _ := v.(string)
+	return tok, err
+}
+
+// refresh runs the WorkOS refresh flow under the shared cross-process refresh
+// lock and persists the new tokens back to keychain. Always invoked through
+// Refresh's single-flight wrapper.
+func (p *KeychainTokenProvider) refresh(ctx context.Context) (tok string, retErr error) {
 	p.mu.RLock()
 	originalAccess := p.accessToken
 	refreshTok := p.refreshToken

@@ -241,6 +241,10 @@ message CreateSessionRequest {
   optional string tracker_url = 10;  // URL to issue in external tracker
   // Agent plugin to run this session under. Empty → server-chosen default agent.
   optional string agent_name = 11;
+  // Full selected tracker issue + source, used to format the session plan
+  // server-side when plan is empty (web new-session tracker flows).
+  optional TrackerIssue tracker_issue = 12;
+  optional string tracker_source = 13;  // "linear" | "sentry"
 }
 
 message CreateSessionResponse {

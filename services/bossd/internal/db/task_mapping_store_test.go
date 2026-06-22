@@ -390,6 +390,45 @@ func TestTaskMappingStore_UpdatePendingFieldsAndClear(t *testing.T) {
 	}
 }
 
+func TestTaskMappingStore_RetryCountRoundTrips(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewTaskMappingStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	m, err := store.Create(ctx, CreateTaskMappingParams{
+		ExternalID: "dependabot:pr:repo:1", PluginName: "dependabot", RepoID: repo.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.RetryCount != 0 {
+		t.Fatalf("default RetryCount = %d, want 0", m.RetryCount)
+	}
+
+	three := 3
+	updated, err := store.Update(ctx, m.ID, UpdateTaskMappingParams{RetryCount: &three})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RetryCount != 3 {
+		t.Fatalf("RetryCount after update = %d, want 3", updated.RetryCount)
+	}
+
+	// A subsequent Update that does not set RetryCount (nil) must leave the
+	// persisted value intact — the "nil = don't update" contract.
+	completed := models.TaskMappingStatusCompleted
+	preserved, err := store.Update(ctx, m.ID, UpdateTaskMappingParams{Status: &completed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.RetryCount != 3 {
+		t.Fatalf("RetryCount after nil-RetryCount update = %d, want 3 (preserved)", preserved.RetryCount)
+	}
+}
+
 // TestTaskMappingStore_FailOrphanedMappings asserts that startup cleanup
 // flips Pending/InProgress to Orphaned (not Failed) and leaves already-
 // terminal rows alone. Orphaned signals to the orchestrator that the

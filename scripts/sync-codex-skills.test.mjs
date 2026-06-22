@@ -173,6 +173,24 @@ Body
     assert.equal(fs.existsSync(path.join(destRoot, 'with-assets', 'assets', 'data.json')), true);
   });
 
+  it('excludes constructed-skill build inputs from codex output', () => {
+    const root = tmpDir();
+    const sourceRoot = path.join(root, '.claude', 'skills');
+    const destRoot = path.join(root, '.codex', 'skills');
+
+    writeFile(path.join(sourceRoot, 'constructed', 'SKILL.md'), skillMarkdown('constructed'));
+    writeFile(path.join(sourceRoot, 'constructed', 'SKILL.md.tmpl'), 'template body\n');
+    writeFile(path.join(sourceRoot, 'constructed', 'construct.json'), '{"output":"x"}\n');
+    writeFile(path.join(sourceRoot, 'constructed', 'references', 'notes.md'), '# Notes\n');
+
+    syncCodexSkills({ destRoot, sourceRoot });
+
+    assert.equal(fs.existsSync(path.join(destRoot, 'constructed', 'SKILL.md')), true);
+    assert.equal(fs.existsSync(path.join(destRoot, 'constructed', 'references', 'notes.md')), true);
+    assert.equal(fs.existsSync(path.join(destRoot, 'constructed', 'SKILL.md.tmpl')), false);
+    assert.equal(fs.existsSync(path.join(destRoot, 'constructed', 'construct.json')), false);
+  });
+
   it('removes stale destination files during sync', () => {
     const root = tmpDir();
     const sourceRoot = path.join(root, '.claude', 'skills');
@@ -290,6 +308,23 @@ Score is /20 then /5 out of 5.
     });
 
     assert.match(output, /Skipped Codex skills check/);
+  });
+
+  it('skips underscore-prefixed directories in collectSkillSources', () => {
+    const root = tmpDir();
+    const sourceRoot = path.join(root, '.claude', 'skills');
+
+    writeFile(path.join(sourceRoot, 'real-skill', 'SKILL.md'), skillMarkdown('real-skill'));
+    fs.mkdirSync(path.join(sourceRoot, '_construct'), { recursive: true });
+
+    let sources;
+
+    assert.doesNotThrow(() => {
+      sources = collectSkillSources(sourceRoot);
+    });
+
+    assert.equal(sources.length, 1);
+    assert.equal(sources[0].dirName, 'real-skill');
   });
 
   it('compares executable mode differences', () => {

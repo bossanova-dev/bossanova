@@ -7,6 +7,7 @@
 	setup-worktree split stage-release test test-affected test-full test-profile test-race test-smoke \
 	test-bosso-scale test-docs test-integration-bossd test-manifest test-manifest-update \
 	test-no-inline-stop-hooks test-public-mirror test-readme test-scripts \
+	build-mcp test-mcp lint-mcp \
 	deploy-staging deploy-production db-staging db-production connect-staging connect-production verify-staging verify-production
 
 ## all: Clean, generate protos, format, and build all binaries (default target)
@@ -258,6 +259,10 @@ $(BIN_DIR)/bossd: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
 
+$(BIN_DIR)/mcp: $(GEN_STAMP)
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/mcp ./services/mcp/cmd
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/mcp; fi
+
 ifneq ($(wildcard services/bosso/go.mod),)
 $(BIN_DIR)/bosso: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
@@ -352,6 +357,9 @@ test-boss:
 test-bossd:
 	$(MAKE) -C services/bossd test
 
+test-mcp:
+	$(MAKE) -C services/mcp test
+
 ## test-integration-bossd: Run bossd integration tests (requires tmux on PATH; gated by 'integration' build tag)
 test-integration-bossd:
 	cd services/bossd && go test -tags=integration -race ./internal/server/... ./internal/testharness/... -count=1
@@ -415,6 +423,9 @@ lint-boss: lint-check-version
 lint-bossd: lint-check-version
 	cd services/bossd && golangci-lint run ./...
 
+lint-mcp: lint-check-version
+	cd services/mcp && golangci-lint run ./...
+
 test-readme:
 	node scripts/check-readme-assets.mjs
 
@@ -468,7 +479,7 @@ proof-plan:
 	node scripts/proof.mjs plan
 
 proof-test:
-	node --test scripts/proof-lib.test.mjs
+	node --test scripts/proof-lib.test.mjs scripts/proof-playwright-runner.test.mjs scripts/proof-vhs.test.mjs
 
 test-scripts:
 	$(MAKE) -C scripts test
@@ -528,6 +539,10 @@ build-boss:
 build-bossd:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bossd ./services/bossd/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/bossd; fi
+
+build-mcp:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/mcp ./services/mcp/cmd
+	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/mcp; fi
 
 ifneq ($(wildcard services/bosso/go.mod),)
 build-bosso:

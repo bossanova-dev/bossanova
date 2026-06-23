@@ -206,7 +206,7 @@ boss trash empty --older-than 30d
 
 ### `boss daemon install`
 
-Install bossd as a macOS LaunchAgent.
+Install bossd as a background service (launchd on macOS, systemd on Linux).
 
 **Flags:**
 
@@ -256,6 +256,54 @@ Restart the bossd daemon via the platform service manager. Errors out if the dae
 
 ```bash
 boss daemon restart
+```
+
+---
+
+## MCP Server
+
+`boss mcp` is a command group for managing the local MCP server, which exposes the boss operations as MCP tools over Streamable HTTP for MCP-aware hosts. It runs as an auto-starting service (launchd on macOS, systemd on Linux) and proxies through the local bossd daemon's Unix socket.
+
+### `boss mcp install`
+
+Install the MCP server as an auto-starting service and start it. Use `--force` to overwrite an existing service file, and `--port` to change the loopback port (default 8765). The server listens on `http://127.0.0.1:<port>/mcp`.
+
+```bash
+boss mcp install
+boss mcp install --force
+boss mcp install --port 8888
+```
+
+### `boss mcp uninstall`
+
+Uninstall the MCP server service and remove its service file.
+
+```bash
+boss mcp uninstall
+```
+
+### `boss mcp status`
+
+Show whether the MCP server is installed and running.
+
+```bash
+boss mcp status
+```
+
+### `boss mcp start`
+
+Start (or restart) the installed MCP server.
+
+```bash
+boss mcp start
+```
+
+### `boss mcp stop`
+
+Stop the running MCP server, leaving its service file in place. Idempotent.
+
+```bash
+boss mcp stop
 ```
 
 ---

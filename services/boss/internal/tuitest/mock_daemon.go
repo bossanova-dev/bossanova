@@ -104,6 +104,35 @@ type MockDaemon struct {
 	chatListError string
 }
 
+// StartMockDaemon binds a Unix socket and serves the mock DaemonService.
+// Returns the daemon and a stop() that closes the server and removes the socket.
+func StartMockDaemon(socketPath string) (*MockDaemon, func() error, error) {
+	_ = removeSocket(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen unix: %w", err)
+	}
+	m := &MockDaemon{
+		socketPath:    socketPath,
+		listener:      ln,
+		cronJobs:      make(map[string]*pb.CronJob),
+		prs:           make(map[string][]*pb.PRSummary),
+		trackerIssues: make(map[string][]*pb.TrackerIssue),
+		attachEvents:  make(map[string]chan *pb.AttachSessionResponse),
+	}
+	mux := http.NewServeMux()
+	path, handler := bossanovav1connect.NewDaemonServiceHandler(m)
+	mux.Handle(path, handler)
+	m.httpServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = m.httpServer.Serve(ln) }()
+	stop := func() error {
+		err := m.httpServer.Close()
+		_ = removeSocket(socketPath)
+		return err
+	}
+	return m, stop, nil
+}
+
 // NewMockDaemon starts a mock daemon on a temporary Unix socket.
 // The server is cleaned up when the test finishes.
 func NewMockDaemon(t *testing.T) *MockDaemon {
@@ -115,36 +144,11 @@ func NewMockDaemon(t *testing.T) *MockDaemon {
 	// its own counter starting at 1, so without the PID qualifier the second binary
 	// would remove and rebind the first binary's still-active socket.
 	socketPath := filepath.Join("/tmp", fmt.Sprintf("boss-tuitest-%d-%d.sock", os.Getpid(), socketCounter.Add(1)))
-	t.Cleanup(func() {
-		_ = removeSocket(socketPath)
-	})
-	_ = removeSocket(socketPath)
-
-	ln, err := net.Listen("unix", socketPath)
+	m, stop, err := StartMockDaemon(socketPath)
 	if err != nil {
-		t.Fatalf("listen unix: %v", err)
+		t.Fatalf("%v", err)
 	}
-
-	m := &MockDaemon{
-		socketPath:    socketPath,
-		listener:      ln,
-		cronJobs:      make(map[string]*pb.CronJob),
-		prs:           make(map[string][]*pb.PRSummary),
-		trackerIssues: make(map[string][]*pb.TrackerIssue),
-		attachEvents:  make(map[string]chan *pb.AttachSessionResponse),
-	}
-
-	mux := http.NewServeMux()
-	path, handler := bossanovav1connect.NewDaemonServiceHandler(m)
-	mux.Handle(path, handler)
-
-	m.httpServer = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = m.httpServer.Serve(ln) }()
-
-	t.Cleanup(func() {
-		_ = m.httpServer.Close()
-	})
-
+	t.Cleanup(func() { _ = stop() })
 	return m
 }
 

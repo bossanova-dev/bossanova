@@ -71,6 +71,36 @@ func GetStatus() (*Status, error) {
 	return platformGetStatus()
 }
 
+// McpInstall registers the local MCP server with the system service manager so
+// it auto-starts and serves Streamable HTTP on 127.0.0.1:port. mcpBinPath is
+// the absolute path to the mcp binary.
+func McpInstall(mcpBinPath string, port int, force bool) error {
+	if err := validatePath(mcpBinPath); err != nil {
+		return err
+	}
+	return platformMcpInstall(mcpBinPath, port, force)
+}
+
+// McpUninstall removes the MCP server from the system service manager.
+func McpUninstall() error {
+	return platformMcpUninstall()
+}
+
+// McpStart starts (or restarts) the installed MCP LaunchAgent/service.
+func McpStart() error {
+	return platformMcpStart()
+}
+
+// McpStop stops the running MCP server, leaving its service file in place.
+func McpStop() error {
+	return platformMcpStop()
+}
+
+// McpGetStatus returns the current MCP server status.
+func McpGetStatus() (*Status, error) {
+	return platformMcpGetStatus()
+}
+
 // EnsureRunning checks if the daemon socket is reachable. If not, it attempts
 // to start bossd. It waits up to 3 seconds for the socket to become available.
 func EnsureRunning(socketPath string) error {
@@ -103,6 +133,25 @@ func ResolveBossdPath() (string, error) {
 	}
 
 	return "", fmt.Errorf("bossd not found (install it next to boss or add it to PATH)")
+}
+
+// ResolveMcpPath finds the mcp binary. It checks next to the current
+// executable first, then $PATH.
+func ResolveMcpPath() (string, error) {
+	exe, err := os.Executable()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "mcp")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	path, err := exec.LookPath("mcp")
+	if err == nil {
+		return filepath.Abs(path)
+	}
+
+	return "", fmt.Errorf("mcp not found (install it next to boss or add it to PATH)")
 }
 
 // isSocketReachable checks if a Unix socket is connectable.

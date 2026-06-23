@@ -43,6 +43,8 @@ linters:
               desc: plugins must not import host bossd packages; communicate over gRPC
             - pkg: github.com/recurser/bosso/
               desc: plugins must not import host bosso packages; communicate over gRPC
+            - pkg: github.com/recurser/bossanova-mcp/
+              desc: plugins must not import the host mcp server; communicate over gRPC
     exhaustive:
       default-signifies-exhaustive: true
     gocritic:

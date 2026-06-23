@@ -45,6 +45,14 @@ var codexRequestUserInput = regexp.MustCompile(`(?ms)\bQuestion\s+[0-9]+/[0-9]+\
 // Question UI above this marker is stale scrollback, not an active prompt.
 var codexSessionComplete = regexp.MustCompile(`(?m)^\s*•\s+Session Complete\s*$`)
 
+// codexUnicodeSpace matches Unicode space separators (category Zs): regular
+// ASCII space U+0020, non-breaking space U+00A0, narrow NBSP U+202F, etc. The
+// codex/Claude TUIs render prompt and layout padding with NBSP, but the "› "/
+// "• " prefix checks and the "\s"-based approval/footer regexes below all
+// assume ASCII whitespace; normalizing every Zs rune to U+0020 first keeps
+// those matchers working regardless of which space byte the TUI emitted.
+var codexUnicodeSpace = regexp.MustCompile(`\p{Zs}`)
+
 // hasCodexQuestionPrompt reports whether the given pane bytes look like a
 // codex question/approval prompt the daemon should surface.
 //
@@ -65,6 +73,9 @@ var codexSessionComplete = regexp.MustCompile(`(?m)^\s*•\s+Session Complete\s*
 // the agent is producing output; treating it as a question state would
 // trigger spurious notifications mid-turn.
 func hasCodexQuestionPrompt(data []byte) bool {
+	// Normalize NBSP and other Unicode spaces to ASCII space so the prefix
+	// checks and "\s"-based regexes below match the TUI's NBSP-rendered output.
+	data = codexUnicodeSpace.ReplaceAll(data, []byte(" "))
 	activeData := codexQuestionActivePane(data)
 	if codexWorking.Match(activeData) {
 		return false

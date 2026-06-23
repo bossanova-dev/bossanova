@@ -30,15 +30,16 @@ name points Homebrew at the Bossanova tap during install.
 curl -fsSL https://bossanova.dev/install.sh | sh
 ```
 
-The curl installer downloads the latest GitHub Release binaries for
-macOS (`darwin-amd64`, `darwin-arm64`) or Linux (`linux-amd64`). It
-currently checks for the Claude Code CLI, GitHub CLI, and a SHA-256
-tool before installing.
+The install script downloads the latest GitHub Release binaries for macOS
+(`darwin-amd64`, `darwin-arm64`) and Linux (`linux-amd64`), configures the bundled
+plugins, and registers the daemon (launchd on macOS, systemd on Linux). It currently
+requires the Claude Code CLI, GitHub CLI, and a SHA-256 tool before installing — if you
+use a different agent plugin, install via Homebrew instead.
 
 ## Build from source
 
-Requires macOS with [Homebrew](https://brew.sh/). The `make deps` target
-installs everything else (`go`, `buf`, `golangci-lint`, `jq`, `gh`,
+Requires [Homebrew](https://brew.sh/) (macOS, or Linuxbrew on Linux) and a Go
+toolchain. The `make deps` target installs everything else (`go`, `buf`, `golangci-lint`, `jq`, `gh`,
 `gremlins`, and the `protoc-gen-go` / `protoc-gen-connect-go` buf
 plugins).
 

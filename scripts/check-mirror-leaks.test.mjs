@@ -155,3 +155,30 @@ test('scans all of HEAD when the base ref does not resolve (first-run orphan)', 
   assert.equal(result.code, 1);
   assert.match(result.stderr, /forbidden path: CLAUDE\.md/);
 });
+
+test('fails when tree contains services/mcp-gateway (private hosted gateway)', () => {
+  const { dir, base } = initRepo();
+  commit(dir, { 'services/mcp-gateway/cmd/main.go': 'package main\n' }, 'leak gateway');
+
+  const result = runGuard(dir, base);
+
+  assert.equal(result.code, 1, result.stderr);
+  assert.match(result.stderr, /forbidden path: services\/mcp-gateway\//);
+});
+
+test('passes when tree contains services/mcp and lib/bossalib/bossmcp (both public)', () => {
+  const { dir, base } = initRepo();
+  commit(
+    dir,
+    {
+      'services/mcp/cmd/main.go': 'package main\n',
+      'lib/bossalib/bossmcp/tools.go': 'package bossmcp\n',
+    },
+    'public mcp paths',
+  );
+
+  const result = runGuard(dir, base);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /Leak guard passed/);
+});

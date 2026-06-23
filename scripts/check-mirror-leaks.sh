@@ -27,7 +27,7 @@ HEAD="${2:?usage: check-mirror-leaks.sh <base-ref> <head-ref>}"
 
 # Paths that must never appear in the public tree. Anchored at repo root, so
 # bossd-plugin-* matches only a stray root binary, never plugins/bossd-plugin-*.
-FORBIDDEN_PATH_RE='^(AGENTS\.md|CLAUDE\.md|bossd-plugin-[^/]+|\.env\.example\.public|plans/|docs/)'
+FORBIDDEN_PATH_RE='^(AGENTS\.md|CLAUDE\.md|bossd-plugin-[^/]+|\.env\.example\.public|plans/|docs/|services/mcp-gateway/)'
 
 # Private env-var assignment prefixes. Only meaningful inside .env* files, so we
 # never false-match these tokens where they legitimately appear in source code.

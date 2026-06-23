@@ -616,15 +616,28 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		Msg("starting claude")
 
 	// Start Claude. Cron-spawned sessions run in a tmux-hosted Claude UI so
-	// the user can attach to the live session, while interactive sessions
-	// stay on the headless `claude --print` path used historically.
+	// the user can attach to the live session. Tracker-sourced interactive
+	// sessions (Linear/Sentry) are created idle so the user can review the
+	// plan before it runs. All other interactive sessions stay on the
+	// headless `claude --print` path used historically.
 	var claudeSessionID string
-	if opts.CronJobID != "" {
+	switch {
+	case opts.CronJobID != "":
 		claudeSessionID, err = l.startCronTmuxChat(ctx, sessionID, opts, session, result)
 		if err != nil {
 			return fmt.Errorf("start cron tmux chat: %w", err)
 		}
-	} else {
+	case session.TrackerID != nil && *session.TrackerID != "":
+		// Tracker sessions are left unstarted: the plan is pre-filled into the
+		// agent's input on first attach (see the boss attach prefill path), and
+		// that interactive run arms its own finalize hook — so nothing here
+		// depends on a headless run firing. claudeSessionID stays empty (no
+		// agent yet), mirroring the idle quick-chat path. The user reviews/edits
+		// the prompt and starts the run by pressing enter on attach.
+		l.logger.Info().
+			Str("session", sessionID).
+			Msg("tracker session created idle; awaiting manual start on first attach")
+	default:
 		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "")
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
@@ -635,11 +648,15 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	}
 	hooklessCronTmux := opts.CronJobID != "" && hookResp != nil && !hookResp.GetIsSupported()
 
-	// Update session with Claude session ID.
-	if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
-		AgentSessionID: strPtr(claudeSessionID),
-	}); err != nil {
-		return fmt.Errorf("update claude session id: %w", err)
+	// Update session with Claude session ID. Idle tracker sessions have no
+	// agent session yet, so leave AgentSessionID nil (matching quick chat)
+	// rather than persisting an empty value.
+	if claudeSessionID != "" {
+		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+			AgentSessionID: strPtr(claudeSessionID),
+		}); err != nil {
+			return fmt.Errorf("update claude session id: %w", err)
+		}
 	}
 	if hooklessCronTmux {
 		l.armTmuxCompletionForHooklessCron(sessionID, claudeSessionID, session.RepoID)

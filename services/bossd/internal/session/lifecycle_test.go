@@ -934,6 +934,65 @@ func TestStartSession(t *testing.T) {
 	}
 }
 
+func TestStartSession_TrackerSession_AwaitsManualStart(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	// A Linear/Sentry-sourced session carries a TrackerID and a Plan. It is
+	// created idle: the worktree is set up but the agent is NOT auto-started,
+	// so the user can review/edit the plan (pre-filled into the agent input on
+	// first attach) and start the run manually. Cron sessions still auto-run
+	// via the CronJobID branch; plain New/Existing PR sessions still auto-run.
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Implement the ticket",
+		TrackerID:  ptr("BOS-123"),
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Worktree setup still runs.
+	if len(wt.created) != 1 {
+		t.Fatalf("expected 1 worktree created, got %d", len(wt.created))
+	}
+
+	// The agent must NOT be auto-started for a tracker session.
+	if len(cr.started) != 0 {
+		t.Fatalf("expected 0 agent starts for tracker session, got %d", len(cr.started))
+	}
+
+	// The session lands ready (ImplementingPlan) but idle — no agent session.
+	sess := sessions.sessions["sess-1"]
+	if sess.State != machine.ImplementingPlan {
+		t.Errorf("session state = %v, want ImplementingPlan", sess.State)
+	}
+	if sess.AgentSessionID != nil {
+		t.Errorf("agent session id = %v, want nil (idle)", sess.AgentSessionID)
+	}
+	// The plan is preserved for the prefill-on-attach path.
+	if sess.Plan != "Implement the ticket" {
+		t.Errorf("plan = %q, want preserved", sess.Plan)
+	}
+}
+
 func TestStartSession_DraftPRNotAttemptedWhenBranchHasNoCommitsOverBase(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()

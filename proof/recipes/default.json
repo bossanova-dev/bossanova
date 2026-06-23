@@ -175,6 +175,21 @@
       "waitForText": "Welcome to Bossanova"
     },
     {
+      "id": "tui-new-session-flow",
+      "surface": "tui",
+      "title": "Boss TUI — New Session Flow",
+      "description": "Animated walkthrough: home → new session wizard.",
+      "privacy": "fixture",
+      "capture": "video",
+      "fixture": "demo",
+      "terminal": { "width": 140, "height": 36 },
+      "frameDelayMs": 500,
+      "steps": [
+        { "keys": ["n"], "waitForReadyText": "Add dark mode", "waitForText": "New Session" },
+        { "keys": ["enter"], "waitForText": "Select a repository" }
+      ]
+    },
+    {
       "id": "web-sessions",
       "surface": "web",
       "title": "Web Sessions",
@@ -224,6 +239,35 @@
       "route": "/pricing",
       "selector": "main",
       "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-new-session-flow",
+      "surface": "web",
+      "title": "Web New Session Flow",
+      "description": "Walkthrough of opening a session in the web app (fixture data).",
+      "privacy": "fixture",
+      "capture": "video",
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        { "action": "goto", "route": "/" },
+        { "action": "wait", "selector": ".data-table-wrap" },
+        { "action": "click", "selector": ".data-table-wrap .row-clickable" },
+        { "action": "wait", "timeoutMs": 800 }
+      ]
+    },
+    {
+      "id": "marketing-home-scroll",
+      "surface": "marketing",
+      "title": "Marketing Home Scroll",
+      "description": "Walkthrough of the marketing homepage (fixture data).",
+      "privacy": "fixture",
+      "capture": "video",
+      "viewport": { "width": 1440, "height": 1000 },
+      "steps": [
+        { "action": "goto", "route": "/" },
+        { "action": "wait", "selector": "main" },
+        { "action": "wait", "timeoutMs": 800 }
+      ]
     }
   ],
   "pathRules": [
@@ -239,18 +283,18 @@
         "tui-repo-list",
         "tui-repo-add", "tui-repo-settings", "tui-trash", "tui-chat-picker",
         "tui-session-settings", "tui-login", "tui-bug-report", "tui-cron",
-        "tui-cron-form", "tui-onboarding"
+        "tui-cron-form", "tui-onboarding", "tui-new-session-flow"
       ]
     },
     {
       "name": "Product web",
       "patterns": ["services/web/"],
-      "recipeIds": ["web-sessions", "web-account", "web-chat-terminal"]
+      "recipeIds": ["web-sessions", "web-account", "web-chat-terminal", "web-new-session-flow"]
     },
     {
       "name": "Marketing site",
       "patterns": ["services/marketing/", "lib/ui-tokens/"],
-      "recipeIds": ["marketing-home", "marketing-pricing"]
+      "recipeIds": ["marketing-home", "marketing-pricing", "marketing-home-scroll"]
     }
   ]
 }

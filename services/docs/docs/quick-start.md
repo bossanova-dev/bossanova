@@ -4,6 +4,8 @@ description: 'Walk through Bossanova end-to-end: install, open the TUI, add a re
 ---
 
 import AsciinemaDemo from '@site/src/components/AsciinemaDemo';
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
 
 # Quick Start
 
@@ -17,33 +19,74 @@ guide page where one exists.
 
 ## 1. Install
 
-Install Bossanova with Homebrew:
+Bossanova ships prebuilt binaries for **macOS** (Intel and Apple Silicon) and
+**Linux x86_64**. Pick your platform:
+
+<Tabs groupId="os">
+<TabItem value="macos" label="macOS" default>
+
+Install with Homebrew:
 
 ```bash
 brew install bossanova-dev/tap/bossanova
 ```
 
-Then install the daemon service:
+Then register the daemon service:
 
 ```bash
 boss daemon install
 ```
 
-Check that it is running:
+</TabItem>
+<TabItem value="linux" label="Linux (x86_64)">
+
+Install with Homebrew (the tap ships a Linux x86_64 build):
+
+```bash
+brew install bossanova-dev/tap/bossanova
+```
+
+Then register the daemon service:
+
+```bash
+boss daemon install
+```
+
+Linux uses a **systemd user service**, so `systemctl --user` must be available
+(most desktop and server distros; minimal containers and some WSL setups are not
+supported).
+
+**Alternative — install script.** The install script downloads the binaries,
+configures plugins, and registers the systemd daemon for you (so you can skip the
+separate `boss daemon install` step):
+
+```bash
+curl -fsSL https://bossanova.dev/install.sh | sh
+```
+
+The script currently requires the [Claude Code CLI](https://claude.ai/download) to
+be installed first; if you use a different agent plugin, install with Homebrew above
+instead.
+
+**Linux arm64** is not prebuilt yet — [build from source](./install.md#build-from-source).
+
+</TabItem>
+</Tabs>
+
+Check that the daemon is running:
 
 ```bash
 boss daemon status
 ```
 
-Expected output:
+Expected output (the service path is a launchd plist on macOS and a systemd unit on
+Linux; PID and path vary by machine):
 
 ```text
 Daemon is running.
   PID:     11537
   service: ~/Library/LaunchAgents/com.bossanova.bossd.plist
 ```
-
-The PID and service path vary by machine.
 
 The daemon owns session state, worktree cleanup, GitHub sync, and browser access.
 

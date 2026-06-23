@@ -1,6 +1,6 @@
 //go:build darwin
 
-// Package daemon manages the bossd daemon lifecycle via macOS LaunchAgent.
+// Package daemon manages the bossd daemon lifecycle via the macOS launchd agent.
 package daemon
 
 import (
@@ -17,8 +17,46 @@ import (
 )
 
 const (
-	// Label is the macOS LaunchAgent label.
+	// Label is the macOS launchd agent label.
 	Label = "com.bossanova.bossd"
+
+	// McpLabel is the macOS launchd agent label for the local MCP server.
+	McpLabel = "com.bossanova.mcp"
+
+	// DefaultMcpPort is the loopback port the MCP HTTP daemon listens on.
+	DefaultMcpPort = 8765
+
+	// mcpPlistTemplate runs `mcp --http 127.0.0.1:<port>`. Unlike the bossd
+	// plist, its PATH includes ~/.nodenv/shims and ~/.local/bin so the MCP
+	// server (and any agent CLI it shells out to) can find node/agent binaries.
+	mcpPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{{.Label}}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{.McpPath}}</string>
+		<string>--http</string>
+		<string>{{.Addr}}</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>{{.LogDir}}/mcp.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>{{.LogDir}}/mcp.stderr.log</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>{{.Path}}</string>
+	</dict>
+</dict>
+</plist>
+`
 
 	plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -52,6 +90,28 @@ type plistData struct {
 	Label     string
 	BossdPath string
 	LogDir    string
+}
+
+type mcpPlistData struct {
+	Label   string
+	McpPath string
+	Addr    string
+	LogDir  string
+	Path    string
+}
+
+// mcpPath builds the PATH for the MCP LaunchAgent. It mirrors the bossd plist
+// PATH but additionally includes the agent-runner shim directories
+// (~/.nodenv/shims and ~/.local/bin), which the Homebrew launchd PATH omits.
+func mcpPath() string {
+	entries := []string{"/usr/local/bin", "/usr/bin", "/bin", "/opt/homebrew/bin"}
+	if home, err := os.UserHomeDir(); err == nil {
+		entries = append([]string{
+			filepath.Join(home, ".nodenv", "shims"),
+			filepath.Join(home, ".local", "bin"),
+		}, entries...)
+	}
+	return strings.Join(entries, ":")
 }
 
 // platformServicePath returns the path to the LaunchAgent plist file.
@@ -94,6 +154,194 @@ func generatePlist(bossdPath string) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+// mcpServicePath returns the path to the MCP LaunchAgent plist file.
+func mcpServicePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", McpLabel+".plist"), nil
+}
+
+// generateMcpPlist renders the LaunchAgent plist XML for the local MCP server.
+func generateMcpPlist(mcpBinPath string, port int) (string, error) {
+	ld, err := logDir()
+	if err != nil {
+		return "", err
+	}
+
+	tmpl, err := template.New("mcpPlist").Parse(mcpPlistTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parse mcp plist template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, mcpPlistData{
+		Label:   McpLabel,
+		McpPath: mcpBinPath,
+		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
+		LogDir:  ld,
+		Path:    mcpPath(),
+	}); err != nil {
+		return "", fmt.Errorf("render mcp plist: %w", err)
+	}
+
+	return buf.String(), nil
+}
+
+// platformMcpInstall writes the MCP LaunchAgent plist and loads it via launchctl. When
+// force is false and the plist already exists, it refuses to overwrite.
+func platformMcpInstall(mcpBinPath string, port int, force bool) error {
+	if err := validatePath(mcpBinPath); err != nil {
+		return err
+	}
+
+	plist, err := generateMcpPlist(mcpBinPath, port)
+	if err != nil {
+		return err
+	}
+
+	plistPath, err := mcpServicePath()
+	if err != nil {
+		return err
+	}
+
+	if !force {
+		if _, err := os.Stat(plistPath); err == nil {
+			return fmt.Errorf("plist already exists at %s (use --force to overwrite)", plistPath)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+		return fmt.Errorf("create LaunchAgents dir: %w", err)
+	}
+
+	ld, err := logDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(ld, 0o755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+
+	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
+		return fmt.Errorf("write plist: %w", err)
+	}
+
+	if skipLaunchctl() {
+		return nil
+	}
+
+	cmd := exec.Command("launchctl", "load", plistPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl load: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// platformMcpUninstall unloads the MCP LaunchAgent and removes the plist file.
+func platformMcpUninstall() error {
+	plistPath, err := mcpServicePath()
+	if err != nil {
+		return err
+	}
+
+	if !skipLaunchctl() {
+		_ = exec.Command("launchctl", "unload", plistPath).Run()
+	}
+
+	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove plist: %w", err)
+	}
+	return nil
+}
+
+// platformMcpStart bootstraps the MCP LaunchAgent (loading it if installed).
+func platformMcpStart() error {
+	if skipLaunchctl() {
+		return nil
+	}
+
+	plistPath, err := mcpServicePath()
+	if err != nil {
+		return err
+	}
+
+	target := "gui/" + strconv.Itoa(os.Getuid())
+	_ = exec.Command("launchctl", "bootout", target, plistPath).Run()
+
+	cmd := exec.Command("launchctl", "bootstrap", target, plistPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// platformMcpStop bootouts the MCP LaunchAgent, leaving the plist in place. It is
+// idempotent: launchctl exits 113 when the service isn't loaded, which we treat
+// as the desired end state.
+func platformMcpStop() error {
+	if skipLaunchctl() {
+		return nil
+	}
+
+	plistPath, err := mcpServicePath()
+	if err != nil {
+		return err
+	}
+
+	target := "gui/" + strconv.Itoa(os.Getuid())
+	out, err := exec.Command("launchctl", "bootout", target, plistPath).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 113 {
+		return nil
+	}
+	return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
+}
+
+// platformMcpGetStatus returns the current MCP LaunchAgent status.
+func platformMcpGetStatus() (*Status, error) {
+	plistPath, err := mcpServicePath()
+	if err != nil {
+		return nil, err
+	}
+
+	st := &Status{ServicePath: plistPath}
+
+	if _, err := os.Stat(plistPath); err != nil {
+		if os.IsNotExist(err) {
+			return st, nil
+		}
+		return nil, fmt.Errorf("check plist file: %w", err)
+	}
+	st.Installed = true
+
+	if skipLaunchctl() {
+		return st, nil
+	}
+
+	out, err := exec.Command("launchctl", "list", McpLabel).Output()
+	if err != nil {
+		return st, nil
+	}
+	st.Running = true
+
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "\"PID\"") || strings.HasPrefix(line, "\"pid\"") {
+			parts := strings.Split(line, "=")
+			if len(parts) == 2 {
+				pidStr := strings.TrimSpace(strings.Trim(parts[1], "\";"))
+				_, _ = fmt.Sscanf(pidStr, "%d", &st.PID)
+			}
+		}
+	}
+	return st, nil
 }
 
 // platformInstall writes the LaunchAgent plist and loads it via launchctl.

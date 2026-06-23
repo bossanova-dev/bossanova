@@ -8,8 +8,91 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { buildSpec, validateRecipe } from './proof-playwright-runner.mjs';
+
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const runnerPath = path.join(repoRoot, 'scripts/proof-playwright-runner.mjs');
+
+test('buildSpec video branch records webm via its own context and screenshots a poster', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      surface: 'web',
+      capture: 'video',
+      steps: [
+        { action: 'goto', route: '/' },
+        { action: 'click', selector: '[data-testid="row"]' },
+        { action: 'type', selector: 'input[name="q"]', value: 'hello' },
+        { action: 'wait', timeoutMs: 500 },
+      ],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /recordVideo/);
+  assert.match(spec, /newContext/);
+  assert.match(spec, /web-flow\.webm/);
+  assert.match(spec, /web-flow\.png/); // poster
+  assert.match(spec, /\.click\(\)/);
+  assert.match(spec, /pressSequentially\('hello'\)/);
+  assert.match(spec, /context\.close\(\)/); // finalizes the video before rename
+});
+
+test('buildSpec video branch preserves playwright baseURL for relative goto steps', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      surface: 'web',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+
+  assert.match(spec, /async \(\{ browser, baseURL \}\)/);
+  assert.match(spec, /baseURL,/);
+  assert.doesNotMatch(spec, /chromium\.launch/);
+});
+
+test('validateRecipe accepts a video recipe and rejects an unknown action', () => {
+  assert.doesNotThrow(() =>
+    validateRecipe({
+      id: 'v',
+      surface: 'web',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+    }),
+  );
+  assert.throws(
+    () =>
+      validateRecipe({ id: 'v', surface: 'web', capture: 'video', steps: [{ action: 'nope' }] }),
+    /unsupported video step action/,
+  );
+});
+
+test('validateRecipe rejects incomplete video steps before playwright starts', () => {
+  assert.throws(
+    () =>
+      validateRecipe({ id: 'v', surface: 'web', capture: 'video', steps: [{ action: 'goto' }] }),
+    /video goto step requires route/,
+  );
+  assert.throws(
+    () =>
+      validateRecipe({ id: 'v', surface: 'web', capture: 'video', steps: [{ action: 'click' }] }),
+    /video click step requires selector/,
+  );
+  assert.throws(
+    () =>
+      validateRecipe({
+        id: 'v',
+        surface: 'web',
+        capture: 'video',
+        steps: [{ action: 'type', selector: 'input' }],
+      }),
+    /video type step requires value/,
+  );
+});
 
 test('rejects recipe ids that are unsafe as screenshot filenames', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-runner-bad-id-'));

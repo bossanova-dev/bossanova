@@ -2,6 +2,27 @@
 
 import path from 'node:path';
 
+// Single source of truth for proof artifact media types. Adding a new
+// uploadable artifact type is one entry here — the upload content-type, the
+// manifest URL encoding, and the path validator all derive from this map.
+export const PROOF_MEDIA_TYPES = {
+  png: 'image/png',
+  webm: 'video/webm',
+  gif: 'image/gif',
+};
+
+export function mediaTypeForPath(fileName) {
+  const ext = String(fileName ?? '')
+    .toLowerCase()
+    .split('.')
+    .pop();
+  const contentType = PROOF_MEDIA_TYPES[ext];
+  if (!contentType) {
+    throw new Error(`unsupported proof media extension: ${ext || '<none>'}`);
+  }
+  return contentType;
+}
+
 export function normalizeChangedFiles(files) {
   return files
     .filter((file) => file !== null && file !== undefined)
@@ -116,13 +137,20 @@ export function buildManifest({ commit, prNumber, runId, publicBaseUrl, captures
     runId,
     publicBaseUrl: normalizedBase,
     publicLiveCapture,
-    captures: captures.map((capture) => ({
-      ...capture,
-      url:
-        capture.status === 'passed' && capture.fileName
-          ? `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(capture.fileName))}`
-          : capture.url,
-    })),
+    captures: captures.map((capture) => {
+      if (capture.status !== 'passed' || !capture.fileName) {
+        return { ...capture, mediaType: capture.mediaType ?? 'png' };
+      }
+      const url = `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(capture.fileName))}`;
+      const out = { ...capture, mediaType: capture.mediaType ?? 'png', url };
+      if (capture.mediaType === 'webm') {
+        out.videoUrl = url;
+        if (capture.posterFileName) {
+          out.posterUrl = `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(capture.posterFileName))}`;
+        }
+      }
+      return out;
+    }),
   };
 }
 
@@ -142,15 +170,22 @@ export function renderComment({ marker, manifest }) {
   // One vertical block per capture. A table wastes horizontal space (the
   // scarce axis in a PR comment), so labels stack above a full-width image.
   for (const capture of manifest.captures) {
-    const body =
-      capture.status === 'passed'
-        ? `![${escapeMarkdown(capture.title)}](${capture.url})`
-        : escapeMarkdown(capture.error ?? 'capture failed');
+    let body;
+    if (capture.status !== 'passed') {
+      body = escapeMarkdown(capture.error ?? 'capture failed');
+    } else if (capture.mediaType === 'webm') {
+      // GitHub strips external <video>, so embed a poster thumbnail that links
+      // to the R2-hosted webm. Clicking opens the video in the browser.
+      const poster = capture.posterUrl ?? capture.url;
+      body = `[![${escapeMarkdown(capture.title)}](${poster})](${capture.videoUrl ?? capture.url})\n\n▶ Video (click the image to play)`;
+    } else {
+      // png and gif both embed inline; an animated gif plays in place.
+      body = `![${escapeMarkdown(capture.title)}](${capture.url})`;
+    }
     lines.push(
       '',
       `### ${escapeMarkdown(capture.title)}`,
       '',
-      // Two trailing spaces force a hard line break so the labels stack.
       `**Surface:** ${escapeMarkdown(capture.surface)}  `,
       `**Status:** ${escapeMarkdown(capture.status)}`,
       '',
@@ -266,6 +301,10 @@ export function browserCaptureCommand({ surface, recipePath, outputDir }) {
       relativeFromService(serviceDir, outputDir),
     ],
   ];
+}
+
+export function tuiVideoCaptureCommand({ tapePath }) {
+  return ['vhs', [tapePath]];
 }
 
 export function tuiCaptureCommand({ recipePath, outputDir }) {
@@ -384,21 +423,22 @@ export function proofUploadFiles({ manifest, localDir }) {
     },
   ];
 
-  for (const capture of manifest.captures ?? []) {
-    if (capture.status !== 'passed' || !capture.fileName) {
-      continue;
-    }
-
-    if (!String(capture.fileName).endsWith('.png')) {
-      continue;
-    }
-    const relative = validateProofUploadRelativePath(capture.fileName);
-
+  const pushArtifact = (fileName) => {
+    if (!fileName) return;
+    const relative = validateProofUploadRelativePath(fileName);
     files.push({
       file: path.join(localDir, ...relative.split('/')),
       relative,
-      contentType: 'image/png',
+      contentType: mediaTypeForPath(relative),
     });
+  };
+
+  for (const capture of manifest.captures ?? []) {
+    if (capture.status !== 'passed') {
+      continue;
+    }
+    pushArtifact(capture.fileName);
+    pushArtifact(capture.posterFileName);
   }
 
   return files;
@@ -415,8 +455,9 @@ export function validateRecipeId(id) {
 export function validateProofUploadRelativePath(fileName) {
   const relative = String(fileName ?? '').replaceAll('\\', '/');
   const segments = relative.split('/');
+  const ext = relative.toLowerCase().split('.').pop();
   if (
-    !relative.endsWith('.png') ||
+    !Object.prototype.hasOwnProperty.call(PROOF_MEDIA_TYPES, ext) ||
     relative.startsWith('/') ||
     /^[A-Za-z]:\//.test(relative) ||
     segments.some((segment) => !segment || segment === '.' || segment === '..')

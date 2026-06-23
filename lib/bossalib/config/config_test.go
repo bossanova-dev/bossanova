@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -737,6 +738,37 @@ func TestMergeDiscoveredPluginsNoChangeWhenAllRegistered(t *testing.T) {
 	}
 	if len(merged) != 2 {
 		t.Errorf("merged has %d entries, want 2", len(merged))
+	}
+}
+
+func TestFilterNonDiscoverablePluginsDropsStubRunner(t *testing.T) {
+	cfgs := []PluginConfig{{Name: "claude"}, {Name: "stub-runner"}, {Name: "sentry"}}
+
+	filtered, dropped := FilterNonDiscoverablePlugins(cfgs)
+
+	if want := []string{"stub-runner"}; !slices.Equal(dropped, want) {
+		t.Errorf("dropped = %v, want %v", dropped, want)
+	}
+	if len(filtered) != 2 {
+		t.Fatalf("filtered has %d entries, want 2: %+v", len(filtered), filtered)
+	}
+	for _, c := range filtered {
+		if c.Name == "stub-runner" {
+			t.Errorf("stub-runner survived filtering: %+v", filtered)
+		}
+	}
+}
+
+func TestFilterNonDiscoverablePluginsNoChangeWhenClean(t *testing.T) {
+	cfgs := []PluginConfig{{Name: "claude"}, {Name: "sentry"}}
+
+	filtered, dropped := FilterNonDiscoverablePlugins(cfgs)
+
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %v, want none", dropped)
+	}
+	if len(filtered) != 2 {
+		t.Errorf("filtered has %d entries, want 2", len(filtered))
 	}
 }
 

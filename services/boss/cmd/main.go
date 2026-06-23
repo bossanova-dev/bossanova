@@ -113,6 +113,7 @@ func rootCmd() *cobra.Command {
 		logoutCmd(),
 		authStatusCmd(),
 		daemonCmd(),
+		mcpCmd(),
 		repairCmd(),
 		sessionCmd(),
 		pluginCmd(),
@@ -337,7 +338,7 @@ func daemonCmd() *cobra.Command {
 
 	install := &cobra.Command{
 		Use:   "install",
-		Short: "Install bossd as a macOS LaunchAgent",
+		Short: "Install bossd as a background service (launchd on macOS, systemd on Linux)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDaemonInstall(cmd)
 		},

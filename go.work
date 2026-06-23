@@ -11,4 +11,5 @@ use (
 	./plugins/bossd-plugin-stub-runner
 	./services/boss
 	./services/bossd
+	./services/mcp
 )

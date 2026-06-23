@@ -522,7 +522,23 @@ func run(opts runOpts) error {
 	pluginCfgs := settings.Plugins
 	if opts.plugins != nil {
 		pluginCfgs = opts.plugins
-	} else if len(pluginCfgs) == 0 {
+	} else {
+		// Drop any non-discoverable plugin (e.g. the E2E-only stub-runner) that an
+		// older daemon persisted before the binary was excluded from discovery.
+		// The explicit --plugins path above intentionally bypasses this so the
+		// E2E harness can still load the stub.
+		if filtered, dropped := config.FilterNonDiscoverablePlugins(pluginCfgs); len(dropped) > 0 {
+			log.Info().Strs("dropped", dropped).Msg("removing non-discoverable plugins from config")
+			pluginCfgs = filtered
+			settings.Plugins = filtered
+			if err := config.Save(settings); err != nil {
+				log.Warn().Err(err).Msg("failed to persist filtered plugin list to settings")
+			} else {
+				log.Info().Msg("persisted filtered plugin list to settings")
+			}
+		}
+	}
+	if opts.plugins == nil && len(pluginCfgs) == 0 {
 		pluginCfgs = config.DiscoverPlugins()
 		if len(pluginCfgs) > 0 {
 			log.Info().Int("count", len(pluginCfgs)).Msg("auto-discovered plugins")

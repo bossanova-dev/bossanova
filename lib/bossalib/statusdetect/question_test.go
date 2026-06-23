@@ -19,6 +19,13 @@ func TestStripANSI(t *testing.T) {
 		{"OSC with ST", "\x1b]8;;url\x1b\\link\x1b]8;;\x1b\\", "link"},
 		{"two-byte ESC(B", "\x1b(Bhello", "hello"},
 		{"mixed", "\x1b[1m\x1b[33mwarn\x1b[0m: msg", "warn: msg"},
+		// Claude Code renders the input-box prompt and layout padding with
+		// non-breaking spaces; normalize them so the ASCII-space detection
+		// regexes (e.g. "❯ ") match.
+		{"NBSP normalized to space", "❯ Did the e2e check pass?", "❯ Did the e2e check pass?"},
+		{"narrow NBSP normalized", "a b", "a b"},
+		{"figure space normalized", "a b", "a b"},
+		{"tab preserved", "a\tb", "a\tb"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -147,6 +154,48 @@ func TestHasQuestionPrompt(t *testing.T) {
 				"─────────────────────────────────────────────────────────────\n" +
 				"  Opus 4.8 (1M context) | Context: 88% remaining\n",
 			want: false,
+		},
+		{
+			// Exact wondercanvas PR #385 repro. Claude Code renders the input
+			// box as "❯<U+00A0>...", a NON-BREAKING space (U+00A0) after the
+			// glyph -- not the ASCII space the "suggested follow-up" case above
+			// uses. Without normalizing NBSP, stripUserPromptLines (regex "❯ ")
+			// fails to remove this draft line and Pattern 3 matches its
+			// trailing "?", firing a false "? question". The " " below is
+			// the real byte sequence captured from the live pane.
+			name: "input-box draft with NBSP separator is not a question",
+			data: "⏺ The plane is landed. The boss-finalize workflow is complete.\n\n" +
+				"⏺ Ran 1 stop hook (ctrl+o to expand)\n" +
+				"  ⎿  Stop hook error: Failed with non-blocking status code: No stderr output\n\n" +
+				"✻ Crunched for 30s\n\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"❯ Did the e2e deterministic check pass?\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"  Opus 4.8 (1M context) | Context: 91% remaining\n",
+			want: false,
+		},
+		{
+			// Same NBSP separator on a suggested follow-up prompt below the
+			// final response marker (no stop-hook line). Mirror of the ASCII
+			// "suggested follow-up prompt below final response marker" case.
+			name: "suggested follow-up prompt with NBSP separator is not a question",
+			data: "⏺ All done. Tests pass and the branch is pushed.\n\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"❯ Want me to open a PR now?\n" +
+				"─────────────────────────────────────────────────────────────\n" +
+				"  Opus 4.8 (1M context) | Context: 88% remaining\n",
+			want: false,
+		},
+		{
+			// Positive guard: a real AskUserQuestion whose selector cursor and
+			// the trailing question both use NBSP separators must STILL fire,
+			// proving the normalization does not break Pattern 1/2 detection.
+			name: "AskUserQuestion card with NBSP separators still detected",
+			data: "  Which library should we use for date formatting?\n\n" +
+				"❯ 1. date-fns (Recommended)\n" +
+				"  2. moment\n" +
+				"  3. luxon\n",
+			want: true,
 		},
 		{
 			name: "numbered suggested next prompts section is not a question",

@@ -5,11 +5,13 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 import {
+  PROOF_MEDIA_TYPES,
   buildManifest,
   browserCaptureCommand,
   classifySecretRisk,
   githubCommentCommand,
   listProofCommentsCommand,
+  mediaTypeForPath,
   minimizeCommentCommand,
   normalizeChangedFiles,
   parseProofArgs,
@@ -23,6 +25,7 @@ import {
   trimTerminalBlankLines,
   terminalRenderCommand,
   tuiCaptureCommand,
+  tuiVideoCaptureCommand,
   validateBrowserRoute,
   validateProofUploadRelativePath,
   validateRecipeId,
@@ -480,7 +483,7 @@ test('proofUploadFiles selects manifest and passed PNG captures only', () => {
         captures: [
           { status: 'passed', fileName: 'marketing-home/marketing-home.png' },
           { status: 'failed', fileName: 'tui-home/tui-home.png' },
-          { status: 'passed', fileName: 'web-sessions/recipe.json' },
+          { status: 'failed', fileName: 'web-sessions/recipe.json' },
         ],
       },
     }),
@@ -519,6 +522,17 @@ test('proofUploadFiles rejects traversal and absolute PNG capture paths', () => 
       proofUploadFiles({
         ...base,
         manifest: { captures: [{ status: 'passed', fileName: 'C:\\tmp\\escape.png' }] },
+      }),
+    /invalid proof upload path/,
+  );
+});
+
+test('proofUploadFiles rejects passed captures with unsupported media paths', () => {
+  assert.throws(
+    () =>
+      proofUploadFiles({
+        localDir: '/repo/.proof/pr-596/abc/run',
+        manifest: { captures: [{ status: 'passed', fileName: 'web-sessions/recipe.json' }] },
       }),
     /invalid proof upload path/,
   );
@@ -589,4 +603,161 @@ test('tui schema accepts steps and fixture fields', () => {
   assert.ok(tui.steps, 'tuiRecipe must declare a steps property');
   assert.ok(tui.fixture, 'tuiRecipe must declare a fixture property');
   assert.deepEqual(tui.fixture.enum, ['demo', 'login', 'onboarding']);
+});
+
+test('browser video step schema requires action-specific fields', () => {
+  const schema = JSON.parse(
+    fs.readFileSync(new URL('../proof/recipes/schema.json', import.meta.url), 'utf8'),
+  );
+  const stepSchema = schema.$defs.browserRecipe.allOf[1].properties.steps.items;
+  const requirementsByAction = Object.fromEntries(
+    stepSchema.allOf.map((rule) => [rule.if.properties.action.const, rule.then.required]),
+  );
+
+  assert.deepEqual(requirementsByAction.goto, ['route']);
+  assert.deepEqual(requirementsByAction.click, ['selector']);
+  assert.deepEqual(requirementsByAction.type, ['selector', 'value']);
+});
+
+test('buildManifest sets png url unchanged (regression) and webm poster/video urls', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: '7',
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example.dev/prefix',
+    captures: [
+      {
+        recipeId: 'web-x',
+        title: 'X',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'passed',
+        mediaType: 'png',
+        fileName: 'web-x/web-x.png',
+      },
+      {
+        recipeId: 'web-v',
+        title: 'V',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'passed',
+        mediaType: 'webm',
+        fileName: 'web-v/web-v.webm',
+        posterFileName: 'web-v/web-v.png',
+      },
+    ],
+  });
+  const png = manifest.captures[0];
+  const webm = manifest.captures[1];
+  assert.equal(png.mediaType, 'png');
+  assert.equal(png.url, 'https://proof.example.dev/prefix/web-x/web-x.png');
+  assert.equal(webm.mediaType, 'webm');
+  assert.equal(webm.url, 'https://proof.example.dev/prefix/web-v/web-v.webm');
+  assert.equal(webm.videoUrl, 'https://proof.example.dev/prefix/web-v/web-v.webm');
+  assert.equal(webm.posterUrl, 'https://proof.example.dev/prefix/web-v/web-v.png');
+});
+
+test('proofUploadFiles queues webm + poster with correct content-types, png still single', () => {
+  const manifest = {
+    captures: [
+      { status: 'passed', mediaType: 'png', fileName: 'web-x/web-x.png' },
+      {
+        status: 'passed',
+        mediaType: 'webm',
+        fileName: 'web-v/web-v.webm',
+        posterFileName: 'web-v/web-v.png',
+      },
+      { status: 'failed', mediaType: 'webm', fileName: undefined },
+    ],
+  };
+  const files = proofUploadFiles({ manifest, localDir: '/tmp/proof' });
+  const byRelative = Object.fromEntries(files.map((f) => [f.relative, f.contentType]));
+  assert.equal(byRelative['manifest.json'], 'application/json');
+  assert.equal(byRelative['web-x/web-x.png'], 'image/png');
+  assert.equal(byRelative['web-v/web-v.webm'], 'video/webm');
+  assert.equal(byRelative['web-v/web-v.png'], 'image/png');
+  // failed capture contributes nothing
+  assert.equal(files.filter((f) => f.relative.startsWith('undefined')).length, 0);
+});
+
+test('renderComment embeds png inline (regression) and webm as poster link', () => {
+  const body = renderComment({
+    marker: '<!-- m -->',
+    manifest: {
+      commit: 'abc1234',
+      runId: 'run-1',
+      publicBaseUrl: 'https://proof.example.dev/prefix',
+      publicLiveCapture: false,
+      captures: [
+        {
+          title: 'Still',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'png',
+          url: 'https://x/p.png',
+        },
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'webm',
+          url: 'https://x/v.webm',
+          videoUrl: 'https://x/v.webm',
+          posterUrl: 'https://x/v.png',
+        },
+      ],
+    },
+  });
+  // png inline image
+  assert.match(body, /!\[Still\]\(https:\/\/x\/p\.png\)/);
+  // webm: clickable poster thumbnail linking to the video + caption
+  assert.match(body, /\[!\[Flow\]\(https:\/\/x\/v\.png\)\]\(https:\/\/x\/v\.webm\)/);
+  assert.match(body, /▶ Video/);
+});
+
+test('renderComment embeds gif inline like an image', () => {
+  const body = renderComment({
+    marker: '<!-- m -->',
+    manifest: {
+      commit: 'abc1234',
+      runId: 'run-1',
+      publicBaseUrl: 'https://x',
+      publicLiveCapture: false,
+      captures: [
+        {
+          title: 'Tui',
+          surface: 'tui',
+          status: 'passed',
+          mediaType: 'gif',
+          url: 'https://x/t.gif',
+        },
+      ],
+    },
+  });
+  assert.match(body, /!\[Tui\]\(https:\/\/x\/t\.gif\)/);
+});
+
+test('PROOF_MEDIA_TYPES maps the three supported extensions', () => {
+  assert.equal(PROOF_MEDIA_TYPES.png, 'image/png');
+  assert.equal(PROOF_MEDIA_TYPES.webm, 'video/webm');
+  assert.equal(PROOF_MEDIA_TYPES.gif, 'image/gif');
+});
+
+test('mediaTypeForPath derives content-type from extension', () => {
+  assert.equal(mediaTypeForPath('a/b/c.webm'), 'video/webm');
+  assert.equal(mediaTypeForPath('poster.png'), 'image/png');
+  assert.throws(() => mediaTypeForPath('clip.mp4'), /unsupported proof media/);
+});
+
+test('validateProofUploadRelativePath accepts webm and gif, rejects traversal and unknown ext', () => {
+  assert.equal(validateProofUploadRelativePath('id/id.webm'), 'id/id.webm');
+  assert.equal(validateProofUploadRelativePath('id/id.gif'), 'id/id.gif');
+  assert.equal(validateProofUploadRelativePath('id/id.png'), 'id/id.png'); // regression: still works
+  assert.throws(() => validateProofUploadRelativePath('id/../x.png'), /invalid proof upload path/);
+  assert.throws(() => validateProofUploadRelativePath('/abs/x.png'), /invalid proof upload path/);
+  assert.throws(() => validateProofUploadRelativePath('id/id.exe'), /invalid proof upload path/);
+});
+
+test('tuiVideoCaptureCommand runs vhs against the tape', () => {
+  assert.deepEqual(tuiVideoCaptureCommand({ tapePath: 'x.tape' }), ['vhs', ['x.tape']]);
 });

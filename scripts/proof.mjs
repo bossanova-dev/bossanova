@@ -3,6 +3,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,12 +24,57 @@ import {
   selectRecipes,
   terminalRenderCommand,
   tuiCaptureCommand,
+  tuiVideoCaptureCommand,
   validateBrowserRoute,
   validateRecipeId,
 } from './proof-lib.mjs';
+import { buildTape } from './proof-vhs.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const catalogPath = path.join(repoRoot, 'proof', 'recipes', 'default.json');
+
+function hasVhs() {
+  const result = spawnSync('vhs', ['--version'], { stdio: 'ignore' });
+  return !result.error && result.status === 0;
+}
+
+// Pre-build the e2e boss binary and the fixture daemon ONCE per run, before VHS
+// records. The launcher (run-fixture.sh) execs these via BOSS_PROOF_*_BIN, so the
+// in-tape boot Sleep only has to cover daemon start + first render — not a 30-60s
+// `go build`, which would finish long after VHS has stopped recording.
+let cachedTuiBinaries = null;
+function buildTuiFixtureBinaries() {
+  if (cachedTuiBinaries) {
+    return cachedTuiBinaries;
+  }
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-'));
+  const bossBin = path.join(binDir, 'boss');
+  const daemonBin = path.join(binDir, 'fixture-daemon');
+  const bossDir = path.join(repoRoot, 'services', 'boss');
+  try {
+    execFileSync('go', ['build', '-tags', 'e2e', '-o', bossBin, './cmd'], {
+      cwd: bossDir,
+      stdio: 'inherit',
+    });
+    execFileSync('go', ['build', '-o', daemonBin, './cmd/proof-fixture-daemon'], {
+      cwd: bossDir,
+      stdio: 'inherit',
+    });
+  } catch (error) {
+    fs.rmSync(binDir, { recursive: true, force: true });
+    throw error;
+  }
+  cachedTuiBinaries = { binDir, bossBin, daemonBin };
+  return cachedTuiBinaries;
+}
+
+function cleanupTuiFixtureBinaries() {
+  if (!cachedTuiBinaries) {
+    return;
+  }
+  fs.rmSync(cachedTuiBinaries.binDir, { recursive: true, force: true });
+  cachedTuiBinaries = null;
+}
 
 function main() {
   const args = parseProofArgs(process.argv.slice(2));
@@ -94,9 +140,73 @@ function captureRecipe({ recipe, localDir }) {
   const recipePath = path.join(recipeDir, 'recipe.json');
   fs.writeFileSync(recipePath, `${JSON.stringify(recipe, null, 2)}\n`);
 
+  // Still/TUI render target; the video branch returns its own <id>.webm plus
+  // this PNG as a poster thumbnail.
   const pngPath = path.join(recipeDir, `${recipeId}.png`);
   try {
     if (recipe.surface === 'tui') {
+      if (recipe.capture === 'video') {
+        if (!hasVhs()) {
+          // Degrade gracefully: a missing vhs must NOT fail a proof run that also
+          // captured browser/still surfaces. Mark this one capture 'skipped'
+          // (the exit-code gate only trips on 'failed'; the comment shows why).
+          return {
+            recipeId,
+            title: recipe.title,
+            surface: recipe.surface,
+            privacy: recipe.privacy,
+            status: 'skipped',
+            error: 'vhs not installed — TUI video skipped (install charmbracelet/vhs)',
+          };
+        }
+        const webmPath = path.join(recipeDir, `${recipeId}.webm`);
+        const tapePath = path.join(recipeDir, `${recipeId}.tape`);
+        const fixture = recipe.fixture ?? 'demo';
+        runCommand(
+          tuiCaptureCommand({
+            recipePath: path.relative(repoRoot, recipePath),
+            outputDir: path.relative(repoRoot, recipeDir),
+          }),
+        );
+        const screenText = fs.readFileSync(path.join(recipeDir, 'screen.txt'), 'utf8');
+        const risk = classifySecretRisk(screenText);
+        if (risk.risk === 'high') {
+          throw new Error(`secret-like text detected in TUI video screen: ${risk.reason}`);
+        }
+        runCommand(
+          terminalRenderCommand({
+            input: path.relative(repoRoot, path.join(recipeDir, 'screen.txt')),
+            output: path.relative(repoRoot, pngPath),
+            title: recipe.title,
+          }),
+        );
+        const tape = buildTape({
+          recipe,
+          launcherCmd: `proof/tui/run-fixture.sh ${fixture}`,
+          outputPath: webmPath,
+        });
+        fs.writeFileSync(tapePath, tape);
+        const { bossBin, daemonBin } = buildTuiFixtureBinaries();
+        runCommand([
+          ...tuiVideoCaptureCommand({ tapePath: path.relative(repoRoot, tapePath) }),
+          { env: { BOSS_PROOF_BOSS_BIN: bossBin, BOSS_PROOF_FIXTURE_DAEMON_BIN: daemonBin } },
+        ]);
+        const stat = fs.statSync(webmPath);
+        if (!stat.size) {
+          throw new Error('vhs produced an empty webm');
+        }
+        return {
+          recipeId,
+          title: recipe.title,
+          surface: recipe.surface,
+          privacy: recipe.privacy,
+          status: 'passed',
+          mediaType: 'webm',
+          fileName: `${recipeId}/${recipeId}.webm`,
+          posterFileName: `${recipeId}/${recipeId}.png`,
+        };
+      }
+      // ----- existing still path -----
       runCommand(
         tuiCaptureCommand({
           recipePath: path.relative(repoRoot, recipePath),
@@ -115,6 +225,32 @@ function captureRecipe({ recipe, localDir }) {
           title: recipe.title,
         }),
       );
+    } else if (recipe.capture === 'video') {
+      // Browser video: the runner records a .webm and screenshots a poster .png.
+      // The steps carry their own routes (validated by the runner), so there is
+      // no single recipe.route to validate here.
+      runCommand(
+        browserCaptureCommand({
+          surface: recipe.surface,
+          recipePath: path.relative(repoRoot, recipePath),
+          outputDir: path.relative(repoRoot, recipeDir),
+        }),
+      );
+      const videoAuditText = fs.readFileSync(path.join(recipeDir, 'audit.txt'), 'utf8');
+      const videoRisk = classifySecretRisk(videoAuditText);
+      if (videoRisk.risk === 'high') {
+        throw new Error(`secret-like text detected in browser video capture: ${videoRisk.reason}`);
+      }
+      return {
+        recipeId,
+        title: recipe.title,
+        surface: recipe.surface,
+        privacy: recipe.privacy,
+        status: 'passed',
+        mediaType: 'webm',
+        fileName: `${recipeId}/${recipeId}.webm`,
+        posterFileName: `${recipeId}/${recipeId}.png`,
+      };
     } else {
       validateBrowserRoute(recipe.route);
       // The secret scan only sees DOM text (see collectProofAuditText). A
@@ -148,12 +284,25 @@ function captureRecipe({ recipe, localDir }) {
       surface: recipe.surface,
       privacy: recipe.privacy,
       status: 'passed',
+      mediaType: 'png',
       fileName: `${recipeId}/${recipeId}.png`,
     };
   } catch (error) {
-    // Never leave a screenshot behind for a failed capture: a partial or
-    // unvetted PNG must not survive to be uploaded to the public bucket.
-    fs.rmSync(pngPath, { force: true });
+    // Never leave a partial/unvetted artifact behind for a failed capture: no
+    // .png/.webm/.gif may survive under .proof. Scan the recipe dir rather than
+    // only the stable <id>.* names, so Playwright recordVideo's random-named
+    // .webm (written when a video flow fails mid-way) is cleaned up too.
+    let leftovers = [];
+    try {
+      leftovers = fs.readdirSync(recipeDir);
+    } catch {
+      leftovers = [];
+    }
+    for (const name of leftovers) {
+      if (/\.(png|webm|gif|tape)$/i.test(name)) {
+        fs.rmSync(path.join(recipeDir, name), { force: true });
+      }
+    }
     return {
       recipeId,
       title: recipe.title,
@@ -262,4 +411,6 @@ try {
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
+} finally {
+  cleanupTuiFixtureBinaries();
 }

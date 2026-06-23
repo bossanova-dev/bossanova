@@ -406,9 +406,9 @@ func checkUpgradeCmdForVersion(ctx context.Context, current string, check upgrad
 			if prior, ok, _ := upgrade.ReadCache(cachePath); ok && prior.SnoozedVersion == result.LatestVersion && !prior.SnoozedUntil.IsZero() && now.Before(prior.SnoozedUntil) {
 				entry.SnoozedVersion = prior.SnoozedVersion
 				entry.SnoozedUntil = prior.SnoozedUntil
-				if available {
-					available = false
-				}
+				// An active snooze for this version suppresses the upgrade
+				// prompt regardless of the prior availability check.
+				available = false
 			}
 			_ = upgrade.WriteCache(cachePath, entry)
 		}

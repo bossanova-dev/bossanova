@@ -136,6 +136,34 @@ func TestQuestionPromptIgnoresUserPromptHistory(t *testing.T) {
 	}
 }
 
+// TestQuestionPromptIgnoresUserPromptHistoryNBSP verifies the history stripper
+// still fires when the codex TUI renders the "›" prefix with a non-breaking
+// space (U+00A0) instead of an ASCII space. A user who pasted "Press 1 or esc"
+// into the chat earlier must not trip the approval detector. Without NBSP
+// normalization the `bytes.HasPrefix(trimmed, "› ")` check would miss the line
+// and codexApproval would false-fire.
+func TestQuestionPromptIgnoresUserPromptHistoryNBSP(t *testing.T) {
+	pane := []byte("› Press 1 or esc\n\nThe model thought about it and replied.\n")
+	if hasCodexQuestionPrompt(pane) {
+		t.Error("expected has_prompt=false: NBSP-prefixed user history should be stripped")
+	}
+}
+
+// TestQuestionPromptFiresOnRequestUserInputCardNBSP verifies the
+// request_user_input picker is still detected when the TUI renders its footer
+// with non-breaking spaces (U+00A0) between tokens. The "\s"-based footer
+// regex only matches after NBSP is normalized to ASCII space.
+func TestQuestionPromptFiresOnRequestUserInputCardNBSP(t *testing.T) {
+	pane := []byte("  Question 1/1 (1 unanswered)\n" +
+		"  D2 -- Decide whether to proceed.\n\n" +
+		"  › 1. A: Full seams (Recommended)\n" +
+		"    2. B: Phase one only\n\n" +
+		"  tab to add notes | enter to submit answer | esc to interrupt\n")
+	if !hasCodexQuestionPrompt(pane) {
+		t.Errorf("expected has_prompt=true for NBSP-rendered request_user_input card:\n%s", pane)
+	}
+}
+
 // TestQuestionPromptIgnoresActivityBullets verifies that activity bullets
 // (codex emits "• <something>" status lines between turns) don't bleed
 // into the approval-detection regex.

@@ -287,12 +287,31 @@ var platformSuffixes = []string{
 var nonDiscoverablePlugins = []string{"bossd-plugin-stub-runner"}
 
 func isNonDiscoverablePlugin(name string) bool {
-	for _, n := range nonDiscoverablePlugins {
-		if name == n {
-			return true
+	return slices.Contains(nonDiscoverablePlugins, name)
+}
+
+// FilterNonDiscoverablePlugins drops any entry that names a non-discoverable
+// plugin (see nonDiscoverablePlugins), returning the filtered slice and the
+// names that were removed. PluginConfig.Name holds the binary name without the
+// "bossd-plugin-" prefix, so it is re-prefixed before comparison.
+//
+// Auto-discovery (scanForPlugins) already skips these binaries, but a config
+// persisted by an older daemon — built before the binary was marked
+// non-discoverable — can still carry a stale entry. Filtering the persisted
+// list at load keeps such an entry from loading and surfacing a non-functional
+// agent (e.g. the E2E-only "stub-runner") in the picker. The explicit --plugins
+// path (E2E) intentionally bypasses this so tests can still load the stub.
+func FilterNonDiscoverablePlugins(cfgs []PluginConfig) ([]PluginConfig, []string) {
+	out := make([]PluginConfig, 0, len(cfgs))
+	var dropped []string
+	for _, c := range cfgs {
+		if isNonDiscoverablePlugin(pluginPrefix + c.Name) {
+			dropped = append(dropped, c.Name)
+			continue
 		}
+		out = append(out, c)
 	}
-	return false
+	return out, dropped
 }
 
 // scanForPlugins scans a directory for any executable matching the

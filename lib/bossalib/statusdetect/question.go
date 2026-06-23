@@ -22,6 +22,18 @@ var cursorPosRe = regexp.MustCompile(`\x1b\[[0-9;]*H`)
 // and two-byte sequences (ESC followed by a single character like ESC(B).
 var ansiRe = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[A-Za-z]|\][^\x07\x1b]*(?:\x07|\x1b\\)|\(.|.)`)
 
+// unicodeSpaceRe matches Unicode space separators (category Zs): the regular
+// ASCII space U+0020, the non-breaking space U+00A0, narrow NBSP U+202F, figure
+// space U+2007, and the rest. Claude Code renders the input-box prompt as
+// "❯ <text>" with a NON-BREAKING space after the glyph (and uses NBSP for
+// other layout padding), but every detection regex below assumes an ASCII
+// space -- so without normalizing, a draft prompt ending in "?" slips past
+// stripUserPromptLines and false-positives the question state. Replacing all Zs
+// runes with U+0020 keeps regular spaces unchanged and leaves tabs (U+0009,
+// category Cc) untouched, so the existing "[ \t]" / "[ ]{4,}" classes keep
+// working.
+var unicodeSpaceRe = regexp.MustCompile(`\p{Zs}`)
+
 // StripANSI converts raw PTY bytes to readable text by:
 // 1. Replacing cursor-forward sequences (ESC[nC) with n spaces
 // 2. Replacing cursor-position sequences (ESC[...H) with newlines
@@ -57,6 +69,11 @@ func StripANSI(data []byte) []byte {
 
 	// Step 4: strip all remaining ANSI sequences.
 	out = ansiRe.ReplaceAll(out, nil)
+
+	// Step 5: normalize Unicode space separators (NBSP etc.) to ASCII space so
+	// the "❯ "/"☐ "/option/indent regexes match Claude Code's NBSP-rendered
+	// input box and layout padding.
+	out = unicodeSpaceRe.ReplaceAll(out, []byte(" "))
 
 	return out
 }

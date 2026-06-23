@@ -25,6 +25,15 @@ const (
 	// ServiceName is the systemd unit name.
 	ServiceName = "bossd.service"
 
+	// McpServiceName is the systemd unit name for the local MCP server.
+	McpServiceName = "bossanova-mcp.service"
+
+	// McpLabel is a stable identifier for the MCP service across platforms.
+	McpLabel = "bossanova-mcp"
+
+	// DefaultMcpPort is the loopback port the MCP HTTP daemon listens on.
+	DefaultMcpPort = 8765
+
 	unitTemplate = `[Unit]
 Description=Bossanova Daemon
 After=network.target
@@ -37,10 +46,51 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 `
+
+	// mcpUnitTemplate runs `mcp --http 127.0.0.1:<port>`. Its PATH includes the
+	// agent-runner shim directories (~/.nodenv/shims, ~/.local/bin) so the MCP
+	// server (and any agent CLI it shells out to) can find node/agent binaries.
+	mcpUnitTemplate = `[Unit]
+Description=Bossanova MCP Server
+After=network.target
+
+[Service]
+ExecStart={{.McpPath}} --http {{.Addr}}
+Restart=always
+RestartSec=5
+Environment=PATH={{.Path}}
+
+[Install]
+WantedBy=default.target
+`
 )
 
 type unitData struct {
 	BossdPath string
+}
+
+type mcpUnitData struct {
+	McpPath string
+	Addr    string
+	Path    string
+}
+
+// mcpPath builds the PATH for the MCP service, prepending the agent-runner shim
+// directories (~/.nodenv/shims and ~/.local/bin) to the inherited PATH.
+func mcpPath() string {
+	entries := []string{}
+	if home, err := os.UserHomeDir(); err == nil {
+		entries = append(entries,
+			filepath.Join(home, ".nodenv", "shims"),
+			filepath.Join(home, ".local", "bin"),
+		)
+	}
+	if p := os.Getenv("PATH"); p != "" {
+		entries = append(entries, p)
+	} else {
+		entries = append(entries, "/usr/local/bin", "/usr/bin", "/bin")
+	}
+	return strings.Join(entries, ":")
 }
 
 // platformServicePath returns the path to the systemd user unit file.
@@ -230,6 +280,150 @@ func platformGetStatus() (*Status, error) {
 		}
 	}
 
+	return st, nil
+}
+
+// mcpServicePath returns the path to the MCP systemd user unit file.
+func mcpServicePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", McpServiceName), nil
+}
+
+// generateMcpUnit renders the systemd unit file for the local MCP server.
+func generateMcpUnit(mcpBinPath string, port int) (string, error) {
+	tmpl, err := template.New("mcpUnit").Parse(mcpUnitTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parse mcp unit template: %w", err)
+	}
+
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, mcpUnitData{
+		McpPath: mcpBinPath,
+		Addr:    fmt.Sprintf("127.0.0.1:%d", port),
+		Path:    mcpPath(),
+	}); err != nil {
+		return "", fmt.Errorf("render mcp unit: %w", err)
+	}
+	return buf.String(), nil
+}
+
+func platformMcpInstall(mcpBinPath string, port int, force bool) error {
+	unitPath, err := mcpServicePath()
+	if err != nil {
+		return err
+	}
+
+	if !force {
+		if _, err := os.Stat(unitPath); err == nil {
+			return fmt.Errorf("unit file already exists at %s (use --force to overwrite)", unitPath)
+		}
+	}
+
+	if !skipLaunchctl() {
+		if _, err := exec.LookPath("systemctl"); err != nil {
+			return fmt.Errorf("systemctl not found: systemd is required for service management on Linux")
+		}
+	}
+
+	unit, err := generateMcpUnit(mcpBinPath, port)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		return fmt.Errorf("create systemd user dir: %w", err)
+	}
+	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
+		return fmt.Errorf("write unit file: %w", err)
+	}
+
+	if skipLaunchctl() {
+		return nil
+	}
+
+	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("systemctl", "--user", "enable", "--now", McpServiceName).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl enable --now: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func platformMcpUninstall() error {
+	unitPath, err := mcpServicePath()
+	if err != nil {
+		return err
+	}
+
+	if !skipLaunchctl() {
+		_ = exec.Command("systemctl", "--user", "disable", "--now", McpServiceName).Run()
+	}
+	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove unit file: %w", err)
+	}
+	if !skipLaunchctl() {
+		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+	}
+	return nil
+}
+
+func platformMcpStart() error {
+	if skipLaunchctl() {
+		return nil
+	}
+	if out, err := exec.Command("systemctl", "--user", "restart", McpServiceName).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl --user restart %s: %w: %s", McpServiceName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func platformMcpStop() error {
+	if skipLaunchctl() {
+		return nil
+	}
+	if out, err := exec.Command("systemctl", "--user", "stop", McpServiceName).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl --user stop %s: %w: %s", McpServiceName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func platformMcpGetStatus() (*Status, error) {
+	unitPath, err := mcpServicePath()
+	if err != nil {
+		return nil, err
+	}
+
+	st := &Status{ServicePath: unitPath}
+
+	if _, err := os.Stat(unitPath); err != nil {
+		if os.IsNotExist(err) {
+			return st, nil
+		}
+		return nil, fmt.Errorf("check unit file: %w", err)
+	}
+	st.Installed = true
+
+	if skipLaunchctl() {
+		return st, nil
+	}
+
+	out, err := exec.Command("systemctl", "--user", "is-active", McpServiceName).Output()
+	if err == nil && strings.TrimSpace(string(out)) == "active" {
+		st.Running = true
+	}
+	if st.Running {
+		out, err := exec.Command("systemctl", "--user", "show", "--property=MainPID", McpServiceName).Output()
+		if err == nil {
+			line := strings.TrimSpace(string(out))
+			if parts := strings.SplitN(line, "=", 2); len(parts) == 2 {
+				_, _ = fmt.Sscanf(parts[1], "%d", &st.PID)
+			}
+		}
+	}
 	return st, nil
 }
 

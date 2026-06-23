@@ -60,13 +60,15 @@
         {
           "type": "object",
           "unevaluatedProperties": false,
-          "required": ["id", "surface", "title", "description", "privacy", "terminal", "waitForText"],
+          "required": ["id", "surface", "title", "description", "privacy", "terminal"],
           "properties": {
             "id": { "type": "string" },
             "surface": { "const": "tui" },
             "title": { "type": "string" },
             "description": { "type": "string" },
             "privacy": { "enum": ["fixture", "live"] },
+            "capture": { "enum": ["image", "video"], "default": "image" },
+            "frameDelayMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
             "terminal": {
               "type": "object",
               "additionalProperties": false,
@@ -101,7 +103,20 @@
                 }
               }
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "capture": { "const": "video" } }, "required": ["capture"] },
+              "then": {
+                "description": "TUI video recipes drive a steps[] sequence; no single waitForText.",
+                "required": ["steps"]
+              },
+              "else": {
+                "description": "TUI still recipes screenshot after a single waitForText anchor.",
+                "required": ["waitForText"]
+              }
+            }
+          ]
         }
       ]
     },
@@ -111,13 +126,14 @@
         {
           "type": "object",
           "unevaluatedProperties": false,
-          "required": ["id", "surface", "title", "description", "privacy", "route", "viewport"],
+          "required": ["id", "surface", "title", "description", "privacy", "viewport"],
           "properties": {
             "id": { "type": "string" },
             "surface": { "enum": ["web", "marketing"] },
             "title": { "type": "string" },
             "description": { "type": "string" },
             "privacy": { "enum": ["fixture", "live"] },
+            "capture": { "enum": ["image", "video"], "default": "image" },
             "route": {
               "type": "string",
               "pattern": "^/(?!/)(?!.*\\\\)(?!.*[\\u0000-\\u001F\\u007F]).*$"
@@ -134,16 +150,67 @@
                 "width": { "type": "integer", "minimum": 320, "maximum": 3840 },
                 "height": { "type": "integer", "minimum": 480, "maximum": 2160 }
               }
+            },
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action"],
+                "properties": {
+                  "action": { "enum": ["goto", "click", "type", "wait"] },
+                  "route": {
+                    "type": "string",
+                    "pattern": "^/(?!/)(?!.*\\\\)(?!.*[\\u0000-\\u001F\\u007F]).*$"
+                  },
+                  "selector": { "type": "string", "minLength": 1 },
+                  "value": { "type": "string", "minLength": 1 },
+                  "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 60000 }
+                },
+                "allOf": [
+                  {
+                    "if": { "properties": { "action": { "const": "goto" } } },
+                    "then": { "required": ["route"] }
+                  },
+                  {
+                    "if": { "properties": { "action": { "const": "click" } } },
+                    "then": { "required": ["selector"] }
+                  },
+                  {
+                    "if": { "properties": { "action": { "const": "type" } } },
+                    "then": { "required": ["selector", "value"] }
+                  }
+                ]
+              }
             }
           },
-          "if": {
-            "properties": { "canvas": { "const": true } },
-            "required": ["canvas"]
-          },
-          "then": {
-            "description": "Canvas surfaces render pixels the DOM-text secret scan cannot inspect, so they must use staged fixture data only.",
-            "properties": { "privacy": { "const": "fixture" } }
-          }
+          "allOf": [
+            {
+              "if": {
+                "properties": { "canvas": { "const": true } },
+                "required": ["canvas"]
+              },
+              "then": {
+                "description": "Canvas surfaces render pixels the DOM-text secret scan cannot inspect, so they must use staged fixture data only.",
+                "properties": { "privacy": { "const": "fixture" } }
+              }
+            },
+            {
+              "if": {
+                "properties": { "capture": { "const": "video" } },
+                "required": ["capture"]
+              },
+              "then": {
+                "description": "Video recipes drive a steps[] action sequence; routes live in the goto steps, not a single top-level route.",
+                "required": ["steps"]
+              },
+              "else": {
+                "description": "Still recipes screenshot a single route.",
+                "required": ["route"]
+              }
+            }
+          ]
         }
       ]
     }

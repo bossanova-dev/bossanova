@@ -13,7 +13,9 @@ import (
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
@@ -48,6 +50,36 @@ func TestBuildInteractiveCommandReturnsSlashCommandPrefix(t *testing.T) {
 	}
 	if resp.GetCommandPrefix() != "/" {
 		t.Fatalf("command prefix = %q, want /", resp.GetCommandPrefix())
+	}
+}
+
+func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
+	srv := &Server{}
+
+	// With the field set, the claude argv must carry --append-system-prompt.
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:          "agent-1",
+		LogPath:            t.TempDir() + "/claude.log",
+		AppendSystemPrompt: "autonomous cron run",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--append-system-prompt\x00autonomous cron run") {
+		t.Fatalf("argv = %v, want --append-system-prompt with the directive", resp.GetArgv())
+	}
+
+	// Without it, the flag must be absent (non-cron chats are unaffected).
+	respNone, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "agent-2",
+		LogPath:   t.TempDir() + "/claude.log",
+	})
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand: %v", err)
+	}
+	if strings.Contains(strings.Join(respNone.GetArgv(), " "), "--append-system-prompt") {
+		t.Fatalf("argv = %v, want no --append-system-prompt when field empty", respNone.GetArgv())
 	}
 }
 
@@ -236,6 +268,59 @@ func TestServer_ConfigureFinalizeHook_RunScoped(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "tkn-run") {
 		t.Errorf("hook file missing run token: %q", data)
+	}
+}
+
+func TestServer_RemoveAgentRunHook(t *testing.T) {
+	worktree := t.TempDir()
+	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
+	// A session-keyed finalize entry that must survive the removal, so the
+	// post-removal Stop array is non-nil and the survival assertion is real
+	// (not a vacuous pass on an empty/absent Stop list).
+	if _, err := srv.ConfigureFinalizeHook(context.Background(), &bossanovav1.ConfigureFinalizeHookRequest{
+		WorkDir: worktree, SessionId: "sess-1", AgentSessionId: "", HookToken: "tok-final", HookPort: 4000,
+	}); err != nil {
+		t.Fatalf("configure finalize: %v", err)
+	}
+	if _, err := srv.ConfigureFinalizeHook(context.Background(), &bossanovav1.ConfigureFinalizeHookRequest{
+		WorkDir: worktree, SessionId: "sess-1", AgentSessionId: "run-1", HookToken: "tok-1", HookPort: 4000,
+	}); err != nil {
+		t.Fatalf("configure run: %v", err)
+	}
+	if _, err := srv.RemoveAgentRunHook(context.Background(), &bossanovav1.RemoveAgentRunHookRequest{
+		WorkDir: worktree, AgentSessionId: "run-1",
+	}); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	settings := readSettings(t, worktree) // shared helper from hookconfig_test.go (same package)
+	stop, ok := settings["hooks"].(map[string]any)["Stop"].([]any)
+	if !ok {
+		t.Fatal("Stop array missing after removal; the finalize entry should remain")
+	}
+	var foundFinalize bool
+	for _, raw := range stop {
+		switch raw.(map[string]any)["matcher"] {
+		case runHookMatcherPrefix + "run-1":
+			t.Fatal("run-1 hook should be gone after RemoveAgentRunHook")
+		case "bossd-finalize":
+			foundFinalize = true
+		}
+	}
+	if !foundFinalize {
+		t.Error("bossd-finalize entry must survive RemoveAgentRunHook")
+	}
+}
+
+func TestServer_RemoveAgentRunHook_ValidationError(t *testing.T) {
+	srv := &Server{logger: zerolog.Nop(), runner: NewRunner(zerolog.Nop())}
+	_, err := srv.RemoveAgentRunHook(context.Background(), &bossanovav1.RemoveAgentRunHookRequest{
+		WorkDir: "", AgentSessionId: "run-1",
+	})
+	if err == nil {
+		t.Fatal("expected an error for empty WorkDir")
+	}
+	if got := status.Code(err); got != codes.Internal {
+		t.Errorf("status code = %v, want %v", got, codes.Internal)
 	}
 }
 

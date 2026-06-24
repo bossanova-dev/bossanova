@@ -1,4 +1,4 @@
-.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills deps format generate kill lint \
+.PHONY: all build build-all build-docs clean codex-skills codex-skills-check construct-skills construct-skills-check copy-skills deps format generate gen-skill kill lint \
 	lint-check-version lint-docs lint-scripts \
 	mutate mutate-coverage mutate-diff mutate-fix mutate-loop mutate-pkg \
 	mutate-report mutate-survivors mutate-uncovered \
@@ -232,6 +232,13 @@ $(WEB_DEPS_STAMP): services/web/package.json pnpm-lock.yaml
 copy-skills:
 	@rsync -a --delete "$(SKILLS_SRC_DIR)/" "$(SKILLS_PLUGIN_DIR)/"
 
+## gen-skill: Regenerate the /boss skill command reference from the CLI, then mirror it.
+## The reference region of services/boss/internal/skillinstall/skills/boss/SKILL.md is
+## generated from the cobra command tree; TestSkillMatchesGenerated fails if it drifts.
+gen-skill:
+	cd services/boss && go run ./cmd gen-skill
+	$(MAKE) copy-skills
+
 ## generate: Run buf generate to produce Go code from proto definitions
 generate: $(GEN_STAMP)
 
@@ -266,6 +273,14 @@ $(BIN_DIR)/mcp: $(GEN_STAMP)
 ifneq ($(wildcard services/bosso/go.mod),)
 $(BIN_DIR)/bosso: $(GEN_STAMP)
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/bosso ./services/bosso/cmd
+endif
+
+# mcp-gateway is a private, hosted-only service (stripped from the public
+# mirror); guard its build rule on the module's presence like bosso so the
+# public Makefile does not reference a missing module.
+ifneq ($(wildcard services/mcp-gateway/go.mod),)
+$(BIN_DIR)/mcp-gateway: $(GEN_STAMP)
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/mcp-gateway ./services/mcp-gateway/cmd
 endif
 
 ## plugins: Build all plugin binaries
@@ -360,6 +375,11 @@ test-bossd:
 test-mcp:
 	$(MAKE) -C services/mcp test
 
+ifneq ($(wildcard services/mcp-gateway/go.mod),)
+test-mcp-gateway:
+	$(MAKE) -C services/mcp-gateway test
+endif
+
 ## test-integration-bossd: Run bossd integration tests (requires tmux on PATH; gated by 'integration' build tag)
 test-integration-bossd:
 	cd services/bossd && go test -tags=integration -race ./internal/server/... ./internal/testharness/... -count=1
@@ -426,6 +446,11 @@ lint-bossd: lint-check-version
 lint-mcp: lint-check-version
 	cd services/mcp && golangci-lint run ./...
 
+ifneq ($(wildcard services/mcp-gateway/go.mod),)
+lint-mcp-gateway: lint-check-version
+	cd services/mcp-gateway && golangci-lint run ./...
+endif
+
 test-readme:
 	node scripts/check-readme-assets.mjs
 
@@ -479,7 +504,7 @@ proof-plan:
 	node scripts/proof.mjs plan
 
 proof-test:
-	node --test scripts/proof-lib.test.mjs scripts/proof-playwright-runner.test.mjs scripts/proof-vhs.test.mjs
+	node --test scripts/proof-lib.test.mjs scripts/proof-playwright-runner.test.mjs scripts/proof-vhs.test.mjs scripts/proof-video.test.mjs scripts/proof-video-intro.test.mjs scripts/proof-poster.test.mjs
 
 test-scripts:
 	$(MAKE) -C scripts test
@@ -543,6 +568,11 @@ build-bossd:
 build-mcp:
 	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/mcp ./services/mcp/cmd
 	@if [ "$$(uname)" = "Darwin" ]; then codesign -s "$(CODESIGN_IDENTITY)" --force $(BIN_DIR)/mcp; fi
+
+ifneq ($(wildcard services/mcp-gateway/go.mod),)
+build-mcp-gateway:
+	go build -ldflags '$(LDFLAGS)' -o $(BIN_DIR)/mcp-gateway ./services/mcp-gateway/cmd
+endif
 
 ifneq ($(wildcard services/bosso/go.mod),)
 build-bosso:

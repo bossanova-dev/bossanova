@@ -106,6 +106,9 @@ const (
 	// AgentRunnerServiceConfigureFinalizeHookProcedure is the fully-qualified name of the
 	// AgentRunnerService's ConfigureFinalizeHook RPC.
 	AgentRunnerServiceConfigureFinalizeHookProcedure = "/bossanova.v1.AgentRunnerService/ConfigureFinalizeHook"
+	// AgentRunnerServiceRemoveAgentRunHookProcedure is the fully-qualified name of the
+	// AgentRunnerService's RemoveAgentRunHook RPC.
+	AgentRunnerServiceRemoveAgentRunHookProcedure = "/bossanova.v1.AgentRunnerService/RemoveAgentRunHook"
 	// AgentRunnerServiceBuildInteractiveCommandProcedure is the fully-qualified name of the
 	// AgentRunnerService's BuildInteractiveCommand RPC.
 	AgentRunnerServiceBuildInteractiveCommandProcedure = "/bossanova.v1.AgentRunnerService/BuildInteractiveCommand"
@@ -777,6 +780,13 @@ type AgentRunnerServiceClient interface {
 	// Claude this writes .claude/settings.local.json. Returns
 	// is_supported=false for agents without one.
 	ConfigureFinalizeHook(context.Context, *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error)
+	// Remove the run-scoped Stop-hook entry a prior ConfigureFinalizeHook (with
+	// a non-empty agent_session_id) installed. Called by the daemon when a run
+	// completes so a finished run's completion ping can't linger in the
+	// worktree's settings.local.json. No-op (is_supported may be false) for
+	// agents without a finalize hook. Idempotent: removing an absent entry
+	// succeeds.
+	RemoveAgentRunHook(context.Context, *connect.Request[v1.RemoveAgentRunHookRequest]) (*connect.Response[v1.RemoveAgentRunHookResponse], error)
 	// Build the argv for an interactive (tmux-hosted) launch. argv MUST
 	// tee stdout/stderr to log_path so AttachSession can read it.
 	BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error)
@@ -851,6 +861,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("ConfigureFinalizeHook")),
 			connect.WithClientOptions(opts...),
 		),
+		removeAgentRunHook: connect.NewClient[v1.RemoveAgentRunHookRequest, v1.RemoveAgentRunHookResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceRemoveAgentRunHookProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("RemoveAgentRunHook")),
+			connect.WithClientOptions(opts...),
+		),
 		buildInteractiveCommand: connect.NewClient[v1.BuildInteractiveCommandRequest, v1.BuildInteractiveCommandResponse](
 			httpClient,
 			baseURL+AgentRunnerServiceBuildInteractiveCommandProcedure,
@@ -904,6 +920,7 @@ type agentRunnerServiceClient struct {
 	isRunning                   *connect.Client[v1.IsAgentRunningRequest, v1.IsAgentRunningResponse]
 	exitStatus                  *connect.Client[v1.AgentExitStatusRequest, v1.AgentExitStatusResponse]
 	configureFinalizeHook       *connect.Client[v1.ConfigureFinalizeHookRequest, v1.ConfigureFinalizeHookResponse]
+	removeAgentRunHook          *connect.Client[v1.RemoveAgentRunHookRequest, v1.RemoveAgentRunHookResponse]
 	buildInteractiveCommand     *connect.Client[v1.BuildInteractiveCommandRequest, v1.BuildInteractiveCommandResponse]
 	resolveInteractiveSessionID *connect.Client[v1.ResolveInteractiveSessionIDRequest, v1.ResolveInteractiveSessionIDResponse]
 	listIgnoredDirtyFiles       *connect.Client[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse]
@@ -941,6 +958,11 @@ func (c *agentRunnerServiceClient) ExitStatus(ctx context.Context, req *connect.
 // ConfigureFinalizeHook calls bossanova.v1.AgentRunnerService.ConfigureFinalizeHook.
 func (c *agentRunnerServiceClient) ConfigureFinalizeHook(ctx context.Context, req *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error) {
 	return c.configureFinalizeHook.CallUnary(ctx, req)
+}
+
+// RemoveAgentRunHook calls bossanova.v1.AgentRunnerService.RemoveAgentRunHook.
+func (c *agentRunnerServiceClient) RemoveAgentRunHook(ctx context.Context, req *connect.Request[v1.RemoveAgentRunHookRequest]) (*connect.Response[v1.RemoveAgentRunHookResponse], error) {
+	return c.removeAgentRunHook.CallUnary(ctx, req)
 }
 
 // BuildInteractiveCommand calls bossanova.v1.AgentRunnerService.BuildInteractiveCommand.
@@ -1000,6 +1022,13 @@ type AgentRunnerServiceHandler interface {
 	// Claude this writes .claude/settings.local.json. Returns
 	// is_supported=false for agents without one.
 	ConfigureFinalizeHook(context.Context, *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error)
+	// Remove the run-scoped Stop-hook entry a prior ConfigureFinalizeHook (with
+	// a non-empty agent_session_id) installed. Called by the daemon when a run
+	// completes so a finished run's completion ping can't linger in the
+	// worktree's settings.local.json. No-op (is_supported may be false) for
+	// agents without a finalize hook. Idempotent: removing an absent entry
+	// succeeds.
+	RemoveAgentRunHook(context.Context, *connect.Request[v1.RemoveAgentRunHookRequest]) (*connect.Response[v1.RemoveAgentRunHookResponse], error)
 	// Build the argv for an interactive (tmux-hosted) launch. argv MUST
 	// tee stdout/stderr to log_path so AttachSession can read it.
 	BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error)
@@ -1070,6 +1099,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("ConfigureFinalizeHook")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceRemoveAgentRunHookHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceRemoveAgentRunHookProcedure,
+		svc.RemoveAgentRunHook,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("RemoveAgentRunHook")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentRunnerServiceBuildInteractiveCommandHandler := connect.NewUnaryHandler(
 		AgentRunnerServiceBuildInteractiveCommandProcedure,
 		svc.BuildInteractiveCommand,
@@ -1126,6 +1161,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceExitStatusHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceConfigureFinalizeHookProcedure:
 			agentRunnerServiceConfigureFinalizeHookHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceRemoveAgentRunHookProcedure:
+			agentRunnerServiceRemoveAgentRunHookHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceBuildInteractiveCommandProcedure:
 			agentRunnerServiceBuildInteractiveCommandHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceResolveInteractiveSessionIDProcedure:
@@ -1171,6 +1208,10 @@ func (UnimplementedAgentRunnerServiceHandler) ExitStatus(context.Context, *conne
 
 func (UnimplementedAgentRunnerServiceHandler) ConfigureFinalizeHook(context.Context, *connect.Request[v1.ConfigureFinalizeHookRequest]) (*connect.Response[v1.ConfigureFinalizeHookResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ConfigureFinalizeHook is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) RemoveAgentRunHook(context.Context, *connect.Request[v1.RemoveAgentRunHookRequest]) (*connect.Response[v1.RemoveAgentRunHookResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.RemoveAgentRunHook is not implemented"))
 }
 
 func (UnimplementedAgentRunnerServiceHandler) BuildInteractiveCommand(context.Context, *connect.Request[v1.BuildInteractiveCommandRequest]) (*connect.Response[v1.BuildInteractiveCommandResponse], error) {

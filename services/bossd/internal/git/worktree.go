@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,6 +86,13 @@ type WorktreeManager interface {
 	// expectedRemoteSHA and the local branch has integrated that SHA. It returns
 	// the pushed local HEAD SHA.
 	PushWithLease(ctx context.Context, worktreePath, branch, expectedRemoteSHA string) (string, error)
+
+	// InjectPRNumbers rewrites the commit subjects on branch between its
+	// merge-base with baseRef and HEAD, inserting "[#<prNumber>]" into any
+	// conventional-commit subject that lacks it, then force-pushes the rewrite
+	// to origin. Idempotent: already-tagged subjects are left untouched and no
+	// push happens when nothing changes. Requires a clean working tree.
+	InjectPRNumbers(ctx context.Context, worktreePath, branch string, prNumber int, baseRef string) error
 
 	// Status runs `git status --porcelain` in the given worktree and returns
 	// its trimmed stdout. Empty output means the working tree has no changes
@@ -664,6 +672,115 @@ func (m *Manager) LatestCommitSubject(ctx context.Context, worktreePath string) 
 		return "", fmt.Errorf("latest commit subject: %w", err)
 	}
 	return out, nil
+}
+
+// InjectPRNumbers ports the boss-finalize skill's add-pr-numbers.sh into the
+// daemon so cron runs satisfy the commit-message PR-tag policy without spawning
+// a separate finalize chat. It rebases the branch onto its merge-base with
+// baseRef and, via a per-commit --exec, inserts "[#<prNumber>]" into each
+// conventional-commit subject missing it, then force-pushes the rewrite.
+//
+// All git hooks are disabled for the rewrite — the husky commit-msg hook is
+// absent or broken in session worktrees — and GPG signing is forced off so an
+// unconfigured key can't abort the amend. The working tree must be clean;
+// callers commit or strip pending changes first. A partial rebase is aborted
+// before returning an error so the worktree stays usable.
+func (m *Manager) InjectPRNumbers(ctx context.Context, worktreePath, branch string, prNumber int, baseRef string) error {
+	if prNumber <= 0 {
+		return fmt.Errorf("invalid PR number %d", prNumber)
+	}
+	if err := m.verifyCurrentBranch(ctx, worktreePath, branch); err != nil {
+		return fmt.Errorf("verify branch before PR-number injection: %w", err)
+	}
+
+	remoteHead, err := remoteBranchHead(ctx, worktreePath, branch)
+	if err != nil {
+		return err
+	}
+
+	baseSHA, err := runGit(ctx, worktreePath, "merge-base", "HEAD", baseRef)
+	if err != nil {
+		return fmt.Errorf("merge-base HEAD %s: %w", baseRef, err)
+	}
+
+	tag := "[#" + strconv.Itoa(prNumber) + "]"
+
+	// Pre-scan the subjects: skip the rebase entirely when every commit already
+	// carries the tag. A no-op `--exec` rebase still rewrites committer dates
+	// (new SHAs), so this guard keeps a re-run a true no-op.
+	subjects, err := runGit(ctx, worktreePath, "log", "--format=%s", baseSHA+"..HEAD")
+	if err != nil {
+		return fmt.Errorf("list commit subjects since base: %w", err)
+	}
+	needsTag := false
+	for s := range strings.SplitSeq(subjects, "\n") {
+		if strings.TrimSpace(s) != "" && !strings.Contains(s, tag) {
+			needsTag = true
+			break
+		}
+	}
+	if !needsTag {
+		if _, err := runGit(ctx, worktreePath, "push", "-u", "origin", "HEAD:refs/heads/"+branch); err != nil {
+			return fmt.Errorf("push already-tagged commits: %w", err)
+		}
+		return nil
+	}
+
+	if _, err := runGit(ctx, worktreePath, "merge-base", "--is-ancestor", remoteHead, "HEAD"); err != nil {
+		return fmt.Errorf("remote branch head %s is not integrated in local branch before PR-number injection", remoteHead)
+	}
+
+	if _, err := runGit(ctx, worktreePath,
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.editor=true",
+		"-c", "sequence.editor=true",
+		"-c", "commit.gpgsign=false",
+		"rebase", baseSHA, "--exec", injectPRTagExec(tag),
+	); err != nil {
+		// Leave the worktree usable: abort any partial rebase before returning.
+		_, _ = runGit(ctx, worktreePath, "rebase", "--abort")
+		return fmt.Errorf("rebase to inject PR numbers: %w", err)
+	}
+
+	// Force-push the rewrite. The explicit lease requires the
+	// remote to still point at the remote head resolved before the rewrite, so
+	// local commits on an existing PR branch can be tagged and pushed without
+	// depending on stale remote-tracking refs.
+	lease := "--force-with-lease=refs/heads/" + branch + ":" + remoteHead
+	if _, err := runGit(ctx, worktreePath, "push", lease, "origin", "HEAD:refs/heads/"+branch); err != nil {
+		return fmt.Errorf("force-push rewritten commits: %w", err)
+	}
+	return nil
+}
+
+func remoteBranchHead(ctx context.Context, worktreePath, branch string) (string, error) {
+	out, err := runGit(ctx, worktreePath, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("resolve remote branch origin/%s: %w", branch, err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 || strings.TrimSpace(fields[0]) == "" {
+		return "", fmt.Errorf("remote branch origin/%s not found", branch)
+	}
+	return strings.TrimSpace(fields[0]), nil
+}
+
+// injectPRTagExec builds the shell command git runs after each replayed commit
+// during InjectPRNumbers' rebase. It mirrors add-pr-numbers.sh: skip if the
+// subject already has the tag, otherwise insert it after the conventional
+// "type(scope): " (or "type: ") prefix, falling back to appending it. The
+// message is amended via stdin (-F -) so no subject quoting is needed, and
+// --no-verify skips the worktree's commit-msg hook.
+func injectPRTagExec(tag string) string {
+	return "s=$(git log -1 --format=%s); " +
+		"if printf '%s' \"$s\" | grep -qF '" + tag + "'; then exit 0; fi; " +
+		"n=$(printf '%s' \"$s\" | sed 's/): /): " + tag + " /'); " +
+		"if [ \"$n\" = \"$s\" ]; then n=$(printf '%s' \"$s\" | sed 's/^\\([a-z][a-z]*\\): /\\1: " + tag + " /'); fi; " +
+		"if [ \"$n\" = \"$s\" ]; then n=\"$s " + tag + "\"; fi; " +
+		"b=$(git log -1 --format=%b); " +
+		// --allow-empty so an empty placeholder commit (chore: [skip ci] create
+		// pull request) can still be reworded without aborting the whole rebase.
+		"if [ -n \"$b\" ]; then printf '%s\\n\\n%s' \"$n\" \"$b\"; else printf '%s' \"$n\"; fi | git commit --amend --no-verify --allow-empty -F -"
 }
 
 // branchDebugUnavailable is the sentinel recorded in a BranchDebugSnapshot

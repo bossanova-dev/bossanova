@@ -1947,10 +1947,12 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		}
 	}
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
-		Chat:         chat,
-		WorktreePath: sess.WorktreePath,
-		TmuxName:     tmuxName,
-		ForceFresh:   !resume,
+		Chat:               chat,
+		WorktreePath:       sess.WorktreePath,
+		TmuxName:           tmuxName,
+		ForceFresh:         !resume,
+		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID),
+		CronEnv:            session.CronSessionEnv(sess),
 	})
 	if err != nil {
 		return err

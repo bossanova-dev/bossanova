@@ -251,9 +251,9 @@ type agentRunCompletePayload struct {
 // Response codes:
 //   - 400 — agent_session_id path parameter missing, or malformed JSON body
 //   - 401 — Authorization header missing/malformed or token mismatch
-//   - 404 — agent_session_id not registered (already completed or never started)
 //   - 500 — completer not configured (misconfiguration; should not happen in production)
-//   - 200 — auth succeeded and waiter signalled
+//   - 200 — auth succeeded and waiter signalled, OR the run is unknown/already
+//     completed (idempotent no-op; a duplicate or post-cleanup ping)
 //
 // The signal is synchronous (a buffered channel send + map cleanup) so
 // there's no need for the safego.Go pattern that handleFinalize uses for
@@ -303,7 +303,13 @@ func (h *HookServer) handleAgentRunComplete(w http.ResponseWriter, r *http.Reque
 	sessionID, err := h.completer.CompleteAgentRun(r.Context(), agentSessionID, token, payload.ExitError)
 	switch {
 	case errors.Is(err, plugin.ErrAgentRunNotFound):
-		http.Error(w, "agent run not found", http.StatusNotFound)
+		// Idempotent no-op: a "this run is done" ping for a run the daemon no
+		// longer tracks (already completed, or forgotten across a restart) is
+		// success, not failure. Returning 200 here is what keeps a stale Stop
+		// hook from surfacing as a "Stop hook error" line in the transcript.
+		// A genuine auth failure still falls through to the 401 branch below,
+		// so a rotated token is NOT silently swallowed.
+		w.WriteHeader(http.StatusOK)
 	case errors.Is(err, plugin.ErrAuthMismatch):
 		h.logger.Warn().Str("agent_session", agentSessionID).Msg("hook: agent-run-complete auth failed")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

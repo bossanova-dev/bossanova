@@ -311,6 +311,13 @@ function webStageScript() {
         prUrl: 'https://github.com/recurser/bossanova/pull/597',
         chats: [{ id: 'chat-1', agentSessionId: 'claude-1', title: 'Proof chat', status: 'idle' }],
       }],
+      // Seed connected repos so the web-repositories recipe (/settings/repos)
+      // renders the repo table (.data-table-wrap) with Disconnect buttons
+      // instead of the empty state — the recipe crops to that selector.
+      githubRepos: [
+        { repoOriginUrl: 'github.com/recurser/bossanova', installed: true },
+        { repoOriginUrl: 'github.com/madverts/madverts-core', installed: true },
+      ],
     };
   });
   await page.routeWebSocket('**/ws/attach*', (ws) => {

@@ -42,6 +42,9 @@ func (f *fakePollAgentClient) IsRunning(_ context.Context, _ *bossanovav1.IsAgen
 func (f *fakePollAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return &bossanovav1.ConfigureFinalizeHookResponse{}, nil
 }
+func (f *fakePollAgentClient) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
 func (f *fakePollAgentClient) BuildInteractiveCommand(_ context.Context, _ *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/agent"
 )
 
 // fakeTmuxClient lets us assert which Command was passed without exec'ing tmux.
@@ -27,6 +30,7 @@ type fakeTmuxClient struct {
 	// concurrent goroutines actually contend on singleflight.Do.
 	slowCreate bool
 	lastName   string
+	lastEnv    map[string]string
 }
 
 func (f *fakeTmuxClient) Available(_ context.Context) bool { return f.available }
@@ -35,7 +39,7 @@ func (f *fakeTmuxClient) HasSession(_ context.Context, _ string) bool {
 	defer f.mu.Unlock()
 	return f.hasSession
 }
-func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cmd []string) error {
+func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cmd []string, env map[string]string) error {
 	if f.slowCreate {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -43,6 +47,7 @@ func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cm
 	defer f.mu.Unlock()
 	f.captured = append([]string{}, cmd...)
 	f.lastName = name
+	f.lastEnv = env
 	if f.createErr != nil {
 		return f.createErr
 	}
@@ -135,17 +140,18 @@ type fakeArgvBuilder struct {
 
 // argvCall captures one BuildInteractive invocation for assertions.
 type argvCall struct {
-	agentName      string
-	agentSessionID string
-	resume         bool
-	worktreePath   string
-	logPath        string
+	agentName          string
+	agentSessionID     string
+	resume             bool
+	worktreePath       string
+	logPath            string
+	appendSystemPrompt string
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath string) ([]string, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -438,6 +444,88 @@ func TestSpawnChatTmux_ClaudeWithoutProviderSessionIDUsesAgentSessionID(t *testi
 	}
 }
 
+// TestSpawnChatTmux_PassesAppendSystemPrompt pins that the record/wake spawn
+// path forwards the boss session-context suffix to BuildInteractive. Without
+// this, continued/woken chats would launch without the boss identifiers that
+// StartTmuxChat injects, so "every chat" would silently exclude these paths.
+func TestSpawnChatTmux_PassesAppendSystemPrompt(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	transcripts := &fakeTranscriptOracle{exists: true}
+	builder := claudeArgvBuilder()
+	chat := newTestChat(t)
+	const bossContext = "You are running inside a bossanova-managed chat. ..."
+
+	_, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: transcripts,
+		Argv:        builder,
+	}, spawnInput{
+		Chat:               chat,
+		WorktreePath:       t.TempDir(),
+		TmuxName:           "boss-agent-session-1",
+		AppendSystemPrompt: bossContext,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(builder.calls) != 1 || builder.calls[0].appendSystemPrompt != bossContext {
+		t.Fatalf("BuildInteractive must receive append-system-prompt %q, got calls=%+v", bossContext, builder.calls)
+	}
+}
+
+// TestSpawnChatTmux_PassesCronEnv pins that the cron session-environment is
+// set on the spawned tmux pane. The cron autonomy directive (carried via
+// AppendSystemPrompt) asserts BOSS_CRON=true, so the record/wake spawn must
+// set that env too — otherwise a cron-spawned woken chat has the directive but
+// not the env, and shell-mode detection takes the interactive path.
+func TestSpawnChatTmux_PassesCronEnv(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	transcripts := &fakeTranscriptOracle{exists: true}
+	builder := claudeArgvBuilder()
+	chat := newTestChat(t)
+	cronEnv := map[string]string{"BOSS_CRON": "true", "BOSS_CRON_JOB_ID": "job-1"}
+
+	_, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: transcripts,
+		Argv:        builder,
+	}, spawnInput{
+		Chat:         chat,
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+		CronEnv:      cronEnv,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if tmuxer.lastEnv["BOSS_CRON"] != "true" || tmuxer.lastEnv["BOSS_CRON_JOB_ID"] != "job-1" {
+		t.Fatalf("tmux spawn must receive cron env, got %+v", tmuxer.lastEnv)
+	}
+}
+
+// TestSpawnChatTmux_NoCronEnvForPlainSession pins the non-cron case: a nil
+// CronEnv must reach the spawner unchanged (no BOSS_CRON leaks into ordinary
+// chats).
+func TestSpawnChatTmux_NoCronEnvForPlainSession(t *testing.T) {
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	_, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: true},
+		Argv:        claudeArgvBuilder(),
+	}, spawnInput{
+		Chat:         newTestChat(t),
+		WorktreePath: t.TempDir(),
+		TmuxName:     "boss-agent-session-1",
+		CronEnv:      nil,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if tmuxer.lastEnv != nil {
+		t.Fatalf("plain session must not receive cron env, got %+v", tmuxer.lastEnv)
+	}
+}
+
 func TestSpawnChatTmux_FreshLaunchResolverReturnsProviderSessionID(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	resolver := &fakeInteractiveSessionResolver{sessionID: "codex-real-1"}
@@ -623,4 +711,174 @@ func contains(s []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// stubResolverAgentClient is a configurable AgentRunnerClient used to drive
+// the liveInteractiveSessionResolver / liveTranscriptOracle dispatch paths.
+// The embedded interface is nil — only the two RPCs these dispatchers call
+// are overridden, so any other method would panic (and never does here).
+type stubResolverAgentClient struct {
+	agent.AgentRunnerClient
+	resolveResp    *bossanovav1.ResolveInteractiveSessionIDResponse
+	resolveErr     error
+	transcriptResp *bossanovav1.TranscriptExistsResponse
+	transcriptErr  error
+}
+
+func (s stubResolverAgentClient) ResolveInteractiveSessionID(context.Context, *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {
+	return s.resolveResp, s.resolveErr
+}
+
+func (s stubResolverAgentClient) TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
+	return s.transcriptResp, s.transcriptErr
+}
+
+func TestLiveInteractiveSessionResolver(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty agent name resolves through the claude default registry key", func(t *testing.T) {
+		t.Parallel()
+		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{
+				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "sess-1"},
+			},
+		}}
+		// agentName "" must fall through to defaultLegacyAgent ("claude"); a
+		// non-nil registry and a non-nil response must each be carried past
+		// their guard clauses so the resolved SessionID survives.
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "", "/work", "", time.Time{}, time.Time{}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.SessionID != "sess-1" {
+			t.Fatalf("SessionID = %q, want %q (empty name must map to claude, registry+response must pass their guards)", got.SessionID, "sess-1")
+		}
+		if got.Ambiguous {
+			t.Errorf("Ambiguous = true, want false")
+		}
+	})
+
+	t.Run("ambiguous response is surfaced", func(t *testing.T) {
+		t.Parallel()
+		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{
+				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Ambiguous: true, Reason: "two matches"},
+			},
+		}}
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !got.Ambiguous || got.Reason != "two matches" {
+			t.Fatalf("got %+v, want Ambiguous with reason %q", got, "two matches")
+		}
+	})
+
+	t.Run("client error is wrapped and returned", func(t *testing.T) {
+		t.Parallel()
+		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{resolveErr: errors.New("boom")},
+		}}
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false)
+		if err == nil {
+			t.Fatalf("expected error, got resolution %+v", got)
+		}
+		if got.SessionID != "" {
+			t.Errorf("SessionID = %q, want empty on error", got.SessionID)
+		}
+	})
+
+	t.Run("nil registry returns an empty resolution", func(t *testing.T) {
+		t.Parallel()
+		var r liveInteractiveSessionResolver
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "claude", "/work", "", time.Time{}, time.Time{}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.SessionID != "" || got.Ambiguous {
+			t.Fatalf("got %+v, want empty resolution for nil registry", got)
+		}
+	})
+
+	t.Run("unknown agent returns an empty resolution", func(t *testing.T) {
+		t.Parallel()
+		r := liveInteractiveSessionResolver{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{
+				resolveResp: &bossanovav1.ResolveInteractiveSessionIDResponse{Found: true, SessionId: "sess-1"},
+			},
+		}}
+		got, err := r.ResolveInteractiveSessionID(context.Background(), "codex", "/work", "", time.Time{}, time.Time{}, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.SessionID != "" {
+			t.Fatalf("SessionID = %q, want empty for unregistered agent", got.SessionID)
+		}
+	})
+}
+
+func TestLiveTranscriptOracle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty agent name probes through the claude default registry key", func(t *testing.T) {
+		t.Parallel()
+		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{
+				transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: true},
+			},
+		}}
+		// "" must map to claude; a non-nil registry and a (nil err, non-nil
+		// resp) pair must each pass their guards so Exists survives as true.
+		if !o.TranscriptExists(context.Background(), "", "/work", "sid") {
+			t.Fatal("want true: empty name must map to claude and a present transcript must report exists")
+		}
+	})
+
+	t.Run("nil registry reports not-exists", func(t *testing.T) {
+		t.Parallel()
+		var o liveTranscriptOracle
+		if o.TranscriptExists(context.Background(), "claude", "/work", "sid") {
+			t.Fatal("nil registry must report not-exists")
+		}
+	})
+
+	t.Run("unknown agent reports not-exists", func(t *testing.T) {
+		t.Parallel()
+		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: true}},
+		}}
+		if o.TranscriptExists(context.Background(), "codex", "/work", "sid") {
+			t.Fatal("unregistered agent must report not-exists")
+		}
+	})
+
+	t.Run("client error reports not-exists", func(t *testing.T) {
+		t.Parallel()
+		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{transcriptErr: errors.New("boom")},
+		}}
+		if o.TranscriptExists(context.Background(), "claude", "/work", "sid") {
+			t.Fatal("client error must report not-exists")
+		}
+	})
+
+	t.Run("present transcript reports exists", func(t *testing.T) {
+		t.Parallel()
+		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: true}},
+		}}
+		if !o.TranscriptExists(context.Background(), "claude", "/work", "sid") {
+			t.Fatal("present transcript must report exists")
+		}
+	})
+
+	t.Run("absent transcript reports not-exists", func(t *testing.T) {
+		t.Parallel()
+		o := liveTranscriptOracle{clients: map[string]agent.AgentRunnerClient{
+			"claude": stubResolverAgentClient{transcriptResp: &bossanovav1.TranscriptExistsResponse{Exists: false}},
+		}}
+		if o.TranscriptExists(context.Background(), "claude", "/work", "sid") {
+			t.Fatal("absent transcript must report not-exists")
+		}
+	})
 }

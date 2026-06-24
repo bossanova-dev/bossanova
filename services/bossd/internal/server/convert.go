@@ -207,10 +207,11 @@ func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionS
 // cronJobStatus derives the run-status enum for a cron job. It mirrors
 // scheduler.previousRunActive's logic so the daemon has a single source of
 // truth for "is this run still going" — with one deliberate divergence: a
-// Blocked session counts as not-running here so a failed finalize surfaces
-// as FAILED instead of perpetually RUNNING. The scheduler's overlap check
-// must NOT treat Blocked as terminal (you may want to refire on top of a
-// stuck run); the STATUS column should.
+// Blocked session counts as not-running here so housekeeping failures do not
+// leave cron STATUS stuck on RUNNING. The scheduler's overlap check must NOT
+// treat Blocked as terminal (you may want to refire on top of a stuck run);
+// the STATUS column should. After inactive-session fall-through, only
+// fire_failed maps to FAILED.
 //
 // Order matters: a re-fire after a previous failure must show RUNNING, not
 // FAILED. MarkFireStarted updates last_run_session_id but leaves
@@ -230,34 +231,35 @@ func cronJobStatus(ctx context.Context, job *models.CronJob, sessions db.Session
 
 // cronStatusInactiveState reports whether a session should NOT count as
 // "running" when deriving cron STATUS. Diverges from cron.isTerminalState
-// (which controls overlap-skip): Blocked is included here so a failed
-// finalize surfaces as FAILED in the STATUS column instead of staying
-// stuck on RUNNING until the user manually archives.
+// (which controls overlap-skip): Blocked is included here because PR/chat/
+// cleanup housekeeping problems are session attention states, not active cron
+// runs. Only fire_failed later maps cron STATUS to FAILED.
 func cronStatusInactiveState(st machine.State) bool {
 	return st == machine.Merged || st == machine.Closed || st == machine.Blocked
 }
 
-// isCronFailureOutcome reports whether a recorded outcome represents a
-// genuinely-failed deliverable (FAILED status). Only outcomes where no useful
-// artefact was produced are red:
-//   - pr_failed: the PR creation step itself failed
-//   - fire_failed: the cron fire never got started
+// isCronFailureOutcome reports whether a recorded outcome should paint the
+// cron job's STATUS column red (FAILED).
 //
-// The following outcomes fall through to IDLE instead, because the run either
-// succeeded or left a PR behind; any janitorial issue surfaces as a session
-// attention warning rather than cron FAILED status:
-//   - pr_created, deleted_no_changes, failed_recovered — successful outcomes
-//   - chat_spawn_failed — the PR was already created before the chat spawn step
-//   - cleanup_failed — the run completed but the cleanup step had an error
-//   - pr_skipped_no_github — no GitHub integration, not a failure
+// Contract: cron FAILED means the scheduled RUN did not happen - the agent
+// never started. It does NOT mean the agent ran fine but bossd's post-run
+// PR/cleanup/chat housekeeping hit a snag. A cron job is not obliged to
+// produce a PR; "no PR" is not a failure.
+//
+//   - fire_failed: the cron fire never reached a session (CreateSession
+//     errored) - the agent never ran. This is the only genuine cron failure.
+//
+// Every other outcome means the agent RAN. Housekeeping problems among them
+// surface as a Blocked session (attention-needed) in the sessions list via
+// FinalizeSession's needsAttention path - NOT as a red cron:
+//   - pr_created, deleted_no_changes, pr_skipped_no_github - successful runs
+//   - failed_recovered - daemon restarted mid-finalize; run already happened
+//   - pr_failed - the agent ran; only PR creation/lookup failed (often a
+//     transient gh/GitHub error). Shown as a Blocked session, not red cron.
+//   - chat_spawn_failed - the PR was created before the chat-spawn step failed
+//   - cleanup_failed - the run completed; only worktree cleanup errored
 func isCronFailureOutcome(o models.CronJobOutcome) bool {
-	switch o {
-	case models.CronJobOutcomePRFailed,
-		models.CronJobOutcomeFireFailed:
-		return true
-	default:
-		return false
-	}
+	return o == models.CronJobOutcomeFireFailed
 }
 
 // constructPRURL is a package-local alias for vcs.ConstructPRURL.

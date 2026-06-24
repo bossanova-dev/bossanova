@@ -221,6 +221,52 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "web-session-detail",
+      "surface": "web",
+      "title": "Web Session Detail",
+      "description": "Product web session-detail view: GitHub-logo action button, no Stop button, no Branch/PR meta rows, status pill at left.",
+      "privacy": "fixture",
+      "route": "/sessions/sess-e2e-1",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
+      "id": "web-session-detail-mobile",
+      "surface": "web",
+      "title": "Web Session Detail (mobile)",
+      "description": "Session-detail at phone width: status pill left, action buttons right, icon-only chat buttons.",
+      "privacy": "fixture",
+      "route": "/sessions/sess-e2e-1",
+      "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-sessions-mobile",
+      "surface": "web",
+      "title": "Web Sessions (mobile)",
+      "description": "Sessions list at phone width: icon-only New Session button floated right, table flush against the breadcrumb with a single top border.",
+      "privacy": "fixture",
+      "route": "/",
+      "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-new-session-mobile",
+      "surface": "web",
+      "title": "Web New Session (mobile)",
+      "description": "New Session wizard at phone width: symmetric breadcrumb padding and no 'Step N of M' heading.",
+      "privacy": "fixture",
+      "route": "/sessions/new",
+      "viewport": { "width": 390, "height": 844 }
+    },
+    {
+      "id": "web-repositories",
+      "surface": "web",
+      "title": "Web Repositories",
+      "description": "Repositories settings page: the Disconnect button shows a cross icon and still confirms.",
+      "privacy": "fixture",
+      "route": "/settings/repos",
+      "cropToSelector": ".data-table-wrap",
+      "viewport": { "width": 1440, "height": 1000 }
+    },
+    {
       "id": "marketing-home",
       "surface": "marketing",
       "title": "Marketing Home",
@@ -289,7 +335,11 @@
     {
       "name": "Product web",
       "patterns": ["services/web/"],
-      "recipeIds": ["web-sessions", "web-account", "web-chat-terminal", "web-new-session-flow"]
+      "recipeIds": [
+        "web-sessions", "web-sessions-mobile", "web-session-detail", "web-session-detail-mobile",
+        "web-new-session-mobile", "web-repositories", "web-account", "web-chat-terminal",
+        "web-new-session-flow"
+      ]
     },
     {
       "name": "Marketing site",

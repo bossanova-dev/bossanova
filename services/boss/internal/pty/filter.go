@@ -27,10 +27,12 @@ const maxPendingFilterBytes = 256
 // pending carries the tail of a previous chunk that ended mid-sequence;
 // callers must thread it through across reads. If the chunk ends with an
 // incomplete candidate, those bytes are returned in newPending instead of
-// being forwarded.
-func stripTerminalQueryReplies(data, pending []byte) (filtered, newPending []byte) {
+// being forwarded. If a carried pending candidate is still incomplete after
+// one continuation read, it is forwarded fail-open and flushedStalePending is
+// true.
+func stripTerminalQueryReplies(data, pending []byte) (filtered, newPending []byte, flushedStalePending bool) {
 	if len(data) == 0 && len(pending) == 0 {
-		return nil, nil
+		return nil, nil, false
 	}
 
 	buf := make([]byte, 0, len(pending)+len(data))
@@ -49,15 +51,25 @@ func stripTerminalQueryReplies(data, pending []byte) (filtered, newPending []byt
 		end, matched, complete := matchQueryReply(buf[i:])
 		if !complete {
 			tail := buf[i:]
+			// Fail open: a candidate carried in pending is still incomplete
+			// after one continuation read, so forward it rather than holding
+			// it across further reads and starving real keystrokes (BOS-55).
+			// Tradeoff: a legitimate reply split across three or more reads
+			// leaks its fragment instead of being stripped — see
+			// docs/plans/2026-06-23-tui-pty-input-freeze.md "Risks".
+			if len(pending) > 0 && len(data) > 0 && i < len(pending) {
+				out = append(out, tail...)
+				return out, nil, true
+			}
 			if len(tail) > maxPendingFilterBytes {
 				// Held more than we should — flush as-is rather than
 				// holding indefinitely on malformed input.
 				out = append(out, tail...)
-				return out, nil
+				return out, nil, false
 			}
 			held := make([]byte, len(tail))
 			copy(held, tail)
-			return out, held
+			return out, held, false
 		}
 		if matched {
 			i += end
@@ -66,7 +78,7 @@ func stripTerminalQueryReplies(data, pending []byte) (filtered, newPending []byt
 		out = append(out, buf[i])
 		i++
 	}
-	return out, nil
+	return out, nil, false
 }
 
 // matchQueryReply inspects a buffer that begins with ESC and decides whether

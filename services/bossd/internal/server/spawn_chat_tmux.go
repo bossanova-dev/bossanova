@@ -74,7 +74,7 @@ type transcriptOracle interface {
 type tmuxSpawner interface {
 	Available(ctx context.Context) bool
 	HasSession(ctx context.Context, name string) bool
-	NewSessionWithCmd(ctx context.Context, name, workDir string, cmd []string) error
+	NewSessionWithCmd(ctx context.Context, name, workDir string, cmd []string, env map[string]string) error
 }
 
 // argvBuilder resolves the tmux command argv for a given agent. The live
@@ -83,7 +83,7 @@ type tmuxSpawner interface {
 // flag wiring (claude → `claude --resume <id>`, codex → `codex resume <id>`,
 // plus per-plugin user settings). spawnChatTmux stays agent-agnostic.
 type argvBuilder interface {
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath string) ([]string, error)
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt string) ([]string, error)
 }
 
 type interactiveSessionResolution struct {
@@ -110,6 +110,17 @@ type spawnInput struct {
 	WorktreePath string
 	TmuxName     string
 	ForceFresh   bool
+	// AppendSystemPrompt is the boss session-context suffix appended to the
+	// agent's system prompt so record/wake-spawned chats carry the same boss
+	// identifiers StartTmuxChat injects. Empty when no session context applies.
+	AppendSystemPrompt string
+	// CronEnv is the cron session-environment (BOSS_CRON et al.) set on the
+	// spawned tmux pane so cron record/wake chats match StartTmuxChat. It must
+	// accompany the cron autonomy directive that AppendSystemPrompt carries —
+	// the directive asserts BOSS_CRON=true, so shipping it without this env
+	// would make shell-mode detection take the interactive path. Nil for
+	// non-cron sessions.
+	CronEnv map[string]string
 }
 
 type spawnResult struct {
@@ -186,7 +197,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	// at all — pane capture is wired post-NewSession via tmux pipe-pane
 	// by StartTmuxChat, and the WakeChat path here just doesn't need
 	// any. Keeping the empty argument makes the contract explicit.
-	args, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "")
+	args, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt)
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -195,7 +206,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	}
 
 	launchedAt := time.Now().UTC()
-	if err := deps.Tmux.NewSessionWithCmd(ctx, in.TmuxName, in.WorktreePath, args); err != nil {
+	if err := deps.Tmux.NewSessionWithCmd(ctx, in.TmuxName, in.WorktreePath, args, in.CronEnv); err != nil {
 		return spawnResult{}, fmt.Errorf("new tmux session: %w", err)
 	}
 
@@ -245,8 +256,10 @@ func (l liveTmuxSpawner) HasSession(ctx context.Context, name string) bool {
 }
 
 // NewSessionWithCmd creates a detached tmux session running the given command.
-func (l liveTmuxSpawner) NewSessionWithCmd(ctx context.Context, name, workDir string, cmd []string) error {
-	return l.c.NewSession(ctx, tmux.NewSessionOpts{Name: name, WorkDir: workDir, Command: cmd})
+// env carries the cron session-environment (BOSS_CRON et al.) so cron
+// record/wake spawns match StartTmuxChat; it is nil for non-cron sessions.
+func (l liveTmuxSpawner) NewSessionWithCmd(ctx context.Context, name, workDir string, cmd []string, env map[string]string) error {
+	return l.c.NewSession(ctx, tmux.NewSessionOpts{Name: name, WorkDir: workDir, Command: cmd, Env: env})
 }
 
 type liveInteractiveSessionResolver struct {
@@ -341,7 +354,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath string) ([]string, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt string) ([]string, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -354,10 +367,11 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		return nil, fmt.Errorf("agent runner not loaded for agent %q", name)
 	}
 	resp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:    agentSessionID,
-		Resume:       resume,
-		WorktreePath: worktreePath,
-		LogPath:      logPath,
+		SessionId:          agentSessionID,
+		Resume:             resume,
+		WorktreePath:       worktreePath,
+		LogPath:            logPath,
+		AppendSystemPrompt: appendSystemPrompt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q BuildInteractiveCommand: %w", name, err)

@@ -19,6 +19,7 @@ type AgentRunner interface {
 	IsRunning(ctx context.Context, req *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error)
 	ExitStatus(ctx context.Context, req *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error)
 	ConfigureFinalizeHook(ctx context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error)
+	RemoveAgentRunHook(ctx context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error)
 	BuildInteractiveCommand(ctx context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error)
 	ResolveInteractiveSessionID(ctx context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
 	ListIgnoredDirtyFiles(ctx context.Context, req *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error)
@@ -111,6 +112,14 @@ func (c *agentRunnerGRPCClient) ExitStatus(ctx context.Context, req *bossanovav1
 func (c *agentRunnerGRPCClient) ConfigureFinalizeHook(ctx context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	resp := &bossanovav1.ConfigureFinalizeHookResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/ConfigureFinalizeHook", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) RemoveAgentRunHook(ctx context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	resp := &bossanovav1.RemoveAgentRunHookResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/RemoveAgentRunHook", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

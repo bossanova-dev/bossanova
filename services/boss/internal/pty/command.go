@@ -3,6 +3,7 @@ package pty
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -187,7 +188,18 @@ func (c *PTYCommand) Run() error {
 					// inspect the same bytes the PTY will see — pending
 					// carries any incomplete sequence into the next read.
 					var data []byte
-					data, pending = stripTerminalQueryReplies(buf[:n], pending)
+					var flushedStalePending bool
+					data, pending, flushedStalePending = stripTerminalQueryReplies(buf[:n], pending)
+					if flushedStalePending {
+						slog.Debug(
+							"flushed stale terminal query reply pending bytes",
+							"agentSessionID", c.agentSessionID,
+							// Total bytes forwarded (stale fragment + the real
+							// input that triggered the flush), not the leaked
+							// fragment size alone.
+							"forwardedBytes", len(data),
+						)
+					}
 
 					if len(data) > 0 {
 						if containsDetachSequence(data) {

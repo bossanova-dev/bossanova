@@ -82,4 +82,13 @@ type Backend interface {
 type Options struct {
 	// ReadOnly omits every non-read-only tool from registration.
 	ReadOnly bool
+
+	// Only, when non-nil, restricts registration to the named tools (by their
+	// MCP tool name, e.g. "list_sessions"). A nil map registers every tool;
+	// an empty map registers none. Hosted deployments that can back only a
+	// subset of the Backend (e.g. the orchestrator gateway, which proxies a
+	// subset of operations) pass the names they support so tools/list
+	// advertises exactly the tools that work. Only composes with ReadOnly:
+	// both filters must admit a tool for it to register.
+	Only map[string]bool
 }

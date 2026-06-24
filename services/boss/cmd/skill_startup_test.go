@@ -2,8 +2,10 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	bossskillinstall "github.com/recurser/boss/internal/skillinstall"
@@ -204,6 +206,28 @@ func TestMaybeInstallSkillsSkipsNonInteractiveAndEnvOptOut(t *testing.T) {
 	}
 	if *calls != 0 {
 		t.Fatalf("prompts = %d, want 0", *calls)
+	}
+}
+
+func TestGenSkillSkipsStartupSkillInstall(t *testing.T) {
+	setupSkillStartupTest(t)
+	setAvailableSkillAgents(map[string]bool{"codex": true})
+	skillInstallReadAnswer = func() string {
+		t.Fatal("gen-skill should not prompt for skill installation")
+		return ""
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	t.Chdir(filepath.Dir(filepath.Dir(file)))
+
+	root := rootCmd()
+	root.SetArgs([]string{"gen-skill", "--check"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("gen-skill --check: %v", err)
 	}
 }
 

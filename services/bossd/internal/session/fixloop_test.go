@@ -748,6 +748,10 @@ func (m *conflictRepairWorktreeManager) PushWithLease(_ context.Context, _ strin
 	return "pushed-head-sha", nil
 }
 
+func (m *conflictRepairWorktreeManager) InjectPRNumbers(_ context.Context, _, _ string, _ int, _ string) error {
+	return nil
+}
+
 type sequencePRStatusProvider struct {
 	*mockVCSProvider
 

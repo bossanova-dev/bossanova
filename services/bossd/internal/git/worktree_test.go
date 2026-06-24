@@ -2152,3 +2152,147 @@ func TestRunSetupScript_CommandArgvStaysLiteral(t *testing.T) {
 		t.Fatalf("unexpected stat error: %v", err)
 	}
 }
+
+// injectTestBranch sets up a branch with the given tagless commit subjects,
+// pushed to origin, and returns the worktree dir. Each subject becomes one
+// empty commit on top of main.
+func injectTestBranch(t *testing.T, branch string, subjects ...string) string {
+	t.Helper()
+	repoDir := initTestRepo(t)
+	gitOutput(t, repoDir, "checkout", "-b", branch)
+	for _, s := range subjects {
+		gitOutput(t, repoDir, "commit", "--allow-empty", "-m", s)
+	}
+	gitOutput(t, repoDir, "push", "-u", "origin", "HEAD:refs/heads/"+branch)
+	return repoDir
+}
+
+func TestInjectPRNumbers_RewritesTaglessConventionalCommits(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-test"
+	repoDir := injectTestBranch(t, branch,
+		"feat(web): add widget",
+		"fix: repair thing",
+		"chore(ci) tweak pipeline", // not conventional (no colon) — appended fallback
+	)
+	mgr := NewManager(zerolog.Nop())
+
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+
+	subjects := gitOutput(t, repoDir, "log", "--format=%s", "origin/main..HEAD")
+	for _, want := range []string{
+		"feat(web): [#42] add widget",
+		"fix: [#42] repair thing",
+		"chore(ci) tweak pipeline [#42]",
+	} {
+		if !strings.Contains(subjects, want) {
+			t.Fatalf("subjects =\n%s\nwant to contain %q", subjects, want)
+		}
+	}
+
+	// The rewrite must be force-pushed: origin/<branch> matches local HEAD.
+	localHead := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	remoteHead := gitOutput(t, repoDir, "rev-parse", "origin/"+branch)
+	if localHead != remoteHead {
+		t.Fatalf("remote head %q != local head %q after injection", remoteHead, localHead)
+	}
+}
+
+func TestInjectPRNumbers_RewritesSubjectWhenBodyContainsTag(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-body-tag"
+	repoDir := initTestRepo(t)
+	gitOutput(t, repoDir, "checkout", "-b", branch)
+	gitOutput(t, repoDir, "commit", "--allow-empty",
+		"-m", "feat(web): add widget",
+		"-m", "Body mentions [#42] but the subject is still tagless.",
+	)
+	gitOutput(t, repoDir, "push", "-u", "origin", "HEAD:refs/heads/"+branch)
+	mgr := NewManager(zerolog.Nop())
+
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+
+	if got := gitOutput(t, repoDir, "log", "-1", "--format=%s"); got != "feat(web): [#42] add widget" {
+		t.Fatalf("subject = %q, want PR tag inserted into subject", got)
+	}
+	body := gitOutput(t, repoDir, "log", "-1", "--format=%b")
+	if !strings.Contains(body, "Body mentions [#42] but the subject is still tagless.") {
+		t.Fatalf("body = %q, want original body preserved", body)
+	}
+}
+
+func TestInjectPRNumbers_IdempotentWhenAlreadyTagged(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-idem"
+	repoDir := injectTestBranch(t, branch, "feat(web): [#42] add widget")
+	mgr := NewManager(zerolog.Nop())
+
+	headBefore := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+
+	// Nothing to do: HEAD unchanged (no rebase, no double tag).
+	if got := gitOutput(t, repoDir, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("HEAD changed on idempotent run: before=%s after=%s", headBefore, got)
+	}
+	if got := gitOutput(t, repoDir, "log", "-1", "--format=%s"); got != "feat(web): [#42] add widget" {
+		t.Fatalf("subject = %q, want unchanged single tag", got)
+	}
+}
+
+func TestInjectPRNumbers_PushesAlreadyTaggedLocalCommits(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-tagged-ahead"
+	repoDir := injectTestBranch(t, branch, "feat(web): [#42] add widget")
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "fix(web): [#42] repair widget")
+	mgr := NewManager(zerolog.Nop())
+
+	localHead := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	remoteBefore := gitOutput(t, repoDir, "rev-parse", "origin/"+branch)
+	if remoteBefore == localHead {
+		t.Fatalf("test setup failed: remote branch already at local HEAD")
+	}
+
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers: %v", err)
+	}
+
+	remoteHead := gitOutput(t, repoDir, "rev-parse", "origin/"+branch)
+	if remoteHead != localHead {
+		t.Fatalf("remote head %q != local head %q after already-tagged injection", remoteHead, localHead)
+	}
+}
+
+func TestInjectPRNumbers_RejectsMismatchedCurrentBranch(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-branch-guard"
+	repoDir := injectTestBranch(t, branch, "feat(web): add widget")
+	gitOutput(t, repoDir, "checkout", "-b", "other-branch", "origin/main")
+	gitOutput(t, repoDir, "commit", "--allow-empty", "-m", "fix(web): change other branch")
+	mgr := NewManager(zerolog.Nop())
+
+	err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main")
+	if err == nil {
+		t.Fatalf("InjectPRNumbers succeeded from mismatched current branch")
+	}
+	if !strings.Contains(err.Error(), `expected "cron-inject-branch-guard"`) {
+		t.Fatalf("InjectPRNumbers error = %v, want current-branch guard", err)
+	}
+}
+
+func TestInjectPRNumbers_NoCommitsIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	branch := "cron-inject-empty"
+	// Branch with no commits beyond main.
+	repoDir := injectTestBranch(t, branch)
+	mgr := NewManager(zerolog.Nop())
+
+	if err := mgr.InjectPRNumbers(ctx, repoDir, branch, 42, "refs/remotes/origin/main"); err != nil {
+		t.Fatalf("InjectPRNumbers on empty branch: %v", err)
+	}
+}

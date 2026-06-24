@@ -32,6 +32,7 @@ import (
 )
 
 var (
+	errListOpenPRs             = errors.New("list open PRs")
 	conventionalCommitPrefixRE = regexp.MustCompile(`^[[:alpha:]][[:alnum:]-]*(\([^)]*\))?!?:[[:space:]]+`)
 	prNumberPrefixRE           = regexp.MustCompile(`^\[#[0-9]+\][[:space:]]+`)
 )
@@ -1112,7 +1113,7 @@ func (l *Lifecycle) attachExistingPRForBranch(ctx context.Context, sessionID str
 func (l *Lifecycle) attachOpenPRForBranch(ctx context.Context, sessionID string, session *models.Session, repo *models.Repo) (bool, error) {
 	prs, err := l.provider.ListOpenPRs(ctx, repo.OriginURL)
 	if err != nil {
-		return false, fmt.Errorf("list open PRs: %w", err)
+		return false, fmt.Errorf("%w: %w", errListOpenPRs, err)
 	}
 
 	candidates := l.candidateBranches(ctx, session)

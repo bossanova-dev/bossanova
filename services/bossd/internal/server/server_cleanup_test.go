@@ -221,6 +221,9 @@ func (m *cleanupWorktreeManager) Push(context.Context, string, string) error {
 func (m *cleanupWorktreeManager) PushWithLease(context.Context, string, string, string) (string, error) {
 	panic("not used")
 }
+func (m *cleanupWorktreeManager) InjectPRNumbers(context.Context, string, string, int, string) error {
+	panic("not used")
+}
 func (m *cleanupWorktreeManager) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
 	panic("not used")
 }

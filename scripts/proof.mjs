@@ -12,6 +12,7 @@ import {
   buildManifest,
   classifySecretRisk,
   githubCommentCommand,
+  introCardCommand,
   listProofCommentsCommand,
   minimizeCommentCommand,
   parseProofArgs,
@@ -28,10 +29,13 @@ import {
   validateBrowserRoute,
   validateRecipeId,
 } from './proof-lib.mjs';
+import { buildPosterArgs } from './proof-poster.mjs';
+import { postprocessProofVideo, probeDimensions } from './proof-video.mjs';
 import { buildTape } from './proof-vhs.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const catalogPath = path.join(repoRoot, 'proof', 'recipes', 'default.json');
+const playButtonAsset = fileURLToPath(new URL('./assets/youtube-play-button.png', import.meta.url));
 
 function hasVhs() {
   const result = spawnSync('vhs', ['--version'], { stdio: 'ignore' });
@@ -90,6 +94,19 @@ function main() {
 
   if (args.command !== 'run') {
     throw new Error(`unknown proof command: ${args.command}`);
+  }
+
+  // Preflight ffmpeg/ffprobe only when a browser-video recipe is selected for a
+  // run. Still and TUI-only runs (and the `plan` command above) must not
+  // require ffmpeg.
+  if (selected.some((recipe) => recipe.capture === 'video' && recipe.surface !== 'tui')) {
+    const ffmpegOk = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
+    const ffprobeOk = spawnSync('ffprobe', ['-version'], { stdio: 'ignore' }).status === 0;
+    if (!ffmpegOk || !ffprobeOk) {
+      throw new Error(
+        'ffmpeg and ffprobe are required for video proof recipes — install ffmpeg (e.g. brew install ffmpeg)',
+      );
+    }
   }
 
   const shouldUpload = !args.dryRun && process.env.BOSS_PROOF_UPLOAD !== '0';
@@ -241,14 +258,137 @@ function captureRecipe({ recipe, localDir }) {
       if (videoRisk.risk === 'high') {
         throw new Error(`secret-like text detected in browser video capture: ${videoRisk.reason}`);
       }
+
+      // ── Post-processing: intro card + condensed mp4 + play-button poster ──
+
+      // Step 2.5: best-effort PR identity for the intro card label.
+      let label = null;
+      let cardTitle = recipe.title;
+      try {
+        const repoName = execFileSync('gh', ['repo', 'view', '--json', 'name', '-q', '.name'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        try {
+          const prInfo = JSON.parse(
+            execFileSync('gh', ['pr', 'view', '--json', 'number,title'], {
+              cwd: repoRoot,
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'ignore'],
+            }),
+          );
+          label = `${repoName}#${prInfo.number}`;
+          cardTitle = prInfo.title ?? recipe.title;
+        } catch {
+          const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          }).trim();
+          label = `${repoName} · ${branch}`;
+        }
+      } catch {
+        // No gh or not a repo — skip the intro card.
+      }
+
+      const webmPath = path.join(recipeDir, `${recipeId}.webm`);
+      const mp4Path = path.join(recipeDir, `${recipeId}.mp4`);
+      const timedPath = path.join(recipeDir, `${recipeId}-timed.mp4`);
+      const scratchPath = path.join(recipeDir, `${recipeId}-timer.raw`);
+      const introPngPath = path.join(recipeDir, `${recipeId}-intro.png`);
+      const tmpPosterPath = path.join(recipeDir, `${recipeId}-poster-tmp.png`);
+      // pngPath (the recorded poster frame) is declared at the top of captureRecipe.
+
+      // Step 3.1: render intro card (best-effort — failure keeps rest working).
+      let resolvedIntroPngPath;
+      if (label) {
+        const dims = probeDimensions(webmPath);
+        if (dims) {
+          try {
+            runCommand(
+              introCardCommand({
+                surface: recipe.surface,
+                out: path.relative(repoRoot, introPngPath),
+                width: dims.width,
+                height: dims.height,
+                label,
+                title: cardTitle,
+              }),
+            );
+            resolvedIntroPngPath = introPngPath;
+          } catch (err) {
+            console.warn(
+              `[proof] intro-card render failed — continuing without intro card: ${err.message}`,
+            );
+          }
+        } else {
+          console.warn('[proof] could not probe video dimensions — skipping intro card');
+        }
+      }
+
+      // Step 3.2: post-process webm → condensed mp4 with timer.
+      const post = postprocessProofVideo({
+        webmPath,
+        timedPath,
+        outPath: mp4Path,
+        scratchPath,
+        introPngPath: resolvedIntroPngPath,
+      });
+
+      // Step 3.3: fallback to plain ffmpeg conversion if post-processing fails.
+      if (!post.ok) {
+        console.warn(
+          `[proof] video post-processing failed (${post.warning}) — falling back to plain mp4 conversion`,
+        );
+        const fallback = spawnSync(
+          'ffmpeg',
+          ['-y', '-loglevel', 'error', '-i', webmPath, mp4Path],
+          { stdio: 'inherit' },
+        );
+        if (fallback.status !== 0) {
+          throw new Error('ffmpeg fallback mp4 conversion failed — no usable video artifact');
+        }
+      }
+
+      // Step 3.4: composite play-button poster over the recorded poster frame.
+      try {
+        const posterResult = spawnSync(
+          'ffmpeg',
+          [
+            '-y',
+            '-loglevel',
+            'error',
+            ...buildPosterArgs({
+              base: pngPath,
+              playButton: playButtonAsset,
+              outPath: tmpPosterPath,
+            }),
+          ],
+          { stdio: 'inherit' },
+        );
+        if (posterResult.status === 0 && fs.existsSync(tmpPosterPath)) {
+          fs.copyFileSync(tmpPosterPath, pngPath);
+        } else {
+          console.warn('[proof] play-button poster compositing failed — using plain poster frame');
+        }
+      } catch (err) {
+        console.warn(`[proof] play-button poster compositing error: ${err.message}`);
+      }
+
+      // Step 3.5: clean up source webm and scratch/temp files.
+      for (const tmpFile of [webmPath, timedPath, scratchPath, tmpPosterPath, introPngPath]) {
+        fs.rmSync(tmpFile, { force: true });
+      }
+
       return {
         recipeId,
         title: recipe.title,
         surface: recipe.surface,
         privacy: recipe.privacy,
         status: 'passed',
-        mediaType: 'webm',
-        fileName: `${recipeId}/${recipeId}.webm`,
+        mediaType: 'mp4',
+        fileName: `${recipeId}/${recipeId}.mp4`,
         posterFileName: `${recipeId}/${recipeId}.png`,
       };
     } else {
@@ -299,7 +439,7 @@ function captureRecipe({ recipe, localDir }) {
       leftovers = [];
     }
     for (const name of leftovers) {
-      if (/\.(png|webm|gif|tape)$/i.test(name)) {
+      if (/\.(png|webm|gif|tape|mp4)$/i.test(name)) {
         fs.rmSync(path.join(recipeDir, name), { force: true });
       }
     }

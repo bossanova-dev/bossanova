@@ -406,6 +406,15 @@ service AgentRunnerService {
   rpc ConfigureFinalizeHook(ConfigureFinalizeHookRequest)
       returns (ConfigureFinalizeHookResponse);
 
+  // Remove the run-scoped Stop-hook entry a prior ConfigureFinalizeHook (with
+  // a non-empty agent_session_id) installed. Called by the daemon when a run
+  // completes so a finished run's completion ping can't linger in the
+  // worktree's settings.local.json. No-op (is_supported may be false) for
+  // agents without a finalize hook. Idempotent: removing an absent entry
+  // succeeds.
+  rpc RemoveAgentRunHook(RemoveAgentRunHookRequest)
+      returns (RemoveAgentRunHookResponse);
+
   // Build the argv for an interactive (tmux-hosted) launch. argv MUST
   // tee stdout/stderr to log_path so AttachSession can read it.
   rpc BuildInteractiveCommand(BuildInteractiveCommandRequest)
@@ -493,6 +502,14 @@ message ConfigureFinalizeHookResponse {
   bool is_supported = 1;
 }
 
+message RemoveAgentRunHookRequest {
+  string work_dir = 1;
+  string agent_session_id = 2;
+}
+message RemoveAgentRunHookResponse {
+  bool is_supported = 1;
+}
+
 message BuildInteractiveCommandRequest {
   string session_id = 1;
   bool resume = 2;
@@ -500,6 +517,11 @@ message BuildInteractiveCommandRequest {
   string initial_prompt = 4;  // raw user prompt to submit at startup
   string initial_command = 5; // boss command name without agent prefix
   string worktree_path = 6;   // directory where the interactive pane launches
+  // append_system_prompt, when non-empty, is appended to the agent's system
+  // prompt (e.g. Claude Code's --append-system-prompt). bossd uses it to carry
+  // the chat's boss session context (session/chat/repo identifiers) for every
+  // chat, plus the cron autonomy directive for scheduler-spawned runs.
+  string append_system_prompt = 7;
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;

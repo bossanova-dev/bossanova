@@ -42,6 +42,12 @@ type MockWorktreeManager struct {
 	// PushWithLeaseFunc overrides the default PushWithLease behavior when set.
 	PushWithLeaseFunc func(ctx context.Context, worktreePath, branch, expectedRemoteSHA string) (string, error)
 
+	// InjectPRNumbersCalls records every InjectPRNumbers invocation so cron
+	// finalize tests can assert the tag-injection step ran with the right PR.
+	InjectPRNumbersCalls []injectPRNumbersCall
+	// InjectPRNumbersFunc overrides the default InjectPRNumbers behavior when set.
+	InjectPRNumbersFunc func(ctx context.Context, worktreePath, branch string, prNumber int, baseRef string) error
+
 	// VerifyPushedBranchAheadOfBaseFunc overrides the default verification behavior when set.
 	VerifyPushedBranchAheadOfBaseFunc func(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error)
 
@@ -95,6 +101,13 @@ type pushCall struct {
 	WorktreePath      string
 	Branch            string
 	ExpectedRemoteSHA string
+}
+
+type injectPRNumbersCall struct {
+	WorktreePath string
+	Branch       string
+	PRNumber     int
+	BaseRef      string
 }
 
 type verifyPushedBranchCall struct {
@@ -273,6 +286,23 @@ func (m *MockWorktreeManager) PushWithLease(ctx context.Context, worktreePath, b
 		return override(ctx, worktreePath, branch, expectedRemoteSHA)
 	}
 	return "pushed-head-sha", nil
+}
+
+func (m *MockWorktreeManager) InjectPRNumbers(ctx context.Context, worktreePath, branch string, prNumber int, baseRef string) error {
+	m.mu.Lock()
+	m.InjectPRNumbersCalls = append(m.InjectPRNumbersCalls, injectPRNumbersCall{
+		WorktreePath: worktreePath,
+		Branch:       branch,
+		PRNumber:     prNumber,
+		BaseRef:      baseRef,
+	})
+	override := m.InjectPRNumbersFunc
+	m.mu.Unlock()
+
+	if override != nil {
+		return override(ctx, worktreePath, branch, prNumber, baseRef)
+	}
+	return nil
 }
 
 func (m *MockWorktreeManager) VerifyPushedBranchAheadOfBase(ctx context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {

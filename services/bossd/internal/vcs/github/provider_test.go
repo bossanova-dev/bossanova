@@ -414,6 +414,69 @@ func TestListOpenPRs_RetriesSecondaryRateLimit(t *testing.T) {
 	}
 }
 
+func TestListPRsByState_PassesStateAndLimitAndMaps(t *testing.T) {
+	const prJSON = `[{"number":7,"title":"Fix bug","headRefName":"feature","state":"OPEN","author":{"login":"alice"}}]`
+
+	tests := []struct {
+		name      string
+		call      func(*Provider) ([]vcs.PRSummary, error)
+		wantState string
+		wantLimit string
+	}{
+		{
+			name:      "open",
+			call:      func(p *Provider) ([]vcs.PRSummary, error) { return p.ListOpenPRs(context.Background(), "owner/repo") },
+			wantState: "open",
+			wantLimit: "300",
+		},
+		{
+			name:      "closed",
+			call:      func(p *Provider) ([]vcs.PRSummary, error) { return p.ListClosedPRs(context.Background(), "owner/repo") },
+			wantState: "closed",
+			wantLimit: "50",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotArgs []string
+			fakeGH := func(_ context.Context, args ...string) (string, error) {
+				gotArgs = append([]string(nil), args...)
+				return prJSON, nil
+			}
+
+			p := New(zerolog.Nop(), WithRunGH(fakeGH))
+			prs, err := tt.call(p)
+			if err != nil {
+				t.Fatalf("list PRs: %v", err)
+			}
+
+			joined := strings.Join(gotArgs, " ")
+			if !strings.Contains(joined, "--state "+tt.wantState) {
+				t.Errorf("args %q missing --state %s", joined, tt.wantState)
+			}
+			if !strings.Contains(joined, "--limit "+tt.wantLimit) {
+				t.Errorf("args %q missing --limit %s", joined, tt.wantLimit)
+			}
+
+			if len(prs) != 1 {
+				t.Fatalf("got %d PRs, want 1", len(prs))
+			}
+			got := prs[0]
+			want := vcs.PRSummary{
+				Number:     7,
+				Title:      "Fix bug",
+				HeadBranch: "feature",
+				State:      parsePRState("OPEN"),
+				Author:     "alice",
+			}
+			if got != want {
+				t.Errorf("PRSummary = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
 func TestGetPRStatus_ReviewRequiredDecisionDoesNotLookRejected(t *testing.T) {
 	var viewArgs []string
 	fakeGH := func(_ context.Context, args ...string) (string, error) {

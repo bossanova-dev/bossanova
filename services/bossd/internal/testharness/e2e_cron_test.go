@@ -164,7 +164,7 @@ func cronTestHarness(t *testing.T) (*testharness.Harness, *testharness.CronReady
 //
 // Assertions:
 //   - last_run_outcome == "pr_created"
-//   - a ClaudeChat row (finalize chat) was created for the session
+//   - exactly one ClaudeChat row exists (the cron chat; no finalize chat)
 //   - the worktree directory still exists (preserved after PR)
 func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	h, fake := cronTestHarness(t)
@@ -177,11 +177,19 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	// Use real temp directories so WriteHookConfig succeeds.
 	useTempWorktrees(t, h)
 
-	// Claude writes a file so git Status returns non-empty (changes present).
+	// Model the post-agent state as a clean branch with committed work.
 	h.Agent.WithChanges("cron-output.txt", "hello from cron")
-	// Override Status to simulate dirty worktree after the implementing chat.
 	h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
-		return "M cron-output.txt\n", nil
+		return "", nil
+	}
+	h.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
+		return "test: cron output", nil
+	}
+	h.Git.IsAncestorFn = func(_ context.Context, _, ref, target string) (bool, error) {
+		if ref == "HEAD" && target == "refs/remotes/origin/main" {
+			return false, nil
+		}
+		return true, nil
 	}
 
 	// Create the cron job.
@@ -256,15 +264,15 @@ func TestE2ECron_HappyPath_PRCreated(t *testing.T) {
 	// Wait for the cron job row to reflect the outcome.
 	waitForCronOutcome(t, h.CronJobs, job.ID, models.CronJobOutcomePRCreated)
 
-	// Assert: at least two chat rows exist now — the cron-spawned one
-	// (created during startCronTmuxChat) and the finalize chat sibling
-	// (created by StartFinalizeChat on the pr_created path).
+	// Assert: still exactly one chat row — the cron-spawned `Run "<name>"` chat.
+	// Cron runs are autonomous now: bossd injects the PR tag in-process instead
+	// of spawning a second "Finalize" chat.
 	chats, err := h.AgentChats.ListBySession(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("list claude chats: %v", err)
 	}
-	if len(chats) < 2 {
-		t.Errorf("expected at least 2 ClaudeChat rows (cron + finalize) after pr_created, got %d", len(chats))
+	if len(chats) != 1 {
+		t.Errorf("expected exactly 1 ClaudeChat row (no finalize chat) after pr_created, got %d", len(chats))
 	}
 
 	// Assert: worktree directory is still present.

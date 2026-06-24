@@ -1563,6 +1563,7 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 	select {
 	case res := <-run.done:
 		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+		s.removeRunHookBestEffort(agentSessionID)
 		s.cleanupRun(agentSessionID)
 		return &bossanovav1.WaitChatRunHostResponse{ExitError: res.exitError, ProviderSessionId: providerSessionID}, nil
 	case <-deadline.C:
@@ -1575,6 +1576,7 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 			Dur("deadline", s.waitChatRunDeadline).
 			Msg("WaitChatRun: agent run did not signal completion within deadline; synthesising exit_error")
 		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+		s.removeRunHookBestEffort(agentSessionID)
 		s.cleanupRun(agentSessionID)
 		return &bossanovav1.WaitChatRunHostResponse{
 			ExitError:         waitChatRunNoSignalMessage(run.completionMode, fmt.Sprintf("deadline %s elapsed", s.waitChatRunDeadline)),
@@ -1582,6 +1584,7 @@ func (s *HostServiceServer) WaitChatRun(ctx context.Context, req *bossanovav1.Wa
 		}, nil
 	case <-ctx.Done():
 		providerSessionID := s.providerSessionIDForAgentSession(ctx, agentSessionID)
+		s.removeRunHookBestEffort(agentSessionID)
 		s.cleanupRun(agentSessionID)
 		if run.completionMode == chatRunCompletionExplicit {
 			return &bossanovav1.WaitChatRunHostResponse{
@@ -1713,6 +1716,46 @@ func (s *HostServiceServer) repairChatRunStillActive(sessionID, agentSessionID s
 		return true
 	}
 	return false
+}
+
+// removeRunHookBestEffort asks the agent plugin to delete the run-scoped
+// Stop-hook entry from the worktree's settings.local.json now that the run
+// has finished. Best-effort: on any failure the (now harmless — the hook
+// endpoint treats unknown runs as a 200 no-op) entry simply lingers until the
+// next run's write-time sweep removes it. MUST run before cleanupRun, which
+// deletes the runSessionByID entry this reads.
+//
+// Agent identity is resolved via sess.AgentName (from the session store) rather
+// than agentSessionByID, because both completion paths (CompleteAgentRun and
+// SignalRunComplete) delete agentSessionByID before WaitChatRun's done-branch
+// can acquire runMu. runSessionByID intentionally survives as a tombstone until
+// cleanupRun, so it is safe to read here.
+func (s *HostServiceServer) removeRunHookBestEffort(agentSessionID string) {
+	s.runMu.Lock()
+	sessionID := s.runSessionByID[agentSessionID]
+	s.runMu.Unlock()
+	if sessionID == "" || s.sessionStore == nil {
+		return
+	}
+	// Detach from the caller ctx: WaitChatRun's ctx-cancel branch passes an
+	// already-cancelled context, but we still want this cleanup write to land.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sess, err := s.sessionStore.Get(ctx, sessionID)
+	if err != nil || sess == nil || sess.WorktreePath == "" || sess.AgentName == "" {
+		return
+	}
+	client, ok := s.agentClients[sess.AgentName]
+	if !ok || client == nil {
+		return
+	}
+	if _, err := client.RemoveAgentRunHook(ctx, &bossanovav1.RemoveAgentRunHookRequest{
+		WorkDir:        sess.WorktreePath,
+		AgentSessionId: agentSessionID,
+	}); err != nil {
+		log.Warn().Err(err).Str("agent_session", agentSessionID).
+			Msg("WaitChatRun: remove run hook failed; stale entry will be swept on next run")
+	}
 }
 
 // cleanupRun deletes all per-run state for agentSessionID under runMu

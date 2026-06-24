@@ -1687,3 +1687,85 @@ func TestHomeUpgradeCheckUsesFreshCache(t *testing.T) {
 		t.Fatalf("cached upgrade messages = first %+v second %+v, want available v1.2.4", first, second)
 	}
 }
+
+func TestHomeNeighborSessionID(t *testing.T) {
+	sessions := []*pb.Session{
+		{Id: "s1", Title: "first"},
+		{Id: "s2", Title: "second"},
+		{Id: "s3", Title: "third"},
+	}
+
+	cases := []struct {
+		name      string
+		sessions  []*pb.Session
+		removedID string
+		want      string
+	}{
+		{"middle highlights next", sessions, "s2", "s3"},
+		{"first highlights next", sessions, "s1", "s2"},
+		{"last highlights previous", sessions, "s3", "s2"},
+		{"only session has no neighbor", sessions[:1], "s1", ""},
+		{"unknown id has no neighbor", sessions, "missing", ""},
+		{"empty list has no neighbor", nil, "s1", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHomeModel(nil, context.Background(), nil)
+			h.sessions = tc.sessions
+			if got := h.neighborSessionID(tc.removedID); got != tc.want {
+				t.Fatalf("neighborSessionID(%q) = %q, want %q", tc.removedID, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHomeArchiveKeepsCursorPosition verifies the end-to-end behaviour: after a
+// session is archived the cursor should land on the session that takes its
+// place rather than jumping back to the top of the list.
+func TestHomeArchiveKeepsCursorPosition(t *testing.T) {
+	sessions := []*pb.Session{
+		{Id: "s1", Title: "first"},
+		{Id: "s2", Title: "second"},
+		{Id: "s3", Title: "third"},
+	}
+
+	t.Run("middle session keeps position", func(t *testing.T) {
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.width = 100
+		h.height = 40
+		model, _ := h.Update(sessionListMsg{sessions: sessions})
+		h = model.(HomeModel)
+
+		// User is sitting on the middle session ("s2") and archives it. The app
+		// highlights the neighbour that fills the gap.
+		h.highlightSessionID = h.neighborSessionID("s2")
+
+		// The reloaded list no longer contains the archived session.
+		remaining := []*pb.Session{sessions[0], sessions[2]}
+		model, _ = h.Update(sessionListMsg{sessions: remaining})
+		h = model.(HomeModel)
+
+		if got := h.selectedSessionID(); got != "s3" {
+			t.Fatalf("after archiving s2, selected = %q, want s3", got)
+		}
+	})
+
+	t.Run("last session falls back to previous", func(t *testing.T) {
+		h := NewHomeModel(nil, context.Background(), nil)
+		h.width = 100
+		h.height = 40
+		model, _ := h.Update(sessionListMsg{sessions: sessions})
+		h = model.(HomeModel)
+
+		h.highlightSessionID = h.neighborSessionID("s3")
+
+		remaining := []*pb.Session{sessions[0], sessions[1]}
+		model, _ = h.Update(sessionListMsg{sessions: remaining})
+		h = model.(HomeModel)
+
+		if got := h.selectedSessionID(); got != "s2" {
+			t.Fatalf("after archiving last session s3, selected = %q, want s2", got)
+		}
+	})
+}

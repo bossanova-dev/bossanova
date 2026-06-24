@@ -36,18 +36,29 @@ func errorResult(err error) *mcp.CallToolResult {
 func boolPtr(b bool) *bool { return &b }
 
 // RegisterTools installs every bossanova MCP tool on server. When opts.ReadOnly
-// is set, only read-only tools are registered.
+// is set, only read-only tools are registered; when opts.Only is non-nil, only
+// the named tools are registered (see Options.Only).
 func RegisterTools(server *mcp.Server, backend Backend, opts Options) {
-	registerReadTools(server, backend)
+	registerReadTools(server, backend, opts)
 	if opts.ReadOnly {
 		return
 	}
-	registerMutatingTools(server, backend)
-	registerDestructiveTools(server, backend)
+	registerMutatingTools(server, backend, opts)
+	registerDestructiveTools(server, backend, opts)
 }
 
-func registerReadTools(server *mcp.Server, backend Backend) {
-	mcp.AddTool(server, &mcp.Tool{
+// addTool registers a tool unless opts.Only is non-nil and omits its name. It
+// is the single choke point that makes Options.Only effective: every tool
+// registration in this package flows through it.
+func addTool[In, Out any](s *mcp.Server, opts Options, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	if opts.Only != nil && !opts.Only[t.Name] {
+		return
+	}
+	mcp.AddTool(s, t, h)
+}
+
+func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_sessions",
 		Description: "List bossanova sessions, optionally filtered by repo, states, or archived flag.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -68,7 +79,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "resolve_context",
 		Description: "Resolve the repo and session for a working directory (if inside a registered repo or session worktree).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -81,7 +92,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "validate_repo_path",
 		Description: "Validate that a local path is a usable git repo, returning origin URL and default branch.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -94,7 +105,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_repos",
 		Description: "List every registered repository.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -107,7 +118,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_repo_prs",
 		Description: "List open pull requests for a registered repository.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -120,7 +131,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_tracker_issues",
 		Description: "List issues from an external tracker (e.g. linear, sentry) for a repo, optionally filtered by query.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -133,7 +144,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "get_session",
 		Description: "Get a single session by id.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -146,7 +157,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_chats",
 		Description: "List agent chats for a session.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -159,7 +170,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "get_chat_statuses",
 		Description: "Get the live status of every chat in a session.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -172,7 +183,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "get_session_statuses",
 		Description: "Get the best live status across chats for each of the given sessions.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -185,7 +196,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_check_snapshots",
 		Description: "List recent CI check snapshots for a session (most recent first).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -198,7 +209,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "repair_doctor",
 		Description: "Run the daemon repair-doctor diagnostics and return the checks and recent agent logs.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -211,7 +222,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_agents",
 		Description: "List the agent-runner plugins currently loaded by the daemon.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -224,7 +235,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_plugins",
 		Description: "List every plugin the daemon attempted to load this run, including disabled and failed entries.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -237,7 +248,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_cron_jobs",
 		Description: "List every scheduled cron job.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -250,7 +261,7 @@ func registerReadTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "get_cron_job",
 		Description: "Get a single cron job by id.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},

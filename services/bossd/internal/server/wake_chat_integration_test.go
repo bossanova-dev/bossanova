@@ -102,6 +102,9 @@ func (*codexTUITestClient) ExitStatus(context.Context, *pb.AgentExitStatusReques
 func (*codexTUITestClient) ConfigureFinalizeHook(context.Context, *pb.ConfigureFinalizeHookRequest) (*pb.ConfigureFinalizeHookResponse, error) {
 	return &pb.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
+func (*codexTUITestClient) RemoveAgentRunHook(context.Context, *pb.RemoveAgentRunHookRequest) (*pb.RemoveAgentRunHookResponse, error) {
+	return &pb.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
 func (*codexTUITestClient) BuildInteractiveCommand(_ context.Context, req *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
 	args := []string{"codex"}
 	if req.GetResume() {
@@ -239,6 +242,9 @@ func (*claudeIntegrationClient) ExitStatus(context.Context, *pb.AgentExitStatusR
 }
 func (*claudeIntegrationClient) ConfigureFinalizeHook(context.Context, *pb.ConfigureFinalizeHookRequest) (*pb.ConfigureFinalizeHookResponse, error) {
 	return &pb.ConfigureFinalizeHookResponse{IsSupported: true}, nil
+}
+func (*claudeIntegrationClient) RemoveAgentRunHook(context.Context, *pb.RemoveAgentRunHookRequest) (*pb.RemoveAgentRunHookResponse, error) {
+	return &pb.RemoveAgentRunHookResponse{IsSupported: true}, nil
 }
 func (*claudeIntegrationClient) BuildInteractiveCommand(_ context.Context, req *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
 	flag := "--session-id"

@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -223,10 +222,19 @@ func TestE2ECron_HookAuth(t *testing.T) {
 	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
 	useTempWorktrees(t, h)
 
-	// Claude writes changes so the happy path produces pr_created.
+	// Model the post-agent state as a clean branch with committed work.
 	h.Agent.WithChanges("out.txt", "data")
 	h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
-		return "M out.txt\n", nil
+		return "", nil
+	}
+	h.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
+		return "test: hook auth output", nil
+	}
+	h.Git.IsAncestorFn = func(_ context.Context, _, ref, target string) (bool, error) {
+		if ref == "HEAD" && target == "refs/remotes/origin/main" {
+			return false, nil
+		}
+		return true, nil
 	}
 
 	// Create a cron job and fire it to get a session with a valid hook token.
@@ -303,7 +311,16 @@ func TestE2ECron_HookAuth(t *testing.T) {
 		useTempWorktrees(t, h2)
 		h2.Agent.WithChanges("out.txt", "data")
 		h2.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
-			return "M out.txt\n", nil
+			return "", nil
+		}
+		h2.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
+			return "test: concurrent hook auth output", nil
+		}
+		h2.Git.IsAncestorFn = func(_ context.Context, _, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "refs/remotes/origin/main" {
+				return false, nil
+			}
+			return true, nil
 		}
 
 		job2, err := h2.CronJobs.Create(ctx2, db.CreateCronJobParams{
@@ -511,16 +528,15 @@ func TestE2ECron_ConcurrencyCap(t *testing.T) {
 // Task 2.3: TestE2ECron_FailureModes
 // ---------------------------------------------------------------------------
 
-// TestE2ECron_FailureModes covers the three failure-outcome branches of the
-// finalize pipeline: pushFail → pr_failed, createPRFail → pr_failed, and
-// chatSpawnFail → chat_spawn_failed. Together with TestE2ECron_HappyPath_PRCreated
-// (pr_created), TestE2ECron_NoChanges_DeletesSession (deleted_no_changes),
+// TestE2ECron_FailureModes covers the PR-failure branches of the finalize
+// pipeline: pushFail → pr_failed and createPRFail → pr_failed. Cron runs are
+// autonomous: bossd no longer spawns a second "Finalize" chat, so the former
+// chat_spawn_failed outcome is unreachable. Together with
+// TestE2ECron_HappyPath_PRCreated (pr_created),
+// TestE2ECron_NoChanges_DeletesSession (deleted_no_changes),
 // TestE2ECron_NoGitHub_SkipsPR (pr_skipped_no_github), and
-// TestE2ECron_FinalizingRecovery (failed_recovered), all 7 outcome strings
-// now have coverage:
-//
-//	deleted_no_changes, pr_created, pr_skipped_no_github, pr_failed,
-//	chat_spawn_failed, cleanup_failed (unrequested), failed_recovered.
+// TestE2ECron_FinalizingRecovery (failed_recovered), the live outcomes are
+// covered.
 func TestE2ECron_FailureModes(t *testing.T) {
 	t.Run("pushFail", func(t *testing.T) {
 		h := testharness.NewWithOptions(t, testharness.Options{
@@ -650,97 +666,6 @@ func TestE2ECron_FailureModes(t *testing.T) {
 		}
 	})
 
-	t.Run("chatSpawnFail", func(t *testing.T) {
-		tmuxFake := testharness.NewCronReadyTmuxFake()
-		baseTmuxFactory := tmuxFake.Factory()
-		var tmuxMu sync.Mutex
-		newSessionCalls := 0
-		h := testharness.NewWithOptions(t, testharness.Options{
-			TmuxCommandFactory: func(ctx context.Context, name string, args ...string) *exec.Cmd {
-				if name == "tmux" && len(args) > 0 && args[0] == "new-session" {
-					tmuxMu.Lock()
-					newSessionCalls++
-					fail := newSessionCalls == 2
-					tmuxMu.Unlock()
-					if fail {
-						return exec.CommandContext(ctx, "false")
-					}
-				}
-				return baseTmuxFactory(ctx, name, args...)
-			},
-		})
-		ctx := context.Background()
-
-		repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
-		useTempWorktrees(t, h)
-
-		// Clean branch has committed work and PR creation succeeds, but the
-		// finalize chat's tmux new-session fails. The first new-session is the
-		// cron implementing chat; the second is the finalize sibling launched
-		// after the stop hook fires.
-		h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
-			return "", nil
-		}
-		h.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
-			return "test: exercise chat spawn failure", nil
-		}
-		h.Git.IsAncestorFn = func(_ context.Context, _, ref, target string) (bool, error) {
-			if ref == "HEAD" && target == "refs/remotes/origin/main" {
-				return false, nil
-			}
-			return true, nil
-		}
-
-		job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
-			RepoID:   repoID,
-			Name:     "chat-spawn-fail-job",
-			Prompt:   "do stuff",
-			Schedule: "* * * * *",
-			Enabled:  true,
-		})
-		if err != nil {
-			t.Fatalf("create job: %v", err)
-		}
-
-		sched := newCronScheduler(h)
-		if err := sched.AddJob(job); err != nil {
-			t.Fatalf("AddJob: %v", err)
-		}
-
-		// Tick fires the implementing-plan session via startCronTmuxChat
-		// (tmux + SendPlan). h.Agent.Start is NOT called on this path, so
-		// SetSpawnError below stays armed for the next Start invocation —
-		// which is StartFinalizeChat after the stop hook fires.
-		sched.Tick(tickTime)
-
-		sess := sessionFromCronJob(t, h, job.ID)
-		if sess.HookToken == nil || *sess.HookToken == "" {
-			t.Fatal("expected HookToken")
-		}
-
-		resp, err := h.PostStopHook(sess.ID, *sess.HookToken)
-		if err != nil {
-			t.Fatalf("PostStopHook: %v", err)
-		}
-		resp.Body.Close() //nolint:errcheck // test-only: best-effort body close
-
-		waitForCronOutcome(t, h.CronJobs, job.ID, models.CronJobOutcomeChatSpawnFailed)
-
-		// Assert: PR was created (EnsurePR succeeded before the chat spawn failed).
-		// The VCS mock records CreateDraftPR calls.
-		if len(h.VCS.CreateDraftPRCalls) == 0 {
-			t.Error("chatSpawnFail: expected at least one CreateDraftPR call (PR created before chat spawn failed)")
-		}
-
-		// Assert: worktree is preserved on chat_spawn_failed.
-		if sess.WorktreePath != "" {
-			for _, p := range h.Git.ArchiveCalls {
-				if p == sess.WorktreePath {
-					t.Errorf("chatSpawnFail: worktree %s was archived; should be preserved", sess.WorktreePath)
-				}
-			}
-		}
-	})
 }
 
 // pb import compile-check (used via pb.SessionState_* in SeedSessionInState

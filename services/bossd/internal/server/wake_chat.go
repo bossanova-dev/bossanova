@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"github.com/recurser/bossd/internal/session"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -103,10 +104,12 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 		}
 
 		result, err := spawnChatTmux(ctx, deps, spawnInput{
-			Chat:         chat,
-			WorktreePath: sess.WorktreePath,
-			TmuxName:     tmuxName,
-			ForceFresh:   forceFresh,
+			Chat:               chat,
+			WorktreePath:       sess.WorktreePath,
+			TmuxName:           tmuxName,
+			ForceFresh:         forceFresh,
+			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID),
+			CronEnv:            session.CronSessionEnv(sess),
 		})
 		if err != nil {
 			return nil, err

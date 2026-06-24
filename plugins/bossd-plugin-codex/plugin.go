@@ -42,6 +42,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "IsRunning", Handler: agentIsRunningHandler},
 		{MethodName: "ExitStatus", Handler: agentExitStatusHandler},
 		{MethodName: "ConfigureFinalizeHook", Handler: agentConfigureFinalizeHookHandler},
+		{MethodName: "RemoveAgentRunHook", Handler: agentRemoveAgentRunHookHandler},
 		{MethodName: "BuildInteractiveCommand", Handler: agentBuildInteractiveCommandHandler},
 		{MethodName: "ResolveInteractiveSessionID", Handler: agentResolveInteractiveSessionIDHandler},
 		{MethodName: "ListIgnoredDirtyFiles", Handler: agentListIgnoredDirtyFilesHandler},
@@ -61,6 +62,7 @@ type agentRunnerServiceHandler interface {
 	IsRunning(context.Context, *bossanovav1.IsAgentRunningRequest) (*bossanovav1.IsAgentRunningResponse, error)
 	ExitStatus(context.Context, *bossanovav1.AgentExitStatusRequest) (*bossanovav1.AgentExitStatusResponse, error)
 	ConfigureFinalizeHook(context.Context, *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error)
+	RemoveAgentRunHook(context.Context, *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error)
 	BuildInteractiveCommand(context.Context, *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error)
 	ResolveInteractiveSessionID(context.Context, *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
 	ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error)
@@ -116,6 +118,14 @@ func agentConfigureFinalizeHookHandler(srv any, ctx context.Context, dec func(an
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).ConfigureFinalizeHook(ctx, req)
+}
+
+func agentRemoveAgentRunHookHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.RemoveAgentRunHookRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).RemoveAgentRunHook(ctx, req)
 }
 
 func agentBuildInteractiveCommandHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

@@ -98,6 +98,13 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, req *bossanovav1.Confi
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: true}, nil
 }
 
+func (s *Server) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+	if err := RemoveRunHookConfig(req.WorkDir, req.AgentSessionId); err != nil {
+		return nil, status.Errorf(codes.Internal, "remove run hook: %v", err)
+	}
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
+
 // BuildInteractiveCommand returns the bare claude argv for tmux-hosted
 // runs. It must NOT wrap the argv in a `bash -c "claude … | tee log"`
 // pipeline (the shape this RPC used pre-#350): piping claude's stdout
@@ -125,6 +132,9 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	}
 	if s.runner != nil && s.runner.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
+	}
+	if sp := req.GetAppendSystemPrompt(); sp != "" {
+		args = append(args, "--append-system-prompt", sp)
 	}
 	loginShell := ""
 	if s.runner != nil {

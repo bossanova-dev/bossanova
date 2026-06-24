@@ -9,7 +9,13 @@ export const PROOF_MEDIA_TYPES = {
   png: 'image/png',
   webm: 'video/webm',
   gif: 'image/gif',
+  mp4: 'video/mp4',
 };
+
+/** True when the media type is a video (webm or mp4). */
+function isVideoMediaType(mt) {
+  return mt === 'webm' || mt === 'mp4';
+}
 
 export function mediaTypeForPath(fileName) {
   const ext = String(fileName ?? '')
@@ -143,7 +149,7 @@ export function buildManifest({ commit, prNumber, runId, publicBaseUrl, captures
       }
       const url = `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(capture.fileName))}`;
       const out = { ...capture, mediaType: capture.mediaType ?? 'png', url };
-      if (capture.mediaType === 'webm') {
+      if (isVideoMediaType(capture.mediaType)) {
         out.videoUrl = url;
         if (capture.posterFileName) {
           out.posterUrl = `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(capture.posterFileName))}`;
@@ -173,9 +179,9 @@ export function renderComment({ marker, manifest }) {
     let body;
     if (capture.status !== 'passed') {
       body = escapeMarkdown(capture.error ?? 'capture failed');
-    } else if (capture.mediaType === 'webm') {
+    } else if (isVideoMediaType(capture.mediaType)) {
       // GitHub strips external <video>, so embed a poster thumbnail that links
-      // to the R2-hosted webm. Clicking opens the video in the browser.
+      // to the R2-hosted video. Clicking opens the video in the browser.
       const poster = capture.posterUrl ?? capture.url;
       body = `[![${escapeMarkdown(capture.title)}](${poster})](${capture.videoUrl ?? capture.url})\n\n▶ Video (click the image to play)`;
     } else {
@@ -303,6 +309,30 @@ export function browserCaptureCommand({ surface, recipePath, outputDir }) {
   ];
 }
 
+export function introCardCommand({ surface, out, width, height, label, title = '' }) {
+  const serviceDir = surface === 'marketing' ? 'services/marketing' : 'services/web';
+  return [
+    'pnpm',
+    [
+      '--dir',
+      serviceDir,
+      'exec',
+      'node',
+      '../../scripts/proof-render-intro-card.mjs',
+      '--out',
+      relativeFromService(serviceDir, out),
+      '--width',
+      String(width),
+      '--height',
+      String(height),
+      '--label',
+      label,
+      '--title',
+      title,
+    ],
+  ];
+}
+
 export function tuiVideoCaptureCommand({ tapePath }) {
   return ['vhs', [tapePath]];
 }
@@ -314,6 +344,7 @@ export function tuiCaptureCommand({ recipePath, outputDir }) {
     {
       cwd: 'services/boss',
       env: {
+        BOSS_PROOF_HIDE_GUEST_OFFER: '1',
         BOSS_PROOF_RECIPE: relativeFromService('services/boss', recipePath),
         BOSS_PROOF_OUTPUT_DIR: relativeFromService('services/boss', outputDir),
       },

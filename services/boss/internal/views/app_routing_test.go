@@ -279,3 +279,57 @@ func TestAppCurrentSession(t *testing.T) {
 		t.Fatalf("currentSession() in home = %v, want nil", got)
 	}
 }
+
+// TestAppChatPickerStaysOnMerge guards the critical regression: after a
+// successful merge the app must NOT bounce back to the session list. The user
+// stays on ViewChatPicker so they can archive in place.
+func TestAppChatPickerStaysOnMerge(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewChatPicker
+	a.chatPicker = ChatPickerModel{merged: true, sessionID: "s1"}
+
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+
+	if got.activeView != ViewChatPicker {
+		t.Fatalf("activeView = %v after merge, want ViewChatPicker (must stay on detail view)", got.activeView)
+	}
+}
+
+// TestAppChatPickerCancelAfterMergeReturnsHome guards that cancel still
+// returns to the session list even when the session was already merged,
+// and that mergedOptimisticID is set on the returned home model.
+func TestAppChatPickerCancelAfterMergeReturnsHome(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewChatPicker
+	a.chatPicker = ChatPickerModel{cancel: true, merged: true, sessionID: "s1"}
+
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("activeView = %v after cancel+merge, want ViewHome", got.activeView)
+	}
+	if got.home.mergedOptimisticID != "s1" {
+		t.Fatalf("mergedOptimisticID = %q, want %q (optimistic merge must carry through)", got.home.mergedOptimisticID, "s1")
+	}
+}
+
+// TestAppChatPickerArchiveAfterMergeReturnsHome guards that archive still
+// returns to the session list even when the session was already merged,
+// and that mergedOptimisticID is set on the returned home model.
+func TestAppChatPickerArchiveAfterMergeReturnsHome(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewChatPicker
+	a.chatPicker = ChatPickerModel{archived: true, merged: true, sessionID: "s1"}
+
+	model, _ := a.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	got := model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("activeView = %v after archive+merge, want ViewHome", got.activeView)
+	}
+	if got.home.mergedOptimisticID != "s1" {
+		t.Fatalf("mergedOptimisticID = %q, want %q (optimistic merge must carry through)", got.home.mergedOptimisticID, "s1")
+	}
+}

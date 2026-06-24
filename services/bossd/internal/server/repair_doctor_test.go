@@ -333,6 +333,60 @@ func TestReadFirstNonEmptyLine(t *testing.T) {
 	})
 }
 
+func TestClaudeVersionCheck(t *testing.T) {
+	t.Run("missing claude on PATH fails via LookPath", func(t *testing.T) {
+		// An empty PATH makes exec.LookPath("claude") fail, exercising the
+		// first guard. The detail must name LookPath so the operator knows
+		// the binary was never resolved (vs. resolved-but-broken).
+		t.Setenv("PATH", t.TempDir())
+
+		check := claudeVersionCheck(context.Background())
+
+		if check.GetOk() {
+			t.Fatalf("missing claude should fail, detail=%q", check.GetDetail())
+		}
+		if !strings.Contains(check.GetDetail(), "exec.LookPath") {
+			t.Fatalf("detail = %q, want LookPath-specific failure (not the --version path)", check.GetDetail())
+		}
+	})
+
+	t.Run("claude present but --version exits non-zero fails", func(t *testing.T) {
+		binDir := t.TempDir()
+		claudePath := filepath.Join(binDir, "claude")
+		if err := os.WriteFile(claudePath, []byte("#!/bin/sh\necho boom >&2\nexit 1\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		check := claudeVersionCheck(context.Background())
+
+		if check.GetOk() {
+			t.Fatalf("a non-zero `claude --version` must fail the check, detail=%q", check.GetDetail())
+		}
+		if !strings.Contains(check.GetDetail(), "--version") {
+			t.Fatalf("detail = %q, want mention of the --version probe", check.GetDetail())
+		}
+	})
+
+	t.Run("claude present and --version succeeds passes", func(t *testing.T) {
+		binDir := t.TempDir()
+		claudePath := filepath.Join(binDir, "claude")
+		if err := os.WriteFile(claudePath, []byte("#!/bin/sh\necho '1.2.3 (Claude Code)'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		check := claudeVersionCheck(context.Background())
+
+		if !check.GetOk() {
+			t.Fatalf("a healthy `claude --version` must pass, detail=%q", check.GetDetail())
+		}
+		if !strings.Contains(check.GetDetail(), "1.2.3") {
+			t.Fatalf("detail = %q, want the version output echoed back", check.GetDetail())
+		}
+	})
+}
+
 func TestShortID(t *testing.T) {
 	t.Run("truncates long id to 8", func(t *testing.T) {
 		if got := shortID("1234567890"); got != "12345678" {

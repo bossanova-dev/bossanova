@@ -132,6 +132,13 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.Configu
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
+// RemoveAgentRunHook reports unsupported. Codex has no run-scoped hook config
+// to remove, but the daemon calls this cleanup RPC unconditionally after run
+// completion.
+func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: false}, nil
+}
+
 // BuildInteractiveCommand returns the argv that boss/bossd should run inside
 // a tmux pane to attach a user-interactive codex session. Output capture is
 // owned by bossd via tmux pipe-pane; wrapping codex in a tee pipeline makes
@@ -140,6 +147,19 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.Configu
 // Resume vs fresh: codex resume is a positional subcommand, so a resume
 // invocation is `codex resume <UUID>`, not `codex --resume <UUID>`.
 // (Lane 0 spike finding.)
+//
+// req.AppendSystemPrompt is intentionally NOT consumed: codex has no
+// append-system-prompt flag (the claude plugin maps the field to
+// `--append-system-prompt`, but codex's only instruction-override knob,
+// `-c model_instructions_file`, REPLACES the AGENTS.md pipeline rather than
+// appending, so using it would clobber the worktree's AGENTS.md — and the
+// concat-into-a-temp-file workaround would leave exactly the local artifact
+// the surrounding feature exists to avoid). The boss session-context suffix
+// is therefore a deliberate no-op for codex today; wire it through here once
+// codex grows a real append surface (tracked upstream:
+// https://github.com/openai/codex/issues/11588). Keeping the daemon
+// agent-agnostic (it always offers the suffix) means this gate lives in the
+// plugin that owns codex's CLI shape, not in the host.
 func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	args := []string{"codex"}
 	if req.Resume {

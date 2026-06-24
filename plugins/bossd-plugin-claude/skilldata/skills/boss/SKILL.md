@@ -7,64 +7,31 @@ description: Complete reference for all boss CLI commands. Use to run boss opera
 
 Boss manages Claude coding sessions across git worktrees with automatic PR creation, CI fix loops, and code review handling.
 
+The command reference below is generated from the `boss` CLI by `make gen-skill`. Do not edit the region between the markers by hand — change the CLI (or the prose registry in `lib/bossalib/clidoc`) and regenerate.
+
+<!-- BEGIN GENERATED: boss command reference — run `make gen-skill` -->
+
 ## Global Flags
 
-### `--remote <url>`
+### `--remote`
 
-Connect to an orchestrator URL instead of the local daemon.
-
-```bash
-boss --remote https://orchestrator.example.com ls
-```
-
----
+Connect to orchestrator URL instead of local daemon
 
 ## Session Management
 
-### `boss ls`
+### `boss archive <session-id>`
 
-List sessions (non-interactive).
-
-**Flags:**
-
-- `--repo <repo-id>` — Filter by repo ID
-- `--archived` — Include archived sessions (default: false)
-- `--state <state>[,<state>...]` — Filter by state(s)
+Archive a session (keep branch, remove worktree)
 
 ```bash
-boss ls
-boss ls --repo my-repo --state running,paused
-boss ls --archived
-```
-
-An extra `AGENT` column appears only when at least one listed session uses
-an agent that differs from the user's `Settings.DefaultAgent`. In the
-common single-agent case the column is hidden so the table stays compact.
-
-### `boss show <session-id>`
-
-Show detailed information about a session.
-
-```bash
-boss show abc123
-```
-
-### `boss new`
-
-Create a new coding session. Launches the interactive session creation flow.
-
-**Flags:**
-
-- `--agent <name>` — Override the default agent plugin for this session (e.g. `claude`, `opencode`). When omitted, the daemon falls back to `Settings.DefaultAgent`.
-
-```bash
-boss new
-boss new --agent opencode
+boss archive abc123
 ```
 
 ### `boss attach <session-id>`
 
-Attach to a running session's terminal.
+Attach to a running session
+
+Attaches to a running session's terminal.
 
 ```bash
 boss attach abc123
@@ -72,40 +39,62 @@ boss attach abc123
 
 ### `boss chats <session-id>`
 
-List chats (conversation turns) in a session.
+List chats in a session
 
 ```bash
 boss chats abc123
 ```
 
-### `boss session link-pr <session-id> <pr-number-or-url>`
+### `boss ls [flags]`
 
-Attach an existing GitHub PR to a session. Use this to repair cron sessions
-where the agent already committed, pushed, and opened a PR before bossd
-finalized the run.
+List sessions (non-interactive)
 
-```bash
-boss session link-pr abc123 477
-boss session link-pr abc123 https://github.com/owner/repo/pull/477
-```
+An extra `AGENT` column appears only when at least one listed session uses an agent that differs from the user's `Settings.DefaultAgent`. In the common single-agent case the column is hidden so the table stays compact.
 
-### `boss archive <session-id>`
+**Flags:**
 
-Archive a session — keeps the branch but removes the worktree.
+- `--archived` — Include archived sessions
+- `--repo` — Filter by repo ID
+- `--state` — Filter by state(s)
 
 ```bash
-boss archive abc123
+boss ls
+boss ls --repo my-repo --state running,paused
+boss ls --archived
 ```
 
----
+### `boss new [flags]`
+
+Create a new coding session
+
+Launches the interactive session creation flow.
+
+**Flags:**
+
+- `--agent` — Override default agent plugin for this session (e.g. claude, opencode)
+
+```bash
+boss new
+boss new --agent opencode
+```
+
+### `boss show <session-id>`
+
+Show session details
+
+```bash
+boss show abc123
+```
 
 ## Repository Management
 
-`boss repo` is a command group; use one of its subcommands.
+### `boss repo`
+
+Manage repositories
 
 ### `boss repo add`
 
-Register a repository with bossd.
+Register a repository
 
 ```bash
 boss repo add
@@ -113,7 +102,7 @@ boss repo add
 
 ### `boss repo ls`
 
-List registered repositories.
+List registered repositories
 
 ```bash
 boss repo ls
@@ -121,60 +110,44 @@ boss repo ls
 
 ### `boss repo remove <repo-id>`
 
-Remove a registered repository.
+Remove a registered repository
 
 ```bash
 boss repo remove my-repo
 ```
 
-### `boss repo update <repo-id>`
+### `boss repo update <repo-id> [flags]`
 
-Update repository settings.
+Update repository settings
 
 **Flags:**
 
-- `--name <name>` — Set display name
-- `--setup-script <path>` — Set setup script (empty string to clear)
-- `--merge-strategy <strategy>` — Set merge strategy (`merge`, `rebase`, `squash`)
-- `--auto-merge` — Enable auto-merge
-- `--no-auto-merge` — Disable auto-merge
-- `--auto-merge-dependabot` — Enable auto-merge for Dependabot PRs
-- `--no-auto-merge-dependabot` — Disable auto-merge for Dependabot PRs
 - `--auto-address-reviews` — Enable auto-address review feedback
-- `--no-auto-address-reviews` — Disable auto-address review feedback
+- `--auto-merge` — Enable auto-merge
+- `--auto-merge-dependabot` — Enable auto-merge for Dependabot PRs
 - `--auto-resolve-conflicts` — Enable auto-resolve merge conflicts
+- `--merge-strategy` — Set merge strategy (merge, rebase, squash)
+- `--name` — Set display name
+- `--no-auto-address-reviews` — Disable auto-address review feedback
+- `--no-auto-merge` — Disable auto-merge
+- `--no-auto-merge-dependabot` — Disable auto-merge for Dependabot PRs
 - `--no-auto-resolve-conflicts` — Disable auto-resolve merge conflicts
+- `--setup-script` — Set setup script (empty string to clear)
 
 ```bash
 boss repo update my-repo --name "My Repo" --merge-strategy squash
 boss repo update my-repo --auto-merge-dependabot
 ```
 
----
-
 ## Trash Management
 
-`boss trash` is a command group; use one of its subcommands to manage archived sessions.
+### `boss trash`
 
-### `boss trash ls`
+Manage archived sessions
 
-List archived sessions.
+### `boss trash delete <session-id> [flags]`
 
-```bash
-boss trash ls
-```
-
-### `boss trash restore <session-id>`
-
-Restore an archived session (recreates the worktree).
-
-```bash
-boss trash restore abc123
-```
-
-### `boss trash delete <session-id>`
-
-Permanently delete an archived session.
+Permanently delete an archived session
 
 **Flags:**
 
@@ -185,28 +158,46 @@ boss trash delete abc123
 boss trash delete abc123 --yes
 ```
 
-### `boss trash empty`
+### `boss trash empty [flags]`
 
-Permanently delete all archived sessions.
+Permanently delete all archived sessions
 
 **Flags:**
 
-- `--older-than <duration>` — Only delete sessions archived longer than this duration (e.g. `30d`)
+- `--older-than` — Only delete sessions archived longer than this duration (e.g. 30d)
 
 ```bash
 boss trash empty
 boss trash empty --older-than 30d
 ```
 
----
+### `boss trash ls`
+
+List archived sessions
+
+```bash
+boss trash ls
+```
+
+### `boss trash restore <session-id>`
+
+Restore an archived session
+
+Restores an archived session, recreating its worktree.
+
+```bash
+boss trash restore abc123
+```
 
 ## Daemon Management
 
-`boss daemon` is a command group for managing the bossd background daemon.
+### `boss daemon`
 
-### `boss daemon install`
+Manage the bossd daemon
 
-Install bossd as a macOS LaunchAgent.
+### `boss daemon install [flags]`
+
+Install bossd as a background service (launchd on macOS, systemd on Linux)
 
 **Flags:**
 
@@ -217,56 +208,75 @@ boss daemon install
 boss daemon install --force
 ```
 
-### `boss daemon uninstall`
+### `boss daemon restart`
 
-Uninstall the bossd LaunchAgent.
+Restart the bossd daemon
 
-```bash
-boss daemon uninstall
-```
-
-### `boss daemon status`
-
-Show bossd daemon status.
+Restarts the bossd daemon via the platform service manager. Errors out if the daemon isn't installed.
 
 ```bash
-boss daemon status
+boss daemon restart
 ```
 
 ### `boss daemon start`
 
-Start the bossd daemon. No-op if it's already running. Falls back to spawning bossd directly if it isn't installed as a LaunchAgent.
+Start the bossd daemon
+
+No-op if it's already running. Falls back to spawning bossd directly if it isn't installed as a LaunchAgent.
 
 ```bash
 boss daemon start
 ```
 
-### `boss daemon stop`
+### `boss daemon status`
 
-Stop the bossd daemon for the current profile via the platform service manager or profile metadata. Idempotent — quietly succeeds if the daemon is already stopped or not installed. Use `--all-standalone` only for explicit cleanup of every user-owned standalone bossd process across profiles.
+Show bossd daemon status
+
+```bash
+boss daemon status
+```
+
+### `boss daemon stop [flags]`
+
+Stop the bossd daemon
+
+Stops the bossd daemon for the current profile via the platform service manager or profile metadata. Idempotent — quietly succeeds if the daemon is already stopped or not installed. Use `--all-standalone` only for explicit cleanup of every user-owned standalone bossd process across profiles.
+
+**Flags:**
+
+- `--all-standalone` — Stop all user-owned bossd processes instead of only the current profile
 
 ```bash
 boss daemon stop
 boss daemon stop --all-standalone
 ```
 
-### `boss daemon restart`
+### `boss daemon uninstall`
 
-Restart the bossd daemon via the platform service manager. Errors out if the daemon isn't installed.
+Uninstall the bossd LaunchAgent
 
 ```bash
-boss daemon restart
+boss daemon uninstall
 ```
-
----
 
 ## MCP Server
 
-`boss mcp` is a command group for managing the local MCP server, which exposes the boss operations as MCP tools over Streamable HTTP for MCP-aware hosts. It runs as an auto-starting service (launchd on macOS, systemd on Linux) and proxies through the local bossd daemon's Unix socket.
+### `boss mcp`
 
-### `boss mcp install`
+Manage the local MCP server
 
-Install the MCP server as an auto-starting service and start it. Use `--force` to overwrite an existing service file, and `--port` to change the loopback port (default 8765). The server listens on `http://127.0.0.1:<port>/mcp`.
+Manages the local MCP server, which exposes the boss operations as MCP tools over Streamable HTTP for MCP-aware hosts. It runs as an auto-starting service (launchd on macOS, systemd on Linux) and proxies through the local bossd daemon's Unix socket.
+
+### `boss mcp install [flags]`
+
+Install the MCP server as an auto-starting service
+
+Installs the MCP server as an auto-starting service and starts it. Use `--force` to overwrite an existing service file, and `--port` to change the loopback port (default 8765). The server listens on `http://127.0.0.1:<port>/mcp`.
+
+**Flags:**
+
+- `--force` — Overwrite existing service file
+- `--port` — Loopback port for the MCP HTTP server (default: 8765)
 
 ```bash
 boss mcp install
@@ -274,67 +284,61 @@ boss mcp install --force
 boss mcp install --port 8888
 ```
 
-### `boss mcp uninstall`
-
-Uninstall the MCP server service and remove its service file.
-
-```bash
-boss mcp uninstall
-```
-
-### `boss mcp status`
-
-Show whether the MCP server is installed and running.
-
-```bash
-boss mcp status
-```
-
 ### `boss mcp start`
 
-Start (or restart) the installed MCP server.
+Start the MCP server
 
 ```bash
 boss mcp start
 ```
 
+### `boss mcp status`
+
+Show MCP server status
+
+```bash
+boss mcp status
+```
+
 ### `boss mcp stop`
 
-Stop the running MCP server, leaving its service file in place. Idempotent.
+Stop the MCP server
+
+Stops the running MCP server, leaving its service file in place. Idempotent.
 
 ```bash
 boss mcp stop
 ```
 
----
+### `boss mcp uninstall`
+
+Uninstall the MCP server service
+
+```bash
+boss mcp uninstall
+```
 
 ## Settings & Auth
 
-### `boss settings`
+### `boss auth-status`
 
-View or update global settings.
-
-**Flags:**
-
-- `--skip-permissions` — Enable Claude `--dangerously-skip-permissions`
-- `--no-skip-permissions` — Disable Claude `--dangerously-skip-permissions`
-- `--worktree-dir <path>` — Set worktree base directory
-- `--default-agent <name>` — Set the default agent plugin (e.g. `claude`, `opencode`)
-- `--poll-interval <seconds>` — Set poll interval in seconds (0 = use default)
+Show authentication status
 
 ```bash
-boss settings
-boss settings --worktree-dir ~/work/bossanova/worktrees
-boss settings --skip-permissions
+boss auth-status
 ```
 
-### `boss config init`
+### `boss config`
 
-Initialize plugin configuration from a directory of plugin binaries.
+Manage configuration
+
+### `boss config init [flags]`
+
+Initialize plugin configuration from a directory
 
 **Flags:**
 
-- `--plugin-dir <path>` — Directory containing plugin binaries (auto-detected if omitted)
+- `--plugin-dir` — Directory containing plugin binaries (auto-detected if omitted)
 
 ```bash
 boss config init
@@ -343,7 +347,7 @@ boss config init --plugin-dir ./plugins
 
 ### `boss login`
 
-Log in to Bossanova cloud (WorkOS).
+Log in to Bossanova cloud (WorkOS)
 
 ```bash
 boss login
@@ -351,96 +355,128 @@ boss login
 
 ### `boss logout`
 
-Log out and remove stored credentials.
+Log out and remove stored credentials
 
 ```bash
 boss logout
 ```
 
-### `boss auth-status`
+### `boss settings [flags]`
 
-Show authentication status.
+View or update global settings
+
+**Flags:**
+
+- `--default-agent` — Set the default agent plugin (e.g. claude, opencode)
+- `--no-skip-permissions` — Disable Claude --dangerously-skip-permissions
+- `--poll-interval` — Set poll interval in seconds (0 = default) (default: 0)
+- `--skip-permissions` — Enable Claude --dangerously-skip-permissions
+- `--worktree-dir` — Set worktree base directory
 
 ```bash
-boss auth-status
+boss settings
+boss settings --worktree-dir ~/work/bossanova/worktrees
+boss settings --skip-permissions
 ```
-
----
 
 ## Diagnostics
 
+### `boss repair`
+
+Auto-repair plugin operations
+
 ### `boss repair doctor`
 
-Health-check the auto-repair pipeline. Calls the daemon's `RepairDoctor` RPC
-and renders a checklist (plugin loaded, `claude` on PATH, recent log files,
-etc.) plus a recent-logs table — answers "is auto-repair healthy?" without
-having to grep daemon stderr.
+Health-check the auto-repair pipeline (plugin loaded, claude on PATH, recent logs, etc.)
+
+Health-checks the auto-repair pipeline. Calls the daemon's `RepairDoctor` RPC and renders a checklist (plugin loaded, `claude` on PATH, recent log files, etc.) plus a recent-logs table — answers "is auto-repair healthy?" without having to grep daemon stderr.
 
 ```bash
 boss repair doctor
 ```
 
-### `boss session checks <session-id>`
+### `boss session`
 
-Show bossd's persisted view of a session's CI check snapshots, alongside the
-`DisplayStatus` the daemon computed for each one. Useful when reconciling
-"why did the TUI think this PR was passing when GitHub says failing?".
+Session diagnostics
+
+### `boss session checks <session-id> [flags]`
+
+Show what bossd's display poller saw for this session's CI checks
+
+Shows bossd's persisted view of a session's CI check snapshots, alongside the `DisplayStatus` the daemon computed for each one. Useful when reconciling "why did the TUI think this PR was passing when GitHub says failing?".
 
 **Flags:**
 
-- `--limit <n>` — Number of snapshots to show, newest first (default: 5)
+- `--limit` — Number of snapshots to show (newest first) (default: 5)
 
 ```bash
 boss session checks abc123
 boss session checks abc123 --limit 10
 ```
 
-Cron repair example:
+### `boss session link-pr <session-id> <pr-number-or-url>`
+
+Attach an existing pull request to a session
+
+Attach an existing GitHub PR to a session. Use this to repair cron sessions where the agent already committed, pushed, and opened a PR before bossd finalized the run.
 
 ```bash
-boss ls --state finalizing,blocked
-boss session link-pr b4764f1684e33742 477
+boss session link-pr abc123 477
+boss session link-pr abc123 https://github.com/owner/repo/pull/477
 ```
-
----
 
 ## Plugins
 
+### `boss plugin`
+
+Inspect installed plugins
+
 ### `boss plugin list`
 
-List plugins the daemon attempted to load during this run.
-
 Alias: `boss plugin ls`
+
+List plugins the daemon attempted to load this run
 
 ```bash
 boss plugin list
 boss plugin ls
 ```
 
----
-
 ## Other
 
-### `boss version`
+### `boss upgrade [flags]`
 
-Print version information.
+Check for and install Bossanova upgrades
 
-```bash
-boss version
-```
+**Flags:**
 
-### `boss upgrade`
-
-Check for and install Bossanova upgrades.
-
-- `--check` — Check for an upgrade without installing
-- `--yes` — Install without interactive confirmation
-- `--version <tag>` — Install a specific stable release tag
-- `--no-restart` — Do not restart the daemon after upgrade
+- `--check` — check for an upgrade without installing
+- `--no-restart` — do not restart the daemon after upgrade
+- `--version` — install a specific stable release tag (prereleases are not supported)
+- `--yes` — install without interactive confirmation
 
 ```bash
 boss upgrade --check
 boss upgrade --yes
 boss upgrade --version v1.2.4 --yes
 boss upgrade --yes --no-restart
+```
+
+### `boss version`
+
+Print version information
+
+```bash
+boss version
+```
+
+<!-- END GENERATED -->
+
+## Cron repair workflow
+
+Cron repair example — list the stalled sessions, then link the existing PR:
+
+```bash
+boss ls --state finalizing,blocked
+boss session link-pr b4764f1684e33742 477
 ```

@@ -29,8 +29,8 @@ func destructiveAnnotations() *mcp.ToolAnnotations {
 
 // registerDestructiveTools installs the destructive write tools, each gated on
 // an explicit confirm:true argument.
-func registerDestructiveTools(server *mcp.Server, backend Backend) {
-	mcp.AddTool(server, &mcp.Tool{
+func registerDestructiveTools(server *mcp.Server, backend Backend, opts Options) {
+	addTool(server, opts, &mcp.Tool{
 		Name:        "remove_repo",
 		Description: "Permanently remove a registered repository. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
@@ -45,12 +45,12 @@ func registerDestructiveTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	registerDestructiveSessionTool(server, "close_session", "Close a session (abandons its work). Destructive — requires confirm:true.", backend.CloseSession)
-	registerDestructiveSessionTool(server, "merge_session", "Merge a session's pull request. Destructive — requires confirm:true.", backend.MergeSession)
-	registerDestructiveSessionTool(server, "archive_session", "Archive a session into the trash. Destructive — requires confirm:true.", backend.ArchiveSession)
-	registerDestructiveSessionTool(server, "resurrect_session", "Resurrect an archived session from the trash. Destructive — requires confirm:true.", backend.ResurrectSession)
+	registerDestructiveSessionTool(server, opts, "close_session", "Close a session (abandons its work). Destructive — requires confirm:true.", backend.CloseSession)
+	registerDestructiveSessionTool(server, opts, "merge_session", "Merge a session's pull request. Destructive — requires confirm:true.", backend.MergeSession)
+	registerDestructiveSessionTool(server, opts, "archive_session", "Archive a session into the trash. Destructive — requires confirm:true.", backend.ArchiveSession)
+	registerDestructiveSessionTool(server, opts, "resurrect_session", "Resurrect an archived session from the trash. Destructive — requires confirm:true.", backend.ResurrectSession)
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "remove_session",
 		Description: "Permanently remove a session and its worktree. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
@@ -65,7 +65,7 @@ func registerDestructiveTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "delete_chat",
 		Description: "Permanently delete an agent chat. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
@@ -80,7 +80,7 @@ func registerDestructiveTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "empty_trash",
 		Description: "Permanently delete archived sessions, optionally only those older than a timestamp. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
@@ -104,7 +104,7 @@ func registerDestructiveTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "delete_cron_job",
 		Description: "Permanently delete a cron job. Destructive — requires confirm:true.",
 		Annotations: destructiveAnnotations(),
@@ -122,8 +122,8 @@ func registerDestructiveTools(server *mcp.Server, backend Backend) {
 
 // registerDestructiveSessionTool installs a confirm-gated id-keyed session tool
 // returning the resulting session.
-func registerDestructiveSessionTool(server *mcp.Server, name, desc string, fn func(context.Context, string) (*pb.Session, error)) {
-	mcp.AddTool(server, &mcp.Tool{
+func registerDestructiveSessionTool(server *mcp.Server, opts Options, name, desc string, fn func(context.Context, string) (*pb.Session, error)) {
+	addTool(server, opts, &mcp.Tool{
 		Name:        name,
 		Description: desc,
 		Annotations: destructiveAnnotations(),

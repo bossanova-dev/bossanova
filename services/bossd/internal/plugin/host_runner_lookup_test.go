@@ -35,6 +35,9 @@ func (s *stubAgentRunner) ExitStatus(context.Context, *bossanovav1.AgentExitStat
 func (s *stubAgentRunner) ConfigureFinalizeHook(context.Context, *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return &bossanovav1.ConfigureFinalizeHookResponse{}, nil
 }
+func (s *stubAgentRunner) RemoveAgentRunHook(context.Context, *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
 func (s *stubAgentRunner) BuildInteractiveCommand(context.Context, *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{}, nil
 }

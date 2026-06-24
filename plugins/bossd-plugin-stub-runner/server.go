@@ -101,6 +101,12 @@ func (s *Server) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.Configu
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
+// RemoveAgentRunHook reports unsupported. The stub never writes run-scoped
+// hook config, but bossd still calls cleanup after completion.
+func (s *Server) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: false}, nil
+}
+
 // BuildInteractiveCommand returns a no-op argv. The stub does not support
 // interactive (tmux) sessions, but returns a valid response so the daemon
 // does not crash if it calls this path.

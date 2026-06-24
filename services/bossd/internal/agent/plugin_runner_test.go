@@ -40,6 +40,9 @@ func (f *fakeAgentClient) ExitStatus(_ context.Context, _ *bossanovav1.AgentExit
 func (f *fakeAgentClient) ConfigureFinalizeHook(context.Context, *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: true}, nil
 }
+func (f *fakeAgentClient) RemoveAgentRunHook(context.Context, *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
 func (f *fakeAgentClient) BuildInteractiveCommand(context.Context, *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{Argv: []string{"sh", "-c", "true"}}, nil
 }

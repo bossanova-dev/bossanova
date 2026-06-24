@@ -1,6 +1,7 @@
 package views
 
 import (
+	"os"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -12,7 +13,16 @@ const (
 	cloudGuestOfferInstallLimit = 72 * time.Hour
 )
 
+// proofHideGuestOffer suppresses the guest cloud offer during proof capture
+// so screenshots aren't cluttered by the subscribe prompt. Read once at
+// startup from BOSS_PROOF_HIDE_GUEST_OFFER; it hides the line only — it does
+// not change cloud-gate copy or pretend the user is subscribed.
+var proofHideGuestOffer = os.Getenv("BOSS_PROOF_HIDE_GUEST_OFFER") != ""
+
 func cloudGuestOfferVisible(settings config.Settings, now, sessionStartedAt time.Time, loggedIn bool, authConfigured bool) bool {
+	if proofHideGuestOffer {
+		return false
+	}
 	if loggedIn || !authConfigured {
 		return false
 	}

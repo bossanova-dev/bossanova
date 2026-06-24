@@ -10,6 +10,7 @@ import {
   browserCaptureCommand,
   classifySecretRisk,
   githubCommentCommand,
+  introCardCommand,
   listProofCommentsCommand,
   mediaTypeForPath,
   minimizeCommentCommand,
@@ -417,6 +418,7 @@ test('tuiCaptureCommand passes recipe and output through environment', () => {
       {
         cwd: 'services/boss',
         env: {
+          BOSS_PROOF_HIDE_GUEST_OFFER: '1',
           BOSS_PROOF_RECIPE: '../../.proof/tui-home/recipe.json',
           BOSS_PROOF_OUTPUT_DIR: '../../.proof/tui-home',
         },
@@ -680,6 +682,25 @@ test('proofUploadFiles queues webm + poster with correct content-types, png stil
   assert.equal(files.filter((f) => f.relative.startsWith('undefined')).length, 0);
 });
 
+test('proofUploadFiles queues mp4 + poster with correct content-types', () => {
+  const manifest = {
+    captures: [
+      {
+        status: 'passed',
+        mediaType: 'mp4',
+        fileName: 'web-v/web-v.mp4',
+        posterFileName: 'web-v/web-v.png',
+      },
+    ],
+  };
+  const files = proofUploadFiles({ manifest, localDir: '/tmp/proof' });
+  const byRelative = Object.fromEntries(files.map((f) => [f.relative, f.contentType]));
+  assert.equal(byRelative['web-v/web-v.mp4'], 'video/mp4');
+  assert.equal(byRelative['web-v/web-v.png'], 'image/png');
+  // the source webm is never published
+  assert.equal(files.filter((f) => f.relative.endsWith('.webm')).length, 0);
+});
+
 test('renderComment embeds png inline (regression) and webm as poster link', () => {
   const body = renderComment({
     marker: '<!-- m -->',
@@ -737,22 +758,77 @@ test('renderComment embeds gif inline like an image', () => {
   assert.match(body, /!\[Tui\]\(https:\/\/x\/t\.gif\)/);
 });
 
-test('PROOF_MEDIA_TYPES maps the three supported extensions', () => {
+test('buildManifest sets videoUrl+posterUrl for mp4 capture (like webm)', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: '7',
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example.dev/prefix',
+    captures: [
+      {
+        recipeId: 'web-v',
+        title: 'V',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'passed',
+        mediaType: 'mp4',
+        fileName: 'web-v/web-v.mp4',
+        posterFileName: 'web-v/web-v.png',
+      },
+    ],
+  });
+  const mp4 = manifest.captures[0];
+  assert.equal(mp4.mediaType, 'mp4');
+  assert.equal(mp4.url, 'https://proof.example.dev/prefix/web-v/web-v.mp4');
+  assert.equal(mp4.videoUrl, 'https://proof.example.dev/prefix/web-v/web-v.mp4');
+  assert.equal(mp4.posterUrl, 'https://proof.example.dev/prefix/web-v/web-v.png');
+});
+
+test('renderComment renders mp4 capture as poster-link + ▶ Video (like webm)', () => {
+  const body = renderComment({
+    marker: '<!-- m -->',
+    manifest: {
+      commit: 'abc1234',
+      runId: 'run-1',
+      publicBaseUrl: 'https://x',
+      publicLiveCapture: false,
+      captures: [
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+        },
+      ],
+    },
+  });
+  // clickable poster thumbnail linking to the video
+  assert.match(body, /\[!\[Flow\]\(https:\/\/x\/v\.png\)\]\(https:\/\/x\/v\.mp4\)/);
+  assert.match(body, /▶ Video/);
+});
+
+test('PROOF_MEDIA_TYPES maps the four supported extensions', () => {
   assert.equal(PROOF_MEDIA_TYPES.png, 'image/png');
   assert.equal(PROOF_MEDIA_TYPES.webm, 'video/webm');
   assert.equal(PROOF_MEDIA_TYPES.gif, 'image/gif');
+  assert.equal(PROOF_MEDIA_TYPES.mp4, 'video/mp4');
 });
 
 test('mediaTypeForPath derives content-type from extension', () => {
   assert.equal(mediaTypeForPath('a/b/c.webm'), 'video/webm');
   assert.equal(mediaTypeForPath('poster.png'), 'image/png');
-  assert.throws(() => mediaTypeForPath('clip.mp4'), /unsupported proof media/);
+  assert.equal(mediaTypeForPath('clip.mp4'), 'video/mp4');
+  assert.throws(() => mediaTypeForPath('file.exe'), /unsupported proof media/);
 });
 
-test('validateProofUploadRelativePath accepts webm and gif, rejects traversal and unknown ext', () => {
+test('validateProofUploadRelativePath accepts webm, gif, mp4, rejects traversal and unknown ext', () => {
   assert.equal(validateProofUploadRelativePath('id/id.webm'), 'id/id.webm');
   assert.equal(validateProofUploadRelativePath('id/id.gif'), 'id/id.gif');
   assert.equal(validateProofUploadRelativePath('id/id.png'), 'id/id.png'); // regression: still works
+  assert.equal(validateProofUploadRelativePath('id/id.mp4'), 'id/id.mp4');
   assert.throws(() => validateProofUploadRelativePath('id/../x.png'), /invalid proof upload path/);
   assert.throws(() => validateProofUploadRelativePath('/abs/x.png'), /invalid proof upload path/);
   assert.throws(() => validateProofUploadRelativePath('id/id.exe'), /invalid proof upload path/);
@@ -760,4 +836,85 @@ test('validateProofUploadRelativePath accepts webm and gif, rejects traversal an
 
 test('tuiVideoCaptureCommand runs vhs against the tape', () => {
   assert.deepEqual(tuiVideoCaptureCommand({ tapePath: 'x.tape' }), ['vhs', ['x.tape']]);
+});
+
+test('introCardCommand runs through services/web for surface web', () => {
+  assert.deepEqual(
+    introCardCommand({
+      surface: 'web',
+      out: '.proof/intro.png',
+      width: 1440,
+      height: 900,
+      label: 'bossanova#123',
+      title: 'Add intro card',
+    }),
+    [
+      'pnpm',
+      [
+        '--dir',
+        'services/web',
+        'exec',
+        'node',
+        '../../scripts/proof-render-intro-card.mjs',
+        '--out',
+        '../../.proof/intro.png',
+        '--width',
+        '1440',
+        '--height',
+        '900',
+        '--label',
+        'bossanova#123',
+        '--title',
+        'Add intro card',
+      ],
+    ],
+  );
+});
+
+test('introCardCommand defaults an omitted title to an empty string', () => {
+  const [, args] = introCardCommand({
+    surface: 'web',
+    out: '.proof/intro.png',
+    width: 1440,
+    height: 900,
+    label: 'bossanova#123',
+  });
+  const titleIdx = args.indexOf('--title');
+  assert.notEqual(titleIdx, -1);
+  assert.strictEqual(args[titleIdx + 1], '');
+  // No undefined entries — spawn() rejects a non-string arg.
+  assert.ok(args.every((a) => typeof a === 'string'));
+});
+
+test('introCardCommand runs through services/marketing for surface marketing', () => {
+  assert.deepEqual(
+    introCardCommand({
+      surface: 'marketing',
+      out: '.proof/intro.png',
+      width: 1920,
+      height: 1080,
+      label: 'bossanova#456',
+      title: 'Marketing intro',
+    }),
+    [
+      'pnpm',
+      [
+        '--dir',
+        'services/marketing',
+        'exec',
+        'node',
+        '../../scripts/proof-render-intro-card.mjs',
+        '--out',
+        '../../.proof/intro.png',
+        '--width',
+        '1920',
+        '--height',
+        '1080',
+        '--label',
+        'bossanova#456',
+        '--title',
+        'Marketing intro',
+      ],
+    ],
+  );
 });

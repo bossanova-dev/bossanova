@@ -10,6 +10,7 @@ import (
 
 	"github.com/recurser/boss/internal/skillinstall"
 	"github.com/recurser/bossalib/buildinfo"
+	"github.com/recurser/bossalib/clidoc"
 	"github.com/recurser/bossalib/config"
 	"github.com/recurser/bossalib/errortrack"
 	bossalog "github.com/recurser/bossalib/log"
@@ -78,6 +79,9 @@ func rootCmd() *cobra.Command {
 		Short: "Bossanova — autonomous Claude coding sessions",
 		Long:  "Boss manages Claude coding sessions with automatic PR creation, CI fix loops, and code review handling.",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.CommandPath() == "boss gen-skill" {
+				return nil
+			}
 			return maybeInstallSkills()
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -95,29 +99,34 @@ func rootCmd() *cobra.Command {
 	// directed to it explicitly.
 	_ = root.PersistentFlags().MarkHidden("allow-insecure-keyring")
 
-	root.AddCommand(
-		versionCmd(),
-		upgradeCmd(),
-		lsCmd(),
-		showCmd(),
-		chatsCmd(),
-		newCmd(),
-		attachCmd(),
-		repoCmd(),
-		archiveCmd(),
-		resurrectCmd(),
-		trashCmd(),
-		settingsCmd(),
-		configCmd(),
-		loginCmd(),
-		logoutCmd(),
-		authStatusCmd(),
-		daemonCmd(),
-		mcpCmd(),
-		repairCmd(),
-		sessionCmd(),
-		pluginCmd(),
-	)
+	// Register the command groups that the /boss skill generator (and cobra's
+	// own --help) use as section headings. The skill extractor hard-errors on
+	// any non-hidden, non-deprecated command without a known GroupID, so every
+	// such command below is assigned to one of these groups.
+	for _, g := range clidoc.GroupOrder {
+		root.AddGroup(&cobra.Group{ID: g.ID, Title: g.Title})
+	}
+	addGrouped := func(groupID string, cmds ...*cobra.Command) {
+		for _, c := range cmds {
+			c.GroupID = groupID
+			root.AddCommand(c)
+		}
+	}
+
+	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), archiveCmd())
+	addGrouped("repo", repoCmd())
+	addGrouped("trash", trashCmd())
+	addGrouped("daemon", daemonCmd())
+	addGrouped("mcp", mcpCmd())
+	addGrouped("settings", settingsCmd(), configCmd(), loginCmd(), logoutCmd(), authStatusCmd())
+	addGrouped("diagnostics", repairCmd(), sessionCmd())
+	addGrouped("plugins", pluginCmd())
+	addGrouped("other", versionCmd(), upgradeCmd())
+
+	// Deprecated (resurrect) and hidden (gen-skill) commands carry no group —
+	// the skill extractor skips them, and cobra lists them under "Additional
+	// Commands".
+	root.AddCommand(resurrectCmd(), newGenSkillCmd())
 
 	return root
 }

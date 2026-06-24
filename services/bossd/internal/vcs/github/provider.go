@@ -586,55 +586,27 @@ func (p *Provider) GetReviewInlineComments(ctx context.Context, repoPath string,
 
 // ListOpenPRs returns all open pull requests for a repository.
 func (p *Provider) ListOpenPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
-	out, err := p.runGHWithTransientRetry(ctx, "list open PRs",
-		"pr", "list",
-		"--repo", repoFlag(repoPath),
-		"--state", "open",
-		"--json", "number,title,headRefName,state,author",
-		"--limit", "300",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list open PRs: %w", err)
-	}
-
-	var raw []struct {
-		Number      int    `json:"number"`
-		Title       string `json:"title"`
-		HeadRefName string `json:"headRefName"`
-		State       string `json:"state"`
-		Author      struct {
-			Login string `json:"login"`
-		} `json:"author"`
-	}
-	if err := json.Unmarshal([]byte(out), &raw); err != nil {
-		return nil, fmt.Errorf("parse PRs: %w", err)
-	}
-
-	prs := make([]vcs.PRSummary, len(raw))
-	for i, r := range raw {
-		prs[i] = vcs.PRSummary{
-			Number:     r.Number,
-			Title:      r.Title,
-			HeadBranch: r.HeadRefName,
-			State:      parsePRState(r.State),
-			Author:     r.Author.Login,
-		}
-	}
-
-	return prs, nil
+	return p.listPRsByState(ctx, repoPath, "list open PRs", "open", 300)
 }
 
 // ListClosedPRs returns recently-closed (not merged) pull requests.
 func (p *Provider) ListClosedPRs(ctx context.Context, repoPath string) ([]vcs.PRSummary, error) {
-	out, err := p.runGHWithTransientRetry(ctx, "list closed PRs",
+	return p.listPRsByState(ctx, repoPath, "list closed PRs", "closed", 50)
+}
+
+// listPRsByState lists pull requests in the given state (e.g. "open" or
+// "closed"), capped at limit, and maps them to vcs.PRSummary. label provides
+// the retry-logging description and error context for the caller.
+func (p *Provider) listPRsByState(ctx context.Context, repoPath, label, state string, limit int) ([]vcs.PRSummary, error) {
+	out, err := p.runGHWithTransientRetry(ctx, label,
 		"pr", "list",
 		"--repo", repoFlag(repoPath),
-		"--state", "closed",
+		"--state", state,
 		"--json", "number,title,headRefName,state,author",
-		"--limit", "50",
+		"--limit", strconv.Itoa(limit),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list closed PRs: %w", err)
+		return nil, fmt.Errorf("%s: %w", label, err)
 	}
 
 	var raw []struct {

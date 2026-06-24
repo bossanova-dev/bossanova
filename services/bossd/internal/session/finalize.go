@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,11 +14,6 @@ import (
 	libvcs "github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
-
-// finalizeChatSkill is the agent command the finalize chat is launched with.
-// boss-finalize handles end-of-run cleanup (review summary, push, status
-// update) so the cron-spawned worktree closes cleanly.
-const finalizeChatSkill = "boss-finalize"
 
 // FinalizeResult is the outcome of a FinalizeSession call. Outcome maps 1:1
 // to the cron_jobs.last_run_outcome column FinalizeSession writes. NoOp is
@@ -37,17 +33,20 @@ type FinalizeResult struct {
 // session. It is idempotent: duplicate Stop events no-op via a conditional
 // state transition (ImplementingPlan → Finalizing) guarded by rows_affected.
 //
+// Cron runs are autonomous: there is no second "Finalize" chat. After the PR
+// is opened, bossd injects the PR number into the (tagless) commit subjects and
+// force-pushes (injectPRTagsAndPush), the deterministic in-process replacement
+// for the old /boss-finalize chat's add-pr-numbers.sh step.
+//
 // Outcome classification, in the order it's evaluated:
-//   - pr_created               — empty git status but branch already has an open PR, or branch has committed work that needs a PR
+//   - pr_created               — empty git status but branch already has an open PR; lookup errors are best-effort and fall through to deleted_no_changes
 //   - deleted_no_changes       — empty git status and no committed branch work → worktree + session removed
 //   - cleanup_failed           — empty status but worktree removal errored
 //   - pr_skipped_no_github     — changes present, origin is not GitHub
-//   - pr_failed                — dirty output present but the PR could not be opened for the finalize chat
-//   - chat_spawn_failed        — dirty output or PR-backed branch could not start /boss-finalize chat
-//   - pr_created               — dirty output: a PR was opened (placeholder commit added when the branch had none) and the /boss-finalize chat started
+//   - pr_failed                — dirty output present but the PR could not be opened
+//   - pr_created               — dirty output: a PR was opened (placeholder commit added when the branch had none); PR tags injected
 //   - pr_failed                — clean committed branch could not open or attach a PR
-//   - chat_spawn_failed        — clean committed branch opened/attached a PR but /boss-finalize chat start failed
-//   - pr_created               — clean committed branch opened/attached a PR and started finalize chat
+//   - pr_created               — clean committed branch opened/attached a PR; PR tags injected
 //
 // After the outcome is classified, FinalizeSession writes
 // cron_jobs.last_run_outcome (step 4) and, on the pr_created success path,
@@ -115,16 +114,19 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 	}
 
 	// Step 5: clear hook_token on success only, so a replayed Stop event can
-	// no longer authenticate as this session. Failure outcomes keep the token
-	// so an operator can manually retry.
+	// no longer authenticate as this session. The PR was already marked ready
+	// by the classifier, so move the session out of Finalizing before daemon
+	// startup recovery can mistake it for an interrupted finalize.
 	if result.Outcome == models.CronJobOutcomePRCreated {
 		var nilToken *string
+		readyState := int(machine.ReadyForReview)
 		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
 			HookToken: &nilToken,
+			State:     &readyState,
 		}); err != nil {
 			l.logger.Error().Err(err).
 				Str("session", sessionID).
-				Msg("failed to clear hook_token after finalize success")
+				Msg("failed to finalize session ready state")
 		}
 	}
 
@@ -155,36 +157,101 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 	return result, nil
 }
 
-// StartFinalizeChat spawns a new agent chat running the boss-finalize command
-// against the session's worktree. The prior implementing-plan chat is left
-// running — the existing idle poller reaps it once it stops producing output —
-// so the user can switch back to it if the finalize chat fails.
+// injectPRTagsAndPush rewrites the session's tagless commit subjects to carry
+// the resolved PR number and force-pushes the result. It replaces the work the
+// old bossd-spawned "Finalize" chat did by running the /boss-finalize skill's
+// add-pr-numbers.sh: cron runs commit tagless, and the commit-message policy
+// (commitlint pr-tag rule) requires "[#<PR>]" on non-protected branches.
 //
-// StartTmuxChat records the new chat in agent_chats. The session's primary
-// AgentSessionID is intentionally NOT overwritten: the implementing chat remains
-// the canonical "main" chat for the session, and the finalize chat is a sibling.
-func (l *Lifecycle) StartFinalizeChat(ctx context.Context, sessionID string) error {
-	session, err := l.sessions.Get(ctx, sessionID)
+// Failures are returned to the finalize classifier. Once bossd stopped
+// spawning a separate "Finalize" chat, this in-process step became the only
+// place that both applies required PR tags and pushes the session branch.
+func (l *Lifecycle) injectPRTagsAndPush(ctx context.Context, sessionID string) error {
+	cur, err := l.sessions.Get(ctx, sessionID)
 	if err != nil {
-		return fmt.Errorf("get session: %w", err)
+		l.logger.Warn().Err(err).Str("session", sessionID).
+			Msg("finalize: refresh session before PR-tag injection failed")
+		return fmt.Errorf("refresh session before PR-tag injection: %w", err)
+	}
+	if cur.PRNumber == nil || *cur.PRNumber <= 0 {
+		l.logger.Warn().Str("session", sessionID).
+			Msg("finalize: no PR number resolved; skipping PR-tag injection")
+		return fmt.Errorf("no PR number resolved for PR-tag injection")
+	}
+	if cur.BranchName == "" || cur.BaseBranch == "" || cur.WorktreePath == "" {
+		l.logger.Warn().Str("session", sessionID).
+			Msg("finalize: missing branch/base/worktree; skipping PR-tag injection")
+		return fmt.Errorf("missing branch/base/worktree for PR-tag injection")
 	}
 
-	if session.WorktreePath == "" {
-		return fmt.Errorf("session %s has no worktree path", sessionID)
-	}
-
-	agentSessionID, err := l.StartTmuxChat(ctx, sessionID, ChatInput{Command: finalizeChatSkill}, "Finalize", HookOpts{
-		AllowSiblingChat: true,
-	})
+	status, err := l.worktrees.Status(ctx, cur.WorktreePath)
 	if err != nil {
-		return fmt.Errorf("start finalize chat: %w", err)
+		l.logger.Warn().Err(err).Str("session", sessionID).
+			Msg("finalize: status before PR-tag injection failed")
+		return fmt.Errorf("status before PR-tag injection: %w", err)
+	}
+	var managedPaths []string
+	if client, err := l.agentClientFor(cur); err == nil {
+		resp, rpcErr := client.ListIgnoredDirtyFiles(ctx, &bossanovav1.ListIgnoredDirtyFilesRequest{
+			WorkDir: cur.WorktreePath,
+		})
+		if rpcErr != nil {
+			l.logger.Warn().Err(rpcErr).Msg("ListIgnoredDirtyFiles failed before PR-tag injection; using empty list")
+		} else if resp != nil {
+			managedPaths = resp.Paths
+		}
+	} else {
+		managedPaths = bossdManagedWorktreeFiles
+	}
+	if trimmed := strings.TrimSpace(stripBossdManagedFilesWith(status, managedPaths)); trimmed != "" {
+		l.logger.Warn().
+			Str("session", sessionID).
+			Str("status", trimmed).
+			Msg("finalize: worktree has uncommitted changes; refusing PR-tag injection")
+		return fmt.Errorf("worktree has uncommitted changes before PR-tag injection")
 	}
 
+	// Inject against the freshly-fetched remote base so the merge-base reflects
+	// the branch's true divergence point.
+	if err := l.worktrees.FetchBase(ctx, cur.WorktreePath, cur.BaseBranch); err != nil {
+		l.logger.Warn().Err(err).Str("session", sessionID).
+			Msg("finalize: fetch base before PR-tag injection failed")
+		return fmt.Errorf("fetch base before PR-tag injection: %w", err)
+	}
+	baseRef := "refs/remotes/origin/" + cur.BaseBranch
+	if err := l.worktrees.InjectPRNumbers(ctx, cur.WorktreePath, cur.BranchName, *cur.PRNumber, baseRef); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Int("pr", *cur.PRNumber).
+			Msg("finalize: PR-tag injection failed; PR commits may not satisfy commitlint")
+		return fmt.Errorf("inject PR tags and push: %w", err)
+	}
 	l.logger.Info().
 		Str("session", sessionID).
-		Str("agentSessionID", agentSessionID).
-		Msg("finalize chat started")
+		Int("pr", *cur.PRNumber).
+		Msg("finalize: injected PR number into commit subjects")
+	return nil
+}
 
+func (l *Lifecycle) markFinalizePRReady(ctx context.Context, sessionID, originURL string) error {
+	cur, err := l.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("refresh session before mark ready: %w", err)
+	}
+	if cur.PRNumber == nil || *cur.PRNumber <= 0 {
+		return fmt.Errorf("no PR number resolved for mark ready")
+	}
+	if err := l.provider.MarkReadyForReview(ctx, originURL, *cur.PRNumber); err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Int("pr", *cur.PRNumber).
+			Msg("finalize: mark PR ready failed")
+		return fmt.Errorf("mark PR ready: %w", err)
+	}
+	l.logger.Info().
+		Str("session", sessionID).
+		Int("pr", *cur.PRNumber).
+		Msg("finalize: marked PR ready for review")
 	return nil
 }
 
@@ -296,17 +363,18 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub}
 	}
 
-	// The /boss-finalize skill assumes a PR already exists — it reads
-	// `gh pr view` for the base/number/URL and runs `gh pr ready`, with no
-	// `gh pr create` step. Cron sessions defer PR creation at start
-	// (opts.DeferPR), so dirty output can reach here with no PR, and the
-	// branch may have no commits beyond base when the agent left only
-	// uncommitted changes. EnsurePR can't open a PR for a zero-commit branch
-	// (GitHub rejects it with "no commits between") and deliberately makes no
-	// placeholder commit. Add one in that case — mirroring the session-start
-	// draft PR path — so dirty-only runs still get a PR for the chat to
-	// operate on; the chat commits the dirty changes on top and the
-	// placeholder is squashed away during finalize.
+	// Cron sessions defer PR creation at start (opts.DeferPR), so dirty output
+	// can reach here with no PR, and the branch may have no commits beyond base
+	// when the agent left only uncommitted changes. EnsurePR can't open a PR
+	// for a zero-commit branch (GitHub rejects it with "no commits between")
+	// and deliberately makes no placeholder commit. Add one in that case —
+	// mirroring the session-start draft PR path — so the run still gets a PR.
+	//
+	// The agent's own uncommitted changes are intentionally NOT committed here:
+	// under BOSS_CRON the agent is told to commit its own work, so leftover
+	// uncommitted changes mean an incomplete run. They are preserved in the
+	// worktree for inspection rather than auto-committed with a synthetic
+	// message.
 	hasCommittedWork, err := l.cleanBranchHasCommittedWork(ctx, session, true)
 	if err != nil {
 		l.logger.Warn().Err(err).
@@ -318,6 +386,9 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		}
 	}
 	if !hasCommittedWork {
+		l.logger.Warn().
+			Str("session", session.ID).
+			Msg("finalize: cron run left uncommitted changes but committed nothing; opening placeholder PR and preserving the worktree changes for inspection")
 		if err := l.worktrees.EmptyCommit(ctx, session.WorktreePath, draftPRPlaceholderCommitSubject); err != nil {
 			l.logger.Warn().Err(err).
 				Str("session", session.ID).
@@ -335,7 +406,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		if attached, attachErr := l.attachBranchPRAfterEnsurePRError(ctx, session, repo); attached {
 			l.logger.Warn().Err(err).
 				Str("session", session.ID).
-				Msg("finalize: EnsurePR failed after branch PR became visible; continuing finalize chat")
+				Msg("finalize: EnsurePR failed after branch PR became visible; continuing")
 		} else {
 			if attachErr != nil {
 				err = fmt.Errorf("%w; attach branch PR after EnsurePR failure: %v", err, attachErr)
@@ -361,14 +432,11 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		}
 	}
 
-	if err := l.StartFinalizeChat(ctx, session.ID); err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", session.ID).
-			Msg("finalize: chat spawn failed for dirty cron output; PR already created, preserving worktree")
-		return &FinalizeResult{
-			Outcome: models.CronJobOutcomeChatSpawnFailed,
-			Err:     err,
-		}
+	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
+		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+	}
+	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
+		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
 
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
@@ -389,6 +457,9 @@ func (l *Lifecycle) attachBranchPRAfterEnsurePRError(ctx context.Context, sessio
 	return l.attachOpenPRForBranch(ctx, session.ID, cur, repo)
 }
 
+// attachExistingPRIfCleanBranchHasOne attaches a pre-existing open PR for a
+// clean branch when one can be found. Initial lookup errors are non-fatal, but
+// attachment/update/persistence errors after a PR match are pr_failed outcomes.
 func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, session *models.Session) *FinalizeResult {
 	repo, err := l.repos.Get(ctx, session.RepoID)
 	if err != nil {
@@ -403,14 +474,25 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 
 	found, err := l.attachOpenPRForBranch(ctx, session.ID, session, repo)
 	if err != nil {
+		// Best-effort lookup only. A clean worktree means the run made no
+		// changes; if the initial PR list request fails (transient gh/GitHub
+		// error, wrong-account token), fall through so the no-committed-work
+		// path reaches finalizeNoChanges (deleted_no_changes).
+		if !errors.Is(err, errListOpenPRs) {
+			l.logger.Warn().Err(err).
+				Str("session", session.ID).
+				Str("branch", session.BranchName).
+				Msg("finalize: existing-PR attachment failed for clean worktree; preserving session")
+			return &FinalizeResult{
+				Outcome: models.CronJobOutcomePRFailed,
+				Err:     err,
+			}
+		}
 		l.logger.Warn().Err(err).
 			Str("session", session.ID).
 			Str("branch", session.BranchName).
-			Msg("finalize: branch PR lookup failed; preserving worktree")
-		return &FinalizeResult{
-			Outcome: models.CronJobOutcomePRFailed,
-			Err:     err,
-		}
+			Msg("finalize: existing-PR lookup failed for clean worktree; treating as no-changes")
+		return nil
 	}
 	if !found {
 		return nil
@@ -420,14 +502,11 @@ func (l *Lifecycle) attachExistingPRIfCleanBranchHasOne(ctx context.Context, ses
 		Str("session", session.ID).
 		Str("branch", session.BranchName).
 		Msg("finalize: attached existing branch PR for clean worktree")
-	if err := l.StartFinalizeChat(ctx, session.ID); err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", session.ID).
-			Msg("finalize: chat spawn failed after attaching existing PR")
-		return &FinalizeResult{
-			Outcome: models.CronJobOutcomeChatSpawnFailed,
-			Err:     err,
-		}
+	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
+		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+	}
+	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
+		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}
 }
@@ -484,7 +563,7 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 		if attached, attachErr := l.attachBranchPRAfterEnsurePRError(ctx, session, repo); attached {
 			l.logger.Warn().Err(err).
 				Str("session", session.ID).
-				Msg("finalize: EnsurePR failed after branch PR became visible; continuing finalize chat")
+				Msg("finalize: EnsurePR failed after branch PR became visible; continuing finalization")
 		} else {
 			if attachErr != nil {
 				err = fmt.Errorf("%w; attach branch PR after EnsurePR failure: %v", err, attachErr)
@@ -509,14 +588,11 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 		}
 	}
 
-	if err := l.StartFinalizeChat(ctx, session.ID); err != nil {
-		l.logger.Warn().Err(err).
-			Str("session", session.ID).
-			Msg("finalize: chat spawn failed for clean committed branch; PR already created, preserving worktree")
-		return &FinalizeResult{
-			Outcome: models.CronJobOutcomeChatSpawnFailed,
-			Err:     err,
-		}
+	if err := l.injectPRTagsAndPush(ctx, session.ID); err != nil {
+		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
+	}
+	if err := l.markFinalizePRReady(ctx, session.ID, repo.OriginURL); err != nil {
+		return &FinalizeResult{Outcome: models.CronJobOutcomePRFailed, Err: err}
 	}
 
 	return &FinalizeResult{Outcome: models.CronJobOutcomePRCreated}

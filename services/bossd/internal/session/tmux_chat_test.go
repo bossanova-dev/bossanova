@@ -1984,3 +1984,49 @@ func (a *emptyArgvAgent) BuildInteractiveCommand(_ context.Context, _ *bossanova
 // Compile-time assertion that emptyArgvAgent still satisfies the interface
 // — guards against the embedded fakeAgentForLifecycle's signature drifting.
 var _ agent.AgentRunnerClient = (*emptyArgvAgent)(nil)
+
+func TestCronSessionEnvAndDirective(t *testing.T) {
+	cronJobID := "cron-42"
+	cronSess := &models.Session{ID: "s1", Title: "Nightly triage", CronJobID: &cronJobID}
+	plainSess := &models.Session{ID: "s2", Title: "Manual"}
+
+	env := CronSessionEnv(cronSess)
+	if env["BOSS_CRON"] != "true" {
+		t.Fatalf("BOSS_CRON = %q, want true", env["BOSS_CRON"])
+	}
+	if env["BOSS_CRON_JOB_ID"] != "cron-42" {
+		t.Fatalf("BOSS_CRON_JOB_ID = %q, want cron-42", env["BOSS_CRON_JOB_ID"])
+	}
+	if env["BOSS_CRON_NAME"] != "Nightly triage" {
+		t.Fatalf("BOSS_CRON_NAME = %q, want Nightly triage", env["BOSS_CRON_NAME"])
+	}
+	const agentSessionID = "agent-123"
+
+	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID)
+	if !strings.Contains(cronPrompt, "s1") {
+		t.Fatalf("cron prompt missing session id: %q", cronPrompt)
+	}
+	if !strings.Contains(cronPrompt, agentSessionID) {
+		t.Fatalf("cron prompt missing chat id: %q", cronPrompt)
+	}
+	if !strings.Contains(cronPrompt, cronAutonomyDirective) {
+		t.Fatalf("cron prompt missing autonomy directive: %q", cronPrompt)
+	}
+
+	// Non-cron sessions still get the boss context, but never the cron directive.
+	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID)
+	if !strings.Contains(plainPrompt, "s2") {
+		t.Fatalf("plain prompt missing session id: %q", plainPrompt)
+	}
+	if strings.Contains(plainPrompt, cronAutonomyDirective) {
+		t.Fatalf("plain prompt should not contain the cron directive: %q", plainPrompt)
+	}
+	if AppendSystemPromptFor(nil, agentSessionID) != "" {
+		t.Fatalf("nil session should yield empty prompt")
+	}
+
+	// Non-cron sessions get neither env nor directive.
+	if env := CronSessionEnv(plainSess); env != nil {
+		t.Fatalf("non-cron env = %v, want nil", env)
+	}
+}

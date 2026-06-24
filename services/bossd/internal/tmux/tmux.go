@@ -7,10 +7,25 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// sortedKeys returns the keys of m in sorted order, so callers that emit
+// per-key flags (e.g. tmux `-e KEY=VALUE`) produce deterministic argv.
+func sortedKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // Default timing knobs for SendPlan. Tests bypass these by passing a
 // custom sendPlanOpts to the unexported sendPlan helper, so the production
@@ -70,6 +85,10 @@ type NewSessionOpts struct {
 	Command []string // Command to run in session (required)
 	Width   int      // Initial width (defaults to 200)
 	Height  int      // Initial height (defaults to 50)
+	// Env sets session-environment variables (tmux `new-session -e KEY=VALUE`)
+	// so the launched command — and any later window opened in the session —
+	// inherits them. Used to mark cron-spawned sessions with BOSS_CRON=true.
+	Env map[string]string
 }
 
 // NewSession creates a new detached tmux session.
@@ -94,7 +113,7 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 		height = 50
 	}
 
-	args := make([]string, 0, 10+len(opts.Command))
+	args := make([]string, 0, 10+2*len(opts.Env)+len(opts.Command))
 	args = append(args,
 		"new-session",
 		"-d",            // Detached
@@ -103,6 +122,11 @@ func (c *Client) NewSession(ctx context.Context, opts NewSessionOpts) error {
 		"-x", strconv.Itoa(width), // Width
 		"-y", strconv.Itoa(height), // Height
 	)
+	// Set session-environment variables before the command. Keys are sorted
+	// so the argv is deterministic (stable logs and tests).
+	for _, k := range sortedKeys(opts.Env) {
+		args = append(args, "-e", k+"="+opts.Env[k])
+	}
 	args = append(args, opts.Command...)
 
 	cmd := c.cmdFunc(ctx, "tmux", args...)

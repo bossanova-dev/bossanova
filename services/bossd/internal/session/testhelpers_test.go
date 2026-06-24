@@ -63,6 +63,10 @@ func (f *fakeAgentForLifecycle) ConfigureFinalizeHook(_ context.Context, req *bo
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: f.IsSupported}, nil
 }
 
+func (f *fakeAgentForLifecycle) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
+
 func (f *fakeAgentForLifecycle) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	f.LastBuildInteractiveCommand = req
 	// Mirror the shape of plugins/bossd-plugin-claude's real argv so cron

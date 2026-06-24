@@ -447,10 +447,10 @@ func TestWriteHookConfig_SessionKeyed_PreservesRunKeyed(t *testing.T) {
 	)
 }
 
-// TestWriteHookConfig_RunKeyed_MultipleRunsCoexist — two run-keyed
-// writes for different agent_session_ids must produce two separate
-// entries that both survive.
-func TestWriteHookConfig_RunKeyed_MultipleRunsCoexist(t *testing.T) {
+// TestWriteHookConfig_RunKeyed_LatestRunWins — a second run-keyed write
+// for a different agent_session_id sweeps the first. Runs are sequential
+// per worktree; the previous run's entry is stale and must not accumulate.
+func TestWriteHookConfig_RunKeyed_LatestRunWins(t *testing.T) {
 	worktree := t.TempDir()
 
 	if err := WriteHookConfig(worktree, "sess-multi", "agent-A", "tok-A", 5555); err != nil {
@@ -462,20 +462,93 @@ func TestWriteHookConfig_RunKeyed_MultipleRunsCoexist(t *testing.T) {
 
 	settings := readSettings(t, worktree)
 	stops := settings["hooks"].(map[string]any)["Stop"].([]any)
-	if len(stops) != 2 {
-		t.Fatalf("Stop array length = %d, want 2 (run A + run B)", len(stops))
+	// Only agent-B survives; agent-A was pruned as a stale sibling.
+	if len(stops) != 1 {
+		t.Fatalf("Stop array length = %d, want 1 (only latest run)", len(stops))
 	}
 
-	entryA := findRunStop(t, settings, "agent-A")
-	assertCommandContains(t, entryA,
-		"Authorization: Bearer tok-A",
-		"http://127.0.0.1:5555/hooks/agent-run-complete/agent-A",
-	)
+	// The single surviving entry is agent-B; the len==1 check above already
+	// proves the stale agent-A sibling was swept.
 	entryB := findRunStop(t, settings, "agent-B")
 	assertCommandContains(t, entryB,
 		"Authorization: Bearer tok-B",
 		"http://127.0.0.1:6666/hooks/agent-run-complete/agent-B",
 	)
+}
+
+// TestWriteHookConfig_RunWritePrunesStaleRunHooks — a run-keyed write must
+// sweep any pre-existing bossd-agent-run-* entries while keeping the
+// session-keyed finalize entry and any user hooks untouched.
+func TestWriteHookConfig_RunWritePrunesStaleRunHooks(t *testing.T) {
+	worktree := t.TempDir()
+	// Pre-existing: a session-keyed finalize entry and an OLD run entry.
+	if err := WriteHookConfig(worktree, "sess-1", "", "tok-final", 4000); err != nil {
+		t.Fatalf("finalize write: %v", err)
+	}
+	if err := WriteHookConfig(worktree, "sess-1", "run-old", "tok-old", 4000); err != nil {
+		t.Fatalf("old run write: %v", err)
+	}
+	// Writing a NEW run entry must prune the old run entry but keep finalize.
+	if err := WriteHookConfig(worktree, "sess-1", "run-new", "tok-new", 4000); err != nil {
+		t.Fatalf("new run write: %v", err)
+	}
+
+	settings := readSettings(t, worktree)
+	stop := settings["hooks"].(map[string]any)["Stop"].([]any)
+	got := map[string]bool{}
+	for _, raw := range stop {
+		got[raw.(map[string]any)["matcher"].(string)] = true
+	}
+	want := map[string]bool{"bossd-finalize": true, runHookMatcherPrefix + "run-new": true}
+	if len(got) != len(want) {
+		t.Fatalf("matchers = %v, want exactly %v", got, want)
+	}
+	for m := range want {
+		if !got[m] {
+			t.Errorf("missing matcher %q", m)
+		}
+	}
+	if got[runHookMatcherPrefix+"run-old"] {
+		t.Error("stale run entry run-old was not pruned")
+	}
+}
+
+func TestRemoveRunHookConfig_RemovesOnlyTargetEntry(t *testing.T) {
+	worktree := t.TempDir()
+	if err := WriteHookConfig(worktree, "sess-1", "", "tok-final", 4000); err != nil {
+		t.Fatalf("finalize write: %v", err)
+	}
+	if err := WriteHookConfig(worktree, "sess-1", "run-1", "tok-1", 4000); err != nil {
+		t.Fatalf("run write: %v", err)
+	}
+
+	if err := RemoveRunHookConfig(worktree, "run-1"); err != nil {
+		t.Fatalf("RemoveRunHookConfig: %v", err)
+	}
+
+	settings := readSettings(t, worktree)
+	stop := settings["hooks"].(map[string]any)["Stop"].([]any)
+	for _, raw := range stop {
+		if raw.(map[string]any)["matcher"] == runHookMatcherPrefix+"run-1" {
+			t.Fatal("run-1 entry should have been removed")
+		}
+	}
+	// finalize entry survives
+	var foundFinalize bool
+	for _, raw := range stop {
+		if raw.(map[string]any)["matcher"] == "bossd-finalize" {
+			foundFinalize = true
+		}
+	}
+	if !foundFinalize {
+		t.Error("bossd-finalize entry must be preserved")
+	}
+}
+
+func TestRemoveRunHookConfig_MissingFileIsNoOp(t *testing.T) {
+	if err := RemoveRunHookConfig(t.TempDir(), "run-x"); err != nil {
+		t.Fatalf("missing file should be a no-op, got %v", err)
+	}
 }
 
 // TestWriteHookConfig_RunKeyed_ReplacesSameRun — calling the run-keyed

@@ -58,6 +58,10 @@ func (*MockAgentClient) ConfigureFinalizeHook(_ context.Context, _ *bossanovav1.
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: true}, nil
 }
 
+func (*MockAgentClient) RemoveAgentRunHook(_ context.Context, _ *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
+
 func (m *MockAgentClient) BuildInteractiveCommand(_ context.Context, req *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	// Mirror the shape each real plugin produces so tests catch wrapping
 	// regressions. Both claude and codex now return bare argv from this

@@ -35,8 +35,8 @@ func deriveSessionTitle(title, prompt string) string {
 
 // registerMutatingTools installs the non-destructive write tools. Idempotent
 // operations (pause/resume and the update_* family) set IdempotentHint.
-func registerMutatingTools(server *mcp.Server, backend Backend) {
-	mcp.AddTool(server, &mcp.Tool{
+func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
+	addTool(server, opts, &mcp.Tool{
 		Name:        "register_repo",
 		Description: "Register an existing local git repository with bossanova.",
 		Annotations: &mcp.ToolAnnotations{},
@@ -57,7 +57,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "clone_and_register_repo",
 		Description: "Clone a remote git repository and register it with bossanova.",
 		Annotations: &mcp.ToolAnnotations{},
@@ -79,7 +79,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "update_repo",
 		Description: "Update settings on a registered repository.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -102,7 +102,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "create_session",
 		Description: "Create a new bossanova session for a repo with a prompt; drains setup and returns the final session.",
 		Annotations: &mcp.ToolAnnotations{},
@@ -123,12 +123,12 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	registerSessionStateTool(server, "stop_session", "Stop a running session.", false, backend.StopSession)
-	registerSessionStateTool(server, "pause_session", "Pause a session.", true, backend.PauseSession)
-	registerSessionStateTool(server, "resume_session", "Resume a paused session.", true, backend.ResumeSession)
-	registerSessionStateTool(server, "retry_session", "Retry a failed session.", false, backend.RetrySession)
+	registerSessionStateTool(server, opts, "stop_session", "Stop a running session.", false, backend.StopSession)
+	registerSessionStateTool(server, opts, "pause_session", "Pause a session.", true, backend.PauseSession)
+	registerSessionStateTool(server, opts, "resume_session", "Resume a paused session.", true, backend.ResumeSession)
+	registerSessionStateTool(server, opts, "retry_session", "Retry a failed session.", false, backend.RetrySession)
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "update_session",
 		Description: "Update a session's title.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -142,7 +142,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "link_session_pr",
 		Description: "Link an existing pull request to a session.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -155,7 +155,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "record_chat",
 		Description: "Record (or resume) an agent chat against a session.",
 		Annotations: &mcp.ToolAnnotations{},
@@ -168,7 +168,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "update_chat_title",
 		Description: "Update the title of an agent chat.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -180,7 +180,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "wake_chat",
 		Description: "Ask the daemon to bring a stopped chat back online.",
 		Annotations: &mcp.ToolAnnotations{},
@@ -193,7 +193,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "report_chat_status",
 		Description: "Report the live status of an agent chat (working/idle/stopped/question).",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -209,7 +209,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "create_cron_job",
 		Description: "Create a scheduled cron job for a repo.",
 		Annotations: &mcp.ToolAnnotations{},
@@ -231,7 +231,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "update_cron_job",
 		Description: "Update an existing cron job.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
@@ -253,7 +253,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 		return r, nil, err
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
+	addTool(server, opts, &mcp.Tool{
 		Name:        "run_cron_job_now",
 		Description: "Fire a cron job immediately, returning the spawned session (or skip reason).",
 		Annotations: &mcp.ToolAnnotations{},
@@ -268,8 +268,8 @@ func registerMutatingTools(server *mcp.Server, backend Backend) {
 }
 
 // registerSessionStateTool installs a simple id-keyed session lifecycle tool.
-func registerSessionStateTool(server *mcp.Server, name, desc string, idempotent bool, fn func(context.Context, string) (*pb.Session, error)) {
-	mcp.AddTool(server, &mcp.Tool{
+func registerSessionStateTool(server *mcp.Server, opts Options, name, desc string, idempotent bool, fn func(context.Context, string) (*pb.Session, error)) {
+	addTool(server, opts, &mcp.Tool{
 		Name:        name,
 		Description: desc,
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: idempotent},

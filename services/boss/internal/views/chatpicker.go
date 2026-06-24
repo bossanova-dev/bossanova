@@ -378,10 +378,12 @@ func (m *ChatPickerModel) chatAgentName(chat *pb.ClaudeChat) string {
 }
 
 // canMerge reports whether the [m]erge action should be available for the
-// current session — only when the session has an open PR and its display
-// status is "passing".
+// current session — only when the session has an open PR, its display status
+// is "passing", and the merge has not already completed (merged sessions no
+// longer offer merge; they show the merged status in place instead).
 func (m ChatPickerModel) canMerge() bool {
-	return m.session != nil &&
+	return !m.merged &&
+		m.session != nil &&
 		m.session.GetPrNumber() != 0 &&
 		m.session.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_PASSING
 }
@@ -509,10 +511,11 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = fmt.Sprintf("Couldn't merge: %v", msg.err)
 			return m, nil
 		}
-		// Merge succeeded — signal App to return to the session list. The
-		// server-side PR state transition lands asynchronously via webhook;
-		// HomeModel renders the session as MERGED optimistically until the
-		// daemon reconciles.
+		// Merge succeeded — stay on the session-detail view showing merged status
+		// so the user can archive in place. The server-side PR state transition
+		// lands asynchronously via webhook; HomeModel renders the session as
+		// MERGED optimistically until the daemon reconciles (if the user then
+		// cancels or archives back to the list).
 		m.merged = true
 		return m, nil
 
@@ -959,6 +962,14 @@ func (m ChatPickerModel) View() tea.View {
 	} else {
 		if m.statusMsg != "" {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Foreground(colorDanger).Render(m.statusMsg))
+			b.WriteString("\n")
+		}
+		if m.merged {
+			mergedLabel := "✓ merged"
+			if n := m.session.GetPrNumber(); n != 0 {
+				mergedLabel = fmt.Sprintf("✓ PR #%d merged", n)
+			}
+			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusMuted.Render(mergedLabel)))
 			b.WriteString("\n")
 		}
 		middle := []string{"[n]ew chat", "[s]ettings"}

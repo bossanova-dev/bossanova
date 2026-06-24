@@ -682,3 +682,60 @@ func TestChatPicker_HidesGitHubActionWithoutRepoWebLink(t *testing.T) {
 		t.Fatalf("rendered chat picker should not show [g]ithub action without repo link:\\n%s", rendered)
 	}
 }
+
+// seedChatPickerWithPassingPR returns a ChatPickerModel whose session has an
+// open passing PR — the conditions that make canMerge() return true when
+// m.merged is false.
+func seedChatPickerWithPassingPR() ChatPickerModel {
+	prNum := int32(42)
+	m := seedChatPicker(&chatPickerStub{}, statusWorking)
+	m.session = &pb.Session{
+		Id:            "session-1",
+		PrNumber:      &prNum,
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+	}
+	return m
+}
+
+// TestChatPickerCanMergeDropsAfterMerge guards that canMerge() returns false
+// once m.merged is true, even when the session otherwise qualifies for merge
+// (open passing PR). The !m.merged guard is what drops [m]erge from the bar.
+func TestChatPickerCanMergeDropsAfterMerge(t *testing.T) {
+	m := seedChatPickerWithPassingPR()
+
+	if !m.canMerge() {
+		t.Fatal("canMerge() = false before merge; test pre-condition broken (session must have an open passing PR)")
+	}
+
+	m.merged = true
+	if m.canMerge() {
+		t.Fatal("canMerge() = true after merge; expected false so [m]erge drops from the action bar")
+	}
+}
+
+// TestChatPickerViewAfterMergeShowsMergedStatusAndArchive guards the rendered
+// output when m.merged=true: the view must contain a merged indicator and the
+// [a]rchive action, but must NOT contain [m]erge.
+func TestChatPickerViewAfterMergeShowsMergedStatusAndArchive(t *testing.T) {
+	m := seedChatPickerWithPassingPR()
+	m.merged = true
+
+	// Give the model a viewport so View() renders the full action bar.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+
+	rendered := m.View().Content
+
+	// Must show some merged indicator (e.g. "✓ merged" or "✓ PR #42 merged").
+	if !strings.Contains(rendered, "merged") {
+		t.Errorf("view after merge missing merged indicator:\n%s", rendered)
+	}
+	// Archive must still be available.
+	if !strings.Contains(rendered, "[a]rchive") {
+		t.Errorf("view after merge missing [a]rchive action:\n%s", rendered)
+	}
+	// Merge action must be gone.
+	if strings.Contains(rendered, "[m]erge") {
+		t.Errorf("view after merge still shows [m]erge action (should be dropped):\n%s", rendered)
+	}
+}

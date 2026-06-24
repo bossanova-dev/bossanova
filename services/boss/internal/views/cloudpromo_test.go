@@ -111,3 +111,24 @@ func TestCloudGuestOfferHiddenWhenLoggedInOrAuthUnavailable(t *testing.T) {
 		t.Fatal("cloudGuestOfferVisible = true, want false without auth configured")
 	}
 }
+
+func TestCloudGuestOfferSuppressedByProofFlag(t *testing.T) {
+	// Use the same eligible-guest setup as TestCloudGuestOfferVisiblePolicy.
+	installedAt := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
+	sessionStartedAt := installedAt.Add(10 * time.Second)
+	now := sessionStartedAt.Add(30 * time.Second)
+	settings := config.DefaultSettings()
+	settings.InstalledAt = installedAt
+
+	// Verify baseline: eligible guest returns true without the flag.
+	if !cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
+		t.Fatal("cloudGuestOfferVisible = false, want true for eligible guest (baseline)")
+	}
+
+	// Suppressed when proofHideGuestOffer is set.
+	defer func(prev bool) { proofHideGuestOffer = prev }(proofHideGuestOffer)
+	proofHideGuestOffer = true
+	if cloudGuestOfferVisible(settings, now, sessionStartedAt, false, true) {
+		t.Fatal("cloudGuestOfferVisible = true, want false when proofHideGuestOffer is set")
+	}
+}

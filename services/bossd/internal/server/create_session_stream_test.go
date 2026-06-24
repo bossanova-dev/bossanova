@@ -508,6 +508,9 @@ func (w *setupStreamWorktree) Push(context.Context, string, string) error       
 func (w *setupStreamWorktree) PushWithLease(context.Context, string, string, string) (string, error) {
 	return "pushed-head-sha", nil
 }
+func (w *setupStreamWorktree) InjectPRNumbers(context.Context, string, string, int, string) error {
+	return nil
+}
 func (w *setupStreamWorktree) VerifyPushedBranchAheadOfBase(context.Context, string, string, string) (*gitpkg.BranchVerification, error) {
 	return &gitpkg.BranchVerification{HeadSHA: "head", BaseSHA: "base", RemoteHeadSHA: "head", AheadCount: 1}, nil
 }

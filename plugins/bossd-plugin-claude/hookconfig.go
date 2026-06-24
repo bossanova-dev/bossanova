@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // hookMatcherKey is the matcher string we stamp on the session-keyed
@@ -18,9 +19,9 @@ const hookMatcherKey = "bossd-finalize"
 
 // runHookMatcherPrefix is the matcher prefix used for run-scoped Stop-hook
 // groups. Each run gets its own unique matcher
-// ("bossd-agent-run-{agentSessionID}") so multiple run-keyed entries — and
-// the cron's session-keyed entry — coexist in Stop[] without overwriting
-// each other.
+// ("bossd-agent-run-{agentSessionID}"). A run-keyed write sweeps any
+// pre-existing bossd-agent-run-* siblings so the file stays capped at one
+// run entry; the session-keyed bossd-finalize entry is left untouched.
 const runHookMatcherPrefix = "bossd-agent-run-"
 
 // WriteHookConfig writes (or merges) a Stop-hook entry into
@@ -45,9 +46,10 @@ const runHookMatcherPrefix = "bossd-agent-run-"
 //   - All existing keys are preserved. "hooks" and "hooks.Stop" are
 //     created only when absent.
 //   - Inside Stop[], the first entry whose matcher matches the one we're
-//     installing is replaced in place. Any other Stop hooks (including
-//     other run-keyed entries, the session-keyed entry, or anything the
-//     repo setup script added) are left untouched.
+//     installing is replaced in place. On a run-keyed write, all other
+//     bossd-agent-run-* entries are pruned first (stale leak recovery).
+//     The session-keyed bossd-finalize entry and any user/repo Stop hooks
+//     are always left untouched.
 //
 // Writes are atomic: JSON is serialised to a sibling temp file inside
 // the same .claude directory and renamed over the target, so a crash
@@ -79,6 +81,14 @@ func WriteHookConfig(worktreePath, sessionID, agentSessionID, token string, port
 
 	hooks := asMap(root, "hooks")
 	stops := asSlice(hooks, "Stop")
+
+	// Run-keyed writes sweep stale sibling run entries first so the file can't
+	// grow one bossd-agent-run-* entry per run forever. The legacy/finalize
+	// path (agentSessionID == "") upserts in place and may legitimately coexist
+	// with an active run entry, so it does not sweep.
+	if agentSessionID != "" {
+		stops = pruneRunHooks(stops)
+	}
 
 	matcher, urlPath := hookEntryShape(sessionID, agentSessionID)
 	entry := bossdStopEntry(matcher, urlPath, token, port)
@@ -112,20 +122,99 @@ func hookEntryShape(sessionID, agentSessionID string) (string, string) {
 // upsertByMatcher replaces the first entry in stops whose matcher equals
 // the supplied key, or appends entry if no match exists. Other entries
 // (including run-keyed siblings or unrelated user hooks) are left
-// untouched.
+// untouched. Returns a fresh slice — never aliases or mutates the input
+// backing array (matching pruneRunHooks).
 func upsertByMatcher(stops []any, matcher string, entry map[string]any) []any {
-	for i, raw := range stops {
+	out := make([]any, len(stops), len(stops)+1)
+	copy(out, stops)
+	for i, raw := range out {
 		m, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
 		existing, _ := m["matcher"].(string)
 		if existing == matcher {
-			stops[i] = entry
-			return stops
+			out[i] = entry
+			return out
 		}
 	}
-	return append(stops, entry)
+	return append(out, entry)
+}
+
+// pruneRunHooks drops every Stop entry whose matcher carries the run-scoped
+// prefix (runHookMatcherPrefix). The session-keyed bossd-finalize entry and
+// any user/repo Stop hooks are preserved. Returns a fresh slice — never
+// aliases or mutates the input backing array.
+//
+// Safe because runs are sequential per worktree (see Global Constraints): any
+// pre-existing run entry belongs to a finished run whose RemoveAgentRunHook
+// cleanup was missed (e.g. a daemon crash), so removing it can't orphan a live
+// run's completion ping.
+func pruneRunHooks(stops []any) []any {
+	kept := make([]any, 0, len(stops))
+	for _, raw := range stops {
+		if m, ok := raw.(map[string]any); ok {
+			if matcher, _ := m["matcher"].(string); strings.HasPrefix(matcher, runHookMatcherPrefix) {
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	return kept
+}
+
+// RemoveRunHookConfig deletes the run-scoped Stop-hook entry
+// (matcher runHookMatcherPrefix+agentSessionID) from
+// worktreePath/.claude/settings.local.json. Inverse of WriteHookConfig's
+// run-keyed path; the daemon calls it when a run completes so a finished
+// run's completion ping can't linger. Missing file, missing hooks/Stop, or
+// an already-absent entry are all no-ops (no error, no rewrite). The
+// bossd-finalize entry and any user hooks are left untouched. Writes are
+// atomic, mirroring WriteHookConfig.
+func RemoveRunHookConfig(worktreePath, agentSessionID string) error {
+	if worktreePath == "" {
+		return errors.New("worktreePath is required")
+	}
+	if agentSessionID == "" {
+		return errors.New("agentSessionID is required")
+	}
+	claudeDir := filepath.Join(worktreePath, ".claude")
+	target := filepath.Join(claudeDir, "settings.local.json")
+
+	root, err := loadHookConfig(target)
+	if err != nil {
+		return err
+	}
+	hooks, ok := root["hooks"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	stops, ok := hooks["Stop"].([]any)
+	if !ok {
+		return nil
+	}
+
+	matcher := runHookMatcherPrefix + agentSessionID
+	kept := make([]any, 0, len(stops))
+	for _, raw := range stops {
+		if m, ok := raw.(map[string]any); ok {
+			if existing, _ := m["matcher"].(string); existing == matcher {
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	if len(kept) == len(stops) {
+		return nil // nothing removed — don't rewrite the file
+	}
+	hooks["Stop"] = kept
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal hook config: %w", err)
+	}
+	out = append(out, '\n')
+	return atomicWrite(claudeDir, target, out)
 }
 
 // loadHookConfig reads and parses the existing settings.local.json.

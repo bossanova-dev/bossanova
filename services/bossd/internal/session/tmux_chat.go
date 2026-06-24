@@ -269,12 +269,13 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
-		SessionId:      agentSessionID,
-		Resume:         resuming,
-		LogPath:        logPath,
-		InitialPrompt:  input.Prompt,
-		InitialCommand: input.Command,
-		WorktreePath:   sess.WorktreePath,
+		SessionId:          agentSessionID,
+		Resume:             resuming,
+		LogPath:            logPath,
+		InitialPrompt:      input.Prompt,
+		InitialCommand:     input.Command,
+		WorktreePath:       sess.WorktreePath,
+		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID),
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -293,11 +294,14 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		finalizeHookSupported = hookSupported
 	}
 
-	// Step 6: spawn the tmux session.
+	// Step 6: spawn the tmux session. Cron-spawned sessions get BOSS_CRON=true
+	// (and job id/name) in the session environment so the agent — and any skill
+	// it runs — can detect that it is an unattended, autonomous run.
 	if err := l.tmux.NewSession(ctx, tmux.NewSessionOpts{
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
 		Command: cmdResp.Argv,
+		Env:     CronSessionEnv(sess),
 	}); err != nil {
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
@@ -743,6 +747,80 @@ func (l *Lifecycle) startCronTmuxChat(
 	// StartSession; pass an empty HookOpts so StartTmuxChat doesn't
 	// install a duplicate run-keyed entry.
 	return l.StartTmuxChat(ctx, sessionID, cronChatInputFromPrompt(session.Plan), `Run "`+cronName+`"`, HookOpts{})
+}
+
+// cronAutonomyDirective is appended to the agent's system prompt for every
+// chat in a cron-spawned session. It tells the agent it is running unattended
+// so it stops asking questions a human will never answer — the failure mode
+// that previously stranded cron runs at a "? question" prompt. bossd still
+// opens and tags the PR after the run stops, so the agent only needs to
+// complete its task and commit.
+const cronAutonomyDirective = "You are running as an autonomous, scheduled (cron) job. " +
+	"The environment variable BOSS_CRON=true is set. No human is watching this run and " +
+	"no one will ever answer a question, approve a plan, or confirm an action. " +
+	"Make every decision yourself: if you would normally pause to ask, pick the most " +
+	"reasonable option and proceed. Never block waiting for input. " +
+	"Complete your task and commit your work — the system opens and tags the pull request " +
+	"for you after you stop."
+
+// isCronSession reports whether the session was spawned by the cron scheduler.
+func isCronSession(sess *models.Session) bool {
+	return sess != nil && sess.CronJobID != nil && *sess.CronJobID != ""
+}
+
+// CronSessionEnv returns the session-environment variables to set on a cron
+// session's tmux session, or nil for non-cron sessions. The values let the
+// agent and any skill it invokes detect the unattended context. Exported so
+// the server package can set the same env on the record/wake spawn paths,
+// keeping BOSS_CRON consistent with the cron autonomy directive that
+// AppendSystemPromptFor appends (a directive that asserts BOSS_CRON=true must
+// not ship without the matching env, or shell-mode detection takes the
+// interactive path).
+func CronSessionEnv(sess *models.Session) map[string]string {
+	if !isCronSession(sess) {
+		return nil
+	}
+	env := map[string]string{
+		"BOSS_CRON":        "true",
+		"BOSS_CRON_JOB_ID": *sess.CronJobID,
+		"BOSS_CRON_NAME":   sess.Title,
+	}
+	return env
+}
+
+// bossSessionContext describes the chat's own bossanova identifiers and how to
+// act on them. It is appended to every chat's system prompt so the agent can
+// perform boss session/chat operations (e.g. "continue this in a new chat in
+// this session") via the /boss skill, the boss CLI, or the boss MCP tools.
+func bossSessionContext(sess *models.Session, agentSessionID string) string {
+	return "You are running inside a bossanova-managed chat. Your boss identifiers are: " +
+		"session ID " + sess.ID + ", chat (agent-session) ID " + agentSessionID + ", " +
+		"repository ID " + sess.RepoID + ", agent " + sess.AgentName + ", " +
+		"worktree " + sess.WorktreePath + ". To act on this session or chat — for example " +
+		"to continue in a new chat in this session, create a session, or wake a chat — use " +
+		"the /boss skill, the boss CLI, or the boss MCP tools (list_sessions, get_session, " +
+		"create_session, record_chat, wake_chat). Boss session/chat operations are keyed on " +
+		"the session ID and the chat (agent-session) ID above."
+}
+
+// appendSystemPromptFor builds the full --append-system-prompt payload for a
+// chat launch: the boss session context for every chat, plus the cron autonomy
+// directive when the session was spawned by the scheduler.
+// AppendSystemPromptFor builds the per-chat system-prompt suffix that boss
+// injects into every agent launch: the boss session identifiers plus, for
+// cron sessions, the autonomy directive. Exported so the server package can
+// apply the same suffix to the record/wake spawn paths (which build their
+// own BuildInteractiveCommand request) and keep "every chat" actually meaning
+// every chat.
+func AppendSystemPromptFor(sess *models.Session, agentSessionID string) string {
+	if sess == nil {
+		return ""
+	}
+	prompt := bossSessionContext(sess, agentSessionID)
+	if isCronSession(sess) {
+		prompt += "\n\n" + cronAutonomyDirective
+	}
+	return prompt
 }
 
 // killTmuxChatBestEffort tears down a tmux session created during a failed

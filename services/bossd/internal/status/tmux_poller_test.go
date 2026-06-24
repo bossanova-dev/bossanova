@@ -161,6 +161,9 @@ func (c *claudeFakeClient) ExitStatus(context.Context, *pb.AgentExitStatusReques
 func (c *claudeFakeClient) ConfigureFinalizeHook(context.Context, *pb.ConfigureFinalizeHookRequest) (*pb.ConfigureFinalizeHookResponse, error) {
 	return &pb.ConfigureFinalizeHookResponse{}, nil
 }
+func (c *claudeFakeClient) RemoveAgentRunHook(context.Context, *pb.RemoveAgentRunHookRequest) (*pb.RemoveAgentRunHookResponse, error) {
+	return &pb.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
 func (c *claudeFakeClient) BuildInteractiveCommand(context.Context, *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
 	return &pb.BuildInteractiveCommandResponse{}, nil
 }
@@ -1280,6 +1283,9 @@ func (c *recordingAgentClient) ExitStatus(context.Context, *pb.AgentExitStatusRe
 }
 func (c *recordingAgentClient) ConfigureFinalizeHook(context.Context, *pb.ConfigureFinalizeHookRequest) (*pb.ConfigureFinalizeHookResponse, error) {
 	return &pb.ConfigureFinalizeHookResponse{}, nil
+}
+func (c *recordingAgentClient) RemoveAgentRunHook(context.Context, *pb.RemoveAgentRunHookRequest) (*pb.RemoveAgentRunHookResponse, error) {
+	return &pb.RemoveAgentRunHookResponse{IsSupported: true}, nil
 }
 func (c *recordingAgentClient) BuildInteractiveCommand(context.Context, *pb.BuildInteractiveCommandRequest) (*pb.BuildInteractiveCommandResponse, error) {
 	return &pb.BuildInteractiveCommandResponse{}, nil

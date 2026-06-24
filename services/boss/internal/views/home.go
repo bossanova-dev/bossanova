@@ -296,6 +296,32 @@ func (h HomeModel) tableDataRowCount() int {
 	return rows
 }
 
+// neighborSessionID returns the ID of the session that should receive the
+// cursor once the session with removedID leaves the list (e.g. on archive). It
+// prefers the next session down so the cursor stays at the same visual position
+// after the list closes the gap; if the removed session was last, it falls back
+// to the previous session. Returns "" when there is no suitable neighbor (the
+// removed session was the only one, or is not in the current list).
+func (h HomeModel) neighborSessionID(removedID string) string {
+	idx := -1
+	for i, sess := range h.sessions {
+		if sess.Id == removedID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return ""
+	}
+	if idx+1 < len(h.sessions) {
+		return h.sessions[idx+1].Id
+	}
+	if idx-1 >= 0 {
+		return h.sessions[idx-1].Id
+	}
+	return ""
+}
+
 func (h HomeModel) tableCursorForSessionIndex(sessionIndex int) int {
 	row := 0
 	for i, sess := range h.sessions {

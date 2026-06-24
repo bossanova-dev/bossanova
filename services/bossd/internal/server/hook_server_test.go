@@ -724,15 +724,14 @@ func TestAgentRunComplete_MissingAuthHeader(t *testing.T) {
 	}
 }
 
-// TestAgentRunComplete_UnknownAgentSession unknown id → 404.
-func TestAgentRunComplete_UnknownAgentSession(t *testing.T) {
-	completer := newFakeAgentRunCompleter()
-	// No script registered: fake returns ErrAgentRunNotFound → 404.
+// TestHandleAgentRunComplete_UnknownRunIsIdempotent200 unknown id → 200 (idempotent no-op).
+func TestHandleAgentRunComplete_UnknownRunIsIdempotent200(t *testing.T) {
+	completer := newFakeAgentRunCompleter() // no run scripted ⇒ ErrAgentRunNotFound
 	base := startHookServerWithCompleter(t, newHookMockSessionStore(), newFakeFinalizer(), completer)
 
-	status := postAgentRunComplete(t, base, "unknown", "Bearer anything", []byte(`{"exit_error": ""}`))
-	if status != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", status)
+	status := postAgentRunComplete(t, base, "never-registered", "Bearer anything", []byte(`{"exit_error": ""}`))
+	if status != http.StatusOK {
+		t.Errorf("status = %d, want 200 (a completion ping for an unknown run is an idempotent no-op)", status)
 	}
 }
 

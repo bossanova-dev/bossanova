@@ -101,6 +101,26 @@ func TestNewSession_Args(t *testing.T) {
 				"sh", "-c", "echo hello",
 			},
 		},
+		{
+			// Env vars are emitted as sorted `-e KEY=VALUE` flags before the
+			// command so the launched process (e.g. a cron agent) inherits them.
+			name: "session environment",
+			opts: NewSessionOpts{
+				Name:    "cron-sess",
+				WorkDir: "/tmp/wt",
+				Command: []string{"claude"},
+				Env: map[string]string{
+					"BOSS_CRON_NAME": "Nightly triage",
+					"BOSS_CRON":      "true",
+				},
+			},
+			expected: []string{
+				"tmux", "new-session", "-d", "-s", "cron-sess",
+				"-c", "/tmp/wt", "-x", "200", "-y", "50",
+				"-e", "BOSS_CRON=true", "-e", "BOSS_CRON_NAME=Nightly triage",
+				"claude",
+			},
+		},
 	}
 
 	for _, tt := range tests {

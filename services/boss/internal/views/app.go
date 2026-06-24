@@ -418,12 +418,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ViewChatPicker:
 		updated, cmd := a.chatPicker.Update(msg)
 		a.chatPicker = updated.(ChatPickerModel)
-		if a.chatPicker.Cancelled() || a.chatPicker.Merged() || a.chatPicker.Archived() {
+		// A successful merge keeps the user on the session-detail view so they can
+		// archive in place; only cancel/archive return to the session list.
+		if a.chatPicker.Cancelled() || a.chatPicker.Archived() {
 			sessionID := a.chatPicker.sessionID
 			merged := a.chatPicker.Merged()
+			// On archive the session disappears from the list, so highlight the
+			// session that fills its place (the next one down, or the previous
+			// one if it was last) to keep the cursor where it was instead of
+			// jumping back to the top. Cancel keeps highlighting the
+			// session itself since it remains in the list. Computed against the
+			// pre-archive list still held by a.home before it is rebuilt.
+			highlightID := sessionID
+			if a.chatPicker.Archived() {
+				highlightID = a.home.neighborSessionID(sessionID)
+			}
 			a.activeView = ViewHome
 			a.home = a.newHomeModel()
-			a.home.highlightSessionID = sessionID
+			a.home.highlightSessionID = highlightID
 			if merged {
 				a.home.mergedOptimisticID = sessionID
 			}

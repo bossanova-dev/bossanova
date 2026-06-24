@@ -88,6 +88,10 @@ func (f *repairFakeAgentClient) ConfigureFinalizeHook(context.Context, *bossanov
 	return &bossanovav1.ConfigureFinalizeHookResponse{IsSupported: false}, nil
 }
 
+func (f *repairFakeAgentClient) RemoveAgentRunHook(context.Context, *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
+}
+
 func (f *repairFakeAgentClient) BuildInteractiveCommand(context.Context, *bossanovav1.BuildInteractiveCommandRequest) (*bossanovav1.BuildInteractiveCommandResponse, error) {
 	return &bossanovav1.BuildInteractiveCommandResponse{Argv: append([]string(nil), f.argv...)}, nil
 }
@@ -260,6 +264,10 @@ func (f *wrappedRepairFakeAgentClient) ExitStatus(ctx context.Context, req *boss
 
 func (f *wrappedRepairFakeAgentClient) ConfigureFinalizeHook(ctx context.Context, req *bossanovav1.ConfigureFinalizeHookRequest) (*bossanovav1.ConfigureFinalizeHookResponse, error) {
 	return f.inner.ConfigureFinalizeHook(ctx, req)
+}
+
+func (f *wrappedRepairFakeAgentClient) RemoveAgentRunHook(ctx context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	return f.inner.RemoveAgentRunHook(ctx, req)
 }
 
 func (f *wrappedRepairFakeAgentClient) ResolveInteractiveSessionID(ctx context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error) {

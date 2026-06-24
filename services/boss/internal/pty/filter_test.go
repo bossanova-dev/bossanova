@@ -12,6 +12,7 @@ func TestStripTerminalQueryReplies(t *testing.T) {
 		data    []byte
 		want    []byte
 		newPend []byte
+		flushed bool
 	}{
 		{
 			name: "empty",
@@ -130,16 +131,43 @@ func TestStripTerminalQueryReplies(t *testing.T) {
 			newPend: []byte("\x1bP>|tmux 3.6"),
 		},
 		{
+			name:    "pending_dcs_completed_in_next_chunk",
+			pending: []byte("\x1bP>|tmux 3.6"),
+			data:    []byte("\x1b\\hello"),
+			want:    []byte("hello"),
+		},
+		{
+			name:    "pending_dcs_with_real_input_flushes",
+			pending: []byte("\x1bP>|tmux 3.6"),
+			data:    []byte("hello"),
+			want:    []byte("\x1bP>|tmux 3.6hello"),
+			flushed: true,
+		},
+		{
 			name:    "pending_da1_completed_in_next_chunk",
 			pending: []byte("\x1b[?62;22"),
 			data:    []byte(";52chello"),
 			want:    []byte("hello"),
 		},
 		{
+			name:    "pending_xtwinops_still_incomplete_flushes",
+			pending: []byte("\x1b[8;59"),
+			data:    []byte(";215"),
+			want:    []byte("\x1b[8;59;215"),
+			flushed: true,
+		},
+		{
 			name:    "pending_esc_resolved_to_arrow",
 			pending: []byte("\x1b"),
 			data:    []byte("[Ax"),
 			want:    []byte("\x1b[Ax"),
+		},
+		{
+			name:    "pending_esc_resolved_then_new_dcs_still_held",
+			pending: []byte("\x1b"),
+			data:    []byte("[A\x1bP>|tmux 3.6"),
+			want:    []byte("\x1b[A"),
+			newPend: []byte("\x1bP>|tmux 3.6"),
 		},
 		{
 			name:    "pending_esc_lbracket_resolved_to_kitty_detach",
@@ -171,13 +199,75 @@ func TestStripTerminalQueryReplies(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, gotPend := stripTerminalQueryReplies(tc.data, tc.pending)
+			got, gotPend, gotFlushed := stripTerminalQueryReplies(tc.data, tc.pending)
 			if !bytes.Equal(got, tc.want) {
 				t.Errorf("filtered = %q, want %q", got, tc.want)
 			}
 			if !bytes.Equal(gotPend, tc.newPend) {
 				t.Errorf("pending = %q, want %q", gotPend, tc.newPend)
 			}
+			if gotFlushed != tc.flushed {
+				t.Errorf("flushedStalePending = %v, want %v", gotFlushed, tc.flushed)
+			}
 		})
+	}
+}
+
+// TestStripTerminalQueryRepliesLiveness chains two reads to prove the BOS-55
+// fix end to end: a DCS fragment that never terminates is held for exactly one
+// continuation read, then forwarded fail-open once real keystrokes arrive —
+// instead of accumulating in pending until the 256-byte cap and freezing input.
+func TestStripTerminalQueryRepliesLiveness(t *testing.T) {
+	// Read 1: an incomplete DCS reply with no prior pending is held, not
+	// flushed (it might still complete on the next read).
+	filtered, pending, flushed := stripTerminalQueryReplies([]byte("\x1bP>|tmux 3.6"), nil)
+	if len(filtered) != 0 {
+		t.Fatalf("read 1 filtered = %q, want empty (candidate held)", filtered)
+	}
+	if !bytes.Equal(pending, []byte("\x1bP>|tmux 3.6")) {
+		t.Fatalf("read 1 pending = %q, want held DCS fragment", pending)
+	}
+	if flushed {
+		t.Fatal("read 1 flushed = true, want false (held, not flushed)")
+	}
+
+	// Read 2: real keystrokes arrive and the carried candidate is still
+	// incomplete, so it fails open and forwards everything immediately.
+	filtered, pending, flushed = stripTerminalQueryReplies([]byte("hello"), pending)
+	if !bytes.Equal(filtered, []byte("\x1bP>|tmux 3.6hello")) {
+		t.Errorf("read 2 filtered = %q, want stale fragment + real keystrokes", filtered)
+	}
+	if pending != nil {
+		t.Errorf("read 2 pending = %q, want nil", pending)
+	}
+	if !flushed {
+		t.Error("read 2 flushed = false, want true (stale pending flushed open)")
+	}
+}
+
+// TestStripTerminalQueryRepliesThreeReadSplitLeaks documents the accepted
+// fail-open tradeoff (see docs/plans/2026-06-23-tui-pty-input-freeze.md
+// "Risks"): a legitimate reply split across THREE reads leaks its fragment
+// rather than being stripped, because the fix forwards a carried candidate
+// after one continuation read. Favoring input responsiveness over stripping
+// this rare split is intentional, not a regression.
+func TestStripTerminalQueryRepliesThreeReadSplitLeaks(t *testing.T) {
+	// Read 1: incomplete XTWINOPS reply, held.
+	filtered, pending, flushed := stripTerminalQueryReplies([]byte("\x1b[8;59"), nil)
+	if len(filtered) != 0 || !bytes.Equal(pending, []byte("\x1b[8;59")) || flushed {
+		t.Fatalf("read 1: filtered=%q pending=%q flushed=%v", filtered, pending, flushed)
+	}
+
+	// Read 2: still all digits/semicolons, still incomplete — fails open and
+	// leaks the fragment instead of waiting for the terminator.
+	filtered, pending, flushed = stripTerminalQueryReplies([]byte(";215"), pending)
+	if !bytes.Equal(filtered, []byte("\x1b[8;59;215")) || !flushed {
+		t.Fatalf("read 2: filtered=%q flushed=%v, want leaked fragment flushed", filtered, flushed)
+	}
+
+	// Read 3: the real terminator arrives too late and leaks as a literal.
+	filtered, _, _ = stripTerminalQueryReplies([]byte("t"), pending)
+	if !bytes.Equal(filtered, []byte("t")) {
+		t.Errorf("read 3 filtered = %q, want literal terminator leaked", filtered)
 	}
 }

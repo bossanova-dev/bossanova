@@ -41,6 +41,44 @@ func TestBuildInteractiveCommandReturnsDollarCommandPrefix(t *testing.T) {
 	}
 }
 
+// TestBuildInteractiveCommandIgnoresAppendSystemPrompt pins that the boss
+// session-context suffix is a deliberate no-op for codex: codex has no
+// append-system-prompt surface today (see openai/codex#11588), so the daemon
+// may offer the field but the codex argv must be byte-for-byte identical with
+// and without it. When codex grows a real append flag, this test should flip
+// to assert the suffix is wired in.
+func TestBuildInteractiveCommandIgnoresAppendSystemPrompt(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
+	worktree := t.TempDir()
+	srv := &Server{}
+
+	base := &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:    "agent-1",
+		WorktreePath: worktree,
+	}
+	withPrompt := &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId:          "agent-1",
+		WorktreePath:       worktree,
+		AppendSystemPrompt: "You are running inside a bossanova-managed chat. ...",
+	}
+
+	respBase, err := srv.BuildInteractiveCommand(context.Background(), base)
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand (base): %v", err)
+	}
+	respWith, err := srv.BuildInteractiveCommand(context.Background(), withPrompt)
+	if err != nil {
+		t.Fatalf("BuildInteractiveCommand (with prompt): %v", err)
+	}
+
+	if strings.Join(respWith.GetArgv(), "\x00") != strings.Join(respBase.GetArgv(), "\x00") {
+		t.Fatalf("AppendSystemPrompt must not alter codex argv: base=%v with=%v", respBase.GetArgv(), respWith.GetArgv())
+	}
+	if strings.Contains(strings.Join(respWith.GetArgv(), " "), "append-system-prompt") {
+		t.Fatalf("codex argv must not carry append-system-prompt: %v", respWith.GetArgv())
+	}
+}
+
 func TestBuildInteractiveCommandTrustsWorktreeBeforeReturningArgv(t *testing.T) {
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
@@ -129,6 +167,28 @@ func TestConfigureFinalizeHookReturnsUnsupported(t *testing.T) {
 	if resp.IsSupported {
 		t.Error("IsSupported = true, want false for codex")
 	}
+}
+
+func TestRemoveAgentRunHookReturnsUnsupported(t *testing.T) {
+	s := newTestServer(t)
+	resp, err := s.RemoveAgentRunHook(context.Background(), &bossanovav1.RemoveAgentRunHookRequest{
+		WorkDir: t.TempDir(), AgentSessionId: "agent-1",
+	})
+	if err != nil {
+		t.Fatalf("RemoveAgentRunHook: %v", err)
+	}
+	if resp.IsSupported {
+		t.Error("IsSupported = true, want false for codex")
+	}
+}
+
+func TestAgentRunnerServiceDescIncludesRemoveAgentRunHook(t *testing.T) {
+	for _, method := range agentRunnerServiceDesc.Methods {
+		if method.MethodName == "RemoveAgentRunHook" {
+			return
+		}
+	}
+	t.Fatal("agentRunnerServiceDesc missing RemoveAgentRunHook")
 }
 
 // TestGetInfoIncludesCodexUserSettings verifies the three codex-specific

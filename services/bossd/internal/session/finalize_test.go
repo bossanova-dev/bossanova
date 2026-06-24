@@ -148,12 +148,13 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 		RepoID:       "repo-1",
 		WorktreePath: "/tmp/wt-sess1",
 		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
 		State:        machine.ImplementingPlan,
 		CronJobID:    &cronJobID,
 		HookToken:    &hookToken,
 	}
 
-	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -168,14 +169,18 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	if len(vp.createPRCalls) != 0 {
 		t.Fatalf("clean branch with existing PR must not create PR, calls=%d", len(vp.createPRCalls))
 	}
-	if got := runner.lastInput.Command; got != "boss-finalize" {
-		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
+	// No second "Finalize" chat is spawned; bossd injects the PR tag in-process.
+	if len(chats.created) != 0 {
+		t.Fatalf("no finalize chat should be created, got %d", len(chats.created))
 	}
-	if len(chats.created) != 1 {
-		t.Fatalf("expected 1 chat row created, got %d", len(chats.created))
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
 	}
-	if chats.created[0].SessionID != "sess-1" {
-		t.Errorf("chat row session = %q, want sess-1", chats.created[0].SessionID)
+	if got := wt.injectPRNumbersCalls[0].prNumber; got != 77 {
+		t.Fatalf("InjectPRNumbers PR = %d, want 77", got)
+	}
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 77 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [77]", vp.markReadyCalls)
 	}
 	sess := sessions.sessions["sess-1"]
 	if sess == nil {
@@ -190,8 +195,8 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	if sess.HookToken != nil {
 		t.Fatalf("hook_token = %v, want nil after PR attachment success", sess.HookToken)
 	}
-	if sess.State != machine.Finalizing {
-		t.Fatalf("state = %s, want finalizing", sess.State)
+	if sess.State != machine.ReadyForReview {
+		t.Fatalf("state = %s, want ready_for_review", sess.State)
 	}
 	if len(cron.lastRunCalls) != 1 {
 		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
@@ -201,6 +206,142 @@ func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) 
 	}
 	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
 		t.Fatalf("recorded outcome = %q, want pr_created", cron.lastRunCalls[0].outcome)
+	}
+}
+
+func TestFinalizeSession_CleanWorktreeExistingBranchPR_TagInjectionFailureBlocksSession(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:          "",
+		injectPRNumbersErr: fmt.Errorf("force-push rewritten commits: stale lease"),
+	}
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 77, HeadBranch: "cron-br-1", State: vcs.PRStateOpen},
+	}
+	chats := &recordingAgentChatStore{}
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
+	}
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
+	}
+	if sessions.sessions["sess-1"].HookToken == nil {
+		t.Fatalf("hook_token was cleared despite tag injection failure")
+	}
+	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", got)
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome recording: got %+v, want single pr_failed entry", cron.lastRunCalls)
+	}
+}
+
+func TestFinalizeSession_CleanWorktreeExistingBranchPRTitleUpdateFailure_BlocksSession(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	vp.nextOpenPRs = []vcs.PRSummary{
+		{Number: 77, HeadBranch: "cron-br-1", State: vcs.PRStateOpen},
+	}
+	vp.updatePRTitleErr = fmt.Errorf("gh pr edit failed")
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "update attached PR title") {
+		t.Fatalf("Err = %v, want title update failure", res.Err)
+	}
+	if len(vp.updatePRTitleCalls) != 1 {
+		t.Fatalf("UpdatePRTitle calls = %d, want 1", len(vp.updatePRTitleCalls))
+	}
+	if len(wt.archived) != 0 {
+		t.Fatalf("worktree should be preserved on pr_failed, got %v", wt.archived)
+	}
+	sess := sessions.sessions["sess-1"]
+	if sess == nil {
+		t.Fatal("session row should be preserved")
+	}
+	if sess.State != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", sess.State)
+	}
+	if sess.BlockedReason == nil ||
+		!strings.Contains(*sess.BlockedReason, "pr_failed") ||
+		!strings.Contains(*sess.BlockedReason, "gh pr edit failed") {
+		t.Fatalf("BlockedReason = %v, want finalize failure reason", sess.BlockedReason)
+	}
+	if sess.PRNumber != nil {
+		t.Fatalf("PRNumber = %v, want nil after title update failure", sess.PRNumber)
+	}
+	if len(cron.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
+	}
+	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("recorded outcome = %q, want %q",
+			cron.lastRunCalls[0].outcome, models.CronJobOutcomePRFailed)
+	}
+	if cron.lastRunCalls[0].sessionID == nil || *cron.lastRunCalls[0].sessionID != "sess-1" {
+		t.Fatalf("recorded session ID = %v, want sess-1", cron.lastRunCalls[0].sessionID)
 	}
 }
 
@@ -291,7 +432,7 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 		HookToken:    &hookToken,
 	}
 
-	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -306,8 +447,8 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 	if len(wt.emptyCommits) != 0 {
 		t.Fatalf("clean committed branch should not get placeholder commit, got %v", wt.emptyCommits)
 	}
-	if len(wt.fetchedBases) != 1 || wt.fetchedBases[0] != "main" {
-		t.Fatalf("fetched bases = %v, want [main]", wt.fetchedBases)
+	if len(wt.fetchedBases) == 0 || wt.fetchedBases[0] != "main" {
+		t.Fatalf("fetched bases = %v, want main fetched", wt.fetchedBases)
 	}
 	if len(wt.pushed) != 1 || wt.pushed[0] != "cron-br-1" {
 		t.Fatalf("pushed branches = %v, want [cron-br-1]", wt.pushed)
@@ -318,8 +459,15 @@ func TestFinalizeSession_CleanCommittedBranchNoPR_CreatesPR(t *testing.T) {
 	if vp.createPRCalls[0].Title != "Preserve PR-backed clean sessions" {
 		t.Fatalf("CreateDraftPR title = %q, want %q", vp.createPRCalls[0].Title, "Preserve PR-backed clean sessions")
 	}
-	if got := runner.lastInput.Command; got != "boss-finalize" {
-		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
+	// bossd injects the PR tag in-process instead of spawning a finalize chat.
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
+	}
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 42 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [42]", vp.markReadyCalls)
+	}
+	if len(chats.created) != 0 {
+		t.Fatalf("no finalize chat should be created, got %d", len(chats.created))
 	}
 	if sessions.sessions["sess-1"].HookToken != nil {
 		t.Fatalf("hook_token = %v, want nil after PR creation success", sessions.sessions["sess-1"].HookToken)
@@ -370,7 +518,7 @@ func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreating
 		HookToken:    &hookToken,
 	}
 
-	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -388,8 +536,11 @@ func TestFinalizeSession_CleanCommittedBranchEmptyOrigin_RedetectsBeforeCreating
 	if len(wt.archived) != 0 {
 		t.Fatalf("worktree should be preserved when creating PR, got %v", wt.archived)
 	}
-	if got := runner.lastInput.Command; got != "boss-finalize" {
-		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
+	}
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 42 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [42]", vp.markReadyCalls)
 	}
 	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
 		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
@@ -513,7 +664,7 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginSkipsPRWithoutFetch(t *test
 	}
 }
 
-func TestFinalizeSession_CleanWorktreePRLookupFailure_PreservesSession(t *testing.T) {
+func TestFinalizeSession_CleanWorktreePRLookupFailure_DeletesNoChanges(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
@@ -537,6 +688,7 @@ func TestFinalizeSession_CleanWorktreePRLookupFailure_PreservesSession(t *testin
 		RepoID:       "repo-1",
 		WorktreePath: "/tmp/wt-sess1",
 		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
 		State:        machine.ImplementingPlan,
 		CronJobID:    &cronJobID,
 		HookToken:    &hookToken,
@@ -548,27 +700,27 @@ func TestFinalizeSession_CleanWorktreePRLookupFailure_PreservesSession(t *testin
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRFailed {
-		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
 	}
-	if res.Err == nil {
-		t.Fatal("Err should carry PR lookup failure")
+	if res.Err != nil {
+		t.Fatalf("Err = %v, want nil", res.Err)
 	}
-	if len(wt.archived) != 0 {
-		t.Fatalf("worktree should be preserved on PR lookup failure, got %v", wt.archived)
+	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
+		t.Fatalf("expected worktree archived at /tmp/wt-sess1, got %v", wt.archived)
 	}
-	sess := sessions.sessions["sess-1"]
-	if sess == nil {
-		t.Fatal("session row should be preserved")
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Fatal("session row should have been deleted")
 	}
-	if sess.HookToken == nil {
-		t.Fatal("hook_token should be preserved on pr_failed")
+	if len(cron.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
 	}
-	if sess.State != machine.Blocked {
-		t.Fatalf("state = %s, want blocked", sess.State)
+	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("recorded outcome = %q, want %q",
+			cron.lastRunCalls[0].outcome, models.CronJobOutcomeDeletedNoChanges)
 	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
-		t.Fatalf("recorded outcome = %q, want pr_failed", cron.lastRunCalls[0].outcome)
+	if cron.lastRunCalls[0].sessionID != nil {
+		t.Fatalf("recorded session ID = %v, want nil after session delete", cron.lastRunCalls[0].sessionID)
 	}
 }
 
@@ -694,7 +846,7 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 	}
 }
 
-func TestFinalizeSession_DirtyUncommittedCronOutputStartsFinalizeChat(t *testing.T) {
+func TestFinalizeSession_DirtyUncommittedCronOutputOpensPRThenBlocksBeforeTagInjection(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
@@ -728,39 +880,104 @@ func TestFinalizeSession_DirtyUncommittedCronOutputStartsFinalizeChat(t *testing
 		HookToken:    &hookToken,
 	}
 
-	lc, _ := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
 	}
-	// The /boss-finalize skill has no `gh pr create` step, so dirty cron
-	// output must get a PR opened before the chat starts — otherwise the chat
-	// has nothing for `gh pr view` / `gh pr ready` to operate on.
+	// Dirty cron output must get a PR opened so the run is reviewable.
 	if len(vp.createPRCalls) != 1 {
-		t.Fatalf("CreateDraftPR calls = %d, want 1 (PR opened before the finalize chat)", len(vp.createPRCalls))
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
 	}
 	// This branch has no commits beyond base (mock IsAncestor defaults to
-	// true), so a placeholder commit must be added so GitHub accepts the PR —
-	// otherwise dirty-only runs could never reach the finalizer chat.
+	// true), so a placeholder commit must be added so GitHub accepts the PR.
 	if wt.emptyCommitCalls != 1 {
 		t.Fatalf("EmptyCommit calls = %d, want 1 (placeholder for zero-commit dirty branch)", wt.emptyCommitCalls)
 	}
-	if len(chats.created) != 1 {
-		t.Fatalf("finalize chats created = %d, want 1", len(chats.created))
+	// No finalize chat is spawned, and bossd must not run the rebase-based PR
+	// tag injection while preserved dirty output remains in the worktree.
+	if len(chats.created) != 0 {
+		t.Fatalf("no finalize chat should be created, got %d", len(chats.created))
+	}
+	if len(wt.injectPRNumbersCalls) != 0 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
+	}
+}
+
+func TestFinalizeSession_DirtyUncommittedCronOutput_TagInjectionFailureBlocksSession(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           " M services/bossd/internal/session/finalize.go\n",
+		latestCommitSubject: "fix(bossd): preserve dirty cron output",
+	}
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
+	}
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	if len(wt.injectPRNumbersCalls) != 0 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
+	}
+	if sessions.sessions["sess-1"].HookToken == nil {
+		t.Fatalf("hook_token was cleared despite tag injection failure")
+	}
+	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
+		t.Fatalf("state = %s, want blocked", got)
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome recording: got %+v, want single pr_failed entry", cron.lastRunCalls)
 	}
 }
 
 // TestFinalizeSession_DirtyUncommittedCronOutputPRFailed covers the dirty cron
 // output path when opening the PR genuinely fails (here GitHub rejects the
-// create even after the placeholder commit). Because the /boss-finalize skill
-// assumes a PR already exists, we must not start the chat without one: the
-// outcome is pr_failed, the worktree is preserved, and no finalize chat is
-// spawned. (The zero-commit case itself no longer fails — a placeholder commit
-// makes the PR openable; see TestFinalizeSession_DirtyUncommittedCronOutputStartsFinalizeChat.)
+// create even after the placeholder commit). The outcome is pr_failed and the
+// worktree is preserved.
 func TestFinalizeSession_DirtyUncommittedCronOutputPRFailed(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -796,7 +1013,7 @@ func TestFinalizeSession_DirtyUncommittedCronOutputPRFailed(t *testing.T) {
 		HookToken:    &hookToken,
 	}
 
-	lc, _ := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -813,8 +1030,8 @@ func TestFinalizeSession_DirtyUncommittedCronOutputPRFailed(t *testing.T) {
 // TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder verifies that
 // when a dirty-only cron run gets its placeholder commit as HEAD, the draft PR
 // title falls back to the cron/session title rather than being derived from the
-// placeholder commit subject ("create pull request"). The /boss-finalize skill
-// does not repair PR titles, so the title set at creation must be correct.
+// placeholder commit subject ("create pull request"). bossd does not repair PR
+// titles after creation, so the title set at creation must be correct.
 func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -851,14 +1068,14 @@ func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.
 		HookToken:    &hookToken,
 	}
 
-	lc, _ := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRCreated)
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRFailed)
 	}
 	if len(vp.createPRCalls) != 1 {
 		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
@@ -866,14 +1083,20 @@ func TestFinalizeSession_DirtyOnlyCronUsesSessionTitleNotPlaceholder(t *testing.
 	if got := vp.createPRCalls[0].Title; got != "Nightly mutation tests" {
 		t.Errorf("draft PR title = %q, want %q (session title, not the placeholder subject)", got, "Nightly mutation tests")
 	}
+	if len(wt.injectPRNumbersCalls) != 0 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
+	}
 }
 
 // TestFinalizeSession_PRCreated covers the happy path: a clean branch contains
-// committed work on a GitHub-linked repo, EnsurePR opens the PR, and
-// StartFinalizeChat spawns the /boss-finalize Claude conversation. Outcome must
-// be pr_created, the session stays in Finalizing (the chat drives it onward to
-// PRMerged/PRClosed), and hook_token is cleared so a replayed Stop event can no
-// longer authenticate.
+// committed work on a GitHub-linked repo, EnsurePR opens the PR, and bossd
+// injects the PR number into the commit subjects in-process (no second chat).
+// Outcome must be pr_created, the session moves to ReadyForReview after the
+// PR is marked ready, and hook_token is cleared so a replayed Stop event can
+// no longer authenticate.
 func TestFinalizeSession_PRCreated(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -914,7 +1137,7 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 		HookToken:    &hookToken,
 	}
 
-	lc, runner := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
 	res, err := lc.FinalizeSession(ctx, "sess-1")
 	if err != nil {
 		t.Fatalf("FinalizeSession: %v", err)
@@ -929,24 +1152,22 @@ func TestFinalizeSession_PRCreated(t *testing.T) {
 	if len(vp.createPRCalls) == 1 && vp.createPRCalls[0].Title != "Add tests for surviving mutants" {
 		t.Errorf("CreateDraftPR title = %q, want %q", vp.createPRCalls[0].Title, "Add tests for surviving mutants")
 	}
-	if got := runner.lastInput.Command; got != "boss-finalize" {
-		t.Fatalf("finalize command = %q, want boss-finalize without / or $ prefix", got)
+	// bossd injects the PR tag in-process; no second "Finalize" chat is created.
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
 	}
-	// A claude_chats row must be created so the UI lists the finalize chat
-	// alongside the prior implementing chat.
-	if len(chats.created) != 1 {
-		t.Fatalf("expected 1 chat row created, got %d", len(chats.created))
+	if len(vp.markReadyCalls) != 1 || vp.markReadyCalls[0] != 42 {
+		t.Fatalf("MarkReadyForReview calls = %v, want [42]", vp.markReadyCalls)
 	}
-	if chats.created[0].SessionID != "sess-1" {
-		t.Errorf("chat row session = %q, want sess-1", chats.created[0].SessionID)
+	if len(chats.created) != 0 {
+		t.Fatalf("no finalize chat should be created, got %d", len(chats.created))
 	}
 	// hook_token must be cleared on pr_created (step 5).
 	if sessions.sessions["sess-1"].HookToken != nil {
 		t.Errorf("hook_token = %v, want nil (cleared on pr_created)", *sessions.sessions["sess-1"].HookToken)
 	}
-	// State stays at Finalizing — the finalize chat drives the session forward.
-	if got := sessions.sessions["sess-1"].State; got != machine.Finalizing {
-		t.Errorf("state after pr_created = %s, want finalizing", got)
+	if got := sessions.sessions["sess-1"].State; got != machine.ReadyForReview {
+		t.Errorf("state after pr_created = %s, want ready_for_review", got)
 	}
 }
 
@@ -1019,139 +1240,6 @@ func TestFinalizeSession_PRFailed(t *testing.T) {
 	}
 	if cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
 		t.Errorf("recorded outcome = %q, want pr_failed", cron.lastRunCalls[0].outcome)
-	}
-}
-
-// TestFinalizeSession_ChatSpawnFailed covers the clean committed branch where
-// EnsurePR succeeds but chat spawn fails: the PR is opened (so we can't redo it
-// cleanly), but the /boss-finalize claude process won't start. Outcome must be
-// chat_spawn_failed with the worktree + hook_token preserved and the session in
-// Blocked.
-func TestFinalizeSession_ChatSpawnFailed(t *testing.T) {
-	ctx := context.Background()
-	logger := zerolog.Nop()
-
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{
-		statusOut:           "",
-		latestCommitSubject: "fix(cron): preserve PR-backed clean sessions",
-		isAncestorFn: func(_, ref, target string) (bool, error) {
-			if ref == "HEAD" && target == "refs/remotes/origin/main" {
-				return false, nil
-			}
-			return true, nil
-		},
-	}
-	cr := newMockAgentRunner()
-	cr.startErr = fmt.Errorf("claude binary not found")
-	vp := newMockVCSProvider()
-	cron := &recordingCronJobStore{}
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:        "repo-1",
-		LocalPath: "/tmp/repo-main",
-		OriginURL: "git@github.com:owner/repo.git",
-	}
-	cronJobID := "cron-1"
-	hookToken := "secret-token"
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:           "sess-1",
-		RepoID:       "repo-1",
-		Title:        "Cron job",
-		Plan:         "Do thing",
-		WorktreePath: "/tmp/wt-sess1",
-		BranchName:   "cron-br-1",
-		BaseBranch:   "main",
-		State:        machine.ImplementingPlan,
-		CronJobID:    &cronJobID,
-		HookToken:    &hookToken,
-	}
-
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
-	res, err := lc.FinalizeSession(ctx, "sess-1")
-	if err != nil {
-		t.Fatalf("FinalizeSession: %v", err)
-	}
-
-	if res.Outcome != models.CronJobOutcomeChatSpawnFailed {
-		t.Fatalf("outcome = %q, want chat_spawn_failed", res.Outcome)
-	}
-	if len(vp.createPRCalls) != 1 {
-		t.Errorf("EnsurePR should have been reached and PR created (calls=%d)", len(vp.createPRCalls))
-	}
-	if sessions.sessions["sess-1"].HookToken == nil {
-		t.Error("hook_token should be preserved on chat_spawn_failed (clear only on success)")
-	}
-	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
-		t.Errorf("state after chat_spawn_failed = %s, want blocked", got)
-	}
-	if cron.lastRunCalls[0].outcome != models.CronJobOutcomeChatSpawnFailed {
-		t.Errorf("recorded outcome = %q, want chat_spawn_failed", cron.lastRunCalls[0].outcome)
-	}
-}
-
-// TestFinalizeSession_ChatSpawnFailed_SetsBlockedReason asserts that a
-// chat_spawn_failed outcome persists a descriptive BlockedReason on the
-// session so the UI can surface it instead of falling back to the generic
-// "fix loop exhausted" message.
-func TestFinalizeSession_ChatSpawnFailed_SetsBlockedReason(t *testing.T) {
-	ctx := context.Background()
-	logger := zerolog.Nop()
-
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	wt := &mockWorktreeManager{
-		statusOut:           "",
-		latestCommitSubject: "fix(cron): preserve PR-backed clean sessions",
-		isAncestorFn: func(_, ref, target string) (bool, error) {
-			if ref == "HEAD" && target == "refs/remotes/origin/main" {
-				return false, nil
-			}
-			return true, nil
-		},
-	}
-	cr := newMockAgentRunner()
-	cr.startErr = fmt.Errorf("claude binary not found")
-	vp := newMockVCSProvider()
-	cron := &recordingCronJobStore{}
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:        "repo-1",
-		LocalPath: "/tmp/repo-main",
-		OriginURL: "git@github.com:owner/repo.git",
-	}
-	cronJobID := "cron-1"
-	hookToken := "secret-token"
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:           "sess-1",
-		RepoID:       "repo-1",
-		Title:        "Cron job",
-		Plan:         "Do thing",
-		WorktreePath: "/tmp/wt-sess1",
-		BranchName:   "cron-br-1",
-		BaseBranch:   "main",
-		State:        machine.ImplementingPlan,
-		CronJobID:    &cronJobID,
-		HookToken:    &hookToken,
-	}
-
-	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
-	res, err := lc.FinalizeSession(ctx, "sess-1")
-	if err != nil {
-		t.Fatalf("FinalizeSession: %v", err)
-	}
-
-	if res.Outcome != models.CronJobOutcomeChatSpawnFailed {
-		t.Fatalf("outcome = %q, want chat_spawn_failed", res.Outcome)
-	}
-
-	sess, _ := sessions.Get(ctx, "sess-1")
-	if sess.State != machine.Blocked {
-		t.Fatalf("state = %v, want Blocked", sess.State)
-	}
-	if sess.BlockedReason == nil || !strings.Contains(*sess.BlockedReason, "chat_spawn_failed") {
-		t.Fatalf("BlockedReason = %v, want contains chat_spawn_failed", sess.BlockedReason)
 	}
 }
 
@@ -1507,8 +1595,8 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 		t.Fatalf("FinalizeSession: %v", err)
 	}
 
-	if res.Outcome != models.CronJobOutcomePRCreated {
-		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
+	if res.Outcome != models.CronJobOutcomePRFailed {
+		t.Fatalf("outcome = %q, want pr_failed", res.Outcome)
 	}
 	sess, getErr := inner.Get(ctx, "sess-1")
 	if getErr != nil {
@@ -1519,6 +1607,12 @@ func TestFinalizeSession_DirtyOutput_PRNumberSetAfterEnsurePRRace(t *testing.T) 
 	}
 	if *sess.PRNumber != 55 {
 		t.Fatalf("PRNumber = %d, want 55", *sess.PRNumber)
+	}
+	if len(wt.injectPRNumbersCalls) != 0 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 0", len(wt.injectPRNumbersCalls))
+	}
+	if len(vp.markReadyCalls) != 0 {
+		t.Fatalf("MarkReadyForReview calls = %v, want none", vp.markReadyCalls)
 	}
 }
 
@@ -1775,7 +1869,7 @@ func newFinalizeChatLifecycle(
 	wt *mockWorktreeManager,
 	vp *mockVCSProvider,
 	logger zerolog.Logger,
-) (*Lifecycle, *recordingFinalizeAgentRunner) {
+) *Lifecycle {
 	t.Helper()
 
 	for _, sess := range sessions.sessions {
@@ -1790,7 +1884,7 @@ func newFinalizeChatLifecycle(
 	lc := NewLifecycle(sessions, repos, chats, cron, wt, newMockAgentRunner(), tmuxClient, vp, logger)
 	lc.SetAgents(map[string]agent.AgentRunnerClient{"claude": runner})
 	lc.SetAgentLogsDir(t.TempDir())
-	return lc, runner
+	return lc
 }
 
 // recordingAgentChatStore captures Create calls so tests can assert that

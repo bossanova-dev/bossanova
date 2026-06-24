@@ -513,6 +513,14 @@ type mockWorktreeManager struct {
 	fetchedBases                []string
 	fetchBaseErr                error
 	isAncestorFn                func(localPath, ref, target string) (bool, error)
+	injectPRNumbersCalls        []injectPRNumbersCall
+	injectPRNumbersErr          error
+}
+
+type injectPRNumbersCall struct {
+	branch   string
+	prNumber int
+	baseRef  string
 }
 
 type branchDebugSnapshotCall struct {
@@ -576,6 +584,15 @@ func (m *mockWorktreeManager) PushWithLease(_ context.Context, _ string, branch,
 	}
 	m.pushed = append(m.pushed, branch)
 	return "pushed-head-sha", nil
+}
+
+func (m *mockWorktreeManager) InjectPRNumbers(_ context.Context, _, branch string, prNumber int, baseRef string) error {
+	m.injectPRNumbersCalls = append(m.injectPRNumbersCalls, injectPRNumbersCall{
+		branch:   branch,
+		prNumber: prNumber,
+		baseRef:  baseRef,
+	})
+	return m.injectPRNumbersErr
 }
 
 func (m *mockWorktreeManager) VerifyPushedBranchAheadOfBase(_ context.Context, worktreePath, branch, baseBranch string) (*gitpkg.BranchVerification, error) {
@@ -770,6 +787,7 @@ type mockVCSProvider struct {
 	checkResultsErr    error
 	reviewCommentsErr  error
 	mergePRErr         error
+	markReadyErr       error
 
 	getCheckResultsCalls   int
 	getReviewCommentsCalls int
@@ -816,7 +834,7 @@ func (m *mockVCSProvider) GetFailedCheckLogs(_ context.Context, _ string, _ stri
 
 func (m *mockVCSProvider) MarkReadyForReview(_ context.Context, _ string, prID int) error {
 	m.markReadyCalls = append(m.markReadyCalls, prID)
-	return nil
+	return m.markReadyErr
 }
 
 func (m *mockVCSProvider) GetReviewComments(_ context.Context, _ string, _ int) ([]vcs.ReviewComment, error) {

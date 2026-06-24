@@ -226,12 +226,13 @@ type fakeAgentClient struct {
 		plan    string
 		logPath string
 	}
-	running     map[string]bool
-	exitErrors  map[string]string
-	completed   map[string]bool
-	resolveResp *bossanovav1.ResolveInteractiveSessionIDResponse
-	resolveErr  error
-	resolveReqs []*bossanovav1.ResolveInteractiveSessionIDRequest
+	running        map[string]bool
+	exitErrors     map[string]string
+	completed      map[string]bool
+	resolveResp    *bossanovav1.ResolveInteractiveSessionIDResponse
+	resolveErr     error
+	resolveReqs    []*bossanovav1.ResolveInteractiveSessionIDRequest
+	removeHookReqs []*bossanovav1.RemoveAgentRunHookRequest
 }
 
 var _ agent.AgentRunnerClient = (*fakeAgentClient)(nil)
@@ -312,6 +313,12 @@ func (f *fakeAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastT
 }
 func (f *fakeAgentClient) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
+}
+func (f *fakeAgentClient) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
+	f.mu.Lock()
+	f.removeHookReqs = append(f.removeHookReqs, req)
+	f.mu.Unlock()
+	return &bossanovav1.RemoveAgentRunHookResponse{IsSupported: true}, nil
 }
 
 // finish marks a session as no-longer-running with the given exit error.
@@ -2586,5 +2593,60 @@ func TestWaitChatRun_ContextCancelled(t *testing.T) {
 	srv.runMu.Unlock()
 	if hasComp || hasTok || hasActive {
 		t.Errorf("expected maps cleared after ctx cancel; comp=%v tok=%v active=%v", hasComp, hasTok, hasActive)
+	}
+}
+
+// TestWaitChatRun_RemovesRunHookOnCompletion verifies that WaitChatRun fires
+// RemoveAgentRunHook even when completion goes through the real CompleteAgentRun
+// path, which deletes agentSessionByID before WaitChatRun's done-branch runs.
+// The fix resolves the agent client via sess.AgentName (from the session store)
+// using runSessionByID, which intentionally survives as a tombstone.
+func TestWaitChatRun_RemovesRunHookOnCompletion(t *testing.T) {
+	fake := newFakeAgentClient()
+	srv := newRepairTestServer(fake, &models.Session{
+		ID:           "sess-1",
+		AgentName:    "claude",
+		WorktreePath: "/tmp/wt-1",
+	})
+
+	srv.registerRun("sess-1", "run-1", "tok-1")
+	// Mirror what StartChatRun does: record the active run so CompleteAgentRun's
+	// matching-session branch (host_service.go:1211) fires and deletes
+	// agentSessionByID["run-1"] — the exact condition that exposed the bug.
+	srv.runMu.Lock()
+	srv.activeRuns["sess-1"] = activeRun{agentName: "claude", agentSessionID: "run-1"}
+	srv.agentSessionByID["run-1"] = "claude"
+	srv.runMu.Unlock()
+
+	// Drive completion through the real path concurrently: WaitChatRun must
+	// start first (grabbing run from runCompletion), then CompleteAgentRun
+	// signals the buffered channel and deletes agentSessionByID. The goroutine
+	// sleep gives WaitChatRun time to enter its select before the signal fires.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = srv.CompleteAgentRun(context.Background(), "run-1", "tok-1", "")
+	}()
+
+	if _, err := srv.WaitChatRun(t.Context(), &bossanovav1.WaitChatRunHostRequest{AgentSessionId: "run-1"}); err != nil {
+		t.Fatalf("WaitChatRun: %v", err)
+	}
+
+	// Verify agentSessionByID was deleted by CompleteAgentRun, proving the fix
+	// exercised the real bug condition (old helper would have returned early here).
+	srv.runMu.Lock()
+	_, stillIndexed := srv.agentSessionByID["run-1"]
+	srv.runMu.Unlock()
+	if stillIndexed {
+		t.Fatal("agentSessionByID[run-1] was not deleted by CompleteAgentRun; bug condition not triggered")
+	}
+
+	fake.mu.Lock()
+	reqs := fake.removeHookReqs
+	fake.mu.Unlock()
+	if len(reqs) != 1 {
+		t.Fatalf("RemoveAgentRunHook called %d times, want 1", len(reqs))
+	}
+	if got := reqs[0]; got.WorkDir != "/tmp/wt-1" || got.AgentSessionId != "run-1" {
+		t.Errorf("remove req = %+v, want {WorkDir:/tmp/wt-1 AgentSessionId:run-1}", got)
 	}
 }

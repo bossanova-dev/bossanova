@@ -89,6 +89,7 @@ func TestRecompute_Matrix(t *testing.T) {
 		workflow    *db.CreateWorkflowParams
 		wfStatus    models.WorkflowStatus
 		wfFlightLeg int
+		settingUp   bool
 		wantLabel   string
 		wantIntent  pb.DisplayIntent
 		wantSpinner bool
@@ -132,6 +133,13 @@ func TestRecompute_Matrix(t *testing.T) {
 			display:     &DisplayEntry{Status: vcs.DisplayStatusPassing, IsRepairing: true},
 			wantLabel:   "repairing",
 			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_WARNING,
+			wantSpinner: true,
+		},
+		{
+			name:        "setting up yields initializing label",
+			settingUp:   true,
+			wantLabel:   "initializing",
+			wantIntent:  pb.DisplayIntent_DISPLAY_INTENT_INFO,
 			wantSpinner: true,
 		},
 		{
@@ -218,6 +226,9 @@ func TestRecompute_Matrix(t *testing.T) {
 				if tc.display.IsRepairing {
 					disp.SetRepairing(sessID, true)
 				}
+			}
+			if tc.settingUp {
+				disp.SetSettingUp(sessID, true)
 			}
 
 			// Optionally seed an active workflow.

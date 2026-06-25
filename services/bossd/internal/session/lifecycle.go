@@ -37,6 +37,14 @@ var (
 	prNumberPrefixRE           = regexp.MustCompile(`^\[#[0-9]+\][[:space:]]+`)
 )
 
+// settingUpTracker is the narrow slice of *status.DisplayTracker the
+// lifecycle needs to drive the "initializing" display status. A local
+// interface keeps the session package free of a status-package import
+// dependency. *status.DisplayTracker satisfies it.
+type settingUpTracker interface {
+	SetSettingUp(sessionID string, on bool)
+}
+
 // PollArmer arms a poll-fallback goroutine that drives an agent run to
 // completion when the agent doesn't support a finalize hook. Implemented
 // by *agent.PollFallback (which accepts a wider AgentRunnerClient via
@@ -135,6 +143,11 @@ type Lifecycle struct {
 	// tmuxCompletionPollInterval controls how often lifecycle-owned hookless
 	// cron runs check whether their tmux session has exited.
 	tmuxCompletionPollInterval time.Duration
+
+	// settingUpTracker drives the transient "initializing" display status
+	// while a setup script runs. nil in tests that don't exercise it; all
+	// uses are nil-guarded.
+	settingUpTracker settingUpTracker
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -143,6 +156,12 @@ type Lifecycle struct {
 // after hookSrv.Listen() succeeds.
 func (l *Lifecycle) SetHookPort(port int) {
 	l.hookPort = port
+}
+
+// SetDisplayTracker wires the display tracker used to flip the transient
+// "initializing" status while a setup script runs. Safe to leave unset.
+func (l *Lifecycle) SetDisplayTracker(t settingUpTracker) {
+	l.settingUpTracker = t
 }
 
 // SetAgents installs the per-name AgentRunnerClient registry used to call
@@ -510,6 +529,15 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 		setupScript = nil
 	}
 
+	// Surface the "initializing" display status for the lifetime of the
+	// pre-chat creation window when a setup script will actually run. The
+	// flag is transient/in-memory; defer guarantees it clears on every
+	// return path (incl. a failed Create) so it can never be stranded.
+	if l.settingUpTracker != nil && setupScript != nil && strings.TrimSpace(*setupScript) != "" {
+		l.settingUpTracker.SetSettingUp(sessionID, true)
+		defer l.settingUpTracker.SetSettingUp(sessionID, false)
+	}
+
 	// Create worktree: existing branch (PR) or new branch.
 	var result *gitpkg.CreateResult
 	if existingBranch != "" {
@@ -765,7 +793,7 @@ func (l *Lifecycle) SubmitPR(ctx context.Context, sessionID string) error {
 	}
 
 	// Ensure origin URL is available before any VCS operations.
-	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+	if err := l.resolveOriginURL(ctx, repo); err != nil {
 		return fmt.Errorf("resolve origin URL: %w", err)
 	}
 
@@ -925,7 +953,7 @@ const draftPRPlaceholderCommitSubject = "chore: [skip ci] create pull request"
 
 func (l *Lifecycle) createDraftPR(ctx context.Context, sessionID, worktreePath, branchName string, session *models.Session, repo *models.Repo) error {
 	// Ensure origin URL is available before any VCS operations.
-	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+	if err := l.resolveOriginURL(ctx, repo); err != nil {
 		return fmt.Errorf("resolve origin URL: %w", err)
 	}
 
@@ -1245,7 +1273,7 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 	if err != nil {
 		return nil, fmt.Errorf("get repo: %w", err)
 	}
-	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+	if err := l.resolveOriginURL(ctx, repo); err != nil {
 		return nil, fmt.Errorf("resolve origin URL: %w", err)
 	}
 
@@ -1357,7 +1385,7 @@ func (l *Lifecycle) EnsurePR(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("get repo: %w", err)
 	}
 
-	if _, err := l.resolveOriginURL(ctx, repo); err != nil {
+	if err := l.resolveOriginURL(ctx, repo); err != nil {
 		return fmt.Errorf("resolve origin URL: %w", err)
 	}
 
@@ -1545,23 +1573,23 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 // resolveOriginURL ensures the repo has a non-empty OriginURL. If it's
 // empty (e.g. git remote get-url failed during initial registration), it
 // re-detects the URL from the repo's local path and persists it.
-func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) (string, error) {
+func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) error {
 	if repo.OriginURL != "" {
-		return repo.OriginURL, nil
+		return nil
 	}
 
 	url, err := l.worktrees.DetectOriginURL(ctx, repo.LocalPath)
 	if err != nil {
-		return "", fmt.Errorf("detect origin URL: %w", err)
+		return fmt.Errorf("detect origin URL: %w", err)
 	}
 	if url == "" {
-		return "", fmt.Errorf("repo %q has no origin remote configured", repo.DisplayName)
+		return fmt.Errorf("repo %q has no origin remote configured", repo.DisplayName)
 	}
 
 	if _, err := l.repos.Update(ctx, repo.ID, db.UpdateRepoParams{
 		OriginURL: &url,
 	}); err != nil {
-		return "", fmt.Errorf("persist origin URL: %w", err)
+		return fmt.Errorf("persist origin URL: %w", err)
 	}
 
 	l.logger.Info().
@@ -1570,7 +1598,7 @@ func (l *Lifecycle) resolveOriginURL(ctx context.Context, repo *models.Repo) (st
 		Msg("re-detected and persisted origin URL")
 
 	repo.OriginURL = url
-	return url, nil
+	return nil
 }
 
 // killAllChatTmuxSessions kills the tmux session for every chat in the given

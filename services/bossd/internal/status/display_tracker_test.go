@@ -253,3 +253,58 @@ func TestDisplayTracker_OnChange_NilCallback(t *testing.T) {
 	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
 	tr.Set("sess-1", vcs.DisplayInfo{Status: vcs.DisplayStatusFailing})
 }
+
+func TestSetSettingUp(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetSettingUp("s1", true)
+	if e := tr.Get("s1"); e == nil || !e.SettingUp {
+		t.Fatalf("expected SettingUp=true, got %+v", e)
+	}
+	// Clearing the flag on an entry that exists ONLY because of the
+	// transient setup flag (no polled PR status yet) must remove the entry
+	// entirely. Otherwise a zero-Status placeholder lingers, and callers
+	// that treat entry presence as authoritative (e.g. MergeSession's
+	// "no entry -> allow merge" fallback) would mis-read a passing PR as
+	// "not passing".
+	tr.SetSettingUp("s1", false)
+	if e := tr.Get("s1"); e != nil {
+		t.Fatalf("expected setup-only entry removed on clear, got %+v", e)
+	}
+}
+
+func TestSetSettingUpClearKeepsRealStatus(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetSettingUp("s1", true)
+	// A PR poll lands a real status before setup finishes.
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusPassing})
+	tr.SetSettingUp("s1", false)
+	e := tr.Get("s1")
+	if e == nil {
+		t.Fatalf("entry with real PR status must not be removed on clear")
+	}
+	if e.SettingUp {
+		t.Fatalf("expected SettingUp cleared, got %+v", e)
+	}
+	if e.Status != vcs.DisplayStatusPassing {
+		t.Fatalf("expected Status preserved as Passing, got %+v", e)
+	}
+}
+
+func TestSetSettingUpClearWhenAbsentNoOp(t *testing.T) {
+	tr := NewDisplayTracker()
+	// Clearing when no entry exists must not fabricate a placeholder entry.
+	tr.SetSettingUp("s1", false)
+	if e := tr.Get("s1"); e != nil {
+		t.Fatalf("clear-when-absent fabricated an entry: %+v", e)
+	}
+}
+
+func TestSetPreservesSettingUp(t *testing.T) {
+	tr := NewDisplayTracker()
+	tr.SetSettingUp("s1", true)
+	// A PR display poll update must not clobber the SettingUp flag.
+	tr.Set("s1", vcs.DisplayInfo{Status: vcs.DisplayStatusDraft})
+	if e := tr.Get("s1"); e == nil || !e.SettingUp {
+		t.Fatalf("Set() clobbered SettingUp; got %+v", e)
+	}
+}

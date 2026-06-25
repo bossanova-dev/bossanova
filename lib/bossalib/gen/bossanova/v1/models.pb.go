@@ -1271,8 +1271,13 @@ type Session struct {
 	// Fingerprint of review feedback targeted by the last repair run.
 	// Empty for non-review-triggered repairs and for legacy rows.
 	LastRepairReviewFingerprint string `protobuf:"bytes,47,opt,name=last_repair_review_fingerprint,json=lastRepairReviewFingerprint,proto3" json:"last_repair_review_fingerprint,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	// True while the repo's setup script is running during session creation
+	// (the "initializing" display status). Transport-only: hydrated server-side
+	// from the in-memory DisplayTracker and never persisted. Mirrors
+	// display_is_repairing (field 24).
+	DisplaySettingUp bool `protobuf:"varint,48,opt,name=display_setting_up,json=displaySettingUp,proto3" json:"display_setting_up,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1632,6 +1637,13 @@ func (x *Session) GetLastRepairReviewFingerprint() string {
 		return x.LastRepairReviewFingerprint
 	}
 	return ""
+}
+
+func (x *Session) GetDisplaySettingUp() bool {
+	if x != nil {
+		return x.DisplaySettingUp
+	}
+	return false
 }
 
 // Attempt represents a fix attempt within a session.
@@ -3082,7 +3094,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
 	"\n" +
 	"sentry_org\x18\x12 \x01(\tR\tsentryOrgB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xfe\x13\n" +
+	"\r_setup_scriptJ\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xac\x14\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -3140,7 +3152,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x15last_chat_activity_at\x18+ \x01(\v2\x1a.google.protobuf.TimestampH\n" +
 	"R\x12lastChatActivityAt\x88\x01\x01\x12&\n" +
 	"\x0frepo_origin_url\x18. \x01(\tR\rrepoOriginUrl\x12C\n" +
-	"\x1elast_repair_review_fingerprint\x18/ \x01(\tR\x1blastRepairReviewFingerprintB\x13\n" +
+	"\x1elast_repair_review_fingerprint\x18/ \x01(\tR\x1blastRepairReviewFingerprint\x12,\n" +
+	"\x12display_setting_up\x180 \x01(\bR\x10displaySettingUpB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

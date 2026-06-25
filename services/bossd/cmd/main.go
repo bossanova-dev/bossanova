@@ -624,6 +624,7 @@ func run(opts runOpts) error {
 	}
 
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
+	lifecycle.SetDisplayTracker(displayTracker)
 	if len(agentClients) > 0 {
 		lifecycle.SetAgents(agentClients)
 	}

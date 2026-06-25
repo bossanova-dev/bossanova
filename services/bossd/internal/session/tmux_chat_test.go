@@ -97,6 +97,34 @@ func TestCronChatInputFromPromptTrimsSurroundingWhitespace(t *testing.T) {
 	}
 }
 
+// A leading slash/$ command with arguments must still dispatch as a command
+// (the whole single line, args included) so it auto-runs via the
+// submit-verified send-line path. Routing it to the paste path instead leaves
+// the command loaded-but-not-executed in the headless cron's input box — the
+// bug that stalled the "/wc-merge-review headless" sweep.
+func TestCronChatInputFromPromptConvertsLeadingCommandWithArgs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	for _, tc := range []struct {
+		prompt  string
+		command string
+	}{
+		{"/wc-merge-review headless", "/wc-merge-review headless"},
+		{"/bs-mutation-test a b", "/bs-mutation-test a b"},
+		{"  /wc-merge-review headless  ", "/wc-merge-review headless"},
+		{"$boss-repair now", "$boss-repair now"},
+	} {
+		input := cronChatInputFromPrompt(tc.prompt)
+		if input.Prompt != "" {
+			t.Fatalf("prompt %q: Prompt = %q, want empty", tc.prompt, input.Prompt)
+		}
+		if input.Command != tc.command {
+			t.Fatalf("prompt %q: Command = %q, want %q", tc.prompt, input.Command, tc.command)
+		}
+	}
+}
+
 // Embedded commands must NOT be extracted: doing so silently truncates the
 // surrounding free-text instruction, which is the user's actual cron plan.
 func TestCronChatInputFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {

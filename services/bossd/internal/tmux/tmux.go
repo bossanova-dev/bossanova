@@ -452,11 +452,22 @@ func (c *Client) SendPlan(ctx context.Context, sessionName, plan string) error {
 
 // SendPlanWithReadyMarker is SendPlan with an agent-specific readiness marker.
 // Empty readyMarker preserves the legacy Claude marker for old plugins.
+//
+// Like sendLine, it verifies the payload actually left the prompt after Enter.
+// A cron session is headless, so a paste that loads but doesn't execute (the
+// failure mode SendLine warns about) would otherwise be reported as a clean
+// fire while nothing ran; the verification turns that silent no-op into a
+// surfaced error. The check is line-oriented, so it applies to a single-line,
+// non-empty payload (e.g. a free-text cron prompt); multi-line plans and the
+// empty string are skipped explicitly (see sendPlan), since neither sits as a
+// single matchable prompt row.
 func (c *Client) SendPlanWithReadyMarker(ctx context.Context, sessionName, plan, readyMarker string) error {
 	return c.sendPlan(ctx, sessionName, plan, sendPlanOpts{
-		deadline:     sendPlanDefaultDeadline,
-		pollInterval: sendPlanDefaultPollInterval,
-		readyMarker:  readyMarker,
+		deadline:         sendPlanDefaultDeadline,
+		pollInterval:     sendPlanDefaultPollInterval,
+		readyMarker:      readyMarker,
+		submitVerifyWait: 2 * time.Second,
+		submitVerifyTick: 100 * time.Millisecond,
 	})
 }
 
@@ -527,6 +538,21 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 			return fmt.Errorf("tmux send-keys Enter for %q: %w (stderr: %s)", sessionName, err, msg)
 		}
 		return fmt.Errorf("tmux send-keys Enter for %q: %w", sessionName, err)
+	}
+
+	// Step 5: verify the payload actually left the prompt, so a paste that
+	// loaded but did not execute surfaces as an error instead of a silent
+	// no-op. The check is line-oriented (lineStillAtPrompt matches the payload
+	// against a single prompt row), so it only applies to a single-line,
+	// non-empty payload. Multi-line plans never sit as one matchable row, and
+	// the empty string matches any row — both are skipped explicitly so the
+	// verification neither runs a needless capture-pane nor reports a spurious
+	// error for content it cannot meaningfully check.
+	trimmedPlan := strings.TrimSpace(plan)
+	if opts.submitVerifyWait > 0 && trimmedPlan != "" && !strings.ContainsAny(trimmedPlan, "\r\n") {
+		if err := c.waitForLineSubmission(ctx, sessionName, trimmedPlan, opts.submitVerifyWait, opts.submitVerifyTick); err != nil {
+			return err
+		}
 	}
 	return nil
 }

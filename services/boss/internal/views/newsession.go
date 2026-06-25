@@ -1369,6 +1369,10 @@ func (m NewSessionModel) View() tea.View {
 
 	if m.phase == newSessionPhaseCreating {
 		var b strings.Builder
+		// Render "initializing" indicator using INFO/blue style with a static
+		// spinner glyph (first frame of the Dot spinner, same as session-list).
+		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(styleStatusInfo.Render("⣾ initializing")))
+		b.WriteString("\n")
 		if len(m.setupLines) > 0 {
 			b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("Running setup script..."))
 			b.WriteString("\n")

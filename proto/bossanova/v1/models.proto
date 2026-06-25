@@ -234,6 +234,12 @@ message Session {
   // Fingerprint of review feedback targeted by the last repair run.
   // Empty for non-review-triggered repairs and for legacy rows.
   string last_repair_review_fingerprint = 47;
+
+  // True while the repo's setup script is running during session creation
+  // (the "initializing" display status). Transport-only: hydrated server-side
+  // from the in-memory DisplayTracker and never persisted. Mirrors
+  // display_is_repairing (field 24).
+  bool display_setting_up = 48;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

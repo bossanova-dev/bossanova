@@ -134,6 +134,7 @@
             "description": { "type": "string" },
             "privacy": { "enum": ["fixture", "live"] },
             "capture": { "enum": ["image", "video"], "default": "image" },
+            "slowMo": { "type": "integer", "minimum": 0, "maximum": 60000 },
             "route": {
               "type": "string",
               "pattern": "^/(?!/)(?!.*\\\\)(?!.*[\\u0000-\\u001F\\u007F]).*$"
@@ -159,15 +160,18 @@
                 "additionalProperties": false,
                 "required": ["action"],
                 "properties": {
-                  "action": { "enum": ["goto", "click", "type", "wait"] },
+                  "action": { "enum": ["goto", "click", "type", "wait", "scroll"] },
                   "label": { "type": "string", "minLength": 1 },
+                  "caption": { "type": "string", "minLength": 1 },
                   "route": {
                     "type": "string",
                     "pattern": "^/(?!/)(?!.*\\\\)(?!.*[\\u0000-\\u001F\\u007F]).*$"
                   },
                   "selector": { "type": "string", "minLength": 1 },
                   "value": { "type": "string", "minLength": 1 },
-                  "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 60000 }
+                  "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
+                  "toSelector": { "type": "string", "minLength": 1 },
+                  "byPx": { "type": "integer", "minimum": -100000, "maximum": 100000 }
                 },
                 "allOf": [
                   {
@@ -181,6 +185,10 @@
                   {
                     "if": { "properties": { "action": { "const": "type" } } },
                     "then": { "required": ["selector", "value"] }
+                  },
+                  {
+                    "if": { "properties": { "action": { "const": "scroll" } }, "required": ["action"] },
+                    "then": { "anyOf": [{ "required": ["toSelector"] }, { "required": ["byPx"] }] }
                   }
                 ]
               }

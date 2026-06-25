@@ -9,7 +9,8 @@ import { validateBrowserRoute } from './proof-lib.mjs';
 
 const validSurfaces = new Set(['web', 'marketing']);
 const validRecipeIdPattern = /^[a-z0-9][a-z0-9-]*$/;
-const VIDEO_ACTIONS = new Set(['goto', 'click', 'type', 'wait']);
+const VIDEO_ACTIONS = new Set(['goto', 'click', 'type', 'wait', 'scroll']);
+const DEFAULT_VIDEO_SLOWMO_MS = 350;
 
 // Only drive Playwright when invoked directly; importing this module (e.g. from
 // the unit tests, to exercise buildSpec/validateRecipe) must not start a run.
@@ -142,6 +143,16 @@ export function validateRecipe(recipe) {
         requireVideoStepString(step, 'value');
       } else if (step.action === 'wait' && step.selector !== undefined) {
         requireVideoStepString(step, 'selector');
+      } else if (step.action === 'scroll') {
+        if (step.toSelector === undefined && step.byPx === undefined) {
+          throw new Error('scroll step requires toSelector or byPx');
+        }
+        if (step.toSelector !== undefined) {
+          requireVideoStepString(step, 'toSelector');
+        }
+        if (step.byPx !== undefined && !Number.isFinite(step.byPx)) {
+          throw new Error('scroll step byPx must be a finite number');
+        }
       }
     }
     return;
@@ -229,6 +240,7 @@ function buildVideoSpec({ recipe, outputDir, surface }) {
 
   const stageWeb = surface === 'web' ? webStageScript() : '';
   const testTitle = JSON.stringify(`proof video: ${recipe.id}`);
+  const slowMo = Number(recipe.slowMo ?? DEFAULT_VIDEO_SLOWMO_MS);
 
   // Build step lines interleaved with still-capture blocks.
   const stepLines = recipe.steps
@@ -263,6 +275,8 @@ ${collectProofAuditTextScript()}
 
 ${captureStillScript()}
 
+test.use({ launchOptions: { slowMo: ${slowMo} } });
+
 test(${testTitle}, async ({ browser, baseURL }) => {
   const context = await browser.newContext({
     baseURL,
@@ -271,6 +285,7 @@ test(${testTitle}, async ({ browser, baseURL }) => {
   });
   const page = await context.newPage();
   ${stageWeb}
+${proofOverlayScript()}
   await page.setViewportSize(${viewport});
   const __stills = [];
   let __cropHeight = null;
@@ -306,23 +321,81 @@ function jsString(value) {
 // Unroll one video step into an inline statement (values baked in, not a
 // runtime loop) so the generated spec is self-contained and inspectable.
 function renderVideoStep(step) {
+  const captionLine =
+    step.caption !== undefined
+      ? `  await page.evaluate((t) => window.__proofOverlay?.caption(t), ${jsString(step.caption)});\n`
+      : '';
   switch (step.action) {
     case 'goto':
+      // Emit the caption AFTER navigation: goto destroys the current document
+      // (and its overlay), so a pre-goto caption would never be seen. The
+      // overlay re-injects on the loaded page via addInitScript, so setting the
+      // caption here makes it visible on the destination page.
       return `  {
     const response = await page.goto(${jsString(step.route)});
     expect(response?.status(), 'proof route status').toBeLessThan(400);
-  }`;
+  }
+${captionLine}`;
     case 'click':
-      return `  await page.locator(${jsString(step.selector)}).first().click();`;
+      return `${captionLine}  {
+    const __loc = page.locator(${jsString(step.selector)}).first();
+    await __loc.scrollIntoViewIfNeeded();
+    const __box = await __loc.boundingBox();
+    if (__box) await page.evaluate(([x, y]) => window.__proofOverlay?.ripple(x, y), [__box.x + __box.width / 2, __box.y + __box.height / 2]);
+    await __loc.click();
+  }`;
     case 'type':
-      return `  await page.locator(${jsString(step.selector)}).first().pressSequentially(${jsString(step.value)});`;
+      return `${captionLine}  {
+    const __loc = page.locator(${jsString(step.selector)}).first();
+    await __loc.scrollIntoViewIfNeeded();
+    const __box = await __loc.boundingBox();
+    if (__box) await page.evaluate(([x, y]) => window.__proofOverlay?.ripple(x, y), [__box.x + __box.width / 2, __box.y + __box.height / 2]);
+    await __loc.pressSequentially(${jsString(step.value)}, { delay: 60 });
+  }`;
     case 'wait':
       return step.selector
-        ? `  await expect(page.locator(${jsString(step.selector)}).first()).toBeVisible();`
-        : `  await page.waitForTimeout(${Number(step.timeoutMs) || 500});`;
+        ? `${captionLine}  await expect(page.locator(${jsString(step.selector)}).first()).toBeVisible();`
+        : `${captionLine}  await page.waitForTimeout(${Number(step.timeoutMs) || 500});`;
+    case 'scroll':
+      return step.toSelector
+        ? `${captionLine}  await page.locator(${jsString(step.toSelector)}).first().evaluate((el) => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+  await page.waitForTimeout(800);`
+        : `${captionLine}  await page.evaluate((px) => window.scrollBy({ top: px, behavior: 'smooth' }), ${Number(step.byPx)});
+  await page.waitForTimeout(800);`;
     default:
       throw new Error(`unsupported video step action: ${step.action ?? '<missing>'}`);
   }
+}
+
+function proofOverlayScript() {
+  return `
+  await page.addInitScript(() => {
+    if (window.__proofOverlay) return;
+    const container = document.createElement('div');
+    container.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;pointer-events:none;overflow:hidden;';
+    document.documentElement.appendChild(container);
+    const captionEl = document.createElement('div');
+    captionEl.style.cssText = 'position:absolute;bottom:32px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.65);color:#fff;font:600 15px/1.4 sans-serif;padding:6px 18px;border-radius:6px;white-space:pre-wrap;max-width:80%;text-align:center;pointer-events:none;display:none;';
+    container.appendChild(captionEl);
+    window.__proofOverlay = {
+      caption(text) {
+        captionEl.textContent = text;
+        captionEl.style.display = text ? 'block' : 'none';
+      },
+      ripple(x, y) {
+        const el = document.createElement('div');
+        el.style.cssText = \`position:absolute;left:\${x}px;top:\${y}px;width:0;height:0;pointer-events:none;\`;
+        const circle = document.createElement('div');
+        circle.style.cssText = 'position:absolute;transform:translate(-50%,-50%);width:40px;height:40px;border-radius:50%;background:rgba(255,80,80,0.45);animation:__proofRipple 0.5s ease-out forwards;pointer-events:none;';
+        el.appendChild(circle);
+        container.appendChild(el);
+        setTimeout(() => el.remove(), 600);
+      },
+    };
+    const style = document.createElement('style');
+    style.textContent = '@keyframes __proofRipple{0%{transform:translate(-50%,-50%) scale(0);opacity:1}100%{transform:translate(-50%,-50%) scale(2.5);opacity:0}}';
+    document.head.appendChild(style);
+  });`;
 }
 
 function captureStillScript() {

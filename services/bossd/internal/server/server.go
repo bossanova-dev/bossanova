@@ -1135,6 +1135,8 @@ func (s *Server) GetSession(ctx context.Context, req *connect.Request[pb.GetSess
 			p.DisplayStatus = pb.DisplayStatus(e.Status)
 			p.DisplayHasFailures = e.HasFailures
 			p.DisplayHasChangesRequested = e.HasChangesRequested
+			p.DisplayIsRepairing = e.IsRepairing
+			p.DisplaySettingUp = e.SettingUp
 		}
 	}
 
@@ -1218,6 +1220,7 @@ func (s *Server) ListSessions(ctx context.Context, req *connect.Request[pb.ListS
 				pbSessions[i].DisplayHasFailures = e.HasFailures
 				pbSessions[i].DisplayHasChangesRequested = e.HasChangesRequested
 				pbSessions[i].DisplayIsRepairing = e.IsRepairing
+				pbSessions[i].DisplaySettingUp = e.SettingUp
 			}
 		}
 	}

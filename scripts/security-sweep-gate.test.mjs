@@ -121,3 +121,40 @@ test('runCli classify maps args to an outcome', () => {
 test('runCli throws on unknown subcommand', () => {
   assert.throws(() => runCli(['bogus'], {}));
 });
+
+// append to scripts/security-sweep-gate.test.mjs
+import { decideAction } from './security-sweep-gate.mjs';
+
+test('decideAction watches a fresh head and resets the counter', () => {
+  const d = decideAction({ state: { attempts: 2, lastSha: 'old', lastOutcome: 'retry' }, currentSha: 'new', maxAttempts: 3 });
+  assert.equal(d.action, 'watch');
+  assert.equal(d.reset, true);
+  assert.equal(d.priorAttempts, 0);
+});
+
+test('decideAction escalates when the budget is spent at an unchanged head', () => {
+  const d = decideAction({ state: { attempts: 3, lastSha: 'same', lastOutcome: 'retry' }, currentSha: 'same', maxAttempts: 3 });
+  assert.equal(d.action, 'escalate');
+  assert.equal(d.priorAttempts, 3);
+});
+
+test('decideAction keeps watching below the cap at the same head', () => {
+  const d = decideAction({ state: { attempts: 1, lastSha: 'same', lastOutcome: 'retry' }, currentSha: 'same', maxAttempts: 3 });
+  assert.equal(d.action, 'watch');
+  assert.equal(d.priorAttempts, 1);
+});
+
+test('decideAction watches a first-ever run (no prior state)', () => {
+  const d = decideAction({ state: null, currentSha: 'first', maxAttempts: 3 });
+  assert.equal(d.action, 'watch');
+  assert.equal(d.priorAttempts, 0);
+  assert.equal(d.reset, false);
+});
+
+test('runCli decide-action reads the state file and prints the decision JSON', () => {
+  const body = renderState({ attempts: 3, lastSha: 'deadbee', lastOutcome: 'retry', batchGhsas: [], updatedAt: '2026-06-25T00:00:00Z' });
+  const out = runCli(['decide-action', 's.md', 'deadbee', '3'], { readFile: () => body });
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.action, 'escalate');
+  assert.equal(parsed.priorAttempts, 3);
+});

@@ -66,6 +66,8 @@ type cronCompletionNotifier interface {
 	NotifyCronAgentStopped(sessionID string)
 }
 
+type sessionDeletedNotifier func(context.Context, string)
+
 // Lifecycle orchestrates worktree creation, Claude process management,
 // and state machine transitions for coding sessions.
 type Lifecycle struct {
@@ -148,6 +150,10 @@ type Lifecycle struct {
 	// while a setup script runs. nil in tests that don't exercise it; all
 	// uses are nil-guarded.
 	settingUpTracker settingUpTracker
+
+	// sessionDeletedNotifier publishes session deletions triggered inside the
+	// lifecycle, such as no-change cron finalization cleanup.
+	sessionDeletedNotifier sessionDeletedNotifier
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -162,6 +168,12 @@ func (l *Lifecycle) SetHookPort(port int) {
 // "initializing" status while a setup script runs. Safe to leave unset.
 func (l *Lifecycle) SetDisplayTracker(t settingUpTracker) {
 	l.settingUpTracker = t
+}
+
+// SetSessionDeletedNotifier wires deletion notifications for lifecycle-owned
+// cleanup paths that delete sessions outside the server RPC handlers.
+func (l *Lifecycle) SetSessionDeletedNotifier(n func(context.Context, string)) {
+	l.sessionDeletedNotifier = n
 }
 
 // SetAgents installs the per-name AgentRunnerClient registry used to call

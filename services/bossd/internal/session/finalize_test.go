@@ -122,6 +122,48 @@ func TestFinalizeSession_DeletedNoChanges(t *testing.T) {
 	}
 }
 
+func TestFinalizeSession_DeletedNoChangesNotifiesSessionDeleted(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: ""}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+	}
+
+	var deleted []string
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc.SetSessionDeletedNotifier(func(_ context.Context, sessionID string) {
+		deleted = append(deleted, sessionID)
+	})
+
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if len(deleted) != 1 || deleted[0] != "sess-1" {
+		t.Fatalf("deleted notifications = %v, want [sess-1]", deleted)
+	}
+}
+
 func TestFinalizeSession_CleanWorktreeExistingBranchPR_AttachesPR(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()

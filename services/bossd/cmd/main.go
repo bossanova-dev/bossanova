@@ -624,6 +624,14 @@ func run(opts runOpts) error {
 	}
 
 	lifecycle := session.NewLifecycle(sessions, repos, agentChats, cronJobs, worktrees, agentRunner, tmuxClient, ghProvider, log.Logger)
+	lifecycle.SetSessionDeletedNotifier(func(_ context.Context, sessionID string) {
+		streamBus.Publish(upstream.StreamEvent{
+			Session: &upstream.SessionEvent{
+				Kind:    bossanovav1.SessionDelta_KIND_DELETED,
+				Session: &bossanovav1.Session{Id: sessionID},
+			},
+		})
+	})
 	lifecycle.SetDisplayTracker(displayTracker)
 	if len(agentClients) > 0 {
 		lifecycle.SetAgents(agentClients)

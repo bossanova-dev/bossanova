@@ -108,7 +108,7 @@ export function parseState(body = '') {
   const num = (re) => { const m = text.match(re); return m ? m[1] : null; };
   return {
     attempts: Number(num(/attempts:\s*(\d+)/) ?? 0),
-    lastSha: num(/lastSha:\s*([0-9a-f]+)/) ?? '',
+    lastSha: num(/lastSha:\s*([0-9a-fA-F]+)/) ?? '',
     lastOutcome: num(/lastOutcome:\s*(\w[\w-]*)/) ?? '',
   };
 }
@@ -127,6 +127,22 @@ export function renderState({ attempts, lastSha, lastOutcome, batchGhsas = [], u
     '```',
     ghsaLines,
   ].join('\n');
+}
+
+// append to scripts/security-sweep-gate.mjs
+// Cross-run attempt cap for the write path: decide whether to keep watching a
+// poison-pill PR or escalate to a human. Pure — no I/O. `escalate` only when the
+// attempt budget is spent AND the head has not advanced since the last run; a fresh
+// head resets the counter (the prior failures no longer apply to new work).
+export function decideAction({ state, currentSha, maxAttempts = 3 }) {
+  const st = state ?? { attempts: 0, lastSha: '', lastOutcome: '' };
+  if (st.lastSha && st.lastSha !== currentSha) {
+    return { action: 'watch', priorAttempts: 0, reset: true };
+  }
+  if (st.lastSha === currentSha && st.attempts >= maxAttempts) {
+    return { action: 'escalate', priorAttempts: st.attempts, reset: false };
+  }
+  return { action: 'watch', priorAttempts: st.attempts ?? 0, reset: false };
 }
 
 // append to scripts/security-sweep-gate.mjs
@@ -149,6 +165,12 @@ export function runCli(argv, { readFile = (f) => readFileSync(f, 'utf8') } = {})
       return renderState(JSON.parse(rest[0]));
     case 'parse-state':
       return JSON.stringify(parseState(readFile(rest[0])));
+    case 'decide-action':
+      return JSON.stringify(decideAction({
+        state: parseState(readFile(rest[0])),
+        currentSha: rest[1],
+        maxAttempts: rest[2] ? Number(rest[2]) : 3,
+      }));
     default:
       throw new Error(`unknown subcommand: ${cmd}`);
   }

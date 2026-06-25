@@ -715,6 +715,9 @@ func (l *Lifecycle) finalizeNoChanges(ctx context.Context, session *models.Sessi
 			Err:     fmt.Errorf("delete session: %w", err),
 		}
 	}
+	if l.sessionDeletedNotifier != nil {
+		l.sessionDeletedNotifier(ctx, session.ID)
+	}
 
 	return &FinalizeResult{Outcome: models.CronJobOutcomeDeletedNoChanges}
 }

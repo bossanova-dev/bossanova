@@ -291,6 +291,33 @@ func TestCompute(t *testing.T) {
 			},
 			want: Output{Label: "working", Intent: pb.DisplayIntent_DISPLAY_INTENT_SUCCESS, Spinner: true},
 		},
+
+		// --- DisplaySettingUp (initializing) ---
+		{
+			name: "setting up shows initializing with spinner and info intent",
+			in: Input{
+				Session: &pb.Session{DisplaySettingUp: true},
+			},
+			want: Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
+		{
+			name: "chat QUESTION wins over initializing",
+			in: Input{
+				Session:    &pb.Session{DisplaySettingUp: true},
+				ChatStatus: pb.ChatStatus_CHAT_STATUS_QUESTION,
+			},
+			want: Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING},
+		},
+		{
+			name: "initializing wins over a stale PR display status",
+			in: Input{
+				Session: &pb.Session{
+					DisplaySettingUp: true,
+					DisplayStatus:    pb.DisplayStatus_DISPLAY_STATUS_DRAFT,
+				},
+			},
+			want: Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true},
+		},
 	}
 
 	for _, tt := range tests {

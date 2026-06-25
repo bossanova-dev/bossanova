@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -491,6 +492,7 @@ func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*models.A
 
 type mockWorktreeManager struct {
 	created                     []gitpkg.CreateOpts
+	createErr                   error // if set, Create returns this error
 	createdFromExisting         []gitpkg.CreateFromExistingBranchOpts
 	createFromExistingBranchErr error // if set, CreateFromExistingBranch returns this error
 	archived                    []string
@@ -541,6 +543,9 @@ type verifyPushedCall struct {
 
 func (m *mockWorktreeManager) Create(_ context.Context, opts gitpkg.CreateOpts) (*gitpkg.CreateResult, error) {
 	m.created = append(m.created, opts)
+	if m.createErr != nil {
+		return nil, m.createErr
+	}
 	path := m.worktreePath
 	if path == "" {
 		path = "/tmp/worktrees/test-repo/test-session"
@@ -1866,6 +1871,136 @@ func TestStartSession_SkipSetupScript_NewBranch(t *testing.T) {
 	}
 }
 
+// fakeSettingUp records SetSettingUp calls.
+type fakeSettingUp struct {
+	mu    sync.Mutex
+	calls []bool
+}
+
+func (f *fakeSettingUp) SetSettingUp(_ string, on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, on)
+}
+
+func (f *fakeSettingUp) snapshot() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]bool, len(f.calls))
+	copy(out, f.calls)
+	return out
+}
+
+func TestStartSession_SetsInitializingWhenSetupScriptPresent(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	setupCmd := "npm install"
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+		DisplayName:     "test-repo",
+		SetupScript:     &setupCmd,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	f := &fakeSettingUp{}
+	lc.SetDisplayTracker(f)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if want := []bool{true, false}; !reflect.DeepEqual(f.snapshot(), want) {
+		t.Fatalf("calls = %v, want %v", f.snapshot(), want)
+	}
+}
+
+func TestStartSession_ClearsInitializingOnCreateError(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{createErr: errors.New("create failed")}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	setupCmd := "npm install"
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+		DisplayName:     "test-repo",
+		SetupScript:     &setupCmd,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	f := &fakeSettingUp{}
+	lc.SetDisplayTracker(f)
+
+	_ = lc.StartSession(ctx, "sess-1", StartSessionOpts{})
+
+	calls := f.snapshot()
+	if len(calls) == 0 || calls[len(calls)-1] != false {
+		t.Fatalf("flag not cleared on error: %v", calls)
+	}
+}
+
+func TestStartSession_NoInitializingWithoutSetupScript(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	// Repo with no setup script.
+	repos.repos["repo-1"] = &models.Repo{
+		ID:              "repo-1",
+		LocalPath:       "/tmp/repo",
+		WorktreeBaseDir: "/tmp/worktrees",
+		DisplayName:     "test-repo",
+		SetupScript:     nil,
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
+	f := &fakeSettingUp{}
+	lc.SetDisplayTracker(f)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if calls := f.snapshot(); len(calls) != 0 {
+		t.Fatalf("expected no SetSettingUp calls when no setup script, got: %v", calls)
+	}
+}
+
 func TestStartQuickChatSession(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -2029,12 +2164,11 @@ func TestResolveOriginURL_AlreadySet(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
-	if err != nil {
+	if err := lc.resolveOriginURL(ctx, repos.repos["repo-1"]); err != nil {
 		t.Fatalf("resolveOriginURL: %v", err)
 	}
-	if url != "git@github.com:owner/repo.git" {
-		t.Errorf("url = %q, want git@github.com:owner/repo.git", url)
+	if got := repos.repos["repo-1"].OriginURL; got != "git@github.com:owner/repo.git" {
+		t.Errorf("repo.OriginURL = %q, want git@github.com:owner/repo.git", got)
 	}
 }
 
@@ -2054,14 +2188,10 @@ func TestResolveOriginURL_EmptyReDetected(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	url, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
-	if err != nil {
+	if err := lc.resolveOriginURL(ctx, repos.repos["repo-1"]); err != nil {
 		t.Fatalf("resolveOriginURL: %v", err)
 	}
-	if url != "git@github.com:owner/repo.git" {
-		t.Errorf("url = %q, want git@github.com:owner/repo.git", url)
-	}
-	// Verify it was persisted to the repo.
+	// Verify it was re-detected and persisted to the repo.
 	if repos.repos["repo-1"].OriginURL != "git@github.com:owner/repo.git" {
 		t.Errorf("repo.OriginURL = %q, want git@github.com:owner/repo.git", repos.repos["repo-1"].OriginURL)
 	}
@@ -2084,7 +2214,7 @@ func TestResolveOriginURL_EmptyNoRemote(t *testing.T) {
 
 	lc := NewLifecycle(sessions, repos, nil, nil, wt, cr, nil, newMockVCSProvider(), logger)
 
-	_, err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
+	err := lc.resolveOriginURL(ctx, repos.repos["repo-1"])
 	if err == nil {
 		t.Fatal("expected error when no origin remote is configured")
 	}

@@ -1084,8 +1084,22 @@ func TestSendPlan_CustomReadyMarker(t *testing.T) {
 	}
 
 	calls := fake.callsCopy()
-	if len(calls) == 0 || calls[len(calls)-1].subcommand != "send-keys" {
-		t.Fatalf("expected SendPlanWithReadyMarker to paste and submit, calls = %+v", calls)
+	// Tail is paste-buffer → send-keys Enter, then the submission-verification
+	// capture-pane the wrapper now performs — so assert the paste-then-submit
+	// order rather than that the final call is send-keys.
+	pasteIdx, enterIdx := -1, -1
+	for i, call := range calls {
+		switch call.subcommand {
+		case "paste-buffer":
+			pasteIdx = i
+		case "send-keys":
+			if len(call.args) > 0 && call.args[len(call.args)-1] == "Enter" {
+				enterIdx = i
+			}
+		}
+	}
+	if pasteIdx == -1 || enterIdx == -1 || pasteIdx > enterIdx {
+		t.Fatalf("expected SendPlanWithReadyMarker to paste then submit, calls = %+v", calls)
 	}
 }
 
@@ -1233,6 +1247,121 @@ func assertTmuxLiteralEnterOrder(t *testing.T, calls []sendPlanCall, line string
 	}
 	if literalIndex > enterIndex {
 		t.Fatalf("literal send-keys must happen before Enter: literal=%d enter=%d", literalIndex, enterIndex)
+	}
+}
+
+// A cron session is headless, so a paste that loads but never executes (the
+// failure mode SendLine warns about) must surface as an error rather than a
+// silent success. sendPlan verifies the payload left the prompt when
+// submitVerifyWait is set, as the public SendPlanWithReadyMarker wrapper does.
+func TestSendPlan_ReturnsErrorWhenPayloadRemainsAtPrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		if subcommand == "capture-pane" {
+			return exec.CommandContext(ctx, "printf", "%s", "ready\n❯ /wc-merge-review headless\n")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	err := c.sendPlan(context.Background(), "boss-test-sess", "/wc-merge-review headless", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 5 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+
+	if err == nil {
+		t.Fatal("expected paste submission verification error")
+	}
+	if !strings.Contains(err.Error(), "command was not submitted") {
+		t.Fatalf("expected submission error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "/wc-merge-review headless") {
+		t.Fatalf("expected stuck payload in error, got %v", err)
+	}
+}
+
+// When the pasted payload leaves the prompt, verification passes.
+func TestSendPlan_SucceedsWhenPayloadLeavesPrompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	captureCount := 0
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		if subcommand == "capture-pane" {
+			captureCount++
+			if captureCount == 1 {
+				return exec.CommandContext(ctx, "printf", "%s", "ready\n❯ \n")
+			}
+			return exec.CommandContext(ctx, "printf", "%s", "working\nTriaging PRs\n")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	err := c.sendPlan(context.Background(), "boss-test-sess", "do the thing", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 20 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+
+	if err != nil {
+		t.Fatalf("sendPlan: unexpected error: %v", err)
+	}
+}
+
+// A multi-line plan cannot sit as one matchable prompt row, so submission
+// verification is skipped structurally: only the ready-marker poll captures the
+// pane, never a post-Enter verification capture. The fake keeps showing input at
+// the prompt, so if verification ran it would issue a second capture-pane (and,
+// against this still-at-prompt pane, eventually error) — neither happens.
+func TestSendPlan_MultilinePayloadSkipsSubmissionVerification(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	t.Parallel()
+
+	captureCount := 0
+	factory := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		subcommand := ""
+		if len(args) > 0 {
+			subcommand = args[0]
+		}
+		if subcommand == "capture-pane" {
+			captureCount++
+			return exec.CommandContext(ctx, "printf", "%s", "ready\n❯ still showing input\n")
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+
+	c := NewClient(WithCommandFactory(factory))
+	err := c.sendPlan(context.Background(), "boss-test-sess", "/cmd\nwith extra notes", sendPlanOpts{
+		readyMarker:      "ready",
+		submitVerifyWait: 5 * time.Millisecond,
+		submitVerifyTick: time.Millisecond,
+	})
+
+	if err != nil {
+		t.Fatalf("multi-line plan must skip verification, got error: %v", err)
+	}
+	// Exactly one capture-pane: the ready-marker poll. A second would mean
+	// verification ran on a multi-line payload.
+	if captureCount != 1 {
+		t.Fatalf("capture-pane count = %d, want 1 (verification must be skipped for multi-line)", captureCount)
 	}
 }
 

@@ -96,20 +96,27 @@ func (i ChatInput) render(commandPrefix string) string {
 
 // cronChatInputFromPrompt decides whether a cron session's stored plan should
 // be dispatched as a boss command (literal send-keys + Enter, so Claude Code
-// recognizes it as a slash command) or as raw prompt text (bracketed paste).
+// actually runs it) or as raw prompt text (bracketed paste).
 //
-// A plan is treated as a command only when, after trimming surrounding
-// whitespace, it is a single-line token that begins with "/" or "$" — e.g.
-// "/bs-mutation-test". Anything else (multi-line plans, free-text instructions,
-// or text that merely contains a slash/dollar such as a path, URL, or price)
-// stays a prompt. Detection is deliberately leading-token-only: matching an
-// embedded "/" or "$" would silently truncate legitimate free-text prompts.
+// A cron session is headless — there is no human to press Enter — so a slash/$
+// command must auto-run. A plan is treated as a command when, after trimming
+// surrounding whitespace, its leading token begins with "/" or "$", with or
+// without arguments — e.g. "/bs-mutation-test" or "/wc-merge-review headless".
+// The whole single line (command + args) is dispatched, so the arguments are
+// preserved. Multi-line plans, and free-text instructions whose leading token
+// is not "/" or "$" (including text that merely contains an embedded
+// slash/dollar such as a path, URL, or price), stay prompts. Detection is
+// deliberately leading-token-only: matching an embedded "/" or "$" would
+// silently truncate legitimate free-text prompts.
+//
+// A single-line free-text plan that genuinely leads with "/" or "$" (e.g. a
+// bare filesystem path) is therefore treated as a command — an accepted
+// trade-off: cron plans that lead with a slash/dollar are commands in
+// practice, and auto-running the line beats the previous failure mode of
+// silently leaving it unsubmitted in the headless pane.
 func cronChatInputFromPrompt(prompt string) ChatInput {
 	trimmed := strings.TrimSpace(prompt)
 	if strings.ContainsAny(trimmed, "\r\n") {
-		return ChatInput{Prompt: prompt}
-	}
-	if strings.ContainsAny(trimmed, " \t") {
 		return ChatInput{Prompt: prompt}
 	}
 	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "$") {

@@ -14,6 +14,7 @@ type DisplayEntry struct {
 	HasFailures         bool
 	HasChangesRequested bool
 	IsRepairing         bool
+	SettingUp           bool
 	HeadSHA             string
 	UpdatedAt           time.Time
 }
@@ -51,11 +52,16 @@ func (t *DisplayTracker) Set(sessionID string, info vcs.DisplayInfo) {
 	if existed {
 		isRepairing = oldEntry.IsRepairing
 	}
+	var settingUp bool
+	if existed {
+		settingUp = oldEntry.SettingUp
+	}
 	newEntry := &DisplayEntry{
 		Status:              info.Status,
 		HasFailures:         info.HasFailures,
 		HasChangesRequested: info.HasChangesRequested,
 		IsRepairing:         isRepairing,
+		SettingUp:           settingUp,
 		HeadSHA:             info.HeadSHA,
 		UpdatedAt:           time.Now(),
 	}
@@ -88,6 +94,7 @@ func (t *DisplayTracker) Get(sessionID string) *DisplayEntry {
 		HasFailures:         e.HasFailures,
 		HasChangesRequested: e.HasChangesRequested,
 		IsRepairing:         e.IsRepairing,
+		SettingUp:           e.SettingUp,
 		HeadSHA:             e.HeadSHA,
 		UpdatedAt:           e.UpdatedAt,
 	}
@@ -108,6 +115,7 @@ func (t *DisplayTracker) GetBatch(sessionIDs []string) map[string]*DisplayEntry 
 			HasFailures:         e.HasFailures,
 			HasChangesRequested: e.HasChangesRequested,
 			IsRepairing:         e.IsRepairing,
+			SettingUp:           e.SettingUp,
 			HeadSHA:             e.HeadSHA,
 			UpdatedAt:           e.UpdatedAt,
 		}
@@ -135,6 +143,41 @@ func (t *DisplayTracker) SetRepairing(sessionID string, repairing bool) {
 	}
 	t.mu.Unlock()
 	t.scheduleRecompute(sessionID)
+}
+
+// SetSettingUp sets or clears the transient "initializing" SettingUp flag for
+// a session without touching any other fields. Setting the flag creates a
+// zero-valued entry if none exists; clearing it removes an entry that exists
+// ONLY because of this flag (no polled PR status), so a zero-Status
+// placeholder does not linger. That matters because other paths treat entry
+// presence as authoritative — e.g. MergeSession allows the merge only when
+// Get returns nil — and a lingering empty entry would mis-read a passing PR as
+// "not passing". An entry that already carries real PR status (or IsRepairing)
+// is preserved with only SettingUp toggled off. The synchronous
+// scheduleRecompute publishes the new (label, intent, spinner) to clients
+// before the caller continues.
+func (t *DisplayTracker) SetSettingUp(sessionID string, settingUp bool) {
+	t.mu.Lock()
+	if e, ok := t.entries[sessionID]; ok {
+		e.SettingUp = settingUp
+		e.UpdatedAt = time.Now()
+		if !settingUp && e.isSetupOnly() {
+			delete(t.entries, sessionID)
+		}
+	} else if settingUp {
+		t.entries[sessionID] = &DisplayEntry{SettingUp: settingUp, UpdatedAt: time.Now()}
+	}
+	t.mu.Unlock()
+	t.scheduleRecompute(sessionID)
+}
+
+// isSetupOnly reports whether the entry carries no state beyond a now-cleared
+// transient setup flag — i.e. it holds no polled PR status and no other flag,
+// so it is safe to drop rather than leave as a zero-Status placeholder.
+func (e *DisplayEntry) isSetupOnly() bool {
+	return e.Status == vcs.DisplayStatusUnspecified &&
+		!e.HasFailures && !e.HasChangesRequested &&
+		!e.IsRepairing && !e.SettingUp && e.HeadSHA == ""
 }
 
 // SetOnChange sets the callback function that is called when a display status changes.

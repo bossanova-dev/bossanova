@@ -34,8 +34,39 @@ test('buildSpec video branch records webm via its own context and screenshots a 
   assert.match(spec, /web-flow\.webm/);
   assert.match(spec, /web-flow\.png/); // poster
   assert.match(spec, /\.click\(\)/);
-  assert.match(spec, /pressSequentially\('hello'\)/);
+  assert.match(spec, /pressSequentially\('hello', \{ delay: 60 \}\)/);
   assert.match(spec, /context\.close\(\)/); // finalizes the video before rename
+});
+
+test('buildSpec video: emits test.use slowMo with default 350 when recipe has no slowMo', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      surface: 'web',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /test\.use\(\{ launchOptions:/);
+  assert.match(spec, /slowMo: 350/);
+});
+
+test('buildSpec video: bakes recipe.slowMo as numeric literal when provided', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      surface: 'web',
+      capture: 'video',
+      slowMo: 700,
+      steps: [{ action: 'goto', route: '/' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /slowMo: 700/);
+  assert.doesNotMatch(spec, /slowMo: 350/);
 });
 
 test('buildSpec video branch preserves playwright baseURL for relative goto steps', () => {
@@ -320,6 +351,107 @@ test('buildSpec video: uses main default for marketing surface without cropToSel
   assert.match(spec, /'main'/);
 });
 
+// ── Behavior 2: overlay harness ───────────────────────────────────────────────
+
+test('buildSpec video: injects overlay harness with addInitScript, __proofOverlay, pointer-events:none, and z-index', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /addInitScript/);
+  assert.match(spec, /__proofOverlay/);
+  assert.match(spec, /pointer-events:none/);
+  assert.match(spec, /2147483647/);
+});
+
+test('buildSpec video: emits caption call for step with caption field', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/', caption: 'Hi' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /window\.__proofOverlay\?\.caption\(/);
+  assert.match(spec, /'Hi'/);
+});
+
+test('buildSpec video: goto step emits its caption AFTER the navigation', () => {
+  // A caption set before goto would be destroyed by the navigation, so for goto
+  // steps the caption must be emitted after page.goto() completes.
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/', caption: 'Open home' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  const gotoIdx = spec.indexOf('page.goto(');
+  const captionIdx = spec.indexOf('window.__proofOverlay?.caption(');
+  assert.ok(gotoIdx >= 0 && captionIdx >= 0, 'spec should contain goto and caption');
+  assert.ok(captionIdx > gotoIdx, 'goto caption must be emitted after page.goto()');
+});
+
+test('buildSpec video: scrolls click target into view before measuring ripple position', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'click', selector: 'button' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /window\.__proofOverlay\?\.ripple\(/);
+  assert.match(spec, /boundingBox\(\)/);
+  const actionBlock = spec.slice(spec.indexOf("const __loc = page.locator('button').first();"));
+  assert.ok(
+    actionBlock.indexOf('scrollIntoViewIfNeeded()') < actionBlock.indexOf('boundingBox()'),
+    'click ripple must measure after target is in the viewport',
+  );
+});
+
+test('buildSpec video: scrolls type target into view before measuring ripple position', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'type', selector: 'input', value: 'hello' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /window\.__proofOverlay\?\.ripple\(/);
+  assert.match(spec, /boundingBox\(\)/);
+  const actionBlock = spec.slice(spec.indexOf("const __loc = page.locator('input').first();"));
+  assert.ok(
+    actionBlock.indexOf('scrollIntoViewIfNeeded()') < actionBlock.indexOf('boundingBox()'),
+    'type ripple must measure after target is in the viewport',
+  );
+});
+
+test('buildSpec video: step without caption does NOT emit caption call', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.doesNotMatch(spec, /window\.__proofOverlay\?\.caption\(/);
+});
+
 // ── validateRecipe: label field ───────────────────────────────────────────────
 
 test('validateRecipe: video step with label: "" throws', () => {
@@ -355,6 +487,82 @@ test('validateRecipe: video step without label passes', () => {
       steps: [{ action: 'goto', route: '/' }],
     }),
   );
+});
+
+// ── Behavior 3: scroll step ───────────────────────────────────────────────────
+
+test('validateRecipe: scroll step with toSelector passes', () => {
+  assert.doesNotThrow(() =>
+    validateRecipe({
+      id: 'v',
+      capture: 'video',
+      steps: [{ action: 'scroll', toSelector: 'main' }],
+    }),
+  );
+});
+
+test('validateRecipe: scroll step with byPx passes', () => {
+  assert.doesNotThrow(() =>
+    validateRecipe({
+      id: 'v',
+      capture: 'video',
+      steps: [{ action: 'scroll', byPx: 600 }],
+    }),
+  );
+});
+
+test('validateRecipe: scroll step with neither toSelector nor byPx throws', () => {
+  assert.throws(
+    () =>
+      validateRecipe({
+        id: 'v',
+        capture: 'video',
+        steps: [{ action: 'scroll' }],
+      }),
+    /scroll step requires toSelector or byPx/,
+  );
+});
+
+test('validateRecipe: scroll step with byPx as non-finite string throws', () => {
+  assert.throws(
+    () =>
+      validateRecipe({
+        id: 'v',
+        capture: 'video',
+        steps: [{ action: 'scroll', byPx: 'bad' }],
+      }),
+    /scroll step byPx must be a finite number/,
+  );
+});
+
+test('buildSpec video: scroll with toSelector emits scrollIntoView with smooth behavior', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'scroll', toSelector: 'main' }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /scrollIntoView/);
+  assert.match(spec, /behavior: 'smooth'/);
+  assert.match(spec, /waitForTimeout\(800\)/);
+});
+
+test('buildSpec video: scroll with byPx emits scrollBy with smooth behavior', () => {
+  const spec = buildSpec({
+    recipe: {
+      id: 'web-flow',
+      capture: 'video',
+      steps: [{ action: 'scroll', byPx: 600 }],
+    },
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /window\.scrollBy/);
+  assert.match(spec, /behavior: 'smooth'/);
+  assert.match(spec, /waitForTimeout\(800\)/);
 });
 
 function runRunner(args) {

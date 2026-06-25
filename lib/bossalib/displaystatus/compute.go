@@ -41,27 +41,31 @@ type Output struct {
 	Spinner bool
 }
 
-// Compute runs the 8-branch precedence cascade that determines a session's
+// Compute runs the 9-branch precedence cascade that determines a session's
 // display status. The algorithm is intentionally identical to the legacy
 // renderPRDisplayStatus — every label, intent, and spinner flag matches.
 //
 // Precedence (highest first):
 //  1. ChatStatus QUESTION → "? question" / WARNING / no spinner
 //  2. Draft PR failure    → "? PR failed" / WARNING / no spinner
-//  3. ChatStatus WORKING  → "working"    / SUCCESS / spinner
-//  4. Active workflow     → "running L/M", "pending", "paused L/M",
+//  3. DisplaySettingUp    → "initializing" / INFO / spinner
+//  4. ChatStatus WORKING  → "working"    / SUCCESS / spinner
+//  5. Active workflow     → "running L/M", "pending", "paused L/M",
 //     "failed L/M", "cancelled" with matching intents
-//  5. DisplayIsRepairing  → "repairing" / WARNING / spinner
-//  6. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ review", "✓ passing",
+//  6. DisplayIsRepairing  → "repairing" / WARNING / spinner
+//  7. PR DisplayStatus    → "✓ merged", "closed", "✓ approved", "✓ review", "✓ passing",
 //     "⨯ failing", "⨯ conflict", "⨯ rejected", "draft", "checking"
-//  7. ChatStatus IDLE     → "idle" / WARNING
-//  8. default             → "stopped" / MUTED
+//  8. ChatStatus IDLE     → "idle" / WARNING
+//  9. default             → "stopped" / MUTED
 func Compute(in Input) Output {
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_QUESTION {
 		return Output{Label: "? question", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
 	}
 	if in.Session != nil && sessionreason.IsDraftPRCreationFailure(in.Session.BlockedReason) {
 		return Output{Label: "? PR failed", Intent: pb.DisplayIntent_DISPLAY_INTENT_WARNING}
+	}
+	if in.Session != nil && in.Session.DisplaySettingUp {
+		return Output{Label: "initializing", Intent: pb.DisplayIntent_DISPLAY_INTENT_INFO, Spinner: true}
 	}
 	if in.ChatStatus == pb.ChatStatus_CHAT_STATUS_WORKING {
 		intent := pb.DisplayIntent_DISPLAY_INTENT_SUCCESS

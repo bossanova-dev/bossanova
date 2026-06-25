@@ -1657,3 +1657,294 @@ func TestNewSession_AgentSelect_ViewRendersAgentNames(t *testing.T) {
 		}
 	}
 }
+
+// --- Enter-key selection bounds checks (PR / issue pickers) ---
+//
+// These exercise the `idx >= 0 && idx < len(...)` guards that decide whether
+// pressing Enter on a table row starts session creation. They cover both the
+// populated path (a row is highlighted) and the empty-list path (the filter
+// matched nothing), where Enter must be a safe no-op rather than an
+// out-of-range index.
+
+func linearRepo() []*pb.Repo {
+	return []*pb.Repo{
+		{Id: "repo-1", DisplayName: "alpha", LocalPath: "/path/alpha", DefaultBaseBranch: "main", LinearApiKey: "lin_api_abc123"},
+	}
+}
+
+func TestNewSession_PRSelectEnterAttachesHighlightedPR(t *testing.T) {
+	sc := &stubClient{repos: oneRepo(), created: &pb.Session{Id: "session-1"}}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeExistingPR
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+		{Number: 7, Title: "Fix login flow", HeadBranch: "fix-login"},
+		{Number: 8, Title: "Add dark mode", HeadBranch: "dark-mode"},
+	}})
+	if m.phase != newSessionPhasePRSelect {
+		t.Fatalf("phase = %d, want newSessionPhasePRSelect (%d)", m.phase, newSessionPhasePRSelect)
+	}
+
+	// Cursor starts on row 0; Enter must start creation for that PR.
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = assertValueType(t, updated)
+	if m.phase != newSessionPhaseCreating {
+		t.Fatalf("phase = %d, want newSessionPhaseCreating (%d)", m.phase, newSessionPhaseCreating)
+	}
+	if cmd == nil {
+		t.Fatal("Enter on a highlighted PR returned nil cmd, want a create command")
+	}
+	cmd()
+	if sc.createReq == nil {
+		t.Fatal("CreateSession was not called")
+	}
+	if sc.createReq.PrNumber == nil || *sc.createReq.PrNumber != 7 {
+		t.Fatalf("CreateSession PrNumber = %v, want 7 (the highlighted PR)", sc.createReq.PrNumber)
+	}
+	if sc.createReq.Title != "Fix login flow" {
+		t.Fatalf("CreateSession Title = %q, want %q", sc.createReq.Title, "Fix login flow")
+	}
+}
+
+func TestNewSession_PRSelectEnterEmptyFilteredIsNoop(t *testing.T) {
+	sc := &stubClient{repos: oneRepo(), created: &pb.Session{Id: "session-1"}}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeExistingPR
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+		{Number: 7, Title: "Fix login flow", HeadBranch: "fix-login"},
+	}})
+
+	// Narrow to a query that matches nothing, then commit it so the filter is
+	// applied (blurred): the non-filter Enter path now sees an empty list.
+	m = sendKey(t, m, '/')
+	m = sendMsg(t, m, pasteText("zzz-no-such-pr"))
+	if len(m.prsFiltered) != 0 {
+		t.Fatalf("prsFiltered = %d, want 0 after a non-matching filter", len(m.prsFiltered))
+	}
+	m = sendSpecialKey(t, m, tea.KeyEnter) // commit the filter
+	if m.prFilter.Active() {
+		t.Fatal("prFilter still active after Enter commit")
+	}
+
+	// Enter with an empty filtered list must not start creation.
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = assertValueType(t, updated)
+	if m.phase != newSessionPhasePRSelect {
+		t.Fatalf("phase = %d, want newSessionPhasePRSelect (Enter must be a no-op on an empty list)", m.phase)
+	}
+	if cmd != nil {
+		t.Fatal("Enter on an empty filtered PR list returned a non-nil cmd, want nil")
+	}
+	if sc.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 (no PR highlighted)", sc.createCalls)
+	}
+}
+
+func TestNewSession_StartCreatingExistingPREmptyFilteredDoesNotAttach(t *testing.T) {
+	sc := &stubClient{repos: oneRepo(), created: &pb.Session{Id: "session-1"}}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeExistingPR
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, prsMsg{prs: []*pb.PRSummary{
+		{Number: 7, Title: "Fix login flow", HeadBranch: "fix-login"},
+	}})
+
+	// Empty the filtered set while m.prs stays populated; the bounds check in
+	// startCreating must skip PR attachment rather than index out of range.
+	m = sendKey(t, m, '/')
+	m = sendMsg(t, m, pasteText("zzz-no-such-pr"))
+	m = sendSpecialKey(t, m, tea.KeyEnter) // commit; prsFiltered now empty
+	if len(m.prsFiltered) != 0 {
+		t.Fatalf("prsFiltered = %d, want 0", len(m.prsFiltered))
+	}
+
+	cmd := m.startCreating()
+	if cmd == nil {
+		t.Fatal("startCreating returned nil cmd")
+	}
+	cmd()
+	if sc.createReq == nil {
+		t.Fatal("CreateSession was not called")
+	}
+	if sc.createReq.PrNumber != nil {
+		t.Fatalf("CreateSession PrNumber = %v, want nil when no PR is highlighted", sc.createReq.PrNumber)
+	}
+}
+
+func TestNewSession_IssueSelectEnterSelectsHighlighted(t *testing.T) {
+	sc := &stubClient{
+		repos: linearRepo(),
+		trackerIssues: []*pb.TrackerIssue{
+			{ExternalId: "ENG-1", Title: "alpha", Url: "https://linear.app/team/issue/ENG-1"},
+			{ExternalId: "ENG-2", Title: "beta"},
+		},
+		created: &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect (%d)", m.phase, newSessionPhaseIssueSelect)
+	}
+
+	// Cursor starts on row 0; Enter selects that issue and starts creation.
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = assertValueType(t, updated)
+	if m.phase != newSessionPhaseCreating {
+		t.Fatalf("phase = %d, want newSessionPhaseCreating (%d)", m.phase, newSessionPhaseCreating)
+	}
+	if m.selectedIssue == nil || m.selectedIssue.ExternalId != "ENG-1" {
+		t.Fatalf("selectedIssue = %v, want the highlighted issue ENG-1", m.selectedIssue)
+	}
+	if cmd == nil {
+		t.Fatal("Enter on a highlighted issue returned nil cmd, want a create command")
+	}
+	cmd()
+	if sc.createReq == nil || sc.createReq.TrackerId == nil || *sc.createReq.TrackerId != "ENG-1" {
+		t.Fatalf("CreateSession TrackerId = %v, want ENG-1", sc.createReq.GetTrackerId())
+	}
+}
+
+func TestNewSession_IssueSelectEnterEmptyIsNoop(t *testing.T) {
+	sc := &stubClient{
+		repos:         linearRepo(),
+		trackerIssues: []*pb.TrackerIssue{{ExternalId: "ENG-1", Title: "alpha"}},
+		created:       &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect (%d)", m.phase, newSessionPhaseIssueSelect)
+	}
+
+	// A later server search returns no matches for a query. The table is now
+	// ready, so this is a legitimate empty list (not the fatal first-load case).
+	m = sendMsg(t, m, issuesMsg{issues: nil, query: "zzz-no-match", seq: m.issueSearchSeq})
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect after empty filtered result", m.phase)
+	}
+	if len(m.issuesFiltered) != 0 {
+		t.Fatalf("issuesFiltered = %d, want 0", len(m.issuesFiltered))
+	}
+
+	// Enter with an empty list must be a safe no-op, not an out-of-range index.
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = assertValueType(t, updated)
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect (Enter must be a no-op)", m.phase)
+	}
+	if cmd != nil {
+		t.Fatal("Enter on an empty issue list returned a non-nil cmd, want nil")
+	}
+	if sc.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 (no issue highlighted)", sc.createCalls)
+	}
+}
+
+func TestNewSession_IssueFilterActiveEnterSelectsHighlighted(t *testing.T) {
+	sc := &stubClient{
+		repos: linearRepo(),
+		trackerIssues: []*pb.TrackerIssue{
+			{ExternalId: "ENG-1", Title: "alpha"},
+			{ExternalId: "ENG-2", Title: "beta"},
+		},
+		created: &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+
+	// Activate the filter (input focused) but leave the query empty so all rows
+	// match; Enter while filtering selects the highlighted row.
+	m = sendKey(t, m, '/')
+	if !m.issueFilter.Active() {
+		t.Fatal("issueFilter.Active() = false after '/', want true")
+	}
+
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = assertValueType(t, updated)
+	if m.phase != newSessionPhaseCreating {
+		t.Fatalf("phase = %d, want newSessionPhaseCreating (%d)", m.phase, newSessionPhaseCreating)
+	}
+	if m.selectedIssue == nil || m.selectedIssue.ExternalId != "ENG-1" {
+		t.Fatalf("selectedIssue = %v, want highlighted issue ENG-1", m.selectedIssue)
+	}
+	if cmd == nil {
+		t.Fatal("Enter while filtering returned nil cmd, want a create command")
+	}
+}
+
+func TestNewSession_IssueFilterActiveEnterEmptyIsNoop(t *testing.T) {
+	sc := &stubClient{
+		repos:         linearRepo(),
+		trackerIssues: []*pb.TrackerIssue{{ExternalId: "ENG-1", Title: "alpha"}},
+		created:       &pb.Session{Id: "session-1"},
+	}
+	m := NewNewSessionModel(sc, context.Background())
+	m = sendMsg(t, m, reposMsg{repos: sc.repos})
+
+	m.selectedType = sessionTypeLinearTicket
+	m.phase = newSessionPhaseLoading
+	m = sendMsg(t, m, issuesMsg{issues: sc.trackerIssues})
+
+	// Filter to a query that matches nothing while the input stays focused, then
+	// press Enter: the active-filter branch must not index an empty list.
+	m = sendKey(t, m, '/')
+	m = sendMsg(t, m, pasteText("zzz-no-match"))
+	if !m.issueFilter.Active() {
+		t.Fatal("issueFilter.Active() = false, want true while filtering")
+	}
+	if len(m.issuesFiltered) != 0 {
+		t.Fatalf("issuesFiltered = %d, want 0 after a non-matching filter", len(m.issuesFiltered))
+	}
+
+	updated, cmd := m.Update(specialKeyPress(tea.KeyEnter))
+	m = assertValueType(t, updated)
+	if m.phase != newSessionPhaseIssueSelect {
+		t.Fatalf("phase = %d, want newSessionPhaseIssueSelect (Enter must be a no-op)", m.phase)
+	}
+	if cmd != nil {
+		t.Fatal("Enter on an empty filtered issue list returned a non-nil cmd, want nil")
+	}
+	if sc.createCalls != 0 {
+		t.Fatalf("createCalls = %d, want 0 (no issue highlighted)", sc.createCalls)
+	}
+}
+
+// TestNewSession_CreatingPhase_RendersInitializingIndicator asserts that the
+// creating-step view includes an "initializing" label styled with the info
+// (blue) color. The indicator is static — the view does not animate.
+func TestNewSession_CreatingPhase_RendersInitializingIndicator(t *testing.T) {
+	sc := &stubClient{repos: oneRepo()}
+	m := NewNewSessionModel(sc, context.Background())
+	m.phase = newSessionPhaseCreating
+
+	view := m.View().Content
+
+	if !strings.Contains(view, "initializing") {
+		t.Errorf("creating-step view missing %q in:\n%s", "initializing", view)
+	}
+	// styleStatusInfo uses colorInfo = #4CA7F8 (76, 167, 248 in decimal).
+	// lipgloss renders this as the SGR sequence 38;2;76;167;248.
+	wantColor := "76;167;248"
+	if !strings.Contains(view, wantColor) {
+		t.Errorf("creating-step view missing info-color SGR sequence %q in:\n%s", wantColor, view)
+	}
+}

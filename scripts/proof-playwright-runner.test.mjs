@@ -8,7 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { buildSpec, validateRecipe } from './proof-playwright-runner.mjs';
+import { buildSpec, validateRecipe, slugify } from './proof-playwright-runner.mjs';
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const runnerPath = path.join(repoRoot, 'scripts/proof-playwright-runner.mjs');
@@ -212,6 +212,149 @@ test('rejects backslash browser proof routes before playwright starts', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /proof browser route must be relative/);
+});
+
+// ── slugify ───────────────────────────────────────────────────────────────────
+
+test('slugify: basic cases', () => {
+  assert.equal(slugify('Open home'), 'open-home');
+  assert.equal(slugify('  A/B  '), 'a-b');
+  assert.equal(slugify(''), 'step');
+  assert.equal(slugify('goto'), 'goto');
+});
+
+// ── buildSpec video: per-step stills + video-meta.json ───────────────────────
+
+const labelledVideoRecipe = {
+  id: 'web-new-session-flow',
+  surface: 'web',
+  capture: 'video',
+  cropToSelector: '.data-table-wrap',
+  viewport: { width: 1440, height: 1000 },
+  steps: [
+    { action: 'goto', route: '/', label: 'Open home' },
+    { action: 'wait', selector: '.data-table-wrap', label: 'Sessions list' },
+    { action: 'click', selector: '.data-table-wrap .row-clickable', label: 'Open session' },
+    { action: 'wait', timeoutMs: 800, label: 'Session view' },
+  ],
+};
+
+test('buildSpec video: emits captureStill call after each step', () => {
+  const spec = buildSpec({ recipe: labelledVideoRecipe, outputDir: '/tmp/out', surface: 'web' });
+  // Should have exactly 4 captureStill calls
+  const matches = spec.match(/captureStill\(/g) ?? [];
+  assert.equal(matches.length, 4 + 1); // 4 calls + 1 helper definition
+});
+
+test('buildSpec video: still filenames use 2-digit NN and slug', () => {
+  const spec = buildSpec({ recipe: labelledVideoRecipe, outputDir: '/tmp/out', surface: 'web' });
+  assert.match(spec, /01-open-home\.png/);
+  assert.match(spec, /02-sessions-list\.png/);
+  assert.match(spec, /03-open-session\.png/);
+  assert.match(spec, /04-session-view\.png/);
+});
+
+test('buildSpec video: emits __stills.push with fileName and label', () => {
+  const spec = buildSpec({ recipe: labelledVideoRecipe, outputDir: '/tmp/out', surface: 'web' });
+  assert.match(spec, /__stills\.push\(\{ fileName: '01-open-home\.png', label: 'Open home' \}\)/);
+  assert.match(
+    spec,
+    /__stills\.push\(\{ fileName: '02-sessions-list\.png', label: 'Sessions list' \}\)/,
+  );
+  assert.match(
+    spec,
+    /__stills\.push\(\{ fileName: '03-open-session\.png', label: 'Open session' \}\)/,
+  );
+  assert.match(
+    spec,
+    /__stills\.push\(\{ fileName: '04-session-view\.png', label: 'Session view' \}\)/,
+  );
+});
+
+test('buildSpec video: writes video-meta.json with cropHeight and stills', () => {
+  const spec = buildSpec({ recipe: labelledVideoRecipe, outputDir: '/tmp/out', surface: 'web' });
+  assert.match(spec, /video-meta\.json/);
+  assert.match(spec, /cropHeight/);
+  assert.match(spec, /__stills/);
+});
+
+test('buildSpec video: preserves the tallest measured crop height across stills', () => {
+  const spec = buildSpec({ recipe: labelledVideoRecipe, outputDir: '/tmp/out', surface: 'web' });
+  assert.match(spec, /__cropHeight = Math\.max\(__cropHeight \?\? 0, __h\)/);
+  assert.doesNotMatch(spec, /__cropHeight = __h;/);
+});
+
+test('buildSpec video: disables crop metadata after any full-frame still fallback', () => {
+  const spec = buildSpec({ recipe: labelledVideoRecipe, outputDir: '/tmp/out', surface: 'web' });
+  assert.match(spec, /let __disableCrop = false;/);
+  assert.match(spec, /if \(__h === null\) __disableCrop = true;/);
+  assert.match(spec, /cropHeight: __disableCrop \? null : __cropHeight/);
+});
+
+test('buildSpec video: uses recipe cropToSelector when present', () => {
+  const spec = buildSpec({ recipe: labelledVideoRecipe, outputDir: '/tmp/out', surface: 'web' });
+  assert.match(spec, /\.data-table-wrap/);
+});
+
+test('buildSpec video: uses #root default for web surface without cropToSelector', () => {
+  const recipe = {
+    id: 'web-flow',
+    surface: 'web',
+    capture: 'video',
+    viewport: { width: 1440, height: 1000 },
+    steps: [{ action: 'goto', route: '/', label: 'Open home' }],
+  };
+  const spec = buildSpec({ recipe, outputDir: '/tmp/out', surface: 'web' });
+  assert.match(spec, /'#root'/);
+});
+
+test('buildSpec video: uses main default for marketing surface without cropToSelector', () => {
+  const recipe = {
+    id: 'mkt-flow',
+    surface: 'marketing',
+    capture: 'video',
+    viewport: { width: 1440, height: 1000 },
+    steps: [{ action: 'goto', route: '/', label: 'Open home' }],
+  };
+  const spec = buildSpec({ recipe, outputDir: '/tmp/out', surface: 'marketing' });
+  assert.match(spec, /'main'/);
+});
+
+// ── validateRecipe: label field ───────────────────────────────────────────────
+
+test('validateRecipe: video step with label: "" throws', () => {
+  assert.throws(
+    () =>
+      validateRecipe({
+        id: 'v',
+        surface: 'web',
+        capture: 'video',
+        steps: [{ action: 'goto', route: '/', label: '' }],
+      }),
+    /video step label must be a non-empty string/,
+  );
+});
+
+test('validateRecipe: video step with label: "X" passes', () => {
+  assert.doesNotThrow(() =>
+    validateRecipe({
+      id: 'v',
+      surface: 'web',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/', label: 'X' }],
+    }),
+  );
+});
+
+test('validateRecipe: video step without label passes', () => {
+  assert.doesNotThrow(() =>
+    validateRecipe({
+      id: 'v',
+      surface: 'web',
+      capture: 'video',
+      steps: [{ action: 'goto', route: '/' }],
+    }),
+  );
 });
 
 function runRunner(args) {

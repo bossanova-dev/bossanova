@@ -9,6 +9,7 @@ import {
   buildManifest,
   browserCaptureCommand,
   classifySecretRisk,
+  deriveVerdictBlock,
   githubCommentCommand,
   introCardCommand,
   listProofCommentsCommand,
@@ -21,6 +22,7 @@ import {
   proofUploadFiles,
   r2UploadCommand,
   renderComment,
+  renderGallery,
   selectOutdatedProofCommentIds,
   selectRecipes,
   trimTerminalBlankLines,
@@ -206,43 +208,6 @@ test('buildManifest encodes file name path segments without encoding slashes', (
     manifest.captures[0].url,
     'https://proof.bossanova.dev/proof/repo/pr-596/abc1234/run-1/web-sessions/web%20sessions.png',
   );
-});
-
-test('renderComment uses inline images and updates as a sticky comment', () => {
-  const body = renderComment({
-    marker: '<!-- bossanova-proof:pr-596 -->',
-    manifest: {
-      commit: 'abc1234',
-      prNumber: '596',
-      runId: 'run-1',
-      publicLiveCapture: true,
-      captures: [
-        {
-          title: 'Web Sessions',
-          surface: 'web',
-          privacy: 'live',
-          status: 'passed',
-          url: 'https://proof.bossanova.dev/a.png',
-        },
-        {
-          title: 'TUI Home',
-          surface: 'tui',
-          privacy: 'fixture',
-          status: 'failed',
-          error: 'timeout waiting for Add dark mode',
-        },
-      ],
-    },
-  });
-
-  assert.match(body, /<!-- bossanova-proof:pr-596 -->/);
-  assert.match(body, /PUBLIC LIVE CAPTURE/);
-  assert.match(body, /!\[Web Sessions\]\(https:\/\/proof\.bossanova\.dev\/a\.png\)/);
-  assert.match(body, /timeout waiting for Add dark mode/);
-  // Vertical per-capture layout: stacked labels, no table, no privacy field.
-  assert.match(body, /### Web Sessions\n\n\*\*Surface:\*\* web {2}\n\*\*Status:\*\* passed/);
-  assert.ok(!/Privacy/i.test(body), 'comment should not include a privacy field');
-  assert.ok(!/\| Surface \|/.test(body), 'comment should not use a table layout');
 });
 
 test('proof comment upsert helpers build expected gh commands', () => {
@@ -456,7 +421,7 @@ test('r2UploadCommand uses wrangler r2 object put with content type', () => {
       'pnpm',
       [
         'dlx',
-        'wrangler@3.90.0',
+        'wrangler@4.42.0',
         'r2',
         'object',
         'put',
@@ -465,6 +430,7 @@ test('r2UploadCommand uses wrangler r2 object put with content type', () => {
         '.proof/a.png',
         '--content-type',
         'image/png',
+        '--remote',
       ],
     ],
   );
@@ -477,7 +443,10 @@ test('githubCommentCommand posts body file with gh pr comment', () => {
   ]);
 });
 
-test('proofUploadFiles selects manifest and passed PNG captures only', () => {
+test('proofUploadFiles selects manifest and all captures with a fileName (passed or failed)', () => {
+  // Failed captures with a fileName are now uploaded so Unsatisfactory agent
+  // runs remain reviewable. Recipe failures delete their artifacts before
+  // buildManifest is called, so fileName is absent for recipe failures in practice.
   assert.deepEqual(
     proofUploadFiles({
       localDir: '/repo/.proof/pr-596/abc/run',
@@ -485,7 +454,7 @@ test('proofUploadFiles selects manifest and passed PNG captures only', () => {
         captures: [
           { status: 'passed', fileName: 'marketing-home/marketing-home.png' },
           { status: 'failed', fileName: 'tui-home/tui-home.png' },
-          { status: 'failed', fileName: 'web-sessions/recipe.json' },
+          { status: 'failed' }, // no fileName → skipped
         ],
       },
     }),
@@ -498,6 +467,11 @@ test('proofUploadFiles selects manifest and passed PNG captures only', () => {
       {
         file: '/repo/.proof/pr-596/abc/run/marketing-home/marketing-home.png',
         relative: 'marketing-home/marketing-home.png',
+        contentType: 'image/png',
+      },
+      {
+        file: '/repo/.proof/pr-596/abc/run/tui-home/tui-home.png',
+        relative: 'tui-home/tui-home.png',
         contentType: 'image/png',
       },
     ],
@@ -701,63 +675,6 @@ test('proofUploadFiles queues mp4 + poster with correct content-types', () => {
   assert.equal(files.filter((f) => f.relative.endsWith('.webm')).length, 0);
 });
 
-test('renderComment embeds png inline (regression) and webm as poster link', () => {
-  const body = renderComment({
-    marker: '<!-- m -->',
-    manifest: {
-      commit: 'abc1234',
-      runId: 'run-1',
-      publicBaseUrl: 'https://proof.example.dev/prefix',
-      publicLiveCapture: false,
-      captures: [
-        {
-          title: 'Still',
-          surface: 'web',
-          status: 'passed',
-          mediaType: 'png',
-          url: 'https://x/p.png',
-        },
-        {
-          title: 'Flow',
-          surface: 'web',
-          status: 'passed',
-          mediaType: 'webm',
-          url: 'https://x/v.webm',
-          videoUrl: 'https://x/v.webm',
-          posterUrl: 'https://x/v.png',
-        },
-      ],
-    },
-  });
-  // png inline image
-  assert.match(body, /!\[Still\]\(https:\/\/x\/p\.png\)/);
-  // webm: clickable poster thumbnail linking to the video + caption
-  assert.match(body, /\[!\[Flow\]\(https:\/\/x\/v\.png\)\]\(https:\/\/x\/v\.webm\)/);
-  assert.match(body, /▶ Video/);
-});
-
-test('renderComment embeds gif inline like an image', () => {
-  const body = renderComment({
-    marker: '<!-- m -->',
-    manifest: {
-      commit: 'abc1234',
-      runId: 'run-1',
-      publicBaseUrl: 'https://x',
-      publicLiveCapture: false,
-      captures: [
-        {
-          title: 'Tui',
-          surface: 'tui',
-          status: 'passed',
-          mediaType: 'gif',
-          url: 'https://x/t.gif',
-        },
-      ],
-    },
-  });
-  assert.match(body, /!\[Tui\]\(https:\/\/x\/t\.gif\)/);
-});
-
 test('buildManifest sets videoUrl+posterUrl for mp4 capture (like webm)', () => {
   const manifest = buildManifest({
     commit: 'abc1234',
@@ -782,32 +699,6 @@ test('buildManifest sets videoUrl+posterUrl for mp4 capture (like webm)', () => 
   assert.equal(mp4.url, 'https://proof.example.dev/prefix/web-v/web-v.mp4');
   assert.equal(mp4.videoUrl, 'https://proof.example.dev/prefix/web-v/web-v.mp4');
   assert.equal(mp4.posterUrl, 'https://proof.example.dev/prefix/web-v/web-v.png');
-});
-
-test('renderComment renders mp4 capture as poster-link + ▶ Video (like webm)', () => {
-  const body = renderComment({
-    marker: '<!-- m -->',
-    manifest: {
-      commit: 'abc1234',
-      runId: 'run-1',
-      publicBaseUrl: 'https://x',
-      publicLiveCapture: false,
-      captures: [
-        {
-          title: 'Flow',
-          surface: 'web',
-          status: 'passed',
-          mediaType: 'mp4',
-          url: 'https://x/v.mp4',
-          videoUrl: 'https://x/v.mp4',
-          posterUrl: 'https://x/v.png',
-        },
-      ],
-    },
-  });
-  // clickable poster thumbnail linking to the video
-  assert.match(body, /\[!\[Flow\]\(https:\/\/x\/v\.png\)\]\(https:\/\/x\/v\.mp4\)/);
-  assert.match(body, /▶ Video/);
 });
 
 test('PROOF_MEDIA_TYPES maps the four supported extensions', () => {
@@ -916,5 +807,513 @@ test('introCardCommand runs through services/marketing for surface marketing', (
         'Marketing intro',
       ],
     ],
+  );
+});
+
+// ── Task C: stills in manifest, upload, comment, and renderGallery ──────────
+
+test('buildManifest adds url to stills on a passed video capture', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: '7',
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example.dev/prefix',
+    captures: [
+      {
+        recipeId: 'web-v',
+        title: 'V',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'passed',
+        mediaType: 'mp4',
+        fileName: 'web-v/web-v.mp4',
+        posterFileName: 'web-v/web-v.png',
+        stills: [{ fileName: 'web-v/01-open-home.png', label: 'Open home' }],
+      },
+    ],
+  });
+  const capture = manifest.captures[0];
+  assert.ok(Array.isArray(capture.stills), 'stills array must be present');
+  assert.equal(capture.stills.length, 1);
+  assert.equal(capture.stills[0].fileName, 'web-v/01-open-home.png');
+  assert.equal(capture.stills[0].label, 'Open home');
+  assert.equal(capture.stills[0].url, 'https://proof.example.dev/prefix/web-v/01-open-home.png');
+});
+
+test('buildManifest adds urls to stills on a failed capture with media', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: '7',
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example.dev/prefix',
+    captures: [
+      {
+        recipeId: 'web-v',
+        title: 'V',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'failed',
+        mediaType: 'mp4',
+        fileName: 'web-v/web-v.mp4',
+        stills: [{ fileName: 'web-v/01-open-home.png', label: 'Open home' }],
+      },
+    ],
+  });
+  const capture = manifest.captures[0];
+  assert.equal(
+    capture.stills[0].url,
+    'https://proof.example.dev/prefix/web-v/01-open-home.png',
+    'failed capture stills must stay reviewable when uploaded',
+  );
+});
+
+test('buildManifest adds urls to stills on a capture with no fileName (video conversion failed)', () => {
+  // proof-agent builds this exact shape when Playwright captured stills but
+  // ffmpeg left no mp4: mediaType mp4, status failed, NO fileName, but stills.
+  // The stills are still uploaded, so they must keep linkable urls.
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: '7',
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example.dev/prefix',
+    captures: [
+      {
+        recipeId: 'web-v',
+        title: 'V',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'failed',
+        mediaType: 'mp4',
+        error: 'agent passed but no converted video artifact was produced',
+        stills: [{ fileName: 'web-v/01-open-home.png', label: 'Open home' }],
+      },
+    ],
+  });
+  const capture = manifest.captures[0];
+  assert.ok(!('url' in capture), 'no primary url when fileName is absent');
+  assert.ok(Array.isArray(capture.stills), 'stills must survive the no-fileName path');
+  assert.equal(
+    capture.stills[0].url,
+    'https://proof.example.dev/prefix/web-v/01-open-home.png',
+    'stills must stay linkable even with no primary media',
+  );
+});
+
+test('buildManifest leaves image capture without stills key unchanged', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: '7',
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example.dev/prefix',
+    captures: [
+      {
+        recipeId: 'web-x',
+        title: 'X',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'passed',
+        mediaType: 'png',
+        fileName: 'web-x/web-x.png',
+      },
+    ],
+  });
+  const capture = manifest.captures[0];
+  assert.ok(!('stills' in capture), 'no stills key should be spuriously added');
+});
+
+test('proofUploadFiles includes stills for a passed video capture', () => {
+  const manifest = {
+    captures: [
+      {
+        status: 'passed',
+        mediaType: 'mp4',
+        fileName: 'web-v/web-v.mp4',
+        posterFileName: 'web-v/web-v.png',
+        stills: [
+          { fileName: 'web-v/01-open-home.png', label: 'Open home' },
+          { fileName: 'web-v/02-select-session.png', label: 'Select session' },
+        ],
+      },
+    ],
+  };
+  const files = proofUploadFiles({ manifest, localDir: '/repo/.proof/run' });
+  const byRelative = Object.fromEntries(files.map((f) => [f.relative, f]));
+  assert.equal(byRelative['web-v/01-open-home.png'].contentType, 'image/png');
+  assert.equal(
+    byRelative['web-v/01-open-home.png'].file,
+    '/repo/.proof/run/web-v/01-open-home.png',
+  );
+  assert.equal(byRelative['web-v/02-select-session.png'].contentType, 'image/png');
+  assert.equal(
+    byRelative['web-v/02-select-session.png'].file,
+    '/repo/.proof/run/web-v/02-select-session.png',
+  );
+});
+
+test('renderGallery includes header with commit, runId, and pr number', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '42',
+      commit: 'deadbeef',
+      runId: 'run-99',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [],
+    },
+  });
+  assert.match(md, /# Proof report — PR 42/);
+  assert.match(md, /`deadbeef`/);
+  assert.match(md, /`run-99`/);
+  assert.match(md, /2026-06-23T00:00:00.000Z/);
+  assert.ok(md.endsWith('\n'), 'must end with trailing newline');
+});
+
+test('renderGallery renders video capture with poster link and step screenshots', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+          stills: [{ fileName: 'web-v/01-a.png', label: 'Step A', url: 'https://x/01-a.png' }],
+        },
+      ],
+    },
+  });
+  // poster→mp4 link
+  assert.match(md, /\[!\[Flow\]\(https:\/\/x\/v\.png\)\]\(https:\/\/x\/v\.mp4\)/);
+  assert.match(md, /▶ Video/);
+  // step screenshots subsection
+  assert.match(md, /### Step screenshots/);
+  assert.match(md, /!\[Step A\]\(https:\/\/x\/01-a\.png\)/);
+});
+
+test('renderGallery surfaces stills when the primary video media is missing', () => {
+  // Video conversion failed: mediaType mp4 but no url/videoUrl. The stills the
+  // agent captured must still be rendered as linked evidence rather than dropped.
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'failed',
+          mediaType: 'mp4',
+          error: 'no converted video artifact was produced',
+          stills: [
+            { fileName: 'web-v/01-a.png', label: 'Step A', url: 'https://x/01-a.png' },
+            { fileName: 'web-v/02-b.png', label: 'Step B', url: 'https://x/02-b.png' },
+          ],
+        },
+      ],
+    },
+  });
+  assert.match(md, /no converted video artifact was produced/);
+  assert.match(md, /!\[Step A\]\(https:\/\/x\/01-a\.png\)/);
+  assert.match(md, /!\[Step B\]\(https:\/\/x\/02-b\.png\)/);
+});
+
+test('renderGallery renders image capture inline', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Still',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'png',
+          url: 'https://x/p.png',
+        },
+      ],
+    },
+  });
+  assert.match(md, /!\[Still\]\(https:\/\/x\/p\.png\)/);
+});
+
+test('renderGallery renders non-passed capture with error text', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Broken',
+          surface: 'web',
+          status: 'failed',
+          error: 'timeout after 30s',
+        },
+      ],
+    },
+  });
+  assert.match(md, /timeout after 30s/);
+});
+
+test('renderGallery renders failed video capture media after the error text', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Broken but reviewable',
+          surface: 'web',
+          status: 'failed',
+          error: 'agent found a regression',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+          stills: [{ fileName: 'web-v/01-a.png', label: 'Step A', url: 'https://x/01-a.png' }],
+        },
+      ],
+    },
+  });
+
+  assert.match(md, /agent found a regression/);
+  assert.match(md, /\[!\[Broken but reviewable\]\(https:\/\/x\/v\.png\)\]\(https:\/\/x\/v\.mp4\)/);
+  assert.match(md, /### Step screenshots/);
+  assert.match(md, /!\[Step A\]\(https:\/\/x\/01-a\.png\)/);
+});
+
+test('renderGallery with zero captures does not throw and has header', () => {
+  let md;
+  assert.doesNotThrow(() => {
+    md = renderGallery({
+      manifest: {
+        prNumber: '0',
+        commit: 'abc',
+        runId: 'run-0',
+        generatedAt: '2026-06-23T00:00:00.000Z',
+        publicBaseUrl: 'https://x',
+        captures: [],
+      },
+    });
+  });
+  assert.match(md, /# Proof report/);
+});
+
+// ── Task 3: gallery link + Evidence line ─────────────────────────────────────
+
+const passed = (over = {}) => ({
+  status: 'passed',
+  fileName: 'a/a.png',
+  title: 'A',
+  surface: 'web',
+  ...over,
+});
+
+test('renderGallery video capture with zero stills has no Step screenshots subsection', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '7',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-23T00:00:00.000Z',
+      publicBaseUrl: 'https://x',
+      captures: [
+        {
+          title: 'Flow',
+          surface: 'web',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+        },
+      ],
+    },
+  });
+  assert.ok(!md.includes('### Step screenshots'), 'no subsection when no stills');
+});
+
+// ── Task 5: failed-capture media upload ──────────────────────────────────────
+
+test('proofUploadFiles: includes media for failed captures that have a fileName', () => {
+  const files = proofUploadFiles({
+    manifest: { captures: [{ status: 'failed', fileName: 'a/a.mp4', posterFileName: 'a/a.png' }] },
+    localDir: '/tmp/x',
+  });
+  const rels = files.map((f) => f.relative);
+  assert.ok(rels.includes('a/a.mp4'), 'mp4 must be included for failed capture with fileName');
+  assert.ok(rels.includes('a/a.png'), 'poster must be included for failed capture with fileName');
+});
+
+test('proofUploadFiles: skips media for failed captures without a fileName', () => {
+  const files = proofUploadFiles({
+    manifest: { captures: [{ status: 'failed' }] },
+    localDir: '/tmp/x',
+  });
+  const rels = files.map((f) => f.relative);
+  // Only manifest.json should be present
+  assert.deepEqual(rels, ['manifest.json']);
+});
+
+test('buildManifest: adds url for failed capture with fileName', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: '7',
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example.dev/prefix',
+    captures: [
+      {
+        recipeId: 'web-v',
+        title: 'V',
+        surface: 'web',
+        privacy: 'fixture',
+        status: 'failed',
+        mediaType: 'mp4',
+        fileName: 'web-v/web-v.mp4',
+        posterFileName: 'web-v/web-v.png',
+        error: 'agent timed out',
+      },
+    ],
+  });
+  const capture = manifest.captures[0];
+  assert.ok(capture.url, 'url must be set for failed capture with fileName');
+  assert.equal(capture.url, 'https://proof.example.dev/prefix/web-v/web-v.mp4');
+  assert.equal(capture.videoUrl, 'https://proof.example.dev/prefix/web-v/web-v.mp4');
+  assert.equal(capture.posterUrl, 'https://proof.example.dev/prefix/web-v/web-v.png');
+});
+
+// ── Task 1: minimal PR comment (renderComment + deriveVerdictBlock) ──────────
+
+const baseManifest = {
+  commit: 'abc1234',
+  runId: '2026-06-24T05-42-36-859Z',
+  reportUrl: 'https://github.com/recurser/bs-proof/blob/main/x/README.md',
+  title: '[BOS-56] Improve bs-proof',
+  verdict: 'passed',
+  genAiLive: false,
+  brief: { genAi: false },
+  publicLiveCapture: false,
+  captures: [{ fileName: 'web-sessions/web-sessions.png' }],
+};
+
+test('deriveVerdictBlock: passed + media → Satisfactory/High', () => {
+  const v = deriveVerdictBlock(baseManifest);
+  assert.equal(v.evidence, 'Satisfactory');
+  assert.equal(v.confidence, 'High');
+  assert.equal(v.evidenceOk, true);
+  assert.equal(v.confidenceOk, true);
+});
+
+test('deriveVerdictBlock: passed but no media → Unsatisfactory/Low', () => {
+  const v = deriveVerdictBlock({ ...baseManifest, captures: [{}] });
+  assert.equal(v.evidence, 'Unsatisfactory');
+  assert.equal(v.confidence, 'Low');
+});
+
+test('deriveVerdictBlock: gen-AI demoed UI-only → Medium', () => {
+  const v = deriveVerdictBlock({ ...baseManifest, brief: { genAi: true }, genAiLive: false });
+  assert.equal(v.confidence, 'Medium');
+});
+
+test('renderComment: minimal shape, no Verdict, no inline media', () => {
+  const body = renderComment({ marker: proofCommentMarker('788'), manifest: baseManifest });
+  assert.match(body, /<!-- bossanova-proof:pr-788 -->/);
+  assert.match(body, /### \[📸 Proof gallery\]\(/);
+  assert.match(body, /\*\*\[BOS-56\] Improve bs-proof\*\*/);
+  assert.match(body, /\*\*Gen-AI:\*\* not live \(UI-only demo\)/);
+  assert.match(body, /✅ \*\*Evidence:\*\* Satisfactory/);
+  assert.match(body, /✅ \*\*Confidence:\*\* High/);
+  assert.doesNotMatch(body, /Verdict/);
+  assert.doesNotMatch(body, /!\[/); // no embedded images
+  assert.doesNotMatch(body, /Manifest:/); // no manifest footer
+});
+
+test('renderComment: falls back to manifest link when reportUrl is absent', () => {
+  const body = renderComment({
+    marker: proofCommentMarker('788'),
+    manifest: {
+      ...baseManifest,
+      reportUrl: undefined,
+      publicBaseUrl: 'https://proof.example.dev/proof/pr-788/run-1',
+    },
+  });
+  assert.match(body, /### \[📸 Proof manifest\]\(/);
+  assert.match(body, /manifest\.json/);
+});
+
+test('renderComment: agentSummary renders a collapsible block', () => {
+  const body = renderComment({
+    marker: proofCommentMarker('788'),
+    manifest: { ...baseManifest, agentSummary: 'Agent navigated the session view.' },
+  });
+  assert.match(body, /<details><summary>Agent summary<\/summary>/);
+  assert.match(body, /Agent navigated the session view\./);
+});
+
+test('buildManifest: carries title/verdict/genAiLive/agentSummary/brief', () => {
+  const m = buildManifest({
+    commit: 'abc1234',
+    prNumber: 788,
+    runId: 'run-1',
+    publicBaseUrl: 'https://proof.example/x',
+    captures: [
+      { recipeId: 'web-sessions', status: 'passed', fileName: 'web-sessions/web-sessions.png' },
+    ],
+    title: 'My PR',
+    verdict: 'passed',
+    agentSummary: 'did things',
+    brief: { genAi: false },
+  });
+  assert.equal(m.title, 'My PR');
+  assert.equal(m.verdict, 'passed');
+  assert.equal(m.genAiLive, false); // always present so the Gen-AI line renders
+  assert.equal(m.agentSummary, 'did things');
+  assert.deepEqual(m.brief, { genAi: false });
+});
+
+// Regression: TUI video uploads the kept mp4, not the deleted webm.
+// finishVideo deletes the source .webm and keeps the .mp4 it builds.
+// captureRecipe must return fileName pointing at the surviving artifact.
+test('proofUploadFiles resolves TUI video capture fileName to video/mp4 content-type', () => {
+  const files = proofUploadFiles({
+    localDir: '/repo/.proof/pr-100/abc/run',
+    manifest: {
+      captures: [
+        {
+          status: 'passed',
+          mediaType: 'mp4',
+          fileName: 'tui-new-session-flow/tui-new-session-flow.mp4',
+          posterFileName: 'tui-new-session-flow/tui-new-session-flow.png',
+        },
+      ],
+    },
+  });
+  const videoEntry = files.find((f) => f.relative.endsWith('.mp4'));
+  assert.ok(videoEntry, 'expected an mp4 entry in upload files');
+  assert.equal(videoEntry.contentType, 'video/mp4');
+  assert.equal(videoEntry.relative, 'tui-new-session-flow/tui-new-session-flow.mp4');
+  // The deleted .webm must NOT appear in the upload list.
+  assert.ok(
+    !files.some((f) => f.relative.endsWith('.webm')),
+    'deleted .webm must not appear in upload list',
   );
 });

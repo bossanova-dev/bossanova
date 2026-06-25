@@ -141,6 +141,7 @@ func (s *SQLiteCronJobStore) MarkFireStarted(ctx context.Context, id string, ses
 	sets := []string{
 		"last_run_session_id = ?",
 		"last_run_at = ?",
+		"last_run_outcome = NULL",
 		"updated_at = ?",
 	}
 	args := []any{sessionID, firedAtStr, now}
@@ -187,12 +188,27 @@ func (s *SQLiteCronJobStore) UpdateLastRun(ctx context.Context, id string, param
 	}
 
 	args = append(args, id)
-	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE id = ?"
+	where := "id = ?"
+	if params.ExpectedSessionID != nil {
+		if params.AllowClearedExpectedSessionID {
+			where += " AND (last_run_session_id = ? OR last_run_session_id IS NULL)"
+		} else {
+			where += " AND last_run_session_id = ?"
+		}
+		args = append(args, *params.ExpectedSessionID)
+	}
+	query := "UPDATE cron_jobs SET " + strings.Join(sets, ", ") + " WHERE " + where
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("update cron job last run: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		// With a guard set, no-match means a newer run replaced the pointer (or
+		// the row is gone); both are benign skips for a late finalize. Without a
+		// guard, a missing row is the usual not-found error.
+		if params.ExpectedSessionID != nil {
+			return ErrCronJobLastRunSuperseded
+		}
 		return sql.ErrNoRows
 	}
 	return nil

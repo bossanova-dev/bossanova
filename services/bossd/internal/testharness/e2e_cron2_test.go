@@ -162,6 +162,15 @@ func TestE2ECron_FinalizingRecovery(t *testing.T) {
 		t.Fatalf("set CronJobID on session: %v", err)
 	}
 
+	// Record the fire so the cron job's last_run_session_id points at this
+	// session, exactly as a real fire does via MarkFireStarted. A session only
+	// reaches Finalizing after its fire was recorded, and the recovery write is
+	// guarded with ExpectedSessionID=last run — without this seed the guard
+	// treats the write as superseded and skips the failed_recovered outcome.
+	if err := h.CronJobs.MarkFireStarted(ctx, job.ID, sess.ID, time.Now(), nil); err != nil {
+		t.Fatalf("mark fire started: %v", err)
+	}
+
 	// Force the session directly into Finalizing state via Update (bypasses the
 	// state machine). Sessions start in CreatingWorktree (state 1); we skip
 	// straight to Finalizing to simulate a daemon crash mid-finalize. Using

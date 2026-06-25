@@ -667,6 +667,20 @@ func run(opts runOpts) error {
 		log.Info().Int("count", n).Msg("recovered sessions stuck in Finalizing from previous run")
 	}
 
+	// Recover cron sessions whose run finished but whose Stop-hook finalize
+	// signal never reached the daemon — e.g. the daemon restarted as the run
+	// ended, so the hook's baked-in loopback port was stale and the curl got
+	// connection-refused. Such sessions are stranded in ImplementingPlan with
+	// no completion trigger (RecoverFinalizingSessions only rescues Finalizing).
+	// Run once at startup (catches restart-stranded sessions) and periodically
+	// below (catches a lost hook on a daemon that stayed up). Must run after
+	// SetCronCompletionNotifier above so the gate is wired.
+	if n, err := lifecycle.RecoverStrandedCronSessions(context.Background()); err != nil {
+		log.Warn().Err(err).Msg("failed to recover stranded cron sessions")
+	} else if n > 0 {
+		log.Info().Int("count", n).Msg("recovered stranded cron sessions with lost finalize signal")
+	}
+
 	// shutdownWG tracks daemon goroutines so we can wait for them to exit cleanly.
 	// Subsystems that manage their own goroutines (poller, dispatcher, orchestrator,
 	// display poller, tmux poller) expose a Done() channel; goroutines spawned
@@ -783,11 +797,14 @@ func run(opts runOpts) error {
 		Sessions: sessions,
 		Repos:    repos,
 		Creator:  sessionCreator,
+		Activity: session.NewCronActivityChecker(agentLogsDir, livenessChecker),
 		Logger:   log.Logger,
 	})
-	if err := cronScheduler.Start(context.Background()); err != nil {
-		return fmt.Errorf("cron scheduler: %w", err)
-	}
+	// NOTE: cronScheduler.Start is intentionally deferred until after the hook
+	// server is bound and lifecycle.SetHookPort has run (below). A tick that
+	// fires before the port is set would have its session rejected by
+	// StartSession (hookPort == 0) and be recorded as fire_failed, which is most
+	// likely right after a restart that lands near a scheduled tick.
 
 	// Wire the orchestrator as the completion notifier for the dispatcher
 	// and server so that terminal session states unblock the per-repo task queue.
@@ -1285,6 +1302,13 @@ func run(opts runOpts) error {
 		opts.onHookPortSet()
 	}
 
+	// Start the cron scheduler now that the hook port is set, so cron-spawned
+	// sessions (which carry a HookToken) pass StartSession's hookPort guard
+	// instead of being recorded as fire_failed during the startup window.
+	if err := cronScheduler.Start(context.Background()); err != nil {
+		return fmt.Errorf("cron scheduler: %w", err)
+	}
+
 	// Re-arm the poll fallback for hookless agent runs that survived a
 	// daemon restart. For agents with a finalize hook (claude), the poll
 	// re-arm is skipped (cached IsSupported=true short-circuits the loop) but
@@ -1344,6 +1368,29 @@ func run(opts runOpts) error {
 					log.Warn().Err(err).Msg("periodic reconcile: failed")
 				} else if n > 0 {
 					log.Info().Int64("count", n).Msg("periodic reconcile: linked sessions to existing PRs")
+				}
+			}
+		}
+	})
+
+	// Periodically recover cron sessions whose Stop-hook finalize signal was
+	// lost (see the startup call above). The startup pass only fires on a
+	// restart; this sweep catches a hook that failed to deliver on a daemon
+	// that stayed up. 2 min matches the orchestrator's reconcile cadence — the
+	// session is already minutes-late, so sub-minute latency buys nothing, and
+	// the inner agent-log idle checks only run when sessions are stuck.
+	trackedGo(func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollerCtx.Done():
+				return
+			case <-ticker.C:
+				if n, err := lifecycle.RecoverStrandedCronSessions(pollerCtx); err != nil {
+					log.Warn().Err(err).Msg("periodic stranded-cron recovery: failed")
+				} else if n > 0 {
+					log.Info().Int("count", n).Msg("periodic stranded-cron recovery: finalized stranded cron sessions")
 				}
 			}
 		}

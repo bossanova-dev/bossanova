@@ -2,10 +2,19 @@ package db
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/recurser/bossalib/models"
 )
+
+// ErrCronJobLastRunSuperseded is returned by UpdateLastRun when a guarded write
+// (ExpectedSessionID set) does not match: the cron job's last_run_session_id is
+// no longer the expected session — a newer run already called MarkFireStarted
+// and replaced the pointer — or the row is gone. Callers recording an older
+// run's finalize outcome treat this as a benign skip, not a failure, so a late
+// finalize can't move the pointer back to a stale session and re-enable overlap.
+var ErrCronJobLastRunSuperseded = errors.New("cron job last run superseded by newer run")
 
 // CreateRepoParams holds the parameters for creating a new repo.
 type CreateRepoParams struct {
@@ -282,9 +291,19 @@ type UpdateCronJobParams struct {
 // UpdateCronJobLastRunParams records the outcome of a cron job fire.
 type UpdateCronJobLastRunParams struct {
 	SessionID *string // nil = don't update; otherwise set even if empty string
-	RanAt     time.Time
-	Outcome   models.CronJobOutcome
-	NextRunAt *time.Time // nil = clear (job disabled or schedule invalid)
+	// ExpectedSessionID, when non-nil, guards the write: the row is updated only
+	// while cron_jobs.last_run_session_id still equals this value. A newer run
+	// that already called MarkFireStarted will have replaced the pointer, in
+	// which case this (older) run's finalize outcome must not clobber it; the
+	// guarded no-match is reported as ErrCronJobLastRunSuperseded.
+	ExpectedSessionID *string
+	// AllowClearedExpectedSessionID permits a guarded update when the expected
+	// session was deleted and session deletion already cleared last_run_session_id
+	// to NULL. A non-NULL different session still counts as superseded.
+	AllowClearedExpectedSessionID bool
+	RanAt                         time.Time
+	Outcome                       models.CronJobOutcome
+	NextRunAt                     *time.Time // nil = clear (job disabled or schedule invalid)
 }
 
 // CronJobStore defines the interface for cron job persistence.

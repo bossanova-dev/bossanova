@@ -166,7 +166,29 @@ test('worktree-lock: acquire / re-entrancy / peer / stale / release / isolation 
   assert.equal(r.code, 3, `mtime-fallback must exit 3: ${r.stdout}`);
   assert.match(r.stdout, /age=[0-9]+s/);
 
-  // 13. RELEASE must never delete a SUCCESSOR's lock.
+  // 13. If the lock dir has no owner and mtime cannot be read, treat it as live.
+  const repo6b = initRepo();
+  lock(repo6b, env, 'acquire', 'm', 'BOS-6B');
+  const meta6b = execFileSync(
+    'bash',
+    ['-c', `find "${HOME}" -path '*${path.basename(repo6b)}*/owner' -type f | head -1`],
+    { encoding: 'utf8' },
+  ).trim();
+  fs.rmSync(meta6b);
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'bli-fakebin-'));
+  tempRoots.push(fakeBin);
+  fs.writeFileSync(path.join(fakeBin, 'stat'), '#!/usr/bin/env sh\nexit 1\n', { mode: 0o755 });
+  r = lock(
+    repo6b,
+    { ...env, BLI_LOCK_STALE_SECS: '1', PATH: `${fakeBin}:${process.env.PATH}` },
+    'acquire',
+    'n',
+    'BOS-6B',
+  );
+  assert.equal(r.code, 3, `unreadable mtime must not look stale: ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /HELD_BY_PEER/);
+
+  // 14. RELEASE must never delete a SUCCESSOR's lock.
   const repo7 = initRepo();
   lock(repo7, env, 'acquire', 'A', 'BOS-7');
   const meta7 = execFileSync(

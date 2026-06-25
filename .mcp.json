@@ -1,8 +1,12 @@
 {
   "mcpServers": {
-    "linear-bossanova": {
+    "bossanova-linear": {
       "type": "http",
       "url": "https://mcp.linear.app/mcp"
+    },
+    "bossanova-sentry": {
+      "type": "http",
+      "url": "https://mcp.sentry.dev/mcp"
     }
   }
 }

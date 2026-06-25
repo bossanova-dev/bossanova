@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  buildTimerOverlayFilter,
   computeFrameDiffs,
   computeFrameLuma,
   detectLeadingBlankMs,
@@ -15,6 +16,9 @@ import {
   formatElapsed,
   renderTimerFrame,
   renderTimerStrip,
+  evenCropHeight,
+  buildBaseChain,
+  applyMinHeightRatio,
   TIMER_W,
   TIMER_H,
 } from './proof-video.mjs';
@@ -63,8 +67,17 @@ test('detectLeadingBlankMs: dark start (gen-AI) → 0, NOT trimmed (regression)'
   assert.equal(detectLeadingBlankMs(luma, { fps: 4 }), 0);
 });
 
-test('detectLeadingBlankMs: whole-video-bright is capped, never guts content', () => {
-  const luma = Array(40).fill(234); // 40*250+150 = 10150ms → clamped to cap
+test('detectLeadingBlankMs: whole-video-bright → 0 (light app, not a flash)', () => {
+  // Every frame bright → a light-themed surface, not a white pre-roll. Trimming
+  // would gut real content (and empty a short clip), so trim nothing.
+  const luma = Array(40).fill(234);
+  assert.equal(detectLeadingBlankMs(luma, { fps: 4, capMs: 2000 }), 0);
+});
+
+test('detectLeadingBlankMs: bright run covering all-but-one frame still trims+caps', () => {
+  // A genuine flash that gives way to one dark content frame is still trimmed
+  // (and capped) — the all-bright guard must only fire when EVERY frame is bright.
+  const luma = [...Array(40).fill(234), 25];
   assert.equal(detectLeadingBlankMs(luma, { fps: 4, capMs: 2000 }), 2000);
 });
 
@@ -205,4 +218,119 @@ test('renderTimerFrame: the ">>" variant fills more of the canvas than the plain
 test('renderTimerStrip: one frame per second, inclusive of second 0 and the final second', () => {
   const strip = renderTimerStrip(3, new Set([2]));
   assert.equal(strip.length, 4 * TIMER_W * TIMER_H * 4);
+});
+
+// ── evenCropHeight ───────────────────────────────────────────────────────────
+
+test('evenCropHeight: odd 613 rounds down to even 612', () => {
+  assert.equal(evenCropHeight(613, 1000), 612);
+});
+
+test('evenCropHeight: already-even 612 stays 612', () => {
+  assert.equal(evenCropHeight(612, 1000), 612);
+});
+
+test('evenCropHeight: null → null', () => {
+  assert.equal(evenCropHeight(null, 1000), null);
+});
+
+test('evenCropHeight: undefined → null', () => {
+  assert.equal(evenCropHeight(undefined, 1000), null);
+});
+
+test('evenCropHeight: 0 → null', () => {
+  assert.equal(evenCropHeight(0, 1000), null);
+});
+
+test('evenCropHeight: negative → null', () => {
+  assert.equal(evenCropHeight(-5, 1000), null);
+});
+
+test('evenCropHeight: fills viewport (equal) → null', () => {
+  assert.equal(evenCropHeight(1000, 1000), null);
+});
+
+test('evenCropHeight: exceeds viewport → null', () => {
+  assert.equal(evenCropHeight(1001, 1000), null);
+});
+
+test('evenCropHeight: 998 < 1000 → 998', () => {
+  assert.equal(evenCropHeight(998, 1000), 998);
+});
+
+// ── buildBaseChain ───────────────────────────────────────────────────────────
+
+test('buildBaseChain: no trim, no crop → fps only', () => {
+  assert.equal(buildBaseChain({ trimSec: 0, cropHeight: null, fps: 30 }), '[0:v]fps=30[base]');
+});
+
+test('buildBaseChain: trim only → trim+setpts+fps', () => {
+  assert.equal(
+    buildBaseChain({ trimSec: 1.2, cropHeight: null, fps: 30 }),
+    '[0:v]trim=start=1.200,setpts=PTS-STARTPTS,fps=30[base]',
+  );
+});
+
+test('buildBaseChain: crop only → crop+fps, no trim', () => {
+  const chain = buildBaseChain({ trimSec: 0, cropHeight: 612, fps: 30 });
+  assert.equal(chain, '[0:v]crop=in_w:612:0:0,fps=30[base]');
+});
+
+test('buildBaseChain: trim+crop → trim+setpts+crop+fps', () => {
+  const chain = buildBaseChain({ trimSec: 1.2, cropHeight: 612, fps: 30 });
+  assert.equal(chain, '[0:v]trim=start=1.200,setpts=PTS-STARTPTS,crop=in_w:612:0:0,fps=30[base]');
+});
+
+test('buildBaseChain: crop appears after setpts and before fps', () => {
+  const chain = buildBaseChain({ trimSec: 1.2, cropHeight: 612, fps: 30 });
+  const cropIdx = chain.indexOf('crop=in_w:612:0:0');
+  const setptsIdx = chain.indexOf('setpts=PTS-STARTPTS');
+  const fpsIdx = chain.indexOf('fps=30');
+  assert.ok(cropIdx > setptsIdx, 'crop must appear after setpts');
+  assert.ok(cropIdx < fpsIdx, 'crop must appear before fps');
+});
+
+test('buildBaseChain: no crop= when cropHeight is null', () => {
+  const chain = buildBaseChain({ trimSec: 0, cropHeight: null, fps: 30 });
+  assert.ok(!chain.includes('crop='), 'should not include crop= when cropHeight is null');
+});
+
+// ── applyMinHeightRatio ──────────────────────────────────────────────────────
+
+test('applyMinHeightRatio: crop already >= 50% width is preserved (even-rounded)', () => {
+  // 600 wide, floor = 300; 420 >= 300 → keep, even
+  assert.equal(applyMinHeightRatio(420, 600, 1000), 420);
+});
+
+test('applyMinHeightRatio: crop below 50% width is raised to the floor', () => {
+  // 600 wide, floor = 300; measured 180 → raise to 300
+  assert.equal(applyMinHeightRatio(180, 600, 1000), 300);
+});
+
+test('applyMinHeightRatio: floor above recorded height clamps to recorded height (no crop if == h)', () => {
+  // 600 wide, floor = 300, recorded height 250 → cannot reach floor → null (no crop)
+  assert.equal(applyMinHeightRatio(120, 600, 250), null);
+});
+
+test('applyMinHeightRatio: odd floor is rounded down to even', () => {
+  // 601 wide, floor = ceil(300.5)=301 → even-round to 300
+  assert.equal(applyMinHeightRatio(100, 601, 1000), 300);
+});
+
+test('applyMinHeightRatio: null/zero crop returns null', () => {
+  assert.equal(applyMinHeightRatio(null, 600, 1000), null);
+  assert.equal(applyMinHeightRatio(0, 600, 1000), null);
+});
+
+// ── buildTimerOverlayFilter ──────────────────────────────────────────────────
+
+test('buildTimerOverlayFilter: timer on appends the overlay', () => {
+  const f = buildTimerOverlayFilter('[0:v]crop=in_w:300:0:0,fps=30[base]', { timer: true });
+  assert.match(f, /\[base\]\[1:v\]overlay=/);
+});
+
+test('buildTimerOverlayFilter: timer off maps the base chain only', () => {
+  const f = buildTimerOverlayFilter('[0:v]crop=in_w:300:0:0,fps=30[base]', { timer: false });
+  assert.doesNotMatch(f, /overlay=/);
+  assert.match(f, /\[base\]/);
 });

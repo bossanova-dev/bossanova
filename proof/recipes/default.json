@@ -293,12 +293,13 @@
       "description": "Walkthrough of opening a session in the web app (fixture data).",
       "privacy": "fixture",
       "capture": "video",
+      "cropToSelector": ".data-table-wrap",
       "viewport": { "width": 1440, "height": 1000 },
       "steps": [
-        { "action": "goto", "route": "/" },
-        { "action": "wait", "selector": ".data-table-wrap" },
-        { "action": "click", "selector": ".data-table-wrap .row-clickable" },
-        { "action": "wait", "timeoutMs": 800 }
+        { "action": "goto", "route": "/", "label": "Open home" },
+        { "action": "wait", "selector": ".data-table-wrap", "label": "Sessions list" },
+        { "action": "click", "selector": ".data-table-wrap .row-clickable", "label": "Open session" },
+        { "action": "wait", "timeoutMs": 800, "label": "Session view" }
       ]
     },
     {

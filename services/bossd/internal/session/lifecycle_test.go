@@ -347,6 +347,7 @@ type mockAgentChatStore struct {
 	createErr              error
 	updateTmuxNameErr      error
 	deleteErr              error
+	listBySessionErr       error // when non-nil, ListBySession returns it
 }
 
 type markStartFailedCall struct {
@@ -396,6 +397,9 @@ func (m *mockAgentChatStore) GetByAgentSessionID(_ context.Context, agentSession
 func (m *mockAgentChatStore) ListBySession(_ context.Context, sessionID string) ([]*models.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.listBySessionErr != nil {
+		return nil, m.listBySessionErr
+	}
 	if m.chatsBySession == nil {
 		return nil, nil
 	}

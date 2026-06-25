@@ -130,6 +130,13 @@ export function computeFrameLuma(raw, frameBytes) {
  * the LEADING run of frames brighter than `threshold` and returns runLen +
  * bufferMs, clamped to capMs. Returns 0 (NO trim) when there is no leading-white
  * run — a dark-start (gen-AI) recording is never trimmed.
+ *
+ * Returns 0 when EVERY sampled frame is bright: the white-flash heuristic relies
+ * on a bright pre-roll giving way to darker app content, but a light-themed
+ * surface (the bossanova web app, marketing pages) stays bright throughout. With
+ * no dark content to anchor against, an all-bright run is the app itself, not a
+ * flash, so trimming it would gut real content (and on a short clip leave an
+ * empty video).
  * @param {number[]} luma per-frame mean luminance (from computeFrameLuma)
  * @param {{fps?: number, threshold?: number, bufferMs?: number, capMs?: number}} [opts]
  * @returns {number}
@@ -142,6 +149,7 @@ export function detectLeadingBlankMs(luma, opts = {}) {
   let n = 0;
   while (n < luma.length && luma[n] > threshold) n++;
   if (n === 0) return 0;
+  if (n === luma.length) return 0; // all-bright → light app, not a flash
   const trimMs = Math.round((n / fps) * 1000 + bufferMs);
   return Math.min(trimMs, capMs);
 }
@@ -480,6 +488,71 @@ export function renderTimerStrip(totalSeconds, fastSecs) {
   return Buffer.concat(frames);
 }
 
+// ── Pure: video crop helpers ─────────────────────────────────────────────────
+
+/**
+ * Returns the even-rounded crop height to apply, or `null` when no crop should
+ * happen. H264 requires even-pixel dimensions.
+ * @param {number|null|undefined} cropHeight raw measured content height (px)
+ * @param {number} recordedHeight viewport height the video was recorded at (px)
+ * @returns {number|null}
+ */
+export function evenCropHeight(cropHeight, recordedHeight) {
+  if (cropHeight == null || !Number.isFinite(cropHeight) || cropHeight <= 0) return null;
+  const even = cropHeight - (cropHeight % 2);
+  if (even <= 0) return null;
+  if (even >= recordedHeight) return null;
+  return even;
+}
+
+/**
+ * Cap the trim so the visible video never gets shorter than half its width — a
+ * 600px-wide clip keeps at least 300px of height, so it stays easy to watch.
+ * Raises a too-short measured crop up to the floor, never exceeds the recorded
+ * height, and even-rounds for H264. Returns null when no crop should happen
+ * (floor unreachable within the recorded frame).
+ * @param {number|null|undefined} cropHeight measured content height (px)
+ * @param {number} recordedWidth viewport width the video was recorded at (px)
+ * @param {number} recordedHeight viewport height the video was recorded at (px)
+ * @returns {number|null}
+ */
+export function applyMinHeightRatio(cropHeight, recordedWidth, recordedHeight) {
+  if (cropHeight == null || !Number.isFinite(cropHeight) || cropHeight <= 0) return null;
+  const floor = Math.ceil(0.5 * recordedWidth);
+  const raised = Math.max(cropHeight, floor);
+  // even-round (H264) and reuse evenCropHeight's >= recordedHeight → null guard
+  return evenCropHeight(raised, recordedHeight);
+}
+
+/**
+ * Build the pass-1 base-chain string `[0:v]...[base]` for the filtergraph.
+ * Applies, in order: optional leading trim (when trimSec > 0), optional crop
+ * (when cropHeight is a positive integer), then fps. Crop comes before fps so
+ * the frame-rate conversion works on the already-cropped geometry.
+ * @param {{ trimSec: number, cropHeight: number|null|undefined, fps: number }} opts
+ * @returns {string}
+ */
+export function buildBaseChain({ trimSec, cropHeight, fps }) {
+  const parts = [];
+  if (trimSec > 0) parts.push(`trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS`);
+  if (cropHeight != null && Number.isInteger(cropHeight) && cropHeight > 0)
+    parts.push(`crop=in_w:${cropHeight}:0:0`);
+  parts.push(`fps=${fps}`);
+  return `[0:v]${parts.join(',')}[base]`;
+}
+
+/**
+ * Pass-1 filtergraph: with a timer, overlay the strip on the top-right; without
+ * one, the base chain (trim/crop/fps) is the whole graph. Pure string builder.
+ * @param {string} baseChain e.g. '[0:v]crop=…,fps=30[base]'
+ * @param {{timer:boolean}} opts
+ * @returns {string}
+ */
+export function buildTimerOverlayFilter(baseChain, { timer }) {
+  if (!timer) return `${baseChain}`;
+  return `${baseChain};[base][1:v]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat[v]`;
+}
+
 // ── Impure: ffmpeg orchestration ─────────────────────────────────────────────
 
 const ENCODE_ARGS = [
@@ -546,6 +619,18 @@ export function probeDimensions(videoPath) {
 }
 
 /**
+ * True when `videoPath` holds a decodable video stream of positive duration.
+ * A zero-frame mp4 (e.g. a concat that failed on a SAR mismatch) still parses
+ * as a valid container but has no dimensions and no duration — this catches it
+ * so callers never upload an empty artifact.
+ * @param {string} videoPath
+ * @returns {boolean}
+ */
+export function isDecodableVideo(videoPath) {
+  return probeDimensions(videoPath) !== null && ffprobeDurationMs(videoPath) !== null;
+}
+
+/**
  * Extract downscaled grayscale frames once and derive BOTH per-pair diffs (for
  * idle-stretch detection) and per-frame mean luma (for leading white-flash
  * detection) from the same buffer — no second decode. Returns null on failure.
@@ -584,10 +669,20 @@ function analyzeDiffs(videoPath) {
  * is rendered from it and prepended to the finished video (best-effort: any
  * ffmpeg failure leaves the card-less output intact).
  *
- * @param {{ webmPath: string, timedPath: string, outPath: string, scratchPath: string, introPngPath?: string }} io
- * @returns {{ ok: boolean, warning?: string, condensed: boolean, originalMs?: number, outputMs?: number, fastSegments?: number }}
+ * @param {{ webmPath: string, timedPath: string, outPath: string, scratchPath: string, introPngPath?: string, cropHeight?: number|null, timer?: boolean, idleSpeedup?: boolean, trimLeadingBlank?: boolean }} io
+ * @returns {{ ok: boolean, warning?: string, condensed: boolean, originalMs?: number, outputMs?: number, fastSegments?: number, cropHeight?: number|null }}
  */
-export function postprocessProofVideo({ webmPath, timedPath, outPath, scratchPath, introPngPath }) {
+export function postprocessProofVideo({
+  webmPath,
+  timedPath,
+  outPath,
+  scratchPath,
+  introPngPath,
+  cropHeight,
+  timer = true,
+  idleSpeedup = true,
+  trimLeadingBlank = true,
+}) {
   const fullDurationMs = ffprobeDurationMs(webmPath);
   if (fullDurationMs === null)
     return {
@@ -595,6 +690,9 @@ export function postprocessProofVideo({ webmPath, timedPath, outPath, scratchPat
       condensed: false,
       warning: 'ffprobe could not read the screencast duration',
     };
+
+  const recorded = probeDimensions(webmPath);
+  const effectiveCrop = recorded ? evenCropHeight(cropHeight, recorded.height) : null;
 
   const analysis = analyzeDiffs(webmPath);
   if (analysis === null)
@@ -607,7 +705,7 @@ export function postprocessProofVideo({ webmPath, timedPath, outPath, scratchPat
   // Detect + trim the leading white-flash pre-roll. Everything downstream
   // (diffs, retime plan, timer clock) runs on the SAME trimmed timeline so
   // 0:00 = the first real app frame. trimMs=0 for a dark-start recording.
-  const trimMs = detectLeadingBlankMs(analysis.luma);
+  const trimMs = trimLeadingBlank ? detectLeadingBlankMs(analysis.luma) : 0;
   const trimSec = trimMs / 1000;
   const dropFrames = Math.round((trimMs / 1000) * ANALYZE_FPS);
   const diffs = trimMs > 0 ? analysis.diffs.slice(dropFrames) : analysis.diffs;
@@ -617,45 +715,48 @@ export function postprocessProofVideo({ webmPath, timedPath, outPath, scratchPat
   const segments = planRetime(staticRuns, durationMs);
   const fastSegments = segments.filter((s) => s.speed > 1);
 
-  // Pass 1: burn the elapsed timer on the (trimmed) original timeline (so it
-  // shows real elapsed time and visibly fast-forwards once stretches are
+  // Pass 1: optionally burn the elapsed timer on the (trimmed) original timeline
+  // (so it shows real elapsed time and visibly fast-forwards once stretches are
   // retimed). The leading trim is applied in-filtergraph — NOT via -ss — so the
   // diff analysis, overlay timer, and retime plan all share one clock.
-  const strip = renderTimerStrip(Math.ceil(durationMs / 1000), fastForwardSeconds(segments));
-  writeFileSync(scratchPath, strip);
-  const baseChain =
-    trimMs > 0
-      ? `[0:v]trim=start=${trimSec.toFixed(3)},setpts=PTS-STARTPTS,fps=${OUTPUT_FPS}[base]`
-      : `[0:v]fps=${OUTPUT_FPS}[base]`;
+  const baseChain = buildBaseChain({ trimSec, cropHeight: effectiveCrop, fps: OUTPUT_FPS });
+  const pass1Filter = buildTimerOverlayFilter(baseChain, { timer });
+  const pass1Inputs = ['-i', webmPath];
+  if (timer) {
+    const strip = renderTimerStrip(Math.ceil(durationMs / 1000), fastForwardSeconds(segments));
+    writeFileSync(scratchPath, strip);
+    pass1Inputs.push(
+      '-f',
+      'rawvideo',
+      '-pix_fmt',
+      'rgba',
+      '-video_size',
+      `${TIMER_W}x${TIMER_H}`,
+      '-framerate',
+      '1',
+      '-i',
+      scratchPath,
+    );
+  }
+  // When timer is off the base chain ends in [base], not [v]; map whichever exists.
+  const mapLabel = timer ? '[v]' : '[base]';
   const pass1 = ffmpeg([
-    '-i',
-    webmPath,
-    '-f',
-    'rawvideo',
-    '-pix_fmt',
-    'rgba',
-    '-video_size',
-    `${TIMER_W}x${TIMER_H}`,
-    '-framerate',
-    '1',
-    '-i',
-    scratchPath,
-    // y=44 sits just below the app's top-right project-name chip.
+    ...pass1Inputs,
     '-filter_complex',
-    `${baseChain};[base][1:v]overlay=x=main_w-overlay_w-14:y=44:eof_action=repeat[v]`,
+    pass1Filter,
     '-map',
-    '[v]',
+    mapLabel,
     ...ENCODE_ARGS,
     timedPath,
   ]);
-  rmSync(scratchPath, { force: true });
+  if (timer) rmSync(scratchPath, { force: true });
   if (pass1.status !== 0)
     return { ok: false, condensed: false, warning: 'timer overlay pass failed' };
 
-  // Pass 2: compress the static stretches. Nothing to compress → the timed
-  // video IS the final video.
+  // Pass 2: compress the static stretches. Nothing to compress (or idleSpeedup
+  // disabled) → the timed video IS the final video.
   let result;
-  if (fastSegments.length === 0) {
+  if (!idleSpeedup || fastSegments.length === 0) {
     copyFileSync(timedPath, outPath);
     result = {
       ok: true,
@@ -664,6 +765,7 @@ export function postprocessProofVideo({ webmPath, timedPath, outPath, scratchPat
       outputMs: durationMs,
       fastSegments: 0,
       leadingBlankMs: trimMs,
+      cropHeight: effectiveCrop,
     };
   } else {
     const pass2 = ffmpeg([
@@ -686,6 +788,7 @@ export function postprocessProofVideo({ webmPath, timedPath, outPath, scratchPat
       outputMs: retimedDurationMs(segments),
       fastSegments: fastSegments.length,
       leadingBlankMs: trimMs,
+      cropHeight: effectiveCrop,
     };
   }
 
@@ -708,12 +811,27 @@ export function postprocessProofVideo({ webmPath, timedPath, outPath, scratchPat
         const cat = ffmpeg(
           buildIntroConcatArgs({ introPath: introClip, mainPath: outPath, outPath: withIntro }),
         );
-        if (cat.status === 0) copyFileSync(withIntro, outPath);
+        // Only adopt the concatenated file if it is actually decodable. The
+        // concat filter can exit 0 yet write a zero-frame container when its
+        // inputs disagree (e.g. SAR mismatch); clobbering outPath with that
+        // would ship an empty video.
+        if (cat.status === 0 && isDecodableVideo(withIntro)) copyFileSync(withIntro, outPath);
         rmSync(withIntro, { force: true });
       }
       rmSync(introClip, { force: true });
       // Intro is additive: any ffmpeg failure leaves the card-less outPath intact.
     }
+  }
+
+  // Final guard: never report success for an empty/undecodable artifact. A
+  // truthy result here means the caller skips its plain-conversion fallback, so
+  // an invalid outPath must flip ok=false instead.
+  if (!isDecodableVideo(outPath)) {
+    return {
+      ok: false,
+      condensed: false,
+      warning: 'post-processed video has no decodable video stream',
+    };
   }
 
   return result;

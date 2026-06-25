@@ -8,10 +8,10 @@
 // goroutines plus any direct fire/RunNow calls before returning.
 //
 // Overlap suppression: at each fire, the scheduler checks cron_jobs.last_run_session_id.
-// If the previous session is still in a non-terminal state and not archived,
-// the fire is skipped. last_run_session_id is persisted on every successful
-// CreateSession via MarkFireStarted; last_run_outcome is written later by the
-// finalize path (flight leg 4).
+// If the previous session is still actively running, the fire is skipped.
+// last_run_session_id is persisted on every successful CreateSession via
+// MarkFireStarted; last_run_outcome is written later by the finalize path
+// (flight leg 4).
 package cron
 
 import (
@@ -37,6 +37,16 @@ import (
 // DefaultMaxConcurrent is the default cap on simultaneous cron fires.
 const DefaultMaxConcurrent = 3
 
+// ActivityChecker reports whether a previous cron run's agent is still actively
+// producing output. The overlap check uses it so a fire is skipped only while
+// the prior run is genuinely working -- not merely because its session row has
+// not reached a terminal state (cron sessions legitimately sit non-terminal
+// with an open PR awaiting review). Nil is allowed: it preserves the legacy
+// "block on any non-terminal session" behavior.
+type ActivityChecker interface {
+	RunActive(sess *models.Session) bool
+}
+
 // Config bundles Scheduler dependencies. Store and Sessions are used for
 // load/overlap checks; Repos resolves the per-job base branch; Creator spawns
 // the actual session.
@@ -45,6 +55,7 @@ type Config struct {
 	Sessions      db.SessionStore
 	Repos         db.RepoStore
 	Creator       taskorchestrator.SessionCreator
+	Activity      ActivityChecker
 	MaxConcurrent int
 	Logger        zerolog.Logger
 
@@ -59,6 +70,7 @@ type Scheduler struct {
 	sessions db.SessionStore
 	repos    db.RepoStore
 	creator  taskorchestrator.SessionCreator
+	activity ActivityChecker
 	logger   zerolog.Logger
 
 	cron *cron.Cron
@@ -102,6 +114,7 @@ func New(cfg Config) *Scheduler {
 		sessions: cfg.Sessions,
 		repos:    cfg.Repos,
 		creator:  cfg.Creator,
+		activity: cfg.Activity,
 		logger:   logger,
 		cron: cron.New(
 			cron.WithLocation(time.UTC),
@@ -466,6 +479,13 @@ func (s *Scheduler) previousRunActive(ctx context.Context, job *models.CronJob) 
 		return "", false
 	}
 	if sess.ArchivedAt != nil || isTerminalState(sess.State) {
+		return "", false
+	}
+	// A non-terminal session blocks the next fire only while its agent is still
+	// actively producing output. Once idle (e.g. it opened a PR and handed off),
+	// the next scheduled fire proceeds on its own per-fire branch. Nil checker
+	// preserves the legacy block-on-any-non-terminal behavior.
+	if s.activity != nil && !s.activity.RunActive(sess) {
 		return "", false
 	}
 	return "overlap_prev_active", true

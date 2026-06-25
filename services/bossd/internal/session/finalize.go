@@ -94,22 +94,49 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 		// UpdateLastRun would re-violate the FK constraint, so we leave the
 		// session-ID field alone (nil = don't update).
 		var recordedSessionIDPtr *string
+		expectedSessionID := sessionID
+		allowClearedExpectedSessionID := false
 		if result.Outcome != models.CronJobOutcomeDeletedNoChanges {
 			recordedSessionID := sessionID
 			recordedSessionIDPtr = &recordedSessionID
+		} else {
+			allowClearedExpectedSessionID = true
 		}
 
+		// Guard the write against a newer run: if this session went idle before
+		// finalizing, the next tick may have already fired a fresh run and moved
+		// last_run_session_id forward (the lost-hook overlap case). Recording
+		// this older outcome would point the job back at the now-stale session,
+		// so the overlap check would inspect idle this-session and launch more
+		// runs while the newer one is still working. ExpectedSessionID makes the
+		// write conditional on this session still being the recorded last run.
+		// deleted_no_changes leaves recordedSessionIDPtr nil because the session
+		// row is gone, but still guards against a newer run. Session deletion may
+		// already have cleared last_run_session_id to NULL, so that cleared value
+		// is allowed only for this deleted-session path.
 		if err := l.cronJobs.UpdateLastRun(ctx, *session.CronJobID, db.UpdateCronJobLastRunParams{
-			SessionID: recordedSessionIDPtr,
-			RanAt:     ranAt,
-			Outcome:   result.Outcome,
+			SessionID:                     recordedSessionIDPtr,
+			ExpectedSessionID:             &expectedSessionID,
+			AllowClearedExpectedSessionID: allowClearedExpectedSessionID,
+			RanAt:                         ranAt,
+			Outcome:                       result.Outcome,
 		}); err != nil {
-			// Outcome classification already succeeded; log and continue.
-			l.logger.Error().Err(err).
-				Str("session", sessionID).
-				Str("cronJob", *session.CronJobID).
-				Str("outcome", string(result.Outcome)).
-				Msg("failed to record cron job last-run outcome")
+			if errors.Is(err, db.ErrCronJobLastRunSuperseded) {
+				// A newer run owns last_run_session_id; this older finalize must
+				// not move it back. Benign — log at info and continue.
+				l.logger.Info().
+					Str("session", sessionID).
+					Str("cronJob", *session.CronJobID).
+					Str("outcome", string(result.Outcome)).
+					Msg("finalize: cron last-run superseded by newer run; skipping outcome write")
+			} else {
+				// Outcome classification already succeeded; log and continue.
+				l.logger.Error().Err(err).
+					Str("session", sessionID).
+					Str("cronJob", *session.CronJobID).
+					Str("outcome", string(result.Outcome)).
+					Msg("failed to record cron job last-run outcome")
+			}
 		}
 	}
 
@@ -716,15 +743,33 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 	for _, sess := range stuck {
 		if sess.CronJobID != nil && *sess.CronJobID != "" && l.cronJobs != nil {
 			recordedID := sess.ID
+			// Guard against a newer run, same as FinalizeSession: while this
+			// session sat stranded in Finalizing, the scheduler may have fired a
+			// fresh run (RunActive treats Finalizing as inactive) and moved
+			// last_run_session_id forward via MarkFireStarted. An unguarded write
+			// here would point the job back at this now-Blocked session, so the
+			// overlap check would inspect it instead of the newer active run and
+			// launch more runs concurrently. ExpectedSessionID keeps the write
+			// conditional on this session still being the recorded last run; a
+			// superseded no-match is a benign skip (the outcome belongs to the
+			// newer run). The Blocked transition below is independent of this.
 			if err := l.cronJobs.UpdateLastRun(ctx, *sess.CronJobID, db.UpdateCronJobLastRunParams{
-				SessionID: &recordedID,
-				RanAt:     time.Now(),
-				Outcome:   models.CronJobOutcomeFailedRecovered,
+				SessionID:         &recordedID,
+				ExpectedSessionID: &recordedID,
+				RanAt:             time.Now(),
+				Outcome:           models.CronJobOutcomeFailedRecovered,
 			}); err != nil {
-				l.logger.Error().Err(err).
-					Str("session", sess.ID).
-					Str("cronJob", *sess.CronJobID).
-					Msg("recover: failed to record failed_recovered outcome")
+				if errors.Is(err, db.ErrCronJobLastRunSuperseded) {
+					l.logger.Info().
+						Str("session", sess.ID).
+						Str("cronJob", *sess.CronJobID).
+						Msg("recover: cron last-run superseded by newer run; skipping failed_recovered outcome")
+				} else {
+					l.logger.Error().Err(err).
+						Str("session", sess.ID).
+						Str("cronJob", *sess.CronJobID).
+						Msg("recover: failed to record failed_recovered outcome")
+				}
 			}
 		}
 

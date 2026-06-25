@@ -160,6 +160,7 @@
                 "required": ["action"],
                 "properties": {
                   "action": { "enum": ["goto", "click", "type", "wait"] },
+                  "label": { "type": "string", "minLength": 1 },
                   "route": {
                     "type": "string",
                     "pattern": "^/(?!/)(?!.*\\\\)(?!.*[\\u0000-\\u001F\\u007F]).*$"

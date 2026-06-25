@@ -176,6 +176,10 @@ type fakeSessionStore struct {
 	getErr   error // force every Get to return this error
 }
 
+type fakeActivity struct{ active bool }
+
+func (f fakeActivity) RunActive(_ *models.Session) bool { return f.active }
+
 func newFakeSessionStore() *fakeSessionStore {
 	return &fakeSessionStore{sessions: map[string]*models.Session{}}
 }
@@ -597,6 +601,58 @@ func TestFire_PreviousRunActive(t *testing.T) {
 	}
 	if len(creator.calls) != 0 {
 		t.Error("creator should not be called when previous run is still active")
+	}
+}
+
+func TestFire_PreviousRunNonTerminalButIdle_ProceedsToFire(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	prev := "sess-prev"
+	job.LastRunSessionID = &prev
+	store.put(job)
+
+	sessions := newFakeSessionStore()
+	sessions.put(&models.Session{ID: prev, State: machine.ImplementingPlan}) // non-terminal
+
+	creator := newFakeCreator()
+	s := newTestScheduler(t, store, sessions, creator)
+	s.activity = fakeActivity{active: false} // agent idle -> not blocking
+
+	_, skipped, err := s.fire(context.Background(), "j")
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if skipped != "" {
+		t.Fatalf("skipped=%q, want fire to proceed", skipped)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls=%d, want 1", len(creator.calls))
+	}
+}
+
+func TestFire_PreviousRunActiveAgent_Skips(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	prev := "sess-prev"
+	job.LastRunSessionID = &prev
+	store.put(job)
+
+	sessions := newFakeSessionStore()
+	sessions.put(&models.Session{ID: prev, State: machine.ImplementingPlan})
+
+	creator := newFakeCreator()
+	s := newTestScheduler(t, store, sessions, creator)
+	s.activity = fakeActivity{active: true} // agent still working -> block
+
+	_, skipped, err := s.fire(context.Background(), "j")
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if skipped != "overlap_prev_active" {
+		t.Fatalf("skipped=%q, want overlap_prev_active", skipped)
+	}
+	if len(creator.calls) != 0 {
+		t.Fatal("creator should not be called while agent active")
 	}
 }
 

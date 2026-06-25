@@ -21,9 +21,8 @@ export function buildTape({ recipe, launcherCmd, outputPath }) {
   // Generous px sizing so boss has at least `cols`x`rows` to render into.
   const width = cols * 9 + padding * 2;
   const height = rows * 19 + padding * 2;
-  const frameDelay = recipe.frameDelayMs ?? 400;
-  // Boot covers daemon start + boss's first render. The orchestrator pre-builds
-  // the binaries (see proof.mjs), so this need not cover a `go build`.
+  const frameDelay = recipe.frameDelayMs ?? 650; // was 400 — a little slower to watch
+  const playbackSpeed = recipe.playbackSpeed ?? 0.65; // VHS final-render slowdown
   const bootSleep = 2500;
 
   const lines = [
@@ -34,9 +33,14 @@ export function buildTape({ recipe, launcherCmd, outputPath }) {
     `Set Width ${width}`,
     `Set Height ${height}`,
     `Set Padding ${padding}`,
+    `Set PlaybackSpeed ${playbackSpeed}`,
+    // Hide the launcher typing + boot so the recording opens on the first real
+    // app frame (not "> proof/tui/run-fixture.sh demo").
+    'Hide',
     `Type "${launcherCmd}"`,
     'Enter',
     `Sleep ${bootSleep}ms`,
+    'Show',
   ];
 
   const steps = Array.isArray(recipe.steps) ? recipe.steps : [];

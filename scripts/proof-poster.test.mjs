@@ -49,3 +49,60 @@ test('buildPosterArgs: maps the composed [v] label to the output', () => {
   assert.ok(mi >= 0, '-map flag present');
   assert.equal(a[mi + 1], '[v]', '-map [v]');
 });
+
+test('buildPosterArgs: without cropHeight is unchanged (regression)', () => {
+  const args = buildPosterArgs({ base: 'b.png', playButton: 'pb.png', outPath: 'o.png' });
+  const filter = args[args.indexOf('-filter_complex') + 1];
+  assert.equal(
+    filter,
+    '[1:v]scale=150:-1[pb];[0:v]drawbox=x=0:y=0:w=iw:h=ih:color=black@0.16:t=fill[bg];[bg][pb]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]',
+  );
+});
+
+test('buildPosterArgs: with cropHeight crops the base before scrim+overlay', () => {
+  const args = buildPosterArgs({
+    base: 'b.png',
+    playButton: 'pb.png',
+    outPath: 'o.png',
+    cropHeight: 612,
+  });
+  const filter = args[args.indexOf('-filter_complex') + 1];
+  assert.equal(
+    filter,
+    '[1:v]scale=150:-1[pb];[0:v]crop=in_w:612:0:0,drawbox=x=0:y=0:w=iw:h=ih:color=black@0.16:t=fill[bg];[bg][pb]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]',
+  );
+});
+
+test('buildPosterArgs: non-integer/zero cropHeight is ignored (no crop)', () => {
+  const args = buildPosterArgs({
+    base: 'b.png',
+    playButton: 'pb.png',
+    outPath: 'o.png',
+    cropHeight: 0,
+  });
+  const filter = args[args.indexOf('-filter_complex') + 1];
+  assert.ok(!filter.includes('crop='));
+});
+
+test('buildPosterArgs centers the overlay over content when overlayCenterHeight is given', () => {
+  const args = buildPosterArgs({
+    base: 'b.png',
+    playButton: 'p.png',
+    outPath: 'o.png',
+    cropHeight: 720,
+    overlayCenterHeight: 325,
+  });
+  const filter = args[args.indexOf('-filter_complex') + 1];
+  assert.match(filter, /overlay=\(main_w-overlay_w\)\/2:\(325-overlay_h\)\/2/);
+});
+
+test('buildPosterArgs without overlayCenterHeight centers on the frame', () => {
+  const args = buildPosterArgs({
+    base: 'b.png',
+    playButton: 'p.png',
+    outPath: 'o.png',
+    cropHeight: 720,
+  });
+  const filter = args[args.indexOf('-filter_complex') + 1];
+  assert.match(filter, /overlay=\(main_w-overlay_w\)\/2:\(main_h-overlay_h\)\/2/);
+});

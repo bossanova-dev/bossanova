@@ -37,13 +37,15 @@ owner_field() { [ -f "$META" ] && sed -n "${1}p" "$META" 2>/dev/null || true; }
 # numeric guard so this can only ever emit an integer (a text mtime would poison `age`).
 dir_mtime() {
   local m
-  m="$(stat -c %Y "$LOCK" 2>/dev/null)" || m="$(stat -f %m "$LOCK" 2>/dev/null)" || m=0
-  case "$m" in ''|*[!0-9]*) m=0 ;; esac
+  m="$(stat -c %Y "$LOCK" 2>/dev/null)" || m="$(stat -f %m "$LOCK" 2>/dev/null)" || m="$(now)"
+  case "$m" in ''|*[!0-9]*) m="$(now)" ;; esac
   printf '%s' "$m"
 }
 # Effective heartbeat: META heartbeat when written, else dir mtime. The fallback closes
 # the TOCTOU window between `mkdir` and the META write — a mid-acquire peer has no
-# heartbeat yet and must read LIVE (mtime≈now), never stale.
+# heartbeat yet and must read LIVE (mtime≈now), never stale. If the mtime cannot
+# be read because the lock dir is moving under a concurrent acquire/revival,
+# treat it as fresh; epoch-zero would misclassify the live peer as stale.
 eff_heartbeat() { local hb; hb="$(owner_field 3)"; if [ -n "$hb" ]; then printf '%s' "$hb"; else dir_mtime; fi; }
 
 cmd="${1:-}"; runid="${2:-}"; ticket="${3:-}"
@@ -68,9 +70,17 @@ case "$cmd" in
     # reviver can move the canonical name; others' `mv` fails (source gone) and they re-read.
     stamp="${LOCK}.stale.$$"
     if mv "$LOCK" "$stamp" 2>/dev/null; then
-      rm -rf "$stamp" 2>/dev/null || true
-      if mkdir "$LOCK" 2>/dev/null; then
-        write_meta "$runid" "$ticket"; echo "TOOK_OVER_STALE runid=$runid prev=${o_runid:-none} age=${age}s"; exit 0
+      # Another reviver may have replaced the stale lock after this process read
+      # o_runid/o_hb but before this mv. Only steal the exact lock observed.
+      s_runid="$(sed -n '1p' "$stamp/owner" 2>/dev/null || true)"
+      s_hb="$(sed -n '3p' "$stamp/owner" 2>/dev/null || true)"
+      if { [ -n "$o_runid" ] && [ "$s_runid" != "$o_runid" ]; } || { [ -n "$o_hb" ] && [ -n "$s_hb" ] && [ "$s_hb" != "$o_hb" ]; }; then
+        mv "$stamp" "$LOCK" 2>/dev/null || rm -rf "$stamp"
+      else
+        rm -rf "$stamp" 2>/dev/null || true
+        if mkdir "$LOCK" 2>/dev/null; then
+          write_meta "$runid" "$ticket"; echo "TOOK_OVER_STALE runid=$runid prev=${o_runid:-none} age=${age}s"; exit 0
+        fi
       fi
     fi
     if [ "$(owner_field 1)" = "$runid" ]; then echo "ACQUIRED runid=$runid (re-entrant)"; exit 0; fi

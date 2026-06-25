@@ -15,17 +15,38 @@ const ENCODE_ARGS = ['-frames:v', '1'];
  *
  * Filtergraph:
  *   [1:v]scale=<scaleW>:-1[pb];
- *   [0:v]drawbox=...:color=black@<scrim>:t=fill[bg];
+ *   [0:v][crop=in_w:<cropHeight>:0:0,]drawbox=...:color=black@<scrim>:t=fill[bg];
  *   [bg][pb]overlay=centered[v]
  *
- * @param {{ base: string, playButton: string, outPath: string, scaleW?: number, scrim?: number }} a
+ * @param {{ base: string, playButton: string, outPath: string, scaleW?: number, scrim?: number, cropHeight?: number, overlayCenterHeight?: number }} a
  * @returns {string[]}
  */
-export function buildPosterArgs({ base, playButton, outPath, scaleW = 150, scrim = 0.16 }) {
+export function buildPosterArgs({
+  base,
+  playButton,
+  outPath,
+  scaleW = 150,
+  scrim = 0.16,
+  cropHeight,
+  overlayCenterHeight,
+}) {
+  const crop =
+    cropHeight != null && Number.isInteger(cropHeight) && cropHeight > 0
+      ? `crop=in_w:${cropHeight}:0:0,`
+      : '';
+  // Center the play button over the content region when given (clamped to the
+  // crop), so short, padded pages don't put the button in the empty band.
+  const centerH =
+    overlayCenterHeight != null && Number.isInteger(overlayCenterHeight) && overlayCenterHeight > 0
+      ? cropHeight
+        ? Math.min(overlayCenterHeight, cropHeight)
+        : overlayCenterHeight
+      : null;
+  const yExpr = centerH != null ? `(${centerH}-overlay_h)/2` : '(main_h-overlay_h)/2';
   const filter = [
     `[1:v]scale=${scaleW}:-1[pb]`,
-    `[0:v]drawbox=x=0:y=0:w=iw:h=ih:color=black@${scrim}:t=fill[bg]`,
-    `[bg][pb]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]`,
+    `[0:v]${crop}drawbox=x=0:y=0:w=iw:h=ih:color=black@${scrim}:t=fill[bg]`,
+    `[bg][pb]overlay=(main_w-overlay_w)/2:${yExpr}[v]`,
   ].join(';');
   return [
     '-i',

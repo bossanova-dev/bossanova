@@ -722,6 +722,9 @@ func TestFinalizeSession_CleanWorktreePRLookupFailure_DeletesNoChanges(t *testin
 	if cron.lastRunCalls[0].sessionID != nil {
 		t.Fatalf("recorded session ID = %v, want nil after session delete", cron.lastRunCalls[0].sessionID)
 	}
+	if cron.lastRunCalls[0].expectedSessionID == nil || *cron.lastRunCalls[0].expectedSessionID != "sess-1" {
+		t.Fatalf("expected session guard = %v, want sess-1", cron.lastRunCalls[0].expectedSessionID)
+	}
 }
 
 // TestFinalizeSession_HookConfigOnly_DeletedNoChanges proves that the
@@ -1281,6 +1284,53 @@ func TestRecoverFinalizingSessions_SetsBlockedReason(t *testing.T) {
 	}
 	if sess.BlockedReason == nil || *sess.BlockedReason == "" {
 		t.Fatalf("BlockedReason = %v, want non-empty recovery reason", sess.BlockedReason)
+	}
+}
+
+// TestRecoverFinalizingSessions_GuardsLastRunWrite asserts that daemon-restart
+// recovery records the failed_recovered outcome with an ExpectedSessionID guard
+// pinned to the recovered session. Without the guard, a newer run that fired
+// while this session sat stranded in Finalizing (RunActive treats Finalizing as
+// inactive) and already moved last_run_session_id forward would be clobbered,
+// pointing the overlap check back at this now-Blocked session and letting more
+// runs launch concurrently with the live newer run.
+func TestRecoverFinalizingSessions_GuardsLastRunWrite(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	cronJobID := "cron-1"
+	sessions.sessions["sess-stuck"] = &models.Session{
+		ID:           "sess-stuck",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-stuck",
+		State:        machine.Finalizing,
+		CronJobID:    &cronJobID,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	if _, err := lc.RecoverFinalizingSessions(ctx); err != nil {
+		t.Fatalf("RecoverFinalizingSessions: %v", err)
+	}
+
+	if len(cron.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(cron.lastRunCalls))
+	}
+	call := cron.lastRunCalls[0]
+	if call.expectedSessionID == nil || *call.expectedSessionID != "sess-stuck" {
+		t.Fatalf("ExpectedSessionID = %v, want guard pinned to \"sess-stuck\"", call.expectedSessionID)
+	}
+	if call.sessionID == nil || *call.sessionID != "sess-stuck" {
+		t.Fatalf("SessionID = %v, want \"sess-stuck\"", call.sessionID)
+	}
+	if call.outcome != models.CronJobOutcomeFailedRecovered {
+		t.Fatalf("outcome = %v, want failed_recovered", call.outcome)
 	}
 }
 
@@ -1907,13 +1957,19 @@ type recordingCronJobStore struct {
 }
 
 type lastRunCall struct {
-	id        string
-	sessionID *string
-	outcome   models.CronJobOutcome
+	id                string
+	sessionID         *string
+	expectedSessionID *string
+	outcome           models.CronJobOutcome
 }
 
 func (r *recordingCronJobStore) UpdateLastRun(_ context.Context, id string, params db.UpdateCronJobLastRunParams) error {
-	r.lastRunCalls = append(r.lastRunCalls, lastRunCall{id: id, sessionID: params.SessionID, outcome: params.Outcome})
+	r.lastRunCalls = append(r.lastRunCalls, lastRunCall{
+		id:                id,
+		sessionID:         params.SessionID,
+		expectedSessionID: params.ExpectedSessionID,
+		outcome:           params.Outcome,
+	})
 	return nil
 }
 

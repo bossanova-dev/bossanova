@@ -97,6 +97,22 @@ function parseArgs(argv) {
   return parsed;
 }
 
+/**
+ * Convert a human-readable label into a URL/filename-safe slug.
+ * Lowercases, replaces each run of non-[a-z0-9] with '-', trims leading/trailing
+ * dashes, and falls back to 'step' when the result would be empty.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function slugify(text) {
+  const slug = String(text ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'step';
+}
+
 export function validateRecipe(recipe) {
   if (!validRecipeIdPattern.test(String(recipe.id ?? ''))) {
     throw new Error(`invalid recipe id: ${recipe.id ?? '<missing>'}`);
@@ -108,6 +124,11 @@ export function validateRecipe(recipe) {
     for (const step of recipe.steps) {
       if (!VIDEO_ACTIONS.has(step.action)) {
         throw new Error(`unsupported video step action: ${step.action ?? '<missing>'}`);
+      }
+      if (step.label !== undefined) {
+        if (typeof step.label !== 'string' || step.label.length === 0) {
+          throw new Error('video step label must be a non-empty string when provided');
+        }
       }
       if (step.action === 'goto') {
         if (typeof step.route !== 'string' || step.route.length === 0) {
@@ -197,11 +218,38 @@ function buildVideoSpec({ recipe, outputDir, surface }) {
   const webmPath = JSON.stringify(path.join(outputDir, `${recipe.id}.webm`));
   const posterPath = JSON.stringify(path.join(outputDir, `${recipe.id}.png`));
   const auditTarget = JSON.stringify(path.join(outputDir, 'audit.txt'));
+  const metaPath = JSON.stringify(path.join(outputDir, 'video-meta.json'));
   const outputDirJson = JSON.stringify(outputDir);
-  const viewport = JSON.stringify(recipe.viewport ?? { width: 1440, height: 1000 });
+  const viewportObj = recipe.viewport ?? { width: 1440, height: 1000 };
+  const viewport = JSON.stringify(viewportObj);
+
+  // Determine the effective crop selector: recipe-level, then per-surface default.
+  const defaultCropToSelector = surface === 'marketing' ? 'main' : '#root';
+  const cropToSelector = jsString(recipe.cropToSelector ?? defaultCropToSelector);
+
   const stageWeb = surface === 'web' ? webStageScript() : '';
   const testTitle = JSON.stringify(`proof video: ${recipe.id}`);
-  const stepLines = recipe.steps.map(renderVideoStep).join('\n');
+
+  // Build step lines interleaved with still-capture blocks.
+  const stepLines = recipe.steps
+    .map((step, i) => {
+      const nn = String(i + 1).padStart(2, '0');
+      const label = step.label ?? step.action;
+      const slug = slugify(label);
+      const fileName = `${nn}-${slug}.png`;
+      const outPath = JSON.stringify(path.join(outputDir, fileName));
+      const fileNameJson = jsString(fileName);
+      const labelJson = jsString(label);
+      const action = renderVideoStep(step);
+      const stillBlock = `  {
+    const __h = await captureStill(page, ${outPath}, ${cropToSelector}, ${viewport});
+    __stills.push({ fileName: ${fileNameJson}, label: ${labelJson} });
+    if (__h === null) __disableCrop = true;
+    else if (!__disableCrop) __cropHeight = Math.max(__cropHeight ?? 0, __h);
+  }`;
+      return `${action}\n${stillBlock}`;
+    })
+    .join('\n');
 
   // Video records at the context level, so this spec owns its own context (the
   // shared `page` fixture cannot be told to record). The webm finalizes only on
@@ -213,6 +261,8 @@ import fs from 'node:fs';
 
 ${collectProofAuditTextScript()}
 
+${captureStillScript()}
+
 test(${testTitle}, async ({ browser, baseURL }) => {
   const context = await browser.newContext({
     baseURL,
@@ -222,6 +272,9 @@ test(${testTitle}, async ({ browser, baseURL }) => {
   const page = await context.newPage();
   ${stageWeb}
   await page.setViewportSize(${viewport});
+  const __stills = [];
+  let __cropHeight = null;
+  let __disableCrop = false;
 ${stepLines}
   const auditText = await page.locator('body').evaluate(collectProofAuditText);
   fs.writeFileSync(${auditTarget}, auditText);
@@ -232,6 +285,7 @@ ${stepLines}
     const tmp = await video.path();
     fs.renameSync(tmp, ${webmPath});
   }
+  fs.writeFileSync(${metaPath}, JSON.stringify({ cropHeight: __disableCrop ? null : __cropHeight, stills: __stills }, null, 2));
 });
 `;
 }
@@ -269,6 +323,28 @@ function renderVideoStep(step) {
     default:
       throw new Error(`unsupported video step action: ${step.action ?? '<missing>'}`);
   }
+}
+
+function captureStillScript() {
+  return `
+async function captureStill(page, outPath, cropToSelector, viewport) {
+  const size = page.viewportSize() ?? viewport;
+  try {
+    if (cropToSelector) {
+      const region = page.locator(cropToSelector).first();
+      await region.waitFor({ state: 'visible', timeout: 2000 });
+      const box = await region.boundingBox();
+      if (box) {
+        const height = Math.min(size.height, Math.ceil(box.y + box.height + 24));
+        await page.screenshot({ path: outPath, clip: { x: 0, y: 0, width: size.width, height } });
+        return height;
+      }
+    }
+  } catch {}
+  await page.screenshot({ path: outPath }); // full-frame fallback
+  return null;
+}
+`;
 }
 
 function collectProofAuditTextScript() {

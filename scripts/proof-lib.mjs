@@ -132,7 +132,19 @@ function looksLikeFilePath(value) {
   return value.split('/').every((segment) => segment === '' || segmentPattern.test(segment));
 }
 
-export function buildManifest({ commit, prNumber, runId, publicBaseUrl, captures }) {
+export function buildManifest({
+  commit,
+  prNumber,
+  runId,
+  publicBaseUrl,
+  captures,
+  agentRunnerStubbed,
+  title,
+  verdict,
+  genAiLive = false,
+  agentSummary = null,
+  brief = null,
+}) {
   const normalizedBase = publicBaseUrl.replace(/\/$/, '');
   const publicLiveCapture = captures.some((capture) => capture.privacy === 'live');
   return {
@@ -141,65 +153,180 @@ export function buildManifest({ commit, prNumber, runId, publicBaseUrl, captures
     commit,
     prNumber: String(prNumber),
     runId,
+    ...(title ? { title } : {}),
+    ...(verdict ? { verdict } : {}),
+    genAiLive,
+    ...(agentSummary ? { agentSummary } : {}),
+    ...(brief ? { brief } : {}),
     publicBaseUrl: normalizedBase,
     publicLiveCapture,
+    ...(agentRunnerStubbed ? { agentRunnerStubbed: true } : {}),
     captures: captures.map((capture) => {
-      if (capture.status !== 'passed' || !capture.fileName) {
-        return { ...capture, mediaType: capture.mediaType ?? 'png' };
+      const mediaType = capture.mediaType ?? 'png';
+      // Normalize captured stills to public URLs whenever they exist, even when
+      // the primary media is missing (e.g. video conversion failed but Playwright
+      // still produced screenshots) — those stills are uploaded, so they must
+      // stay linkable evidence instead of being dropped.
+      const stills =
+        Array.isArray(capture.stills) && capture.stills.length > 0
+          ? capture.stills.map((still) => ({
+              ...still,
+              url: `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(still.fileName))}`,
+            }))
+          : null;
+      if (!capture.fileName) {
+        return { ...capture, mediaType, ...(stills ? { stills } : {}) };
       }
+      // Surface media URLs whenever file names exist, regardless of status, so
+      // Unsatisfactory agent runs are reviewable without re-running.
       const url = `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(capture.fileName))}`;
-      const out = { ...capture, mediaType: capture.mediaType ?? 'png', url };
+      const out = { ...capture, mediaType, url };
       if (isVideoMediaType(capture.mediaType)) {
         out.videoUrl = url;
         if (capture.posterFileName) {
           out.posterUrl = `${normalizedBase}/${encodePathSegments(validateProofUploadRelativePath(capture.posterFileName))}`;
         }
       }
+      if (stills) {
+        out.stills = stills;
+      }
       return out;
     }),
   };
 }
 
-export function renderComment({ marker, manifest }) {
-  const lines = [
-    marker,
-    '## Proof of implementation',
+/**
+ * Evidence/Confidence verdict block (ported from wc-proof lib/publish.mjs).
+ * Evidence is Satisfactory only when the run passed AND media exists.
+ * Confidence is Low when not satisfactory, Medium when a gen-AI feature was
+ * demoed UI-only (brief.genAi && !genAiLive), else High.
+ * @param {{verdict?:string, captures?:Array<{fileName?:string}>, genAiLive?:boolean, brief?:{genAi?:boolean}}} manifest
+ * @returns {{evidence:string, confidence:string, evidenceOk:boolean, confidenceOk:boolean}}
+ */
+export function deriveVerdictBlock(manifest) {
+  const hasMedia = (manifest.captures ?? []).some((c) => Boolean(c.fileName));
+  const satisfactory = manifest.verdict === 'passed' && hasMedia;
+  const evidence = satisfactory ? 'Satisfactory' : 'Unsatisfactory';
+  let confidence = 'Low';
+  if (satisfactory) confidence = manifest.brief?.genAi && !manifest.genAiLive ? 'Medium' : 'High';
+  return {
+    evidence,
+    confidence,
+    evidenceOk: evidence !== 'Unsatisfactory',
+    confidenceOk: confidence !== 'Low',
+  };
+}
+
+/** The two ✅/❌ Evidence + Confidence lines, shared by the comment and the gallery README. */
+export function verdictBlockLines(manifest) {
+  const v = deriveVerdictBlock(manifest);
+  return [
+    `${v.evidenceOk ? '✅' : '❌'} **Evidence:** ${v.evidence}`,
     '',
-    `Commit: \`${manifest.commit}\``,
-    `Run: \`${manifest.runId}\``,
+    `${v.confidenceOk ? '✅' : '❌'} **Confidence:** ${v.confidence}`,
   ];
+}
 
+/**
+ * Minimal sticky PR comment: a single prominent gallery link, the title, the
+ * run metadata line, an optional agent summary, and the Evidence/Confidence
+ * block. No inline media (the gallery README is the clickthrough). No Verdict
+ * line (it dupes Evidence).
+ */
+export function renderComment({ marker, manifest }) {
+  const lines = [marker];
+  if (manifest.reportUrl) lines.push(`### [📸 Proof gallery](${manifest.reportUrl})`, '');
+  else if (manifest.publicBaseUrl)
+    lines.push(`### [📸 Proof manifest](${manifest.publicBaseUrl}/manifest.json)`, '');
+  lines.push(`**${escapeMarkdown(manifest.title ?? 'Proof of implementation')}**`, '');
+  const genAi = manifest.genAiLive ? 'live providers' : 'not live (UI-only demo)';
+  lines.push(
+    `**Commit:** \`${manifest.commit}\`  **Run:** ${manifest.runId}  **Gen-AI:** ${genAi}`,
+    '',
+  );
   if (manifest.publicLiveCapture) {
-    lines.push('', '**PUBLIC LIVE CAPTURE:** one or more screenshots came from live state.');
+    lines.push('**PUBLIC LIVE CAPTURE:** one or more screenshots came from live state.', '');
   }
-
-  // One vertical block per capture. A table wastes horizontal space (the
-  // scarce axis in a PR comment), so labels stack above a full-width image.
-  for (const capture of manifest.captures) {
-    let body;
-    if (capture.status !== 'passed') {
-      body = escapeMarkdown(capture.error ?? 'capture failed');
-    } else if (isVideoMediaType(capture.mediaType)) {
-      // GitHub strips external <video>, so embed a poster thumbnail that links
-      // to the R2-hosted video. Clicking opens the video in the browser.
-      const poster = capture.posterUrl ?? capture.url;
-      body = `[![${escapeMarkdown(capture.title)}](${poster})](${capture.videoUrl ?? capture.url})\n\n▶ Video (click the image to play)`;
-    } else {
-      // png and gif both embed inline; an animated gif plays in place.
-      body = `![${escapeMarkdown(capture.title)}](${capture.url})`;
-    }
+  if (manifest.agentSummary) {
     lines.push(
+      '<details><summary>Agent summary</summary>',
       '',
-      `### ${escapeMarkdown(capture.title)}`,
+      manifest.agentSummary,
       '',
-      `**Surface:** ${escapeMarkdown(capture.surface)}  `,
-      `**Status:** ${escapeMarkdown(capture.status)}`,
+      '</details>',
       '',
-      body,
     );
   }
+  for (const l of verdictBlockLines(manifest)) lines.push(l);
+  return `${lines.join('\n')}\n`;
+}
 
-  lines.push('', `Manifest: ${manifest.publicBaseUrl}/manifest.json`);
+/**
+ * Renders a Markdown README for the bs-proof report repo. Pure — no fs/env/Date.
+ * @param {{ manifest: object }} opts
+ * @returns {string}
+ */
+export function renderGallery({ manifest }) {
+  const captureCount = (manifest.captures ?? []).length;
+  const lines = [
+    `# Proof report — PR ${manifest.prNumber}`,
+    '',
+    `- Commit: \`${manifest.commit}\``,
+    `- Run: \`${manifest.runId}\``,
+    `- Generated: ${manifest.generatedAt}`,
+    `- Captures: ${captureCount}`,
+  ];
+
+  lines.push('');
+  for (const l of verdictBlockLines(manifest)) lines.push(l);
+  if (manifest.agentRunnerStubbed)
+    lines.push('', '_agent-runner stubbed; UI + orchestration + persistence exercised._');
+
+  // Render a list of stills as blank-line-separated markdown images.
+  const pushStills = (stills) => {
+    for (let i = 0; i < stills.length; i++) {
+      lines.push(`![${escapeMarkdown(stills[i].label)}](${stills[i].url})`);
+      if (i < stills.length - 1) {
+        lines.push('');
+      }
+    }
+  };
+
+  for (const capture of manifest.captures ?? []) {
+    lines.push('', `## ${escapeMarkdown(capture.title)}`, '');
+    lines.push(
+      `**Surface:** ${escapeMarkdown(capture.surface)} · **Status:** ${escapeMarkdown(capture.status)}`,
+      '',
+    );
+
+    if (capture.status !== 'passed') {
+      lines.push(escapeMarkdown(capture.error ?? 'capture failed'));
+    }
+
+    const stills = capture.stills ?? [];
+    if (isVideoMediaType(capture.mediaType) && (capture.videoUrl || capture.url)) {
+      const poster = capture.posterUrl ?? capture.url;
+      if (capture.status !== 'passed') lines.push('');
+      lines.push(
+        `[![${escapeMarkdown(capture.title)}](${poster})](${capture.videoUrl ?? capture.url})`,
+        '',
+        '▶ Video',
+      );
+      if (stills.length > 0) {
+        lines.push('', '### Step screenshots', '');
+        pushStills(stills);
+      }
+    } else if (capture.url) {
+      if (capture.status !== 'passed') lines.push('');
+      lines.push(`![${escapeMarkdown(capture.title)}](${capture.url})`);
+    } else if (stills.length > 0) {
+      // No linkable primary media (e.g. video conversion failed) but Playwright
+      // captured stills — surface them directly so there is still linked evidence.
+      if (capture.status !== 'passed') lines.push('');
+      pushStills(stills);
+    }
+  }
+
   return `${lines.join('\n')}\n`;
 }
 
@@ -370,7 +497,12 @@ export function r2UploadCommand({ bucket, key, file, contentType }) {
     'pnpm',
     [
       'dlx',
-      'wrangler@3.90.0',
+      // Pinned to a v4 line: v3 prints an "out-of-date, update to v4" warning on
+      // every object put. NOTE: v4 changed `r2 object put` to default to the
+      // LOCAL miniflare store — `--remote` is REQUIRED to write the real bucket
+      // (without it the upload silently lands in a local simulator and the public
+      // URL 404s).
+      'wrangler@4.42.0',
       'r2',
       'object',
       'put',
@@ -379,6 +511,7 @@ export function r2UploadCommand({ bucket, key, file, contentType }) {
       file,
       '--content-type',
       contentType,
+      '--remote',
     ],
   ];
 }
@@ -465,11 +598,15 @@ export function proofUploadFiles({ manifest, localDir }) {
   };
 
   for (const capture of manifest.captures ?? []) {
-    if (capture.status !== 'passed') {
-      continue;
-    }
+    // Upload media whenever a fileName is present (passed OR failed), so
+    // Unsatisfactory agent runs remain reviewable. Recipe failures never reach
+    // this path with a fileName because proof.mjs deletes their artifacts
+    // upstream before buildManifest is called.
     pushArtifact(capture.fileName);
     pushArtifact(capture.posterFileName);
+    for (const still of capture.stills ?? []) {
+      pushArtifact(still.fileName);
+    }
   }
 
   return files;

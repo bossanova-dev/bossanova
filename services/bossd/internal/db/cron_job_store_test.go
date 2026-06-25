@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -504,6 +505,181 @@ func TestCronJobStore_MarkFireStarted(t *testing.T) {
 	got3, _ := store.Get(ctx, job.ID)
 	if got3.NextRunAt != nil {
 		t.Errorf("next_run_at after clear = %v, want nil", got3.NextRunAt)
+	}
+}
+
+func TestCronJobStore_MarkFireStarted_ClearsStaleOutcome(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	job := createTestCronJob(t, store, repo.ID, "outcome-test")
+
+	// Record a prior outcome.
+	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
+		RanAt:   time.Now().UTC(),
+		Outcome: models.CronJobOutcomeDeletedNoChanges,
+	}); err != nil {
+		t.Fatalf("UpdateLastRun: %v", err)
+	}
+
+	sess, _ := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "next fire", WorktreePath: "/tmp/wt/next",
+		BranchName: "feat/next", BaseBranch: "main",
+	})
+	if err := store.MarkFireStarted(ctx, job.ID, sess.ID, time.Now().UTC(), nil); err != nil {
+		t.Fatalf("MarkFireStarted: %v", err)
+	}
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// models.CronJob.LastRunOutcome is *CronJobOutcome; cleared == nil.
+	if got.LastRunOutcome != nil {
+		t.Fatalf("LastRunOutcome=%v, want nil (cleared)", *got.LastRunOutcome)
+	}
+}
+
+// TestCronJobStore_UpdateLastRun_ExpectedSessionGuard verifies that a guarded
+// UpdateLastRun (ExpectedSessionID set) only writes while last_run_session_id
+// still matches, so an older run's late finalize cannot move the pointer back
+// over a newer run that already called MarkFireStarted (the overlap bug).
+func TestCronJobStore_UpdateLastRun_ExpectedSessionGuard(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	job := createTestCronJob(t, store, repo.ID, "guard-test")
+
+	mkSession := func(name, path string) string {
+		s, err := sessionStore.Create(ctx, CreateSessionParams{
+			RepoID: repo.ID, Title: name, WorktreePath: path,
+			BranchName: "feat/" + name, BaseBranch: "main",
+		})
+		if err != nil {
+			t.Fatalf("create session %s: %v", name, err)
+		}
+		return s.ID
+	}
+
+	runA := mkSession("run-a", "/tmp/wt/a")
+	runB := mkSession("run-b", "/tmp/wt/b")
+
+	// Run A fires, then the next tick fires run B (B's MarkFireStarted moves
+	// the pointer forward while A is still idle in ImplementingPlan).
+	if err := store.MarkFireStarted(ctx, job.ID, runA, time.Now().UTC(), nil); err != nil {
+		t.Fatalf("MarkFireStarted A: %v", err)
+	}
+	if err := store.MarkFireStarted(ctx, job.ID, runB, time.Now().UTC(), nil); err != nil {
+		t.Fatalf("MarkFireStarted B: %v", err)
+	}
+
+	// A finalizes late. A guarded write expecting A must be a no-op (B owns the
+	// pointer now) and report the supersede sentinel.
+	err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
+		SessionID:         &runA,
+		ExpectedSessionID: &runA,
+		RanAt:             time.Now().UTC(),
+		Outcome:           models.CronJobOutcomePRCreated,
+	})
+	if !errors.Is(err, ErrCronJobLastRunSuperseded) {
+		t.Fatalf("guarded UpdateLastRun(A): got %v, want ErrCronJobLastRunSuperseded", err)
+	}
+	got, _ := store.Get(ctx, job.ID)
+	if got.LastRunSessionID == nil || *got.LastRunSessionID != runB {
+		t.Fatalf("pointer moved off newer run: got %v, want %s", got.LastRunSessionID, runB)
+	}
+	if got.LastRunOutcome != nil {
+		t.Fatalf("superseded outcome leaked: got %v, want nil", got.LastRunOutcome)
+	}
+
+	// A guarded write expecting the current run B succeeds and records the outcome.
+	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
+		SessionID:         &runB,
+		ExpectedSessionID: &runB,
+		RanAt:             time.Now().UTC(),
+		Outcome:           models.CronJobOutcomePRCreated,
+	}); err != nil {
+		t.Fatalf("guarded UpdateLastRun(B): %v", err)
+	}
+	got2, _ := store.Get(ctx, job.ID)
+	if got2.LastRunOutcome == nil || *got2.LastRunOutcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome for current run not recorded: got %v", got2.LastRunOutcome)
+	}
+}
+
+func TestCronJobStore_UpdateLastRun_DeletedSessionGuardAllowsClearedPointer(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	job := createTestCronJob(t, store, repo.ID, "deleted-guard-test")
+
+	runA, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "run-a", WorktreePath: "/tmp/wt/a",
+		BranchName: "feat/run-a", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("create run A: %v", err)
+	}
+	if err := store.MarkFireStarted(ctx, job.ID, runA.ID, time.Now().UTC(), nil); err != nil {
+		t.Fatalf("MarkFireStarted A: %v", err)
+	}
+	if err := sessionStore.Delete(ctx, runA.ID); err != nil {
+		t.Fatalf("delete run A: %v", err)
+	}
+
+	// Deleting run A clears last_run_session_id; the deleted-no-change finalizer
+	// still owns that cleared pointer and may record its outcome.
+	if err := store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
+		ExpectedSessionID:             &runA.ID,
+		AllowClearedExpectedSessionID: true,
+		RanAt:                         time.Now().UTC(),
+		Outcome:                       models.CronJobOutcomeDeletedNoChanges,
+	}); err != nil {
+		t.Fatalf("guarded deleted UpdateLastRun(A): %v", err)
+	}
+	got, _ := store.Get(ctx, job.ID)
+	if got.LastRunOutcome == nil || *got.LastRunOutcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("deleted outcome not recorded: got %v", got.LastRunOutcome)
+	}
+
+	runB, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID: repo.ID, Title: "run-b", WorktreePath: "/tmp/wt/b",
+		BranchName: "feat/run-b", BaseBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("create run B: %v", err)
+	}
+	if err := store.MarkFireStarted(ctx, job.ID, runB.ID, time.Now().UTC(), nil); err != nil {
+		t.Fatalf("MarkFireStarted B: %v", err)
+	}
+
+	err = store.UpdateLastRun(ctx, job.ID, UpdateCronJobLastRunParams{
+		ExpectedSessionID:             &runA.ID,
+		AllowClearedExpectedSessionID: true,
+		RanAt:                         time.Now().UTC(),
+		Outcome:                       models.CronJobOutcomeDeletedNoChanges,
+	})
+	if !errors.Is(err, ErrCronJobLastRunSuperseded) {
+		t.Fatalf("guarded deleted UpdateLastRun(A after B): got %v, want ErrCronJobLastRunSuperseded", err)
+	}
+	got2, _ := store.Get(ctx, job.ID)
+	if got2.LastRunSessionID == nil || *got2.LastRunSessionID != runB.ID {
+		t.Fatalf("pointer moved off newer run: got %v, want %s", got2.LastRunSessionID, runB.ID)
+	}
+	if got2.LastRunOutcome != nil {
+		t.Fatalf("superseded deleted outcome leaked: got %v, want nil", got2.LastRunOutcome)
 	}
 }
 

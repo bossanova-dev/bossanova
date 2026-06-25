@@ -51,3 +51,27 @@ test('buildTape rejects an invalid recipe id', () => {
     /invalid recipe id/,
   );
 });
+
+test('buildTape hides the launcher preamble and slows playback', () => {
+  const tape = buildTape({
+    recipe: { id: 'tui-x', steps: [{ keys: ['n'] }] },
+    launcherCmd: 'proof/tui/run-fixture.sh demo',
+    outputPath: '/tmp/out.webm',
+  });
+  const lines = tape.split('\n');
+  const hideIdx = lines.indexOf('Hide');
+  const typeIdx = lines.findIndex((l) => l.startsWith('Type "proof/tui/run-fixture.sh demo"'));
+  const showIdx = lines.indexOf('Show');
+  assert.ok(hideIdx >= 0 && typeIdx > hideIdx, 'Hide precedes the launcher Type');
+  assert.ok(showIdx > typeIdx, 'Show comes after the launcher boot');
+  assert.match(tape, /Set PlaybackSpeed 0\.65/);
+});
+
+test('buildTape default frameDelay is the slower 650ms', () => {
+  const tape = buildTape({
+    recipe: { id: 'tui-x', steps: [{ keys: ['n'] }] },
+    launcherCmd: 'x',
+    outputPath: '/tmp/o.webm',
+  });
+  assert.match(tape, /Sleep 650ms/);
+});

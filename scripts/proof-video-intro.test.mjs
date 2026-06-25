@@ -24,6 +24,7 @@ test('buildIntroClipArgs: loops the png for INTRO_SEC at the video geometry/fps'
   assert.ok(a.includes(String(INTRO_SEC)), `should contain INTRO_SEC duration (${INTRO_SEC})`);
   assert.ok(a.join(' ').includes('scale=1280:720'), 'should include scale filter');
   assert.ok(a.join(' ').includes('fps=30'), 'should include fps filter');
+  assert.ok(a.join(' ').includes('setsar=1'), 'should pin SAR to 1:1 to avoid concat mismatch');
   assert.equal(a[a.length - 1], '/p/intro.mp4');
 });
 
@@ -64,6 +65,15 @@ test('buildIntroConcatArgs: filter_complex contains concat=n=2:v=1:a=0', () => {
   assert.ok(filterIdx >= 0, '-filter_complex present');
   const filter = a[filterIdx + 1];
   assert.ok(filter.includes('concat=n=2:v=1:a=0'), 'concat n=2 v=1 a=0 in filter');
+});
+
+test('buildIntroConcatArgs: normalizes both inputs to SAR 1:1 before concat', () => {
+  const a = buildIntroConcatArgs({ introPath: '/i.mp4', mainPath: '/m.mp4', outPath: '/o.mp4' });
+  const filter = a[a.indexOf('-filter_complex') + 1];
+  // Both streams pass through setsar=1 so a sample-aspect mismatch can't make
+  // concat write a zero-frame file.
+  assert.ok(filter.includes('[0:v]setsar=1'), 'intro stream SAR-normalized');
+  assert.ok(filter.includes('[1:v]setsar=1'), 'main stream SAR-normalized');
 });
 
 // ── buildIntroCardHtml ───────────────────────────────────────────────────────

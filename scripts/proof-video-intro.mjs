@@ -31,14 +31,23 @@ export function buildIntroClipArgs({ pngPath, width, height, fps, outPath }) {
     String(INTRO_SEC),
     '-i',
     pngPath,
+    // setsar=1 pins square pixels: if the source PNG's aspect differs from the
+    // target geometry, scale would otherwise set a non-1:1 SAR to preserve DAR,
+    // and the downstream concat filter rejects a SAR mismatch (zero frames out).
     '-vf',
-    `scale=${width}:${height}:flags=lanczos,format=yuv420p,fps=${fps}`,
+    `scale=${width}:${height}:flags=lanczos,setsar=1,format=yuv420p,fps=${fps}`,
     ...ENCODE_ARGS,
     outPath,
   ];
 }
 
-/** Concat [intro][main] via the filter graph (robust across two encodes). */
+/**
+ * Concat [intro][main] via the filter graph (robust across two encodes).
+ * Both inputs are normalized to SAR 1:1 before concat — the concat filter
+ * refuses to configure when input SARs differ and silently writes a zero-frame
+ * file, so this guards against any residual sample-aspect drift between the two
+ * independently-encoded clips.
+ */
 export function buildIntroConcatArgs({ introPath, mainPath, outPath }) {
   return [
     '-i',
@@ -46,7 +55,7 @@ export function buildIntroConcatArgs({ introPath, mainPath, outPath }) {
     '-i',
     mainPath,
     '-filter_complex',
-    '[0:v][1:v]concat=n=2:v=1:a=0[v]',
+    '[0:v]setsar=1[i];[1:v]setsar=1[m];[i][m]concat=n=2:v=1:a=0[v]',
     '-map',
     '[v]',
     ...ENCODE_ARGS,

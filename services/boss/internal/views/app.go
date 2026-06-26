@@ -241,6 +241,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.cronList.width = msg.Width
 		a.cronList.height = msg.Height
 		a.cronForm.width = msg.Width
+		a.cronForm.height = msg.Height
 		a.onboarding.width = msg.Width
 
 	case tea.KeyMsg:
@@ -365,6 +366,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ViewCronForm:
 			a.cronForm = NewCronFormModel(a.client, a.ctx)
 			a.cronForm.width = a.width
+			a.cronForm.height = a.height
 			return a, a.cronForm.Init()
 		}
 		return a, nil
@@ -579,6 +581,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cronForm = NewCronFormModel(a.client, a.ctx)
 			a.cronForm.job = ofm.job
 			a.cronForm.width = a.width
+			a.cronForm.height = a.height
 			return a, a.cronForm.Init()
 		}
 		return a, cmd

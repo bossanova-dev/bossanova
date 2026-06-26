@@ -64,15 +64,18 @@ export function selectBatch(alerts, openPRs = [], opts = {}) {
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(a);
   }
-  if (groups.size === 0) return { manifest: null, ecosystem: null, batch: [], deferred: [], dropped: [] };
+  if (groups.size === 0)
+    return { manifest: null, ecosystem: null, batch: [], deferred: [], dropped: [] };
 
   // Rank groups: total score desc, count desc, manifest path asc.
   const ranked = [...groups.entries()]
     .map(([k, list]) => ({ k, list, score: list.reduce((s, a) => s + scoreAlert(a), 0) }))
-    .sort((x, y) =>
-      y.score - x.score ||
-      y.list.length - x.list.length ||
-      (x.list[0].dependency.manifest_path < y.list[0].dependency.manifest_path ? -1 : 1));
+    .sort(
+      (x, y) =>
+        y.score - x.score ||
+        y.list.length - x.list.length ||
+        (x.list[0].dependency.manifest_path < y.list[0].dependency.manifest_path ? -1 : 1),
+    );
 
   const chosen = ranked[0].list;
   const ecosystem = chosen[0].dependency.package.ecosystem;
@@ -83,13 +86,20 @@ export function selectBatch(alerts, openPRs = [], opts = {}) {
   const fixable = [];
   for (const a of chosen) {
     const fixed = fixedOf(a);
-    if (!fixed) { dropped.push({ number: a.number, ghsa: ghsaOf(a), reason: 'no patched version' }); continue; }
-    if (isMajorBump(rangeOf(a), fixed)) { deferred.push({ number: a.number, ghsa: ghsaOf(a), reason: 'major version bump' }); continue; }
+    if (!fixed) {
+      dropped.push({ number: a.number, ghsa: ghsaOf(a), reason: 'no patched version' });
+      continue;
+    }
+    if (isMajorBump(rangeOf(a), fixed)) {
+      deferred.push({ number: a.number, ghsa: ghsaOf(a), reason: 'major version bump' });
+      continue;
+    }
     fixable.push(a);
   }
   fixable.sort((x, y) => scoreAlert(y) - scoreAlert(x));
   const batch = fixable.slice(0, maxBatch);
-  for (const a of fixable.slice(maxBatch)) deferred.push({ number: a.number, ghsa: ghsaOf(a), reason: 'over per-run cap' });
+  for (const a of fixable.slice(maxBatch))
+    deferred.push({ number: a.number, ghsa: ghsaOf(a), reason: 'over per-run cap' });
 
   return { manifest, ecosystem, batch, deferred, dropped };
 }
@@ -97,7 +107,12 @@ export function selectBatch(alerts, openPRs = [], opts = {}) {
 // append to scripts/security-sweep-gate.mjs
 export function classifyOutcome(repairResult, mergeable, reviewDecision) {
   if (repairResult === 'max-attempts' || repairResult === 'blocked') return 'escalate';
-  if (repairResult === 'green' && mergeable === 'MERGEABLE' && reviewDecision !== 'CHANGES_REQUESTED') return 'green';
+  if (
+    repairResult === 'green' &&
+    mergeable === 'MERGEABLE' &&
+    reviewDecision !== 'CHANGES_REQUESTED'
+  )
+    return 'green';
   return 'retry';
 }
 
@@ -105,7 +120,10 @@ const STATE_SENTINEL = '<!-- bs-security-sweep:state -->';
 
 export function parseState(body = '') {
   const text = String(body ?? '');
-  const num = (re) => { const m = text.match(re); return m ? m[1] : null; };
+  const num = (re) => {
+    const m = text.match(re);
+    return m ? m[1] : null;
+  };
   return {
     attempts: Number(num(/attempts:\s*(\d+)/) ?? 0),
     lastSha: num(/lastSha:\s*([0-9a-fA-F]+)/) ?? '',
@@ -156,7 +174,9 @@ export function runCli(argv, { readFile = (f) => readFileSync(f, 'utf8') } = {})
     case 'score':
       return JSON.stringify(json(rest[0]).map((a) => ({ number: a.number, score: scoreAlert(a) })));
     case 'select-batch':
-      return JSON.stringify(selectBatch(json(rest[0]), json(rest[1]), { maxBatch: rest[2] ? Number(rest[2]) : 10 }));
+      return JSON.stringify(
+        selectBatch(json(rest[0]), json(rest[1]), { maxBatch: rest[2] ? Number(rest[2]) : 10 }),
+      );
     case 'dedupe':
       return JSON.stringify(dedupeAgainstPRs(json(rest[0]), json(rest[1])).map((a) => a.number));
     case 'classify':
@@ -166,11 +186,13 @@ export function runCli(argv, { readFile = (f) => readFileSync(f, 'utf8') } = {})
     case 'parse-state':
       return JSON.stringify(parseState(readFile(rest[0])));
     case 'decide-action':
-      return JSON.stringify(decideAction({
-        state: parseState(readFile(rest[0])),
-        currentSha: rest[1],
-        maxAttempts: rest[2] ? Number(rest[2]) : 3,
-      }));
+      return JSON.stringify(
+        decideAction({
+          state: parseState(readFile(rest[0])),
+          currentSha: rest[1],
+          maxAttempts: rest[2] ? Number(rest[2]) : 3,
+        }),
+      );
     default:
       throw new Error(`unknown subcommand: ${cmd}`);
   }

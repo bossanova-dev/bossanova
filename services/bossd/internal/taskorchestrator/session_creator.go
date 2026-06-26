@@ -58,7 +58,12 @@ type lifecycleSessionCreator struct {
 	lifecycle            SessionStarter
 	defaultAgentProvider func() string
 	duplicateLiveness    SessionLivenessChecker
-	logger               zerolog.Logger
+	// onSessionDeleted, when non-nil, is invoked after a half-started
+	// session row is cleaned up so the deletion propagates upstream.
+	// Without it the row lingers as a phantom in the web read model until
+	// the daemon reconnects and re-snapshots.
+	onSessionDeleted func(context.Context, string)
+	logger           zerolog.Logger
 }
 
 // NewSessionCreator creates a SessionCreator backed by the DB and Lifecycle.
@@ -93,11 +98,29 @@ func NewSessionCreatorWithDefaultAgentProviderAndLiveness(
 	duplicateLiveness SessionLivenessChecker,
 	logger zerolog.Logger,
 ) SessionCreator {
+	return NewSessionCreatorWithNotifier(sessions, lifecycle, defaultAgentProvider, duplicateLiveness, nil, logger)
+}
+
+// NewSessionCreatorWithNotifier is like
+// NewSessionCreatorWithDefaultAgentProviderAndLiveness but also takes an
+// onSessionDeleted callback invoked when a half-started session is cleaned
+// up, so the deletion propagates to the orchestrator read model instead of
+// lingering as a phantom row until the next daemon reconnect. A nil callback
+// is allowed (no-op).
+func NewSessionCreatorWithNotifier(
+	sessions db.SessionStore,
+	lifecycle SessionStarter,
+	defaultAgentProvider func() string,
+	duplicateLiveness SessionLivenessChecker,
+	onSessionDeleted func(context.Context, string),
+	logger zerolog.Logger,
+) SessionCreator {
 	return &lifecycleSessionCreator{
 		sessions:             sessions,
 		lifecycle:            lifecycle,
 		defaultAgentProvider: defaultAgentProvider,
 		duplicateLiveness:    duplicateLiveness,
+		onSessionDeleted:     onSessionDeleted,
 		logger:               logger.With().Str("component", "session-creator").Logger(),
 	}
 }
@@ -174,6 +197,10 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 			c.logger.Warn().Err(delErr).
 				Str("session", sess.ID).
 				Msg("clean up half-started session after StartSession failure")
+		} else if c.onSessionDeleted != nil {
+			// Publish the deletion so the orchestrator read model drops the
+			// row immediately rather than leaving a phantom until reconnect.
+			c.onSessionDeleted(ctx, sess.ID)
 		}
 		return nil, fmt.Errorf("start session %s: %w", sess.ID, err)
 	}

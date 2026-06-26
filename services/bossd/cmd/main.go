@@ -126,13 +126,32 @@ func filterSessionsByPR(rows []*db.SessionWithRepo, prNumber int) []*db.SessionW
 	return out
 }
 
-// snapshotFallbackEnabled reports whether the periodic unary
-// PublishDaemonSnapshot publisher should run. It is a break-glass
-// fallback for transports that cannot carry the DaemonStream bidi
-// stream; steady state must be stream-fed, so it is opt-in.
+// snapshotFallbackEnabled reports whether the unary PublishDaemonSnapshot
+// publisher should run in break-glass FULL-FALLBACK mode — i.e. as the sole
+// feed for transports that cannot carry the DaemonStream bidi stream. In this
+// mode it publishes aggressively and reclaims idle connections. It is opt-in.
 func snapshotFallbackEnabled(getenv func(string) string) bool {
 	return getenv("BOSSD_SNAPSHOT_FALLBACK") == "true"
 }
+
+// snapshotReconcileDisabled reports whether the steady-state read-model
+// reconciliation publisher is turned off. It runs by default (alongside the
+// stream) as a safety net against drift from lost/never-published deltas; set
+// BOSSD_SNAPSHOT_RECONCILE=false to disable.
+func snapshotReconcileDisabled(getenv func(string) string) bool {
+	return getenv("BOSSD_SNAPSHOT_RECONCILE") == "false"
+}
+
+const (
+	// steadyStateSnapshotInterval is how often the read model is reconciled
+	// against the daemon's authoritative session set while the bidi stream is
+	// the primary feed. Long enough to be cheap, short enough that phantom
+	// rows self-heal promptly.
+	steadyStateSnapshotInterval = 5 * time.Minute
+	// snapshotFallbackInterval is the aggressive cadence used only in
+	// break-glass full-fallback mode, where the publisher is the sole feed.
+	snapshotFallbackInterval = 30 * time.Second
+)
 
 func main() {
 	showVersion := flag.Bool("version", false, "Print version information and exit")
@@ -786,14 +805,23 @@ func run(opts runOpts) error {
 		return agentRunner
 	}
 	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
-	sessionCreator := taskorchestrator.NewSessionCreatorWithDefaultAgentProviderAndLiveness(sessions, lifecycle, func() string {
+	sessionCreator := taskorchestrator.NewSessionCreatorWithNotifier(sessions, lifecycle, func() string {
 		loaded, err := config.Load()
 		if err != nil {
 			log.Warn().Err(err).Msg("load config for orchestrated session default agent")
 			return settings.DefaultAgent
 		}
 		return loaded.DefaultAgent
-	}, livenessChecker, log.Logger)
+	}, livenessChecker, func(_ context.Context, sessionID string) {
+		// Propagate cleanup of a half-started session so it doesn't linger
+		// as a phantom row in the web read model until the daemon reconnects.
+		streamBus.Publish(upstream.StreamEvent{
+			Session: &upstream.SessionEvent{
+				Kind:    bossanovav1.SessionDelta_KIND_DELETED,
+				Session: &bossanovav1.Session{Id: sessionID},
+			},
+		})
+	}, log.Logger)
 	orchestrator := taskorchestrator.New(
 		pluginHost, repos, taskMappings, sessionCreator, ghProvider,
 		worktrees, livenessChecker, taskorchestrator.DefaultPollInterval, log.Logger,
@@ -888,6 +916,17 @@ func run(opts runOpts) error {
 	emitter := session.NewSessionEventEmitter(&displayPollerSessionLookup{sessions: sessions, repos: repos}, webhookEventCh, log.Logger)
 	_, upstreamURLExplicit := os.LookupEnv("BOSSD_ORCHESTRATOR_URL")
 	if cfg := upstream.ConfigFromEnv(); cfg != nil {
+		// Pin daemon_id to a UUID persisted under the data dir (not the
+		// rotating hostname) so a hostname change doesn't orphan the old
+		// id's rows in the orchestrator read model. BOSSD_DAEMON_ID still
+		// wins when set; hostname remains the last-resort fallback.
+		if daemonID, idErr := upstream.ResolveDaemonID(os.Getenv, appDataDir, cfg.Hostname); idErr != nil {
+			log.Warn().Err(idErr).Str("daemon_id", daemonID).Msg("stable daemon id unavailable; using fallback")
+			cfg.DaemonID = daemonID
+		} else {
+			cfg.DaemonID = daemonID
+		}
+
 		// ConnectRPC bidi streams (DaemonStream) require HTTP/2. Over
 		// TLS that's handled via ALPN automatically; over plain HTTP
 		// (local dev against http://localhost:8080) Go's default
@@ -1151,14 +1190,33 @@ func run(opts runOpts) error {
 			AuthState:      authState,
 			Logger:         log.Logger,
 		})
-		if upstreamURLExplicit && snapshotFallbackEnabled(os.Getenv) {
+		// Periodic read-model reconciliation. The bidi DaemonStream is the
+		// primary feed, but delta delivery is best-effort (forwardEvent drops
+		// deltas on reconnect) and not every delete path publishes, so a
+		// long-lived stream's read model drifts — deleted sessions linger as
+		// phantom rows in the web until the daemon reconnects and re-snapshots.
+		// A periodic full-snapshot re-publish reconciles the read model via
+		// ReplaceDaemonSessions. It is unary (transport-agnostic), so it works
+		// even where the bidi stream is half-duplexed by an intermediary.
+		if !snapshotReconcileDisabled(os.Getenv) {
+			// Steady state: gentle cadence, and MUST NOT close the live
+			// stream's idle connections (they share the HTTP client).
+			interval := steadyStateSnapshotInterval
+			closeIdle := func() {}
+			if upstreamURLExplicit && snapshotFallbackEnabled(os.Getenv) {
+				// Break-glass: the bidi stream can't be carried at all, so the
+				// publisher is the SOLE feed — publish aggressively and reclaim
+				// idle connections (no long-lived stream to disrupt).
+				interval = snapshotFallbackInterval
+				closeIdle = httpClient.CloseIdleConnections
+			}
 			snapshotPublisher = func(ctx context.Context) {
 				runSnapshotPublisher(ctx, client, sessionTokenHolder, upstream.StreamStores{
 					Sessions: snapshotSessions,
 					Chats:    snapshotChats,
 					Repos:    snapshotRepos,
 					Statuses: snapshotStatuses,
-				}, cfg.DaemonID, cfg.Hostname, httpClient.CloseIdleConnections, log.Logger)
+				}, cfg.DaemonID, cfg.Hostname, closeIdle, interval, log.Logger)
 			}
 		}
 
@@ -1658,6 +1716,7 @@ func runSnapshotPublisher(
 	stores upstream.StreamStores,
 	daemonID, hostname string,
 	closeIdle func(),
+	interval time.Duration,
 	logger zerolog.Logger,
 ) {
 	publish := func() {
@@ -1682,14 +1741,21 @@ func runSnapshotPublisher(
 		req := connect.NewRequest(&bossanovav1.PublishDaemonSnapshotRequest{Snapshot: snap})
 		req.Header().Set("Authorization", "Bearer "+token)
 		if _, err := client.PublishDaemonSnapshot(pubCtx, req); err != nil {
-			logger.Warn().Err(err).Msg("snapshot publisher: publish failed")
+			// CodeUnimplemented means the orchestrator has no read model
+			// (single-instance / local dev) — there is nothing to reconcile,
+			// so don't spam warnings on every steady-state tick.
+			if connect.CodeOf(err) == connect.CodeUnimplemented {
+				logger.Debug().Msg("snapshot publisher: read model not configured")
+			} else {
+				logger.Warn().Err(err).Msg("snapshot publisher: publish failed")
+			}
 			return
 		}
 		logger.Debug().Int("sessions", len(snap.GetSessions())).Msg("snapshot publisher: published")
 	}
 
 	publish()
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

@@ -386,19 +386,18 @@ func TestTUI_Settings_RepoAddFirstRepoReturnsToSettings(t *testing.T) {
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Add this repository?"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Merge strategy"); err != nil {
 		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
 	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
+	// Accept the details form (5 fields) with all defaults.
+	for range 5 {
+		if err := h.Driver.SendEnter(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
+	// Completing the add returns to the settings hub it was launched from; the
+	// repo's options were configured inline on the add wizard.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "Settings") &&
 			strings.Contains(screen, "[r]epos") &&

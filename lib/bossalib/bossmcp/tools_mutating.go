@@ -85,14 +85,13 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateRepoArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.UpdateRepoRequest{
-			Id:                      args.ID,
-			DisplayName:             args.Name,
-			MergeStrategy:           args.MergeStrategy,
-			SetupScript:             args.SetupScript,
-			CanAutoMerge:            args.CanAutoMerge,
-			CanAutoMergeDependabot:  args.CanAutoMergeDependabot,
-			CanAutoAddressReviews:   args.CanAutoAddressReviews,
-			CanAutoResolveConflicts: args.CanAutoResolveConflicts,
+			Id:                     args.ID,
+			DisplayName:            args.Name,
+			MergeStrategy:          args.MergeStrategy,
+			SetupScript:            args.SetupScript,
+			CanAutoMerge:           args.CanAutoMerge,
+			CanAutoMergeDependabot: args.CanAutoMergeDependabot,
+			CanAutoRepair:          args.CanAutoRepair,
 		}
 		out, err := backend.UpdateRepo(ctx, req)
 		if err != nil {
@@ -303,14 +302,13 @@ type CloneAndRegisterRepoArgs struct {
 // UpdateRepoArgs is the typed argument struct for update_repo. Optional pointer
 // fields are only applied when present in the request.
 type UpdateRepoArgs struct {
-	ID                      string  `json:"id" jsonschema:"the repo id"`
-	Name                    *string `json:"name,omitempty" jsonschema:"new display name"`
-	MergeStrategy           *string `json:"merge_strategy,omitempty" jsonschema:"merge strategy (e.g. squash, merge, rebase)"`
-	SetupScript             *string `json:"setup_script,omitempty" jsonschema:"setup script to run in new worktrees"`
-	CanAutoMerge            *bool   `json:"can_auto_merge,omitempty" jsonschema:"allow auto-merge"`
-	CanAutoMergeDependabot  *bool   `json:"can_auto_merge_dependabot,omitempty" jsonschema:"allow auto-merge for dependabot PRs"`
-	CanAutoAddressReviews   *bool   `json:"can_auto_address_reviews,omitempty" jsonschema:"allow auto-addressing review comments"`
-	CanAutoResolveConflicts *bool   `json:"can_auto_resolve_conflicts,omitempty" jsonschema:"allow auto-resolving merge conflicts"`
+	ID                     string  `json:"id" jsonschema:"the repo id"`
+	Name                   *string `json:"name,omitempty" jsonschema:"new display name"`
+	MergeStrategy          *string `json:"merge_strategy,omitempty" jsonschema:"merge strategy (e.g. squash, merge, rebase)"`
+	SetupScript            *string `json:"setup_script,omitempty" jsonschema:"setup script to run in new worktrees"`
+	CanAutoMerge           *bool   `json:"can_auto_merge,omitempty" jsonschema:"mark a passing draft PR ready for review (does not merge)"`
+	CanAutoMergeDependabot *bool   `json:"can_auto_merge_dependabot,omitempty" jsonschema:"allow auto-merge for dependabot PRs"`
+	CanAutoRepair          *bool   `json:"can_auto_repair,omitempty" jsonschema:"allow the repair plugin to auto-repair PRs (failing checks, conflicts, review feedback)"`
 }
 
 // CreateSessionArgs is the typed argument struct for create_session.

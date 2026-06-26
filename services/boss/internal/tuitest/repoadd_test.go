@@ -32,6 +32,18 @@ func navigateToRepoAddInput(t *testing.T, h *tuitest.Harness) {
 	}
 }
 
+// completeRepoAddDetails accepts the add wizard's details form with all defaults
+// by advancing through every field with enter: Name, Setup command, Merge
+// strategy, Automation, and the final "Add Repository" confirm.
+func completeRepoAddDetails(t *testing.T, h *tuitest.Harness) {
+	t.Helper()
+	for range 5 {
+		if err := h.Driver.SendEnter(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestTUI_RepoAddView_ValidatesPath drives the wizard to the path-input phase,
 // forces ValidateRepoPath to return an invalid response, and asserts the view
 // surfaces the error and never calls RegisterRepo.
@@ -89,20 +101,12 @@ func TestTUI_RepoAddView_CreatesRepo(t *testing.T) {
 	}
 
 	// Validation advances to the details phase (Name / Setup / Confirm).
-	if err := h.Driver.WaitForText(waitTimeout, "Add this repository?"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Merge strategy"); err != nil {
 		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
 	}
 
-	// Walk through the 3 fields: Name (pre-filled), Setup (empty), Confirm (Yes).
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
+	// Accept the details form (name pre-filled, all other fields default).
+	completeRepoAddDetails(t, h)
 
 	// Poll for the captured request.
 	deadline := time.Now().Add(waitTimeout)
@@ -129,6 +133,9 @@ func TestTUI_RepoAddView_CreatesRepo(t *testing.T) {
 	if req.SetupScript != nil {
 		t.Fatalf("RegisterRepo.SetupScript = %v, want nil when setup left blank", req.SetupScript)
 	}
+	// The add wizard now collects the merge/automation/integration options
+	// inline, so a completed add returns to the repo list (the new repo
+	// highlighted) rather than diverting to a settings screen.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "PATH") &&
 			strings.Contains(screen, "my-app") &&
@@ -178,19 +185,14 @@ func TestTUI_RepoAddView_FirstRepoReturnsSettings(t *testing.T) {
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Add this repository?"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Merge strategy"); err != nil {
 		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
 	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
+	completeRepoAddDetails(t, h)
 
+	// The first repo was added from the settings hub, so completing the add
+	// returns there (its merge/automation/integration options were configured
+	// inline on the add wizard, not on a separate settings screen).
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
 		return strings.Contains(screen, "Settings") &&
 			strings.Contains(screen, "[r]epos") &&
@@ -231,18 +233,10 @@ func TestTUI_RepoAddView_LoggedInWaitsForGitHubAppInstall(t *testing.T) {
 	if err := h.Driver.SendEnter(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Driver.WaitForText(waitTimeout, "Add this repository?"); err != nil {
+	if err := h.Driver.WaitForText(waitTimeout, "Merge strategy"); err != nil {
 		t.Fatalf("expected details phase; screen:\n%s", h.Driver.Screen())
 	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.Driver.SendEnter(); err != nil {
-		t.Fatal(err)
-	}
+	completeRepoAddDetails(t, h)
 	if err := h.Driver.WaitForText(waitTimeout, "Install the Bossanova Github App on acme/widgets?"); err != nil {
 		t.Fatalf("expected GitHub App install prompt; screen:\n%s", h.Driver.Screen())
 	}
@@ -253,8 +247,11 @@ func TestTUI_RepoAddView_LoggedInWaitsForGitHubAppInstall(t *testing.T) {
 	if err := h.Driver.WaitForText(waitTimeout, "Waiting for GitHub App installation on acme/widgets"); err != nil {
 		t.Fatalf("expected GitHub App install wait screen; screen:\n%s", h.Driver.Screen())
 	}
+	// After the GitHub App install completes, the add returns to the repo list.
 	if err := h.Driver.WaitFor(waitTimeout, func(screen string) bool {
-		return strings.Contains(screen, "PATH") && strings.Contains(screen, "my-app") && strings.Contains(screen, "@acme/widgets")
+		return strings.Contains(screen, "PATH") &&
+			strings.Contains(screen, "my-app") &&
+			strings.Contains(screen, "@acme/widgets")
 	}); err != nil {
 		t.Fatalf("expected repo list after GitHub App install; screen:\n%s", h.Driver.Screen())
 	}

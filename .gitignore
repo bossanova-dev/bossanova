@@ -53,7 +53,7 @@ docs/handoffs/
 # Wrangler v4 local state dir, created by `wrangler r2 object put` during proof uploads
 .wrangler/
 
-# Linear plan scratch dir (bs-linear-plan skill; plans are uploaded to R2, not committed)
+# Linear plan scratch dir (bs-plan skill; plans are uploaded to R2, not committed)
 .linear-plans/
 
 # Beads

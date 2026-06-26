@@ -143,10 +143,21 @@ func (l *Lifecycle) RecoverStrandedCronSessions(ctx context.Context) (int, error
 }
 
 // cronRunIsOver reports whether a cron session's agent run has finished. Cron
-// Claude runs interactively in tmux and stays alive idle after its turn, so
-// tmux/process liveness can't decide this; the durable signal is the agent log
-// going quiet. Fail-safe: any sign of life — or no durable idle evidence —
-// returns false (treat as still running), so we never finalize a live run.
+// Claude runs interactively in tmux and stays alive idle after its turn, so a
+// merely-alive tmux can't decide this; the durable signal is the agent log
+// going quiet for cronAgentIdleThreshold. Fail-safe: when the evidence is
+// ambiguous we return false (treat as still running) so a live run is never
+// finalized.
+//
+// Two liveness signals refine that durable signal:
+//   - If the headless runner reports the agent running, the run is not over.
+//   - If a wired liveness checker confirms the session is NOT alive — neither a
+//     headless subprocess nor a tmux chat survives — the run is definitively
+//     over, so we reap it immediately even when the agent log is fresh (the
+//     agent died moments before a restart) or absent entirely (a logless Codex
+//     run, or a failed tmux pipe-pane). A live session can't be declared over
+//     from liveness alone — a finished cron agent sits idle but alive in tmux —
+//     so that case falls through to the durable log-idle threshold below.
 func (l *Lifecycle) cronRunIsOver(sess *models.Session) bool {
 	if sess.AgentSessionID == nil || *sess.AgentSessionID == "" {
 		return false
@@ -154,8 +165,13 @@ func (l *Lifecycle) cronRunIsOver(sess *models.Session) bool {
 	if l.agentRunner != nil && l.agentRunner.IsRunningByAgent(sess.AgentName, *sess.AgentSessionID) {
 		return false
 	}
+	if l.liveness != nil && !l.liveness.IsSessionAlive(context.Background(), sess.ID) {
+		return true
+	}
 	idle, known := agentLogIdleFor(l.agentLogsDir, *sess.AgentSessionID, time.Now())
 	if !known {
+		// No durable log evidence, and liveness is either unwired or reports the
+		// session alive: conservatively treat as still running.
 		return false
 	}
 	return idle >= cronAgentIdleThreshold

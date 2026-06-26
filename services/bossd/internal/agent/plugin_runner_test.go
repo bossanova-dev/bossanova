@@ -52,6 +52,10 @@ func (f *fakeAgentClient) ResolveInteractiveSessionID(context.Context, *bossanov
 func (f *fakeAgentClient) ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{Paths: []string{".claude/settings.local.json"}}, nil
 }
+func (f *fakeAgentClient) SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	return &bossanovav1.SuggestPRTitleResponse{}, nil
+}
+
 func (f *fakeAgentClient) GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{Supported: true, Title: ""}, nil
 }

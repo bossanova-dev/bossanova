@@ -187,8 +187,10 @@ message UpdateRepoRequest {
   optional string display_name = 2;
   optional bool can_auto_merge = 3;
   optional bool can_auto_merge_dependabot = 4;
-  optional bool can_auto_address_reviews = 5;
-  optional bool can_auto_resolve_conflicts = 6;
+  // 5 (can_auto_address_reviews), 6 (can_auto_resolve_conflicts), and 14
+  // (can_auto_fix_checks) were per-behavior repair toggles, collapsed into
+  // can_auto_repair below.
+  reserved 5, 6, 14;
   optional string merge_strategy = 7;
   optional string setup_script = 8;
   optional string linear_api_key = 9;
@@ -196,6 +198,7 @@ message UpdateRepoRequest {
   optional string sentry_api_key = 11;
   optional string sentry_org = 12;
   reserved 13; // was sentry_project (removed: issues are listed org-wide)
+  optional bool can_auto_repair = 15;
 }
 
 message UpdateRepoResponse {

@@ -46,11 +46,11 @@ func ComputeAttentionStatus(sess *models.Session, repo *models.Repo) AttentionSt
 		// Status column already shows this state; no attention alert needed.
 
 	case machine.FixingChecks:
-		if !repo.CanAutoResolveConflicts {
+		if !repo.CanAutoRepair {
 			return AttentionStatus{
 				NeedsAttention: true,
 				Reason:         AttentionReasonMergeConflictUnresolvable,
-				Summary:        "auto-resolve conflicts disabled, needs human",
+				Summary:        "automatic repair disabled, needs human",
 				Since:          sess.UpdatedAt,
 			}
 		}

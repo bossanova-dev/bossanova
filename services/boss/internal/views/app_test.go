@@ -2,6 +2,7 @@ package views
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -279,5 +280,73 @@ func TestAppHomeSubscribeKeyShowsSubscriptionWaitingView(t *testing.T) {
 	got = model.(App)
 	if openedURL != cloud.checkoutURL {
 		t.Fatalf("opened URL = %q, want %q", openedURL, cloud.checkoutURL)
+	}
+}
+
+// A successful add of a second repo returns to the repo list with the new repo
+// highlighted (its options were configured inline on the add wizard), rather
+// than diverting to a settings screen.
+func TestRepoAddCompletedSecondRepoGoesToList(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewRepoAdd
+	a.repoAddCompleting = true
+	repos := []*pb.Repo{{Id: "r1"}, {Id: "r2"}}
+
+	model, _ := a.Update(repoAddCompletedMsg{repos: repos, highlightID: "r2"})
+	got := model.(App)
+
+	if got.repoAddCompleting {
+		t.Fatal("repoAddCompleting should be reset to false")
+	}
+	if got.activeView != ViewRepoList {
+		t.Fatalf("activeView = %v, want ViewRepoList", got.activeView)
+	}
+	if got.repoList.highlightRepoID != "r2" {
+		t.Fatalf("highlightRepoID = %q, want %q", got.repoList.highlightRepoID, "r2")
+	}
+}
+
+// The first-ever repo (len(repos) <= 1, not opened from Settings) returns to
+// Home rather than diverting to a settings screen.
+func TestRepoAddCompletedFirstRepoGoesHome(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewRepoAdd
+	repos := []*pb.Repo{{Id: "r1"}}
+
+	model, _ := a.Update(repoAddCompletedMsg{repos: repos, highlightID: "r1"})
+	got := model.(App)
+
+	if got.activeView != ViewHome {
+		t.Fatalf("first repo add should return Home, got %v", got.activeView)
+	}
+}
+
+// A failed add preserves the prior fallback (repo list), without diverting to
+// a settings screen for a repo that may not exist.
+func TestRepoAddCompletedErrorFallsBackToList(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewRepoAdd
+	repos := []*pb.Repo{{Id: "r1"}, {Id: "r2"}}
+
+	model, _ := a.Update(repoAddCompletedMsg{repos: repos, err: errors.New("boom"), highlightID: ""})
+	got := model.(App)
+
+	if got.activeView != ViewRepoList {
+		t.Fatalf("on error want ViewRepoList, got %v", got.activeView)
+	}
+}
+
+// Defensive: success but no usable repo id falls back to the prior behavior
+// rather than opening settings for a missing repo.
+func TestRepoAddCompletedEmptyIDFallsBack(t *testing.T) {
+	a := NewApp(nil, nil)
+	a.activeView = ViewRepoAdd
+	repos := []*pb.Repo{{Id: "r1"}, {Id: "r2"}}
+
+	model, _ := a.Update(repoAddCompletedMsg{repos: repos, highlightID: ""})
+	got := model.(App)
+
+	if got.activeView != ViewRepoList {
+		t.Fatalf("empty id should fall back to list, got %v", got.activeView)
 	}
 }

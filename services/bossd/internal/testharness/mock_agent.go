@@ -25,6 +25,11 @@ type MockAgentClient struct {
 	// Empty defaults to "claude" — preserves behavior for tests that
 	// pre-date the per-agent routing.
 	Name string
+
+	// SuggestPRTitleFunc, when set, drives SuggestPRTitle so finalize tests can
+	// simulate an agent suggestion (or a not-supported fallback). Nil defaults
+	// to supported=false (agent has no opinion → daemon falls back).
+	SuggestPRTitleFunc func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 }
 
 func (m *MockAgentClient) name() string {
@@ -113,6 +118,13 @@ func (*MockAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.
 
 func (*MockAgentClient) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{}, nil
+}
+
+func (m *MockAgentClient) SuggestPRTitle(_ context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	if m != nil && m.SuggestPRTitleFunc != nil {
+		return m.SuggestPRTitleFunc(req)
+	}
+	return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
 }
 
 func (*MockAgentClient) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) {

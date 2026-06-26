@@ -70,10 +70,9 @@ func TestAppRepoAddCompletedActiveView(t *testing.T) {
 	}
 }
 
-// TestAppRepoAddCompletedHighlight covers app.go:276 (`highlightID == ""`) and
-// app.go:278 (`cursor >= 0 && cursor < len(a.repoList.repos)`) on the
-// non-Home branch (more than one repo, so routing falls through to the repo list
-// where a highlight target is chosen).
+// TestAppRepoAddCompletedHighlight covers highlight selection on the non-Home
+// branch (more than one repo, so routing falls through to the repo list where a
+// highlight target is chosen).
 //
 //   - An explicit highlightID must win outright (kills the `== ""` negation:
 //     a `!= ""` mutant would discard it and fall back to the cursor).
@@ -98,7 +97,8 @@ func TestAppRepoAddCompletedHighlight(t *testing.T) {
 			a := appWithRepoList(t, tt.ids, tt.cursor)
 			a.activeView = ViewRepoAdd
 
-			// Two repos in the message keeps us off the Home branch.
+			// Two repos in the message + empty highlightID: falls through to the
+			// cursor-based highlight path (non-Home, non-settings branch).
 			msg := repoAddCompletedMsg{
 				repos:       []*pb.Repo{{Id: "x"}, {Id: "y"}},
 				err:         nil,

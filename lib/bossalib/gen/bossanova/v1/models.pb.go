@@ -1011,22 +1011,24 @@ func (CronJobStatus) EnumDescriptor() ([]byte, []int) {
 
 // Repo represents a registered Git repository.
 type Repo struct {
-	state                   protoimpl.MessageState `protogen:"open.v1"`
-	Id                      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	DisplayName             string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	LocalPath               string                 `protobuf:"bytes,3,opt,name=local_path,json=localPath,proto3" json:"local_path,omitempty"`
-	OriginUrl               string                 `protobuf:"bytes,4,opt,name=origin_url,json=originUrl,proto3" json:"origin_url,omitempty"`
-	DefaultBaseBranch       string                 `protobuf:"bytes,5,opt,name=default_base_branch,json=defaultBaseBranch,proto3" json:"default_base_branch,omitempty"`
-	WorktreeBaseDir         string                 `protobuf:"bytes,6,opt,name=worktree_base_dir,json=worktreeBaseDir,proto3" json:"worktree_base_dir,omitempty"`
-	SetupScript             *string                `protobuf:"bytes,7,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
-	CreatedAt               *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt               *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	CanAutoMerge            bool                   `protobuf:"varint,10,opt,name=can_auto_merge,json=canAutoMerge,proto3" json:"can_auto_merge,omitempty"`
-	CanAutoMergeDependabot  bool                   `protobuf:"varint,11,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3" json:"can_auto_merge_dependabot,omitempty"`
-	CanAutoAddressReviews   bool                   `protobuf:"varint,12,opt,name=can_auto_address_reviews,json=canAutoAddressReviews,proto3" json:"can_auto_address_reviews,omitempty"`
-	CanAutoResolveConflicts bool                   `protobuf:"varint,13,opt,name=can_auto_resolve_conflicts,json=canAutoResolveConflicts,proto3" json:"can_auto_resolve_conflicts,omitempty"`
-	MergeStrategy           string                 `protobuf:"bytes,14,opt,name=merge_strategy,json=mergeStrategy,proto3" json:"merge_strategy,omitempty"`
-	LinearApiKey            string                 `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	Id                     string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	DisplayName            string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	LocalPath              string                 `protobuf:"bytes,3,opt,name=local_path,json=localPath,proto3" json:"local_path,omitempty"`
+	OriginUrl              string                 `protobuf:"bytes,4,opt,name=origin_url,json=originUrl,proto3" json:"origin_url,omitempty"`
+	DefaultBaseBranch      string                 `protobuf:"bytes,5,opt,name=default_base_branch,json=defaultBaseBranch,proto3" json:"default_base_branch,omitempty"`
+	WorktreeBaseDir        string                 `protobuf:"bytes,6,opt,name=worktree_base_dir,json=worktreeBaseDir,proto3" json:"worktree_base_dir,omitempty"`
+	SetupScript            *string                `protobuf:"bytes,7,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
+	CreatedAt              *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt              *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	CanAutoMerge           bool                   `protobuf:"varint,10,opt,name=can_auto_merge,json=canAutoMerge,proto3" json:"can_auto_merge,omitempty"`
+	CanAutoMergeDependabot bool                   `protobuf:"varint,11,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3" json:"can_auto_merge_dependabot,omitempty"`
+	MergeStrategy          string                 `protobuf:"bytes,14,opt,name=merge_strategy,json=mergeStrategy,proto3" json:"merge_strategy,omitempty"`
+	// Whether the daemon's repair plugin may automatically repair this repo's PRs
+	// (failing checks, merge conflicts, review feedback). Honored by the plugin.
+	// Defaults on.
+	CanAutoRepair bool   `protobuf:"varint,21,opt,name=can_auto_repair,json=canAutoRepair,proto3" json:"can_auto_repair,omitempty"`
+	LinearApiKey  string `protobuf:"bytes,15,opt,name=linear_api_key,json=linearApiKey,proto3" json:"linear_api_key,omitempty"`
 	// Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
 	// address an organization, so the org slug is stored alongside it. Issues are
 	// listed org-wide (across every project), so no project slug is needed.
@@ -1143,25 +1145,18 @@ func (x *Repo) GetCanAutoMergeDependabot() bool {
 	return false
 }
 
-func (x *Repo) GetCanAutoAddressReviews() bool {
-	if x != nil {
-		return x.CanAutoAddressReviews
-	}
-	return false
-}
-
-func (x *Repo) GetCanAutoResolveConflicts() bool {
-	if x != nil {
-		return x.CanAutoResolveConflicts
-	}
-	return false
-}
-
 func (x *Repo) GetMergeStrategy() string {
 	if x != nil {
 		return x.MergeStrategy
 	}
 	return ""
+}
+
+func (x *Repo) GetCanAutoRepair() bool {
+	if x != nil {
+		return x.CanAutoRepair
+	}
+	return false
 }
 
 func (x *Repo) GetLinearApiKey() string {
@@ -1276,8 +1271,11 @@ type Session struct {
 	// from the in-memory DisplayTracker and never persisted. Mirrors
 	// display_is_repairing (field 24).
 	DisplaySettingUp bool `protobuf:"varint,48,opt,name=display_setting_up,json=displaySettingUp,proto3" json:"display_setting_up,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Denormalized repo.can_auto_repair, populated server-side so the repair
+	// plugin can honor the per-repo auto-repair toggle without a separate lookup.
+	RepoCanAutoRepair bool `protobuf:"varint,49,opt,name=repo_can_auto_repair,json=repoCanAutoRepair,proto3" json:"repo_can_auto_repair,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Session) Reset() {
@@ -1642,6 +1640,13 @@ func (x *Session) GetLastRepairReviewFingerprint() string {
 func (x *Session) GetDisplaySettingUp() bool {
 	if x != nil {
 		return x.DisplaySettingUp
+	}
+	return false
+}
+
+func (x *Session) GetRepoCanAutoRepair() bool {
+	if x != nil {
+		return x.RepoCanAutoRepair
 	}
 	return false
 }
@@ -3069,7 +3074,7 @@ var File_bossanova_v1_models_proto protoreflect.FileDescriptor
 
 const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\n" +
-	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf7\x05\n" +
+	"\x19bossanova/v1/models.proto\x12\fbossanova.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbb\x05\n" +
 	"\x04Repo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12\x1d\n" +
@@ -3086,15 +3091,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"updated_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12$\n" +
 	"\x0ecan_auto_merge\x18\n" +
 	" \x01(\bR\fcanAutoMerge\x129\n" +
-	"\x19can_auto_merge_dependabot\x18\v \x01(\bR\x16canAutoMergeDependabot\x127\n" +
-	"\x18can_auto_address_reviews\x18\f \x01(\bR\x15canAutoAddressReviews\x12;\n" +
-	"\x1acan_auto_resolve_conflicts\x18\r \x01(\bR\x17canAutoResolveConflicts\x12%\n" +
-	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12$\n" +
+	"\x19can_auto_merge_dependabot\x18\v \x01(\bR\x16canAutoMergeDependabot\x12%\n" +
+	"\x0emerge_strategy\x18\x0e \x01(\tR\rmergeStrategy\x12&\n" +
+	"\x0fcan_auto_repair\x18\x15 \x01(\bR\rcanAutoRepair\x12$\n" +
 	"\x0elinear_api_key\x18\x0f \x01(\tR\flinearApiKey\x12$\n" +
 	"\x0esentry_api_key\x18\x11 \x01(\tR\fsentryApiKey\x12\x1d\n" +
 	"\n" +
 	"sentry_org\x18\x12 \x01(\tR\tsentryOrgB\x0f\n" +
-	"\r_setup_scriptJ\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xac\x14\n" +
+	"\r_setup_scriptJ\x04\b\f\x10\rJ\x04\b\r\x10\x0eJ\x04\b\x14\x10\x15J\x04\b\x10\x10\x11J\x04\b\x13\x10\x14\"\xdd\x14\n" +
 	"\aSession\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x14\n" +
@@ -3153,7 +3157,8 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"R\x12lastChatActivityAt\x88\x01\x01\x12&\n" +
 	"\x0frepo_origin_url\x18. \x01(\tR\rrepoOriginUrl\x12C\n" +
 	"\x1elast_repair_review_fingerprint\x18/ \x01(\tR\x1blastRepairReviewFingerprint\x12,\n" +
-	"\x12display_setting_up\x180 \x01(\bR\x10displaySettingUpB\x13\n" +
+	"\x12display_setting_up\x180 \x01(\bR\x10displaySettingUp\x12/\n" +
+	"\x14repo_can_auto_repair\x181 \x01(\bR\x11repoCanAutoRepairB\x13\n" +
 	"\x11_agent_session_idB\f\n" +
 	"\n" +
 	"_pr_numberB\t\n" +

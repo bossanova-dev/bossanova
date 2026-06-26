@@ -154,6 +154,14 @@ type Lifecycle struct {
 	// sessionDeletedNotifier publishes session deletions triggered inside the
 	// lifecycle, such as no-change cron finalization cleanup.
 	sessionDeletedNotifier sessionDeletedNotifier
+
+	// liveness reports whether a boss session's agent is still running, across
+	// both headless subprocesses and tmux-hosted chats. The stranded-cron sweep
+	// (cronRunIsOver) consults it as a fallback when the durable agent log can't
+	// answer — e.g. a logless Codex run or a failed tmux pipe-pane — so such runs
+	// can still be reaped once liveness confirms the agent is gone. nil leaves
+	// the conservative "can't tell => still running" default in place.
+	liveness sessionLiveness
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -174,6 +182,14 @@ func (l *Lifecycle) SetDisplayTracker(t settingUpTracker) {
 // cleanup paths that delete sessions outside the server RPC handlers.
 func (l *Lifecycle) SetSessionDeletedNotifier(n func(context.Context, string)) {
 	l.sessionDeletedNotifier = n
+}
+
+// SetSessionLiveness wires the liveness checker used by the stranded-cron sweep
+// to reap logless runs once their agent is confirmed gone. Safe to leave unset:
+// without it the sweep keeps its conservative "no durable evidence => still
+// running" behavior.
+func (l *Lifecycle) SetSessionLiveness(c sessionLiveness) {
+	l.liveness = c
 }
 
 // SetAgents installs the per-name AgentRunnerClient registry used to call
@@ -1102,6 +1118,101 @@ func (l *Lifecycle) draftPRTitle(ctx context.Context, session *models.Session) s
 	return normalizeCronPRTitle(subject)
 }
 
+// finalizeTitle decides the PR/session title for a session at cron finalize.
+//
+// The historical behavior derived the title from the LAST commit subject. That
+// is fine when the branch is a single commit (the subject IS the PR's intent),
+// but wrong once the branch carries several commits — the last one is usually a
+// narrow fix, so the derived title is irrelevant and, worse, it CLOBBERS a good
+// title the agent set at PR creation (the WON-1280 bug: "[WON-1280] Don't allow …"
+// became "Fail closed when clean-tree baseline is missing").
+//
+// So the policy is:
+//   - ≥2 real commits: ask the agent (which keeps a good existing title and only
+//     improves a weak one). If it has no suggestion, PRESERVE the existing PR
+//     title rather than rewriting it to the last commit subject.
+//   - 0–1 real commits: derive deterministically by normalizing the commit
+//     subject (the old, well-tested behavior — cleans a messy "type(scope): …"
+//     PR title into a readable one).
+//   - commit history unreadable: preserve the existing title (never risk a
+//     clobber on incomplete information).
+//
+// currentPRTitle is the PR's current title (set earlier, e.g. by the agent at PR
+// creation). Non-cron sessions keep their own title unchanged.
+func (l *Lifecycle) finalizeTitle(ctx context.Context, session *models.Session, currentPRTitle string) string {
+	if session.CronJobID == nil || *session.CronJobID == "" {
+		return session.Title
+	}
+
+	subjects, err := l.worktrees.CommitSubjects(ctx, session.WorktreePath, session.BaseBranch)
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Str("base", session.BaseBranch).
+			Msg("failed to read commit subjects for cron PR title; preserving existing title")
+		if t := strings.TrimSpace(currentPRTitle); t != "" {
+			return t
+		}
+		return l.draftPRTitle(ctx, session)
+	}
+
+	if real := realCommitSubjects(subjects); len(real) >= 2 {
+		if title, ok := l.agentSuggestedTitle(ctx, session, currentPRTitle, real); ok {
+			return title
+		}
+		// Multi-commit with no agent suggestion: never rewrite to the last commit
+		// subject. Preserve a meaningful existing title; derive only if none.
+		if t := strings.TrimSpace(currentPRTitle); t != "" {
+			return t
+		}
+	}
+	return l.draftPRTitle(ctx, session)
+}
+
+// realCommitSubjects drops the empty draft-PR placeholder commit so it never
+// counts toward the multi-commit threshold or reaches the title suggester.
+func realCommitSubjects(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	for _, s := range raw {
+		if t := strings.TrimSpace(s); t == "" || t == draftPRPlaceholderCommitSubject {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// agentSuggestedTitle asks the session's agent plugin to suggest a PR title.
+// Returns ok=false on any error / unsupported / empty result, so the caller
+// falls back deterministically — a title suggestion must never block or fail
+// finalize.
+func (l *Lifecycle) agentSuggestedTitle(ctx context.Context, session *models.Session, currentPRTitle string, subjects []string) (string, bool) {
+	client, err := l.agentClientFor(session)
+	if err != nil || client == nil {
+		return "", false
+	}
+	resp, err := client.SuggestPRTitle(ctx, &bossanovav1.SuggestPRTitleRequest{
+		WorkDir:      session.WorktreePath,
+		CurrentTitle: currentPRTitle,
+		GitLog:       strings.Join(subjects, "\n"),
+		BaseBranch:   session.BaseBranch,
+	})
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", session.ID).
+			Msg("agent SuggestPRTitle failed; falling back to deterministic title")
+		return "", false
+	}
+	if !resp.GetSupported() {
+		return "", false
+	}
+	title := strings.TrimSpace(resp.GetTitle())
+	if title == "" {
+		return "", false
+	}
+	return title, true
+}
+
 func normalizeCronPRTitle(subject string) string {
 	title := strings.TrimSpace(subject)
 	if title == "" {
@@ -1165,9 +1276,14 @@ func (l *Lifecycle) attachOpenPRForBranch(ctx context.Context, sessionID string,
 
 			prTitle := pr.Title
 			if session.CronJobID != nil && *session.CronJobID != "" {
-				title := l.draftPRTitle(ctx, session)
-				if err := l.provider.UpdatePRTitle(ctx, repo.OriginURL, pr.Number, title); err != nil {
-					return false, fmt.Errorf("update attached PR title: %w", err)
+				// Decide the title from the agent (keep-if-valid) or, failing
+				// that, preserve the existing PR title — never blindly rewrite it
+				// to the last commit subject. Only call GitHub when it changes.
+				title := l.finalizeTitle(ctx, session, pr.Title)
+				if title != pr.Title {
+					if err := l.provider.UpdatePRTitle(ctx, repo.OriginURL, pr.Number, title); err != nil {
+						return false, fmt.Errorf("update attached PR title: %w", err)
+					}
 				}
 				prTitle = title
 			}

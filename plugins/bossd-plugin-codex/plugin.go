@@ -47,6 +47,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "ResolveInteractiveSessionID", Handler: agentResolveInteractiveSessionIDHandler},
 		{MethodName: "ListIgnoredDirtyFiles", Handler: agentListIgnoredDirtyFilesHandler},
 		{MethodName: "GetChatTitle", Handler: agentGetChatTitleHandler},
+		{MethodName: "SuggestPRTitle", Handler: agentSuggestPRTitleHandler},
 		{MethodName: "HasQuestionPrompt", Handler: agentHasQuestionPromptHandler},
 		{MethodName: "LastTurnIsUser", Handler: agentLastTurnIsUserHandler},
 		{MethodName: "TranscriptExists", Handler: agentTranscriptExistsHandler},
@@ -67,6 +68,7 @@ type agentRunnerServiceHandler interface {
 	ResolveInteractiveSessionID(context.Context, *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
 	ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error)
 	GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error)
+	SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 	HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
@@ -158,6 +160,14 @@ func agentGetChatTitleHandler(srv any, ctx context.Context, dec func(any) error,
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).GetChatTitle(ctx, req)
+}
+
+func agentSuggestPRTitleHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.SuggestPRTitleRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).SuggestPRTitle(ctx, req)
 }
 
 func agentHasQuestionPromptHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {

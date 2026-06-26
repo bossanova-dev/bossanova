@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Cross-model "outside voice" review helper for bs-linear-implement.
+// Cross-model "outside voice" review helper for bs-implement.
 // Shells out to the Codex CLI (`codex exec`) read-only over a git diff and
 // returns sanitized review text.  Designed to be called from the skill's
 // review loop — this file only builds and exposes the helper; the skill

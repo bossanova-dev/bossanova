@@ -54,6 +54,10 @@ func (c *listAgentsFakeClient) ResolveInteractiveSessionID(context.Context, *bos
 func (c *listAgentsFakeClient) ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }
+func (c *listAgentsFakeClient) SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	return &bossanovav1.SuggestPRTitleResponse{}, nil
+}
+
 func (c *listAgentsFakeClient) GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{}, nil
 }

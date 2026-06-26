@@ -47,6 +47,10 @@ func (s *stubAgentRunner) ResolveInteractiveSessionID(context.Context, *bossanov
 func (s *stubAgentRunner) ListIgnoredDirtyFiles(context.Context, *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }
+func (s *stubAgentRunner) SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	return &bossanovav1.SuggestPRTitleResponse{}, nil
+}
+
 func (s *stubAgentRunner) GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{}, nil
 }

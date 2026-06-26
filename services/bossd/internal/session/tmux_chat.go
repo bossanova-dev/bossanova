@@ -101,7 +101,7 @@ func (i ChatInput) render(commandPrefix string) string {
 // A cron session is headless — there is no human to press Enter — so a slash/$
 // command must auto-run. A plan is treated as a command when, after trimming
 // surrounding whitespace, its leading token begins with "/" or "$", with or
-// without arguments — e.g. "/bs-mutation-test" or "/wc-merge-review headless".
+// without arguments — e.g. "/bs-sweep-mutation" or "/wc-merge-review headless".
 // The whole single line (command + args) is dispatched, so the arguments are
 // preserved. Multi-line plans, and free-text instructions whose leading token
 // is not "/" or "$" (including text that merely contains an embedded

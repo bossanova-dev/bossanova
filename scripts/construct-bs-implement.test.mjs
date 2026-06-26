@@ -7,7 +7,7 @@ import { constructSkill, GENERATED_HEADER, skillsRootAvailable } from './constru
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const manifest = JSON.parse(
-  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-linear-implement/construct.json'), 'utf8'),
+  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
 );
 // Construction reads the component skills from the installed superpowers plugin.
 // Skip (don't throw at import) where it is absent — e.g. a fresh CI runner.
@@ -71,8 +71,8 @@ test('runtime helper references are local to generated Claude and Codex skills',
   ];
 
   const skillDirs = [
-    path.join(rootDir, '.claude/skills/bs-linear-implement'),
-    path.join(rootDir, '.codex/skills/bs-linear-implement'),
+    path.join(rootDir, '.claude/skills/bs-implement'),
+    path.join(rootDir, '.codex/skills/bs-implement'),
   ];
 
   for (const skillDir of skillDirs) {

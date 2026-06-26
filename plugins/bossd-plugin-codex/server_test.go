@@ -370,12 +370,12 @@ func TestBuildInteractiveCommandConvertsSlashStartupCommand(t *testing.T) {
 
 	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:      "abc",
-		InitialCommand: "/bs-mutation-test",
+		InitialCommand: "/bs-sweep-mutation",
 	})
 	if err != nil {
 		t.Fatalf("BuildInteractiveCommand: %v", err)
 	}
-	if got, want := resp.Argv[len(resp.Argv)-1], "$bs-mutation-test"; got != want {
+	if got, want := resp.Argv[len(resp.Argv)-1], "$bs-sweep-mutation"; got != want {
 		t.Fatalf("fresh command argv last = %q, want %q; argv=%v", got, want, resp.Argv)
 	}
 	if !resp.ConsumesInitialInput {

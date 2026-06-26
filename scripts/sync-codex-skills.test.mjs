@@ -17,10 +17,10 @@ import {
 const tmpRoots = [];
 const scriptPath = fileURLToPath(new URL('./sync-codex-skills.mjs', import.meta.url));
 const privateDebtSkillPath = fileURLToPath(
-  new URL('../.claude/skills/bs-technical-debt/SKILL.md', import.meta.url),
+  new URL('../.claude/skills/bs-sweep-debt/SKILL.md', import.meta.url),
 );
 const privateMutationSkillPath = fileURLToPath(
-  new URL('../.claude/skills/bs-mutation-test/SKILL.md', import.meta.url),
+  new URL('../.claude/skills/bs-sweep-mutation/SKILL.md', import.meta.url),
 );
 
 function tmpDir() {
@@ -56,13 +56,13 @@ afterEach(() => {
 
 describe('sync-codex-skills', () => {
   it(
-    'keeps the bs-technical-debt daily automation safety contract explicit',
+    'keeps the bs-sweep-debt daily automation safety contract explicit',
     {
       skip: !fs.existsSync(privateDebtSkillPath) && 'private skill fixture is absent',
     },
     () => {
       const skill = fs.readFileSync(privateDebtSkillPath, 'utf8');
-      assert.match(skill, /^name: bs-technical-debt/m);
+      assert.match(skill, /^name: bs-sweep-debt/m);
       assert.match(skill, /Push at most one PR-worthy session-branch commit per run/);
       assert.match(skill, /Windows WSL/);
       assert.match(skill, /macOS, Linux, and Windows WSL/);
@@ -87,7 +87,7 @@ describe('sync-codex-skills', () => {
     () => {
       const skill = fs.readFileSync(privateMutationSkillPath, 'utf8');
 
-      assert.match(skill, /^name: bs-mutation-test/m);
+      assert.match(skill, /^name: bs-sweep-mutation/m);
       assert.match(skill, /current session branch/);
       assert.match(skill, /READY_GREEN_PR/);
       assert.match(skill, /NO_CHANGE/);
@@ -234,15 +234,15 @@ name: example
 description: example description
 ---
 
-Run \`/bs-linear-plan\` then **/boss-finalize**.
+Run \`/bs-plan\` then **/boss-finalize**.
 Also run /bs-proof now and use /superpowers:writing-plans for plans.
 `);
 
-    assert.match(rewritten, /`\$bs-linear-plan`/);
+    assert.match(rewritten, /`\$bs-plan`/);
     assert.match(rewritten, /\*\*\$boss-finalize\*\*/);
     assert.match(rewritten, /run \$bs-proof now/);
     assert.match(rewritten, /use \$superpowers:writing-plans for plans/);
-    assert.doesNotMatch(rewritten, /\/bs-linear-plan/);
+    assert.doesNotMatch(rewritten, /\/bs-plan/);
     assert.doesNotMatch(rewritten, /\/boss-finalize/);
   });
 

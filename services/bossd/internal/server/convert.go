@@ -48,22 +48,21 @@ func CanonicalRepoOriginURL(originURL string) string {
 // repoToProto converts a domain Repo to its protobuf representation.
 func repoToProto(r *models.Repo) *pb.Repo {
 	p := &pb.Repo{
-		Id:                      protoString(r.ID),
-		DisplayName:             protoString(r.DisplayName),
-		LocalPath:               protoString(r.LocalPath),
-		OriginUrl:               protoString(r.OriginURL),
-		DefaultBaseBranch:       protoString(r.DefaultBaseBranch),
-		WorktreeBaseDir:         protoString(r.WorktreeBaseDir),
-		CanAutoMerge:            r.CanAutoMerge,
-		CanAutoMergeDependabot:  r.CanAutoMergeDependabot,
-		CanAutoAddressReviews:   r.CanAutoAddressReviews,
-		CanAutoResolveConflicts: r.CanAutoResolveConflicts,
-		MergeStrategy:           protoString(string(r.MergeStrategy)),
-		LinearApiKey:            protoString(r.LinearAPIKey),
-		SentryApiKey:            protoString(r.SentryAPIKey),
-		SentryOrg:               protoString(r.SentryOrg),
-		CreatedAt:               timestamppb.New(r.CreatedAt),
-		UpdatedAt:               timestamppb.New(r.UpdatedAt),
+		Id:                     protoString(r.ID),
+		DisplayName:            protoString(r.DisplayName),
+		LocalPath:              protoString(r.LocalPath),
+		OriginUrl:              protoString(r.OriginURL),
+		DefaultBaseBranch:      protoString(r.DefaultBaseBranch),
+		WorktreeBaseDir:        protoString(r.WorktreeBaseDir),
+		CanAutoMerge:           r.CanAutoMerge,
+		CanAutoMergeDependabot: r.CanAutoMergeDependabot,
+		CanAutoRepair:          r.CanAutoRepair,
+		MergeStrategy:          protoString(string(r.MergeStrategy)),
+		LinearApiKey:           protoString(r.LinearAPIKey),
+		SentryApiKey:           protoString(r.SentryAPIKey),
+		SentryOrg:              protoString(r.SentryOrg),
+		CreatedAt:              timestamppb.New(r.CreatedAt),
+		UpdatedAt:              timestamppb.New(r.UpdatedAt),
 	}
 	if r.SetupScript != nil {
 		p.SetupScript = protoStringPtr(r.SetupScript)

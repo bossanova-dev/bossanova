@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,16 +41,48 @@ const (
 	sourceModeClone = 1
 )
 
-// repoRegisteredMsg carries the result of a RegisterRepo RPC call.
-type repoRegisteredMsg struct {
-	repo *pb.Repo
-	err  error
+// Defaults applied by bossd when a repo is first created (see
+// services/bossd/internal/db/repo_store.go SQLiteRepoStore.Create). The add
+// wizard's details form is seeded to these so its controls reflect the real
+// post-create state, and add-time options are only persisted (via a follow-up
+// UpdateRepo) when the user changes something. Keep in sync with that INSERT.
+const defaultRepoMergeStrategy = "merge"
+
+const (
+	defaultCanAutoMerge           = false
+	defaultCanAutoMergeDependabot = true
+	defaultCanAutoRepair          = true
+)
+
+// Automation option values for the details-form multi-select. They map onto the
+// repo's CanAuto* flags in repoConfigUpdate.
+const (
+	automationAutoMerge  = "auto_merge"
+	automationDependabot = "dependabot"
+	automationRepair     = "repair"
+)
+
+// defaultRepoAutomation lists the automation options enabled by default on a
+// freshly-created repo (auto-merge off; the rest on).
+func defaultRepoAutomation() []string {
+	return []string{automationDependabot, automationRepair}
 }
 
-// repoClonedMsg carries the result of a CloneAndRegisterRepo RPC call.
+// repoRegisteredMsg carries the result of a RegisterRepo RPC call. configErr is
+// set when the repo was created but the follow-up UpdateRepo persisting its
+// add-time options failed — a non-fatal condition (the repo exists).
+type repoRegisteredMsg struct {
+	repo      *pb.Repo
+	err       error
+	configErr error
+}
+
+// repoClonedMsg carries the result of a CloneAndRegisterRepo RPC call. configErr
+// has the same non-fatal meaning as on repoRegisteredMsg.
 type repoClonedMsg struct {
-	repo *pb.Repo
-	err  error
+	repo      *pb.Repo
+	err       error
+	configErr error
 }
 
 // repoValidatedMsg carries the result of a ValidateRepoPath RPC call.
@@ -129,7 +162,35 @@ type repoAddFormData struct {
 	localPath string
 	name      string
 	setup     string
-	confirm   bool
+
+	// Core repo-behavior config collected at add time. Seeded to the bossd
+	// creation defaults; persisted via a follow-up UpdateRepo only when changed.
+	// Integrations (Linear/Sentry) are intentionally NOT here: they need the
+	// repo-settings screen's collapsible, validated layout (key+org are a unit),
+	// which huh can't reproduce inline. They're configured there after add.
+	mergeStrategy string   // "merge" | "rebase" | "squash"
+	automation    []string // subset of the automation* values
+
+	confirm bool
+}
+
+// repoConfigSnapshot is an immutable copy of the add-form options that feed the
+// post-create UpdateRepo. submitRepo captures it before launching the async
+// create/clone RPC: fd stays bound to the live form, and the view keeps handling
+// keys while the RPC is in flight (esc can rebuild the form), so reading fd after
+// the RPC returns could persist edits the user never submitted.
+type repoConfigSnapshot struct {
+	mergeStrategy string
+	automation    []string
+}
+
+// configSnapshot copies the config fields into an immutable snapshot, cloning the
+// automation slice so later form mutations cannot alias it.
+func (fd *repoAddFormData) configSnapshot() repoConfigSnapshot {
+	return repoConfigSnapshot{
+		mergeStrategy: fd.mergeStrategy,
+		automation:    slices.Clone(fd.automation),
+	}
 }
 
 // RepoAddModel is the wizard for registering a new repository.
@@ -138,10 +199,13 @@ type RepoAddModel struct {
 	auth   *auth.Manager
 	ctx    context.Context
 
-	phase  repoAddPhase
-	err    error
-	done   bool
-	cancel bool
+	phase repoAddPhase
+	err   error
+	// configErr is set when the repo was created but persisting its add-time
+	// options failed; the wizard shows a non-fatal notice and esc completes.
+	configErr error
+	done      bool
+	cancel    bool
 
 	// Source selection table (phase 1)
 	sourceTable table.Model
@@ -191,9 +255,11 @@ func NewRepoAddModel(c client.BossClient, ctx context.Context) RepoAddModel {
 		detectedBaseBranch: "main",
 		spinner:            newStatusSpinner(),
 		fd: &repoAddFormData{
-			localPath: home + "/",
-			name:      filepath.Base(home),
-			confirm:   true,
+			localPath:     home + "/",
+			name:          filepath.Base(home),
+			mergeStrategy: defaultRepoMergeStrategy,
+			automation:    defaultRepoAutomation(),
+			confirm:       true,
 		},
 	}
 	m.buildSourceTable()
@@ -268,6 +334,11 @@ func (m *RepoAddModel) buildInputForm() {
 }
 
 func (m *RepoAddModel) buildDetailsForm() {
+	automationOptions := []huh.Option[string]{
+		huh.NewOption("Mark ready for review when checks pass", automationAutoMerge),
+		huh.NewOption("Auto-merge Dependabot PRs", automationDependabot),
+		huh.NewOption("Automatic repair (failing checks, conflicts, review feedback)", automationRepair),
+	}
 	m.form = huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
@@ -284,10 +355,26 @@ func (m *RepoAddModel) buildDetailsForm() {
 				Title("Setup command").
 				Placeholder("Optional, e.g. make setup").
 				Value(&m.fd.setup),
+			huh.NewSelect[string]().
+				Title("Merge strategy").
+				Options(
+					huh.NewOption("Merge commit", "merge"),
+					huh.NewOption("Rebase", "rebase"),
+					huh.NewOption("Squash", "squash"),
+				).
+				Value(&m.fd.mergeStrategy),
+			huh.NewMultiSelect[string]().
+				Title("Automation").
+				// Explicit height = option count + 1 for the title line. Without
+				// it, huh v2's auto-height sizes the option viewport to
+				// (options height - title height), silently clipping the last
+				// option (the "Automatic repair" row never rendered otherwise).
+				Height(len(automationOptions)+1).
+				Value(&m.fd.automation).
+				Options(automationOptions...),
 			huh.NewConfirm().
-				Title("Add this repository?").
-				Affirmative("Yes").
-				Negative("No").
+				Affirmative("Add Repository").
+				Negative("Cancel").
 				Value(&m.fd.confirm),
 		),
 	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
@@ -312,11 +399,7 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.createdRepo = msg.repo
-		if m.shouldOfferGitHubAppInstall() {
-			return m.promptGitHubAppInstall(), nil
-		}
-		m.done = true
-		return m, nil
+		return m.afterRepoCreated(msg.configErr), nil
 
 	case repoClonedMsg:
 		m.cloning = false
@@ -325,11 +408,7 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.createdRepo = msg.repo
-		if m.shouldOfferGitHubAppInstall() {
-			return m.promptGitHubAppInstall(), nil
-		}
-		m.done = true
-		return m, nil
+		return m.afterRepoCreated(msg.configErr), nil
 
 	case repoValidatedMsg:
 		m.validating = false
@@ -449,6 +528,12 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.String() == "esc" {
+			// The repo was created but its options failed to save: esc dismisses
+			// the notice and completes the add (the repo exists either way).
+			if m.configErr != nil {
+				m.done = true
+				return m, nil
+			}
 			// If showing an error, go back to the input form with data preserved.
 			if m.err != nil {
 				m.err = nil
@@ -490,8 +575,11 @@ func (m RepoAddModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Delegate to form when active (input + details phases).
-	if m.form != nil && m.phase != repoAddPhaseDone {
+	// Delegate to form when active (input + details phases). Once the repo is
+	// created but its options failed to save, the config-error notice owns the
+	// screen — keep stray keys away from the now-hidden details form so they
+	// can't re-submit it.
+	if m.form != nil && m.phase != repoAddPhaseDone && m.configErr == nil {
 		_, cmd := m.form.Update(msg)
 
 		if m.form.State == huh.StateAborted {
@@ -549,6 +637,23 @@ func (m RepoAddModel) promptGitHubAppInstall() RepoAddModel {
 	m.phase = repoAddPhaseGitHubAppPrompt
 	m.githubAppInstallErr = nil
 	m.githubAppInstallNWO = vcs.GitHubNWO(m.githubAppRepoOrigin())
+	return m
+}
+
+// afterRepoCreated advances the wizard once the repo exists. A non-nil configErr
+// means the repo was created but persisting its add-time options failed; that is
+// non-fatal, so the wizard shows a notice (esc completes) instead of offering
+// the GitHub App install. Otherwise it offers the install follow-up when
+// applicable, or finishes.
+func (m RepoAddModel) afterRepoCreated(configErr error) RepoAddModel {
+	if configErr != nil {
+		m.configErr = configErr
+		return m
+	}
+	if m.shouldOfferGitHubAppInstall() {
+		return m.promptGitHubAppInstall()
+	}
+	m.done = true
 	return m
 }
 
@@ -682,38 +787,106 @@ func (m *RepoAddModel) handleFormCompleted() (tea.Model, tea.Cmd) {
 
 func (m *RepoAddModel) submitRepo() tea.Cmd {
 	cfg, _ := config.Load()
+	c := m.client
+	ctx := m.ctx
+	fd := m.fd
+	// Snapshot the config fields now, while we know they reflect what the user
+	// submitted; the closures below run after the create RPC, by which time fd may
+	// have been mutated by in-flight key handling.
+	cfgSnap := fd.configSnapshot()
 
 	if m.sourceMode == sourceModeClone {
 		m.cloning = true
 		req := &pb.CloneAndRegisterRepoRequest{
-			CloneUrl:          m.fd.gitURL,
-			LocalPath:         m.fd.clonePath,
-			DisplayName:       m.fd.name,
+			CloneUrl:          fd.gitURL,
+			LocalPath:         fd.clonePath,
+			DisplayName:       fd.name,
 			DefaultBaseBranch: "main",
 			WorktreeBaseDir:   cfg.WorktreeBaseDir,
 		}
-		if s := m.fd.setup; s != "" {
+		if s := fd.setup; s != "" {
 			req.SetupScript = &s
 		}
 		return func() tea.Msg {
-			repo, err := m.client.CloneAndRegisterRepo(m.ctx, req)
-			return repoClonedMsg{repo: repo, err: err}
+			repo, err := c.CloneAndRegisterRepo(ctx, req)
+			if err != nil {
+				return repoClonedMsg{err: err}
+			}
+			repo, cfgErr := applyRepoConfig(ctx, c, repo, cfgSnap)
+			return repoClonedMsg{repo: repo, configErr: cfgErr}
 		}
 	}
 
 	req := &pb.RegisterRepoRequest{
-		LocalPath:         m.fd.localPath,
-		DisplayName:       m.fd.name,
+		LocalPath:         fd.localPath,
+		DisplayName:       fd.name,
 		DefaultBaseBranch: m.detectedBaseBranch,
 		WorktreeBaseDir:   cfg.WorktreeBaseDir,
 	}
-	if s := m.fd.setup; s != "" {
+	if s := fd.setup; s != "" {
 		req.SetupScript = &s
 	}
 	return func() tea.Msg {
-		repo, err := m.client.RegisterRepo(m.ctx, req)
-		return repoRegisteredMsg{repo: repo, err: err}
+		repo, err := c.RegisterRepo(ctx, req)
+		if err != nil {
+			return repoRegisteredMsg{err: err}
+		}
+		repo, cfgErr := applyRepoConfig(ctx, c, repo, cfgSnap)
+		return repoRegisteredMsg{repo: repo, configErr: cfgErr}
 	}
+}
+
+// applyRepoConfig persists the add-form merge-strategy / automation options onto
+// a freshly-created repo via UpdateRepo. It returns the updated repo (or the
+// original when nothing changed) and any error from the settings write. The repo
+// already exists, so callers treat that error as non-fatal.
+func applyRepoConfig(ctx context.Context, c client.BossClient, repo *pb.Repo, snap repoConfigSnapshot) (*pb.Repo, error) {
+	req, changed := repoConfigUpdate(repo.GetId(), snap)
+	if !changed {
+		return repo, nil
+	}
+	updated, err := c.UpdateRepo(ctx, req)
+	if err != nil {
+		return repo, err
+	}
+	return updated, nil
+}
+
+// changedBool reports whether cur differs from the creation default def. Wrapping
+// the comparison keeps the named default constants readable (a bare `cur != true`
+// literal would be folded away by staticcheck) while documenting the WYSIWYG
+// "persist only what the user changed" intent.
+func changedBool(cur, def bool) bool { return cur != def }
+
+// repoConfigUpdate builds an UpdateRepoRequest for any add-form options that
+// differ from the bossd creation defaults. The bool reports whether anything
+// needs persisting.
+func repoConfigUpdate(repoID string, snap repoConfigSnapshot) (*pb.UpdateRepoRequest, bool) {
+	req := &pb.UpdateRepoRequest{Id: repoID}
+	changed := false
+
+	if ms := snap.mergeStrategy; ms != "" && ms != defaultRepoMergeStrategy {
+		req.MergeStrategy = &ms
+		changed = true
+	}
+
+	autoMerge := slices.Contains(snap.automation, automationAutoMerge)
+	dependabot := slices.Contains(snap.automation, automationDependabot)
+	repair := slices.Contains(snap.automation, automationRepair)
+	if changedBool(autoMerge, defaultCanAutoMerge) {
+		req.CanAutoMerge = &autoMerge
+		changed = true
+	}
+	if changedBool(dependabot, defaultCanAutoMergeDependabot) {
+		req.CanAutoMergeDependabot = &dependabot
+		changed = true
+	}
+	if changedBool(repair, defaultCanAutoRepair) {
+		req.CanAutoRepair = &repair
+		changed = true
+	}
+
+	return req, changed
 }
 
 // Cancelled returns true if the user cancelled.
@@ -749,6 +922,17 @@ func (m RepoAddModel) View() tea.View {
 		return tea.NewView(
 			lipgloss.NewStyle().Padding(0, 2).Foreground(colorInfo).Render(
 				fmt.Sprintf("Cloning %s...", m.fd.gitURL)),
+		)
+	}
+
+	if m.configErr != nil && !m.done && m.createdRepo != nil {
+		name := m.createdRepo.DisplayName
+		body := fmt.Sprintf(
+			"Repository %q was added, but saving its options failed:\n\n  %v\n\nYou can adjust them later in the repo settings.",
+			name, m.configErr)
+		return tea.NewView(
+			lipgloss.NewStyle().Padding(0, 2).Foreground(colorWarning).Render(body) + "\n" +
+				actionBar([]string{"[esc] continue"}),
 		)
 	}
 

@@ -29,19 +29,18 @@ type CreateRepoParams struct {
 // UpdateRepoParams holds the fields that can be updated on a repo.
 // Nil fields are not updated.
 type UpdateRepoParams struct {
-	DisplayName             *string
-	OriginURL               *string
-	DefaultBaseBranch       *string
-	WorktreeBaseDir         *string
-	SetupScript             **string // double pointer: nil = don't update, *nil = set to NULL
-	CanAutoMerge            *bool
-	CanAutoMergeDependabot  *bool
-	CanAutoAddressReviews   *bool
-	CanAutoResolveConflicts *bool
-	MergeStrategy           *models.MergeStrategy
-	LinearAPIKey            *string
-	SentryAPIKey            *string
-	SentryOrg               *string
+	DisplayName            *string
+	OriginURL              *string
+	DefaultBaseBranch      *string
+	WorktreeBaseDir        *string
+	SetupScript            **string // double pointer: nil = don't update, *nil = set to NULL
+	CanAutoMerge           *bool
+	CanAutoMergeDependabot *bool
+	CanAutoRepair          *bool
+	MergeStrategy          *models.MergeStrategy
+	LinearAPIKey           *string
+	SentryAPIKey           *string
+	SentryOrg              *string
 }
 
 // RepoStore defines the interface for repo persistence.

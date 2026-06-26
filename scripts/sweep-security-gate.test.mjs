@@ -1,7 +1,7 @@
-// scripts/security-sweep-gate.test.mjs
+// scripts/sweep-security-gate.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreAlert, isMajorBump, parseSemverMajor } from './security-sweep-gate.mjs';
+import { scoreAlert, isMajorBump, parseSemverMajor } from './sweep-security-gate.mjs';
 
 test('scoreAlert ranks by severity then runtime scope', () => {
   const crit = { security_advisory: { severity: 'critical' }, dependency: { scope: 'runtime' } };
@@ -24,8 +24,8 @@ test('isMajorBump flags a fix that crosses a major boundary', () => {
   assert.equal(isMajorBump('< 5.0.0', '6.0.1'), true);
 });
 
-// append to scripts/security-sweep-gate.test.mjs
-import { selectBatch, dedupeAgainstPRs } from './security-sweep-gate.mjs';
+// append to scripts/sweep-security-gate.test.mjs
+import { selectBatch, dedupeAgainstPRs } from './sweep-security-gate.mjs';
 
 const mkAlert = (over = {}) => ({
   number: over.number ?? 1,
@@ -48,7 +48,7 @@ test('dedupeAgainstPRs drops alerts already covered by an open dependabot PR or 
   ];
   const prs = [
     { number: 50, headRefName: 'dependabot/npm_and_yarn/lodash-4.17.21', body: '' },
-    { number: 51, headRefName: 'feature/x', body: 'fixes <!-- bs-security-sweep:ghsa:GHSA-y -->' },
+    { number: 51, headRefName: 'feature/x', body: 'fixes <!-- bs-sweep-security:ghsa:GHSA-y -->' },
   ];
   assert.deepEqual(
     dedupeAgainstPRs(alerts, prs).map((a) => a.number),
@@ -76,8 +76,8 @@ test('selectBatch returns empty batch when nothing qualifies', () => {
   assert.deepEqual(out.batch, []);
 });
 
-// append to scripts/security-sweep-gate.test.mjs
-import { classifyOutcome, parseState, renderState } from './security-sweep-gate.mjs';
+// append to scripts/sweep-security-gate.test.mjs
+import { classifyOutcome, parseState, renderState } from './sweep-security-gate.mjs';
 
 test('classifyOutcome only greenlights a settled mergeable non-rejected PR', () => {
   assert.equal(classifyOutcome('green', 'MERGEABLE', 'APPROVED'), 'green');
@@ -96,8 +96,8 @@ test('renderState/parseState round-trips and embeds ghsa dedupe sentinels', () =
     batchGhsas: ['GHSA-a', 'GHSA-b'],
     updatedAt: '2026-06-25T00:00:00Z',
   });
-  assert.match(body, /<!-- bs-security-sweep:state -->/);
-  assert.match(body, /bs-security-sweep:ghsa:GHSA-a/);
+  assert.match(body, /<!-- bs-sweep-security:state -->/);
+  assert.match(body, /bs-sweep-security:ghsa:GHSA-a/);
   const st = parseState(body);
   assert.equal(st.attempts, 1);
   assert.equal(st.lastSha, 'abc1234');
@@ -108,8 +108,8 @@ test('parseState defaults cleanly on an empty body', () => {
   assert.deepEqual(parseState(''), { attempts: 0, lastSha: '', lastOutcome: '' });
 });
 
-// append to scripts/security-sweep-gate.test.mjs
-import { runCli } from './security-sweep-gate.mjs';
+// append to scripts/sweep-security-gate.test.mjs
+import { runCli } from './sweep-security-gate.mjs';
 
 test('runCli select-batch reads files via injected reader and prints JSON', () => {
   const files = {
@@ -147,8 +147,8 @@ test('runCli throws on unknown subcommand', () => {
   assert.throws(() => runCli(['bogus'], {}));
 });
 
-// append to scripts/security-sweep-gate.test.mjs
-import { decideAction } from './security-sweep-gate.mjs';
+// append to scripts/sweep-security-gate.test.mjs
+import { decideAction } from './sweep-security-gate.mjs';
 
 test('decideAction watches a fresh head and resets the counter', () => {
   const d = decideAction({

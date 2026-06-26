@@ -115,19 +115,18 @@ func TestRepoToProto(t *testing.T) {
 	script := "make install"
 
 	repo := &models.Repo{
-		ID:                      "repo-1",
-		DisplayName:             "my-app",
-		LocalPath:               "/home/user/my-app",
-		OriginURL:               "https://github.com/user/my-app.git",
-		DefaultBaseBranch:       "main",
-		WorktreeBaseDir:         "/home/user/.worktrees",
-		SetupScript:             &script,
-		CanAutoMerge:            true,
-		CanAutoMergeDependabot:  true,
-		CanAutoAddressReviews:   false,
-		CanAutoResolveConflicts: true,
-		CreatedAt:               now,
-		UpdatedAt:               now,
+		ID:                     "repo-1",
+		DisplayName:            "my-app",
+		LocalPath:              "/home/user/my-app",
+		OriginURL:              "https://github.com/user/my-app.git",
+		DefaultBaseBranch:      "main",
+		WorktreeBaseDir:        "/home/user/.worktrees",
+		SetupScript:            &script,
+		CanAutoMerge:           true,
+		CanAutoMergeDependabot: true,
+		CanAutoRepair:          true,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 
 	p := repoToProto(repo)
@@ -158,11 +157,8 @@ func TestRepoToProto(t *testing.T) {
 	if !p.CanAutoMergeDependabot {
 		t.Error("CanAutoMergeDependabot should be true")
 	}
-	if p.CanAutoAddressReviews {
-		t.Error("CanAutoAddressReviews should be false")
-	}
-	if !p.CanAutoResolveConflicts {
-		t.Error("CanAutoResolveConflicts should be true")
+	if !p.CanAutoRepair {
+		t.Error("CanAutoRepair should be true")
 	}
 	if p.CreatedAt == nil {
 		t.Error("CreatedAt should not be nil")

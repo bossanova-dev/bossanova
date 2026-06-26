@@ -25,6 +25,7 @@ type fakeAgentForLifecycle struct {
 	CommandPrefix               string
 	ConsumesInitialInput        bool
 	OnConfigureHook             func()
+	SuggestPRTitleFunc          func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 }
 
 func newFakeAgent() *fakeAgentForLifecycle {
@@ -101,6 +102,13 @@ func (f *fakeAgentForLifecycle) ResolveInteractiveSessionID(_ context.Context, r
 
 func (f *fakeAgentForLifecycle) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) SuggestPRTitle(_ context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	if f.SuggestPRTitleFunc != nil {
+		return f.SuggestPRTitleFunc(req)
+	}
+	return &bossanovav1.SuggestPRTitleResponse{}, nil
 }
 
 func (f *fakeAgentForLifecycle) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {

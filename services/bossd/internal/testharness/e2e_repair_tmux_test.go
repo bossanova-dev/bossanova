@@ -104,6 +104,10 @@ func (f *repairFakeAgentClient) ListIgnoredDirtyFiles(context.Context, *bossanov
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }
 
+func (f *repairFakeAgentClient) SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	return &bossanovav1.SuggestPRTitleResponse{}, nil
+}
+
 func (f *repairFakeAgentClient) GetChatTitle(context.Context, *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{Supported: true, Title: "Repair: fake"}, nil
 }
@@ -276,6 +280,10 @@ func (f *wrappedRepairFakeAgentClient) ResolveInteractiveSessionID(ctx context.C
 
 func (f *wrappedRepairFakeAgentClient) ListIgnoredDirtyFiles(ctx context.Context, req *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return f.inner.ListIgnoredDirtyFiles(ctx, req)
+}
+
+func (f *wrappedRepairFakeAgentClient) SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	return &bossanovav1.SuggestPRTitleResponse{}, nil
 }
 
 func (f *wrappedRepairFakeAgentClient) GetChatTitle(ctx context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {

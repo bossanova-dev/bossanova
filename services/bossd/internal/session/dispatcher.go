@@ -9,19 +9,10 @@ import (
 
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
-	"github.com/recurser/bossalib/safego"
 	"github.com/recurser/bossalib/sessionreason"
 	"github.com/recurser/bossalib/vcs"
 	"github.com/recurser/bossd/internal/db"
 )
-
-// FixHandler handles automated fix attempts for sessions. It is satisfied by
-// *FixLoop and exists to decouple the Dispatcher from the concrete FixLoop type.
-type FixHandler interface {
-	HandleCheckFailure(ctx context.Context, sessionID string, failedChecks []vcs.CheckResult) error
-	HandleConflict(ctx context.Context, sessionID string) error
-	HandleReviewFeedback(ctx context.Context, sessionID string, comments []vcs.ReviewComment) error
-}
 
 // SessionCompletionNotifier is called when a session reaches a terminal state
 // (merged, closed, or blocked). The task orchestrator implements this to
@@ -55,7 +46,6 @@ type Dispatcher struct {
 	sessions           db.SessionStore
 	repos              db.RepoStore
 	provider           vcs.Provider
-	fixLoop            FixHandler
 	completionNotifier SessionCompletionNotifier
 	displayStatus      DisplayStatusSetter
 	logger             zerolog.Logger
@@ -67,14 +57,12 @@ func NewDispatcher(
 	sessions db.SessionStore,
 	repos db.RepoStore,
 	provider vcs.Provider,
-	fixLoop FixHandler,
 	logger zerolog.Logger,
 ) *Dispatcher {
 	return &Dispatcher{
 		sessions: sessions,
 		repos:    repos,
 		provider: provider,
-		fixLoop:  fixLoop,
 		logger:   logger,
 	}
 }
@@ -246,19 +234,9 @@ func (d *Dispatcher) handleChecksFailed(ctx context.Context, sm *machine.Machine
 		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
 	}
 
-	// Kick off the fix loop if we transitioned to FixingChecks.
-	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
-		if !sess.AutomationEnabled {
-			d.logger.Info().Str("session", sess.ID).Msg("automation disabled, skipping fix loop for check failure")
-			return nil
-		}
-		safego.Go(d.logger, func() {
-			if err := d.fixLoop.HandleCheckFailure(ctx, sess.ID, event.FailedChecks); err != nil {
-				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: check failure handler failed")
-			}
-		})
-	}
-
+	// On a FixingChecks transition the dispatcher does no repair itself: the
+	// repair plugin reacts to the resulting FAILING display status (gated by the
+	// repo's auto-repair toggle). The dispatcher only owns the state machine.
 	return nil
 }
 
@@ -297,24 +275,8 @@ func (d *Dispatcher) handleConflictDetected(ctx context.Context, sm *machine.Mac
 		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
 	}
 
-	// Kick off the fix loop if we transitioned to FixingChecks.
-	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
-		repo, err := d.repos.Get(ctx, sess.RepoID)
-		if err != nil {
-			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to get repo for conflict automation check")
-			return nil
-		}
-		if !repo.CanAutoResolveConflicts {
-			d.logger.Info().Str("session", sess.ID).Msg("auto-resolve conflicts disabled, skipping fix loop")
-			return nil
-		}
-		safego.Go(d.logger, func() {
-			if err := d.fixLoop.HandleConflict(ctx, sess.ID); err != nil {
-				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: conflict handler failed")
-			}
-		})
-	}
-
+	// Repair (if enabled) is driven by the repair plugin off the resulting
+	// CONFLICT display status; the dispatcher only owns the state machine.
 	return nil
 }
 
@@ -369,24 +331,8 @@ func (d *Dispatcher) handleReviewSubmitted(ctx context.Context, sm *machine.Mach
 		d.notifyCompletion(ctx, sess.ID, models.TaskMappingStatusFailed)
 	}
 
-	// Kick off the fix loop if we transitioned to FixingChecks.
-	if sm.State() == machine.FixingChecks && d.fixLoop != nil {
-		repo, err := d.repos.Get(ctx, sess.RepoID)
-		if err != nil {
-			d.logger.Warn().Err(err).Str("session", sess.ID).Msg("failed to get repo for review automation check")
-			return nil
-		}
-		if !repo.CanAutoAddressReviews {
-			d.logger.Info().Str("session", sess.ID).Msg("auto-address reviews disabled, skipping fix loop")
-			return nil
-		}
-		safego.Go(d.logger, func() {
-			if err := d.fixLoop.HandleReviewFeedback(ctx, sess.ID, event.Comments); err != nil {
-				d.logger.Error().Err(err).Str("session", sess.ID).Msg("fix loop: review handler failed")
-			}
-		})
-	}
-
+	// Repair (if enabled) is driven by the repair plugin off the resulting
+	// REJECTED display status; the dispatcher only owns the state machine.
 	return nil
 }
 

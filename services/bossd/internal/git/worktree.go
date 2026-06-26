@@ -105,6 +105,11 @@ type WorktreeManager interface {
 	// keeping the actual commit message conventional.
 	LatestCommitSubject(ctx context.Context, worktreePath string) (string, error)
 
+	// CommitSubjects returns the subjects of commits on HEAD ahead of baseRef,
+	// oldest first. Used by cron finalize to give a PR-title suggester the full
+	// change context instead of only the last commit.
+	CommitSubjects(ctx context.Context, worktreePath, baseRef string) ([]string, error)
+
 	// BranchDebugSnapshot captures branch state used to diagnose draft PR
 	// creation failures.
 	BranchDebugSnapshot(ctx context.Context, worktreePath, branch, baseBranch string) (*BranchDebugSnapshot, error)
@@ -672,6 +677,26 @@ func (m *Manager) LatestCommitSubject(ctx context.Context, worktreePath string) 
 		return "", fmt.Errorf("latest commit subject: %w", err)
 	}
 	return out, nil
+}
+
+// CommitSubjects returns the subjects of commits on HEAD that are ahead of
+// baseRef, oldest first. It gives a PR-title suggester the full change context
+// (not just the last commit). baseRef is typically the PR base branch (e.g.
+// "dev"); an empty or unresolvable base returns an error the caller treats as
+// "no history available" and falls back accordingly.
+func (m *Manager) CommitSubjects(ctx context.Context, worktreePath, baseRef string) ([]string, error) {
+	if strings.TrimSpace(baseRef) == "" {
+		return nil, fmt.Errorf("commit subjects: empty base ref")
+	}
+	out, err := runGit(ctx, worktreePath, "log", baseRef+"..HEAD", "--pretty=%s", "--reverse")
+	if err != nil {
+		return nil, fmt.Errorf("commit subjects: %w", err)
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
 }
 
 // InjectPRNumbers ports the boss-finalize skill's add-pr-numbers.sh into the

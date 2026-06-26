@@ -509,6 +509,8 @@ type mockWorktreeManager struct {
 	verifyPushedCalls           []verifyPushedCall
 	latestCommitSubject         string
 	latestCommitSubjectErr      error
+	commitSubjects              []string
+	commitSubjectsErr           error
 	branchDebugSnapshot         *gitpkg.BranchDebugSnapshot
 	branchDebugSnapshotErr      error
 	branchDebugSnapshotCalls    []branchDebugSnapshotCall
@@ -626,6 +628,10 @@ func (m *mockWorktreeManager) VerifyPushedBranchAheadOfBase(_ context.Context, w
 
 func (m *mockWorktreeManager) Status(_ context.Context, _ string) (string, error) {
 	return m.statusOut, m.statusErr
+}
+
+func (m *mockWorktreeManager) CommitSubjects(context.Context, string, string) ([]string, error) {
+	return m.commitSubjects, m.commitSubjectsErr
 }
 
 func (m *mockWorktreeManager) LatestCommitSubject(_ context.Context, _ string) (string, error) {

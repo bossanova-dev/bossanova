@@ -128,6 +128,10 @@ func (*codexTUITestClient) ResolveInteractiveSessionID(_ context.Context, req *p
 func (*codexTUITestClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
 	return &pb.ListIgnoredDirtyFilesResponse{}, nil
 }
+func (*codexTUITestClient) SuggestPRTitle(context.Context, *pb.SuggestPRTitleRequest) (*pb.SuggestPRTitleResponse, error) {
+	return &pb.SuggestPRTitleResponse{}, nil
+}
+
 func (*codexTUITestClient) GetChatTitle(context.Context, *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
 	return &pb.GetChatTitleResponse{}, nil
 }
@@ -259,6 +263,10 @@ func (*claudeIntegrationClient) ResolveInteractiveSessionID(context.Context, *pb
 func (*claudeIntegrationClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
 	return &pb.ListIgnoredDirtyFilesResponse{}, nil
 }
+func (*claudeIntegrationClient) SuggestPRTitle(context.Context, *pb.SuggestPRTitleRequest) (*pb.SuggestPRTitleResponse, error) {
+	return &pb.SuggestPRTitleResponse{}, nil
+}
+
 func (*claudeIntegrationClient) GetChatTitle(context.Context, *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
 	return &pb.GetChatTitleResponse{}, nil
 }

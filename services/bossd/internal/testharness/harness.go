@@ -226,7 +226,7 @@ func newHarness(t *testing.T, opts Options) *Harness {
 	realtimeProvider := NewStubProvider()
 	realtimeCtx, realtimeCancel := context.WithCancel(context.Background())
 	poller := session.NewPoller(sessions, repos, realtimeProvider, time.Hour, session.DefaultPollTimeout, logger)
-	realtimeDispatcher := session.NewDispatcher(sessions, repos, realtimeProvider, nil, logger)
+	realtimeDispatcher := session.NewDispatcher(sessions, repos, realtimeProvider, logger)
 	pollerEvents := poller.Run(realtimeCtx)
 	webhookEventCh := make(chan session.SessionEvent, 64)
 	merged := mergeSessionEvents(realtimeCtx, pollerEvents, webhookEventCh)
@@ -606,7 +606,7 @@ func (h *Harness) SeedSessionInState(t *testing.T, ctx context.Context, repoID s
 			t.Fatalf("SeedSessionInState: submit PR: %v", err)
 		}
 		prNumber = getPRNumber(t, h, ctx, sessionID)
-		dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+		dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 		events := make(chan session.SessionEvent, 1)
 		events <- session.SessionEvent{SessionID: sessionID, Event: vcs.ChecksPassed{PRID: prNumber}}
 		close(events)
@@ -627,7 +627,7 @@ func (h *Harness) SeedSessionInState(t *testing.T, ctx context.Context, repoID s
 			t.Fatalf("SeedSessionInState: seed attempt count: %v", err)
 		}
 		failureConclusion := vcs.CheckConclusionFailure
-		dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+		dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 		events := make(chan session.SessionEvent, 1)
 		events <- session.SessionEvent{
 			SessionID: sessionID,

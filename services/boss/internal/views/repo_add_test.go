@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,10 @@ type repoAddStubClient struct {
 	cloned      *pb.Repo
 	cloneErr    error
 	cloneReq    *pb.CloneAndRegisterRepoRequest
+
+	updated   *pb.Repo
+	updateErr error
+	updateReq *pb.UpdateRepoRequest
 }
 
 func (s *repoAddStubClient) ValidateRepoPath(_ context.Context, path string) (*pb.ValidateRepoPathResponse, error) {
@@ -93,6 +98,17 @@ func (s *repoAddStubClient) RegisterRepo(_ context.Context, req *pb.RegisterRepo
 func (s *repoAddStubClient) CloneAndRegisterRepo(_ context.Context, req *pb.CloneAndRegisterRepoRequest) (*pb.Repo, error) {
 	s.cloneReq = req
 	return s.cloned, s.cloneErr
+}
+
+func (s *repoAddStubClient) UpdateRepo(_ context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
+	s.updateReq = req
+	if s.updateErr != nil {
+		return nil, s.updateErr
+	}
+	if s.updated != nil {
+		return s.updated, nil
+	}
+	return s.registered, nil
 }
 
 // sendRepoAddMsg sends an arbitrary tea.Msg through Update and asserts value type.
@@ -685,6 +701,294 @@ func TestRepoAdd_SetupScriptPassedToClone(t *testing.T) {
 
 	if sc.cloneReq.SetupScript == nil || *sc.cloneReq.SetupScript != "make setup" {
 		t.Fatalf("SetupScript = %v, want 'make setup'", sc.cloneReq.SetupScript)
+	}
+}
+
+func TestRepoAdd_DetailsForm_SeedsCreationDefaults(t *testing.T) {
+	sc := &repoAddStubClient{}
+	m := NewRepoAddModel(sc, context.Background())
+
+	if m.fd.mergeStrategy != defaultRepoMergeStrategy {
+		t.Fatalf("mergeStrategy = %q, want %q", m.fd.mergeStrategy, defaultRepoMergeStrategy)
+	}
+	want := defaultRepoAutomation()
+	if len(m.fd.automation) != len(want) {
+		t.Fatalf("automation = %v, want %v", m.fd.automation, want)
+	}
+	for _, v := range want {
+		if !slices.Contains(m.fd.automation, v) {
+			t.Fatalf("automation %v missing default %q", m.fd.automation, v)
+		}
+	}
+	// The seeded defaults must equal the booleans bossd applies at creation, or
+	// the WYSIWYG "only persist changes" logic would drift.
+	if slices.Contains(want, automationAutoMerge) != defaultCanAutoMerge {
+		t.Fatal("auto-merge default seed disagrees with defaultCanAutoMerge")
+	}
+	if slices.Contains(want, automationDependabot) != defaultCanAutoMergeDependabot {
+		t.Fatal("dependabot default seed disagrees with defaultCanAutoMergeDependabot")
+	}
+	if slices.Contains(want, automationRepair) != defaultCanAutoRepair {
+		t.Fatal("repair default seed disagrees with defaultCanAutoRepair")
+	}
+}
+
+func TestRepoAdd_DetailsForm_RendersConfigFields(t *testing.T) {
+	sc := &repoAddStubClient{}
+	m := NewRepoAddModel(sc, context.Background())
+	m.phase = repoAddPhaseDetails
+	m.sourceMode = sourceModeOpen
+	m.buildDetailsForm()
+	m.form.Init()
+
+	view := m.View().Content
+	for _, want := range []string{
+		"Name", "Setup command", "Merge strategy", "Automation",
+		"Add Repository", "Cancel",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("details form view missing %q; got:\n%s", want, view)
+		}
+	}
+	// Integrations (Linear/Sentry) are configured on the repo-settings screen,
+	// not the add form, so they must not appear here.
+	for _, absent := range []string{"Linear API key", "Sentry API key", "Sentry organization"} {
+		if strings.Contains(view, absent) {
+			t.Fatalf("details form unexpectedly includes integration field %q; got:\n%s", absent, view)
+		}
+	}
+}
+
+func TestRepoConfigUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(fd *repoAddFormData)
+		wantChanged bool
+		check       func(t *testing.T, req *pb.UpdateRepoRequest)
+	}{
+		{
+			name:        "defaults produce no update",
+			mutate:      func(*repoAddFormData) {},
+			wantChanged: false,
+		},
+		{
+			name:        "changed merge strategy",
+			mutate:      func(fd *repoAddFormData) { fd.mergeStrategy = "squash" },
+			wantChanged: true,
+			check: func(t *testing.T, req *pb.UpdateRepoRequest) {
+				if req.MergeStrategy == nil || *req.MergeStrategy != "squash" {
+					t.Fatalf("MergeStrategy = %v, want squash", req.MergeStrategy)
+				}
+			},
+		},
+		{
+			name:        "enabling auto-merge",
+			mutate:      func(fd *repoAddFormData) { fd.automation = append(fd.automation, automationAutoMerge) },
+			wantChanged: true,
+			check: func(t *testing.T, req *pb.UpdateRepoRequest) {
+				if req.CanAutoMerge == nil || !*req.CanAutoMerge {
+					t.Fatalf("CanAutoMerge = %v, want true", req.CanAutoMerge)
+				}
+			},
+		},
+		{
+			name: "disabling automatic repair",
+			mutate: func(fd *repoAddFormData) {
+				fd.automation = slices.DeleteFunc(fd.automation, func(v string) bool { return v == automationRepair })
+			},
+			wantChanged: true,
+			check: func(t *testing.T, req *pb.UpdateRepoRequest) {
+				if req.CanAutoRepair == nil || *req.CanAutoRepair {
+					t.Fatalf("CanAutoRepair = %v, want false", req.CanAutoRepair)
+				}
+			},
+		},
+		{
+			name:        "disabling all automation",
+			mutate:      func(fd *repoAddFormData) { fd.automation = nil },
+			wantChanged: true,
+			check: func(t *testing.T, req *pb.UpdateRepoRequest) {
+				if req.CanAutoMergeDependabot == nil || *req.CanAutoMergeDependabot {
+					t.Fatalf("CanAutoMergeDependabot = %v, want false", req.CanAutoMergeDependabot)
+				}
+				if req.CanAutoRepair == nil || *req.CanAutoRepair {
+					t.Fatalf("CanAutoRepair = %v, want false", req.CanAutoRepair)
+				}
+			},
+		},
+		{
+			name: "merge strategy plus automation change together",
+			mutate: func(fd *repoAddFormData) {
+				fd.mergeStrategy = "rebase"
+				fd.automation = []string{automationDependabot} // drop repair
+			},
+			wantChanged: true,
+			check: func(t *testing.T, req *pb.UpdateRepoRequest) {
+				if req.MergeStrategy == nil || *req.MergeStrategy != "rebase" {
+					t.Fatalf("MergeStrategy = %v, want rebase", req.MergeStrategy)
+				}
+				if req.CanAutoRepair == nil || *req.CanAutoRepair {
+					t.Fatalf("CanAutoRepair = %v, want false", req.CanAutoRepair)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fd := &repoAddFormData{
+				mergeStrategy: defaultRepoMergeStrategy,
+				automation:    defaultRepoAutomation(),
+			}
+			tt.mutate(fd)
+
+			req, changed := repoConfigUpdate("repo-1", fd.configSnapshot())
+			if changed != tt.wantChanged {
+				t.Fatalf("changed = %v, want %v (req=%+v)", changed, tt.wantChanged, req)
+			}
+			if changed && req.Id != "repo-1" {
+				t.Fatalf("req.Id = %q, want repo-1", req.Id)
+			}
+			if tt.check != nil {
+				tt.check(t, req)
+			}
+		})
+	}
+}
+
+// TestRepoConfigSnapshot_DecoupledFromLaterMutation guards the fix for the
+// post-create config race: submitRepo snapshots the add-form options before the
+// async create RPC, so edits made to the live form while the RPC is in flight
+// must not leak into the values persisted for the new repo.
+func TestRepoConfigSnapshot_DecoupledFromLaterMutation(t *testing.T) {
+	fd := &repoAddFormData{
+		mergeStrategy: "rebase",
+		automation:    []string{automationAutoMerge, automationDependabot},
+	}
+
+	snap := fd.configSnapshot()
+
+	// Simulate the view rebuilding form state while the create RPC is in flight.
+	fd.mergeStrategy = "squash"
+	fd.automation[0] = automationDependabot
+	fd.automation = append(fd.automation, automationRepair)
+
+	req, changed := repoConfigUpdate("repo-1", snap)
+	if !changed {
+		t.Fatal("expected changed = true")
+	}
+	if req.MergeStrategy == nil || *req.MergeStrategy != "rebase" {
+		t.Fatalf("MergeStrategy = %v, want rebase (snapshot leaked later edit)", req.MergeStrategy)
+	}
+	if req.CanAutoMerge == nil || !*req.CanAutoMerge {
+		t.Fatalf("CanAutoMerge = %v, want true (snapshot lost submitted value)", req.CanAutoMerge)
+	}
+	if req.CanAutoRepair == nil || *req.CanAutoRepair {
+		t.Fatalf("CanAutoRepair = %v, want false (appended edit leaked)", req.CanAutoRepair)
+	}
+}
+
+func TestRepoAdd_DetailsPhase_ChangedConfigUpdatesRepoAfterRegister(t *testing.T) {
+	sc := &repoAddStubClient{
+		registered: &pb.Repo{Id: "repo-1", DisplayName: "test-repo"},
+	}
+	m := NewRepoAddModel(sc, context.Background())
+	m.phase = repoAddPhaseDetails
+	m.sourceMode = sourceModeOpen
+	m.fd.localPath = "/my/repo"
+	m.fd.name = "test-repo"
+	m.fd.confirm = true
+	m.detectedBaseBranch = "main"
+	// User changed merge strategy and enabled auto-merge on the add form.
+	m.fd.mergeStrategy = "rebase"
+	m.fd.automation = append(m.fd.automation, automationAutoMerge)
+
+	_, cmd := m.handleFormCompleted()
+	if cmd == nil {
+		t.Fatal("expected registration command")
+	}
+	msg := cmd()
+	regMsg, ok := msg.(repoRegisteredMsg)
+	if !ok {
+		t.Fatalf("expected repoRegisteredMsg, got %T", msg)
+	}
+	if regMsg.err != nil || regMsg.configErr != nil {
+		t.Fatalf("unexpected errors: err=%v configErr=%v", regMsg.err, regMsg.configErr)
+	}
+	if sc.registerReq == nil {
+		t.Fatal("RegisterRepo was not called")
+	}
+	if sc.updateReq == nil {
+		t.Fatal("UpdateRepo was not called for changed config")
+	}
+	if sc.updateReq.Id != "repo-1" {
+		t.Fatalf("UpdateRepo.Id = %q, want repo-1", sc.updateReq.Id)
+	}
+	if sc.updateReq.MergeStrategy == nil || *sc.updateReq.MergeStrategy != "rebase" {
+		t.Fatalf("UpdateRepo.MergeStrategy = %v, want rebase", sc.updateReq.MergeStrategy)
+	}
+	if sc.updateReq.CanAutoMerge == nil || !*sc.updateReq.CanAutoMerge {
+		t.Fatalf("UpdateRepo.CanAutoMerge = %v, want true", sc.updateReq.CanAutoMerge)
+	}
+}
+
+func TestRepoAdd_DetailsPhase_DefaultConfigSkipsUpdate(t *testing.T) {
+	sc := &repoAddStubClient{
+		registered: &pb.Repo{Id: "repo-1", DisplayName: "test-repo"},
+	}
+	m := NewRepoAddModel(sc, context.Background())
+	m.phase = repoAddPhaseDetails
+	m.sourceMode = sourceModeOpen
+	m.fd.localPath = "/my/repo"
+	m.fd.name = "test-repo"
+	m.fd.confirm = true
+
+	_, cmd := m.handleFormCompleted()
+	msg := cmd()
+	if _, ok := msg.(repoRegisteredMsg); !ok {
+		t.Fatalf("expected repoRegisteredMsg, got %T", msg)
+	}
+	if sc.updateReq != nil {
+		t.Fatalf("UpdateRepo should not be called when config matches defaults; got %+v", sc.updateReq)
+	}
+}
+
+func TestRepoAdd_ConfigUpdateFailure_ShowsNonFatalNotice(t *testing.T) {
+	sc := &repoAddStubClient{
+		registered: &pb.Repo{Id: "repo-1", DisplayName: "test-repo"},
+		updateErr:  fmt.Errorf("settings write failed"),
+	}
+	m := NewRepoAddModel(sc, context.Background())
+	m.phase = repoAddPhaseDetails
+	m.sourceMode = sourceModeOpen
+	m.fd.localPath = "/my/repo"
+	m.fd.name = "test-repo"
+	m.fd.confirm = true
+	m.fd.mergeStrategy = "squash" // force an UpdateRepo call
+
+	_, cmd := m.handleFormCompleted()
+	msg := cmd()
+	regMsg := msg.(repoRegisteredMsg)
+	if regMsg.err != nil {
+		t.Fatalf("register err should be nil (repo created); got %v", regMsg.err)
+	}
+	if regMsg.configErr == nil {
+		t.Fatal("expected configErr when UpdateRepo fails")
+	}
+
+	// Feeding the message in must not mark the wizard done, and must surface the
+	// notice. esc then completes the add (the repo exists).
+	m = sendRepoAddMsg(t, m, regMsg)
+	if m.Done() {
+		t.Fatal("config failure should not auto-complete the wizard")
+	}
+	if view := m.View().Content; !strings.Contains(view, "saving its options failed") ||
+		!strings.Contains(view, "settings write failed") {
+		t.Fatalf("expected non-fatal config notice; got:\n%s", view)
+	}
+	m = sendRepoAddMsg(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !m.Done() {
+		t.Fatal("esc on the config notice should complete the add")
 	}
 }
 

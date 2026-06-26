@@ -173,6 +173,10 @@ func (c *claudeFakeClient) ResolveInteractiveSessionID(context.Context, *pb.Reso
 func (c *claudeFakeClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
 	return &pb.ListIgnoredDirtyFilesResponse{}, nil
 }
+func (c *claudeFakeClient) SuggestPRTitle(context.Context, *pb.SuggestPRTitleRequest) (*pb.SuggestPRTitleResponse, error) {
+	return &pb.SuggestPRTitleResponse{}, nil
+}
+
 func (c *claudeFakeClient) GetChatTitle(_ context.Context, req *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
 	c.titleCalls.Add(1)
 	c.lastTitleReq = &pb.GetChatTitleRequest{
@@ -1296,6 +1300,10 @@ func (c *recordingAgentClient) ResolveInteractiveSessionID(context.Context, *pb.
 func (c *recordingAgentClient) ListIgnoredDirtyFiles(context.Context, *pb.ListIgnoredDirtyFilesRequest) (*pb.ListIgnoredDirtyFilesResponse, error) {
 	return &pb.ListIgnoredDirtyFilesResponse{}, nil
 }
+func (c *recordingAgentClient) SuggestPRTitle(context.Context, *pb.SuggestPRTitleRequest) (*pb.SuggestPRTitleResponse, error) {
+	return &pb.SuggestPRTitleResponse{}, nil
+}
+
 func (c *recordingAgentClient) GetChatTitle(context.Context, *pb.GetChatTitleRequest) (*pb.GetChatTitleResponse, error) {
 	return &pb.GetChatTitleResponse{}, nil
 }

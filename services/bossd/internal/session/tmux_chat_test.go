@@ -62,12 +62,12 @@ func TestCronChatInputFromPromptConvertsLeadingSlashCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	input := cronChatInputFromPrompt("/bs-technical-debt")
+	input := cronChatInputFromPrompt("/bs-sweep-debt")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
 	}
-	if input.Command != "/bs-technical-debt" {
-		t.Fatalf("Command = %q, want /bs-technical-debt", input.Command)
+	if input.Command != "/bs-sweep-debt" {
+		t.Fatalf("Command = %q, want /bs-sweep-debt", input.Command)
 	}
 }
 
@@ -75,12 +75,12 @@ func TestCronChatInputFromPromptConvertsLeadingDollarCommand(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	input := cronChatInputFromPrompt("$bs-mutation-test")
+	input := cronChatInputFromPrompt("$bs-sweep-mutation")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
 	}
-	if input.Command != "$bs-mutation-test" {
-		t.Fatalf("Command = %q, want $bs-mutation-test", input.Command)
+	if input.Command != "$bs-sweep-mutation" {
+		t.Fatalf("Command = %q, want $bs-sweep-mutation", input.Command)
 	}
 }
 
@@ -88,12 +88,12 @@ func TestCronChatInputFromPromptTrimsSurroundingWhitespace(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	input := cronChatInputFromPrompt("  /bs-mutation-test  ")
+	input := cronChatInputFromPrompt("  /bs-sweep-mutation  ")
 	if input.Prompt != "" {
 		t.Fatalf("Prompt = %q, want empty", input.Prompt)
 	}
-	if input.Command != "/bs-mutation-test" {
-		t.Fatalf("Command = %q, want /bs-mutation-test", input.Command)
+	if input.Command != "/bs-sweep-mutation" {
+		t.Fatalf("Command = %q, want /bs-sweep-mutation", input.Command)
 	}
 }
 
@@ -111,7 +111,7 @@ func TestCronChatInputFromPromptConvertsLeadingCommandWithArgs(t *testing.T) {
 		command string
 	}{
 		{"/wc-merge-review headless", "/wc-merge-review headless"},
-		{"/bs-mutation-test a b", "/bs-mutation-test a b"},
+		{"/bs-sweep-mutation a b", "/bs-sweep-mutation a b"},
 		{"  /wc-merge-review headless  ", "/wc-merge-review headless"},
 		{"$boss-repair now", "$boss-repair now"},
 	} {
@@ -131,7 +131,7 @@ func TestCronChatInputFromPromptKeepsEmbeddedCommandAsPrompt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	prompt := "Run /bs-mutation-test"
+	prompt := "Run /bs-sweep-mutation"
 	input := cronChatInputFromPrompt(prompt)
 	if input.Prompt != prompt {
 		t.Fatalf("Prompt = %q, want %q", input.Prompt, prompt)
@@ -166,7 +166,7 @@ func TestCronChatInputFromPromptKeepsMultilinePrompt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
 	}
-	prompt := "/bs-mutation-test\nwith extra notes"
+	prompt := "/bs-sweep-mutation\nwith extra notes"
 	input := cronChatInputFromPrompt(prompt)
 	if input.Prompt != prompt {
 		t.Fatalf("Prompt = %q, want %q", input.Prompt, prompt)
@@ -1365,7 +1365,7 @@ func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
 	h := newStartTmuxChatHarness(t)
 	h.agentFake.CommandPrefix = "$"
 
-	h.sessions.sessions["sess-1"].Plan = "/bs-mutation-test"
+	h.sessions.sessions["sess-1"].Plan = "/bs-sweep-mutation"
 	h.sessions.sessions["sess-1"].Title = "Nightly mutation test"
 
 	_, err := h.lc.startCronTmuxChat(ctx, "sess-1", StartSessionOpts{}, h.sessions.sessions["sess-1"], nil)
@@ -1376,8 +1376,8 @@ func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
 	if h.tmuxFake.hasSubcommand("load-buffer") || h.tmuxFake.hasSubcommand("paste-buffer") {
 		t.Fatal("cron command input should use literal send-keys, not bracketed paste")
 	}
-	if got := h.agentFake.LastBuildInteractiveCommand.GetInitialCommand(); got != "/bs-mutation-test" {
-		t.Fatalf("InitialCommand = %q, want /bs-mutation-test", got)
+	if got := h.agentFake.LastBuildInteractiveCommand.GetInitialCommand(); got != "/bs-sweep-mutation" {
+		t.Fatalf("InitialCommand = %q, want /bs-sweep-mutation", got)
 	}
 
 	var sendKeys []recordedTmuxCall
@@ -1394,7 +1394,7 @@ func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
 	}
 	tmuxName := tmux.ChatSessionName("repo-abcdef12", h.chats.createCalls[0].AgentSessionID)
 	textCall := sendKeys[len(sendKeys)-2]
-	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$bs-mutation-test"}) {
+	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$bs-sweep-mutation"}) {
 		t.Fatalf("literal send-keys args = %v", textCall.args)
 	}
 	enterCall := sendKeys[len(sendKeys)-1]

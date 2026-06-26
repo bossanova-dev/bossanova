@@ -8,6 +8,7 @@ import {
   computeFrameDiffs,
   computeFrameLuma,
   detectLeadingBlankMs,
+  detectLeadingStaticMs,
   findStaticRuns,
   planRetime,
   retimedDurationMs,
@@ -19,6 +20,7 @@ import {
   evenCropHeight,
   buildBaseChain,
   applyMinHeightRatio,
+  LEADING_STATIC_DIFF,
   TIMER_W,
   TIMER_H,
 } from './proof-video.mjs';
@@ -88,6 +90,84 @@ test('detectLeadingBlankMs: trimMs clamped to capMs', () => {
 
 test('detectLeadingBlankMs: empty luma → 0', () => {
   assert.equal(detectLeadingBlankMs([], { fps: 4 }), 0);
+});
+
+// ── detectLeadingStaticMs ────────────────────────────────────────────────────
+
+test('detectLeadingStaticMs: VHS dark-boot → trims static boot run + buffer', () => {
+  // 6 near-zero diffs (static blank terminal at boot) then active diffs.
+  // fps=4 → 250ms/frame. 6*250 + 150 buffer = 1650ms.
+  const diffs = [0.0, 0.01, 0.0, 0.01, 0.0, 0.01, 5.2, 8.3, 4.1];
+  assert.equal(detectLeadingStaticMs(diffs, { fps: 4 }), 1650);
+});
+
+test('detectLeadingStaticMs: browser white-flash (also static) → trims it too', () => {
+  // Browser pre-roll is also static (identical near-white frames). 3 static + active.
+  // This proves one detector covers both surfaces — plan acceptance criterion.
+  // fps=4 → 3*250 + 150 buffer = 900ms.
+  const diffs = [0.02, 0.01, 0.03, 6.0, 5.5, 4.2];
+  assert.equal(detectLeadingStaticMs(diffs, { fps: 4 }), 900);
+});
+
+test('detectLeadingStaticMs: no lead-in (active from frame 0) → 0', () => {
+  const diffs = [5.2, 0.01, 0.01, 3.4];
+  assert.equal(detectLeadingStaticMs(diffs, { fps: 4 }), 0);
+});
+
+test('detectLeadingStaticMs: all-static → 0 (guard: not a lead-in)', () => {
+  // An all-static clip is not a lead-in — trimming it would gut real content.
+  const diffs = Array(20).fill(0.01);
+  assert.equal(detectLeadingStaticMs(diffs, { fps: 4 }), 0);
+});
+
+test('detectLeadingStaticMs: clamp to capMs', () => {
+  // 10 static diffs at fps=4 → 10*250+150=2650ms → clamped to 2000ms.
+  const diffs = [...Array(10).fill(0.01), 5.5];
+  assert.equal(detectLeadingStaticMs(diffs, { fps: 4, capMs: 2000 }), 2000);
+});
+
+test('detectLeadingStaticMs: eps regression pin — terminal-static frames are below LEADING_STATIC_DIFF', () => {
+  // Pins the threshold so a future drift cannot silently skip TUI boot detection.
+  // VHS terminal boot: diff ≈ 0 (no change at all). VHS cursor blink: ~0.05 on
+  // 96×54 grayscale (1 blinking pixel / 5184 total ≈ 0.05). Any real action
+  // (typing, spawning a process) produces diff ≥ 5. LEADING_STATIC_DIFF=1.5
+  // absorbs the blink while staying far below real-action diffs.
+  const terminalBootDiffs = [0.0, 0.05, 0.0, 0.03, 0.0, 0.05]; // static boot
+  const withActiveStart = [...terminalBootDiffs, 5.5]; // then app paints
+  assert.ok(
+    terminalBootDiffs.every((d) => d < LEADING_STATIC_DIFF),
+    `LEADING_STATIC_DIFF=${LEADING_STATIC_DIFF} must exceed all terminal-static diffs`,
+  );
+  assert.ok(
+    detectLeadingStaticMs(withActiveStart, { fps: 4 }) > 0,
+    'static terminal boot sequence must be detected and trimmed',
+  );
+});
+
+test('leading-trim composition: bright detector wins on a dark app (browser unchanged)', () => {
+  // postprocessProofVideo trims with `detectLeadingBlankMs(luma) || detectLeadingStaticMs(diffs)`.
+  // A dark web app has a near-white flash giving way to dark content: the bright
+  // detector fires, so its value is used verbatim and the static fallback never
+  // runs — the established browser path is byte-for-byte unchanged.
+  const luma = [234, 234, 25, 25, 33, 30]; // white flash → dark app
+  const diffs = [0.1, 9, 0.2, 0.3, 0.2]; // flash static, then paint, then app
+  const bright = detectLeadingBlankMs(luma, { fps: 4 });
+  assert.equal(bright, 650);
+  assert.equal(bright || detectLeadingStaticMs(diffs, { fps: 4 }), 650);
+});
+
+test('leading-trim composition: light surface falls back to the static detector', () => {
+  // A light/all-bright surface (e.g. marketing) stays bright throughout, so the
+  // brightness heuristic deliberately returns 0 (it cannot tell a bright pre-roll
+  // from a bright app). The static fallback then trims ONLY the leading static
+  // pre-roll — the page-paint diff spike ends the run, so real content survives.
+  const luma = Array(8).fill(234); // bright pre-roll AND bright app
+  const bright = detectLeadingBlankMs(luma, { fps: 4, capMs: 2000 });
+  assert.equal(bright, 0, 'all-bright → brightness heuristic declines to trim');
+  const diffs = [0.1, 0.2, 0.1, 8, 6, 5, 7]; // 3 static pre-roll frames, then paint+scroll
+  const fallback = detectLeadingStaticMs(diffs, { fps: 4 });
+  assert.ok(fallback > 0, 'static pre-roll on a light surface must be trimmed');
+  assert.equal(bright || fallback, fallback, 'composition uses the static fallback here');
 });
 
 // ── findStaticRuns ───────────────────────────────────────────────────────────

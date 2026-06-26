@@ -1,7 +1,6 @@
 package tuitest
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,28 +63,14 @@ func serviceDir() string {
 	return filepath.Join(filepath.Dir(filename), "..", "..")
 }
 
-// configDirForHome returns the bossanova config directory under a per-test
-// HOME. config.Path() resolves through os.UserConfigDir(), which is HOME-derived
-// on every supported platform.
-func configDirForHome(home string) string {
-	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "bossanova")
-	}
-	return filepath.Join(home, ".config", "bossanova")
-}
-
 // seedSettingsAcknowledged writes a minimal settings.json with
 // ProvidersAcknowledged=true into the per-test HOME so the boss subprocess
 // skips the first-run onboarding gate.
 func seedSettingsAcknowledged(t *testing.T, home, worktreeBaseDir string) {
 	t.Helper()
-	settings := map[string]any{
-		"providers_acknowledged": true,
+	if err := SeedSettingsAcknowledged(home, worktreeBaseDir); err != nil {
+		t.Fatalf("seed acknowledged settings: %v", err)
 	}
-	if worktreeBaseDir != "" {
-		settings["worktree_base_dir"] = worktreeBaseDir
-	}
-	writeSeedSettings(t, home, settings)
 }
 
 // seedFirstRunSettings writes a settings.json that points boss at the test
@@ -95,21 +80,8 @@ func seedSettingsAcknowledged(t *testing.T, home, worktreeBaseDir string) {
 // resolves the mock daemon directly via socket_path — no socket proxy needed.
 func seedFirstRunSettings(t *testing.T, home, socketPath string) {
 	t.Helper()
-	writeSeedSettings(t, home, map[string]any{
-		"providers_acknowledged": false,
-		"socket_path":            socketPath,
-	})
-}
-
-func writeSeedSettings(t *testing.T, home string, settings map[string]any) {
-	t.Helper()
-	configDir := configDirForHome(home)
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("seed settings dir: %v", err)
-	}
-	contents, _ := json.Marshal(settings)
-	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), contents, 0o644); err != nil {
-		t.Fatalf("seed settings file: %v", err)
+	if err := SeedFirstRunSettings(home, socketPath); err != nil {
+		t.Fatalf("seed first run settings: %v", err)
 	}
 }
 
@@ -423,7 +395,7 @@ func New(t *testing.T, opts ...Option) *Harness {
 	}
 
 	// Filter out env vars we override to avoid conflicts with the developer's environment.
-	env := baseHarnessEnv(os.Environ())
+	env := BaseHarnessEnv(os.Environ())
 	env = append(env,
 		"BOSS_SKIP_SKILLS=1",
 		"BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=1",
@@ -494,29 +466,4 @@ func New(t *testing.T, opts ...Option) *Harness {
 		Driver: driver,
 		Daemon: daemon,
 	}
-}
-
-func baseHarnessEnv(environ []string) []string {
-	var env []string
-	for _, e := range environ {
-		if strings.HasPrefix(e, "BOSS_SOCKET=") ||
-			strings.HasPrefix(e, "BOSS_SETTINGS_PATH=") ||
-			strings.HasPrefix(e, "BOSS_SKIP_SKILLS=") ||
-			strings.HasPrefix(e, "BOSS_AUTH_E2E_EMAIL=") ||
-			strings.HasPrefix(e, "BOSS_AUTH_E2E_LOGIN_EMAIL=") ||
-			strings.HasPrefix(e, "BOSS_SKIP_PROVIDER_STARTUP_DAEMON_RESTART=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_SEQUENCE=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_URL=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_CHECKOUT_ERROR=") ||
-			strings.HasPrefix(e, "BOSS_CLOUD_ACCESS_E2E_REFRESH_INTERVAL=") ||
-			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALLED_REPOS=") ||
-			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_AFTER_POLLS=") ||
-			strings.HasPrefix(e, "BOSS_GITHUB_APP_E2E_INSTALL_URL=") ||
-			strings.HasPrefix(e, "HOME=") ||
-			strings.HasPrefix(e, "XDG_CONFIG_HOME=") {
-			continue
-		}
-		env = append(env, e)
-	}
-	return env
 }

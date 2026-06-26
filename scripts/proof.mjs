@@ -257,9 +257,11 @@ async function main() {
 }
 
 // Shared video finish: optional intro card, condense/timer per flags, then a
-// play-button poster composite. Browser passes timer/idleSpeedup/trimLeadingBlank
-// true; TUI passes them false (D3 — short clips don't need timer/idle, and a VHS
-// recording has no white flash to trim).
+// play-button poster composite. Both browser and TUI pass
+// timer/idleSpeedup/trimLeadingBlank true; the leading-trim is generalized
+// (detectLeadingStaticMs) so beyond the browser's bright white flash it also
+// drops the VHS dark/blank-terminal boot lead-in and a light surface's static
+// pre-roll (e.g. marketing) that the brightness heuristic alone can't trim.
 function finishVideo({
   recipeDir,
   recipeId,
@@ -479,9 +481,9 @@ function captureRecipe({ recipe, localDir, keepWebm = false }) {
           surface: recipe.surface,
           cropHeight: null,
           contentHeight: null,
-          timer: false,
-          idleSpeedup: false,
-          trimLeadingBlank: false,
+          timer: true,
+          idleSpeedup: true,
+          trimLeadingBlank: true,
           keepWebm,
         });
 

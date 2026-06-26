@@ -180,7 +180,10 @@ func (c *DisplayStatusComputer) Recompute(ctx context.Context, sessionID string)
 					chatStatus = pb.ChatStatus_CHAT_STATUS_QUESTION
 					break
 				}
-				if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING && chatStatus != pb.ChatStatus_CHAT_STATUS_QUESTION {
+				// A QUESTION chat short-circuits the loop above, so chatStatus
+				// is never QUESTION here — WORKING can upgrade STOPPED/IDLE
+				// without guarding against a QUESTION it can't observe.
+				if e.Status == pb.ChatStatus_CHAT_STATUS_WORKING {
 					chatStatus = pb.ChatStatus_CHAT_STATUS_WORKING
 				}
 				if e.Status == pb.ChatStatus_CHAT_STATUS_IDLE && chatStatus == pb.ChatStatus_CHAT_STATUS_STOPPED {

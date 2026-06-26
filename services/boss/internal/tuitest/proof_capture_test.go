@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/recurser/boss/internal/fixtures"
+	"github.com/recurser/boss/internal/tuidriver"
 	"github.com/recurser/boss/internal/tuitest"
 )
 
@@ -193,28 +193,11 @@ func resolveProofPath(path string) string {
 
 func sendProofKey(t *testing.T, h *tuitest.Harness, key string) {
 	t.Helper()
-	if len(key) == 6 && strings.HasPrefix(key, "ctrl+") && key[5] >= 'a' && key[5] <= 'z' {
-		// Ctrl+<letter> is the control byte: 'a'->0x01, 'b'->0x02, ...
-		if err := h.Driver.SendKey(key[5] - 'a' + 1); err != nil {
-			t.Fatalf("send %s: %v", key, err)
-		}
-		return
+	b, err := tuidriver.KeyBytes(key)
+	if err != nil {
+		t.Fatalf("%v", err)
 	}
-	switch key {
-	case "enter":
-		if err := h.Driver.SendEnter(); err != nil {
-			t.Fatalf("send enter: %v", err)
-		}
-	case "esc":
-		if err := h.Driver.SendEscape(); err != nil {
-			t.Fatalf("send escape: %v", err)
-		}
-	default:
-		if len(key) != 1 {
-			t.Fatalf("unsupported proof key %q", key)
-		}
-		if err := h.Driver.SendKey(key[0]); err != nil {
-			t.Fatalf("send key %q: %v", key, err)
-		}
+	if err := h.Driver.SendString(string(b)); err != nil {
+		t.Fatalf("send %s: %v", key, err)
 	}
 }

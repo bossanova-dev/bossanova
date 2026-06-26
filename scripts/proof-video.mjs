@@ -53,6 +53,22 @@ export const LEADING_BLANK_BUFFER_MS = 150;
 /** Hard cap so a pathological all-bright start can never gut real content. */
 export const LEADING_BLANK_CAP_MS = 2_000;
 
+// ── Leading static-frames trim ───────────────────────────────────────────────
+// VHS-recorded TUI sessions begin with a dark, completely static terminal
+// during the ~2.5s boot Sleep before the app paints. detectLeadingBlankMs
+// ignores dark starts, so this brightness-independent fallback covers it.
+// It also detects the browser white-flash (which is likewise a static run),
+// but detectLeadingBlankMs fires first via short-circuit and takes precedence.
+/**
+ * Mean-abs-diff (0-255 scale) below which consecutive frames are considered
+ * static for the purpose of leading-trim detection. Matches STATIC_DIFF_THRESHOLD
+ * (1.5) in magnitude: absorbs VHS cursor blinks (~0.05 on 96×54 grayscale) and
+ * is far below any real-action diff (typing, spawning a process: ≥ 5). A
+ * dedicated constant lets leading-trim and idle-speedup thresholds evolve
+ * independently.
+ */
+export const LEADING_STATIC_DIFF = 1.5;
+
 // ── Pure: frame differencing ─────────────────────────────────────────────────
 
 /**
@@ -150,6 +166,47 @@ export function detectLeadingBlankMs(luma, opts = {}) {
   while (n < luma.length && luma[n] > threshold) n++;
   if (n === 0) return 0;
   if (n === luma.length) return 0; // all-bright → light app, not a flash
+  const trimMs = Math.round((n / fps) * 1000 + bufferMs);
+  return Math.min(trimMs, capMs);
+}
+
+/**
+ * Milliseconds of leading static (near-identical frames) to trim from a
+ * recording. Counts the LEADING run of consecutive frame-diffs below `eps`
+ * and returns runLen + bufferMs, clamped to capMs.
+ *
+ * Returns 0 when there is no leading static run (n === 0) — a recording that
+ * starts with visible activity is left untouched.
+ *
+ * Returns 0 when EVERY diff is sub-eps (n === diffs.length) — an all-static
+ * clip (e.g. a mis-captured blank) is not a lead-in; trimming it would gut
+ * the video.
+ *
+ * Unlike detectLeadingBlankMs, this function is brightness-independent: it
+ * catches both the browser's near-white pre-roll (also a static run) and the
+ * TUI's dark-blank terminal boot. It is used as the FALLBACK — detectLeadingBlankMs
+ * is tried first and short-circuits when it fires (the dark-app browser path,
+ * which always opens on a white flash, is therefore unchanged); this fallback
+ * runs only when the bright detector returns 0 (dark/blank TUI boot, or a
+ * light/all-bright surface whose static pre-roll the brightness heuristic
+ * cannot safely trim).
+ *
+ * `diffs[k]` compares frame k to k+1 (length = frameCount - 1); the fps/ms
+ * math mirrors detectLeadingBlankMs and findStaticRuns.
+ *
+ * @param {number[]} diffs consecutive-frame diff array from computeFrameDiffs
+ * @param {{fps?: number, eps?: number, bufferMs?: number, capMs?: number}} [opts]
+ * @returns {number}
+ */
+export function detectLeadingStaticMs(diffs, opts = {}) {
+  const fps = opts.fps ?? ANALYZE_FPS;
+  const eps = opts.eps ?? LEADING_STATIC_DIFF;
+  const bufferMs = opts.bufferMs ?? LEADING_BLANK_BUFFER_MS;
+  const capMs = opts.capMs ?? LEADING_BLANK_CAP_MS;
+  let n = 0;
+  while (n < diffs.length && diffs[n] < eps) n++;
+  if (n === 0) return 0;
+  if (n === diffs.length) return 0; // all-static → not a lead-in
   const trimMs = Math.round((n / fps) * 1000 + bufferMs);
   return Math.min(trimMs, capMs);
 }
@@ -702,10 +759,22 @@ export function postprocessProofVideo({
       warning: 'frame analysis failed (ffmpeg rawvideo extraction)',
     };
 
-  // Detect + trim the leading white-flash pre-roll. Everything downstream
-  // (diffs, retime plan, timer clock) runs on the SAME trimmed timeline so
-  // 0:00 = the first real app frame. trimMs=0 for a dark-start recording.
-  const trimMs = trimLeadingBlank ? detectLeadingBlankMs(analysis.luma) : 0;
+  // Detect + trim the leading pre-roll. Everything downstream (diffs, retime
+  // plan, timer clock) runs on the SAME trimmed timeline so 0:00 = the first
+  // real app frame. The bright-flash detector fires first, so the dark-app
+  // browser path (where it trips) is byte-for-byte unchanged. The static
+  // fallback engages only when it returns 0 — covering the TUI dark/blank boot
+  // lead-in AND a light/all-bright surface (e.g. marketing) whose static
+  // Playwright pre-roll the luma heuristic deliberately declines to trim; the
+  // frame-diff detector trims only the leading static run (the page-paint
+  // transition ends it), so real content is never gutted. The trim is clamped
+  // to LEADING_BLANK_CAP_MS rather than over-trimming, so a boot lead-in longer
+  // than the cap keeps a short residual static head (left at 1x, or — once over
+  // MIN_STATIC_RUN_MS — folded into the normal idle-speedup pass like any other
+  // static stretch).
+  const trimMs = trimLeadingBlank
+    ? detectLeadingBlankMs(analysis.luma) || detectLeadingStaticMs(analysis.diffs)
+    : 0;
   const trimSec = trimMs / 1000;
   const dropFrames = Math.round((trimMs / 1000) * ANALYZE_FPS);
   const diffs = trimMs > 0 ? analysis.diffs.slice(dropFrames) : analysis.diffs;

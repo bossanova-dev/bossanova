@@ -29,6 +29,7 @@ type Driver struct {
 	mu       sync.Mutex // protects vt.Write, vt.String
 	width    int
 	height   int
+	rawOut   io.Writer     // if non-nil, raw PTY bytes are teed here (for .cast capture)
 	done     chan struct{} // closed when readLoop exits
 	respDone chan struct{} // closed when responseLoop exits
 }
@@ -47,6 +48,9 @@ type Options struct {
 	Width int
 	// Height is the terminal height in rows (default 30).
 	Height int
+	// RawOutput, if non-nil, receives a copy of every raw PTY output byte
+	// (the same bytes fed to the VT emulator) for .cast capture.
+	RawOutput io.Writer
 }
 
 // New spawns a command in a PTY and begins reading output into the VT
@@ -83,6 +87,7 @@ func New(opts Options) (*Driver, error) {
 		vt:       em,
 		width:    opts.Width,
 		height:   opts.Height,
+		rawOut:   opts.RawOutput,
 		done:     make(chan struct{}),
 		respDone: make(chan struct{}),
 	}
@@ -106,6 +111,9 @@ func (d *Driver) readLoop() {
 			d.mu.Lock()
 			_, _ = d.vt.Write(buf[:n])
 			d.mu.Unlock()
+			if d.rawOut != nil {
+				_, _ = d.rawOut.Write(buf[:n])
+			}
 		}
 		if err != nil {
 			return

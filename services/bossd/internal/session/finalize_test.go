@@ -646,7 +646,12 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginNoBranchWorkDeletesSession(
 	}
 }
 
-func TestFinalizeSession_CleanCommittedBranchNoOriginSkipsPRWithoutFetch(t *testing.T) {
+// A cron session that committed all its work cleanly (empty git status) in a
+// repo with no GitHub origin reaches createPRIfCleanBranchHasCommittedWork —
+// the common healthy-cron flow, distinct from the dirty-output path. It must be
+// hard-deleted (no PR is possible) without a FetchBase against the missing
+// origin.
+func TestFinalizeSession_CleanCommittedBranchNoOriginDeletesCronSessionWithoutFetch(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
 
@@ -692,17 +697,86 @@ func TestFinalizeSession_CleanCommittedBranchNoOriginSkipsPRWithoutFetch(t *test
 	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
 		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
 	}
+	if !res.Deleted {
+		t.Error("Deleted should be true for hard-deleted clean-committed cron session")
+	}
 	if len(wt.fetchedBases) != 0 {
 		t.Fatalf("FetchBase should not run for no-origin clean branch, got %v", wt.fetchedBases)
 	}
-	if len(wt.archived) != 0 {
-		t.Fatalf("worktree should be preserved, got archived=%v", wt.archived)
+	// Cron session must be hard-deleted: worktree archived and row gone.
+	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
+		t.Errorf("expected worktree archived at /tmp/wt-sess1, got archived=%v", wt.archived)
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Error("cron session row should be deleted on clean-committed pr_skipped_no_github")
 	}
 	if len(vp.createPRCalls) != 0 {
 		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
 	}
 	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRSkippedNoGitHub {
 		t.Fatalf("outcome recording: got %+v, want single pr_skipped_no_github entry", cron.lastRunCalls)
+	}
+	// Step 4 FK guard: deleted session ID must NOT be recorded.
+	if cron.lastRunCalls[0].sessionID != nil {
+		t.Errorf("UpdateLastRun sessionID should be nil for deleted session, got %v", *cron.lastRunCalls[0].sessionID)
+	}
+}
+
+// The interactive (non-cron) counterpart of the clean-committed no-origin path:
+// it must be PRESERVED. Deleting interactive sessions is a data-loss footgun and
+// is gated out by isCronSession on this branch too, not only the dirty path.
+func TestFinalizeSession_CleanCommittedBranchNoOriginInteractivePreserved(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut: "",
+		isAncestorFn: func(_, ref, target string) (bool, error) {
+			if ref == "HEAD" && target == "main" {
+				return false, nil
+			}
+			t.Fatalf("unexpected ancestor check %q -> %q", ref, target)
+			return false, nil
+		},
+	}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "",
+	}
+	// No CronJobID → interactive session.
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	}
+	if res.Deleted {
+		t.Error("Deleted must be false for an interactive session")
+	}
+	if len(wt.archived) != 0 {
+		t.Errorf("interactive worktree must be preserved, got archived=%v", wt.archived)
+	}
+	if _, ok := sessions.sessions["sess-1"]; !ok {
+		t.Error("interactive session row must be preserved")
 	}
 }
 
@@ -837,10 +911,12 @@ func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
 	}
 }
 
-// TestFinalizeSession_PRSkippedNoGitHub covers the non-GitHub origin branch:
-// changes exist but there's no GitHub to push to, so the worktree is
-// preserved and the session transitions to Blocked (attention-needed),
-// mirroring the "needs manual action" semantics of a preserved worktree.
+// TestFinalizeSession_PRSkippedNoGitHub covers the non-GitHub origin branch
+// for a cron session: changes exist but origin is not GitHub, so the cron
+// session is hard-deleted (worktree archived, session row removed).
+// The outcome is still pr_skipped_no_github (enum kept stable); Deleted=true
+// ensures the caller does not try to record the deleted session ID or
+// transition the (now-gone) row to Blocked.
 func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -875,19 +951,81 @@ func TestFinalizeSession_PRSkippedNoGitHub(t *testing.T) {
 	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
 		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
 	}
-	if len(wt.archived) != 0 {
-		t.Errorf("worktree should be preserved on pr_skipped_no_github, got archived=%v", wt.archived)
+	// Cron session must be hard-deleted: worktree archived and row gone.
+	if len(wt.archived) != 1 || wt.archived[0] != "/tmp/wt-sess1" {
+		t.Errorf("expected worktree archived at /tmp/wt-sess1, got archived=%v", wt.archived)
 	}
-	if _, ok := sessions.sessions["sess-1"]; !ok {
-		t.Error("session row should be preserved on pr_skipped_no_github")
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Error("cron session row should be deleted on pr_skipped_no_github")
 	}
-	// Step 6: failure outcomes transition Finalizing → Blocked so the
-	// session surfaces as attention-needed in the UI.
-	if got := sessions.sessions["sess-1"].State; got != machine.Blocked {
-		t.Errorf("state after pr_skipped_no_github = %s, want blocked", got)
+	// Deleted=true means Step 4 must not pass the session ID (FK guard) and
+	// Step 6 must not try to transition the gone row to Blocked.
+	if !res.Deleted {
+		t.Error("Deleted should be true for hard-deleted cron session")
 	}
 	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRSkippedNoGitHub {
 		t.Errorf("outcome recording: got %+v, want single pr_skipped_no_github entry", cron.lastRunCalls)
+	}
+	// Step 4 FK guard: deleted session ID must NOT be recorded.
+	if cron.lastRunCalls[0].sessionID != nil {
+		t.Errorf("UpdateLastRun sessionID should be nil for deleted session, got %v", *cron.lastRunCalls[0].sessionID)
+	}
+}
+
+// TestFinalizeSession_PRSkippedNoGitHub_Interactive is the critical negative
+// guard: an interactive (non-cron, CronJobID==nil) session in a no-GitHub
+// repo must NOT be auto-deleted. The session row must be preserved and the
+// outcome is pr_skipped_no_github. Because this is an interactive session
+// (no CronJobID), the cron-job outcome recording (Step 4) is skipped entirely.
+func TestFinalizeSession_PRSkippedNoGitHub_Interactive(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: "?? new.txt"} // untracked file
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@gitlab.example.com:owner/repo.git", // not github.com
+	}
+	// CronJobID is nil: interactive session, not spawned by cron.
+	sessions.sessions["sess-interactive"] = &models.Session{
+		ID:           "sess-interactive",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-interactive",
+		State:        machine.ImplementingPlan,
+		CronJobID:    nil,
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-interactive")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRSkippedNoGitHub {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomePRSkippedNoGitHub)
+	}
+	// Interactive session must NOT be archived — deleting it would be data loss.
+	if len(wt.archived) != 0 {
+		t.Errorf("interactive session worktree must NOT be archived, got archived=%v", wt.archived)
+	}
+	// Session row must still exist.
+	if _, ok := sessions.sessions["sess-interactive"]; !ok {
+		t.Error("interactive session row must be preserved on pr_skipped_no_github")
+	}
+	// Not deleted: Deleted must be false.
+	if res.Deleted {
+		t.Error("Deleted should be false for preserved interactive session")
+	}
+	// No cron recording (CronJobID == nil skips Step 4).
+	if len(cron.lastRunCalls) != 0 {
+		t.Errorf("expected no UpdateLastRun calls for interactive session, got %d", len(cron.lastRunCalls))
 	}
 }
 

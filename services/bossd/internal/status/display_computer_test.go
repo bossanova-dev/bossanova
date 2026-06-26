@@ -363,6 +363,52 @@ func TestRecompute_AggregatesAcrossChats(t *testing.T) {
 	}
 }
 
+// TestRecompute_QuestionChatOutranksWorkingSibling pins the precedence
+// invariant (QUESTION > WORKING) across sibling chats: when one chat is
+// asking a question and another is working, the session label must reflect
+// the question regardless of the order ListBySession returns them. The
+// aggregation loop relies on QUESTION short-circuiting the scan, so a WORKING
+// sibling can never overwrite a QUESTION already chosen.
+func TestRecompute_QuestionChatOutranksWorkingSibling(t *testing.T) {
+	sessions, workflows, chats, repos := newTestDB(t)
+	repoID := mustRepo(t, repos)
+	sessID := mustSession(t, sessions, repoID)
+
+	questionClaude := "claude-question-" + sessID
+	workingClaude := "claude-working-" + sessID
+
+	for _, agentSessionID := range []string{questionClaude, workingClaude} {
+		if _, err := chats.Create(context.Background(), db.CreateAgentChatParams{
+			SessionID:      sessID,
+			AgentSessionID: agentSessionID,
+			Title:          "chat",
+		}); err != nil {
+			t.Fatalf("create chat %s: %v", agentSessionID, err)
+		}
+	}
+
+	chatTr := &fakeChatReader{entries: map[string]*Entry{
+		questionClaude: {Status: pb.ChatStatus_CHAT_STATUS_QUESTION, ReceivedAt: time.Now()},
+		workingClaude:  {Status: pb.ChatStatus_CHAT_STATUS_WORKING, ReceivedAt: time.Now()},
+	}}
+
+	disp := NewDisplayTracker()
+	disp.Set(sessID, vcs.DisplayInfo{Status: vcs.DisplayStatusDraft})
+
+	c := NewDisplayStatusComputer(sessions, disp, chatTr, chats, workflows, zerolog.Nop())
+	if err := c.Recompute(context.Background(), sessID); err != nil {
+		t.Fatalf("recompute: %v", err)
+	}
+
+	got, err := sessions.Get(context.Background(), sessID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.DisplayLabel != "? question" {
+		t.Errorf("DisplayLabel = %q, want %q (question chat must outrank working sibling)", got.DisplayLabel, "? question")
+	}
+}
+
 // TestRecompute_Idempotent verifies that calling Recompute twice in a row
 // with no input changes results in exactly one DB UPDATE.
 func TestRecompute_Idempotent(t *testing.T) {

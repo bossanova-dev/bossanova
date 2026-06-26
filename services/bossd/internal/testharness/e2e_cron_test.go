@@ -396,16 +396,18 @@ func TestE2ECron_NoChanges_DeletesSession(t *testing.T) {
 	}
 }
 
-// TestE2ECron_NoGitHub_SkipsPR exercises the no-github branch:
+// TestE2ECron_NoGitHub_DeletesSession exercises the no-github branch for a
+// cron session:
 //
 //	register repo with non-GitHub origin → create job → Tick → claude writes
-//	changes → PostStopHook → finalize sees non-GitHub origin →
-//	outcome=pr_skipped_no_github, worktree preserved.
+//	changes → PostStopHook → finalize sees non-GitHub origin + cron session →
+//	outcome=pr_skipped_no_github, session hard-deleted (worktree archived,
+//	session row gone).
 //
 // The key setup: set DetectOriginURLResult to a non-GitHub URL BEFORE
 // registering the repo, so the stored OriginURL in the DB is non-GitHub.
 // The finalize pipeline checks IsGitHubURL(repo.OriginURL).
-func TestE2ECron_NoGitHub_SkipsPR(t *testing.T) {
+func TestE2ECron_NoGitHub_DeletesSession(t *testing.T) {
 	h, _ := cronTestHarness(t)
 	ctx := context.Background()
 
@@ -444,8 +446,10 @@ func TestE2ECron_NoGitHub_SkipsPR(t *testing.T) {
 	if sess.HookToken == nil || *sess.HookToken == "" {
 		t.Fatal("expected HookToken to be set on cron-spawned session")
 	}
+	sessionID := sess.ID
+	worktreePath := sess.WorktreePath
 
-	resp, err := h.PostStopHook(sess.ID, *sess.HookToken)
+	resp, err := h.PostStopHook(sessionID, *sess.HookToken)
 	if err != nil {
 		t.Fatalf("PostStopHook: %v", err)
 	}
@@ -453,12 +457,103 @@ func TestE2ECron_NoGitHub_SkipsPR(t *testing.T) {
 
 	waitForCronOutcome(t, h.CronJobs, job.ID, models.CronJobOutcomePRSkippedNoGitHub)
 
-	// Assert: worktree is preserved (no Archive call for this path).
-	if sess.WorktreePath != "" {
+	// Assert: cron session row is hard-deleted (mirrors TestE2ECron_NoChanges_DeletesSession).
+	waitForSessionDeleted(t, h.Sessions, sessionID, 5*time.Second)
+
+	// Assert: worktree was archived (removed). The mock's Archive appends to
+	// ArchiveCalls; if the worktree path is non-empty, it should appear there.
+	if worktreePath != "" {
+		found := false
 		for _, p := range h.Git.ArchiveCalls {
-			if p == sess.WorktreePath {
-				t.Errorf("worktree %s should be preserved but was archived", sess.WorktreePath)
+			if p == worktreePath {
+				found = true
+				break
 			}
+		}
+		if !found {
+			t.Errorf("expected worktree %s to appear in Git.ArchiveCalls; got %v",
+				worktreePath, h.Git.ArchiveCalls)
+		}
+	}
+}
+
+// TestE2ECron_NoGitHubCleanCommitted_DeletesSession covers the common healthy
+// flow: the cron agent commits all its work (clean git status) in a repo with a
+// non-GitHub origin. That routes through createPRIfCleanBranchHasCommittedWork
+// (not the dirty path) and must also hard-delete the session — no PR is
+// possible. Distinct from TestE2ECron_NoGitHub_DeletesSession, which exercises
+// the dirty-output branch.
+func TestE2ECron_NoGitHubCleanCommitted_DeletesSession(t *testing.T) {
+	h, _ := cronTestHarness(t)
+	ctx := context.Background()
+
+	h.Git.DetectOriginURLResult = "file:///tmp/local-only-repo"
+
+	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
+	useTempWorktrees(t, h)
+
+	// Model a clean branch with committed work: empty status, and HEAD is NOT an
+	// ancestor of base (so the branch has commits ahead).
+	h.Agent.WithChanges("committed.txt", "done")
+	h.Git.StatusFunc = func(_ context.Context, _ string) (string, error) {
+		return "", nil
+	}
+	h.Git.LatestCommitSubjectFunc = func(_ context.Context, _ string) (string, error) {
+		return "feat: cron work", nil
+	}
+	h.Git.IsAncestorFn = func(_ context.Context, _, ref, _ string) (bool, error) {
+		// HEAD not contained in base → committed work exists on the branch.
+		if ref == "HEAD" {
+			return false, nil
+		}
+		return true, nil
+	}
+
+	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
+		RepoID:   repoID,
+		Name:     "no-github-clean",
+		Prompt:   "do stuff and commit",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	sched := newCronScheduler(h)
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	sched.Tick(tickTime)
+
+	sess := sessionFromCronJob(t, h, job.ID)
+	if sess.HookToken == nil || *sess.HookToken == "" {
+		t.Fatal("expected HookToken to be set on cron-spawned session")
+	}
+	sessionID := sess.ID
+	worktreePath := sess.WorktreePath
+
+	resp, err := h.PostStopHook(sessionID, *sess.HookToken)
+	if err != nil {
+		t.Fatalf("PostStopHook: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck // test helper: body drain error is not meaningful here
+
+	waitForCronOutcome(t, h.CronJobs, job.ID, models.CronJobOutcomePRSkippedNoGitHub)
+	waitForSessionDeleted(t, h.Sessions, sessionID, 5*time.Second)
+
+	if worktreePath != "" {
+		found := false
+		for _, p := range h.Git.ArchiveCalls {
+			if p == worktreePath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected worktree %s to appear in Git.ArchiveCalls; got %v",
+				worktreePath, h.Git.ArchiveCalls)
 		}
 	}
 }

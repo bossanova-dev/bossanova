@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,81 @@ func (f *fakeSessionCommandServer) ListRepoPRs(_ context.Context, _ *connect.Req
 
 func (f *fakeSessionCommandServer) ListTrackerIssues(_ context.Context, _ *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
 	return connect.NewResponse(&pb.ListTrackerIssuesResponse{}), nil
+}
+
+// fakeAutomationToggler records the last SetAutomationEnabled call and returns
+// the configured error, driving the pause/resume adapter paths.
+type fakeAutomationToggler struct {
+	gotEnabled bool
+	gotID      string
+	err        error
+}
+
+func (f *fakeAutomationToggler) SetAutomationEnabled(_ context.Context, id string, enabled bool) error {
+	f.gotID = id
+	f.gotEnabled = enabled
+	return f.err
+}
+
+// fakeCmdSessionReader returns a fixed session/error from GetSession,
+// exercising the post-action reload branch of the pause/resume adapters.
+type fakeCmdSessionReader struct {
+	sess *pb.Session
+	err  error
+}
+
+func (f *fakeCmdSessionReader) GetSession(_ context.Context, _ string) (*pb.Session, error) {
+	return f.sess, f.err
+}
+
+// fakeChatWaker returns a scripted WakeChatStream result for the WakeChat
+// delegation path.
+type fakeChatWaker struct {
+	outcome pb.WakeChatResult_Outcome
+	tmux    string
+	reason  string
+	code    pb.CommandResult_ErrorCode
+	err     error
+}
+
+func (f *fakeChatWaker) WakeChatStream(_ context.Context, _ string, _ bool) (pb.WakeChatResult_Outcome, string, string, pb.CommandResult_ErrorCode, error) {
+	return f.outcome, f.tmux, f.reason, f.code, f.err
+}
+
+// errCommandServer returns err from every SessionCommandServer method so the
+// adapter's error-propagation branches can be exercised.
+type errCommandServer struct{ err error }
+
+func (e *errCommandServer) MergeSession(context.Context, *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ArchiveSession(context.Context, *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) RecordChat(context.Context, *connect.Request[pb.RecordChatRequest]) (*connect.Response[pb.RecordChatResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) DeleteChat(context.Context, *connect.Request[pb.DeleteChatRequest]) (*connect.Response[pb.DeleteChatResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListRepos(context.Context, *connect.Request[pb.ListReposRequest]) (*connect.Response[pb.ListReposResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListRepoPRs(context.Context, *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) ListTrackerIssues(context.Context, *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
+	return nil, e.err
 }
 
 // fakeStreamCreateSessioner drives SessionCreatorAdapter.Create. emit is
@@ -303,4 +379,390 @@ func TestCommandHandlerAdapter_RecordChat_AgentNameMapping(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCommandHandlerAdapter_Pause(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Automation: &fakeAutomationToggler{}}
+		if _, err := adapter.Pause(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "pause: session_id required") {
+			t.Fatalf("Pause(\"\") error = %v, want pause: session_id required", err)
+		}
+	})
+
+	t.Run("missing automation toggler is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.Pause(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "pause: automation toggler not wired") {
+			t.Fatalf("Pause error = %v, want automation toggler not wired", err)
+		}
+	})
+
+	t.Run("toggler error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Automation: &fakeAutomationToggler{err: errors.New("boom")}}
+		if _, err := adapter.Pause(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "pause session: boom") {
+			t.Fatalf("Pause error = %v, want pause session: boom", err)
+		}
+	})
+
+	t.Run("disables automation and returns nil when no reader is wired", func(t *testing.T) {
+		t.Parallel()
+		tog := &fakeAutomationToggler{}
+		adapter := &CommandHandlerAdapter{Automation: tog}
+		sess, err := adapter.Pause(context.Background(), "s1")
+		if err != nil {
+			t.Fatalf("Pause returned error: %v", err)
+		}
+		if sess != nil {
+			t.Fatalf("Pause session = %v, want nil when no reader wired", sess)
+		}
+		if tog.gotEnabled {
+			t.Errorf("SetAutomationEnabled enabled = true, want false for pause")
+		}
+		if tog.gotID != "s1" {
+			t.Errorf("SetAutomationEnabled id = %q, want s1", tog.gotID)
+		}
+	})
+
+	t.Run("returns the reloaded session when a reader is wired", func(t *testing.T) {
+		t.Parallel()
+		want := &pb.Session{Id: "s1"}
+		adapter := &CommandHandlerAdapter{Automation: &fakeAutomationToggler{}, Sessions: &fakeCmdSessionReader{sess: want}}
+		got, err := adapter.Pause(context.Background(), "s1")
+		if err != nil {
+			t.Fatalf("Pause returned error: %v", err)
+		}
+		if got != want {
+			t.Fatalf("Pause session = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_Resume(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Automation: &fakeAutomationToggler{}}
+		if _, err := adapter.Resume(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "resume: session_id required") {
+			t.Fatalf("Resume(\"\") error = %v, want resume: session_id required", err)
+		}
+	})
+
+	t.Run("missing automation toggler is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.Resume(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "resume: automation toggler not wired") {
+			t.Fatalf("Resume error = %v, want automation toggler not wired", err)
+		}
+	})
+
+	t.Run("toggler error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Automation: &fakeAutomationToggler{err: errors.New("boom")}}
+		if _, err := adapter.Resume(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "resume session: boom") {
+			t.Fatalf("Resume error = %v, want resume session: boom", err)
+		}
+	})
+
+	t.Run("enables automation and returns nil when no reader is wired", func(t *testing.T) {
+		t.Parallel()
+		tog := &fakeAutomationToggler{}
+		adapter := &CommandHandlerAdapter{Automation: tog}
+		sess, err := adapter.Resume(context.Background(), "s1")
+		if err != nil {
+			t.Fatalf("Resume returned error: %v", err)
+		}
+		if sess != nil {
+			t.Fatalf("Resume session = %v, want nil when no reader wired", sess)
+		}
+		if !tog.gotEnabled {
+			t.Errorf("SetAutomationEnabled enabled = false, want true for resume")
+		}
+	})
+
+	t.Run("returns the reloaded session when a reader is wired", func(t *testing.T) {
+		t.Parallel()
+		want := &pb.Session{Id: "s1"}
+		adapter := &CommandHandlerAdapter{Automation: &fakeAutomationToggler{}, Sessions: &fakeCmdSessionReader{sess: want}}
+		got, err := adapter.Resume(context.Background(), "s1")
+		if err != nil {
+			t.Fatalf("Resume returned error: %v", err)
+		}
+		if got != want {
+			t.Fatalf("Resume session = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_WakeChat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty agent session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Waker: &fakeChatWaker{}}
+		_, _, _, _, err := adapter.WakeChat(context.Background(), "", false)
+		if err == nil || !strings.Contains(err.Error(), "agent_session_id required") {
+			t.Fatalf("WakeChat error = %v, want agent_session_id required", err)
+		}
+	})
+
+	t.Run("missing waker is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		_, _, _, _, err := adapter.WakeChat(context.Background(), "as1", false)
+		if err == nil || !strings.Contains(err.Error(), "waker not wired") {
+			t.Fatalf("WakeChat error = %v, want waker not wired", err)
+		}
+	})
+
+	t.Run("delegates to the configured waker", func(t *testing.T) {
+		t.Parallel()
+		waker := &fakeChatWaker{outcome: pb.WakeChatResult_OUTCOME_RESUMED, tmux: "tmux1", reason: "fell back"}
+		adapter := &CommandHandlerAdapter{Waker: waker}
+		outcome, tmux, reason, _, err := adapter.WakeChat(context.Background(), "as1", true)
+		if err != nil {
+			t.Fatalf("WakeChat returned error: %v", err)
+		}
+		if outcome != pb.WakeChatResult_OUTCOME_RESUMED {
+			t.Errorf("outcome = %v, want OUTCOME_RESUMED", outcome)
+		}
+		if tmux != "tmux1" {
+			t.Errorf("tmux = %q, want tmux1", tmux)
+		}
+		if reason != "fell back" {
+			t.Errorf("reason = %q, want %q", reason, "fell back")
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_MergeSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.MergeSession(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "merge: session_id required") {
+			t.Fatalf("MergeSession error = %v, want merge: session_id required", err)
+		}
+	})
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.MergeSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "merge: command server not wired") {
+			t.Fatalf("MergeSession error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.MergeSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "merge session: boom") {
+			t.Fatalf("MergeSession error = %v, want merge session: boom", err)
+		}
+	})
+
+	t.Run("returns successfully when the command server succeeds", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.MergeSession(context.Background(), "s1"); err != nil {
+			t.Fatalf("MergeSession returned error: %v", err)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ArchiveSession(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty session id is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.ArchiveSession(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "archive: session_id required") {
+			t.Fatalf("ArchiveSession error = %v, want archive: session_id required", err)
+		}
+	})
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.ArchiveSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "archive: command server not wired") {
+			t.Fatalf("ArchiveSession error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.ArchiveSession(context.Background(), "s1"); err == nil || !strings.Contains(err.Error(), "archive session: boom") {
+			t.Fatalf("ArchiveSession error = %v, want archive session: boom", err)
+		}
+	})
+
+	t.Run("returns successfully when the command server succeeds", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if _, err := adapter.ArchiveSession(context.Background(), "s1"); err != nil {
+			t.Fatalf("ArchiveSession returned error: %v", err)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_DeleteChat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if err := adapter.DeleteChat(context.Background(), "s1", "as1"); err == nil || !strings.Contains(err.Error(), "delete_chat: command server not wired") {
+			t.Fatalf("DeleteChat error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if err := adapter.DeleteChat(context.Background(), "s1", "as1"); err == nil || !strings.Contains(err.Error(), "delete chat: boom") {
+			t.Fatalf("DeleteChat error = %v, want delete chat: boom", err)
+		}
+	})
+
+	t.Run("succeeds when the command server returns ok", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		if err := adapter.DeleteChat(context.Background(), "s1", "as1"); err != nil {
+			t.Fatalf("DeleteChat returned error: %v", err)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ListRepos(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.ListRepos(context.Background()); err == nil || !strings.Contains(err.Error(), "list_repos: command server not wired") {
+			t.Fatalf("ListRepos error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.ListRepos(context.Background()); err == nil || !strings.Contains(err.Error(), "list repos: boom") {
+			t.Fatalf("ListRepos error = %v, want list repos: boom", err)
+		}
+	})
+
+	t.Run("returns the response on success", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		resp, err := adapter.ListRepos(context.Background())
+		if err != nil {
+			t.Fatalf("ListRepos returned error: %v", err)
+		}
+		if resp == nil {
+			t.Fatal("ListRepos returned nil response on success")
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ListAgents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.ListAgents(context.Background()); err == nil || !strings.Contains(err.Error(), "list_agents: command server not wired") {
+			t.Fatalf("ListAgents error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.ListAgents(context.Background()); err == nil || !strings.Contains(err.Error(), "list agents: boom") {
+			t.Fatalf("ListAgents error = %v, want list agents: boom", err)
+		}
+	})
+
+	t.Run("returns the response on success", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		resp, err := adapter.ListAgents(context.Background())
+		if err != nil {
+			t.Fatalf("ListAgents returned error: %v", err)
+		}
+		if resp == nil {
+			t.Fatal("ListAgents returned nil response on success")
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ListRepoPRs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.ListRepoPRs(context.Background(), "repo1"); err == nil || !strings.Contains(err.Error(), "list_repo_prs: command server not wired") {
+			t.Fatalf("ListRepoPRs error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.ListRepoPRs(context.Background(), "repo1"); err == nil || !strings.Contains(err.Error(), "list repo prs: boom") {
+			t.Fatalf("ListRepoPRs error = %v, want list repo prs: boom", err)
+		}
+	})
+
+	t.Run("returns the response on success", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		resp, err := adapter.ListRepoPRs(context.Background(), "repo1")
+		if err != nil {
+			t.Fatalf("ListRepoPRs returned error: %v", err)
+		}
+		if resp == nil {
+			t.Fatal("ListRepoPRs returned nil response on success")
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_ListTrackerIssues(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.ListTrackerIssues(context.Background(), "repo1", "query", nil); err == nil || !strings.Contains(err.Error(), "list_tracker_issues: command server not wired") {
+			t.Fatalf("ListTrackerIssues error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.ListTrackerIssues(context.Background(), "repo1", "query", nil); err == nil || !strings.Contains(err.Error(), "list tracker issues: boom") {
+			t.Fatalf("ListTrackerIssues error = %v, want list tracker issues: boom", err)
+		}
+	})
+
+	t.Run("returns the response on success", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &fakeSessionCommandServer{}}
+		resp, err := adapter.ListTrackerIssues(context.Background(), "repo1", "query", nil)
+		if err != nil {
+			t.Fatalf("ListTrackerIssues returned error: %v", err)
+		}
+		if resp == nil {
+			t.Fatal("ListTrackerIssues returned nil response on success")
+		}
+	})
 }

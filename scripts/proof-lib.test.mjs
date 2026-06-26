@@ -1290,6 +1290,39 @@ test('buildManifest: carries title/verdict/genAiLive/agentSummary/brief', () => 
   assert.deepEqual(m.brief, { genAi: false });
 });
 
+// TUI mp4 gallery rendering — mediaType 'mp4' drives the poster-link + ▶ Video
+// path in renderGallery regardless of surface. Pin the TUI surface contract here.
+test('renderGallery: TUI mp4 capture renders play-button poster link and ▶ Video', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '100',
+      commit: 'abc1234',
+      runId: 'run-1',
+      generatedAt: '2026-06-26T00:00:00.000Z',
+      publicBaseUrl: 'https://proof.example.dev/proof/pr-100/run-1',
+      captures: [
+        {
+          title: 'TUI New Session Flow',
+          surface: 'tui',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://proof.example.dev/proof/pr-100/run-1/tui-new-session-flow/tui-new-session-flow.mp4',
+          videoUrl:
+            'https://proof.example.dev/proof/pr-100/run-1/tui-new-session-flow/tui-new-session-flow.mp4',
+          posterUrl:
+            'https://proof.example.dev/proof/pr-100/run-1/tui-new-session-flow/tui-new-session-flow.png',
+        },
+      ],
+    },
+  });
+  // poster→mp4 link
+  assert.match(
+    md,
+    /\[!\[TUI New Session Flow\]\(https:\/\/proof\.example\.dev\/proof\/pr-100\/run-1\/tui-new-session-flow\/tui-new-session-flow\.png\)\]\(https:\/\/proof\.example\.dev\/proof\/pr-100\/run-1\/tui-new-session-flow\/tui-new-session-flow\.mp4\)/,
+  );
+  assert.match(md, /▶ Video/);
+});
+
 // Regression: TUI video uploads the kept mp4, not the deleted webm.
 // finishVideo deletes the source .webm and keeps the .mp4 it builds.
 // captureRecipe must return fileName pointing at the surviving artifact.

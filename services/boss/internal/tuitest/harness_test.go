@@ -29,7 +29,7 @@ func TestWithEnvAppendsEnvironmentOverrides(t *testing.T) {
 }
 
 func TestBaseHarnessEnvFiltersSettingsPath(t *testing.T) {
-	env := baseHarnessEnv([]string{
+	env := BaseHarnessEnv([]string{
 		"BOSS_SETTINGS_PATH=/real/settings.json",
 		"BOSS_SOCKET=/tmp/real.sock",
 		"PATH=/bin",

@@ -20,9 +20,13 @@ import (
 // true when the conditional state transition no-op'd (duplicate Stop event
 // or a session that never reached ImplementingPlan) — the hook endpoint
 // returns 200 either way, but the caller uses this to log the distinction.
+// Deleted is true when the finalize path already removed the session row and
+// worktree, so the caller must not record the deleted session ID or transition
+// the (now-gone) row to Blocked.
 type FinalizeResult struct {
 	Outcome models.CronJobOutcome
 	NoOp    bool
+	Deleted bool
 	// Err, when non-nil, is the underlying failure behind a *_failed outcome.
 	// It is not returned as a top-level error so the hook endpoint still
 	// reports success — the outcome column is already recorded.
@@ -42,7 +46,9 @@ type FinalizeResult struct {
 //   - pr_created               — empty git status but branch already has an open PR; lookup errors are best-effort and fall through to deleted_no_changes
 //   - deleted_no_changes       — empty git status and no committed branch work → worktree + session removed
 //   - cleanup_failed           — empty status but worktree removal errored
-//   - pr_skipped_no_github     — changes present, origin is not GitHub
+//   - pr_skipped_no_github     — changes present, origin is not GitHub:
+//     cron session → hard-deleted (Archive + Delete, Deleted=true)
+//     interactive  → preserved, transitions to Blocked
 //   - pr_failed                — dirty output present but the PR could not be opened
 //   - pr_created               — dirty output: a PR was opened (placeholder commit added when the branch had none); PR tags injected
 //   - pr_failed                — clean committed branch could not open or attach a PR
@@ -88,15 +94,15 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 	if session.CronJobID != nil && *session.CronJobID != "" && l.cronJobs != nil {
 		ranAt := time.Now()
 
-		// For deleted_no_changes, the session row was already deleted by
-		// finalizeNoChanges. SQLite's ON DELETE SET NULL cascade has already
-		// nulled out cron_jobs.last_run_session_id; passing the deleted ID to
-		// UpdateLastRun would re-violate the FK constraint, so we leave the
+		// For deleted paths (deleted_no_changes, or cron no-github hard-delete),
+		// the session row was already deleted. SQLite's ON DELETE SET NULL cascade
+		// has already nulled out cron_jobs.last_run_session_id; passing the deleted
+		// ID to UpdateLastRun would re-violate the FK constraint, so we leave the
 		// session-ID field alone (nil = don't update).
 		var recordedSessionIDPtr *string
 		expectedSessionID := sessionID
 		allowClearedExpectedSessionID := false
-		if result.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		if !result.Deleted {
 			recordedSessionID := sessionID
 			recordedSessionIDPtr = &recordedSessionID
 		} else {
@@ -157,12 +163,13 @@ func (l *Lifecycle) FinalizeSession(ctx context.Context, sessionID string) (*Fin
 		}
 	}
 
-	// Step 6: on failure outcomes (except deleted_no_changes, which removed
-	// the session entirely), persist a descriptive blocked reason and then
+	// Step 6: on failure outcomes (except deleted paths, which removed the
+	// session entirely), persist a descriptive blocked reason and then
 	// transition to Blocked so the session surfaces as attention-needed in
 	// the UI. Finalizing itself is suppressed in ComputeAttentionStatus, so
-	// leaving a failed session there would hide the problem.
-	if needsAttention(result.Outcome) {
+	// leaving a failed session there would hide the problem. Deleted sessions
+	// (Deleted=true) have no row to transition — skip them regardless of outcome.
+	if needsAttention(result.Outcome) && !result.Deleted {
 		reason := sessionreason.FinalizeFailure(string(result.Outcome), result.Err)
 		reasonPtr := &reason
 		if _, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
@@ -383,6 +390,24 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 		}
 	}
 	if !libvcs.IsGitHubURL(repo.OriginURL) {
+		// cron session finalize
+		//   ├─ no commits ──────────────► finalizeNoChanges(): Archive + Delete            [EXISTING]
+		//   ├─ commits, GitHub origin ──► EnsurePR() → pr_created / pr_failed(keep,Blocked) [EXISTING]
+		//   └─ commits, NO GitHub origin─► cron: hard-delete (Archive+Delete);  [NEW]
+		//                                  interactive: preserve (pr_skipped_no_github)
+		if isCronSession(session) {
+			l.logger.Info().
+				Str("session", session.ID).
+				Str("origin", repo.OriginURL).
+				Msg("finalize: cron session has changes but origin is not GitHub; hard-deleting")
+			if err := l.hardDeleteSession(ctx, session, repo); err != nil {
+				return &FinalizeResult{
+					Outcome: models.CronJobOutcomeCleanupFailed,
+					Err:     err,
+				}
+			}
+			return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub, Deleted: true}
+		}
 		l.logger.Info().
 			Str("session", session.ID).
 			Str("origin", repo.OriginURL).
@@ -574,6 +599,23 @@ func (l *Lifecycle) createPRIfCleanBranchHasCommittedWork(ctx context.Context, s
 	}
 
 	if !isGitHubOrigin {
+		// Same routing as the dirty-output no-github branch in
+		// classifyFinalizeOutcome: a cron session whose committed work can never
+		// become a PR is hard-deleted; interactive sessions are preserved.
+		if isCronSession(session) {
+			l.logger.Info().
+				Str("session", session.ID).
+				Str("branch", session.BranchName).
+				Str("origin", originURL).
+				Msg("finalize: clean branch has committed work but origin is not GitHub; hard-deleting cron session")
+			if err := l.hardDeleteSession(ctx, session, repo); err != nil {
+				return &FinalizeResult{
+					Outcome: models.CronJobOutcomeCleanupFailed,
+					Err:     err,
+				}
+			}
+			return &FinalizeResult{Outcome: models.CronJobOutcomePRSkippedNoGitHub, Deleted: true}
+		}
 		l.logger.Info().
 			Str("session", session.ID).
 			Str("branch", session.BranchName).
@@ -675,6 +717,37 @@ func (l *Lifecycle) originURLIfConfigured(ctx context.Context, repo *models.Repo
 	return url, nil
 }
 
+// hardDeleteSession performs the Archive → killAllChatTmuxSessions → Delete →
+// notifier sequence shared by the no-changes and no-github-cron paths. It
+// returns nil on success. On failure the caller should demote the outcome to
+// cleanup_failed and preserve the session row for investigation.
+//
+// The worktree guard (WorktreePath != "" && != repo.LocalPath) is applied here
+// so both callers get identical protection. Both callers are cron-only paths
+// (interactive sessions never reach finalize, and the no-github caller gates on
+// isCronSession), so a tmux-hosted chat is always present to tear down.
+func (l *Lifecycle) hardDeleteSession(ctx context.Context, session *models.Session, repo *models.Repo) error {
+	if session.WorktreePath != "" && session.WorktreePath != repo.LocalPath {
+		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
+			return fmt.Errorf("archive worktree: %w", err)
+		}
+	}
+
+	// Tear down any per-chat tmux sessions BEFORE deleting the session row.
+	// agent_chats.session_id has ON DELETE CASCADE, so once the row is gone
+	// we lose the tmux_session_name needed to find and kill the tmux session
+	// — leaving a stranded `claude` process with no DB pointer back to it.
+	l.killAllChatTmuxSessions(ctx, session.ID)
+
+	if err := l.sessions.Delete(ctx, session.ID); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	if l.sessionDeletedNotifier != nil {
+		l.sessionDeletedNotifier(ctx, session.ID)
+	}
+	return nil
+}
+
 // finalizeNoChanges handles the deleted_no_changes branch: remove the
 // worktree and delete the session row. Any error demotes the outcome to
 // cleanup_failed and preserves the session row so the user can investigate.
@@ -691,35 +764,14 @@ func (l *Lifecycle) finalizeNoChanges(ctx context.Context, session *models.Sessi
 		}
 	}
 
-	if session.WorktreePath != "" && session.WorktreePath != repo.LocalPath {
-		if err := l.worktrees.Archive(ctx, session.WorktreePath); err != nil {
-			return &FinalizeResult{
-				Outcome: models.CronJobOutcomeCleanupFailed,
-				Err:     fmt.Errorf("archive worktree: %w", err),
-			}
-		}
-	}
-
-	// Tear down any per-chat tmux sessions BEFORE deleting the session row.
-	// agent_chats.session_id has ON DELETE CASCADE, so once the row is gone
-	// we lose the tmux_session_name needed to find and kill the tmux session
-	// — leaving a stranded `claude` process with no DB pointer back to it.
-	// Cron-spawned sessions always have a tmux-hosted chat in this branch
-	// (per startCronTmuxChat); interactive sessions never reach finalize, so
-	// this is effectively the cron cleanup path.
-	l.killAllChatTmuxSessions(ctx, session.ID)
-
-	if err := l.sessions.Delete(ctx, session.ID); err != nil {
+	if err := l.hardDeleteSession(ctx, session, repo); err != nil {
 		return &FinalizeResult{
 			Outcome: models.CronJobOutcomeCleanupFailed,
-			Err:     fmt.Errorf("delete session: %w", err),
+			Err:     err,
 		}
 	}
-	if l.sessionDeletedNotifier != nil {
-		l.sessionDeletedNotifier(ctx, session.ID)
-	}
 
-	return &FinalizeResult{Outcome: models.CronJobOutcomeDeletedNoChanges}
+	return &FinalizeResult{Outcome: models.CronJobOutcomeDeletedNoChanges, Deleted: true}
 }
 
 // RecoverFinalizingSessions handles daemon-startup recovery: any session left
@@ -816,6 +868,12 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 // scheduler respectively) and never flow through FinalizeSession's
 // needsAttention check, but they're listed here to keep the switch
 // exhaustive.
+//
+// Note pr_skipped_no_github returns true here for the preserved (interactive)
+// case, but a cron session on that path is hard-deleted (FinalizeResult.Deleted)
+// — the deletion is suppressed by the caller's `&& !result.Deleted` guard in
+// FinalizeSession step 6, not by this function. The outcome alone does not gate
+// the Blocked transition.
 func needsAttention(o models.CronJobOutcome) bool {
 	switch o {
 	case models.CronJobOutcomePRFailed,

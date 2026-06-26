@@ -905,11 +905,8 @@ func TestRepoStore_SettingsFields(t *testing.T) {
 	if !repo.CanAutoMergeDependabot {
 		t.Error("CanAutoMergeDependabot should default to true")
 	}
-	if !repo.CanAutoAddressReviews {
-		t.Error("CanAutoAddressReviews should default to true")
-	}
-	if !repo.CanAutoResolveConflicts {
-		t.Error("CanAutoResolveConflicts should default to true")
+	if !repo.CanAutoRepair {
+		t.Error("CanAutoRepair should default to true")
 	}
 
 	// Update each field and verify.
@@ -937,23 +934,13 @@ func TestRepoStore_SettingsFields(t *testing.T) {
 	}
 
 	updated, err = store.Update(ctx, repo.ID, UpdateRepoParams{
-		CanAutoAddressReviews: &falseVal,
+		CanAutoRepair: &falseVal,
 	})
 	if err != nil {
-		t.Fatalf("update CanAutoAddressReviews: %v", err)
+		t.Fatalf("update CanAutoRepair: %v", err)
 	}
-	if updated.CanAutoAddressReviews {
-		t.Error("CanAutoAddressReviews should be false after update")
-	}
-
-	updated, err = store.Update(ctx, repo.ID, UpdateRepoParams{
-		CanAutoResolveConflicts: &falseVal,
-	})
-	if err != nil {
-		t.Fatalf("update CanAutoResolveConflicts: %v", err)
-	}
-	if updated.CanAutoResolveConflicts {
-		t.Error("CanAutoResolveConflicts should be false after update")
+	if updated.CanAutoRepair {
+		t.Error("CanAutoRepair should be false after update")
 	}
 
 	// Verify persistence by re-fetching.
@@ -967,11 +954,8 @@ func TestRepoStore_SettingsFields(t *testing.T) {
 	if got.CanAutoMergeDependabot {
 		t.Error("CanAutoMergeDependabot should persist as false")
 	}
-	if got.CanAutoAddressReviews {
-		t.Error("CanAutoAddressReviews should persist as false")
-	}
-	if got.CanAutoResolveConflicts {
-		t.Error("CanAutoResolveConflicts should persist as false")
+	if got.CanAutoRepair {
+		t.Error("CanAutoRepair should persist as false")
 	}
 }
 

@@ -209,6 +209,75 @@ func TestRecoverStrandedCronSessions_NonCron_Skipped(t *testing.T) {
 	}
 }
 
+func TestRecoverStrandedCronSessions_NoLog_LivenessDead_Routed(t *testing.T) {
+	// A logless cron run (e.g. Codex, or a failed tmux pipe-pane) has no durable
+	// idle evidence, but a wired liveness checker confirms the agent is gone — so
+	// the sweep reaps it instead of leaving it stranded forever.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // nothing alive
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1")              // no log written
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("routed=%d, want 1", n)
+	}
+	if got := rec.callsCopy(); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("notifier=%v, want [s1]", got)
+	}
+}
+
+func TestRecoverStrandedCronSessions_NoLog_LivenessAlive_Skipped(t *testing.T) {
+	// Logless but liveness reports the session still alive (e.g. pipe-pane failed
+	// while the agent keeps running) -> conservatively left for the next sweep.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{"s1": true}})
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1") // no log written
+
+	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d notifier=%d, want 0/0 (session still alive)", n, rec.count())
+	}
+}
+
+func TestRecoverStrandedCronSessions_FreshLog_LivenessDead_Routed(t *testing.T) {
+	// Fresh log mtime but the agent is confirmed gone (it died moments before a
+	// daemon restart) -> reaped immediately rather than waiting out the idle
+	// threshold. This is the restart fast-path.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{}}) // agent gone
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+	seedLog(t, dir, "a1", time.Minute) // fresh -> would otherwise look "active"
+
+	n, err := lc.RecoverStrandedCronSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || rec.count() != 1 {
+		t.Fatalf("routed=%d notifier=%d, want 1/1 (agent dead reaps despite fresh log)", n, rec.count())
+	}
+}
+
+func TestRecoverStrandedCronSessions_FreshLog_LivenessAlive_Skipped(t *testing.T) {
+	// Fresh log + a live (idle-in-tmux) agent -> not over yet; the durable
+	// log-idle threshold still guards against reaping a paused-but-live run.
+	dir := t.TempDir()
+	lc, sessions, _, rec := newSweepLifecycle(t, dir)
+	lc.SetSessionLiveness(fakeSessionLiveness{running: map[string]bool{"s1": true}})
+	sessions.sessions["s1"] = strandedCronSession("s1", "a1")
+	seedLog(t, dir, "a1", time.Minute) // fresh
+
+	n, _ := lc.RecoverStrandedCronSessions(context.Background())
+	if n != 0 || rec.count() != 0 {
+		t.Fatalf("routed=%d notifier=%d, want 0/0 (live agent, fresh log)", n, rec.count())
+	}
+}
+
 func TestRecoverStrandedCronSessions_NoNotifier_NoOp(t *testing.T) {
 	dir := t.TempDir()
 	sessions := newMockSessionStore()

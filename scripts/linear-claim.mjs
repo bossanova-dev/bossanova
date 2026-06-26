@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 // Marker prefix for claim comments. The agent posts formatClaimComment(token)
 // on the issue, waits a few seconds for racers' comments to land, re-reads all
 // comments, and asks this script whether its token won.
-export const CLAIM_MARKER = 'bs-linear-implement-claim';
+export const CLAIM_MARKER = 'bs-implement-claim';
 
 // Anchor the trailing boundary so a malformed/crafted comment body with extra
 // hex (e.g. a 40-char string) can't have its first 32 chars captured as a token.
@@ -18,7 +18,7 @@ export function generateRunToken() {
 }
 
 export function formatClaimComment(token) {
-  return `🔒 ${CLAIM_MARKER}:${token} (bs-linear-implement run claiming this ticket)`;
+  return `🔒 ${CLAIM_MARKER}:${token} (bs-implement run claiming this ticket)`;
 }
 
 // Extract { token, createdAt } from claim comments; ignore everything else.

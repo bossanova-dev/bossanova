@@ -230,6 +230,10 @@ func (m *cleanupWorktreeManager) VerifyPushedBranchAheadOfBase(context.Context, 
 func (m *cleanupWorktreeManager) Status(context.Context, string) (string, error) {
 	panic("not used")
 }
+func (m *cleanupWorktreeManager) CommitSubjects(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
 func (m *cleanupWorktreeManager) LatestCommitSubject(context.Context, string) (string, error) {
 	panic("not used")
 }

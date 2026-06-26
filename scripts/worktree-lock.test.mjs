@@ -132,7 +132,13 @@ test('worktree-lock: acquire / re-entrancy / peer / stale / release / isolation 
   assert.equal((race.match(/HELD_BY_PEER/g) || []).length, 1, `one HELD_BY_PEER: ${race}`);
   assert.equal((race.match(/TOOK_OVER_STALE/g) || []).length, 0, `no STALE: ${race}`);
 
-  // 11. CONCURRENT STALE REVIVAL stays atomic: 1 TOOK_OVER_STALE + 1 HELD_BY_PEER.
+  // 11. CONCURRENT STALE REVIVAL stays atomic: exactly one winner + one HELD_BY_PEER,
+  // never a double takeover. The winner usually reports TOOK_OVER_STALE, but a plain
+  // ACQUIRED is equally valid and safe: stealing a stale lock renames the lock dir aside
+  // (mv "$LOCK" "$stamp"), which briefly frees the canonical name, so the racing peer can
+  // legitimately win it with a fresh mkdir. Asserting TOOK_OVER_STALE specifically made
+  // this case flaky; the invariant that actually matters is single ownership, not which
+  // code path the winner took (the single-process takeover path is covered by case 5).
   const repo5 = initRepo();
   const revival = execFileSync(
     'bash',
@@ -146,11 +152,9 @@ test('worktree-lock: acquire / re-entrancy / peer / stale / release / isolation 
     ],
     { cwd: repo5, encoding: 'utf8' },
   );
-  assert.equal(
-    (revival.match(/TOOK_OVER_STALE/g) || []).length,
-    1,
-    `one TOOK_OVER_STALE: ${revival}`,
-  );
+  const revivalWinners =
+    (revival.match(/TOOK_OVER_STALE/g) || []).length + (revival.match(/ACQUIRED/g) || []).length;
+  assert.equal(revivalWinners, 1, `exactly one winner (TOOK_OVER_STALE or ACQUIRED): ${revival}`);
   assert.equal((revival.match(/HELD_BY_PEER/g) || []).length, 1, `one HELD_BY_PEER: ${revival}`);
 
   // 12. dir_mtime fallback must feed numeric arithmetic (no abort), yielding a numeric age.

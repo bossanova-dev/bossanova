@@ -21,23 +21,22 @@ const (
 
 // Repo represents a registered Git repository.
 type Repo struct {
-	ID                      string
-	DisplayName             string
-	LocalPath               string
-	OriginURL               string
-	DefaultBaseBranch       string
-	WorktreeBaseDir         string
-	SetupScript             *string
-	CanAutoMerge            bool
-	CanAutoMergeDependabot  bool
-	CanAutoAddressReviews   bool
-	CanAutoResolveConflicts bool
-	MergeStrategy           MergeStrategy
-	LinearAPIKey            string
-	SentryAPIKey            string
-	SentryOrg               string
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
+	ID                     string
+	DisplayName            string
+	LocalPath              string
+	OriginURL              string
+	DefaultBaseBranch      string
+	WorktreeBaseDir        string
+	SetupScript            *string
+	CanAutoMerge           bool
+	CanAutoMergeDependabot bool
+	CanAutoRepair          bool
+	MergeStrategy          MergeStrategy
+	LinearAPIKey           string
+	SentryAPIKey           string
+	SentryOrg              string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // Session represents an agent coding session.

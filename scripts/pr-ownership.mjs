@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Extract the open PR number from a `gh pr view`/`gh pr list` payload so a
-// bs-linear-implement run can find the PR it should push to. Pure and
+// bs-implement run can find the PR it should push to. Pure and
 // dependency-free: the agent gathers the gh JSON and passes it as a flag.
 
 // Normalize a `gh pr view`/`gh pr list` payload (object or array) into the shape

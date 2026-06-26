@@ -142,6 +142,12 @@ func (s *Server) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequ
 	return &bossanovav1.GetChatTitleResponse{Supported: false}, nil
 }
 
+// SuggestPRTitle reports not-supported; the stub has no agent to ask. The daemon
+// falls back to its deterministic title heuristic.
+func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
+}
+
 // HasQuestionPrompt always returns false; the stub never shows a prompt.
 func (s *Server) HasQuestionPrompt(_ context.Context, _ *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.HasQuestionPromptResponse{HasPrompt: false}, nil

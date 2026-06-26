@@ -32,54 +32,54 @@ function requireFfmpeg(t, reason) {
 
 test('agentModeAvailable: BOSS_PROOF_MODE=recipe → false regardless of key', async () => {
   const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.ANTHROPIC_API_KEY;
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
   process.env.BOSS_PROOF_MODE = 'recipe';
-  process.env.ANTHROPIC_API_KEY = 'sk-some-key';
+  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-some-key';
   try {
     const { agentModeAvailable } = await import('./proof.mjs');
     assert.equal(agentModeAvailable(), false);
   } finally {
     process.env.BOSS_PROOF_MODE = original ?? '';
-    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = originalKey;
+    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY;
+    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
   }
 });
 
 test('agentModeAvailable: BOSS_PROOF_MODE=agent → true regardless of key', async () => {
   const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.ANTHROPIC_API_KEY;
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
   process.env.BOSS_PROOF_MODE = 'agent';
-  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.PROOF_ANTHROPIC_API_KEY;
   try {
     const { agentModeAvailable } = await import('./proof.mjs');
     assert.equal(agentModeAvailable(), true);
   } finally {
     if (original === undefined) delete process.env.BOSS_PROOF_MODE;
     else process.env.BOSS_PROOF_MODE = original;
-    if (originalKey !== undefined) process.env.ANTHROPIC_API_KEY = originalKey;
+    if (originalKey !== undefined) process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
   }
 });
 
 test('agentModeAvailable: unset mode + key set → true', async () => {
   const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.ANTHROPIC_API_KEY;
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
   delete process.env.BOSS_PROOF_MODE;
-  process.env.ANTHROPIC_API_KEY = 'sk-test-key-123';
+  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-test-key-123';
   try {
     const { agentModeAvailable } = await import('./proof.mjs');
     assert.equal(agentModeAvailable(), true);
   } finally {
     if (original !== undefined) process.env.BOSS_PROOF_MODE = original;
-    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = originalKey;
+    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY;
+    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
   }
 });
 
 test('agentModeAvailable: explicit recipe selection prefers recipe path unless agent forced', async () => {
   const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.ANTHROPIC_API_KEY;
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
   delete process.env.BOSS_PROOF_MODE;
-  process.env.ANTHROPIC_API_KEY = 'sk-test-key-123';
+  process.env.PROOF_ANTHROPIC_API_KEY = 'sk-test-key-123';
   try {
     const { agentModeAvailable } = await import('./proof.mjs');
     assert.equal(agentModeAvailable({ explicitRecipeSelection: true }), false);
@@ -88,22 +88,22 @@ test('agentModeAvailable: explicit recipe selection prefers recipe path unless a
   } finally {
     if (original === undefined) delete process.env.BOSS_PROOF_MODE;
     else process.env.BOSS_PROOF_MODE = original;
-    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = originalKey;
+    if (originalKey === undefined) delete process.env.PROOF_ANTHROPIC_API_KEY;
+    else process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
   }
 });
 
 test('agentModeAvailable: unset mode + no key → false (recipe fallback)', async () => {
   const original = process.env.BOSS_PROOF_MODE;
-  const originalKey = process.env.ANTHROPIC_API_KEY;
+  const originalKey = process.env.PROOF_ANTHROPIC_API_KEY;
   delete process.env.BOSS_PROOF_MODE;
-  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.PROOF_ANTHROPIC_API_KEY;
   try {
     const { agentModeAvailable } = await import('./proof.mjs');
     assert.equal(agentModeAvailable(), false);
   } finally {
     if (original !== undefined) process.env.BOSS_PROOF_MODE = original;
-    if (originalKey !== undefined) process.env.ANTHROPIC_API_KEY = originalKey;
+    if (originalKey !== undefined) process.env.PROOF_ANTHROPIC_API_KEY = originalKey;
   }
 });
 

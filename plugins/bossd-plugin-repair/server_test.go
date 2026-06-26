@@ -39,6 +39,7 @@ type mockHostClient struct {
 	sessions         []*bossanovav1.Session
 	sessionSequences [][]*bossanovav1.Session
 	sessionSeqIndex  int
+	repairDisabled   map[string]bool // session id -> repo auto-repair off
 	listSessErr      error
 	listSessCalls    int
 
@@ -92,9 +93,19 @@ func (m *mockHostClient) ListSessions(_ context.Context) (*bossanovav1.HostServi
 			idx = len(m.sessionSequences) - 1
 		}
 		m.sessionSeqIndex++
-		return &bossanovav1.HostServiceListSessionsResponse{Sessions: m.sessionSequences[idx]}, nil
+		return &bossanovav1.HostServiceListSessionsResponse{Sessions: m.applyRepoRepairDefault(m.sessionSequences[idx])}, nil
 	}
-	return &bossanovav1.HostServiceListSessionsResponse{Sessions: m.sessions}, nil
+	return &bossanovav1.HostServiceListSessionsResponse{Sessions: m.applyRepoRepairDefault(m.sessions)}, nil
+}
+
+// applyRepoRepairDefault stamps RepoCanAutoRepair onto returned sessions. Test
+// sessions represent repair-enabled repos by default (matching the DB default);
+// list a session id in repairDisabled to model a repo with auto-repair off.
+func (m *mockHostClient) applyRepoRepairDefault(sessions []*bossanovav1.Session) []*bossanovav1.Session {
+	for _, s := range sessions {
+		s.RepoCanAutoRepair = !m.repairDisabled[s.GetId()]
+	}
+	return sessions
 }
 
 func (m *mockHostClient) GetReviewComments(_ context.Context, _ *bossanovav1.GetReviewCommentsRequest) (*bossanovav1.GetReviewCommentsResponse, error) {
@@ -1106,6 +1117,24 @@ func TestMaybeRepair_TriggersForFailing(t *testing.T) {
 		c, _, _, _ := mock.snapshot()
 		return c > 0
 	}, "StartChatRun called")
+}
+
+// TestMaybeRepair_SkipsWhenRepoAutoRepairDisabled verifies the per-repo
+// auto-repair kill switch: a repairable session in a repo with auto-repair off
+// is skipped, even for a FAILING status that would otherwise trigger repair.
+func TestMaybeRepair_SkipsWhenRepoAutoRepairDisabled(t *testing.T) {
+	mock := newTestMock()
+	mock.sessions = []*bossanovav1.Session{
+		{Id: "s1", State: bossanovav1.SessionState_SESSION_STATE_FIXING_CHECKS},
+	}
+	mock.repairDisabled = map[string]bool{"s1": true}
+	rm := newTestMonitor(mock)
+	rm.maybeRepair("s1", bossanovav1.DisplayStatus_DISPLAY_STATUS_FAILING, true)
+
+	// Give any erroneous async repair a chance to fire, then assert none did.
+	time.Sleep(50 * time.Millisecond)
+	startCalls, _, _, _ := mock.snapshot()
+	require.Zero(t, startCalls, "no repair when repo auto-repair disabled")
 }
 
 func TestMaybeRepair_TriggersForConflict(t *testing.T) {

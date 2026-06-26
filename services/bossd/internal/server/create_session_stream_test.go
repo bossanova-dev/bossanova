@@ -515,6 +515,10 @@ func (w *setupStreamWorktree) VerifyPushedBranchAheadOfBase(context.Context, str
 	return &gitpkg.BranchVerification{HeadSHA: "head", BaseSHA: "base", RemoteHeadSHA: "head", AheadCount: 1}, nil
 }
 func (w *setupStreamWorktree) Status(context.Context, string) (string, error) { return "", nil }
+func (w *setupStreamWorktree) CommitSubjects(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
 func (w *setupStreamWorktree) LatestCommitSubject(context.Context, string) (string, error) {
 	return "", nil
 }

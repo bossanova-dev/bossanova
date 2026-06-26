@@ -57,6 +57,9 @@ type MockWorktreeManager struct {
 	// LatestCommitSubjectFunc overrides the default LatestCommitSubject behavior when set.
 	LatestCommitSubjectFunc func(ctx context.Context, worktreePath string) (string, error)
 
+	// CommitSubjectsFunc overrides the default CommitSubjects behavior when set.
+	CommitSubjectsFunc func(ctx context.Context, worktreePath, baseRef string) ([]string, error)
+
 	// DetectOriginURLResult is returned by DetectOriginURL.
 	DetectOriginURLResult string
 
@@ -346,6 +349,13 @@ func (m *MockWorktreeManager) LatestCommitSubject(ctx context.Context, worktreeP
 		return m.LatestCommitSubjectFunc(ctx, worktreePath)
 	}
 	return "", nil
+}
+
+func (m *MockWorktreeManager) CommitSubjects(ctx context.Context, worktreePath, baseRef string) ([]string, error) {
+	if m.CommitSubjectsFunc != nil {
+		return m.CommitSubjectsFunc(ctx, worktreePath, baseRef)
+	}
+	return nil, nil
 }
 
 func (m *MockWorktreeManager) BranchDebugSnapshot(_ context.Context, _, _, _ string) (*gitpkg.BranchDebugSnapshot, error) {

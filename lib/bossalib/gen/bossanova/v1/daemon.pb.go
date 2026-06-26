@@ -754,20 +754,19 @@ func (*RemoveRepoResponse) Descriptor() ([]byte, []int) {
 }
 
 type UpdateRepoRequest struct {
-	state                   protoimpl.MessageState `protogen:"open.v1"`
-	Id                      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	DisplayName             *string                `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3,oneof" json:"display_name,omitempty"`
-	CanAutoMerge            *bool                  `protobuf:"varint,3,opt,name=can_auto_merge,json=canAutoMerge,proto3,oneof" json:"can_auto_merge,omitempty"`
-	CanAutoMergeDependabot  *bool                  `protobuf:"varint,4,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3,oneof" json:"can_auto_merge_dependabot,omitempty"`
-	CanAutoAddressReviews   *bool                  `protobuf:"varint,5,opt,name=can_auto_address_reviews,json=canAutoAddressReviews,proto3,oneof" json:"can_auto_address_reviews,omitempty"`
-	CanAutoResolveConflicts *bool                  `protobuf:"varint,6,opt,name=can_auto_resolve_conflicts,json=canAutoResolveConflicts,proto3,oneof" json:"can_auto_resolve_conflicts,omitempty"`
-	MergeStrategy           *string                `protobuf:"bytes,7,opt,name=merge_strategy,json=mergeStrategy,proto3,oneof" json:"merge_strategy,omitempty"`
-	SetupScript             *string                `protobuf:"bytes,8,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
-	LinearApiKey            *string                `protobuf:"bytes,9,opt,name=linear_api_key,json=linearApiKey,proto3,oneof" json:"linear_api_key,omitempty"`
-	SentryApiKey            *string                `protobuf:"bytes,11,opt,name=sentry_api_key,json=sentryApiKey,proto3,oneof" json:"sentry_api_key,omitempty"`
-	SentryOrg               *string                `protobuf:"bytes,12,opt,name=sentry_org,json=sentryOrg,proto3,oneof" json:"sentry_org,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	Id                     string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	DisplayName            *string                `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3,oneof" json:"display_name,omitempty"`
+	CanAutoMerge           *bool                  `protobuf:"varint,3,opt,name=can_auto_merge,json=canAutoMerge,proto3,oneof" json:"can_auto_merge,omitempty"`
+	CanAutoMergeDependabot *bool                  `protobuf:"varint,4,opt,name=can_auto_merge_dependabot,json=canAutoMergeDependabot,proto3,oneof" json:"can_auto_merge_dependabot,omitempty"`
+	MergeStrategy          *string                `protobuf:"bytes,7,opt,name=merge_strategy,json=mergeStrategy,proto3,oneof" json:"merge_strategy,omitempty"`
+	SetupScript            *string                `protobuf:"bytes,8,opt,name=setup_script,json=setupScript,proto3,oneof" json:"setup_script,omitempty"`
+	LinearApiKey           *string                `protobuf:"bytes,9,opt,name=linear_api_key,json=linearApiKey,proto3,oneof" json:"linear_api_key,omitempty"`
+	SentryApiKey           *string                `protobuf:"bytes,11,opt,name=sentry_api_key,json=sentryApiKey,proto3,oneof" json:"sentry_api_key,omitempty"`
+	SentryOrg              *string                `protobuf:"bytes,12,opt,name=sentry_org,json=sentryOrg,proto3,oneof" json:"sentry_org,omitempty"`
+	CanAutoRepair          *bool                  `protobuf:"varint,15,opt,name=can_auto_repair,json=canAutoRepair,proto3,oneof" json:"can_auto_repair,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *UpdateRepoRequest) Reset() {
@@ -828,20 +827,6 @@ func (x *UpdateRepoRequest) GetCanAutoMergeDependabot() bool {
 	return false
 }
 
-func (x *UpdateRepoRequest) GetCanAutoAddressReviews() bool {
-	if x != nil && x.CanAutoAddressReviews != nil {
-		return *x.CanAutoAddressReviews
-	}
-	return false
-}
-
-func (x *UpdateRepoRequest) GetCanAutoResolveConflicts() bool {
-	if x != nil && x.CanAutoResolveConflicts != nil {
-		return *x.CanAutoResolveConflicts
-	}
-	return false
-}
-
 func (x *UpdateRepoRequest) GetMergeStrategy() string {
 	if x != nil && x.MergeStrategy != nil {
 		return *x.MergeStrategy
@@ -875,6 +860,13 @@ func (x *UpdateRepoRequest) GetSentryOrg() string {
 		return *x.SentryOrg
 	}
 	return ""
+}
+
+func (x *UpdateRepoRequest) GetCanAutoRepair() bool {
+	if x != nil && x.CanAutoRepair != nil {
+		return *x.CanAutoRepair
+	}
+	return false
 }
 
 type UpdateRepoResponse struct {
@@ -5501,30 +5493,28 @@ const file_bossanova_v1_daemon_proto_rawDesc = "" +
 	"\x05repos\x18\x01 \x03(\v2\x12.bossanova.v1.RepoR\x05repos\"#\n" +
 	"\x11RemoveRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x14\n" +
-	"\x12RemoveRepoResponse\"\xe7\x05\n" +
+	"\x12RemoveRepoResponse\"\xfe\x04\n" +
 	"\x11UpdateRepoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12&\n" +
 	"\fdisplay_name\x18\x02 \x01(\tH\x00R\vdisplayName\x88\x01\x01\x12)\n" +
 	"\x0ecan_auto_merge\x18\x03 \x01(\bH\x01R\fcanAutoMerge\x88\x01\x01\x12>\n" +
-	"\x19can_auto_merge_dependabot\x18\x04 \x01(\bH\x02R\x16canAutoMergeDependabot\x88\x01\x01\x12<\n" +
-	"\x18can_auto_address_reviews\x18\x05 \x01(\bH\x03R\x15canAutoAddressReviews\x88\x01\x01\x12@\n" +
-	"\x1acan_auto_resolve_conflicts\x18\x06 \x01(\bH\x04R\x17canAutoResolveConflicts\x88\x01\x01\x12*\n" +
-	"\x0emerge_strategy\x18\a \x01(\tH\x05R\rmergeStrategy\x88\x01\x01\x12&\n" +
-	"\fsetup_script\x18\b \x01(\tH\x06R\vsetupScript\x88\x01\x01\x12)\n" +
-	"\x0elinear_api_key\x18\t \x01(\tH\aR\flinearApiKey\x88\x01\x01\x12)\n" +
-	"\x0esentry_api_key\x18\v \x01(\tH\bR\fsentryApiKey\x88\x01\x01\x12\"\n" +
+	"\x19can_auto_merge_dependabot\x18\x04 \x01(\bH\x02R\x16canAutoMergeDependabot\x88\x01\x01\x12*\n" +
+	"\x0emerge_strategy\x18\a \x01(\tH\x03R\rmergeStrategy\x88\x01\x01\x12&\n" +
+	"\fsetup_script\x18\b \x01(\tH\x04R\vsetupScript\x88\x01\x01\x12)\n" +
+	"\x0elinear_api_key\x18\t \x01(\tH\x05R\flinearApiKey\x88\x01\x01\x12)\n" +
+	"\x0esentry_api_key\x18\v \x01(\tH\x06R\fsentryApiKey\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"sentry_org\x18\f \x01(\tH\tR\tsentryOrg\x88\x01\x01B\x0f\n" +
+	"sentry_org\x18\f \x01(\tH\aR\tsentryOrg\x88\x01\x01\x12+\n" +
+	"\x0fcan_auto_repair\x18\x0f \x01(\bH\bR\rcanAutoRepair\x88\x01\x01B\x0f\n" +
 	"\r_display_nameB\x11\n" +
 	"\x0f_can_auto_mergeB\x1c\n" +
-	"\x1a_can_auto_merge_dependabotB\x1b\n" +
-	"\x19_can_auto_address_reviewsB\x1d\n" +
-	"\x1b_can_auto_resolve_conflictsB\x11\n" +
+	"\x1a_can_auto_merge_dependabotB\x11\n" +
 	"\x0f_merge_strategyB\x0f\n" +
 	"\r_setup_scriptB\x11\n" +
 	"\x0f_linear_api_keyB\x11\n" +
 	"\x0f_sentry_api_keyB\r\n" +
-	"\v_sentry_orgJ\x04\b\n" +
+	"\v_sentry_orgB\x12\n" +
+	"\x10_can_auto_repairJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fJ\x04\b\n" +
 	"\x10\vJ\x04\b\r\x10\x0e\"<\n" +
 	"\x12UpdateRepoResponse\x12&\n" +
 	"\x04repo\x18\x01 \x01(\v2\x12.bossanova.v1.RepoR\x04repo\"-\n" +

@@ -13,46 +13,6 @@ import (
 	"github.com/recurser/bossalib/vcs"
 )
 
-// --- Mock FixHandler ---
-
-type mockFixHandler struct {
-	checkFailureCalls []string
-	conflictCalls     []string
-	reviewCalls       []string
-	done              chan struct{} // closed after a handler call, to sync with async goroutine
-}
-
-func newMockFixHandler() *mockFixHandler {
-	return &mockFixHandler{done: make(chan struct{}, 1)}
-}
-
-func (m *mockFixHandler) HandleCheckFailure(_ context.Context, sessionID string, _ []vcs.CheckResult) error {
-	m.checkFailureCalls = append(m.checkFailureCalls, sessionID)
-	select {
-	case m.done <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
-func (m *mockFixHandler) HandleConflict(_ context.Context, sessionID string) error {
-	m.conflictCalls = append(m.conflictCalls, sessionID)
-	select {
-	case m.done <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
-func (m *mockFixHandler) HandleReviewFeedback(_ context.Context, sessionID string, _ []vcs.ReviewComment) error {
-	m.reviewCalls = append(m.reviewCalls, sessionID)
-	select {
-	case m.done <- struct{}{}:
-	default:
-	}
-	return nil
-}
-
 func TestDispatcherChecksPassed(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
@@ -73,7 +33,7 @@ func TestDispatcherChecksPassed(t *testing.T) {
 		PRNumber: &prNum,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
@@ -106,7 +66,7 @@ func TestDispatcherChecksFailed(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	failure := vcs.CheckConclusionFailure
 	ch := make(chan SessionEvent, 1)
@@ -141,7 +101,7 @@ func TestDispatcherChecksFailedMaxAttempts(t *testing.T) {
 		AttemptCount: machine.MaxAttempts - 1, // One attempt away from max.
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksFailed{PRID: 42}}
@@ -171,7 +131,7 @@ func TestDispatcherConflictDetected(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
@@ -198,7 +158,7 @@ func TestDispatcherPRMerged(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
@@ -224,7 +184,7 @@ func TestDispatcherPRClosed(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRClosed{PRID: 42}}
@@ -243,7 +203,7 @@ func TestDispatcherContextCancellation(t *testing.T) {
 	vp := newMockVCSProvider()
 	logger := zerolog.Nop()
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ch := make(chan SessionEvent)
@@ -284,7 +244,7 @@ func TestDispatcherChecksPassedAutoMergeDisabled(t *testing.T) {
 		PRNumber: &prNum,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ChecksPassed{PRID: 42}}
@@ -302,174 +262,22 @@ func TestDispatcherChecksPassedAutoMergeDisabled(t *testing.T) {
 	}
 }
 
-func TestDispatcherChecksFailedAutomationDisabled(t *testing.T) {
+// TestDispatcherReviewChangesRequested verifies a changes-requested review
+// transitions the session to FixingChecks (repair is then the plugin's job).
+func TestDispatcherReviewChangesRequested(t *testing.T) {
 	ctx := context.Background()
 	sessions := newMockSessionStore()
 	repos := newMockRepoStore()
 	vp := newMockVCSProvider()
-	fh := newMockFixHandler()
 	logger := zerolog.Nop()
 
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:                "sess-1",
-		RepoID:            "repo-1",
-		State:             machine.AwaitingChecks,
-		AutomationEnabled: false,
-	}
-
-	d := NewDispatcher(sessions, repos, vp, fh, logger)
-
-	failure := vcs.CheckConclusionFailure
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
-		SessionID: "sess-1",
-		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
-	}
-	close(ch)
-
-	d.Run(ctx, ch)
-
-	// State should still transition to FixingChecks (state machine doesn't check automation).
-	sess := sessions.sessions["sess-1"]
-	if sess.State != machine.FixingChecks {
-		t.Errorf("state = %v, want FixingChecks", sess.State)
-	}
-	// But fix loop should NOT have been called.
-	if len(fh.checkFailureCalls) != 0 {
-		t.Errorf("expected 0 check failure calls, got %d", len(fh.checkFailureCalls))
-	}
-}
-
-func TestDispatcherChecksFailedAutomationEnabled(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	fh := newMockFixHandler()
-	logger := zerolog.Nop()
-
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:                "sess-1",
-		RepoID:            "repo-1",
-		State:             machine.AwaitingChecks,
-		AutomationEnabled: true,
-	}
-
-	d := NewDispatcher(sessions, repos, vp, fh, logger)
-
-	failure := vcs.CheckConclusionFailure
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
-		SessionID: "sess-1",
-		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
-	}
-	close(ch)
-
-	d.Run(ctx, ch)
-
-	// Wait for async fix loop goroutine.
-	select {
-	case <-fh.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("fix loop was not invoked within timeout")
-	}
-
-	if len(fh.checkFailureCalls) != 1 {
-		t.Errorf("expected 1 check failure call, got %d", len(fh.checkFailureCalls))
-	}
-}
-
-func TestDispatcherConflictAutoResolveDisabled(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	fh := newMockFixHandler()
-	logger := zerolog.Nop()
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:                      "repo-1",
-		CanAutoResolveConflicts: false,
-	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:     "sess-1",
-		RepoID: "repo-1",
-		State:  machine.AwaitingChecks,
-	}
-
-	d := NewDispatcher(sessions, repos, vp, fh, logger)
-
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
-	close(ch)
-
-	d.Run(ctx, ch)
-
-	sess := sessions.sessions["sess-1"]
-	if sess.State != machine.FixingChecks {
-		t.Errorf("state = %v, want FixingChecks", sess.State)
-	}
-	if len(fh.conflictCalls) != 0 {
-		t.Errorf("expected 0 conflict calls, got %d", len(fh.conflictCalls))
-	}
-}
-
-func TestDispatcherConflictAutoResolveEnabled(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	fh := newMockFixHandler()
-	logger := zerolog.Nop()
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:                      "repo-1",
-		CanAutoResolveConflicts: true,
-	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:     "sess-1",
-		RepoID: "repo-1",
-		State:  machine.AwaitingChecks,
-	}
-
-	d := NewDispatcher(sessions, repos, vp, fh, logger)
-
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.ConflictDetected{PRID: 42}}
-	close(ch)
-
-	d.Run(ctx, ch)
-
-	select {
-	case <-fh.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("fix loop was not invoked within timeout")
-	}
-
-	if len(fh.conflictCalls) != 1 {
-		t.Errorf("expected 1 conflict call, got %d", len(fh.conflictCalls))
-	}
-}
-
-func TestDispatcherReviewAutoAddressDisabled(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	fh := newMockFixHandler()
-	logger := zerolog.Nop()
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:                    "repo-1",
-		CanAutoAddressReviews: false,
-	}
 	sessions.sessions["sess-1"] = &models.Session{
 		ID:     "sess-1",
 		RepoID: "repo-1",
 		State:  machine.ReadyForReview,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, fh, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{
@@ -484,67 +292,20 @@ func TestDispatcherReviewAutoAddressDisabled(t *testing.T) {
 	if sess.State != machine.FixingChecks {
 		t.Errorf("state = %v, want FixingChecks", sess.State)
 	}
-	if len(fh.reviewCalls) != 0 {
-		t.Errorf("expected 0 review calls, got %d", len(fh.reviewCalls))
+	if sess.LastObservedReviewState != int(vcs.ReviewStateChangesRequested) {
+		t.Errorf("last observed review state = %v, want ChangesRequested", sess.LastObservedReviewState)
 	}
 }
 
-func TestDispatcherReviewAutoAddressEnabled(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	fh := newMockFixHandler()
-	logger := zerolog.Nop()
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:                    "repo-1",
-		CanAutoAddressReviews: true,
-	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:     "sess-1",
-		RepoID: "repo-1",
-		State:  machine.ReadyForReview,
-	}
-
-	d := NewDispatcher(sessions, repos, vp, fh, logger)
-
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
-		SessionID: "sess-1",
-		Event:     vcs.ReviewSubmitted{PRID: 42, State: vcs.ReviewStateChangesRequested, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
-	}
-	close(ch)
-
-	d.Run(ctx, ch)
-
-	select {
-	case <-fh.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("fix loop was not invoked within timeout")
-	}
-
-	if len(fh.reviewCalls) != 1 {
-		t.Errorf("expected 1 review call, got %d", len(fh.reviewCalls))
-	}
-	if got := sessions.sessions["sess-1"].LastObservedReviewState; got != int(vcs.ReviewStateChangesRequested) {
-		t.Errorf("last observed review state = %v, want ChangesRequested", got)
-	}
-}
-
+// TestDispatcherReviewSubmittedNonActionableStates verifies that approved or
+// commented reviews record the review state without transitioning to repair.
 func TestDispatcherReviewSubmittedNonActionableStates(t *testing.T) {
 	tests := []struct {
 		name  string
 		state vcs.ReviewState
 	}{
-		{
-			name:  "approved",
-			state: vcs.ReviewStateApproved,
-		},
-		{
-			name:  "commented",
-			state: vcs.ReviewStateCommented,
-		},
+		{name: "approved", state: vcs.ReviewStateApproved},
+		{name: "commented", state: vcs.ReviewStateCommented},
 	}
 
 	for _, tt := range tests {
@@ -553,20 +314,15 @@ func TestDispatcherReviewSubmittedNonActionableStates(t *testing.T) {
 			sessions := newMockSessionStore()
 			repos := newMockRepoStore()
 			vp := newMockVCSProvider()
-			fh := newMockFixHandler()
 			logger := zerolog.Nop()
 
-			repos.repos["repo-1"] = &models.Repo{
-				ID:                    "repo-1",
-				CanAutoAddressReviews: true,
-			}
 			sessions.sessions["sess-1"] = &models.Session{
 				ID:     "sess-1",
 				RepoID: "repo-1",
 				State:  machine.ReadyForReview,
 			}
 
-			d := NewDispatcher(sessions, repos, vp, fh, logger)
+			d := NewDispatcher(sessions, repos, vp, logger)
 
 			ch := make(chan SessionEvent, 1)
 			ch <- SessionEvent{
@@ -584,113 +340,7 @@ func TestDispatcherReviewSubmittedNonActionableStates(t *testing.T) {
 			if sess.LastObservedReviewState != int(tt.state) {
 				t.Errorf("last observed review state = %v, want %v", sess.LastObservedReviewState, tt.state)
 			}
-			if len(fh.reviewCalls) != 0 {
-				t.Errorf("expected 0 review calls, got %d", len(fh.reviewCalls))
-			}
 		})
-	}
-}
-
-func TestDispatcherNilFixLoop_ChecksFailed(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	logger := zerolog.Nop()
-
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:                "sess-1",
-		RepoID:            "repo-1",
-		State:             machine.AwaitingChecks,
-		AutomationEnabled: true,
-	}
-
-	// Pass nil for fixLoop - should not panic
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
-
-	failure := vcs.CheckConclusionFailure
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
-		SessionID: "sess-1",
-		Event:     vcs.ChecksFailed{PRID: 42, FailedChecks: []vcs.CheckResult{{Conclusion: &failure}}},
-	}
-	close(ch)
-
-	// Should not panic despite nil fixLoop
-	d.Run(ctx, ch)
-
-	sess := sessions.sessions["sess-1"]
-	if sess.State != machine.FixingChecks {
-		t.Errorf("state = %v, want FixingChecks", sess.State)
-	}
-}
-
-func TestDispatcherNilFixLoop_ConflictDetected(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	logger := zerolog.Nop()
-
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:                "sess-1",
-		RepoID:            "repo-1",
-		State:             machine.AwaitingChecks,
-		AutomationEnabled: true,
-	}
-
-	// Pass nil for fixLoop - should not panic
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
-
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
-		SessionID: "sess-1",
-		Event:     vcs.ConflictDetected{PRID: 42},
-	}
-	close(ch)
-
-	// Should not panic despite nil fixLoop
-	d.Run(ctx, ch)
-
-	sess := sessions.sessions["sess-1"]
-	if sess.State != machine.FixingChecks {
-		t.Errorf("state = %v, want FixingChecks", sess.State)
-	}
-}
-
-func TestDispatcherNilFixLoop_ReviewSubmitted(t *testing.T) {
-	ctx := context.Background()
-	sessions := newMockSessionStore()
-	repos := newMockRepoStore()
-	vp := newMockVCSProvider()
-	logger := zerolog.Nop()
-
-	repos.repos["repo-1"] = &models.Repo{
-		ID:                    "repo-1",
-		CanAutoAddressReviews: true,
-	}
-	sessions.sessions["sess-1"] = &models.Session{
-		ID:     "sess-1",
-		RepoID: "repo-1",
-		State:  machine.ReadyForReview,
-	}
-
-	// Pass nil for fixLoop - should not panic
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
-
-	ch := make(chan SessionEvent, 1)
-	ch <- SessionEvent{
-		SessionID: "sess-1",
-		Event:     vcs.ReviewSubmitted{PRID: 42, State: vcs.ReviewStateChangesRequested, Comments: []vcs.ReviewComment{{Body: "fix this"}}},
-	}
-	close(ch)
-
-	// Should not panic despite nil fixLoop
-	d.Run(ctx, ch)
-
-	sess := sessions.sessions["sess-1"]
-	if sess.State != machine.FixingChecks {
-		t.Errorf("state = %v, want FixingChecks", sess.State)
 	}
 }
 
@@ -725,7 +375,7 @@ func TestDispatcherPRMerged_NotifiesCompletion(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetCompletionNotifier(notifier)
 
 	ch := make(chan SessionEvent, 1)
@@ -759,7 +409,7 @@ func TestDispatcherPRClosed_NotifiesCompletion(t *testing.T) {
 		State:  machine.AwaitingChecks,
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetCompletionNotifier(notifier)
 
 	ch := make(chan SessionEvent, 1)
@@ -791,7 +441,7 @@ func TestDispatcherChecksFailedBlocked_NotifiesCompletion(t *testing.T) {
 		AttemptCount: machine.MaxAttempts - 1, // will transition to Blocked
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetCompletionNotifier(notifier)
 
 	ch := make(chan SessionEvent, 1)
@@ -826,7 +476,7 @@ func TestDispatcherChecksFailedNotBlocked_DoesNotNotify(t *testing.T) {
 		AttemptCount: 0, // will transition to FixingChecks, not Blocked
 	}
 
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetCompletionNotifier(notifier)
 
 	failure := vcs.CheckConclusionFailure
@@ -858,7 +508,7 @@ func TestDispatcherNilNotifier_DoesNotPanic(t *testing.T) {
 	}
 
 	// No SetCompletionNotifier call — notifier is nil.
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 
 	ch := make(chan SessionEvent, 1)
 	ch <- SessionEvent{SessionID: "sess-1", Event: vcs.PRMerged{PRID: 42}}
@@ -904,7 +554,7 @@ func TestDispatcherPRMerged_SetsDisplayStatusMerged(t *testing.T) {
 	}
 
 	setter := &fakeDisplayStatusSetter{}
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetDisplayStatusSetter(setter)
 
 	ch := make(chan SessionEvent, 1)
@@ -938,7 +588,7 @@ func TestDispatcherPRClosed_SetsDisplayStatusClosed(t *testing.T) {
 	}
 
 	setter := &fakeDisplayStatusSetter{}
-	d := NewDispatcher(sessions, repos, vp, nil, logger)
+	d := NewDispatcher(sessions, repos, vp, logger)
 	d.SetDisplayStatusSetter(setter)
 
 	ch := make(chan SessionEvent, 1)

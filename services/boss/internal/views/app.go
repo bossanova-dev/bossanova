@@ -272,6 +272,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case repoAddCompletedMsg:
 		a.repoAddCompleting = false
 		returnView := a.repoList.returnView
+		// A freshly-added repo configures its merge-strategy / automation /
+		// integration options inline on the add wizard, so the completed add
+		// returns to where it started: Home when there is at most one repo, else
+		// the repo list with the new repo highlighted.
 		if msg.err == nil && len(msg.repos) <= 1 {
 			if returnView == ViewSettings {
 				return a, a.switchToReturn(returnView)

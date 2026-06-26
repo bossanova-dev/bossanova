@@ -1955,8 +1955,7 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 	}{
 		{"auto-merge", "no-auto-merge", func(v bool) { req.CanAutoMerge = &v }},
 		{"auto-merge-dependabot", "no-auto-merge-dependabot", func(v bool) { req.CanAutoMergeDependabot = &v }},
-		{"auto-address-reviews", "no-auto-address-reviews", func(v bool) { req.CanAutoAddressReviews = &v }},
-		{"auto-resolve-conflicts", "no-auto-resolve-conflicts", func(v bool) { req.CanAutoResolveConflicts = &v }},
+		{"auto-repair", "no-auto-repair", func(v bool) { req.CanAutoRepair = &v }},
 	}
 	for _, bp := range boolPairs {
 		enableChanged := cmd.Flags().Changed(bp.enable)
@@ -1991,10 +1990,9 @@ func runRepoUpdate(cmd *cobra.Command, repoID string) error {
 	if repo.SetupScript != nil {
 		fmt.Printf("  Setup:    %s\n", *repo.SetupScript)
 	}
-	fmt.Printf("  Auto-merge:            %v\n", repo.CanAutoMerge)
-	fmt.Printf("  Auto-merge Dependabot: %v\n", repo.CanAutoMergeDependabot)
-	fmt.Printf("  Auto-address reviews:  %v\n", repo.CanAutoAddressReviews)
-	fmt.Printf("  Auto-resolve conflicts: %v\n", repo.CanAutoResolveConflicts)
+	fmt.Printf("  Mark ready on green:    %v\n", repo.CanAutoMerge)
+	fmt.Printf("  Auto-merge Dependabot:  %v\n", repo.CanAutoMergeDependabot)
+	fmt.Printf("  Automatic repair:       %v\n", repo.CanAutoRepair)
 	return nil
 }
 

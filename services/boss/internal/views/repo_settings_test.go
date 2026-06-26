@@ -115,8 +115,7 @@ func TestRepoSettings_CollapsedNavigationSkipsChildRows(t *testing.T) {
 		repoSettingsRowMergeStrategy,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
-		repoSettingsRowCanAutoAddressReviews,
-		repoSettingsRowCanAutoResolveConflicts,
+		repoSettingsRowCanAutoRepair,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowSentryHeader,
 	}
@@ -163,8 +162,7 @@ func TestRepoSettings_ExpandedNavigationIncludesChildRows(t *testing.T) {
 		repoSettingsRowMergeStrategy,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
-		repoSettingsRowCanAutoAddressReviews,
-		repoSettingsRowCanAutoResolveConflicts,
+		repoSettingsRowCanAutoRepair,
 		repoSettingsRowLinearHeader,
 		repoSettingsRowLinearApiKey,
 		repoSettingsRowSentryHeader,
@@ -413,6 +411,34 @@ func TestGitHubAppInstallationSettingsURL(t *testing.T) {
 	want := "https://github.com/organizations/freshclaim/settings/installations/133291047"
 	if got != want {
 		t.Fatalf("githubAppInstallationSettingsURL() = %q, want %q", got, want)
+	}
+}
+
+// TestRepoSettingsLoadFailureSurfacesErrorAndCancels verifies that when the
+// initial repo load fails (e.g. opening repo settings for a repo that can't be
+// loaded), the error is shown to the user and esc cancels the view.
+func TestRepoSettingsLoadFailureSurfacesErrorAndCancels(t *testing.T) {
+	stub := &stubRepoClient{
+		reposErr: errors.New("load failed"),
+	}
+
+	m := NewRepoSettingsModel(stub, context.Background(), "repo-1")
+
+	// Feed the load-failure message directly (same as Init() → ListRepos returning error).
+	updated, _ := m.Update(repoSettingsLoadedMsg{err: errors.New("load failed")})
+	m = updated.(RepoSettingsModel)
+
+	// The error text must appear in the view.
+	view := m.View().Content
+	if !strings.Contains(view, "load failed") {
+		t.Fatalf("expected 'load failed' in view; got:\n%s", view)
+	}
+
+	// Pressing esc must cancel the view.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = updated.(RepoSettingsModel)
+	if !m.Cancelled() {
+		t.Fatal("expected Cancelled() to be true after esc on error screen")
 	}
 }
 

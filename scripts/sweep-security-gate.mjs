@@ -1,5 +1,5 @@
-// scripts/security-sweep-gate.mjs
-// Pure-core decision logic for the bs-security-sweep skill. NO side effects,
+// scripts/sweep-security-gate.mjs
+// Pure-core decision logic for the bs-sweep-security skill. NO side effects,
 // NO imports beyond node builtins — the cron worktree is dependency-free.
 
 const SEVERITY_WEIGHT = { critical: 400, high: 300, medium: 200, low: 100 };
@@ -29,7 +29,7 @@ export function isMajorBump(vulnerableRange, fixedVersion) {
   return fixedMajor > upper;
 }
 
-// append to scripts/security-sweep-gate.mjs
+// append to scripts/sweep-security-gate.mjs
 const ghsaOf = (a) => a?.security_advisory?.ghsa_id ?? '';
 const pkgOf = (a) => a?.dependency?.package?.name ?? '';
 const groupKey = (a) => `${a?.dependency?.package?.ecosystem} ${a?.dependency?.manifest_path}`;
@@ -40,7 +40,7 @@ export function dedupeAgainstPRs(alerts, openPRs = []) {
   const sentinels = new Set();
   const depBranchText = [];
   for (const pr of openPRs) {
-    for (const m of String(pr.body ?? '').matchAll(/bs-security-sweep:ghsa:([A-Za-z0-9-]+)/g)) {
+    for (const m of String(pr.body ?? '').matchAll(/bs-sweep-security:ghsa:([A-Za-z0-9-]+)/g)) {
       sentinels.add(m[1]);
     }
     if (String(pr.headRefName ?? '').startsWith('dependabot/')) depBranchText.push(pr.headRefName);
@@ -104,7 +104,7 @@ export function selectBatch(alerts, openPRs = [], opts = {}) {
   return { manifest, ecosystem, batch, deferred, dropped };
 }
 
-// append to scripts/security-sweep-gate.mjs
+// append to scripts/sweep-security-gate.mjs
 export function classifyOutcome(repairResult, mergeable, reviewDecision) {
   if (repairResult === 'max-attempts' || repairResult === 'blocked') return 'escalate';
   if (
@@ -116,7 +116,7 @@ export function classifyOutcome(repairResult, mergeable, reviewDecision) {
   return 'retry';
 }
 
-const STATE_SENTINEL = '<!-- bs-security-sweep:state -->';
+const STATE_SENTINEL = '<!-- bs-sweep-security:state -->';
 
 export function parseState(body = '') {
   const text = String(body ?? '');
@@ -132,10 +132,10 @@ export function parseState(body = '') {
 }
 
 export function renderState({ attempts, lastSha, lastOutcome, batchGhsas = [], updatedAt }) {
-  const ghsaLines = batchGhsas.map((g) => `<!-- bs-security-sweep:ghsa:${g} -->`).join('\n');
+  const ghsaLines = batchGhsas.map((g) => `<!-- bs-sweep-security:ghsa:${g} -->`).join('\n');
   return [
     STATE_SENTINEL,
-    '🔒 **bs-security-sweep** automated security fix PR.',
+    '🔒 **bs-sweep-security** automated security fix PR.',
     '',
     '```',
     `attempts: ${Number(attempts)}`,
@@ -147,7 +147,7 @@ export function renderState({ attempts, lastSha, lastOutcome, batchGhsas = [], u
   ].join('\n');
 }
 
-// append to scripts/security-sweep-gate.mjs
+// append to scripts/sweep-security-gate.mjs
 // Cross-run attempt cap for the write path: decide whether to keep watching a
 // poison-pill PR or escalate to a human. Pure — no I/O. `escalate` only when the
 // attempt budget is spent AND the head has not advanced since the last run; a fresh
@@ -163,7 +163,7 @@ export function decideAction({ state, currentSha, maxAttempts = 3 }) {
   return { action: 'watch', priorAttempts: st.attempts ?? 0, reset: false };
 }
 
-// append to scripts/security-sweep-gate.mjs
+// append to scripts/sweep-security-gate.mjs
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -203,7 +203,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.stdout.write(runCli(process.argv.slice(2)));
     process.stdout.write('\n');
   } catch (err) {
-    process.stderr.write(`security-sweep-gate: ${err.message}\n`);
+    process.stderr.write(`sweep-security-gate: ${err.message}\n`);
     process.exit(1);
   }
 }

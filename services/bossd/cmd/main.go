@@ -475,7 +475,7 @@ func run(opts runOpts) error {
 	// --- Dispatcher + Poller ---
 	// Note: FixLoop removed - repair functionality moved to plugin
 
-	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, nil, log.Logger)
+	dispatcher := session.NewDispatcher(sessions, repos, ghProvider, log.Logger)
 	// Let the dispatcher poke the display tracker the instant a PR merges/closes
 	// so the STATUS column flips immediately instead of waiting for the display
 	// poller's next cycle.
@@ -684,6 +684,20 @@ func run(opts runOpts) error {
 		lifecycle.SetPollArmer(pollFallback)
 	}
 
+	// Liveness checker resolves whether a session's agent is still running
+	// (headless subprocess or tmux chat). The Dispatcher already routes
+	// per-session internally, so agentForSession can return it unconditionally;
+	// the closure shape lets non-dispatcher wirings (e.g. unit tests) resolve
+	// per session. Built here — before the startup cron-recovery pass below — so
+	// the stranded-cron sweep can reap logless / agent-dead runs immediately on
+	// boot instead of waiting out the durable log-idle threshold. Reused for the
+	// session creator, orchestrator, and cron overlap checker.
+	agentForSession := func(_ *models.Session) agent.AgentRunner {
+		return agentRunner
+	}
+	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
+	lifecycle.SetSessionLiveness(livenessChecker)
+
 	// Recover sessions left in Finalizing from a previous daemon crash.
 	// They can't be safely re-driven (we don't know whether EnsurePR ran
 	// or whether the finalize chat was spawned), so we record
@@ -796,15 +810,6 @@ func run(opts runOpts) error {
 		log.Warn().Msg("tmux is not installed or not in PATH; interactive sessions will not work, and cron fires will record fire_failed")
 	}
 
-	// The Dispatcher already routes per-session internally, so the
-	// agentForSession closure can return it unconditionally — the
-	// LivenessChecker accepts the function shape (rather than a single
-	// runner) so non-dispatcher wirings (e.g. unit tests) can still
-	// supply a per-session resolution.
-	agentForSession := func(_ *models.Session) agent.AgentRunner {
-		return agentRunner
-	}
-	livenessChecker := taskorchestrator.NewLivenessChecker(sessions, agentChats, agentForSession, tmuxClient)
 	sessionCreator := taskorchestrator.NewSessionCreatorWithNotifier(sessions, lifecycle, func() string {
 		loaded, err := config.Load()
 		if err != nil {

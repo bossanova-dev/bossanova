@@ -282,10 +282,8 @@ func repoCmd() *cobra.Command {
 	update.Flags().Bool("no-auto-merge", false, "Disable auto-merge")
 	update.Flags().Bool("auto-merge-dependabot", false, "Enable auto-merge for Dependabot PRs")
 	update.Flags().Bool("no-auto-merge-dependabot", false, "Disable auto-merge for Dependabot PRs")
-	update.Flags().Bool("auto-address-reviews", false, "Enable auto-address review feedback")
-	update.Flags().Bool("no-auto-address-reviews", false, "Disable auto-address review feedback")
-	update.Flags().Bool("auto-resolve-conflicts", false, "Enable auto-resolve merge conflicts")
-	update.Flags().Bool("no-auto-resolve-conflicts", false, "Disable auto-resolve merge conflicts")
+	update.Flags().Bool("auto-repair", false, "Enable automatic repair (failing checks, conflicts, review feedback)")
+	update.Flags().Bool("no-auto-repair", false, "Disable automatic repair")
 
 	repo.AddCommand(
 		&cobra.Command{

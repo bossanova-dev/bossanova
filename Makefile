@@ -21,7 +21,7 @@ all:
 # (.github/workflows/*.yml). Bumping requires coordinated changes to both.
 GOLANGCI_LINT_VERSION := v2.11.4
 
-# Technical-debt scanner tools used by `make debt-*` (the bs-technical-debt skill).
+# Technical-debt scanner tools used by `make debt-*` (the bs-sweep-debt skill).
 # These are non-blocking, informational detectors (CI runs them continue-on-error,
 # matching the existing govulncheck step), so they track `latest` like govulncheck.
 # Pin to an explicit version here if you want hermetic local runs.
@@ -532,7 +532,7 @@ $(foreach p,$(PLUGIN_MODULES),$(eval \
   $(call define-plugin-lint,$(p),$(patsubst bossd-plugin-%,%,$(notdir $(p))))))
 
 ## Technical-debt scanners (make debt-<kind>-<module>) — narrow, per-module, NON-BLOCKING
-## detectors used by the bs-technical-debt skill. Each auto-fetches its pinned tool via
+## detectors used by the bs-sweep-debt skill. Each auto-fetches its pinned tool via
 ## `go run`. `<module>` is the short name: bossalib, boss, bossd, bosso, or a plugin short
 ## name (claude, codex, dependabot, linear, repair, sentry). Examples:
 ##   make debt-deadcode-bossd   # unreachable code (whole-program, includes tests)

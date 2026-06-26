@@ -802,6 +802,18 @@ func (m *repairMonitor) lookupSession(ctx context.Context, sessionID string, dis
 		if ts := sess.GetLastRepairStartedAt(); ts != nil {
 			info.LastRepairStartedAt = ts.AsTime()
 		}
+		// Per-repo kill switch: skip repair entirely when the repo's auto-repair
+		// toggle is off, regardless of session state. This is the single gate that
+		// makes the "Automatic repair" repo setting effective for both the
+		// edge-triggered (NotifyStatusChange) and startup-sweep paths.
+		if !sess.GetRepoCanAutoRepair() {
+			m.logger.Info().
+				Str("session_id", sessionID).
+				Str("repo", info.RepoName).
+				Str("session_name", info.SessionTitle).
+				Msg("automatic repair disabled for repo, skipping repair")
+			return info
+		}
 		state := sess.GetState()
 		if isRepairableState(state, displayStatus) {
 			info.Repairable = true

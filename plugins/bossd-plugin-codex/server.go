@@ -249,6 +249,15 @@ func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRe
 	}, nil
 }
 
+// SuggestPRTitle is not yet implemented for codex. Returning supported=false
+// makes the daemon fall back to its deterministic title heuristic (which
+// preserves a meaningful existing PR title), so codex cron runs are unaffected
+// and no longer get their title clobbered by the last commit subject. A future
+// change can implement this via `codex exec` (a one-shot read-only run).
+func (s *Server) SuggestPRTitle(_ context.Context, _ *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) { //nolint:unparam // interface implementation
+	return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
+}
+
 // HasQuestionPrompt reports whether the supplied tmux pane bytes look like
 // a codex TUI question prompt (e.g. an approval/permission menu). Unlike
 // claude (which delegates to bossalib/statusdetect), codex's TUI grammar

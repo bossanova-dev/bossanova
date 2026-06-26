@@ -2,7 +2,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
@@ -14,6 +20,15 @@ import (
 	"github.com/recurser/bossalib/statusdetect"
 )
 
+// suggestPRTitleTimeout bounds the one-shot title-suggestion agent call so a
+// hung/slow model can never stall finalize; on timeout the daemon falls back to
+// its deterministic heuristic.
+const suggestPRTitleTimeout = 30 * time.Second
+
+// suggestedTitleMaxLen caps a suggested PR title (GitHub renders long titles
+// poorly and the daemon expects a single headline line).
+const suggestedTitleMaxLen = 80
+
 const pluginName = "claude"
 const pluginVersion = "1"
 
@@ -22,14 +37,20 @@ type Server struct {
 	host   hostclient.Client
 	logger zerolog.Logger
 	runner *Runner
+
+	// oneShot runs a single read-only claude prompt and returns its text output.
+	// Defaults to runClaudeOneShot; overridable in tests so they never exec claude.
+	oneShot func(ctx context.Context, workDir, prompt string) (string, error)
 }
 
 func newServer(host hostclient.Client, logger zerolog.Logger, runnerOpts ...RunnerOption) *Server {
-	return &Server{
+	s := &Server{
 		host:   host,
 		logger: logger,
 		runner: NewRunner(logger, runnerOpts...),
 	}
+	s.oneShot = s.runClaudeOneShot
+	return s
 }
 
 func (s *Server) GetInfo(_ context.Context, _ *bossanovav1.AgentRunnerServiceGetInfoRequest) (*bossanovav1.AgentRunnerServiceGetInfoResponse, error) { //nolint:unparam // interface implementation
@@ -169,6 +190,91 @@ func (s *Server) GetChatTitle(_ context.Context, req *bossanovav1.GetChatTitleRe
 		Supported: true,
 		Title:     title,
 	}, nil
+}
+
+// SuggestPRTitle asks claude (one-shot, read-only, headless) to propose a PR
+// title from the current title + PR body + git log, returning the current title
+// verbatim when it already fits. Any failure or empty result returns
+// supported=false so the daemon falls back to its deterministic heuristic — a
+// title suggestion must never block finalize.
+func (s *Server) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	runCtx, cancel := context.WithTimeout(ctx, suggestPRTitleTimeout)
+	defer cancel()
+
+	out, err := s.oneShot(runCtx, req.WorkDir, buildPRTitlePrompt(req))
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("claude SuggestPRTitle failed; daemon will fall back to its deterministic title")
+		return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
+	}
+	title := sanitizeSuggestedTitle(out)
+	if title == "" {
+		return &bossanovav1.SuggestPRTitleResponse{Supported: false}, nil
+	}
+	return &bossanovav1.SuggestPRTitleResponse{Supported: true, Title: title}, nil
+}
+
+// runClaudeOneShot runs `claude -p --permission-mode plan` (read-only headless)
+// with the prompt piped on stdin and returns stdout. The plan permission mode
+// forbids edits/executes; piping on stdin avoids ARG_MAX limits for large
+// prompts. The caller-supplied ctx bounds the run (exec.CommandContext kills the
+// process when ctx is done).
+func (s *Server) runClaudeOneShot(ctx context.Context, workDir, prompt string) (string, error) {
+	loginShell := ""
+	if s.runner != nil {
+		loginShell = s.runner.loginShell
+	}
+	argv := loginshell.Wrap(loginShell, loginshell.Flags(loginShell),
+		[]string{"claude", "-p", "--permission-mode", "plan"})
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = workDir
+	cmd.Stdin = strings.NewReader(prompt)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("claude one-shot: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+func buildPRTitlePrompt(req *bossanovav1.SuggestPRTitleRequest) string {
+	orEmpty := func(s, fallback string) string {
+		if strings.TrimSpace(s) == "" {
+			return fallback
+		}
+		return s
+	}
+	var b strings.Builder
+	b.WriteString("You are titling a pull request. Output ONLY the title text on a single line — no quotes, no markdown, no preamble.\n\n")
+	b.WriteString("If the CURRENT TITLE below already accurately and concisely describes the overall change, output it verbatim, unchanged. ")
+	b.WriteString("Otherwise output a single concise title (<= 70 characters) capturing the PR's overall intent — summarize the WHOLE change, not just the last commit.\n\n")
+	b.WriteString("CURRENT TITLE:\n")
+	b.WriteString(orEmpty(req.GetCurrentTitle(), "(none)") + "\n\n")
+	b.WriteString("BASE BRANCH: " + orEmpty(req.GetBaseBranch(), "(unknown)") + "\n\n")
+	b.WriteString("PR DESCRIPTION:\n")
+	b.WriteString(orEmpty(req.GetPrBody(), "(none)") + "\n\n")
+	b.WriteString("COMMITS (oldest to newest):\n")
+	b.WriteString(orEmpty(req.GetGitLog(), "(none)") + "\n")
+	return b.String()
+}
+
+// sanitizeSuggestedTitle reduces raw model output to a single clean title line:
+// first non-empty line, surrounding quotes/backticks stripped, length-capped.
+func sanitizeSuggestedTitle(out string) string {
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) != "" {
+			line = strings.TrimSpace(l)
+			break
+		}
+	}
+	line = strings.Trim(line, "\"'`")
+	line = strings.TrimSpace(line)
+	if utf8.RuneCountInString(line) > suggestedTitleMaxLen {
+		runes := []rune(line)
+		line = strings.TrimSpace(string(runes[:suggestedTitleMaxLen]))
+	}
+	return line
 }
 
 // HasQuestionPrompt reports whether the supplied pane bytes look like a Claude

@@ -120,9 +120,16 @@ message Repo {
   google.protobuf.Timestamp updated_at = 9;
   bool can_auto_merge = 10;
   bool can_auto_merge_dependabot = 11;
-  bool can_auto_address_reviews = 12;
-  bool can_auto_resolve_conflicts = 13;
+  // 12 (can_auto_address_reviews), 13 (can_auto_resolve_conflicts), and 20
+  // (can_auto_fix_checks) were per-behavior repair toggles. They gated the
+  // removed in-process FixLoop and never reached the repair plugin, so they were
+  // collapsed into the single can_auto_repair flag below.
+  reserved 12, 13, 20;
   string merge_strategy = 14;
+  // Whether the daemon's repair plugin may automatically repair this repo's PRs
+  // (failing checks, merge conflicts, review feedback). Honored by the plugin.
+  // Defaults on.
+  bool can_auto_repair = 21;
   string linear_api_key = 15;
   reserved 16;
   // Sentry credentials. Mirrors linear_api_key: a Sentry auth token alone can't
@@ -240,6 +247,10 @@ message Session {
   // from the in-memory DisplayTracker and never persisted. Mirrors
   // display_is_repairing (field 24).
   bool display_setting_up = 48;
+
+  // Denormalized repo.can_auto_repair, populated server-side so the repair
+  // plugin can honor the per-repo auto-repair toggle without a separate lookup.
+  bool repo_can_auto_repair = 49;
 }
 
 // DisplayIntent represents the semantic meaning of a session's display

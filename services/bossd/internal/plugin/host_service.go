@@ -699,6 +699,7 @@ func (s *HostServiceServer) ListSessions(ctx context.Context, req *bossanovav1.H
 				RepoId:                      sess.RepoID,
 				RepoDisplayName:             repo.DisplayName,
 				RepoOriginUrl:               repo.OriginURL,
+				RepoCanAutoRepair:           repo.CanAutoRepair,
 				Title:                       sess.Title,
 				BranchName:                  sess.BranchName,
 				State:                       sessionStateToProto(sess.State),

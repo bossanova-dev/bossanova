@@ -122,16 +122,14 @@ Update repository settings
 
 **Flags:**
 
-- `--auto-address-reviews` — Enable auto-address review feedback
 - `--auto-merge` — Enable auto-merge
 - `--auto-merge-dependabot` — Enable auto-merge for Dependabot PRs
-- `--auto-resolve-conflicts` — Enable auto-resolve merge conflicts
+- `--auto-repair` — Enable automatic repair (failing checks, conflicts, review feedback)
 - `--merge-strategy` — Set merge strategy (merge, rebase, squash)
 - `--name` — Set display name
-- `--no-auto-address-reviews` — Disable auto-address review feedback
 - `--no-auto-merge` — Disable auto-merge
 - `--no-auto-merge-dependabot` — Disable auto-merge for Dependabot PRs
-- `--no-auto-resolve-conflicts` — Disable auto-resolve merge conflicts
+- `--no-auto-repair` — Disable automatic repair
 - `--setup-script` — Set setup script (empty string to clear)
 
 ```bash

@@ -121,6 +121,9 @@ const (
 	// AgentRunnerServiceGetChatTitleProcedure is the fully-qualified name of the AgentRunnerService's
 	// GetChatTitle RPC.
 	AgentRunnerServiceGetChatTitleProcedure = "/bossanova.v1.AgentRunnerService/GetChatTitle"
+	// AgentRunnerServiceSuggestPRTitleProcedure is the fully-qualified name of the AgentRunnerService's
+	// SuggestPRTitle RPC.
+	AgentRunnerServiceSuggestPRTitleProcedure = "/bossanova.v1.AgentRunnerService/SuggestPRTitle"
 	// AgentRunnerServiceHasQuestionPromptProcedure is the fully-qualified name of the
 	// AgentRunnerService's HasQuestionPrompt RPC.
 	AgentRunnerServiceHasQuestionPromptProcedure = "/bossanova.v1.AgentRunnerService/HasQuestionPrompt"
@@ -799,6 +802,14 @@ type AgentRunnerServiceClient interface {
 	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
 	// Title from the agent's transcript for a given run.
 	GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error)
+	// SuggestPRTitle asks the agent to propose a concise pull-request title from
+	// the git history + PR description, returning the current title UNCHANGED when
+	// it already describes the change accurately. The daemon uses this at cron
+	// finalize instead of deriving the title from the last commit subject.
+	// supported=false (or any error) means "agent has no opinion" — the daemon
+	// then falls back to its deterministic title heuristic, so plugins that do not
+	// implement this stay correct.
+	SuggestPRTitle(context.Context, *connect.Request[v1.SuggestPRTitleRequest]) (*connect.Response[v1.SuggestPRTitleResponse], error)
 	// HasQuestionPrompt scans pane content for the agent's TUI grammar that
 	// signals "waiting for the user to answer a question." Plugin owns its
 	// grammar; daemon owns the timing logic that combines this with content-
@@ -891,6 +902,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("GetChatTitle")),
 			connect.WithClientOptions(opts...),
 		),
+		suggestPRTitle: connect.NewClient[v1.SuggestPRTitleRequest, v1.SuggestPRTitleResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceSuggestPRTitleProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("SuggestPRTitle")),
+			connect.WithClientOptions(opts...),
+		),
 		hasQuestionPrompt: connect.NewClient[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse](
 			httpClient,
 			baseURL+AgentRunnerServiceHasQuestionPromptProcedure,
@@ -925,6 +942,7 @@ type agentRunnerServiceClient struct {
 	resolveInteractiveSessionID *connect.Client[v1.ResolveInteractiveSessionIDRequest, v1.ResolveInteractiveSessionIDResponse]
 	listIgnoredDirtyFiles       *connect.Client[v1.ListIgnoredDirtyFilesRequest, v1.ListIgnoredDirtyFilesResponse]
 	getChatTitle                *connect.Client[v1.GetChatTitleRequest, v1.GetChatTitleResponse]
+	suggestPRTitle              *connect.Client[v1.SuggestPRTitleRequest, v1.SuggestPRTitleResponse]
 	hasQuestionPrompt           *connect.Client[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse]
 	lastTurnIsUser              *connect.Client[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse]
 	transcriptExists            *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
@@ -985,6 +1003,11 @@ func (c *agentRunnerServiceClient) GetChatTitle(ctx context.Context, req *connec
 	return c.getChatTitle.CallUnary(ctx, req)
 }
 
+// SuggestPRTitle calls bossanova.v1.AgentRunnerService.SuggestPRTitle.
+func (c *agentRunnerServiceClient) SuggestPRTitle(ctx context.Context, req *connect.Request[v1.SuggestPRTitleRequest]) (*connect.Response[v1.SuggestPRTitleResponse], error) {
+	return c.suggestPRTitle.CallUnary(ctx, req)
+}
+
 // HasQuestionPrompt calls bossanova.v1.AgentRunnerService.HasQuestionPrompt.
 func (c *agentRunnerServiceClient) HasQuestionPrompt(ctx context.Context, req *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error) {
 	return c.hasQuestionPrompt.CallUnary(ctx, req)
@@ -1041,6 +1064,14 @@ type AgentRunnerServiceHandler interface {
 	ListIgnoredDirtyFiles(context.Context, *connect.Request[v1.ListIgnoredDirtyFilesRequest]) (*connect.Response[v1.ListIgnoredDirtyFilesResponse], error)
 	// Title from the agent's transcript for a given run.
 	GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error)
+	// SuggestPRTitle asks the agent to propose a concise pull-request title from
+	// the git history + PR description, returning the current title UNCHANGED when
+	// it already describes the change accurately. The daemon uses this at cron
+	// finalize instead of deriving the title from the last commit subject.
+	// supported=false (or any error) means "agent has no opinion" — the daemon
+	// then falls back to its deterministic title heuristic, so plugins that do not
+	// implement this stay correct.
+	SuggestPRTitle(context.Context, *connect.Request[v1.SuggestPRTitleRequest]) (*connect.Response[v1.SuggestPRTitleResponse], error)
 	// HasQuestionPrompt scans pane content for the agent's TUI grammar that
 	// signals "waiting for the user to answer a question." Plugin owns its
 	// grammar; daemon owns the timing logic that combines this with content-
@@ -1129,6 +1160,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("GetChatTitle")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceSuggestPRTitleHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceSuggestPRTitleProcedure,
+		svc.SuggestPRTitle,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("SuggestPRTitle")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentRunnerServiceHasQuestionPromptHandler := connect.NewUnaryHandler(
 		AgentRunnerServiceHasQuestionPromptProcedure,
 		svc.HasQuestionPrompt,
@@ -1171,6 +1208,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceListIgnoredDirtyFilesHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceGetChatTitleProcedure:
 			agentRunnerServiceGetChatTitleHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceSuggestPRTitleProcedure:
+			agentRunnerServiceSuggestPRTitleHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceHasQuestionPromptProcedure:
 			agentRunnerServiceHasQuestionPromptHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceLastTurnIsUserProcedure:
@@ -1228,6 +1267,10 @@ func (UnimplementedAgentRunnerServiceHandler) ListIgnoredDirtyFiles(context.Cont
 
 func (UnimplementedAgentRunnerServiceHandler) GetChatTitle(context.Context, *connect.Request[v1.GetChatTitleRequest]) (*connect.Response[v1.GetChatTitleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.GetChatTitle is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) SuggestPRTitle(context.Context, *connect.Request[v1.SuggestPRTitleRequest]) (*connect.Response[v1.SuggestPRTitleResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.SuggestPRTitle is not implemented"))
 }
 
 func (UnimplementedAgentRunnerServiceHandler) HasQuestionPrompt(context.Context, *connect.Request[v1.HasQuestionPromptRequest]) (*connect.Response[v1.HasQuestionPromptResponse], error) {

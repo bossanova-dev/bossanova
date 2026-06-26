@@ -289,7 +289,7 @@ func TestE2E_Resilience_ConcurrentDeliverVCSEvents(t *testing.T) {
 	sessionID, prNum := h.SeedSessionInState(t, ctx, repoID,
 		pb.SessionState_SESSION_STATE_AWAITING_CHECKS, "concurrent events", "concurrent plan")
 
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 	events := make(chan session.SessionEvent, 2)
 
 	failureConclusion := vcs.CheckConclusionFailure

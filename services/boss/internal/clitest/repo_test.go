@@ -117,25 +117,25 @@ func TestCLI_Repo_Update_AllFlags(t *testing.T) {
 			},
 		},
 		{
-			name: "auto-address-reviews",
-			args: []string{"repo", "update", "repo-1", "--auto-address-reviews"},
+			name: "auto-repair",
+			args: []string{"repo", "update", "repo-1", "--auto-repair"},
 			check: func(t *testing.T, h *clitest.Harness) {
 				t.Helper()
 				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && !r.CanAutoAddressReviews {
-						t.Errorf("expected CanAutoAddressReviews=true")
+					if r.Id == "repo-1" && !r.CanAutoRepair {
+						t.Errorf("expected CanAutoRepair=true")
 					}
 				}
 			},
 		},
 		{
-			name: "auto-resolve-conflicts",
-			args: []string{"repo", "update", "repo-1", "--auto-resolve-conflicts"},
+			name: "no-auto-repair",
+			args: []string{"repo", "update", "repo-1", "--no-auto-repair"},
 			check: func(t *testing.T, h *clitest.Harness) {
 				t.Helper()
 				for _, r := range h.Daemon.Repos() {
-					if r.Id == "repo-1" && !r.CanAutoResolveConflicts {
-						t.Errorf("expected CanAutoResolveConflicts=true")
+					if r.Id == "repo-1" && r.CanAutoRepair {
+						t.Errorf("expected CanAutoRepair=false")
 					}
 				}
 			},

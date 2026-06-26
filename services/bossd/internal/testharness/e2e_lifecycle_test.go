@@ -172,7 +172,7 @@ func TestE2E_FullSessionLifecycle(t *testing.T) {
 
 	// --- Step 5: Simulate checks passing via dispatcher ---
 	// Create a dispatcher to handle the ChecksPassed event.
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Send ChecksPassed event through the dispatcher.
 	events := make(chan session.SessionEvent, 1)
@@ -249,7 +249,7 @@ func TestE2E_ChecksFailedFixLoop(t *testing.T) {
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
 	// Send ChecksFailed — should transition to FixingChecks (attempt 1).
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	failureConclusion := vcs.CheckConclusionFailure
 	failedChecks := []vcs.CheckResult{
@@ -455,7 +455,7 @@ func TestE2E_PRMergedTransition(t *testing.T) {
 	}
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Checks passed.
 	events := make(chan session.SessionEvent, 1)
@@ -503,13 +503,13 @@ func TestE2E_ConflictDetectedTransition(t *testing.T) {
 		t.Fatalf("register repo: %v", err)
 	}
 
-	// can_auto_resolve_conflicts defaults to true at the DB level. Disable it
-	// so the FixingChecks state surfaces the MERGE_CONFLICT_UNRESOLVABLE
-	// attention reason (see vcs.ComputeAttentionStatus).
-	autoResolve := false
+	// can_auto_repair defaults to true at the DB level. Disable it so the
+	// FixingChecks state surfaces the MERGE_CONFLICT_UNRESOLVABLE attention
+	// reason (see vcs.ComputeAttentionStatus).
+	autoRepair := false
 	if _, err := h.Client.UpdateRepo(ctx, connect.NewRequest(&pb.UpdateRepoRequest{
-		Id:                      repoResp.Msg.Repo.Id,
-		CanAutoResolveConflicts: &autoResolve,
+		Id:            repoResp.Msg.Repo.Id,
+		CanAutoRepair: &autoRepair,
 	})); err != nil {
 		t.Fatalf("update repo: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestE2E_ConflictDetectedTransition(t *testing.T) {
 	}
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 	events := make(chan session.SessionEvent, 1)
 	events <- session.SessionEvent{SessionID: sessionID, Event: vcs.ConflictDetected{PRID: prNum}}
 	close(events)
@@ -554,7 +554,7 @@ func TestE2E_ConflictDetectedTransition(t *testing.T) {
 		t.Fatalf("expected attempt count 1, got %d", getResp.Msg.Session.AttemptCount)
 	}
 
-	// With CanAutoResolveConflicts disabled above, FixingChecks surfaces the
+	// With CanAutoRepair disabled above, FixingChecks surfaces the
 	// MERGE_CONFLICT_UNRESOLVABLE attention reason.
 	att := getResp.Msg.Session.AttentionStatus
 	if att == nil || !att.NeedsAttention {
@@ -604,7 +604,7 @@ func TestE2E_ConflictAfterPassingChecks(t *testing.T) {
 	}
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Drive ChecksPassed so the session lands in GreenDraft.
 	checksEvents := make(chan session.SessionEvent, 1)
@@ -687,7 +687,7 @@ func TestE2E_ReviewSubmittedTransition(t *testing.T) {
 	}
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 
 	// Drive ChecksPassed first so the session lands in ReadyForReview.
 	checksEvents := make(chan session.SessionEvent, 1)
@@ -769,7 +769,7 @@ func TestE2E_PRClosedTransition(t *testing.T) {
 	}
 	prNum := int(*getResp.Msg.Session.PrNumber)
 
-	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, nil, zerolog.Nop())
+	dispatcher := session.NewDispatcher(h.Sessions, h.Repos, h.VCS, zerolog.Nop())
 	events := make(chan session.SessionEvent, 1)
 	events <- session.SessionEvent{SessionID: sessionID, Event: vcs.PRClosed{PRID: prNum}}
 	close(events)

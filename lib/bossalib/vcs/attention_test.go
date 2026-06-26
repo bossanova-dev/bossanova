@@ -80,23 +80,23 @@ func TestComputeAttentionStatus(t *testing.T) {
 			wantAttention: false,
 		},
 		{
-			name: "fixing checks with auto-resolve off needs attention",
+			name: "fixing checks with auto-repair off needs attention",
 			session: &models.Session{
 				State:     machine.FixingChecks,
 				UpdatedAt: now,
 			},
-			repo:          &models.Repo{CanAutoResolveConflicts: false},
+			repo:          &models.Repo{CanAutoRepair: false},
 			wantAttention: true,
 			wantReason:    AttentionReasonMergeConflictUnresolvable,
-			wantSummary:   "auto-resolve conflicts disabled, needs human",
+			wantSummary:   "automatic repair disabled, needs human",
 		},
 		{
-			name: "fixing checks with auto-resolve on does not need attention",
+			name: "fixing checks with auto-repair on does not need attention",
 			session: &models.Session{
 				State:     machine.FixingChecks,
 				UpdatedAt: now,
 			},
-			repo:          &models.Repo{CanAutoResolveConflicts: true},
+			repo:          &models.Repo{CanAutoRepair: true},
 			wantAttention: false,
 		},
 		{

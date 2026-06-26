@@ -16,7 +16,7 @@ import {
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 
 const liveManifest = JSON.parse(
-  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-linear-implement/construct.json'), 'utf8'),
+  fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
 );
 // Construction reads the component skills from the installed superpowers plugin.
 // Where it is absent (a fresh CI runner), skip the integration tests rather than fail.
@@ -61,14 +61,11 @@ test('GENERATED_HEADER warns against editing', () => {
 
 test('committed SKILL.md matches a fresh construction (no drift)', { skip: sourceSkip }, () => {
   const manifest = JSON.parse(
-    fs.readFileSync(
-      path.join(rootDir, '.claude/skills/bs-linear-implement/construct.json'),
-      'utf8',
-    ),
+    fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
   );
   const fresh = constructSkill(manifest, { rootDir });
   const committed = fs.readFileSync(
-    path.join(rootDir, '.claude/skills/bs-linear-implement/SKILL.md'),
+    path.join(rootDir, '.claude/skills/bs-implement/SKILL.md'),
     'utf8',
   );
   assert.equal(committed, fresh);
@@ -76,10 +73,7 @@ test('committed SKILL.md matches a fresh construction (no drift)', { skip: sourc
 
 test('constructed SKILL.md is already Prettier-stable', { skip: sourceSkip }, () => {
   const manifest = JSON.parse(
-    fs.readFileSync(
-      path.join(rootDir, '.claude/skills/bs-linear-implement/construct.json'),
-      'utf8',
-    ),
+    fs.readFileSync(path.join(rootDir, '.claude/skills/bs-implement/construct.json'), 'utf8'),
   );
   const fresh = constructSkill(manifest, { rootDir });
   const formatted = execFileSync(
@@ -88,7 +82,7 @@ test('constructed SKILL.md is already Prettier-stable', { skip: sourceSkip }, ()
       'exec',
       'prettier',
       '--stdin-filepath',
-      path.join(rootDir, '.claude/skills/bs-linear-implement/SKILL.md'),
+      path.join(rootDir, '.claude/skills/bs-implement/SKILL.md'),
     ],
     { cwd: rootDir, encoding: 'utf8', input: fresh },
   );

@@ -497,11 +497,8 @@ func (s *Server) UpdateRepo(ctx context.Context, req *connect.Request[pb.UpdateR
 	if msg.CanAutoMergeDependabot != nil {
 		params.CanAutoMergeDependabot = msg.CanAutoMergeDependabot
 	}
-	if msg.CanAutoAddressReviews != nil {
-		params.CanAutoAddressReviews = msg.CanAutoAddressReviews
-	}
-	if msg.CanAutoResolveConflicts != nil {
-		params.CanAutoResolveConflicts = msg.CanAutoResolveConflicts
+	if msg.CanAutoRepair != nil {
+		params.CanAutoRepair = msg.CanAutoRepair
 	}
 	if msg.MergeStrategy != nil {
 		ms := models.MergeStrategy(*msg.MergeStrategy)

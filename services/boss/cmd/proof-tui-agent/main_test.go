@@ -229,7 +229,7 @@ func TestE2E_AddRepoReachable(t *testing.T) {
 	s.do(map[string]any{"id": 10, "op": "type", "text": "widgets"})
 	s.do(map[string]any{"id": 11, "op": "enter"})
 	// Reaches the repo details phase (Name / Setup / Merge strategy / confirm).
-	wr := s.do(map[string]any{"id": 12, "op": "wait", "text": "Add this repository?", "timeoutMs": 10000})
+	wr := s.do(map[string]any{"id": 12, "op": "wait", "text": "Add Repository", "timeoutMs": 10000})
 	if !okResp(wr) {
 		t.Fatalf("repo details phase not reached; screen:\n%s", screenOf(wr))
 	}

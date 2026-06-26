@@ -53,7 +53,9 @@ const BRIEF_SCHEMA = {
  */
 export async function generateBriefFromDiff({ diff, routes, fixtures, model }) {
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const client = new Anthropic();
+  // Use a proof-scoped key so the SDK does not silently pick up a session's
+  // ANTHROPIC_API_KEY (which would confuse interactive Claude Code sessions).
+  const client = new Anthropic({ apiKey: process.env.PROOF_ANTHROPIC_API_KEY });
   const truncated = diff.length > 30_000 ? `${diff.slice(0, 30_000)}\n...[diff truncated]` : diff;
   const resp = await client.messages.create({
     model,

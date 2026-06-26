@@ -54,6 +54,10 @@ func (f *fakePollAgentClient) ResolveInteractiveSessionID(_ context.Context, _ *
 func (f *fakePollAgentClient) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
 	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
 }
+func (f *fakePollAgentClient) SuggestPRTitle(context.Context, *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	return &bossanovav1.SuggestPRTitleResponse{}, nil
+}
+
 func (f *fakePollAgentClient) GetChatTitle(_ context.Context, _ *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	return &bossanovav1.GetChatTitleResponse{}, nil
 }

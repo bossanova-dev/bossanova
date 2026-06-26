@@ -434,6 +434,15 @@ service AgentRunnerService {
   // Title from the agent's transcript for a given run.
   rpc GetChatTitle(GetChatTitleRequest) returns (GetChatTitleResponse);
 
+  // SuggestPRTitle asks the agent to propose a concise pull-request title from
+  // the git history + PR description, returning the current title UNCHANGED when
+  // it already describes the change accurately. The daemon uses this at cron
+  // finalize instead of deriving the title from the last commit subject.
+  // supported=false (or any error) means "agent has no opinion" — the daemon
+  // then falls back to its deterministic title heuristic, so plugins that do not
+  // implement this stay correct.
+  rpc SuggestPRTitle(SuggestPRTitleRequest) returns (SuggestPRTitleResponse);
+
   // HasQuestionPrompt scans pane content for the agent's TUI grammar that
   // signals "waiting for the user to answer a question." Plugin owns its
   // grammar; daemon owns the timing logic that combines this with content-
@@ -565,6 +574,27 @@ message GetChatTitleRequest {
 }
 message GetChatTitleResponse {
   bool supported = 1;
+  string title = 2;
+}
+
+message SuggestPRTitleRequest {
+  // The worktree the change lives in (the agent runs read-only here).
+  string work_dir = 1;
+  // The PR's current title (set earlier, e.g. by the agent at PR creation).
+  // The agent should return this verbatim when it already fits the change.
+  string current_title = 2;
+  // The PR description / body (the human/agent-authored intent).
+  string pr_body = 3;
+  // The git log of commits on the branch vs the base (subjects, oldest→newest).
+  string git_log = 4;
+  // The base branch the PR targets.
+  string base_branch = 5;
+}
+message SuggestPRTitleResponse {
+  // false = the agent has no suggestion (unimplemented / failed); the daemon
+  // falls back to its deterministic title heuristic.
+  bool supported = 1;
+  // The suggested title (== current_title when it is already accurate).
   string title = 2;
 }
 

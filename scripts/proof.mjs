@@ -716,7 +716,7 @@ export function collapsePriorProofComments({ prNumber }) {
  * Returns true when agent mode should run for this invocation.
  * BOSS_PROOF_MODE=recipe → always recipe.
  * BOSS_PROOF_MODE=agent  → always agent.
- * Unset                  → agent iff ANTHROPIC_API_KEY is set and this
+ * Unset                  → agent iff PROOF_ANTHROPIC_API_KEY is set and this
  *                          invocation did not explicitly select recipes.
  * Exported for unit-testing the dispatcher logic without spawning anything.
  * @param {{ explicitRecipeSelection?: boolean }} [opts]
@@ -725,7 +725,7 @@ export function agentModeAvailable({ explicitRecipeSelection = false } = {}) {
   if (process.env.BOSS_PROOF_MODE === 'recipe') return false;
   if (process.env.BOSS_PROOF_MODE === 'agent') return true;
   if (explicitRecipeSelection) return false;
-  return Boolean(process.env.ANTHROPIC_API_KEY);
+  return Boolean(process.env.PROOF_ANTHROPIC_API_KEY);
 }
 
 function requiredProofBucket() {

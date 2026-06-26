@@ -56,8 +56,7 @@ const (
 	repoSettingsRowMergeStrategy
 	repoSettingsRowCanAutoMerge
 	repoSettingsRowCanAutoMergeDependabot
-	repoSettingsRowCanAutoAddressReviews
-	repoSettingsRowCanAutoResolveConflicts
+	repoSettingsRowCanAutoRepair
 	repoSettingsRowLinearHeader
 	repoSettingsRowLinearApiKey
 	repoSettingsRowSentryHeader
@@ -194,8 +193,7 @@ func (m RepoSettingsModel) visibleRows() []rowID {
 		repoSettingsRowMergeStrategy,
 		repoSettingsRowCanAutoMerge,
 		repoSettingsRowCanAutoMergeDependabot,
-		repoSettingsRowCanAutoAddressReviews,
-		repoSettingsRowCanAutoResolveConflicts,
+		repoSettingsRowCanAutoRepair,
 		repoSettingsRowLinearHeader,
 	}
 	if m.linearExpanded {
@@ -554,19 +552,12 @@ func (m RepoSettingsModel) activateRow() (tea.Model, tea.Cmd) {
 			Id:                     m.repoID,
 			CanAutoMergeDependabot: &v,
 		})
-	case repoSettingsRowCanAutoAddressReviews:
-		v := !m.repo.CanAutoAddressReviews
-		m.repo.CanAutoAddressReviews = v
+	case repoSettingsRowCanAutoRepair:
+		v := !m.repo.CanAutoRepair
+		m.repo.CanAutoRepair = v
 		return m, m.saveSettings(&pb.UpdateRepoRequest{
-			Id:                    m.repoID,
-			CanAutoAddressReviews: &v,
-		})
-	case repoSettingsRowCanAutoResolveConflicts:
-		v := !m.repo.CanAutoResolveConflicts
-		m.repo.CanAutoResolveConflicts = v
-		return m, m.saveSettings(&pb.UpdateRepoRequest{
-			Id:                      m.repoID,
-			CanAutoResolveConflicts: &v,
+			Id:            m.repoID,
+			CanAutoRepair: &v,
 		})
 	case repoSettingsRowLinearHeader:
 		// UI-only expand/collapse toggle; never reads or writes credentials.
@@ -803,19 +794,12 @@ func (m RepoSettingsModel) View() tea.View {
 
 	b.WriteString("\n")
 
-	// Checkbox rows
-	checkboxes := []struct {
+	type checkboxRow struct {
 		label   string
 		checked bool
 		row     rowID
-	}{
-		{"Auto-merge PRs", m.repo.CanAutoMerge, repoSettingsRowCanAutoMerge},
-		{"Auto-merge Dependabot PRs", m.repo.CanAutoMergeDependabot, repoSettingsRowCanAutoMergeDependabot},
-		{"Auto-address review feedback", m.repo.CanAutoAddressReviews, repoSettingsRowCanAutoAddressReviews},
-		{"Auto-resolve merge conflicts", m.repo.CanAutoResolveConflicts, repoSettingsRowCanAutoResolveConflicts},
 	}
-
-	for _, cb := range checkboxes {
+	renderCheckbox := func(cb checkboxRow) {
 		check := " "
 		if cb.checked {
 			check = "x"
@@ -830,6 +814,19 @@ func (m RepoSettingsModel) View() tea.View {
 		}
 		b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(line))
 		b.WriteString("\n")
+	}
+
+	// Automation toggles, rendered contiguously (no separating blank line) so the
+	// edit screen mirrors the add wizard's single "Automation" list. "Mark ready
+	// for review when checks pass" is the CanAutoMerge flag, which only promotes a
+	// passing draft PR to ready — it does not merge (regular PR merges are manual;
+	// only Dependabot auto-merges). "Automatic repair" gates the repair plugin.
+	for _, cb := range []checkboxRow{
+		{"Mark ready for review when checks pass", m.repo.CanAutoMerge, repoSettingsRowCanAutoMerge},
+		{"Auto-merge Dependabot PRs", m.repo.CanAutoMergeDependabot, repoSettingsRowCanAutoMergeDependabot},
+		{"Automatic repair (failing checks, conflicts, review feedback)", m.repo.CanAutoRepair, repoSettingsRowCanAutoRepair},
+	} {
+		renderCheckbox(cb)
 	}
 
 	b.WriteString("\n")

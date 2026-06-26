@@ -24,6 +24,7 @@ type AgentRunner interface {
 	ResolveInteractiveSessionID(ctx context.Context, req *bossanovav1.ResolveInteractiveSessionIDRequest) (*bossanovav1.ResolveInteractiveSessionIDResponse, error)
 	ListIgnoredDirtyFiles(ctx context.Context, req *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error)
 	GetChatTitle(ctx context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error)
+	SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
 	HasQuestionPrompt(ctx context.Context, req *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	LastTurnIsUser(ctx context.Context, req *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(ctx context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
@@ -152,6 +153,14 @@ func (c *agentRunnerGRPCClient) ListIgnoredDirtyFiles(ctx context.Context, req *
 func (c *agentRunnerGRPCClient) GetChatTitle(ctx context.Context, req *bossanovav1.GetChatTitleRequest) (*bossanovav1.GetChatTitleResponse, error) {
 	resp := &bossanovav1.GetChatTitleResponse{}
 	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/GetChatTitle", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *agentRunnerGRPCClient) SuggestPRTitle(ctx context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
+	resp := &bossanovav1.SuggestPRTitleResponse{}
+	if err := invokePluginUnary(ctx, c.conn, "/bossanova.v1.AgentRunnerService/SuggestPRTitle", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil

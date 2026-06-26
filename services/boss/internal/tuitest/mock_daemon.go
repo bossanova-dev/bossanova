@@ -487,11 +487,8 @@ func (m *MockDaemon) UpdateRepo(_ context.Context, req *connect.Request[pb.Updat
 			if req.Msg.CanAutoMergeDependabot != nil {
 				r.CanAutoMergeDependabot = *req.Msg.CanAutoMergeDependabot
 			}
-			if req.Msg.CanAutoAddressReviews != nil {
-				r.CanAutoAddressReviews = *req.Msg.CanAutoAddressReviews
-			}
-			if req.Msg.CanAutoResolveConflicts != nil {
-				r.CanAutoResolveConflicts = *req.Msg.CanAutoResolveConflicts
+			if req.Msg.CanAutoRepair != nil {
+				r.CanAutoRepair = *req.Msg.CanAutoRepair
 			}
 			if req.Msg.MergeStrategy != nil {
 				r.MergeStrategy = *req.Msg.MergeStrategy

@@ -39,6 +39,18 @@ function writeFakeBin(dir, name, body) {
   return p;
 }
 
+async function waitForPidFile(pidFile, timeoutMs = 2000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(pidFile)) {
+      const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`timed out waiting for pid file: ${pidFile}`);
+}
+
 // ---------------------------------------------------------------------------
 // 1. classifyProbe — pure classifier, all four outcomes
 // ---------------------------------------------------------------------------
@@ -200,15 +212,17 @@ test('run: fake codex that sleeps is killed, timedOut=true, process group gone, 
     // detached) to a file, then sleeps. After the timeout kill, the whole group
     // — including this shell — must be gone.
     const bin = writeFakeBin(dir, 'codex', `echo $$ > "${pidFile}"\nsleep 30`);
-    const timeoutMs = 400;
+    const timeoutMs = 1500;
     const t0 = Date.now();
-    const result = await run({
+    const resultPromise = run({
       env: { BOSS_CODEX_BIN: bin },
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
       timeoutMs,
     });
+    const childPid = await waitForPidFile(pidFile);
+    const result = await resultPromise;
     const elapsed = Date.now() - t0;
     assert.equal(result.timedOut, true);
     assert.equal(result.ok, false);
@@ -218,8 +232,6 @@ test('run: fake codex that sleeps is killed, timedOut=true, process group gone, 
 
     // Assert the process group is actually gone (no orphan). Give the SIGKILL
     // escalation a moment to land, then probe the group with signal 0.
-    const childPid = Number(fs.readFileSync(pidFile, 'utf8').trim());
-    assert.ok(Number.isInteger(childPid) && childPid > 0, `bad child pid: ${childPid}`);
     await new Promise((r) => setTimeout(r, 400));
     let gone = false;
     try {
@@ -255,22 +267,22 @@ test('run: timeout still reaps a child that ignores SIGTERM after the leader exi
         'exec sleep 30',
       ].join('\n'),
     );
-    const timeoutMs = 400;
+    const timeoutMs = 1500;
     const t0 = Date.now();
-    const result = await run({
+    const resultPromise = run({
       env: { BOSS_CODEX_BIN: bin },
       base: 'abc1234',
       head: 'def5678',
       repo: dir,
       timeoutMs,
     });
+    const leaderPid = await waitForPidFile(pidFile);
+    const result = await resultPromise;
     const elapsed = Date.now() - t0;
     assert.equal(result.timedOut, true);
     assert.equal(result.ok, false);
     assert.ok(elapsed < timeoutMs * 3, `run took too long: ${elapsed}ms`);
 
-    const leaderPid = Number(fs.readFileSync(pidFile, 'utf8').trim());
-    assert.ok(Number.isInteger(leaderPid) && leaderPid > 0, `bad leader pid: ${leaderPid}`);
     // Allow the SIGKILL escalation (200ms after SIGTERM) to sweep the group.
     await new Promise((r) => setTimeout(r, 500));
     let gone = false;

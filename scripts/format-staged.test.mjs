@@ -255,7 +255,11 @@ test('format-staged: file with staged+unstaged changes is skipped; unstaged edit
 
   // Staged blob must NOT have been clobbered with unstaged content
   const stagedAfter = stagedContent(repo, 'mixed.go');
-  assert.equal(stagedBefore, stagedAfter, 'staged blob must be unchanged when file has unstaged edits');
+  assert.equal(
+    stagedBefore,
+    stagedAfter,
+    'staged blob must be unchanged when file has unstaged edits',
+  );
 });
 
 // ---------------------------------------------------------------------------

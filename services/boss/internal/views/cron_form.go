@@ -44,6 +44,19 @@ type cronFormAgentsMsg struct {
 
 var cronNameRe = regexp.MustCompile(`^[A-Za-z0-9 _-]+$`)
 
+// cronSelectHeight caps how many options the Repo/Agent selects show at once.
+// Past this the select scrolls internally instead of ballooning the form and
+// pushing the Enabled toggle and action bar below the terminal fold.
+const cronSelectHeight = 6
+
+// cronFormChrome is the number of rendered lines that surround the huh form in
+// the common (no-error) case, subtracted from terminal height when sizing the
+// form so the action bar stays on screen. It covers the banner App.View prepends
+// (bannerOverhead), the title + blank line, the live schedule preview line, and
+// the action bar (top+bottom padding plus its single text line). Mirrors the
+// overhead-constant style in cron_list.go / chatpicker.go.
+const cronFormChrome = bannerOverhead + 2 /*title+blank*/ + 1 /*preview line*/ + (actionBarPadY*2 + 1) /*action bar*/
+
 // --- Form data ---
 
 // cronFormData holds huh-bound values on the heap so Value() pointers survive
@@ -94,7 +107,8 @@ type CronFormModel struct {
 	cancelled  bool
 	done       bool
 
-	width int
+	width  int
+	height int
 }
 
 // NewCronFormModel creates a CronFormModel wired to the daemon client.
@@ -184,6 +198,7 @@ func (m *CronFormModel) buildForm() {
 		huh.NewSelect[string]().
 			Title("Repo").
 			Options(repoOpts...).
+			Height(cronSelectHeight).
 			Value(&m.fd.repoID),
 	}
 
@@ -192,6 +207,7 @@ func (m *CronFormModel) buildForm() {
 			huh.NewSelect[string]().
 				Title("Agent").
 				Options(agentOpts...).
+				Height(cronSelectHeight).
 				Value(&m.fd.agentName),
 		)
 	}
@@ -239,12 +255,13 @@ func (m *CronFormModel) buildForm() {
 
 		huh.NewConfirm().
 			Title("Enabled").
+			Description("Press enter to save this job.").
 			Value(&m.fd.enabled),
 	)
 
 	m.form = huh.NewForm(
 		huh.NewGroup(fields...),
-	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70)
+	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70).WithHeight(m.formHeight())
 }
 
 func (m CronFormModel) agentOptions() []huh.Option[string] {
@@ -275,6 +292,22 @@ func (m CronFormModel) agentOptions() []huh.Option[string] {
 		add(m.fd.agentName)
 	}
 	return opts
+}
+
+// formHeight returns the height to constrain the huh form to so the schedule
+// preview and action bar below it stay on screen. It returns 0 when the
+// terminal height is unknown (WithHeight(0) is a no-op in huh, leaving the form
+// unconstrained). A submit error or schedule error adds a rendered line of
+// chrome, so reserve for it to keep the action bar from being pushed off again.
+func (m CronFormModel) formHeight() int {
+	if m.height <= 0 {
+		return 0
+	}
+	chrome := cronFormChrome
+	if m.err != nil {
+		chrome += 2 // submit error renders an extra block above the form
+	}
+	return max(m.height-chrome, 3)
 }
 
 // recomputePreview refreshes m.schedulePreview and m.scheduleErr based on
@@ -320,6 +353,10 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		if m.form != nil {
+			m.form.WithHeight(m.formHeight())
+		}
 		return m, nil
 
 	case cronFormReposMsg:
@@ -350,6 +387,9 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.submitting = false
 		if msg.err != nil {
 			m.err = msg.err
+			if m.form != nil {
+				m.form.WithHeight(m.formHeight())
+			}
 			// Do NOT unwind the form — let the user correct and resubmit.
 			return m, nil
 		}
@@ -504,7 +544,7 @@ func (m CronFormModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(actionBar([]string{"[tab/enter] next field", "[esc] cancel"}))
+	b.WriteString(actionBar([]string{"[tab] next field", "[enter] save", "[esc] cancel"}))
 
 	return tea.NewView(b.String())
 }

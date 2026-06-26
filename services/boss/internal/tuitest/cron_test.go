@@ -1097,3 +1097,51 @@ func TestHomeAndSettings_KeysStillWork(t *testing.T) {
 	// home_test.go (TestTUI_HomeView_*) which exercises logout via WithLoggedInUser.
 	// Skipped here to avoid a flaky dependency on auth infrastructure.
 }
+
+// manyRepos returns n synthetic repos so the cron form's Repo select has enough
+// options to overflow a short terminal, reproducing the original bug.
+func manyRepos(n int) []*pb.Repo {
+	repos := make([]*pb.Repo, n)
+	for i := range repos {
+		id := "repo-" + string(rune('a'+i))
+		repos[i] = &pb.Repo{
+			Id:                id,
+			DisplayName:       "repo-" + string(rune('a'+i)),
+			LocalPath:         "/tmp/" + id,
+			DefaultBaseBranch: "main",
+			MergeStrategy:     "merge",
+		}
+	}
+	return repos
+}
+
+// TestCron_NewForm_SaveCueVisibleOnShortTerminal guards the regression that
+// prompted this work: with a long repo list on a short terminal, the Enabled
+// toggle and action bar were pushed below the fold, so the user could not see
+// how to save. The form now fits the terminal and renders an explicit save cue
+// that must be visible the moment the form opens, without navigating any field.
+func TestCron_NewForm_SaveCueVisibleOnShortTerminal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow TUI test in -short; run make test-boss for coverage")
+	}
+	// Short terminal + many repos: the unbounded form is ~30 rows, so at 20 rows
+	// the action bar lands off-screen unless the form is height-constrained.
+	h := tuitest.New(t,
+		tuitest.WithRepos(manyRepos(12)...),
+		tuitest.WithTerminalSize(120, 20),
+	)
+
+	navigateToCronList(t, h)
+
+	if err := h.Driver.SendKey('n'); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Driver.WaitForText(waitTimeout, "New Scheduled Job"); err != nil {
+		t.Fatalf("expected cron form; screen:\n%s", h.Driver.Screen())
+	}
+
+	// The save cue must be on screen immediately, with no field navigation.
+	if err := h.Driver.WaitForText(waitTimeout, "[enter] save"); err != nil {
+		t.Fatalf("save cue not visible on short terminal; screen:\n%s", h.Driver.Screen())
+	}
+}

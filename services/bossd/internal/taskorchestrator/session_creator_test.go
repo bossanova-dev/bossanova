@@ -179,6 +179,66 @@ func TestCreateSession_Success(t *testing.T) {
 	}
 }
 
+func TestCreateSession_StartFailurePublishesDelete(t *testing.T) {
+	var notified []string
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			return &models.Session{ID: "sess-x", RepoID: params.RepoID, Title: params.Title}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id}, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error {
+			return errors.New("worktree create failed")
+		},
+	}
+	creator := NewSessionCreatorWithNotifier(store, starter, func() string { return "claude" }, nil,
+		func(_ context.Context, id string) { notified = append(notified, id) }, zerolog.Nop())
+
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID: "repo-1", Title: "t", BaseBranch: "main",
+	}); err == nil {
+		t.Fatal("expected error from StartSession failure")
+	}
+
+	// The half-started row is deleted AND the deletion is published so it
+	// doesn't linger as a phantom in the web read model until reconnect.
+	if len(store.deleted) != 1 || store.deleted[0] != "sess-x" {
+		t.Fatalf("expected session sess-x deleted, got %v", store.deleted)
+	}
+	if len(notified) != 1 || notified[0] != "sess-x" {
+		t.Fatalf("expected delete notification for sess-x, got %v", notified)
+	}
+}
+
+func TestCreateSession_SuccessDoesNotPublishDelete(t *testing.T) {
+	var notified []string
+	store := &mockSessionStore{
+		createFn: func(_ context.Context, params db.CreateSessionParams) (*models.Session, error) {
+			return &models.Session{ID: "sess-ok", RepoID: params.RepoID, Title: params.Title}, nil
+		},
+		getFn: func(_ context.Context, id string) (*models.Session, error) {
+			return &models.Session{ID: id, BranchName: "b"}, nil
+		},
+	}
+	starter := &mockSessionStarter{
+		startSessionFn: func(_ context.Context, _ string, _ session.StartSessionOpts) error { return nil },
+	}
+	creator := NewSessionCreatorWithNotifier(store, starter, func() string { return "claude" }, nil,
+		func(_ context.Context, id string) { notified = append(notified, id) }, zerolog.Nop())
+
+	if _, err := creator.CreateSession(context.Background(), CreateSessionOpts{
+		RepoID: "repo-1", Title: "t", BaseBranch: "main",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("no delete notification expected on success, got %v", notified)
+	}
+}
+
 func TestSessionCreatorPreservesExplicitAgent(t *testing.T) {
 	var capturedParams db.CreateSessionParams
 

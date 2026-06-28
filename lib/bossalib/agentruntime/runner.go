@@ -205,7 +205,7 @@ func defaultBinName(s string) string {
 // reason. These exist because the log file used to remain at 0 bytes
 // when the subprocess died before producing output, leaving no on-disk
 // record of why a run failed.
-func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath string) (string, error) {
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string) (string, error) {
 	// Determine whether the caller provided a session ID.
 	providedSessionID := sessionID != ""
 
@@ -251,6 +251,7 @@ func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string
 		SessionID:         sessionID,
 		ProvidedSessionID: providedSessionID,
 		LogPath:           logPath,
+		Options:           map[string]string{"model": model},
 	})
 	if len(argv) == 0 {
 		cancel()

@@ -84,6 +84,12 @@ const (
 	// OrchestratorServiceProxyDeleteChatProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyDeleteChat RPC.
 	OrchestratorServiceProxyDeleteChatProcedure = "/bossanova.v1.OrchestratorService/ProxyDeleteChat"
+	// OrchestratorServiceProxyGetChatTranscriptProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxyGetChatTranscript RPC.
+	OrchestratorServiceProxyGetChatTranscriptProcedure = "/bossanova.v1.OrchestratorService/ProxyGetChatTranscript"
+	// OrchestratorServiceProxySendChatMessageProcedure is the fully-qualified name of the
+	// OrchestratorService's ProxySendChatMessage RPC.
+	OrchestratorServiceProxySendChatMessageProcedure = "/bossanova.v1.OrchestratorService/ProxySendChatMessage"
 	// OrchestratorServiceProxyListReposAggregatedProcedure is the fully-qualified name of the
 	// OrchestratorService's ProxyListReposAggregated RPC.
 	OrchestratorServiceProxyListReposAggregatedProcedure = "/bossanova.v1.OrchestratorService/ProxyListReposAggregated"
@@ -182,6 +188,13 @@ type OrchestratorServiceClient interface {
 	ProxyRecordChat(context.Context, *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error)
 	// Deletes a chat via the owning daemon's reverse stream.
 	ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error)
+	// Reads a chat's transcript via the owning daemon's reverse stream. Routes by
+	// session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
+	ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error)
+	// Sends a user message into a chat via the owning daemon's reverse stream.
+	// Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
+	// carries no session_id.
+	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
 	// Aggregates repos across all of the caller's live daemons, deduped by
 	// origin URL, with the serving daemon IDs unioned per repo.
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
@@ -344,6 +357,18 @@ func NewOrchestratorServiceClient(httpClient connect.HTTPClient, baseURL string,
 			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
 			connect.WithClientOptions(opts...),
 		),
+		proxyGetChatTranscript: connect.NewClient[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxyGetChatTranscriptProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetChatTranscript")),
+			connect.WithClientOptions(opts...),
+		),
+		proxySendChatMessage: connect.NewClient[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse](
+			httpClient,
+			baseURL+OrchestratorServiceProxySendChatMessageProcedure,
+			connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendChatMessage")),
+			connect.WithClientOptions(opts...),
+		),
 		proxyListReposAggregated: connect.NewClient[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse](
 			httpClient,
 			baseURL+OrchestratorServiceProxyListReposAggregatedProcedure,
@@ -480,6 +505,8 @@ type orchestratorServiceClient struct {
 	proxyArchiveSession        *connect.Client[v1.ProxyArchiveSessionRequest, v1.ProxyArchiveSessionResponse]
 	proxyRecordChat            *connect.Client[v1.ProxyRecordChatRequest, v1.ProxyRecordChatResponse]
 	proxyDeleteChat            *connect.Client[v1.ProxyDeleteChatRequest, v1.ProxyDeleteChatResponse]
+	proxyGetChatTranscript     *connect.Client[v1.ProxyGetChatTranscriptRequest, v1.ProxyGetChatTranscriptResponse]
+	proxySendChatMessage       *connect.Client[v1.ProxySendChatMessageRequest, v1.ProxySendChatMessageResponse]
 	proxyListReposAggregated   *connect.Client[v1.ProxyListReposAggregatedRequest, v1.ProxyListReposAggregatedResponse]
 	proxyListAgents            *connect.Client[v1.ProxyListAgentsRequest, v1.ProxyListAgentsResponse]
 	proxyListRepoPRs           *connect.Client[v1.ProxyListRepoPRsRequest, v1.ProxyListRepoPRsResponse]
@@ -584,6 +611,16 @@ func (c *orchestratorServiceClient) ProxyRecordChat(ctx context.Context, req *co
 // ProxyDeleteChat calls bossanova.v1.OrchestratorService.ProxyDeleteChat.
 func (c *orchestratorServiceClient) ProxyDeleteChat(ctx context.Context, req *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error) {
 	return c.proxyDeleteChat.CallUnary(ctx, req)
+}
+
+// ProxyGetChatTranscript calls bossanova.v1.OrchestratorService.ProxyGetChatTranscript.
+func (c *orchestratorServiceClient) ProxyGetChatTranscript(ctx context.Context, req *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error) {
+	return c.proxyGetChatTranscript.CallUnary(ctx, req)
+}
+
+// ProxySendChatMessage calls bossanova.v1.OrchestratorService.ProxySendChatMessage.
+func (c *orchestratorServiceClient) ProxySendChatMessage(ctx context.Context, req *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error) {
+	return c.proxySendChatMessage.CallUnary(ctx, req)
 }
 
 // ProxyListReposAggregated calls bossanova.v1.OrchestratorService.ProxyListReposAggregated.
@@ -720,6 +757,13 @@ type OrchestratorServiceHandler interface {
 	ProxyRecordChat(context.Context, *connect.Request[v1.ProxyRecordChatRequest]) (*connect.Response[v1.ProxyRecordChatResponse], error)
 	// Deletes a chat via the owning daemon's reverse stream.
 	ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error)
+	// Reads a chat's transcript via the owning daemon's reverse stream. Routes by
+	// session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
+	ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error)
+	// Sends a user message into a chat via the owning daemon's reverse stream.
+	// Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
+	// carries no session_id.
+	ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error)
 	// Aggregates repos across all of the caller's live daemons, deduped by
 	// origin URL, with the serving daemon IDs unioned per repo.
 	ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error)
@@ -878,6 +922,18 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyDeleteChat")),
 		connect.WithHandlerOptions(opts...),
 	)
+	orchestratorServiceProxyGetChatTranscriptHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxyGetChatTranscriptProcedure,
+		svc.ProxyGetChatTranscript,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxyGetChatTranscript")),
+		connect.WithHandlerOptions(opts...),
+	)
+	orchestratorServiceProxySendChatMessageHandler := connect.NewUnaryHandler(
+		OrchestratorServiceProxySendChatMessageProcedure,
+		svc.ProxySendChatMessage,
+		connect.WithSchema(orchestratorServiceMethods.ByName("ProxySendChatMessage")),
+		connect.WithHandlerOptions(opts...),
+	)
 	orchestratorServiceProxyListReposAggregatedHandler := connect.NewUnaryHandler(
 		OrchestratorServiceProxyListReposAggregatedProcedure,
 		svc.ProxyListReposAggregated,
@@ -1028,6 +1084,10 @@ func NewOrchestratorServiceHandler(svc OrchestratorServiceHandler, opts ...conne
 			orchestratorServiceProxyRecordChatHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyDeleteChatProcedure:
 			orchestratorServiceProxyDeleteChatHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxyGetChatTranscriptProcedure:
+			orchestratorServiceProxyGetChatTranscriptHandler.ServeHTTP(w, r)
+		case OrchestratorServiceProxySendChatMessageProcedure:
+			orchestratorServiceProxySendChatMessageHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListReposAggregatedProcedure:
 			orchestratorServiceProxyListReposAggregatedHandler.ServeHTTP(w, r)
 		case OrchestratorServiceProxyListAgentsProcedure:
@@ -1141,6 +1201,14 @@ func (UnimplementedOrchestratorServiceHandler) ProxyRecordChat(context.Context, 
 
 func (UnimplementedOrchestratorServiceHandler) ProxyDeleteChat(context.Context, *connect.Request[v1.ProxyDeleteChatRequest]) (*connect.Response[v1.ProxyDeleteChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyDeleteChat is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxyGetChatTranscript(context.Context, *connect.Request[v1.ProxyGetChatTranscriptRequest]) (*connect.Response[v1.ProxyGetChatTranscriptResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxyGetChatTranscript is not implemented"))
+}
+
+func (UnimplementedOrchestratorServiceHandler) ProxySendChatMessage(context.Context, *connect.Request[v1.ProxySendChatMessageRequest]) (*connect.Response[v1.ProxySendChatMessageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.OrchestratorService.ProxySendChatMessage is not implemented"))
 }
 
 func (UnimplementedOrchestratorServiceHandler) ProxyListReposAggregated(context.Context, *connect.Request[v1.ProxyListReposAggregatedRequest]) (*connect.Response[v1.ProxyListReposAggregatedResponse], error) {

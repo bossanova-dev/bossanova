@@ -22,8 +22,9 @@ type AgentRunner interface {
 	// If resume is non-nil, it resumes an existing Claude session.
 	// If sessionID is non-empty, it is passed via --session-id and used as the tracking key.
 	// When sessionID is empty, a generated claude-<timestamp> ID is used instead.
+	// model is an opaque agent model id; "" means the plugin's default model.
 	// Returns the session ID assigned to this process.
-	Start(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error)
+	Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string) (string, error)
 
 	// Stop terminates the Claude process for the given session.
 	Stop(sessionID string) error
@@ -51,7 +52,7 @@ type AgentRunner interface {
 // fresh runs, non-empty for resume.
 type AgentDispatcher interface {
 	AgentRunner
-	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID string) (string, error)
+	StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string) (string, error)
 	StopByAgent(agentName, agentSessionID string) error
 	IsRunningByAgent(agentName, agentSessionID string) bool
 }

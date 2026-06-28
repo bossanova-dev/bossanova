@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,25 +76,40 @@ func TestProofCapture(t *testing.T) {
 					t.Fatalf("step %d wait for ready %q: %v", i, step.WaitForReadyText, err)
 				}
 			}
+			before := h.Driver.Screen()
 			for _, key := range step.Keys {
 				sendProofKey(t, h, key)
 			}
 			if step.WaitForText != "" {
-				if err := h.Driver.WaitForText(10*time.Second, step.WaitForText); err != nil {
+				if err := waitForTextAfterChange(h, 10*time.Second, before, step.WaitForText); err != nil {
 					t.Fatalf("step %d wait for %q: %v", i, step.WaitForText, err)
 				}
 			}
 		}
+		// A trailing top-level waitForText re-asserts the already-settled final
+		// screen; no keypress follows it, so a plain contains-check is correct.
+		if recipe.WaitForText != "" {
+			if err := h.Driver.WaitForText(10*time.Second, recipe.WaitForText); err != nil {
+				t.Fatalf("wait for final proof text: %v", err)
+			}
+		}
 	} else {
 		// Legacy single-step recipes use a flat keys array (no per-step waits).
+		before := h.Driver.Screen()
 		for _, key := range recipe.Keys {
 			sendProofKey(t, h, key)
 		}
-	}
-
-	if recipe.WaitForText != "" {
-		if err := h.Driver.WaitForText(10*time.Second, recipe.WaitForText); err != nil {
-			t.Fatalf("wait for final proof text: %v", err)
+		if recipe.WaitForText != "" {
+			// A recipe that pressed a key must see the anchor on a post-keypress
+			// frame (so a stale match on the prior screen can't satisfy it); a
+			// key-less recipe (e.g. tui-home) simply asserts its initial screen.
+			if len(recipe.Keys) > 0 {
+				if err := waitForTextAfterChange(h, 10*time.Second, before, recipe.WaitForText); err != nil {
+					t.Fatalf("wait for final proof text: %v", err)
+				}
+			} else if err := h.Driver.WaitForText(10*time.Second, recipe.WaitForText); err != nil {
+				t.Fatalf("wait for final proof text: %v", err)
+			}
 		}
 	}
 
@@ -135,6 +151,9 @@ func fixtureProfile(t *testing.T, recipe proofRecipe) []tuitest.Option {
 		// Deterministic worktree dir keeps the settings screen free of the
 		// per-test temp HOME (a machine-specific, high-entropy path).
 		tuitest.WithWorktreeBaseDir("/home/bossanova/worktrees"),
+		// Seed healthy cloud-access so deep TUI screens (cron list/form, repo
+		// settings) are reachable without the "unavailable" banner (#855).
+		tuitest.WithE2ECloudAccessSequence(tuitest.E2ECloudAccessActive),
 	}
 
 	switch recipe.Fixture {
@@ -189,6 +208,19 @@ func resolveProofPath(path string) string {
 		return path
 	}
 	return serviceRelative
+}
+
+// waitForTextAfterChange waits until the screen both differs from `before` (the
+// snapshot taken immediately before a step's keypress) and contains `text`. A
+// plain contains-check can be satisfied by a stale match on the pre-keypress
+// frame — e.g. the cron form's "Daily dependency update" Name placeholder, or
+// the chat picker header echoing the "Add dark mode" session title — which lets
+// a step "pass" without the navigation actually happening. Requiring a changed
+// frame ensures the anchor is matched on a frame rendered after the keypress.
+func waitForTextAfterChange(h *tuitest.Harness, timeout time.Duration, before, text string) error {
+	return h.Driver.WaitFor(timeout, func(screen string) bool {
+		return screen != before && strings.Contains(screen, text)
+	})
 }
 
 func sendProofKey(t *testing.T, h *tuitest.Harness, key string) {

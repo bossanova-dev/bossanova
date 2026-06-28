@@ -46,6 +46,8 @@ type fakeBackend struct {
 	reportChatStatus     func(ctx context.Context, statuses []*pb.ChatStatusReport) error
 	getChatStatuses      func(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	getSessionStatuses   func(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
+	getChatTranscript    func(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
+	sendChatMessage      func(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
 	createCronJob        func(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error)
 	listCronJobs         func(ctx context.Context) ([]*pb.CronJob, error)
 	getCronJob           func(ctx context.Context, id string) (*pb.CronJob, error)
@@ -285,6 +287,20 @@ func (f *fakeBackend) GetChatStatuses(ctx context.Context, sessionID string) ([]
 func (f *fakeBackend) GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error) {
 	if f.getSessionStatuses != nil {
 		return f.getSessionStatuses(ctx, sessionIDs)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	if f.getChatTranscript != nil {
+		return f.getChatTranscript(ctx, req)
+	}
+	return nil, errNotImpl
+}
+
+func (f *fakeBackend) SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	if f.sendChatMessage != nil {
+		return f.sendChatMessage(ctx, req)
 	}
 	return nil, errNotImpl
 }

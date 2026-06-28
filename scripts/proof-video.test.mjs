@@ -18,6 +18,7 @@ import {
   renderTimerFrame,
   renderTimerStrip,
   evenCropHeight,
+  encoderCropHeight,
   buildBaseChain,
   applyMinHeightRatio,
   LEADING_STATIC_DIFF,
@@ -336,6 +337,18 @@ test('evenCropHeight: exceeds viewport → null', () => {
 
 test('evenCropHeight: 998 < 1000 → 998', () => {
   assert.equal(evenCropHeight(998, 1000), 998);
+});
+
+test('encoderCropHeight: odd full-height recording crops one pixel for H264', () => {
+  assert.equal(encoderCropHeight(null, 829), 828);
+});
+
+test('encoderCropHeight: even full-height recording stays uncropped', () => {
+  assert.equal(encoderCropHeight(null, 830), null);
+});
+
+test('encoderCropHeight: explicit measured crop still wins', () => {
+  assert.equal(encoderCropHeight(613, 829), 612);
 });
 
 // ── buildBaseChain ───────────────────────────────────────────────────────────

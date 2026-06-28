@@ -55,6 +55,7 @@ unset BOSS_SETTINGS_PATH
 case "$FIXTURE" in
   demo)
     export BOSS_AUTH_E2E_EMAIL="proof@example.com"
+    export BOSS_CLOUD_ACCESS_E2E_SEQUENCE="active"
     ;;
   login)
     export BOSS_AUTH_E2E_LOGIN_EMAIL="proof@example.com"

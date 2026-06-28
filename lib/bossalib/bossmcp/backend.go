@@ -62,6 +62,8 @@ type Backend interface {
 	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)
 	GetSessionStatuses(ctx context.Context, sessionIDs []string) ([]*pb.SessionStatusEntry, error)
+	GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
+	SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
 
 	// Cron
 	CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error)

@@ -8,6 +8,11 @@ build/
 .docusaurus/
 .cache-loader/
 
+# Playwright / bs-proof browser capture
+playwright-report/
+test-results/
+tests/e2e/proof-*/
+
 # Misc
 .DS_Store
 .env.local

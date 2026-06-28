@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/recurser/bossalib/agentruntime"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
@@ -427,6 +428,54 @@ func TestBuildInteractiveCommandIncludesRunnerOptions(t *testing.T) {
 		if !contains(resp.Argv, want) {
 			t.Errorf("argv missing %q: %v", want, resp.Argv)
 		}
+	}
+}
+
+// TestCodexBuildInteractiveCommand_RequestModelWins proves a per-request model
+// overrides the plugin-global BOSS_PLUGIN_model env default.
+func TestCodexBuildInteractiveCommand_RequestModelWins(t *testing.T) {
+	s := newTestServer(t, WithModel("codex-default"))
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid", Model: "gpt-5-codex",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.Argv, "\x00")
+	if !strings.Contains(joined, "--model\x00gpt-5-codex") {
+		t.Fatalf("argv %v should use request model over env default", resp.Argv)
+	}
+	if strings.Contains(joined, "codex-default") {
+		t.Fatalf("argv %v should not contain the env default when request model set", resp.Argv)
+	}
+}
+
+// TestCodexBuildInteractiveCommand_EnvFallback proves an empty request model
+// falls back to the plugin-global env default.
+func TestCodexBuildInteractiveCommand_EnvFallback(t *testing.T) {
+	s := newTestServer(t, WithModel("codex-default"))
+	resp, err := s.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.Argv, "\x00")
+	if !strings.Contains(joined, "--model\x00codex-default") {
+		t.Fatalf("argv %v should fall back to env default model", resp.Argv)
+	}
+}
+
+// TestCodexBuildArgv_RequestModelWins proves the headless path prefers the
+// per-request model (carried via Options) over the env default.
+func TestCodexBuildArgv_RequestModelWins(t *testing.T) {
+	r := NewRunner(zerolog.Nop(), WithModel("codex-default"))
+	got := r.buildArgv(agentruntime.BuildArgvInput{
+		Options: map[string]string{"model": "gpt-5-codex"},
+	})
+	joined := strings.Join(got, "\x00")
+	if !strings.Contains(joined, "--model\x00gpt-5-codex") {
+		t.Fatalf("buildArgv %v should use request model over env default", got)
 	}
 }
 

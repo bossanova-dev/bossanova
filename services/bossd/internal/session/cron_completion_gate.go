@@ -35,15 +35,33 @@ type CronCompletionGateDeps struct {
 	// FinalizeTimeout bounds each FinalizeSession call. Defaults to
 	// defaultCronFinalizeTimeout when zero.
 	FinalizeTimeout time.Duration
+	// RunIsOver reports whether the cron session's agent run has actually
+	// finished (durable agent-log idle + liveness — see Lifecycle.cronRunIsOver).
+	// The gate is fed by Claude Code's Stop hook, which fires at the end of
+	// EVERY main-agent turn — including when the agent merely pauses (awaiting a
+	// background subagent, a slow tool). A Stop is therefore a per-turn hint, not
+	// a completion signal: without this check the gate would finalize mid-run,
+	// opening a junk PR and Blocking a still-working session. When RunIsOver
+	// reports the run is not over, the gate defers to the periodic
+	// RecoverStrandedCronSessions sweep, which re-evaluates the same criterion and
+	// finalizes once the run is genuinely complete. A nil RunIsOver (partial
+	// wiring) preserves the legacy finalize-on-any-cron-Stop behavior.
+	RunIsOver func(*models.Session) bool
 }
 
-// CronCompletionGate debounces cron completion signals before finalization.
+// CronCompletionGate debounces cron completion signals before finalization and
+// gates finalize on the run actually being over. It is the single chokepoint both
+// finalize-trigger paths funnel through — the Claude Stop hook (per-turn) and the
+// periodic RecoverStrandedCronSessions sweep — so the run-completion criterion
+// (RunIsOver → Lifecycle.cronRunIsOver) is enforced in exactly one place. A Stop
+// alone never finalizes a still-working run; see CronCompletionGateDeps.RunIsOver.
 type CronCompletionGate struct {
 	sessions        cronSessionStore
 	finalizer       cronFinalizer
 	logger          zerolog.Logger
 	quietDelay      time.Duration
 	finalizeTimeout time.Duration
+	runIsOver       func(*models.Session) bool
 
 	mu      sync.Mutex
 	pending map[string]*cronCompletionGatePending
@@ -81,6 +99,7 @@ func NewCronCompletionGate(deps CronCompletionGateDeps) *CronCompletionGate {
 		logger:          deps.Logger,
 		quietDelay:      delay,
 		finalizeTimeout: finalizeTimeout,
+		runIsOver:       deps.RunIsOver,
 		pending:         map[string]*cronCompletionGatePending{},
 	}
 }
@@ -165,6 +184,19 @@ func (g *CronCompletionGate) checkAndFinalize(ctx context.Context, sessionID str
 		return cronCompletionGateCheckDone
 	}
 	if session.CronJobID == nil || *session.CronJobID == "" {
+		return cronCompletionGateCheckDone
+	}
+
+	// The Stop hook fires on every turn boundary, including mid-run pauses (e.g.
+	// the agent yielding while a background subagent runs). Finalize only when the
+	// run is actually over; otherwise defer to the periodic
+	// RecoverStrandedCronSessions sweep, which re-evaluates the same criterion and
+	// finalizes once the run genuinely completes. A nil runIsOver keeps the legacy
+	// finalize-on-any-cron-Stop behavior for partial wiring.
+	if g.runIsOver != nil && !g.runIsOver(session) {
+		g.logger.Debug().
+			Str("session", sessionID).
+			Msg("cron completion gate: stop hook fired but run not over; deferring to recovery sweep")
 		return cronCompletionGateCheckDone
 	}
 

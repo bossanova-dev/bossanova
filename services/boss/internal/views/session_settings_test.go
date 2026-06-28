@@ -128,6 +128,12 @@ func (s *stubSessionSettingsClient) GetChatStatuses(context.Context, string) ([]
 func (s *stubSessionSettingsClient) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
 	panic("unused")
 }
+func (s *stubSessionSettingsClient) GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	panic("unused")
+}
+func (s *stubSessionSettingsClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	panic("unused")
+}
 func (s *stubSessionSettingsClient) NotifyAuthChange(context.Context, string) error { return nil }
 func (s *stubSessionSettingsClient) CreateCronJob(context.Context, *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	panic("unused")
@@ -407,6 +413,27 @@ func TestSessionSettingsEditingForwardsKeysToInput(t *testing.T) {
 	updated, _ = m.Update(keyPress('z'))
 	if got := updated.(SessionSettingsModel).nameInput.Value(); got != "z" {
 		t.Fatalf("name input = %q, want the typed %q", got, "z")
+	}
+}
+
+func TestSessionSettingsPasteMsgForwardedToInput(t *testing.T) {
+	// Regression test for BOS-78: pasting text into the session-rename field was
+	// silently dropped because Update only routed tea.KeyMsg into updateEditing,
+	// not tea.PasteMsg.
+	m := newSessionSettingsModel(t, &stubSessionSettingsClient{session: &pb.Session{Title: ""}})
+
+	// Enter editing mode on the name row.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(SessionSettingsModel)
+	if m.editingField != sessionSettingsRowName {
+		t.Fatalf("precondition: not in editing mode (editingField=%d)", m.editingField)
+	}
+
+	// Paste multi-character text. Before the fix this was dropped entirely.
+	updated, _ = m.Update(tea.PasteMsg{Content: "pasted text"})
+	got := updated.(SessionSettingsModel).nameInput.Value()
+	if !strings.Contains(got, "pasted text") {
+		t.Fatalf("nameInput.Value() = %q, want it to contain %q (PasteMsg was dropped)", got, "pasted text")
 	}
 }
 

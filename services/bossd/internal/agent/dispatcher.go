@@ -90,12 +90,12 @@ func (d *Dispatcher) resolve(sessionID string) (AgentRunner, string) {
 }
 
 // Start routes to the resolved agent's Start.
-func (d *Dispatcher) Start(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error) {
+func (d *Dispatcher) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string) (string, error) {
 	runner, name := d.resolve(sessionID)
 	if runner == nil {
 		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
 	}
-	return runner.Start(ctx, workDir, plan, resume, sessionID)
+	return runner.Start(ctx, workDir, plan, resume, sessionID, model)
 }
 
 // Stop routes to the resolved agent's Stop.
@@ -174,12 +174,12 @@ func (d *Dispatcher) resolveByName(agentName string) (AgentRunner, string) {
 // StartByAgent routes Start to the named agent runner, decoupling routing
 // from the agent-side tracking key. agentSessionID is forwarded as the
 // runner.Start sessionID parameter (empty = plugin generates a fresh ID).
-func (d *Dispatcher) StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+func (d *Dispatcher) StartByAgent(ctx context.Context, agentName, workDir, plan string, resume *string, agentSessionID, model string) (string, error) {
 	runner, name := d.resolveByName(agentName)
 	if runner == nil {
 		return "", fmt.Errorf("agent %q not loaded: %w", name, ErrAgentNotLoaded)
 	}
-	return runner.Start(ctx, workDir, plan, resume, agentSessionID)
+	return runner.Start(ctx, workDir, plan, resume, agentSessionID, model)
 }
 
 // StopByAgent routes Stop to the named agent runner.

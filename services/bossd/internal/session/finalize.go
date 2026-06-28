@@ -37,6 +37,14 @@ type FinalizeResult struct {
 // session. It is idempotent: duplicate Stop events no-op via a conditional
 // state transition (ImplementingPlan → Finalizing) guarded by rows_affected.
 //
+// IMPORTANT: callers must not invoke this just because a Stop hook fired. The
+// Claude Stop hook fires at the end of EVERY main-agent turn — including mid-run
+// pauses (e.g. the agent yielding while a background subagent runs) — so a Stop
+// is a per-turn hint, not a completion signal. Run-completion gating lives in
+// CronCompletionGate (cronRunIsOver); finalizing a still-working run opens a junk
+// PR and Blocks a live session. Both finalize-trigger paths (the Stop hook and
+// the RecoverStrandedCronSessions sweep) funnel through that gate by design.
+//
 // Cron runs are autonomous: there is no second "Finalize" chat. After the PR
 // is opened, bossd injects the PR number into the (tagless) commit subjects and
 // force-pushes (injectPRTagsAndPush), the deterministic in-process replacement
@@ -218,31 +226,41 @@ func (l *Lifecycle) injectPRTagsAndPush(ctx context.Context, sessionID string) e
 		return fmt.Errorf("missing branch/base/worktree for PR-tag injection")
 	}
 
+	// Repair a cron session still titled with the cron job name by adopting its
+	// PR's GitHub title. Done before the dirty-worktree check below can fail the
+	// injection, so a placeholder / pr_failed finalize still leaves a meaningful
+	// session title — every other rename path is gated on PRNumber == nil and is
+	// bypassed once the agent's PR already exists.
+	if updatedSess, changed, syncErr := adoptPRTitleWhenCronTitleStale(
+		ctx, l.sessions, l.repos, l.cronJobs, l.provider, l.logger, cur); syncErr != nil {
+		l.logger.Warn().Err(syncErr).Str("session", sessionID).
+			Msg("finalize: cron title sync from PR failed")
+	} else if changed {
+		cur = updatedSess
+	}
+
 	status, err := l.worktrees.Status(ctx, cur.WorktreePath)
 	if err != nil {
 		l.logger.Warn().Err(err).Str("session", sessionID).
 			Msg("finalize: status before PR-tag injection failed")
 		return fmt.Errorf("status before PR-tag injection: %w", err)
 	}
-	var managedPaths []string
-	if client, err := l.agentClientFor(cur); err == nil {
-		resp, rpcErr := client.ListIgnoredDirtyFiles(ctx, &bossanovav1.ListIgnoredDirtyFilesRequest{
-			WorkDir: cur.WorktreePath,
-		})
-		if rpcErr != nil {
-			l.logger.Warn().Err(rpcErr).Msg("ListIgnoredDirtyFiles failed before PR-tag injection; using empty list")
-		} else if resp != nil {
-			managedPaths = resp.Paths
-		}
-	} else {
-		managedPaths = bossdManagedWorktreeFiles
-	}
+	managedPaths := l.managedDirtyPaths(ctx, cur, "ListIgnoredDirtyFiles failed before PR-tag injection")
 	if trimmed := strings.TrimSpace(stripBossdManagedFilesWith(status, managedPaths)); trimmed != "" {
+		if porcelainHasTrackedChanges(trimmed) {
+			l.logger.Warn().
+				Str("session", sessionID).
+				Str("status", trimmed).
+				Msg("finalize: worktree has uncommitted tracked changes; refusing PR-tag injection")
+			return fmt.Errorf("worktree has uncommitted changes before PR-tag injection")
+		}
+		// Only untracked scratch remains (e.g. a stray plan file the agent forgot
+		// to commit). That is not implementation work, so allow PR-tag injection
+		// to proceed while preserving those files in the worktree.
 		l.logger.Warn().
 			Str("session", sessionID).
 			Str("status", trimmed).
-			Msg("finalize: worktree has uncommitted changes; refusing PR-tag injection")
-		return fmt.Errorf("worktree has uncommitted changes before PR-tag injection")
+			Msg("finalize: only untracked leftovers remain; proceeding with PR-tag injection")
 	}
 
 	// Inject against the freshly-fetched remote base so the merge-base reflects
@@ -303,6 +321,26 @@ func (l *Lifecycle) markFinalizePRReady(ctx context.Context, sessionID, originUR
 var bossdManagedWorktreeFiles = []string{
 	".claude/settings.local.json",
 	".claude/scheduled_tasks.lock",
+	".superpowers/",
+}
+
+func (l *Lifecycle) managedDirtyPaths(ctx context.Context, session *models.Session, warnMsg string) []string {
+	managedPaths := append([]string(nil), bossdManagedWorktreeFiles...)
+	client, err := l.agentClientFor(session)
+	if err != nil {
+		return managedPaths
+	}
+	resp, rpcErr := client.ListIgnoredDirtyFiles(ctx, &bossanovav1.ListIgnoredDirtyFilesRequest{
+		WorkDir: session.WorktreePath,
+	})
+	if rpcErr != nil {
+		l.logger.Warn().Err(rpcErr).Msg(warnMsg)
+		return managedPaths
+	}
+	if resp != nil {
+		managedPaths = append(managedPaths, resp.Paths...)
+	}
+	return managedPaths
 }
 
 // stripBossdManagedFilesWith removes porcelain entries for any of the given
@@ -335,6 +373,25 @@ func stripBossdManagedFilesWith(porcelain string, managedPaths []string) string 
 	return strings.Join(kept, "\n")
 }
 
+// porcelainHasTrackedChanges reports whether any line of `git status
+// --porcelain` output represents a change to a tracked file (modification,
+// staged add, delete, rename, etc.) as opposed to a purely untracked entry.
+// Untracked entries are prefixed with "??"; everything else touches tracked
+// state. Used by the finalize guard to distinguish genuine incomplete work
+// (tracked changes — must block) from stray scratch artifacts (untracked-only —
+// safe to skip past).
+func porcelainHasTrackedChanges(porcelain string) bool {
+	for line := range strings.SplitSeq(porcelain, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "??") {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyFinalizeOutcome runs steps 2 and 3 of the finalize pipeline: it
 // inspects the worktree and routes to the cleanup, no-github, PR-failed, or
 // PR-created branch. It never returns an error — unrecoverable failures are
@@ -356,20 +413,7 @@ func (l *Lifecycle) classifyFinalizeOutcome(ctx context.Context, session *models
 	// we fall back to the hardcoded list when no client is loaded for this
 	// session's agent (e.g. legacy rows whose agent_name doesn't match a
 	// loaded plugin).
-	var managedPaths []string
-	if client, err := l.agentClientFor(session); err == nil {
-		resp, rpcErr := client.ListIgnoredDirtyFiles(ctx, &bossanovav1.ListIgnoredDirtyFilesRequest{
-			WorkDir: session.WorktreePath,
-		})
-		if rpcErr != nil {
-			l.logger.Warn().Err(rpcErr).Msg("ListIgnoredDirtyFiles failed; using empty list")
-		} else if resp != nil {
-			managedPaths = resp.Paths
-		}
-	} else {
-		managedPaths = bossdManagedWorktreeFiles
-	}
-	status = stripBossdManagedFilesWith(status, managedPaths)
+	status = stripBossdManagedFilesWith(status, l.managedDirtyPaths(ctx, session, "ListIgnoredDirtyFiles failed"))
 
 	if strings.TrimSpace(status) == "" {
 		if result := l.attachExistingPRIfCleanBranchHasOne(ctx, session); result != nil {
@@ -863,11 +907,12 @@ func (l *Lifecycle) RecoverFinalizingSessions(ctx context.Context) (int, error) 
 // into the Blocked state so it surfaces as attention-needed in the UI. The
 // happy path (pr_created) and the session-deleted path (deleted_no_changes)
 // both return false — the former continues under the finalize chat, the
-// latter has no row to transition. failed_recovered and fire_failed are
-// recorded by other code paths (RecoverFinalizingSessions and the
+// latter has no row to transition. failed_recovered, fire_failed, and gated
+// are recorded by other code paths (RecoverFinalizingSessions and the
 // scheduler respectively) and never flow through FinalizeSession's
 // needsAttention check, but they're listed here to keep the switch
-// exhaustive.
+// exhaustive. (gated blocks the fire before any session exists, so there is
+// no session to mark attention-needed.)
 //
 // Note pr_skipped_no_github returns true here for the preserved (interactive)
 // case, but a cron session on that path is hard-deleted (FinalizeResult.Deleted)
@@ -884,7 +929,8 @@ func needsAttention(o models.CronJobOutcome) bool {
 	case models.CronJobOutcomeDeletedNoChanges,
 		models.CronJobOutcomePRCreated,
 		models.CronJobOutcomeFailedRecovered,
-		models.CronJobOutcomeFireFailed:
+		models.CronJobOutcomeFireFailed,
+		models.CronJobOutcomeGated:
 		return false
 	}
 	return false

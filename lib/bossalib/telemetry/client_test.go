@@ -79,6 +79,42 @@ func TestDefaultHostsUseFirstPartyDomains(t *testing.T) {
 	}
 }
 
+func TestFunnelDistinctID(t *testing.T) {
+	cases := []struct {
+		name       string
+		workOSUser string
+		email      string
+		want       string
+	}{
+		{
+			name:       "user form when workOS user id provided",
+			workOSUser: "user_abc123",
+			email:      "user@example.com",
+			want:       "user:user_abc123",
+		},
+		{
+			name:       "email form lowercased and trimmed when no user id",
+			workOSUser: "",
+			email:      "  User@Example.COM  ",
+			want:       "email:user@example.com",
+		},
+		{
+			name:       "anonymous when both empty",
+			workOSUser: "",
+			email:      "",
+			want:       "anonymous",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FunnelDistinctID(tc.workOSUser, tc.email)
+			if got != tc.want {
+				t.Fatalf("FunnelDistinctID(%q, %q) = %q, want %q", tc.workOSUser, tc.email, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDistinctIDHelpersAreHyphenatedAndStable(t *testing.T) {
 	cases := []struct {
 		name string
@@ -309,5 +345,61 @@ func TestPostHogLoggerWritesThroughZerolog(t *testing.T) {
 	}
 	if !strings.Contains(got, `"message":"sending request - timeout"`) {
 		t.Fatalf("log missing formatted message: %s", got)
+	}
+}
+
+func TestFilterPropertiesBillingFunnelKeysSurvive(t *testing.T) {
+	input := map[string]any{
+		"product_area":        "billing",
+		"entry_point":         "server_checkout_session",
+		"cloud_access_state":  "needs_subscription",
+		"checkout_action":     "create_checkout",
+		"can_create_checkout": true,
+		"checkout_started":    false,
+		"denial_reason":       "subscription_required",
+		"workos_org_id":       "org_123",
+		"step":                "provisioned",
+		"email":               "a@b.com",
+		"nope":                "x",
+	}
+
+	props := FilterProperties(input)
+
+	// All billing/funnel keys must survive.
+	for _, key := range []string{
+		"product_area", "entry_point", "cloud_access_state", "checkout_action",
+		"can_create_checkout", "checkout_started", "denial_reason", "workos_org_id", "step",
+	} {
+		if _, ok := props[key]; !ok {
+			t.Errorf("key %q should survive FilterProperties but was dropped", key)
+		}
+	}
+
+	// Verify representative values are preserved correctly.
+	if props["product_area"] != "billing" {
+		t.Errorf("product_area = %v, want billing", props["product_area"])
+	}
+	if props["can_create_checkout"] != true {
+		t.Errorf("can_create_checkout = %v, want true", props["can_create_checkout"])
+	}
+	if props["checkout_started"] != false {
+		t.Errorf("checkout_started = %v, want false", props["checkout_started"])
+	}
+
+	// Forbidden and unknown keys must be dropped.
+	if _, ok := props["email"]; ok {
+		t.Error("email should be dropped by FilterProperties")
+	}
+	if _, ok := props["nope"]; ok {
+		t.Error("nope should be dropped by FilterProperties")
+	}
+}
+
+func TestIsAllowedNewEvents(t *testing.T) {
+	if !IsAllowed(EventSignupUserCreated) {
+		t.Fatal("EventSignupUserCreated should be allowed")
+	}
+	if !IsAllowed(EventBillingAccountProvisioned) {
+		t.Fatal("EventBillingAccountProvisioned should be allowed")
 	}
 }

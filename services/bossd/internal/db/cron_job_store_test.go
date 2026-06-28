@@ -100,6 +100,54 @@ func TestCronJobStore_CreateAndGet(t *testing.T) {
 	}
 }
 
+func TestCronJobStore_PersistsModel(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID: repo.ID, Name: "m", Prompt: "/x", Schedule: "@hourly",
+		AgentName: "claude", Model: "sonnet", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if job.Model != "sonnet" {
+		t.Fatalf("create returned model %q, want sonnet", job.Model)
+	}
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Model != "sonnet" {
+		t.Fatalf("reloaded model %q, want sonnet", got.Model)
+	}
+
+	// Update round-trips the model (pointer-on-changed).
+	newModel := "opus"
+	updated, err := store.Update(ctx, job.ID, UpdateCronJobParams{Model: &newModel})
+	if err != nil {
+		t.Fatalf("update model: %v", err)
+	}
+	if updated.Model != "opus" {
+		t.Fatalf("updated model %q, want opus", updated.Model)
+	}
+
+	// Empty model is a legitimate value (plugin default), not "no change".
+	empty := ""
+	cleared, err := store.Update(ctx, job.ID, UpdateCronJobParams{Model: &empty})
+	if err != nil {
+		t.Fatalf("clear model: %v", err)
+	}
+	if cleared.Model != "" {
+		t.Fatalf("cleared model %q, want empty", cleared.Model)
+	}
+}
+
 func TestCronJobStore_Create_DefaultsBlankAgentToClaude(t *testing.T) {
 	db := setupTestDB(t)
 	repoStore := NewRepoStore(db)
@@ -237,13 +285,31 @@ func TestCronJobStore_ListAndListByRepo(t *testing.T) {
 	createTestCronJob(t, store, repoA.ID, "a-job-1")
 	createTestCronJob(t, store, repoA.ID, "a-job-2")
 	createTestCronJob(t, store, repoB.ID, "b-job-1")
+	// Mixed-case names: binary collation places "Banana" (B=0x42) before
+	// "apple" (a=0x61) and would return [Banana, a-job-1, a-job-2, apple,
+	// b-job-1, cherry]. COLLATE NOCASE interleaves them alphabetically as
+	// [a-job-1, a-job-2, apple, b-job-1, Banana, cherry].
+	createTestCronJob(t, store, repoB.ID, "apple")
+	createTestCronJob(t, store, repoB.ID, "Banana")
+	createTestCronJob(t, store, repoB.ID, "cherry")
 
 	all, err := store.List(ctx)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(all) != 3 {
-		t.Errorf("list len = %d, want 3", len(all))
+	// Fatal so a length mismatch can't silently skip the ordering assertions below.
+	if len(all) != 6 {
+		t.Fatalf("list len = %d, want 6", len(all))
+	}
+
+	// Verify List() returns jobs case-insensitively alphabetical by name.
+	// This assertion fails under binary collation (Banana sorts before apple)
+	// and passes only with COLLATE NOCASE.
+	wantNames := []string{"a-job-1", "a-job-2", "apple", "b-job-1", "Banana", "cherry"}
+	for i, want := range wantNames {
+		if all[i].Name != want {
+			t.Errorf("List()[%d].Name = %q, want %q (COLLATE NOCASE order)", i, all[i].Name, want)
+		}
 	}
 
 	a, err := store.ListByRepo(ctx, repoA.ID)
@@ -255,6 +321,25 @@ func TestCronJobStore_ListAndListByRepo(t *testing.T) {
 	}
 	if a[0].Name != "a-job-1" || a[1].Name != "a-job-2" {
 		t.Errorf("repo a sort: got %q, %q; want a-job-1, a-job-2", a[0].Name, a[1].Name)
+	}
+
+	// ListByRepo must use the identical COLLATE NOCASE ordering as List(); assert
+	// it independently so a regression in only ListByRepo cannot hide behind the
+	// global List() assertion. repoB holds b-job-1, apple, Banana, cherry; NOCASE
+	// orders them apple, b-job-1, Banana, cherry ("b-job-1" < "Banana" because
+	// '-' (0x2D) < 'a' (0x61) at the second position).
+	b, err := store.ListByRepo(ctx, repoB.ID)
+	if err != nil {
+		t.Fatalf("list by repo b: %v", err)
+	}
+	wantB := []string{"apple", "b-job-1", "Banana", "cherry"}
+	if len(b) != len(wantB) {
+		t.Fatalf("list by repo b len = %d, want %d", len(b), len(wantB))
+	}
+	for i, want := range wantB {
+		if b[i].Name != want {
+			t.Errorf("ListByRepo(repoB)[%d].Name = %q, want %q (COLLATE NOCASE order)", i, b[i].Name, want)
+		}
 	}
 }
 
@@ -767,5 +852,141 @@ func TestCronJobStore_Delete_NotFound(t *testing.T) {
 	store := NewCronJobStore(db)
 	if err := store.Delete(context.Background(), "missing"); err != sql.ErrNoRows {
 		t.Errorf("got %v, want sql.ErrNoRows", err)
+	}
+}
+
+// TestCronJobStore_GateCommandAndRunSetupCommand_RoundTrip verifies that
+// gate_command and run_setup_command are persisted correctly on Create and
+// returned by Get.
+func TestCronJobStore_GateCommandAndRunSetupCommand_RoundTrip(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID:          repo.ID,
+		Name:            "gated-job",
+		Prompt:          "Run checks",
+		Schedule:        "@daily",
+		Enabled:         true,
+		GateCommand:     "make gate-check",
+		RunSetupCommand: false,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if job.GateCommand != "make gate-check" {
+		t.Errorf("create: GateCommand = %q, want %q", job.GateCommand, "make gate-check")
+	}
+	if job.RunSetupCommand != false {
+		t.Errorf("create: RunSetupCommand = %v, want false", job.RunSetupCommand)
+	}
+
+	got, err := store.Get(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.GateCommand != "make gate-check" {
+		t.Errorf("get: GateCommand = %q, want %q", got.GateCommand, "make gate-check")
+	}
+	if got.RunSetupCommand != false {
+		t.Errorf("get: RunSetupCommand = %v, want false", got.RunSetupCommand)
+	}
+}
+
+// TestCronJobStore_GateCommand_DefaultRow verifies that a row inserted without
+// gate_command/run_setup_command (simulating a pre-migration row) is read back
+// with empty GateCommand and RunSetupCommand=true (from the column DEFAULT 1).
+func TestCronJobStore_GateCommand_DefaultRow(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	_, err := db.ExecContext(ctx,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cron-gate-legacy", repo.ID, "Legacy Gate", "Run checks", "@daily", 1,
+		"2026-06-27T00:00:00.000Z", "2026-06-27T00:00:00.000Z",
+	)
+	if err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	got, err := store.Get(ctx, "cron-gate-legacy")
+	if err != nil {
+		t.Fatalf("get legacy row: %v", err)
+	}
+	if got.GateCommand != "" {
+		t.Errorf("GateCommand = %q, want empty", got.GateCommand)
+	}
+	if !got.RunSetupCommand {
+		t.Errorf("RunSetupCommand = false, want true (migration default 1)")
+	}
+}
+
+// TestCronJobStore_GateCommand_Update verifies that Update can set, change, and
+// leave-unchanged GateCommand and RunSetupCommand.
+func TestCronJobStore_GateCommand_Update(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	store := NewCronJobStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	job, err := store.Create(ctx, CreateCronJobParams{
+		RepoID:          repo.ID,
+		Name:            "update-gate-job",
+		Prompt:          "noop",
+		Schedule:        "@daily",
+		Enabled:         true,
+		GateCommand:     "make old-gate",
+		RunSetupCommand: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Set GateCommand and toggle RunSetupCommand.
+	newGate := "make new-gate"
+	disableSetup := false
+	updated, err := store.Update(ctx, job.ID, UpdateCronJobParams{
+		GateCommand:     &newGate,
+		RunSetupCommand: &disableSetup,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.GateCommand != "make new-gate" {
+		t.Errorf("after update: GateCommand = %q, want %q", updated.GateCommand, "make new-gate")
+	}
+	if updated.RunSetupCommand != false {
+		t.Errorf("after update: RunSetupCommand = %v, want false", updated.RunSetupCommand)
+	}
+
+	// Nil params leave them unchanged.
+	unchanged, err := store.Update(ctx, job.ID, UpdateCronJobParams{})
+	if err != nil {
+		t.Fatalf("no-op update: %v", err)
+	}
+	if unchanged.GateCommand != "make new-gate" {
+		t.Errorf("no-op: GateCommand = %q, want %q", unchanged.GateCommand, "make new-gate")
+	}
+	if unchanged.RunSetupCommand != false {
+		t.Errorf("no-op: RunSetupCommand = %v, want false", unchanged.RunSetupCommand)
+	}
+
+	// Clear GateCommand by setting to empty string.
+	emptyGate := ""
+	cleared, err := store.Update(ctx, job.ID, UpdateCronJobParams{GateCommand: &emptyGate})
+	if err != nil {
+		t.Fatalf("clear gate: %v", err)
+	}
+	if cleared.GateCommand != "" {
+		t.Errorf("cleared: GateCommand = %q, want empty", cleared.GateCommand)
 	}
 }

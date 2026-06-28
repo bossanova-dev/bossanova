@@ -131,6 +131,22 @@ func (f *fakeDaemonRPC) ListPlugins(_ context.Context, _ *connect.Request[pb.Lis
 	})
 }
 
+func (f *fakeDaemonRPC) GetChatTranscript(_ context.Context, _ *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error) {
+	return sessionResp(f, func() *pb.GetChatTranscriptResponse {
+		return &pb.GetChatTranscriptResponse{
+			Messages:           []*pb.ChatMessage{{Role: "assistant", Text: "hello"}},
+			FinalAssistantText: "hello",
+			Exists:             true,
+		}
+	})
+}
+
+func (f *fakeDaemonRPC) SendChatMessage(_ context.Context, _ *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
+	return sessionResp(f, func() *pb.SendChatMessageResponse {
+		return &pb.SendChatMessageResponse{TmuxSessionName: "tmux-chat-1", Delivered: true}
+	})
+}
+
 // CreateSession and AttachSession return server-streams. Constructing a real
 // *connect.ServerStreamForClient without a live server is impractical, so the
 // fake returns the canned error when set and a nil stream otherwise; the
@@ -233,6 +249,14 @@ func TestLocalClientValueWrappers(t *testing.T) {
 		{"ListPlugins", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
 			got, err := c.ListPlugins(ctx)
 			return err == nil && len(got) == 1 && got[0].GetName() == "plugin-1", got == nil, err
+		}},
+		{"GetChatTranscript", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.GetChatTranscript(ctx, &pb.GetChatTranscriptRequest{AgentSessionId: "agent-1"})
+			return err == nil && got.GetExists() && got.GetFinalAssistantText() == "hello", got == nil, err
+		}},
+		{"SendChatMessage", func(_ *testing.T, c *LocalClient) (bool, bool, error) {
+			got, err := c.SendChatMessage(ctx, &pb.SendChatMessageRequest{AgentSessionId: "agent-1", Message: "hi"})
+			return err == nil && got.GetDelivered(), got == nil, err
 		}},
 	}
 

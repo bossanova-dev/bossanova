@@ -196,15 +196,63 @@ export function buildManifest({
 }
 
 /**
+ * Returns the manifest as a JSON string with machine-derived URL fields removed,
+ * for secret scanning. publicBaseUrl and per-capture media URLs are derived
+ * from publicBaseUrl plus validated relative paths; every other field stays
+ * scanned.
+ * @param {object} manifest
+ * @returns {string}
+ */
+export function manifestSecretScanText(manifest) {
+  const clone = structuredClone(manifest);
+  const normalizedBase =
+    typeof clone.publicBaseUrl === 'string' ? clone.publicBaseUrl.replace(/\/$/, '') : null;
+  delete clone.publicBaseUrl;
+  for (const capture of clone.captures ?? []) {
+    const captureUrl = derivedManifestUrl(normalizedBase, capture.fileName);
+    if (captureUrl && capture.url === captureUrl) {
+      delete capture.url;
+    }
+    if (captureUrl && isVideoMediaType(capture.mediaType) && capture.videoUrl === captureUrl) {
+      delete capture.videoUrl;
+    }
+    const posterUrl = derivedManifestUrl(normalizedBase, capture.posterFileName);
+    if (posterUrl && isVideoMediaType(capture.mediaType) && capture.posterUrl === posterUrl) {
+      delete capture.posterUrl;
+    }
+    for (const still of capture.stills ?? []) {
+      const stillUrl = derivedManifestUrl(normalizedBase, still.fileName);
+      if (stillUrl && still.url === stillUrl) {
+        delete still.url;
+      }
+    }
+  }
+  return JSON.stringify(clone);
+}
+
+function derivedManifestUrl(publicBaseUrl, fileName) {
+  if (!publicBaseUrl) {
+    return null;
+  }
+  try {
+    return `${publicBaseUrl}/${encodePathSegments(validateProofUploadRelativePath(fileName))}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Evidence/Confidence verdict block (ported from wc-proof lib/publish.mjs).
  * Evidence is Satisfactory only when the run passed AND media exists.
  * Confidence is Low when not satisfactory, Medium when a gen-AI feature was
  * demoed UI-only (brief.genAi && !genAiLive), else High.
- * @param {{verdict?:string, captures?:Array<{fileName?:string}>, genAiLive?:boolean, brief?:{genAi?:boolean}}} manifest
+ * @param {{verdict?:string, captures?:Array<{fileName?:string,posterFileName?:string,stills?:Array<object>}>, genAiLive?:boolean, brief?:{genAi?:boolean}}} manifest
  * @returns {{evidence:string, confidence:string, evidenceOk:boolean, confidenceOk:boolean}}
  */
 export function deriveVerdictBlock(manifest) {
-  const hasMedia = (manifest.captures ?? []).some((c) => Boolean(c.fileName));
+  const hasMedia = (manifest.captures ?? []).some((c) =>
+    Boolean(c.fileName || c.posterFileName || (c.stills?.length ?? 0) > 0),
+  );
   const satisfactory = manifest.verdict === 'passed' && hasMedia;
   const evidence = satisfactory ? 'Satisfactory' : 'Unsatisfactory';
   let confidence = 'Low';
@@ -262,6 +310,44 @@ export function renderComment({ marker, manifest }) {
 }
 
 /**
+ * Neutral "proof deferred" comment for environment limitations. Unlike
+ * renderComment it never emits the ❌ Evidence/Confidence verdict block — a
+ * deferral is not a failed change.
+ * @param {{ marker: string, manifest: object, reasonCode: string, recaptureHint?: string }} opts
+ * @returns {string}
+ */
+export function renderDeferredComment({ marker, manifest, reasonCode, recaptureHint }) {
+  const lines = [marker];
+  if (manifest.reportUrl) lines.push(`### [📸 Proof gallery](${manifest.reportUrl})`, '');
+  else if (manifest.publicBaseUrl)
+    lines.push(`### [📸 Proof manifest](${manifest.publicBaseUrl}/manifest.json)`, '');
+  else lines.push('');
+  lines.push('### Proof deferred');
+  lines.push('');
+  lines.push(
+    `bs-proof could not complete the agent proof this run (${reasonCode}). This is an environment limitation, not a problem with the change.`,
+  );
+  if (manifest.commit) lines.push('', `**Commit:** \`${manifest.commit}\``);
+  if (recaptureHint) {
+    lines.push('', 'Re-capture from a dev environment:', '', '```bash', recaptureHint, '```');
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Orders captures for the gallery report: video captures first (so the most
+ * informative artifact leads), then the rest. Stable within each group. Pure.
+ * @param {Array<{mediaType?: string}>} captures
+ * @returns {Array<object>}
+ */
+export function orderCapturesForReport(captures) {
+  const list = captures ?? [];
+  const videos = list.filter((c) => isVideoMediaType(c.mediaType));
+  const rest = list.filter((c) => !isVideoMediaType(c.mediaType));
+  return [...videos, ...rest];
+}
+
+/**
  * Renders a Markdown README for the bs-proof report repo. Pure — no fs/env/Date.
  * @param {{ manifest: object }} opts
  * @returns {string}
@@ -292,7 +378,7 @@ export function renderGallery({ manifest }) {
     }
   };
 
-  for (const capture of manifest.captures ?? []) {
+  for (const capture of orderCapturesForReport(manifest.captures)) {
     lines.push('', `## ${escapeMarkdown(capture.title)}`, '');
     lines.push(
       `**Surface:** ${escapeMarkdown(capture.surface)} · **Status:** ${escapeMarkdown(capture.status)}`,
@@ -358,7 +444,11 @@ function escapeMarkdown(value) {
 
 export function parseProofArgs(argv) {
   const [firstArg, ...tail] = argv;
-  const command = firstArg && !firstArg.startsWith('--') ? firstArg : 'run';
+  // A completely empty invocation prints usage rather than silently running a
+  // real (uploading, comment-posting) capture. Flags-only invocations still
+  // default to `run` so documented `--recipe`/`--dry-run` usage is unchanged.
+  const command =
+    argv.length === 0 ? 'help' : firstArg && !firstArg.startsWith('--') ? firstArg : 'run';
   const rest = command === firstArg ? tail : argv;
   const parsed = {
     command,
@@ -416,8 +506,29 @@ export function terminalRenderCommand({ input, output, title }) {
   ];
 }
 
+export function tuiAgentBridgeBuildCommand({ outBin }) {
+  return [
+    'go',
+    ['build', '-tags', 'e2e', '-o', outBin, './cmd/proof-tui-agent'],
+    { cwd: 'services/boss' },
+  ];
+}
+
+export function bossE2eBuildCommand({ outBin }) {
+  return ['go', ['build', '-tags', 'e2e', '-o', outBin, './cmd'], { cwd: 'services/boss' }];
+}
+
+// Maps a browser proof surface to the package that owns its Playwright config
+// and dev/preview webServer: docs → Docusaurus site, marketing → Astro site,
+// anything else → the Vite web app.
+export function browserServiceDir(surface) {
+  if (surface === 'marketing') return 'services/marketing';
+  if (surface === 'docs') return 'services/docs';
+  return 'services/web';
+}
+
 export function browserCaptureCommand({ surface, recipePath, outputDir }) {
-  const serviceDir = surface === 'marketing' ? 'services/marketing' : 'services/web';
+  const serviceDir = browserServiceDir(surface);
   return [
     'pnpm',
     [
@@ -437,7 +548,7 @@ export function browserCaptureCommand({ surface, recipePath, outputDir }) {
 }
 
 export function introCardCommand({ surface, out, width, height, label, title = '' }) {
-  const serviceDir = surface === 'marketing' ? 'services/marketing' : 'services/web';
+  const serviceDir = browserServiceDir(surface);
   return [
     'pnpm',
     [
@@ -477,6 +588,46 @@ export function tuiCaptureCommand({ recipePath, outputDir }) {
       },
     },
   ];
+}
+
+/**
+ * Ancestor directories of a proof run dir, deepest first, ending at the
+ * `.proof` dir itself (the run dir's own path is NOT included). Returns []
+ * when the path has no `.proof` segment. Pure — string-only.
+ * @param {string} localDir
+ * @returns {string[]}
+ */
+export function proofAncestorDirs(localDir) {
+  const parts = String(localDir ?? '')
+    .replaceAll('\\', '/')
+    .replace(/\/+$/, '')
+    .split('/');
+  const proofIdx = parts.indexOf('.proof');
+  if (proofIdx === -1) return [];
+  const out = [];
+  for (let end = parts.length - 1; end > proofIdx; end -= 1) {
+    out.push(parts.slice(0, end).join('/'));
+  }
+  return out;
+}
+
+/**
+ * Resolves the recipe-catalog path. An `override` (typically from
+ * `BOSS_PROOF_CATALOG`) lets an ad-hoc/experimental recipe set be trialled
+ * without editing the committed catalog: an absolute path is used as-is, a
+ * relative one is resolved against the current working directory. With no
+ * override, falls back to `proof/recipes/default.json` under `repoRoot`. Pure —
+ * no fs/env/Date (the env value is passed in by the caller).
+ * @param {string} repoRoot
+ * @param {string} [override]
+ * @returns {string}
+ */
+export function resolveCatalogPath(repoRoot, override) {
+  const trimmed = String(override ?? '').trim();
+  if (trimmed) {
+    return path.isAbsolute(trimmed) ? trimmed : path.resolve(trimmed);
+  }
+  return path.join(repoRoot, 'proof', 'recipes', 'default.json');
 }
 
 export function proofRunPaths({ prNumber, commit, runId, token }) {

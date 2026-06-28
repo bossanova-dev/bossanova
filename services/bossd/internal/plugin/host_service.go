@@ -1012,6 +1012,7 @@ func (s *HostServiceServer) StartAgentRun(ctx context.Context, req *bossanovav1.
 		WorkDir: sess.WorktreePath,
 		Plan:    req.GetPrompt(),
 		LogPath: filepath.Join(s.agentLogsDir, "repair-"+sessionID+".log"),
+		Model:   sess.Model,
 	}
 	startResp, err := client.StartRun(context.Background(), startReq)
 	if err != nil {

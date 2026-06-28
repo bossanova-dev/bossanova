@@ -64,6 +64,10 @@ func (s *stubAgentRunner) TranscriptExists(context.Context, *bossanovav1.Transcr
 	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
 
+func (s *stubAgentRunner) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+
 // newHostForTest builds a Host pre-populated with the given managedPlugins,
 // bypassing the gRPC subprocess launch path. The callers only need the
 // cfg.Name and agentRunner fields populated for runner-lookup tests.

@@ -25,6 +25,10 @@ func TestSanitizeSuggestedTitle(t *testing.T) {
 		{"strips single quotes", "'single'", "single"},
 		{"empty stays empty", "   \n  ", ""},
 		{"caps length", long, strings.Repeat("a", suggestedTitleMaxLen)},
+		{"rejects current-title commentary", "The current title accurately and concisely describes the whole change.", ""},
+		{"rejects the-title commentary", "The title already fits the change.", ""},
+		{"rejects describes-the-change commentary", "It accurately describes the change made here.", ""},
+		{"keeps real title mentioning describe", "Describe build flags in the README", "Describe build flags in the README"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -41,10 +45,14 @@ func TestBuildPRTitlePrompt(t *testing.T) {
 		GitLog:       "feat: a\nfix: b",
 		BaseBranch:   "dev",
 	})
-	for _, want := range []string{"[WON-1] Keep me", "feat: a\nfix: b", "dev", "verbatim, unchanged"} {
+	for _, want := range []string{"[WON-1] Keep me", "feat: a\nfix: b", "dev", "repeat it back exactly"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q\n---\n%s", want, p)
 		}
+	}
+	// The prompt must forbid narrating the keep/replace decision as the title.
+	if !strings.Contains(p, "NO sentence that describes") {
+		t.Errorf("prompt should forbid commentary:\n%s", p)
 	}
 	// An empty PR body renders as "(none)" rather than a blank section.
 	if !strings.Contains(p, "(none)") {

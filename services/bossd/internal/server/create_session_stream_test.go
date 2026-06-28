@@ -550,7 +550,7 @@ type setupStreamAgent struct {
 	startFn  func(context.Context, string, string, *string, string) (string, error)
 }
 
-func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+func (a *setupStreamAgent) Start(ctx context.Context, workDir, plan string, resume *string, agentSessionID, _ string) (string, error) {
 	if a.startFn != nil {
 		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
 	}
@@ -565,7 +565,7 @@ func (a *setupStreamAgent) Subscribe(context.Context, string) (<-chan agent.Outp
 	close(ch)
 	return ch, nil
 }
-func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID string) (string, error) {
+func (a *setupStreamAgent) StartByAgent(ctx context.Context, _ string, workDir, plan string, resume *string, agentSessionID, _ string) (string, error) {
 	if a.startFn != nil {
 		return a.startFn(ctx, workDir, plan, resume, agentSessionID)
 	}

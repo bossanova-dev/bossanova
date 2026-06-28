@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { validateBrowserRoute } from './proof-lib.mjs';
 
-const validSurfaces = new Set(['web', 'marketing']);
+const validSurfaces = new Set(['web', 'marketing', 'docs']);
 const validRecipeIdPattern = /^[a-z0-9][a-z0-9-]*$/;
 const VIDEO_ACTIONS = new Set(['goto', 'click', 'type', 'wait', 'scroll']);
 const DEFAULT_VIDEO_SLOWMO_MS = 350;
@@ -167,7 +167,11 @@ function requireVideoStepString(step, field) {
 }
 
 function serviceSpecRoot(surface) {
-  return path.resolve(surface === 'marketing' ? 'tests/e2e' : 'tests/e2e/specs');
+  // marketing (Astro) and docs (Docusaurus) keep their proof specs in tests/e2e;
+  // the web app nests them under tests/e2e/specs.
+  return path.resolve(
+    surface === 'marketing' || surface === 'docs' ? 'tests/e2e' : 'tests/e2e/specs',
+  );
 }
 
 export function buildSpec({ recipe, outputDir, surface }) {

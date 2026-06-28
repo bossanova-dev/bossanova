@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 const maxScanLines = 200
@@ -502,4 +504,87 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:maxSummaryLen-3] + "..."
+}
+
+// parseRolloutMessages reads all chat turns from the codex rollout JSONL at
+// path and returns them as ordered []*bossanovav1.ChatMessage. Only
+// event_msg/user_message and event_msg/agent_message envelopes are converted;
+// protocol noise (session_meta, turn_context, token_count, response_item,
+// task_complete, function_call*, etc.) is skipped.
+//
+// The second return value is the flattened text of the last assistant turn
+// seen across the full file (used as FinalAssistantText in
+// ReadTranscriptResponse, independent of any MaxMessages tail-cut).
+func parseRolloutMessages(path string) ([]*bossanovav1.ChatMessage, string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	var msgs []*bossanovav1.ChatMessage
+	var lastAssistant string
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		var env codexEnvelope
+		if err := json.Unmarshal(scanner.Bytes(), &env); err != nil {
+			continue
+		}
+		if env.Type != "event_msg" {
+			continue
+		}
+		var p codexEventMsgPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			continue
+		}
+		var role string
+		switch p.Type {
+		case "user_message":
+			role = "user"
+		case "agent_message":
+			role = "assistant"
+		default:
+			continue
+		}
+		text := strings.TrimSpace(p.Message)
+		msgs = append(msgs, &bossanovav1.ChatMessage{
+			Role:      role,
+			Text:      text,
+			Timestamp: env.Timestamp,
+			Kind:      "text",
+		})
+		if role == "assistant" {
+			lastAssistant = text
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, "", err
+	}
+	return msgs, lastAssistant, nil
+}
+
+// readTranscriptAt resolves the rollout JSONL for agentSessionID under root
+// and returns parsed chat messages. When no rollout file is found it returns
+// {Exists:false} with nil error — callers treat that as transcript-not-yet-
+// written rather than a hard failure. Exposed for tests so the sessions root
+// can be redirected to a temp dir (mirrors findRolloutPath).
+func readTranscriptAt(root, _, agentSessionID string, maxMessages int32) (*bossanovav1.ReadTranscriptResponse, error) {
+	path, err := findRolloutPath(root, agentSessionID)
+	if err != nil {
+		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
+	}
+	msgs, finalAssistant, err := parseRolloutMessages(path)
+	if err != nil {
+		return nil, err
+	}
+	if maxMessages > 0 && int(maxMessages) < len(msgs) {
+		msgs = msgs[len(msgs)-int(maxMessages):]
+	}
+	return &bossanovav1.ReadTranscriptResponse{
+		Exists:             true,
+		Messages:           msgs,
+		FinalAssistantText: finalAssistant,
+	}, nil
 }

@@ -26,6 +26,7 @@ type CreateSessionOpts struct {
 	PRNumber        *int
 	PRURL           *string
 	AgentName       string // Agent plugin name; empty means use the daemon default agent.
+	Model           string // Opaque agent model id; "" = plugin default.
 
 	// PreventDuplicateActiveSession is set for Dependabot repair sessions so
 	// one active PR/branch session covers repeated plugin emissions.
@@ -167,6 +168,7 @@ func (c *lifecycleSessionCreator) CreateSession(ctx context.Context, opts Create
 			PRNumber:   opts.PRNumber,
 			PRURL:      opts.PRURL,
 			AgentName:  agentName,
+			Model:      opts.Model,
 			BranchName: branchName,
 		})
 	}

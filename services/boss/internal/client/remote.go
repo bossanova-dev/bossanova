@@ -265,6 +265,44 @@ func translateStreamOutcome(o pb.WakeChatResult_Outcome) pb.WakeChatResponse_Out
 	}
 }
 
+// --- Chat Transcript and Messaging (proxied through the orchestrator) ---
+
+// GetChatTranscript proxies a transcript read through the orchestrator, which
+// routes by (session_id, agent_session_id) to the owning daemon and enforces the
+// session-level authz check.
+func (c *RemoteClient) GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	resp, err := c.rpc.ProxyGetChatTranscript(ctx, connect.NewRequest(&pb.ProxyGetChatTranscriptRequest{
+		SessionId:      req.GetSessionId(),
+		AgentSessionId: req.GetAgentSessionId(),
+		MaxMessages:    req.GetMaxMessages(),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.GetChatTranscriptResponse{
+		Messages:           resp.Msg.GetMessages(),
+		FinalAssistantText: resp.Msg.GetFinalAssistantText(),
+		Exists:             resp.Msg.GetExists(),
+	}, nil
+}
+
+// SendChatMessage proxies a send through the orchestrator, which resolves the
+// owning daemon by agent_session_id (the send RPC carries no session_id).
+func (c *RemoteClient) SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	resp, err := c.rpc.ProxySendChatMessage(ctx, connect.NewRequest(&pb.ProxySendChatMessageRequest{
+		AgentSessionId: req.GetAgentSessionId(),
+		Message:        req.GetMessage(),
+		WakeIfAsleep:   req.GetWakeIfAsleep(),
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return &pb.SendChatMessageResponse{
+		TmuxSessionName: resp.Msg.GetTmuxSessionName(),
+		Delivered:       resp.Msg.GetDelivered(),
+	}, nil
+}
+
 // --- Chat Status (local only) ---
 
 func (c *RemoteClient) ReportChatStatus(_ context.Context, _ []*pb.ChatStatusReport) error {

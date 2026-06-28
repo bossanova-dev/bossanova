@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -1728,6 +1729,14 @@ func (s *Server) UpdateSession(ctx context.Context, req *connect.Request[pb.Upda
 		p.RepoOriginUrl = CanonicalRepoOriginURL(repo.OriginURL)
 	}
 
+	// Propagate the update (e.g. a rename) to the cloud/web via the upstream
+	// stream, matching LinkSessionPR/Archive/Resurrect. Without this the local
+	// DB and TUI reflect the new title but bosso never sees it until the next
+	// full daemon snapshot.
+	if s.onSessionUpdated != nil {
+		s.onSessionUpdated(ctx, p)
+	}
+
 	return connect.NewResponse(&pb.UpdateSessionResponse{Session: p}), nil
 }
 
@@ -1760,11 +1769,26 @@ func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.Arc
 	}
 
 	if err := s.lifecycle.ArchiveSession(ctx, req.Msg.Id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Session row is already gone — treat archive as idempotent success.
+			// Emit KIND_DELETED so bosso drops the stale read-model row.
+			if s.onSessionDeleted != nil {
+				s.onSessionDeleted(ctx, req.Msg.Id)
+			}
+			return connect.NewResponse(&pb.ArchiveSessionResponse{Session: &pb.Session{Id: req.Msg.Id}}), nil
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("archive session: %w", err))
 	}
 
 	sess, err := s.sessions.Get(ctx, req.Msg.Id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Session disappeared between the lifecycle call and the read-back.
+			if s.onSessionDeleted != nil {
+				s.onSessionDeleted(ctx, req.Msg.Id)
+			}
+			return connect.NewResponse(&pb.ArchiveSessionResponse{Session: &pb.Session{Id: req.Msg.Id}}), nil
+		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
 	}
 
@@ -1951,8 +1975,9 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 		WorktreePath:       sess.WorktreePath,
 		TmuxName:           tmuxName,
 		ForceFresh:         !resume,
-		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID),
-		CronEnv:            session.CronSessionEnv(sess),
+		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName),
+		SessionEnv:         session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+		Model:              sess.Model,
 	})
 	if err != nil {
 		return err

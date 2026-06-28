@@ -51,6 +51,13 @@ service OrchestratorService {
   rpc ProxyRecordChat(ProxyRecordChatRequest) returns (ProxyRecordChatResponse);
   // Deletes a chat via the owning daemon's reverse stream.
   rpc ProxyDeleteChat(ProxyDeleteChatRequest) returns (ProxyDeleteChatResponse);
+  // Reads a chat's transcript via the owning daemon's reverse stream. Routes by
+  // session_id (FindSessionDaemon) with a GetChat authz check, like ProxyWakeChat.
+  rpc ProxyGetChatTranscript(ProxyGetChatTranscriptRequest) returns (ProxyGetChatTranscriptResponse);
+  // Sends a user message into a chat via the owning daemon's reverse stream.
+  // Routes by agent_session_id (FindDaemonForChat) since the MCP send tool
+  // carries no session_id.
+  rpc ProxySendChatMessage(ProxySendChatMessageRequest) returns (ProxySendChatMessageResponse);
   // Aggregates repos across all of the caller's live daemons, deduped by
   // origin URL, with the serving daemon IDs unioned per repo.
   rpc ProxyListReposAggregated(ProxyListReposAggregatedRequest) returns (ProxyListReposAggregatedResponse);
@@ -302,6 +309,36 @@ message ProxyDeleteChatRequest {
   string agent_session_id = 2;
 }
 message ProxyDeleteChatResponse {}
+
+// ProxyGetChatTranscriptRequest reads a chat by agent_session_id, scoped to
+// session_id for authz (mirror ProxyWakeChat). max_messages == 0 returns all.
+message ProxyGetChatTranscriptRequest {
+  string session_id = 1;       // for authz scoping (mirror ProxyWakeChat)
+  string agent_session_id = 2;
+  int32 max_messages = 3;      // 0 = all; otherwise the most recent N
+}
+// ProxyGetChatTranscriptResponse mirrors daemon.proto's GetChatTranscriptResponse
+// shape so the gateway can forward it field-for-field. ChatMessage is defined in
+// daemon.proto (already imported).
+message ProxyGetChatTranscriptResponse {
+  repeated ChatMessage messages = 1;
+  string final_assistant_text = 2;
+  bool exists = 3;
+}
+
+// ProxySendChatMessageRequest carries only agent_session_id (the MCP send tool
+// has no session_id), so bosso routes via FindDaemonForChat rather than
+// FindSessionDaemon.
+message ProxySendChatMessageRequest {
+  string agent_session_id = 1;
+  string message = 2;
+  bool wake_if_asleep = 3;
+}
+// ProxySendChatMessageResponse mirrors daemon.proto's SendChatMessageResponse.
+message ProxySendChatMessageResponse {
+  string tmux_session_name = 1;
+  bool delivered = 2;
+}
 
 // AggregatedRepo is one logical repo (deduped by origin URL) plus a ref for
 // every live daemon that serves it. Web-safe: carries no Repo and no API keys.

@@ -287,9 +287,15 @@ func sanitizeDirName(name string) string {
 // adds the wiring. The in-process filter in finalize.go (which does call
 // ListIgnoredDirtyFiles) is the primary fix; this exclude entry is
 // belt-and-suspenders.
+// .superpowers/ is the superpowers-framework scratch directory. Skills create
+// it while they run — including during the finalize/stop skills themselves — so
+// the agent cannot reliably clean it before bossd finalizes. Left untracked it
+// trips the same pr_failed → Blocked misclassification as the Stop-hook config,
+// so it is excluded here for every managed repo.
 var bossdManagedExcludePatterns = []string{
 	".boss/",
 	".claude/settings.local.json",
+	".superpowers/",
 }
 
 // bossdExcludeMarker identifies the block of patterns bossd has added

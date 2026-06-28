@@ -14,13 +14,19 @@ func TestKeyBytes(t *testing.T) {
 		wantErr bool
 	}{
 		{"enter", "enter", []byte{'\r'}, false},
+		{"Enter alias", "Enter", []byte{'\r'}, false},
+		{"return alias", "Return", []byte{'\r'}, false},
 		{"esc", "esc", []byte{0x1b}, false},
+		{"Escape alias", "Escape", []byte{0x1b}, false},
 		{"ctrl+a", "ctrl+a", []byte{0x01}, false},
+		{"Ctrl+A alias", "Ctrl+A", []byte{0x01}, false},
 		{"ctrl+z", "ctrl+z", []byte{0x1a}, false},
 		{"single char j", "j", []byte{'j'}, false},
+		{"single char S preserves case", "S", []byte{'S'}, false},
+		{"single char space", " ", []byte{' '}, false},
 		{"single char q", "q", []byte{'q'}, false},
 		{"unsupported", "up", nil, true},
-		{"unsupported long", "ctrl+A", nil, true}, // uppercase not supported
+		{"unsupported long", "ctrl+ab", nil, true},
 	}
 
 	for _, tt := range tests {

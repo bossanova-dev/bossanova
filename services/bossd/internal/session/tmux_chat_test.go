@@ -413,6 +413,22 @@ func TestKillChatTmuxSession_DoesNotClearChatPointerWhenKillFails(t *testing.T) 
 // (bracketed paste). Verifies the title is exactly what the caller passed
 // (NOT cron's `Run "..."` template) and that the argv came from the agent
 // plugin rather than a hardcoded slice.
+func TestStartTmuxChat_SendsModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+	h.sessions.sessions["sess-1"].Model = "sonnet"
+
+	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair"}, "title", HookOpts{}); err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	if got := h.agentFake.LastBuildInteractiveCommand.GetModel(); got != "sonnet" {
+		t.Fatalf("BuildInteractiveCommand model = %q, want sonnet", got)
+	}
+}
+
 func TestStartTmuxChat_HappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -2013,48 +2029,119 @@ func (a *emptyArgvAgent) BuildInteractiveCommand(_ context.Context, _ *bossanova
 // — guards against the embedded fakeAgentForLifecycle's signature drifting.
 var _ agent.AgentRunnerClient = (*emptyArgvAgent)(nil)
 
-func TestCronSessionEnvAndDirective(t *testing.T) {
-	cronJobID := "cron-42"
-	cronSess := &models.Session{ID: "s1", Title: "Nightly triage", CronJobID: &cronJobID}
+func TestAppendSystemPromptForFacts(t *testing.T) {
+	job := "cron-42"
+	cronSess := &models.Session{ID: "s1", Title: "Nightly triage", CronJobID: &job}
 	plainSess := &models.Session{ID: "s2", Title: "Manual"}
-
-	env := CronSessionEnv(cronSess)
-	if env["BOSS_CRON"] != "true" {
-		t.Fatalf("BOSS_CRON = %q, want true", env["BOSS_CRON"])
-	}
-	if env["BOSS_CRON_JOB_ID"] != "cron-42" {
-		t.Fatalf("BOSS_CRON_JOB_ID = %q, want cron-42", env["BOSS_CRON_JOB_ID"])
-	}
-	if env["BOSS_CRON_NAME"] != "Nightly triage" {
-		t.Fatalf("BOSS_CRON_NAME = %q, want Nightly triage", env["BOSS_CRON_NAME"])
-	}
 	const agentSessionID = "agent-123"
 
-	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID)
-	if !strings.Contains(cronPrompt, "s1") {
-		t.Fatalf("cron prompt missing session id: %q", cronPrompt)
-	}
-	if !strings.Contains(cronPrompt, agentSessionID) {
-		t.Fatalf("cron prompt missing chat id: %q", cronPrompt)
-	}
-	if !strings.Contains(cronPrompt, cronAutonomyDirective) {
-		t.Fatalf("cron prompt missing autonomy directive: %q", cronPrompt)
+	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID, "claude")
+	for _, want := range []string{"s1", agentSessionID, cronAutonomyDirective, "rename"} {
+		if !strings.Contains(cronPrompt, want) {
+			t.Fatalf("cron prompt missing %q: %q", want, cronPrompt)
+		}
 	}
 
-	// Non-cron sessions still get the boss context, but never the cron directive.
-	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID)
+	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude")
 	if !strings.Contains(plainPrompt, "s2") {
 		t.Fatalf("plain prompt missing session id: %q", plainPrompt)
 	}
 	if strings.Contains(plainPrompt, cronAutonomyDirective) {
 		t.Fatalf("plain prompt should not contain the cron directive: %q", plainPrompt)
 	}
-	if AppendSystemPromptFor(nil, agentSessionID) != "" {
+	if AppendSystemPromptFor(nil, agentSessionID, "") != "" {
 		t.Fatalf("nil session should yield empty prompt")
 	}
 
-	// Non-cron sessions get neither env nor directive.
-	if env := CronSessionEnv(plainSess); env != nil {
-		t.Fatalf("non-cron env = %v, want nil", env)
+	// Hardened guardrail must be present.
+	if !strings.Contains(plainPrompt, "report") || !strings.Contains(plainPrompt, "blocked") {
+		t.Fatalf("prompt missing the 'report blocked' guardrail: %q", plainPrompt)
+	}
+}
+
+// TestBossPromptHasNoStaleCapabilityList guards against re-introducing the
+// hand-listed tool subset (the original bug) or naming surfaces that only land
+// in later tickets (boss env, mcp__boss__*).
+func TestBossPromptHasNoStaleCapabilityList(t *testing.T) {
+	prompt := AppendSystemPromptFor(&models.Session{ID: "s1"}, "agent-1", "claude")
+	for _, banned := range []string{
+		"list_sessions", "get_session", "create_session", "record_chat",
+		"wake_chat", "update_session", "mcp__boss__", "boss env",
+	} {
+		if strings.Contains(prompt, banned) {
+			t.Fatalf("prompt must not reference %q (Phase-1 drift guard): %q", banned, prompt)
+		}
+	}
+}
+
+func TestResolveSessionFacts(t *testing.T) {
+	sess := &models.Session{
+		ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt", Title: "Manual",
+	}
+	f := ResolveSessionFacts(sess, "agent-99", "claude")
+	if f.SessionID != "s1" || f.AgentSessionID != "agent-99" ||
+		f.RepoID != "r1" || f.Agent != "claude" || f.Worktree != "/wt" {
+		t.Fatalf("identifiers not threaded: %+v", f)
+	}
+	if f.IsCron {
+		t.Fatalf("non-cron session marked cron")
+	}
+	if f.SettingsPath == "" {
+		t.Fatalf("settings path not resolved")
+	}
+
+	// agentName param wins over sess.AgentName.
+	fCross := ResolveSessionFacts(sess, "agent-99", "codex")
+	if fCross.Agent != "codex" {
+		t.Fatalf("explicit agentName should win over sess.AgentName: got %q, want %q", fCross.Agent, "codex")
+	}
+
+	// empty agentName falls back to sess.AgentName.
+	fFallback := ResolveSessionFacts(sess, "agent-99", "")
+	if fFallback.Agent != "claude" {
+		t.Fatalf("empty agentName should fall back to sess.AgentName: got %q, want %q", fFallback.Agent, "claude")
+	}
+
+	job := "cron-42"
+	cron := &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job}
+	cf := ResolveSessionFacts(cron, "agent-1", "")
+	if !cf.IsCron || cf.CronJobID != "cron-42" || cf.CronName != "Nightly" {
+		t.Fatalf("cron facts wrong: %+v", cf)
+	}
+}
+
+func TestManagedSessionEnv(t *testing.T) {
+	sess := &models.Session{ID: "s1", RepoID: "r1", AgentName: "claude", WorktreePath: "/wt", Title: "Manual"}
+	// Pass "codex" as the chat agent to verify the param wins over sess.AgentName ("claude").
+	env := ManagedSessionEnv(sess, "agent-7", "codex")
+	for k, want := range map[string]string{
+		"BOSS_SESSION_ID":       "s1",
+		"BOSS_AGENT_SESSION_ID": "agent-7",
+		"BOSS_REPO_ID":          "r1",
+		"BOSS_AGENT":            "codex",
+		"BOSS_WORKTREE":         "/wt",
+	} {
+		if env[k] != want {
+			t.Fatalf("env[%s] = %q, want %q", k, env[k], want)
+		}
+	}
+	if _, ok := env["BOSS_CRON"]; ok {
+		t.Fatalf("non-cron session must not set BOSS_CRON")
+	}
+	if _, ok := env["BOSS_SETTINGS_PATH"]; !ok {
+		t.Fatalf("BOSS_SETTINGS_PATH must be set")
+	}
+
+	// Empty agentName falls back to sess.AgentName.
+	envFallback := ManagedSessionEnv(sess, "agent-7", "")
+	if envFallback["BOSS_AGENT"] != "claude" {
+		t.Fatalf("empty agentName should fall back to sess.AgentName: got %q, want %q", envFallback["BOSS_AGENT"], "claude")
+	}
+
+	job := "cron-42"
+	cron := &models.Session{ID: "s2", Title: "Nightly", CronJobID: &job}
+	cenv := ManagedSessionEnv(cron, "agent-1", "")
+	if cenv["BOSS_CRON"] != "true" || cenv["BOSS_CRON_JOB_ID"] != "cron-42" || cenv["BOSS_CRON_NAME"] != "Nightly" {
+		t.Fatalf("cron env wrong: %v", cenv)
 	}
 }

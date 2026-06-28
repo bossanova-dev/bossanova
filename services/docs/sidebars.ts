@@ -20,6 +20,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'guides/agent-plugins',
+        'guides/mcp',
         'guides/setup-scripts',
         'guides/pr-lifecycle',
         'guides/scheduled-sessions',

@@ -13,6 +13,16 @@ import (
 	"github.com/recurser/bossd/internal/db"
 )
 
+// gatingJobIDs returns a snapshot of the job IDs currently running their gate
+// command. Returns nil when no scheduler is wired (tests that don't construct
+// one still work correctly via the nil-safe path in cronJobToProto).
+func (s *Server) gatingJobIDs() map[string]struct{} {
+	if s.cronScheduler == nil {
+		return nil
+	}
+	return s.cronScheduler.GatingJobIDs()
+}
+
 // CreateCronJob registers a new scheduled prompt and adds it to the live
 // scheduler when enabled. The schedule is validated by the scheduler's parser
 // when AddJob runs; an invalid expression is reported as InvalidArgument and
@@ -35,6 +45,10 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 	if err := s.validateExplicitAgentName(agentName); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	model := strings.TrimSpace(msg.Model)
+	if err := s.validateModel(model); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
 
 	params := db.CreateCronJobParams{
 		RepoID:   msg.RepoId,
@@ -44,9 +58,16 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		// Resolve a blank agent the same way CreateSession does, so a cron job
 		// created with no explicit agent lands on the daemon's actual runner
 		// rather than a hardcoded "claude" that may not be loaded.
-		AgentName: s.resolveAgentName(agentName),
-		Enabled:   msg.Enabled,
+		AgentName:   s.resolveAgentName(agentName),
+		Model:       model,
+		Enabled:     msg.Enabled,
+		GateCommand: strings.TrimSpace(msg.GateCommand),
 	}
+	runSetup := true
+	if msg.RunSetupCommand != nil {
+		runSetup = *msg.RunSetupCommand
+	}
+	params.RunSetupCommand = runSetup
 	if tz := strings.TrimSpace(msg.Timezone); tz != "" {
 		params.Timezone = &tz
 	}
@@ -68,7 +89,7 @@ func (s *Server) CreateCronJob(ctx context.Context, req *connect.Request[pb.Crea
 		}
 	}
 
-	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions)}), nil
+	return connect.NewResponse(&pb.CreateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.gatingJobIDs())}), nil
 }
 
 // ListCronJobs returns all cron jobs, optionally filtered by repo_id.
@@ -86,9 +107,10 @@ func (s *Server) ListCronJobs(ctx context.Context, req *connect.Request[pb.ListC
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list cron jobs: %w", err))
 	}
 
+	gating := s.gatingJobIDs()
 	out := make([]*pb.CronJob, 0, len(jobs))
 	for _, j := range jobs {
-		out = append(out, cronJobToProto(ctx, j, s.sessions))
+		out = append(out, cronJobToProto(ctx, j, s.sessions, gating))
 	}
 	return connect.NewResponse(&pb.ListCronJobsResponse{CronJobs: out}), nil
 }
@@ -105,7 +127,7 @@ func (s *Server) GetCronJob(ctx context.Context, req *connect.Request[pb.GetCron
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get cron job: %w", err))
 	}
-	return connect.NewResponse(&pb.GetCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions)}), nil
+	return connect.NewResponse(&pb.GetCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.gatingJobIDs())}), nil
 }
 
 // UpdateCronJob mutates an existing cron job and refreshes its scheduler
@@ -162,9 +184,23 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 		params.AgentName = &v
 		nextAgentName = v
 	}
+	if msg.Model != nil {
+		v := strings.TrimSpace(*msg.Model)
+		if err := s.validateModel(v); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+		params.Model = &v
+	}
 	if msg.Enabled != nil {
 		params.Enabled = msg.Enabled
 		nextEnabled = *msg.Enabled
+	}
+	if msg.GateCommand != nil {
+		v := strings.TrimSpace(*msg.GateCommand)
+		params.GateCommand = &v
+	}
+	if msg.RunSetupCommand != nil {
+		params.RunSetupCommand = msg.RunSetupCommand
 	}
 	if nextEnabled {
 		if err := s.validateExplicitAgentName(nextAgentName); err != nil {
@@ -190,7 +226,7 @@ func (s *Server) UpdateCronJob(ctx context.Context, req *connect.Request[pb.Upda
 		}
 	}
 
-	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions)}), nil
+	return connect.NewResponse(&pb.UpdateCronJobResponse{CronJob: cronJobToProto(ctx, job, s.sessions, s.gatingJobIDs())}), nil
 }
 
 // DeleteCronJob removes a cron job from the scheduler and the database.

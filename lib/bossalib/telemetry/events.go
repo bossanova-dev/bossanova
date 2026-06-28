@@ -17,19 +17,33 @@ const (
 type Event string
 
 const (
-	EventCLICommandInvoked     Event = "cli_command_invoked"
-	EventDaemonStarted         Event = "daemon_started"
-	EventSessionCreated        Event = "session_created"
-	EventChatCreated           Event = "chat_created"
-	EventChatAttached          Event = "chat_attached"
-	EventAuthChanged           Event = "auth_changed"
-	EventRepairStarted         Event = "repair_started"
-	EventRepairCompleted       Event = "repair_completed"
-	EventBugReportSubmitted    Event = "bug_report_submitted"
-	EventCloudAccessDenied     Event = "cloud_access_denied"
-	EventCloudCheckoutStarted  Event = "cloud_checkout_started"
-	EventCloudCheckoutReturned Event = "cloud_checkout_returned"
+	EventCLICommandInvoked         Event = "cli_command_invoked"
+	EventDaemonStarted             Event = "daemon_started"
+	EventSessionCreated            Event = "session_created"
+	EventChatCreated               Event = "chat_created"
+	EventChatAttached              Event = "chat_attached"
+	EventAuthChanged               Event = "auth_changed"
+	EventRepairStarted             Event = "repair_started"
+	EventRepairCompleted           Event = "repair_completed"
+	EventBugReportSubmitted        Event = "bug_report_submitted"
+	EventCloudAccessDenied         Event = "cloud_access_denied"
+	EventCloudCheckoutStarted      Event = "cloud_checkout_started"
+	EventCloudCheckoutReturned     Event = "cloud_checkout_returned"
+	EventSignupUserCreated         Event = "signup_user_created"
+	EventBillingAccountProvisioned Event = "billing_account_provisioned"
 )
+
+// FunnelDistinctID is the canonical signup/subscription funnel distinct id:
+// user:<workos-user-id> when known, else email:<lowercased+trimmed>, else "anonymous".
+func FunnelDistinctID(workOSUserID, email string) string {
+	if workOSUserID != "" {
+		return "user:" + workOSUserID
+	}
+	if e := strings.ToLower(strings.TrimSpace(email)); e != "" {
+		return "email:" + e
+	}
+	return "anonymous"
+}
 
 func LocalDistinctID(value string) string {
 	return prefixedHashID("local", value)
@@ -60,18 +74,20 @@ func prefixedHashID(prefix, value string) string {
 }
 
 var allowedEvents = map[Event]struct{}{
-	EventCLICommandInvoked:     {},
-	EventDaemonStarted:         {},
-	EventSessionCreated:        {},
-	EventChatCreated:           {},
-	EventChatAttached:          {},
-	EventAuthChanged:           {},
-	EventRepairStarted:         {},
-	EventRepairCompleted:       {},
-	EventBugReportSubmitted:    {},
-	EventCloudAccessDenied:     {},
-	EventCloudCheckoutStarted:  {},
-	EventCloudCheckoutReturned: {},
+	EventCLICommandInvoked:         {},
+	EventDaemonStarted:             {},
+	EventSessionCreated:            {},
+	EventChatCreated:               {},
+	EventChatAttached:              {},
+	EventAuthChanged:               {},
+	EventRepairStarted:             {},
+	EventRepairCompleted:           {},
+	EventBugReportSubmitted:        {},
+	EventCloudAccessDenied:         {},
+	EventCloudCheckoutStarted:      {},
+	EventCloudCheckoutReturned:     {},
+	EventSignupUserCreated:         {},
+	EventBillingAccountProvisioned: {},
 }
 
 func IsAllowed(event Event) bool {

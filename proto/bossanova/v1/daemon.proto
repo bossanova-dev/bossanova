@@ -54,6 +54,15 @@ service DaemonService {
   // --session-id by pre-flight stat of the Claude transcript file.
   rpc WakeChat(WakeChatRequest) returns (WakeChatResponse);
 
+  // GetChatTranscript returns a chat's conversation and final result by routing
+  // to the owning agent plugin's ReadTranscript. Request-response (pollable).
+  rpc GetChatTranscript(GetChatTranscriptRequest) returns (GetChatTranscriptResponse);
+
+  // SendChatMessage delivers a user message into a chat's live agent (waking it
+  // first if asleep) by bracketed-paste, then returns. Drives follow-up turns
+  // and cross-agent "second opinion" prompts without an interactive attach.
+  rpc SendChatMessage(SendChatMessageRequest) returns (SendChatMessageResponse);
+
   // Chat status (cross-client heartbeat sharing)
   rpc ReportChatStatus(ReportChatStatusRequest) returns (ReportChatStatusResponse);
   rpc GetChatStatuses(GetChatStatusesRequest) returns (GetChatStatusesResponse);
@@ -486,6 +495,29 @@ message WakeChatResponse {
   string reason = 3;
 }
 
+message GetChatTranscriptRequest {
+  string agent_session_id = 1;  // chat to read
+  // session_id, when set, scopes the read: the daemon rejects the request
+  // (NotFound) if the chat does not belong to this session. Empty skips the
+  // check, like DeleteChatRequest.
+  string session_id = 2;
+  int32 max_messages = 3;       // 0 = all; otherwise the most recent N
+}
+message GetChatTranscriptResponse {
+  repeated ChatMessage messages = 1;
+  string final_assistant_text = 2;
+  bool exists = 3;
+}
+message SendChatMessageRequest {
+  string agent_session_id = 1;  // target chat
+  string message = 2;           // text to deliver to the agent
+  bool wake_if_asleep = 3;      // when true, wake an asleep chat before pasting
+}
+message SendChatMessageResponse {
+  string tmux_session_name = 1;
+  bool delivered = 2;
+}
+
 // --- Chat Status (cross-client heartbeat sharing) ---
 
 // ChatStatusReport is a single heartbeat from an owning client.
@@ -559,6 +591,12 @@ message CreateCronJobRequest {
   string timezone = 5;   // optional IANA tz; empty = daemon-local
   bool   enabled  = 6;
   string agent_name = 7; // optional agent runner plugin name; empty = claude
+  string model = 8;      // opaque agent model id; "" = plugin default. Never enumerated by bossd.
+  string gate_command = 9; // optional gate command run before each fire; empty = no gate
+  // run the repo setup script before the agent. optional so the server can
+  // default it to true when a client omits it (a plain bool can't tell
+  // "omitted" from "explicit false").
+  optional bool run_setup_command = 10;
 }
 
 message CreateCronJobResponse {
@@ -590,6 +628,9 @@ message UpdateCronJobRequest {
   optional string timezone = 5;
   optional bool   enabled  = 6;
   optional string agent_name = 7;
+  optional string model = 8; // opaque agent model id; "" = plugin default.
+  optional string gate_command = 9; // optional gate command; empty = no gate
+  optional bool   run_setup_command = 10; // run the repo setup script before the agent
 }
 
 message UpdateCronJobResponse {

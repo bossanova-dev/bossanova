@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -93,7 +95,7 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	// codex process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths. (Mirrors the claude plugin
 	// fix in services/bossd's host_service.)
-	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath)
+	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -179,8 +181,8 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 				args = append(args, "--ask-for-approval", s.runner.approval)
 			}
 		}
-		if s.runner.model != "" {
-			args = append(args, "--model", s.runner.model)
+		if model := resolveCodexModel(req.GetModel(), s.runner.model); model != "" {
+			args = append(args, "--model", model)
 		}
 	}
 	initialInput := codexInitialInput(req)
@@ -294,4 +296,16 @@ func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.Transcript
 	return &bossanovav1.TranscriptExistsResponse{
 		Exists: transcriptExists(req.WorkDir, req.AgentSessionId),
 	}, nil
+}
+
+// ReadTranscript reads the codex rollout JSONL transcript for (work_dir,
+// agent_session_id) and returns ordered chat messages. Returns Exists=false
+// (nil error) when no rollout file is found, so callers can distinguish
+// "never started" from hard errors.
+func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
+	}
+	return readTranscriptAt(filepath.Join(home, codexSessionsDir), req.WorkDir, req.AgentSessionId, req.MaxMessages)
 }

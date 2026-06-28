@@ -68,13 +68,16 @@ func (f *fakeAgentClient) LastTurnIsUser(context.Context, *bossanovav1.LastTurnI
 func (f *fakeAgentClient) TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
+func (f *fakeAgentClient) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
 
 func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 	fc := &fakeAgentClient{startResp: &bossanovav1.StartAgentRunResponse{SessionId: "sid"}}
 	tl := NewTailer(zerolog.Nop())
 	pr := NewPluginRunner(fc, tl, t.TempDir(), zerolog.Nop())
 
-	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid")
+	sid, err := pr.Start(context.Background(), "/work", "plan", nil, "explicit-sid", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -96,7 +99,7 @@ func TestPluginRunner_Start_ResolvesLogPath(t *testing.T) {
 func TestPluginRunner_Start_PropagatesError(t *testing.T) {
 	fc := &fakeAgentClient{startErr: errors.New("boom")}
 	pr := NewPluginRunner(fc, NewTailer(zerolog.Nop()), t.TempDir(), zerolog.Nop())
-	_, err := pr.Start(context.Background(), "/w", "p", nil, "sid")
+	_, err := pr.Start(context.Background(), "/w", "p", nil, "sid", "")
 	if err == nil || !errors.Is(err, fc.startErr) && err.Error() != "boom" {
 		t.Errorf("expected wrapped err, got %v", err)
 	}

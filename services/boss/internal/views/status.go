@@ -104,16 +104,10 @@ func attentionWarningHint(sess *pb.Session) string {
 		return ""
 	}
 	summary := strings.TrimSpace(sess.GetAttentionStatus().GetSummary())
-	if summary == "" {
-		return ""
-	}
-	if strings.HasPrefix(summary, "⚠") {
-		return summary
-	}
-	return "⚠ " + summary
+	return summary
 }
 
-// repairFailureHint returns a short suffix like "⚠ repair failed (5×,
+// repairFailureHint returns a short suffix like "repair failed (5×,
 // retry in ~16m)" when the session's last repair attempt failed. Empty
 // when there has been no attempt or the last attempt was clean. Kept
 // distinct from the main STATUS label so the existing `failing` /
@@ -137,9 +131,9 @@ func repairFailureHint(sess *pb.Session) string {
 	if repairFailureResolved(sess) {
 		return ""
 	}
-	base := fmt.Sprintf("⚠ repair failed (%d×)", count)
+	base := fmt.Sprintf("repair failed (%d×)", count)
 	if count == 1 {
-		base = "⚠ repair failed"
+		base = "repair failed"
 	}
 	startedAt := sess.GetLastRepairStartedAt()
 	if startedAt == nil {
@@ -197,6 +191,18 @@ func shortDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Round(time.Minute).Minutes()))
 	}
 	return fmt.Sprintf("%ds", int(d.Round(time.Second).Seconds()))
+}
+
+// selectedSessionWarningBlock returns a full-width, danger-styled block
+// containing all warning hints for the given session, joined by newlines.
+// Returns "" when the session has no hints, so callers can skip rendering
+// entirely (no empty block, no layout shift).
+func selectedSessionWarningBlock(sess *pb.Session, width int) string {
+	hints := sessionWarningHints(sess)
+	if len(hints) == 0 {
+		return ""
+	}
+	return styleStatusDanger.Width(width).Render(strings.Join(hints, "\n"))
 }
 
 // styleForIntent maps a DisplayIntent to its lipgloss style for the TUI.

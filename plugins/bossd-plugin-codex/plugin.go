@@ -51,6 +51,7 @@ var agentRunnerServiceDesc = grpc.ServiceDesc{
 		{MethodName: "HasQuestionPrompt", Handler: agentHasQuestionPromptHandler},
 		{MethodName: "LastTurnIsUser", Handler: agentLastTurnIsUserHandler},
 		{MethodName: "TranscriptExists", Handler: agentTranscriptExistsHandler},
+		{MethodName: "ReadTranscript", Handler: agentReadTranscriptHandler},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "bossanova/v1/plugin.proto",
@@ -72,6 +73,7 @@ type agentRunnerServiceHandler interface {
 	HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
+	ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
 }
 
 func agentGetInfoHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
@@ -192,4 +194,12 @@ func agentTranscriptExistsHandler(srv any, ctx context.Context, dec func(any) er
 		return nil, err
 	}
 	return srv.(agentRunnerServiceHandler).TranscriptExists(ctx, req)
+}
+
+func agentReadTranscriptHandler(srv any, ctx context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+	req := new(bossanovav1.ReadTranscriptRequest)
+	if err := dec(req); err != nil {
+		return nil, err
+	}
+	return srv.(agentRunnerServiceHandler).ReadTranscript(ctx, req)
 }

@@ -23,7 +23,7 @@ func newLabeledAgentRunner(name string) *labeledAgentRunner {
 	return &labeledAgentRunner{name: name}
 }
 
-func (r *labeledAgentRunner) Start(_ context.Context, _, _ string, _ *string, sessionID string) (string, error) {
+func (r *labeledAgentRunner) Start(_ context.Context, _, _ string, _ *string, sessionID, _ string) (string, error) {
 	tag := r.name + ":" + sessionID
 	r.startSeen.Store(&tag)
 	return sessionID, nil
@@ -48,7 +48,7 @@ func TestDispatcher_Start_RoutesToLookupResult(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "claude", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-1"); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-1", ""); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -71,7 +71,7 @@ func TestDispatcher_Start_RoutesToOpenCode(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "opencode", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-2"); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-2", ""); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestDispatcher_Start_FallsBackToDefaultOnEmptyLookup(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-3"); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-3", ""); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func TestDispatcher_Start_FallsBackToDefaultOnLookupError(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", errors.New("db down") }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-4"); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-4", ""); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestDispatcher_Start_UnknownAgentReturnsError(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "ghost", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	_, err := d.Start(context.Background(), "/w", "p", nil, "sid-5")
+	_, err := d.Start(context.Background(), "/w", "p", nil, "sid-5", "")
 	if err == nil {
 		t.Fatal("expected Start to error for unknown agent")
 	}
@@ -171,7 +171,7 @@ func TestResolveSingleLoadedAgentOverridesEmptyName(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-solo"); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-solo", ""); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if seen := codexRunner.startSeen.Load(); seen == nil || *seen != "codex:sid-solo" {
@@ -191,7 +191,7 @@ func TestResolveMultipleLoadedFallsBackToDefault(t *testing.T) {
 	lookup := func(_ string) (string, error) { return "", nil }
 	d := NewDispatcher(registry, lookup, "claude", zerolog.Nop())
 
-	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-multi"); err != nil {
+	if _, err := d.Start(context.Background(), "/w", "p", nil, "sid-multi", ""); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if seen := claudeRunner.startSeen.Load(); seen == nil || *seen != "claude:sid-multi" {
@@ -214,7 +214,7 @@ func TestDispatcher_StartByAgent_RoutesToNamedAgent(t *testing.T) {
 		return "", nil
 	}, "claude", zerolog.Nop())
 
-	if _, err := d.StartByAgent(context.Background(), "codex", "/w", "p", nil, "agent-sid-1"); err != nil {
+	if _, err := d.StartByAgent(context.Background(), "codex", "/w", "p", nil, "agent-sid-1", ""); err != nil {
 		t.Fatalf("StartByAgent: %v", err)
 	}
 	if seen := codexRunner.startSeen.Load(); seen == nil || *seen != "codex:agent-sid-1" {
@@ -233,7 +233,7 @@ func TestDispatcher_StartByAgent_EmptyNameWithSingleRunnerWins(t *testing.T) {
 		return "", nil
 	}, "claude", zerolog.Nop())
 
-	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid"); err != nil {
+	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid", ""); err != nil {
 		t.Fatalf("StartByAgent: %v", err)
 	}
 	if seen := codexRunner.startSeen.Load(); seen == nil || *seen != "codex:sid" {
@@ -253,7 +253,7 @@ func TestDispatcher_StartByAgent_EmptyNameMultipleRunnersFallsBackToDefault(t *t
 		return "", nil
 	}, "claude", zerolog.Nop())
 
-	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid"); err != nil {
+	if _, err := d.StartByAgent(context.Background(), "", "/w", "p", nil, "sid", ""); err != nil {
 		t.Fatalf("StartByAgent: %v", err)
 	}
 	if seen := claudeRunner.startSeen.Load(); seen == nil || *seen != "claude:sid" {
@@ -265,7 +265,7 @@ func TestDispatcher_StartByAgent_UnknownAgentReturnsError(t *testing.T) {
 	registry := map[string]AgentRunner{"claude": newLabeledAgentRunner("claude")}
 	d := NewDispatcher(registry, func(string) (string, error) { return "", nil }, "claude", zerolog.Nop())
 
-	_, err := d.StartByAgent(context.Background(), "ghost", "/w", "p", nil, "sid")
+	_, err := d.StartByAgent(context.Background(), "ghost", "/w", "p", nil, "sid", "")
 	if err == nil || !errors.Is(err, ErrAgentNotLoaded) {
 		t.Fatalf("expected ErrAgentNotLoaded, got %v", err)
 	}
@@ -303,7 +303,7 @@ type stopRecordingRunner struct {
 	onStop func(sessionID string)
 }
 
-func (r *stopRecordingRunner) Start(_ context.Context, _, _ string, _ *string, sid string) (string, error) {
+func (r *stopRecordingRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string) (string, error) {
 	return sid, nil
 }
 func (r *stopRecordingRunner) Stop(sid string) error    { r.onStop(sid); return nil }
@@ -334,7 +334,7 @@ func TestDispatcher_IsRunningByAgent_RoutesAndReturnsTrue(t *testing.T) {
 
 type alwaysRunningRunner struct{ running bool }
 
-func (r *alwaysRunningRunner) Start(_ context.Context, _, _ string, _ *string, sid string) (string, error) {
+func (r *alwaysRunningRunner) Start(_ context.Context, _, _ string, _ *string, sid, _ string) (string, error) {
 	return sid, nil
 }
 func (r *alwaysRunningRunner) Stop(_ string) error      { return nil }

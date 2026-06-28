@@ -160,6 +160,24 @@ you can work from anywhere.
 
 <img src="https://bossanova.dev/screenshots/tour/gifs/boss-cloud-sign-in.gif" alt="signing in to Bossanova Cloud from the TUI" width="900">
 
+## Control via agents & CLI
+
+Bossanova is fully scriptable. Beyond the TUI, you can drive every core operation
+— sessions, repositories, CI status, and scheduled jobs — from the `boss` CLI or
+from any AI agent through the built-in **MCP server**. You can even create a
+session non-interactively (`boss new --detach`), follow a running chat, send it a
+follow-up message, and read back its final result — via `boss chat` or MCP.
+
+```bash
+make build-mcp     # build the MCP server (bin/mcp)
+```
+
+Point Claude Code or Claude Desktop at `bin/mcp` (the host spawns it over
+stdio), or run `boss mcp install` to host it as an always-on local HTTP daemon.
+The MCP server exposes 44 tools across read-only, mutating, and `confirm`-gated
+destructive tiers. See the [MCP guide](https://docs.bossanova.dev/guides/mcp) for
+host wiring and the full tool catalog.
+
 ## What It Runs
 
 - **`boss`**: the terminal UI for managing agent sessions.

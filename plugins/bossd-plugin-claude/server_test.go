@@ -83,6 +83,38 @@ func TestBuildInteractiveCommandAppendsSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveCommand_AppendsModel(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		LogPath:   t.TempDir() + "/claude.log",
+		Model:     "sonnet",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(resp.GetArgv(), "\x00")
+	if !strings.Contains(joined, "--model\x00sonnet") {
+		t.Fatalf("argv %v missing --model sonnet", resp.GetArgv())
+	}
+}
+
+func TestBuildInteractiveCommand_NoModelWhenEmpty(t *testing.T) {
+	srv := &Server{}
+	resp, err := srv.BuildInteractiveCommand(context.Background(), &bossanovav1.BuildInteractiveCommandRequest{
+		SessionId: "sid",
+		LogPath:   t.TempDir() + "/claude.log",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range resp.GetArgv() {
+		if a == "--model" {
+			t.Fatal("argv should not contain --model when model empty")
+		}
+	}
+}
+
 func TestGetInfoIncludesDangerouslySkipPermissionsSetting(t *testing.T) {
 	s := newServer(nil, zerolog.Nop())
 	resp, err := s.GetInfo(context.Background(), &bossanovav1.AgentRunnerServiceGetInfoRequest{})

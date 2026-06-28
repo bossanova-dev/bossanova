@@ -162,8 +162,10 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 			args = append(args, "--ask-for-approval", r.approval)
 		}
 	}
-	if r.model != "" {
-		args = append(args, "--model", r.model)
+	// A per-request model (carried via Options) overrides the plugin-global
+	// BOSS_PLUGIN_model env default; empty falls back to the env default.
+	if model := resolveCodexModel(in.Options["model"], r.model); model != "" {
+		args = append(args, "--model", model)
 	}
 	// Caller-provided session ID is ignored: codex generates its own.
 	_ = in.ProvidedSessionID
@@ -171,11 +173,22 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }
 
+// resolveCodexModel implements the per-request-wins, env-fallback rule shared
+// by the headless and interactive argv paths: a non-empty request model wins;
+// otherwise the plugin-global env default (BOSS_PLUGIN_model) is used; empty
+// means "codex CLI default" (no --model flag).
+func resolveCodexModel(reqModel, envModel string) string {
+	if reqModel != "" {
+		return reqModel
+	}
+	return envModel
+}
+
 // Start spawns the codex CLI subprocess. Delegates to the embedded
 // agentruntime.Runner.Start. The returned session ID is the codex-generated
 // UUID parsed from `thread.started` (via the SessionIDFromOutput hook wired
 // in C.6); falls back to the caller-supplied hint if no UUID was observed
 // in time.
-func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath string) (string, error) {
-	return r.Runner.Start(ctx, workDir, plan, resume, sessionID, logPath)
+func (r *Runner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, logPath, model string) (string, error) {
+	return r.Runner.Start(ctx, workDir, plan, resume, sessionID, logPath, model)
 }

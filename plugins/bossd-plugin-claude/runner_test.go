@@ -4,6 +4,7 @@ import (
 	"context"
 	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -18,6 +19,31 @@ func fakeClaude(t *testing.T, script string) agentruntime.CommandFactory {
 	t.Helper()
 	return func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	}
+}
+
+func TestBuildArgvIncludesModelFromOptions(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	got := r.buildArgv(agentruntime.BuildArgvInput{
+		SessionID: "x", ProvidedSessionID: true,
+		Options: map[string]string{"model": "sonnet"},
+	})
+	joined := strings.Join(got, "\x00")
+	if !strings.Contains(joined, "--model\x00sonnet") {
+		t.Errorf("buildArgv = %v, want --model sonnet", got)
+	}
+}
+
+func TestBuildArgvNoModelWhenEmptyOption(t *testing.T) {
+	r := NewRunner(zerolog.Nop())
+	got := r.buildArgv(agentruntime.BuildArgvInput{
+		SessionID: "x", ProvidedSessionID: true,
+		Options: map[string]string{"model": ""},
+	})
+	for _, a := range got {
+		if a == "--model" {
+			t.Fatalf("buildArgv = %v, want no --model for empty option", got)
+		}
 	}
 }
 

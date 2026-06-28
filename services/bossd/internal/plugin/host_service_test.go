@@ -318,6 +318,9 @@ func (f *fakeAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastT
 func (f *fakeAgentClient) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
+func (f *fakeAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
 func (f *fakeAgentClient) RemoveAgentRunHook(_ context.Context, req *bossanovav1.RemoveAgentRunHookRequest) (*bossanovav1.RemoveAgentRunHookResponse, error) {
 	f.mu.Lock()
 	f.removeHookReqs = append(f.removeHookReqs, req)

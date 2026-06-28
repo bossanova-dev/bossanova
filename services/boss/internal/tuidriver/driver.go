@@ -139,6 +139,14 @@ func (d *Driver) responseLoop() {
 	}
 }
 
+// Width returns the effective terminal width in columns, after any default
+// has been applied in New.
+func (d *Driver) Width() int { return d.width }
+
+// Height returns the effective terminal height in rows, after any default
+// has been applied in New.
+func (d *Driver) Height() int { return d.height }
+
 // Screen returns the current terminal screen as plain text.
 func (d *Driver) Screen() string {
 	d.mu.Lock()

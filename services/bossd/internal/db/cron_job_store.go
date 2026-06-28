@@ -37,11 +37,16 @@ func (s *SQLiteCronJobStore) Create(ctx context.Context, params CreateCronJobPar
 	}
 	now := sqlutil.TimeNow()
 	agentName := normalizeCronJobAgentName(params.AgentName)
+	var gateCommandVal any
+	if params.GateCommand != "" {
+		gateCommandVal = params.GateCommand
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO cron_jobs (id, repo_id, name, prompt, schedule, timezone, agent_name, model, enabled, gate_command, run_setup_command, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Name, params.Prompt, params.Schedule, params.Timezone,
-		agentName, sqlutil.BoolToInt(params.Enabled), now, now,
+		agentName, params.Model, sqlutil.BoolToInt(params.Enabled),
+		gateCommandVal, sqlutil.BoolToInt(params.RunSetupCommand), now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert cron job: %w", err)
@@ -55,7 +60,7 @@ func (s *SQLiteCronJobStore) Get(ctx context.Context, id string) (*models.CronJo
 }
 
 func (s *SQLiteCronJobStore) List(ctx context.Context) ([]*models.CronJob, error) {
-	rows, err := s.db.QueryContext(ctx, cronJobSelectSQL+" ORDER BY created_at DESC")
+	rows, err := s.db.QueryContext(ctx, cronJobSelectSQL+" ORDER BY name COLLATE NOCASE ASC, created_at DESC")
 	if err != nil {
 		return nil, fmt.Errorf("list cron jobs: %w", err)
 	}
@@ -64,7 +69,7 @@ func (s *SQLiteCronJobStore) List(ctx context.Context) ([]*models.CronJob, error
 
 func (s *SQLiteCronJobStore) ListByRepo(ctx context.Context, repoID string) ([]*models.CronJob, error) {
 	rows, err := s.db.QueryContext(ctx,
-		cronJobSelectSQL+" WHERE repo_id = ? ORDER BY name ASC", repoID)
+		cronJobSelectSQL+" WHERE repo_id = ? ORDER BY name COLLATE NOCASE ASC, created_at DESC", repoID)
 	if err != nil {
 		return nil, fmt.Errorf("list cron jobs by repo: %w", err)
 	}
@@ -109,6 +114,10 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 		sets = append(sets, "agent_name = ?")
 		args = append(args, normalizeCronJobAgentName(*params.AgentName))
 	}
+	if params.Model != nil {
+		sets = append(sets, "model = ?")
+		args = append(args, *params.Model)
+	}
 	if params.Enabled != nil {
 		sets = append(sets, "enabled = ?")
 		args = append(args, sqlutil.BoolToInt(*params.Enabled))
@@ -120,6 +129,14 @@ func (s *SQLiteCronJobStore) Update(ctx context.Context, id string, params Updat
 			sets = append(sets, "next_run_at = ?")
 			args = append(args, (*params.NextRunAt).UTC().Format("2006-01-02T15:04:05.000Z"))
 		}
+	}
+	if params.GateCommand != nil {
+		sets = append(sets, "gate_command = ?")
+		args = append(args, *params.GateCommand)
+	}
+	if params.RunSetupCommand != nil {
+		sets = append(sets, "run_setup_command = ?")
+		args = append(args, sqlutil.BoolToInt(*params.RunSetupCommand))
 	}
 
 	args = append(args, id)
@@ -225,7 +242,8 @@ func (s *SQLiteCronJobStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, enabled,
+const cronJobSelectSQL = `SELECT id, repo_id, name, prompt, schedule, timezone, agent_name, model, enabled,
+	gate_command, run_setup_command,
 	last_run_session_id, last_run_at, last_run_outcome, next_run_at,
 	created_at, updated_at
 	FROM cron_jobs`
@@ -245,12 +263,13 @@ func collectCronJobs(rows *sql.Rows) ([]*models.CronJob, error) {
 
 func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 	var j models.CronJob
-	var enabledInt int
-	var timezone, agentName, lastRunSessionID, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
+	var enabledInt, runSetupInt int
+	var timezone, agentName, model, gateCommand, lastRunSessionID, lastRunAt, lastRunOutcome, nextRunAt sql.NullString
 	var createdAt, updatedAt string
 	err := s.Scan(
 		&j.ID, &j.RepoID, &j.Name, &j.Prompt, &j.Schedule,
-		&timezone, &agentName, &enabledInt,
+		&timezone, &agentName, &model, &enabledInt,
+		&gateCommand, &runSetupInt,
 		&lastRunSessionID, &lastRunAt, &lastRunOutcome, &nextRunAt,
 		&createdAt, &updatedAt,
 	)
@@ -258,11 +277,14 @@ func scanCronJob(s sqlutil.Scanner) (*models.CronJob, error) {
 		return nil, err
 	}
 	j.Enabled = enabledInt != 0
+	j.GateCommand = gateCommand.String
+	j.RunSetupCommand = runSetupInt != 0
 	if timezone.Valid {
 		s := timezone.String
 		j.Timezone = &s
 	}
 	j.AgentName = normalizeCronJobAgentName(agentName.String)
+	j.Model = model.String
 	if lastRunSessionID.Valid {
 		s := lastRunSessionID.String
 		j.LastRunSessionID = &s

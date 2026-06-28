@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -442,6 +443,84 @@ func TestRepoSettingsLoadFailureSurfacesErrorAndCancels(t *testing.T) {
 	}
 }
 
+func TestRepoSettings_AutomationsAndIntegrationsHeadings(t *testing.T) {
+	stub := &stubRepoClient{repos: []*pb.Repo{{
+		Id:                     "repo-1",
+		DisplayName:            "Test Repo",
+		CanAutoMerge:           true,
+		CanAutoMergeDependabot: true,
+		CanAutoRepair:          true,
+	}}}
+	m := initSettings(t, stub)
+	out := m.View().Content
+
+	if !strings.Contains(out, "Automations") {
+		t.Errorf("expected an \"Automations\" section heading, not found in:\n%s", out)
+	}
+	if !strings.Contains(out, "Integrations") {
+		t.Errorf("expected an \"Integrations\" section heading, not found in:\n%s", out)
+	}
+	// "Automations" renders above "Integrations".
+	if strings.Index(out, "Automations") >= strings.Index(out, "Integrations") {
+		t.Errorf("expected the Automations heading above the Integrations heading:\n%s", out)
+	}
+}
+
+func TestRepoSettings_AutomationTogglesUnderAutomationsHeading(t *testing.T) {
+	stub := &stubRepoClient{repos: []*pb.Repo{{
+		Id:                     "repo-1",
+		DisplayName:            "Test Repo",
+		CanAutoMerge:           true,
+		CanAutoMergeDependabot: true,
+		CanAutoRepair:          true,
+	}}}
+	m := initSettings(t, stub)
+	out := m.View().Content
+
+	automationsIdx := strings.Index(out, "Automations")
+	markReadyIdx := strings.Index(out, "Mark ready for review when checks pass")
+	depIdx := strings.Index(out, "Auto-merge Dependabot PRs")
+	repairIdx := strings.Index(out, "Automatic repair (failing checks, conflicts, review feedback)")
+	integrationsIdx := strings.Index(out, "Integrations")
+
+	if automationsIdx < 0 || markReadyIdx < 0 || depIdx < 0 || repairIdx < 0 || integrationsIdx < 0 {
+		t.Fatalf("missing expected labels: automations=%d markReady=%d dep=%d repair=%d integrations=%d\n%s",
+			automationsIdx, markReadyIdx, depIdx, repairIdx, integrationsIdx, out)
+	}
+	// Under "Automations", in order: Mark ready, Auto-merge Dependabot, Automatic repair.
+	if automationsIdx >= markReadyIdx || markReadyIdx >= depIdx || depIdx >= repairIdx {
+		t.Errorf("expected order Automations < markReady < dependabot < repair; got %d < %d < %d < %d",
+			automationsIdx, markReadyIdx, depIdx, repairIdx)
+	}
+	// The three automation toggles all render above the Integrations heading.
+	if repairIdx >= integrationsIdx {
+		t.Errorf("automation toggles should render above the Integrations heading; repair=%d integrations=%d",
+			repairIdx, integrationsIdx)
+	}
+}
+
+func TestRepoSettings_VisibleRowsOrderMatchesRender(t *testing.T) {
+	stub := &stubRepoClient{repos: []*pb.Repo{{
+		Id:          "repo-1",
+		DisplayName: "Test Repo",
+	}}}
+	m := initSettings(t, stub)
+	got := m.visibleRows()
+	want := []rowID{
+		repoSettingsRowName,
+		repoSettingsRowSetupScript,
+		repoSettingsRowMergeStrategy,
+		repoSettingsRowCanAutoMerge,
+		repoSettingsRowCanAutoMergeDependabot,
+		repoSettingsRowCanAutoRepair,
+		repoSettingsRowLinearHeader,
+		repoSettingsRowSentryHeader,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("visibleRows order mismatch:\n got=%v\nwant=%v", got, want)
+	}
+}
+
 // stubRepoClient implements client.BossClient for testing RepoSettingsModel.
 type stubRepoClient struct {
 	repos     []*pb.Repo
@@ -557,6 +636,12 @@ func (s *stubRepoClient) GetChatStatuses(context.Context, string) ([]*pb.ChatSta
 	panic("unused")
 }
 func (s *stubRepoClient) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	panic("unused")
+}
+func (s *stubRepoClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
 	panic("unused")
 }
 func (s *stubRepoClient) NotifyAuthChange(context.Context, string) error { return nil }

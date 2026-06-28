@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
 const maxScanLines = 50
@@ -265,4 +267,119 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:maxSummaryLen-3] + "..."
+}
+
+// transcriptLineWithTS is a JSONL line with the optional top-level timestamp.
+type transcriptLineWithTS struct {
+	Type      string   `json:"type"`
+	Timestamp string   `json:"timestamp"` // RFC3339 if present, else ""
+	Message   jsonlMsg `json:"message"`
+}
+
+// extractAllText extracts and concatenates all text content from a message
+// content field. Unlike extractText it does not truncate or strip to the first
+// line; it returns the full text of every text-typed block joined by newlines.
+func extractAllText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// Try as a plain string first.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+
+	// Try as an array of content blocks — collect all text blocks.
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" {
+				if t := strings.TrimSpace(b.Text); t != "" {
+					parts = append(parts, t)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	return ""
+}
+
+// readTranscript reads the JSONL transcript at path and returns ordered
+// ChatMessages. maxMessages=0 returns all; otherwise only the most recent N
+// messages are returned (tail). finalAssistant always reflects the true last
+// assistant turn in the full transcript regardless of maxMessages. A missing
+// file returns (nil, "", false, nil) — absent transcript is not an error.
+func readTranscript(path string, maxMessages int32) (messages []*bossanovav1.ChatMessage, finalAssistant string, exists bool, err error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, "", false, nil
+		}
+		return nil, "", false, err
+	}
+	defer func() { _ = f.Close() }()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+
+	var all []*bossanovav1.ChatMessage
+	for scanner.Scan() {
+		var entry transcriptLineWithTS
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+
+		var role string
+		switch entry.Type {
+		case "user":
+			if entry.Message.Role != "user" {
+				continue
+			}
+			if !hasUserTextBlock(entry.Message.Content) {
+				// Tool-result-only entries are protocol plumbing; skip them.
+				continue
+			}
+			role = "user"
+		case "assistant":
+			role = "assistant"
+		default:
+			continue
+		}
+
+		text := extractAllText(entry.Message.Content)
+		if text == "" {
+			continue
+		}
+
+		all = append(all, &bossanovav1.ChatMessage{
+			Role:      role,
+			Text:      text,
+			Timestamp: entry.Timestamp,
+			Kind:      "text",
+		})
+	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		return nil, "", true, scanErr
+	}
+
+	// Compute finalAssistant from the full transcript before any tail cut.
+	for i := len(all) - 1; i >= 0; i-- {
+		if all[i].Role == "assistant" {
+			finalAssistant = all[i].Text
+			break
+		}
+	}
+
+	// Apply maxMessages tail.
+	if maxMessages > 0 && int32(len(all)) > maxMessages {
+		all = all[len(all)-int(maxMessages):]
+	}
+
+	return all, finalAssistant, true, nil
 }

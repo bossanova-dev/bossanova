@@ -1566,3 +1566,52 @@ func readFile(path string) (string, error) {
 	}
 	return string(f), nil
 }
+
+// TestSendMessage_IssuesBracketedPasteSequence verifies SendMessage issues
+// load-buffer, paste-buffer, send-keys in order with no capture-pane poll.
+func TestSendMessage_IssuesBracketedPasteSequence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	fake := &sendPlanRecordingFactory{}
+	c := NewClient(WithCommandFactory(fake.factory))
+
+	if err := c.SendMessage(context.Background(), "boss-test-sess", "hello world"); err != nil {
+		t.Fatalf("SendMessage: unexpected error: %v", err)
+	}
+
+	calls := fake.callsCopy()
+	subcommands := make([]string, len(calls))
+	for i, call := range calls {
+		subcommands[i] = call.subcommand
+	}
+
+	want := []string{"load-buffer", "paste-buffer", "send-keys"}
+	if len(calls) != len(want) {
+		t.Fatalf("expected exactly %d calls, got %d: %v", len(want), len(calls), subcommands)
+	}
+	if !equalSlices(subcommands, want) {
+		t.Errorf("subcommands = %v, want %v", subcommands, want)
+	}
+
+	if !equalSlices(calls[0].args, []string{"-"}) {
+		t.Errorf("load-buffer args = %v, want [-]", calls[0].args)
+	}
+	if !equalSlices(calls[1].args, []string{"-d", "-p", "-t", "boss-test-sess"}) {
+		t.Errorf("paste-buffer args = %v, want [-d -p -t boss-test-sess]", calls[1].args)
+	}
+	if !equalSlices(calls[2].args, []string{"-t", "boss-test-sess", "Enter"}) {
+		t.Errorf("send-keys args = %v, want [-t boss-test-sess Enter]", calls[2].args)
+	}
+}
+
+func TestSendMessage_EmptySessionName_Error(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	c := NewClient(WithCommandFactory((&mockCommandFactory{}).factory))
+	err := c.SendMessage(context.Background(), "", "hello")
+	if err == nil {
+		t.Fatal("expected error for empty session name")
+	}
+}

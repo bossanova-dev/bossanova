@@ -28,9 +28,16 @@ type fakeTmuxClient struct {
 	createdN   int
 	// slowCreate, when true, sleeps briefly inside NewSessionWithCmd so
 	// concurrent goroutines actually contend on singleflight.Do.
-	slowCreate bool
-	lastName   string
-	lastEnv    map[string]string
+	slowCreate     bool
+	lastName       string
+	lastEnv        map[string]string
+	sentMessages   []sentMessage
+	sendMessageErr error
+}
+
+type sentMessage struct {
+	sessionName string
+	text        string
 }
 
 func (f *fakeTmuxClient) Available(_ context.Context) bool { return f.available }
@@ -53,6 +60,15 @@ func (f *fakeTmuxClient) NewSessionWithCmd(_ context.Context, name, _ string, cm
 	}
 	f.createdN++
 	f.hasSession = true
+	return nil
+}
+func (f *fakeTmuxClient) SendMessage(_ context.Context, sessionName, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.sendMessageErr != nil {
+		return f.sendMessageErr
+	}
+	f.sentMessages = append(f.sentMessages, sentMessage{sessionName: sessionName, text: text})
 	return nil
 }
 
@@ -146,12 +162,13 @@ type argvCall struct {
 	worktreePath       string
 	logPath            string
 	appendSystemPrompt string
+	model              string
 }
 
-func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt string) ([]string, error) {
+func (f *fakeArgvBuilder) BuildInteractive(_ context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt})
+	f.calls = append(f.calls, argvCall{agentName: agentName, agentSessionID: agentSessionID, resume: resume, worktreePath: worktreePath, logPath: logPath, appendSystemPrompt: appendSystemPrompt, model: model})
 	// Mirror liveArgvBuilder's legacy default so tests with chat.AgentName=""
 	// (rows that predate the agent_name column) route to claude rather than
 	// erroring out. liveArgvBuilder does the same at spawn_chat_tmux.go.
@@ -189,6 +206,34 @@ func newTestChat(t *testing.T) *models.AgentChat {
 		SessionID:      "sess-id",
 		AgentSessionID: "agent-session-1",
 		AgentName:      "claude",
+	}
+}
+
+// TestSpawnChatTmux_ThreadsModel pins the re-spawn/wake path (RecordChat,
+// WakeChat): a session's model must reach BuildInteractive so a woken or
+// re-ensured pane launches on the same model as the initial StartTmuxChat.
+func TestSpawnChatTmux_ThreadsModel(t *testing.T) {
+	wd := t.TempDir()
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	builder := claudeArgvBuilder()
+	_, err := spawnChatTmux(context.Background(), spawnDeps{
+		Tmux:        tmuxer,
+		Transcripts: &fakeTranscriptOracle{exists: false},
+		Argv:        builder,
+	}, spawnInput{
+		Chat:         newTestChat(t),
+		WorktreePath: wd,
+		TmuxName:     "boss-aaa-bbb",
+		Model:        "sonnet",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(builder.calls) != 1 {
+		t.Fatalf("BuildInteractive calls = %d, want 1", len(builder.calls))
+	}
+	if got := builder.calls[0].model; got != "sonnet" {
+		t.Fatalf("BuildInteractive model = %q, want sonnet", got)
 	}
 }
 
@@ -473,12 +518,12 @@ func TestSpawnChatTmux_PassesAppendSystemPrompt(t *testing.T) {
 	}
 }
 
-// TestSpawnChatTmux_PassesCronEnv pins that the cron session-environment is
-// set on the spawned tmux pane. The cron autonomy directive (carried via
-// AppendSystemPrompt) asserts BOSS_CRON=true, so the record/wake spawn must
-// set that env too — otherwise a cron-spawned woken chat has the directive but
-// not the env, and shell-mode detection takes the interactive path.
-func TestSpawnChatTmux_PassesCronEnv(t *testing.T) {
+// TestSpawnChatTmux_PassesSessionEnv pins that the canonical BOSS_* session
+// environment is forwarded to the spawned tmux pane unchanged. This matters for
+// cron sessions in particular: the autonomy directive carried via
+// AppendSystemPrompt asserts BOSS_CRON=true, so the spawned pane must also
+// receive that env — otherwise shell-mode detection takes the interactive path.
+func TestSpawnChatTmux_PassesSessionEnv(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	transcripts := &fakeTranscriptOracle{exists: true}
 	builder := claudeArgvBuilder()
@@ -493,20 +538,19 @@ func TestSpawnChatTmux_PassesCronEnv(t *testing.T) {
 		Chat:         chat,
 		WorktreePath: t.TempDir(),
 		TmuxName:     "boss-agent-session-1",
-		CronEnv:      cronEnv,
+		SessionEnv:   cronEnv,
 	})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if tmuxer.lastEnv["BOSS_CRON"] != "true" || tmuxer.lastEnv["BOSS_CRON_JOB_ID"] != "job-1" {
-		t.Fatalf("tmux spawn must receive cron env, got %+v", tmuxer.lastEnv)
+		t.Fatalf("tmux spawn must receive session env, got %+v", tmuxer.lastEnv)
 	}
 }
 
-// TestSpawnChatTmux_NoCronEnvForPlainSession pins the non-cron case: a nil
-// CronEnv must reach the spawner unchanged (no BOSS_CRON leaks into ordinary
-// chats).
-func TestSpawnChatTmux_NoCronEnvForPlainSession(t *testing.T) {
+// TestSpawnChatTmux_NoSessionEnvLeak pins the non-cron case: a nil SessionEnv
+// must reach the spawner unchanged (no BOSS_* vars leak into plain sessions).
+func TestSpawnChatTmux_NoSessionEnvLeak(t *testing.T) {
 	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
 	_, err := spawnChatTmux(context.Background(), spawnDeps{
 		Tmux:        tmuxer,
@@ -516,7 +560,7 @@ func TestSpawnChatTmux_NoCronEnvForPlainSession(t *testing.T) {
 		Chat:         newTestChat(t),
 		WorktreePath: t.TempDir(),
 		TmuxName:     "boss-agent-session-1",
-		CronEnv:      nil,
+		SessionEnv:   nil,
 	})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)

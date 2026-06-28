@@ -95,6 +95,7 @@ type CreateSessionParams struct {
 	BranchName   string
 	BaseBranch   string
 	AgentName    string // Agent plugin name; daemon callers should pass a resolved name. Empty falls back to "claude" for legacy callers.
+	Model        string // Opaque agent model id; "" = plugin default.
 	PRNumber     *int
 	PRURL        *string
 	TrackerID    *string
@@ -266,25 +267,31 @@ type WorkflowStore interface {
 
 // CreateCronJobParams holds the parameters for creating a new cron job.
 type CreateCronJobParams struct {
-	RepoID    string
-	Name      string
-	Prompt    string
-	Schedule  string
-	Timezone  *string
-	AgentName string // Agent plugin name; empty falls back to "claude".
-	Enabled   bool
+	RepoID          string
+	Name            string
+	Prompt          string
+	Schedule        string
+	Timezone        *string
+	AgentName       string // Agent plugin name; empty falls back to "claude".
+	Model           string // Opaque agent model id; "" = plugin default.
+	Enabled         bool
+	GateCommand     string // shell command to run before firing; "" = no gate
+	RunSetupCommand bool   // whether to run the repo setup script before the agent session
 }
 
 // UpdateCronJobParams holds the fields that can be updated on a cron job.
 // Nil fields are not updated.
 type UpdateCronJobParams struct {
-	Name      *string
-	Prompt    *string
-	Schedule  *string
-	Timezone  **string // double pointer: nil = don't update, *nil = set to NULL
-	AgentName *string
-	Enabled   *bool
-	NextRunAt **time.Time // double pointer: nil = don't update, *nil = clear
+	Name            *string
+	Prompt          *string
+	Schedule        *string
+	Timezone        **string // double pointer: nil = don't update, *nil = set to NULL
+	AgentName       *string
+	Model           *string // nil = don't update; "" is a real value (plugin default)
+	Enabled         *bool
+	NextRunAt       **time.Time // double pointer: nil = don't update, *nil = clear
+	GateCommand     *string     // nil = don't update; "" = clear gate
+	RunSetupCommand *bool       // nil = don't update
 }
 
 // UpdateCronJobLastRunParams records the outcome of a cron job fire.

@@ -17,6 +17,9 @@ const (
 	// e.g. the scheduler's CreateSession call returned an error. Distinct
 	// from the later-pipeline failure outcomes (PRFailed, ChatSpawnFailed).
 	CronJobOutcomeFireFailed CronJobOutcome = "fire_failed"
+	// CronJobOutcomeGated records a fire that was skipped because the job's
+	// gate_command exited non-zero, indicating the gate condition was not met.
+	CronJobOutcomeGated CronJobOutcome = "gated"
 )
 
 // CronJob represents a scheduled prompt that fires on a cron expression.
@@ -28,7 +31,10 @@ type CronJob struct {
 	Schedule         string
 	Timezone         *string // IANA name; nil = daemon-local
 	AgentName        string
+	Model            string // opaque agent model id; "" = plugin default.
 	Enabled          bool
+	GateCommand      string // shell command run before firing; non-zero exit skips the run
+	RunSetupCommand  bool   // whether to run the repo setup script before the agent session
 	LastRunSessionID *string
 	LastRunAt        *time.Time
 	LastRunOutcome   *CronJobOutcome

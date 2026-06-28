@@ -382,3 +382,107 @@ func TestCronJobAPIsRejectUnknownAgentName(t *testing.T) {
 		t.Fatalf("UpdateCronJob re-enable error code = %v, want %v (err=%v)", connect.CodeOf(err), connect.CodeInvalidArgument, err)
 	}
 }
+
+// TestCreateCronJobRunSetupCommandDefault verifies that omitting RunSetupCommand
+// (nil) defaults to true: setup should run by default.
+func TestCreateCronJobRunSetupCommandDefault(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:    repoID,
+		Name:      "Default setup",
+		Prompt:    "do it",
+		Schedule:  "@daily",
+		AgentName: "codex",
+		Enabled:   false,
+		// RunSetupCommand intentionally omitted (nil).
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if !created.Msg.CronJob.RunSetupCommand {
+		t.Fatalf("RunSetupCommand = false, want true (default)")
+	}
+}
+
+// TestCreateCronJobRunSetupCommandExplicitFalse verifies that passing
+// RunSetupCommand=false is honoured (opt-out of setup).
+func TestCreateCronJobRunSetupCommandExplicitFalse(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+	falseVal := false
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:          repoID,
+		Name:            "No setup",
+		Prompt:          "do it",
+		Schedule:        "@daily",
+		AgentName:       "codex",
+		Enabled:         false,
+		RunSetupCommand: &falseVal,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if created.Msg.CronJob.RunSetupCommand {
+		t.Fatalf("RunSetupCommand = true, want false (explicit opt-out)")
+	}
+}
+
+// TestCreateCronJobGateCommand verifies that a GateCommand set on creation is
+// reflected in the returned proto.
+func TestCreateCronJobGateCommand(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:      repoID,
+		Name:        "Gated job",
+		Prompt:      "do it",
+		Schedule:    "@daily",
+		AgentName:   "codex",
+		Enabled:     false,
+		GateCommand: "make gate-check",
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	if got := created.Msg.CronJob.GateCommand; got != "make gate-check" {
+		t.Fatalf("GateCommand = %q, want %q", got, "make gate-check")
+	}
+}
+
+// TestUpdateCronJobGateCommandAndRunSetupCommand verifies that UpdateCronJob
+// correctly maps and persists GateCommand and RunSetupCommand changes.
+func TestUpdateCronJobGateCommandAndRunSetupCommand(t *testing.T) {
+	srv, repoID, ctx := newCronTestServer(t)
+
+	// Create without a gate command; run_setup defaults to true.
+	created, err := srv.CreateCronJob(ctx, connect.NewRequest(&pb.CreateCronJobRequest{
+		RepoId:    repoID,
+		Name:      "Update target",
+		Prompt:    "do it",
+		Schedule:  "@daily",
+		AgentName: "codex",
+		Enabled:   false,
+	}))
+	if err != nil {
+		t.Fatalf("CreateCronJob: %v", err)
+	}
+	jobID := created.Msg.CronJob.Id
+
+	gateCmd := "make ci-gate"
+	falseVal := false
+	updated, err := srv.UpdateCronJob(ctx, connect.NewRequest(&pb.UpdateCronJobRequest{
+		Id:              jobID,
+		GateCommand:     &gateCmd,
+		RunSetupCommand: &falseVal,
+	}))
+	if err != nil {
+		t.Fatalf("UpdateCronJob: %v", err)
+	}
+	if got := updated.Msg.CronJob.GateCommand; got != "make ci-gate" {
+		t.Fatalf("GateCommand = %q, want %q", got, "make ci-gate")
+	}
+	if updated.Msg.CronJob.RunSetupCommand {
+		t.Fatalf("RunSetupCommand = true, want false after update")
+	}
+}

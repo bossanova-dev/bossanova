@@ -159,7 +159,10 @@ func TestCron_NewForm_LivePreview(t *testing.T) {
 	// Field 2: Repo — already has "my-app" selected; advance.
 	advanceCronFormField(t, h)
 
-	// Field 3: Prompt — type and advance with Tab (huh text-area convention).
+	// Field 3: Model — free-text; leave blank and advance with Enter.
+	advanceCronFormField(t, h)
+
+	// Field 4: Prompt — type and advance with Tab (huh text-area convention).
 	if err := h.Driver.SendString("Do the thing."); err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +214,10 @@ func TestCron_FormValidation(t *testing.T) {
 		// Field 2: Repo — advance.
 		advanceCronFormField(t, h)
 
-		// Field 3: Prompt — type and advance with Tab.
+		// Field 3: Model — free-text; leave blank and advance with Enter.
+		advanceCronFormField(t, h)
+
+		// Field 4: Prompt — type and advance with Tab.
 		if err := h.Driver.SendString("Some prompt."); err != nil {
 			t.Fatal(err)
 		}
@@ -264,7 +270,10 @@ func TestCron_FormValidation(t *testing.T) {
 		// Field 2: Repo — advance.
 		advanceCronFormField(t, h)
 
-		// Field 3: Prompt — type and advance with Tab.
+		// Field 3: Model — free-text; leave blank and advance with Enter.
+		advanceCronFormField(t, h)
+
+		// Field 4: Prompt — type and advance with Tab.
 		if err := h.Driver.SendString("Some prompt."); err != nil {
 			t.Fatal(err)
 		}
@@ -322,7 +331,10 @@ func TestCron_FormValidation(t *testing.T) {
 		// Field 2: Repo — advance.
 		advanceCronFormField(t, h)
 
-		// Field 3: Prompt — leave empty; advance with Tab (empty prompt should fail validation).
+		// Field 3: Model — free-text; leave blank and advance with Enter.
+		advanceCronFormField(t, h)
+
+		// Field 4: Prompt — leave empty; advance with Tab (empty prompt should fail validation).
 		advanceCronFormPrompt(t, h)
 
 		// Field 4: Schedule — valid expression.
@@ -383,7 +395,10 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 	// Field 2: Repo — advance with Enter.
 	advanceCronFormField(t, h)
 
-	// Field 3: Prompt — type and advance with Tab.
+	// Field 3: Model — free-text; leave blank and advance with Enter.
+	advanceCronFormField(t, h)
+
+	// Field 4: Prompt — type and advance with Tab.
 	if err := h.Driver.SendString("Run the roundtrip prompt."); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +415,16 @@ func TestCron_CreateRoundtrip(t *testing.T) {
 	// Field 5: Timezone — leave empty, advance.
 	advanceCronFormField(t, h)
 
-	// Field 6: Enabled confirm — already "Yes"; submit.
+	// Field 6: Gate command — leave empty, advance.
+	advanceCronFormField(t, h)
+
+	// Field 7: Run setup command — keep default (Yes), advance.
+	advanceCronFormField(t, h)
+
+	// Field 8: Enabled toggle — already "Yes"; advance.
+	advanceCronFormField(t, h)
+
+	// Field 9: Save confirm — "Add Scheduled Job" is highlighted; submit.
 	advanceCronFormField(t, h)
 
 	// After submit, the form completes and we return to the cron list.
@@ -466,6 +490,9 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 	}
 	advanceCronFormField(t, h)
 
+	// Model — free-text; leave blank and advance with Enter.
+	advanceCronFormField(t, h)
+
 	if err := h.Driver.SendString("Run with opencode."); err != nil {
 		t.Fatal(err)
 	}
@@ -474,9 +501,12 @@ func TestCron_CreateWithSelectedAgentSendsAgentName(t *testing.T) {
 	if err := h.Driver.SendString("0 9 1 1 1"); err != nil {
 		t.Fatal(err)
 	}
-	advanceCronFormField(t, h)
-	advanceCronFormField(t, h)
-	advanceCronFormField(t, h)
+	advanceCronFormField(t, h) // Schedule
+	advanceCronFormField(t, h) // Timezone
+	advanceCronFormField(t, h) // Gate command
+	advanceCronFormField(t, h) // Run setup command
+	advanceCronFormField(t, h) // Enabled toggle
+	advanceCronFormField(t, h) // Save confirm — "Add Scheduled Job"
 
 	if err := h.Driver.WaitFor(waitTimeout, func(_ string) bool {
 		return h.Daemon.CreateCronJobCallCount() >= 1
@@ -539,7 +569,10 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	// Field 2: Repo — keep as-is; advance.
 	advanceCronFormField(t, h)
 
-	// Field 3: Prompt — keep as-is; advance with Tab.
+	// Field 3: Model — keep as-is (blank); advance with Enter.
+	advanceCronFormField(t, h)
+
+	// Field 4: Prompt — keep as-is; advance with Tab.
 	advanceCronFormPrompt(t, h)
 
 	// Field 4: Schedule — keep as-is; advance.
@@ -548,7 +581,16 @@ func TestCron_EditRoundtrip(t *testing.T) {
 	// Field 5: Timezone — keep as-is; advance.
 	advanceCronFormField(t, h)
 
-	// Field 6: Enabled — keep as-is; submit.
+	// Field 6: Gate command — keep as-is (blank); advance.
+	advanceCronFormField(t, h)
+
+	// Field 7: Run setup command — keep as-is; advance.
+	advanceCronFormField(t, h)
+
+	// Field 8: Enabled toggle — keep as-is; advance.
+	advanceCronFormField(t, h)
+
+	// Field 9: Save confirm — "Update Scheduled Job" is highlighted; submit.
 	advanceCronFormField(t, h)
 
 	// Wait for list to reappear.

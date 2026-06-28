@@ -197,6 +197,24 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 	})
 
 	addTool(server, opts, &mcp.Tool{
+		Name:        "get_chat_transcript",
+		Description: "Return the conversation transcript and final assistant text for a chat.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args GetChatTranscriptArgs) (*mcp.CallToolResult, any, error) {
+		req := &pb.GetChatTranscriptRequest{
+			AgentSessionId: args.AgentSessionID,
+			SessionId:      args.SessionID,
+			MaxMessages:    args.MaxMessages,
+		}
+		out, err := backend.GetChatTranscript(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
+
+	addTool(server, opts, &mcp.Tool{
 		Name:        "list_check_snapshots",
 		Description: "List recent CI check snapshots for a session (most recent first).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -326,4 +344,11 @@ type ListTrackerIssuesArgs struct {
 type ListCheckSnapshotsArgs struct {
 	SessionID string `json:"session_id" jsonschema:"the session id"`
 	Limit     int32  `json:"limit,omitempty" jsonschema:"max snapshots to return (0 = server default)"`
+}
+
+// GetChatTranscriptArgs is the typed argument struct for get_chat_transcript.
+type GetChatTranscriptArgs struct {
+	AgentSessionID string `json:"agent_session_id" jsonschema:"the agent session UUID"`
+	SessionID      string `json:"session_id,omitempty" jsonschema:"the session id (for authz when available)"`
+	MaxMessages    int32  `json:"max_messages,omitempty" jsonschema:"max messages to return (0 = server default)"`
 }

@@ -11,10 +11,10 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
 
-// expectedTools is the complete set of 42 bossanova MCP tool names:
-// 16 read-only + 17 mutating + 9 destructive.
+// expectedTools is the complete set of 44 bossanova MCP tool names:
+// 17 read-only + 18 mutating + 9 destructive.
 var expectedTools = []string{
-	// read-only (16)
+	// read-only (17)
 	"list_sessions",
 	"resolve_context",
 	"validate_repo_path",
@@ -31,7 +31,8 @@ var expectedTools = []string{
 	"list_plugins",
 	"list_cron_jobs",
 	"get_cron_job",
-	// mutating (17)
+	"get_chat_transcript",
+	// mutating (18)
 	"register_repo",
 	"clone_and_register_repo",
 	"update_repo",
@@ -49,6 +50,7 @@ var expectedTools = []string{
 	"create_cron_job",
 	"update_cron_job",
 	"run_cron_job_now",
+	"send_chat_message",
 	// destructive (9)
 	"remove_repo",
 	"close_session",
@@ -62,12 +64,20 @@ var expectedTools = []string{
 }
 
 // contractBackend is a minimal bossmcp.Backend sufficient for the contract test:
-// it handles list_sessions (read) and remove_repo (destructive).
+// it handles list_sessions (read), remove_repo (destructive), and the
+// chat-control trio (create_session, send_chat_message, get_chat_transcript).
 // Any other method panics to keep the test scope honest.
 type contractBackend struct {
 	bossmcp.Backend // nil embed: any uncovered method panics if called
 	sessions        []*pb.Session
 	removedRepoID   string
+
+	// chat-control fields for TestContractChatControl
+	createdSession     *pb.Session
+	sendResponse       *pb.SendChatMessageResponse
+	transcriptResponse *pb.GetChatTranscriptResponse
+	sentAgentSessionID string
+	sentMessage        string
 }
 
 func (b *contractBackend) ListSessions(_ context.Context, _ *pb.ListSessionsRequest) ([]*pb.Session, error) {
@@ -77,6 +87,20 @@ func (b *contractBackend) ListSessions(_ context.Context, _ *pb.ListSessionsRequ
 func (b *contractBackend) RemoveRepo(_ context.Context, id string) error {
 	b.removedRepoID = id
 	return nil
+}
+
+func (b *contractBackend) CreateSession(_ context.Context, _ *pb.CreateSessionRequest) (*pb.Session, error) {
+	return b.createdSession, nil
+}
+
+func (b *contractBackend) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	b.sentAgentSessionID = req.AgentSessionId
+	b.sentMessage = req.Message
+	return b.sendResponse, nil
+}
+
+func (b *contractBackend) GetChatTranscript(_ context.Context, _ *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	return b.transcriptResponse, nil
 }
 
 // newContractClient wires an in-memory server using newServer (identical to
@@ -100,7 +124,7 @@ func newContractClient(t *testing.T, backend bossmcp.Backend) *mcp.ClientSession
 	return cs
 }
 
-// TestContractFullToolSet asserts that tools/list returns exactly the 42
+// TestContractFullToolSet asserts that tools/list returns exactly the 44
 // expected bossanova tools over the in-memory transport.
 func TestContractFullToolSet(t *testing.T) {
 	t.Parallel()
@@ -204,5 +228,103 @@ func TestContractDestructiveToolConfirmGate(t *testing.T) {
 	}
 	if backend.removedRepoID != "repo-123" {
 		t.Fatalf("backend.RemoveRepo not called with correct id; got %q", backend.removedRepoID)
+	}
+}
+
+// TestContractChatControl exercises the full trigger→follow→result loop over the
+// in-memory transport: create_session → send_chat_message → get_chat_transcript.
+func TestContractChatControl(t *testing.T) {
+	t.Parallel()
+
+	const agentSessionID = "agt-contract-42"
+	const seededOpinion = "looks good to me — no blocking issues"
+
+	agentSessionIDStr := agentSessionID
+	backend := &contractBackend{
+		createdSession: &pb.Session{
+			Id:             "s-contract-cc-1",
+			Title:          "second opinion session",
+			AgentSessionId: &agentSessionIDStr,
+		},
+		sendResponse: &pb.SendChatMessageResponse{
+			Delivered:       true,
+			TmuxSessionName: "bossanova:agt-contract-42",
+		},
+		transcriptResponse: &pb.GetChatTranscriptResponse{
+			FinalAssistantText: seededOpinion,
+			Exists:             true,
+			Messages:           nil,
+		},
+	}
+	cs := newContractClient(t, backend)
+	ctx := context.Background()
+
+	// Step 1: create_session — trigger the second-opinion session.
+	resCreate, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "create_session",
+		Arguments: map[string]any{
+			"repo_id": "repo-contract-1",
+			"prompt":  "Please review the proposed change and give a second opinion.",
+			"agent":   "codex",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool create_session: unexpected transport error: %v", err)
+	}
+	if resCreate.IsError {
+		t.Fatalf("create_session returned error result: %s", textOf(t, resCreate))
+	}
+	createText := textOf(t, resCreate)
+	if !strings.Contains(createText, "s-contract-cc-1") {
+		t.Fatalf("create_session result missing session id; got: %s", createText)
+	}
+
+	// Step 2: send_chat_message — follow up with a user message.
+	resMsg, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "send_chat_message",
+		Arguments: map[string]any{
+			"agent_session_id": agentSessionID,
+			"message":          "What do you think about the edge-case handling?",
+			"wake_if_asleep":   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool send_chat_message: unexpected transport error: %v", err)
+	}
+	if resMsg.IsError {
+		t.Fatalf("send_chat_message returned error result: %s", textOf(t, resMsg))
+	}
+	msgText := textOf(t, resMsg)
+	if !strings.Contains(msgText, "true") {
+		t.Fatalf("send_chat_message result missing delivered:true; got: %s", msgText)
+	}
+	if !strings.Contains(msgText, "bossanova:agt-contract-42") {
+		t.Fatalf("send_chat_message result missing tmux_session_name; got: %s", msgText)
+	}
+
+	// Assert the backend received the correct agent_session_id and message.
+	if backend.sentAgentSessionID != agentSessionID {
+		t.Fatalf("backend.SendChatMessage got agent_session_id=%q, want %q", backend.sentAgentSessionID, agentSessionID)
+	}
+	if !strings.Contains(backend.sentMessage, "edge-case handling") {
+		t.Fatalf("backend.SendChatMessage got message=%q, want it to contain 'edge-case handling'", backend.sentMessage)
+	}
+
+	// Step 3: get_chat_transcript — read the final assistant result.
+	resTx, err := cs.CallTool(ctx, &mcp.CallToolParams{
+		Name: "get_chat_transcript",
+		Arguments: map[string]any{
+			"agent_session_id": agentSessionID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool get_chat_transcript: unexpected transport error: %v", err)
+	}
+	if resTx.IsError {
+		t.Fatalf("get_chat_transcript returned error result: %s", textOf(t, resTx))
+	}
+	txText := textOf(t, resTx)
+	if !strings.Contains(txText, seededOpinion) {
+		t.Fatalf("get_chat_transcript result missing seeded final_assistant_text; got: %s", txText)
 	}
 }

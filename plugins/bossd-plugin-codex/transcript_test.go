@@ -380,3 +380,95 @@ func TestResolveLegacyInteractiveSessionIDAtReturnsAmbiguousForMultipleRollouts(
 		t.Error("reason empty, want ambiguity reason")
 	}
 }
+
+// TestReadTranscriptAt covers the three key branches of readTranscriptAt:
+// happy-path multi-turn parse, MaxMessages tail-cut, and missing-file
+// (Exists=false, nil error).
+func TestReadTranscriptAt(t *testing.T) {
+	t.Run("parses ordered messages from rollout", func(t *testing.T) {
+		root := t.TempDir()
+		uuid := "read-transcript-uuid"
+		dst := shardedRolloutPath(root, uuid)
+		copyFixture(t, "testdata/transcripts/chat.jsonl", dst)
+
+		resp, err := readTranscriptAt(root, "", uuid, 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !resp.Exists {
+			t.Error("expected Exists=true")
+		}
+		// chat.jsonl has 4 chat messages: user, assistant, user, assistant.
+		// token_count and task_complete envelopes must be skipped.
+		if len(resp.Messages) != 4 {
+			t.Errorf("len(Messages) = %d, want 4", len(resp.Messages))
+		}
+		wantRoles := []string{"user", "assistant", "user", "assistant"}
+		wantTexts := []string{"hello codex", "hi there, how can I help?", "what is 2+2?", "4"}
+		for i, msg := range resp.Messages {
+			if msg.Role != wantRoles[i] {
+				t.Errorf("Messages[%d].Role = %q, want %q", i, msg.Role, wantRoles[i])
+			}
+			if msg.Text != wantTexts[i] {
+				t.Errorf("Messages[%d].Text = %q, want %q", i, msg.Text, wantTexts[i])
+			}
+			if msg.Kind != "text" {
+				t.Errorf("Messages[%d].Kind = %q, want %q", i, msg.Kind, "text")
+			}
+			if msg.Timestamp == "" {
+				t.Errorf("Messages[%d].Timestamp is empty", i)
+			}
+		}
+		if resp.FinalAssistantText != "4" {
+			t.Errorf("FinalAssistantText = %q, want %q", resp.FinalAssistantText, "4")
+		}
+	})
+
+	t.Run("MaxMessages limits to most recent N", func(t *testing.T) {
+		root := t.TempDir()
+		uuid := "read-transcript-max-uuid"
+		dst := shardedRolloutPath(root, uuid)
+		copyFixture(t, "testdata/transcripts/chat.jsonl", dst)
+
+		resp, err := readTranscriptAt(root, "", uuid, 2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !resp.Exists {
+			t.Error("expected Exists=true")
+		}
+		if len(resp.Messages) != 2 {
+			t.Errorf("len(Messages) = %d, want 2 (tail-cut to MaxMessages=2)", len(resp.Messages))
+		}
+		// The tail-2 should be: user "what is 2+2?" + assistant "4".
+		if len(resp.Messages) >= 2 {
+			if resp.Messages[0].Text != "what is 2+2?" {
+				t.Errorf("Messages[0].Text = %q, want %q", resp.Messages[0].Text, "what is 2+2?")
+			}
+			if resp.Messages[1].Text != "4" {
+				t.Errorf("Messages[1].Text = %q, want %q", resp.Messages[1].Text, "4")
+			}
+		}
+		// FinalAssistantText must reflect the true last assistant turn (not just the tail).
+		if resp.FinalAssistantText != "4" {
+			t.Errorf("FinalAssistantText = %q, want %q", resp.FinalAssistantText, "4")
+		}
+	})
+
+	t.Run("no rollout file returns Exists=false nil error", func(t *testing.T) {
+		root := t.TempDir()
+		resp, err := readTranscriptAt(root, "", "no-such-uuid", 0)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Exists {
+			t.Error("expected Exists=false for missing rollout")
+		}
+		if resp.Messages != nil {
+			t.Error("expected nil Messages for missing rollout")
+		}
+		if resp.FinalAssistantText != "" {
+			t.Errorf("expected empty FinalAssistantText for missing rollout, got %q", resp.FinalAssistantText)
+		}
+	})
+}

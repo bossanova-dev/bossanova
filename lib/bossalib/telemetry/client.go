@@ -174,13 +174,22 @@ func isAllowedProperty(key string) bool {
 	switch key {
 	case "action",
 		"authenticated",
+		"can_create_checkout",
+		"checkout_action",
+		"checkout_started",
+		"cloud_access_state",
 		"command",
 		"context_has_error",
+		"denial_reason",
+		"entry_point",
 		"ok",
+		"product_area",
 		"report_id",
 		"resume",
 		"source",
-		"status":
+		"status",
+		"step",
+		"workos_org_id":
 		return true
 	}
 	return false

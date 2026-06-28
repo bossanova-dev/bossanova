@@ -30,6 +30,12 @@ const runHookMatcherPrefix = "bossd-agent-run-"
 // for run-scoped entries, the per-run completion handler) runs when
 // Claude finishes producing output in the worktree.
 //
+// Note: Claude's Stop hook fires at the end of EVERY main-agent turn, including
+// mid-run pauses (e.g. awaiting a background subagent), so the POST is a per-turn
+// hint, not a completion signal. The cron path's run-completion gating lives on
+// the bossd side in CronCompletionGate (cronRunIsOver); a Stop alone never
+// finalizes a still-working cron session.
+//
 // When agentSessionID == "" (legacy / cron path):
 //   - Matcher is "bossd-finalize".
 //   - URL is /hooks/finalize/{sessionID}.

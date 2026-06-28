@@ -181,7 +181,7 @@ func (s Spec) Execute(ctx context.Context, opts ExecuteOpts) error {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return fmt.Errorf("timed out after %v", opts.Timeout)
 		}
-		return err
+		return fmt.Errorf("run setup script (%s): %w", s.Type, err)
 	}
 	return nil
 }

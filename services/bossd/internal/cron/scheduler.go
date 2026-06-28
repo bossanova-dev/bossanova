@@ -15,6 +15,7 @@
 package cron
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -28,6 +29,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossalib/cronutil"
+	"github.com/recurser/bossalib/gatecmd"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
@@ -82,6 +84,12 @@ type Scheduler struct {
 	entriesMu sync.Mutex
 	entries   map[string]scheduledEntry
 
+	// gatingMu guards gating, the set of job IDs currently executing their
+	// gate command. Entries are present only for the brief duration of the
+	// gatecmd.Run call; they are cleared before CreateSession is invoked.
+	gatingMu sync.Mutex
+	gating   map[string]struct{}
+
 	// wg tracks in-flight fires (cron-driven and direct). Stop waits on
 	// this in addition to cron.Stop()'s own context.
 	wg sync.WaitGroup
@@ -122,6 +130,7 @@ func New(cfg Config) *Scheduler {
 		),
 		sem:     make(chan struct{}, maxC),
 		entries: make(map[string]scheduledEntry),
+		gating:  make(map[string]struct{}),
 		nowFunc: nowFn,
 	}
 }
@@ -226,8 +235,11 @@ func (s *Scheduler) UpdateJob(job *models.CronJob) error {
 
 // RunNow fires the given job synchronously, bypassing the schedule. Returns
 // the created session on success, a non-empty skippedReason if the fire was
-// skipped (job disabled or previous run still active), or an error if the
-// fire failed outright. Honors the concurrency cap.
+// skipped (job disabled, previous run still active, or blocked by the gate
+// command), or an error if the fire failed outright. Honors the concurrency
+// cap. A configured gate command is evaluated exactly as it is on a scheduled
+// fire — a manual run that fails the gate is reported as the "gated" skip
+// reason and spawns no session.
 //
 // The caller's ctx is intentionally NOT propagated into the spawn pipeline:
 // claude.Start binds the spawned process to its ctx via cmd.Cancel, so a
@@ -346,7 +358,11 @@ func (s *Scheduler) fireJob(jobID string) {
 // and asks the session creator to spawn a cron-scoped session. Returns the
 // created session, a non-empty skippedReason, or an error.
 //
-// Skip reasons (non-error skips): "disabled", "db_fetch_error", "overlap_prev_active".
+// A configured gate command runs before the fire on every path — scheduled
+// and manual (RunNow) alike; a non-zero exit blocks the fire with outcome=gated.
+//
+// Skip reasons (non-error skips): "disabled", "db_fetch_error",
+// "overlap_prev_active", "gated".
 func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, string, error) {
 	s.wg.Add(1)
 	defer s.wg.Done()
@@ -401,12 +417,61 @@ func (s *Scheduler) fire(ctx context.Context, jobID string) (*models.Session, st
 		return nil, "", fmt.Errorf("load repo for cron job %s: %w", job.ID, err)
 	}
 
+	// Gate command: run the configured command before firing. A non-zero exit,
+	// timeout, or launch failure blocks the fire with outcome=gated. This runs
+	// on both scheduled and manual (RunNow) fires.
+	if strings.TrimSpace(job.GateCommand) != "" {
+		var buf bytes.Buffer
+		// Run inside a closure so the gating marker is cleared via defer —
+		// always before CreateSession on a pass, and even if gatecmd.Run
+		// panics (the cron.Recover chain would otherwise leave the job stuck
+		// in the gating set forever).
+		passed, gateErr := func() (bool, error) {
+			s.markGating(job.ID)
+			defer s.unmarkGating(job.ID)
+			return gatecmd.Run(ctx, gatecmd.Options{
+				Command:      job.GateCommand,
+				RepoPath:     repo.LocalPath,
+				LinearAPIKey: repo.LinearAPIKey,
+				SentryAPIKey: repo.SentryAPIKey,
+				SentryOrg:    repo.SentryOrg,
+				// Timeout left zero → gatecmd.DefaultTimeout (60s)
+				Output: &buf,
+			})
+		}()
+		if !passed {
+			// Block the fire. Advance next_run_at; record outcome=gated; no session.
+			firedAt := s.nowFunc()
+			nextAt := s.peekNextFire(job.ID, firedAt)
+			var nextArg *time.Time
+			if !nextAt.IsZero() {
+				nextArg = &nextAt
+			}
+			if upErr := s.store.UpdateLastRun(ctx, job.ID, db.UpdateCronJobLastRunParams{
+				RanAt:     firedAt,
+				Outcome:   models.CronJobOutcomeGated,
+				NextRunAt: nextArg,
+				// SessionID nil: this was not a fired run.
+			}); upErr != nil {
+				logger.Warn().Err(upErr).Msg("fire: failed to record gated outcome")
+			}
+			logger.Info().Str("gate_output", buf.String()).Msg("fire: gate command blocked run")
+			if gateErr != nil {
+				logger.Debug().Err(gateErr).Msg("fire: gate command error")
+			}
+			return nil, "gated", nil
+		}
+		logger.Debug().Str("gate_output", buf.String()).Msg("fire: gate command passed")
+	}
+
 	opts := taskorchestrator.CreateSessionOpts{
-		RepoID:     job.RepoID,
-		Title:      job.Name,
-		Plan:       job.Prompt,
-		BaseBranch: repo.DefaultBaseBranch,
-		AgentName:  job.AgentName,
+		RepoID:          job.RepoID,
+		Title:           job.Name,
+		Plan:            job.Prompt,
+		BaseBranch:      repo.DefaultBaseBranch,
+		AgentName:       job.AgentName,
+		Model:           job.Model,
+		SkipSetupScript: !job.RunSetupCommand,
 		// Per-fire branch name. Without this, every fire of the same cron
 		// job tries to create the same branch (e.g. cron-test) and the
 		// second fire trips ErrBranchExists once the first run's branch
@@ -464,6 +529,31 @@ func (s *Scheduler) peekNextFire(jobID string, from time.Time) time.Time {
 		return time.Time{}
 	}
 	return entry.sched.Next(from)
+}
+
+// GatingJobIDs returns a snapshot copy of the set of job IDs currently
+// executing their gate command. The returned map is safe to read and mutate
+// without affecting the scheduler's internal state.
+func (s *Scheduler) GatingJobIDs() map[string]struct{} {
+	s.gatingMu.Lock()
+	defer s.gatingMu.Unlock()
+	c := make(map[string]struct{}, len(s.gating))
+	for k := range s.gating {
+		c[k] = struct{}{}
+	}
+	return c
+}
+
+func (s *Scheduler) markGating(jobID string) {
+	s.gatingMu.Lock()
+	s.gating[jobID] = struct{}{}
+	s.gatingMu.Unlock()
+}
+
+func (s *Scheduler) unmarkGating(jobID string) {
+	s.gatingMu.Lock()
+	delete(s.gating, jobID)
+	s.gatingMu.Unlock()
 }
 
 // previousRunActive reports whether the job's most recent session is still

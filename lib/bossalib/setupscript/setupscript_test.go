@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -210,6 +211,34 @@ func TestExecute_Script_RunsFile(t *testing.T) {
 	}
 	if strings.TrimSpace(buf.String()) != "hello" {
 		t.Fatalf("got %q", buf.String())
+	}
+}
+
+func TestExecute_Command_NonZeroExit_WrapsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell assumed")
+	}
+	wt := t.TempDir()
+
+	s := Spec{Type: TypeCommand, Argv: []string{"sh", "-c", "exit 7"}}
+	err := s.Execute(context.Background(), ExecuteOpts{
+		WorktreePath: wt,
+		Output:       &bytes.Buffer{},
+		Timeout:      5 * time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected error from non-zero exit, got nil")
+	}
+	// The returned error must identify the setup script as its source rather
+	// than surfacing a bare "exit status 7" with no provenance.
+	if !strings.Contains(err.Error(), "setup script") {
+		t.Fatalf("error missing setup-script context: %v", err)
+	}
+	// Wrapping must preserve the underlying exec error so callers that inspect
+	// the exit code via errors.As still can.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("want wrapped *exec.ExitError, got %v", err)
 	}
 }
 

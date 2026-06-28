@@ -48,6 +48,12 @@ type fakeCommandHandler struct {
 	wakeReason    string
 	wakeErrorCode pb.CommandResult_ErrorCode
 	wakeErr       error
+	// GetChatTranscript / SendChatMessage knobs.
+	transcript        *pb.GetChatTranscriptResponse
+	transcriptSession string // last sessionID passed to GetChatTranscript
+	sendResult        *pb.SendChatMessageResponse
+	sendAgentID       string // last agentSessionID passed to SendChatMessage
+	sendMessage       string // last message passed to SendChatMessage
 }
 
 func (f *fakeCommandHandler) Stop(_ context.Context, _ string) (*pb.Session, error) {
@@ -103,6 +109,16 @@ func (f *fakeCommandHandler) ListTrackerIssues(_ context.Context, repoID, query 
 		<-f.issuesBlock
 	}
 	return f.issues, f.returnErr
+}
+
+func (f *fakeCommandHandler) GetChatTranscript(_ context.Context, sessionID, _ string, _ int32) (*pb.GetChatTranscriptResponse, error) {
+	f.transcriptSession = sessionID
+	return f.transcript, f.returnErr
+}
+func (f *fakeCommandHandler) SendChatMessage(_ context.Context, agentSessionID, message string, _ bool) (*pb.SendChatMessageResponse, error) {
+	f.sendAgentID = agentSessionID
+	f.sendMessage = message
+	return f.sendResult, f.returnErr
 }
 
 func strPtr(s string) *string { return &s }
@@ -229,6 +245,131 @@ func TestDispatch_ListTrackerIssues(t *testing.T) {
 	}
 	if *fake.lastSource != "linear" {
 		t.Fatalf("lastSource = %q, want linear", *fake.lastSource)
+	}
+}
+
+func TestDispatch_GetChatTranscript(t *testing.T) {
+	fake := &fakeCommandHandler{transcript: &pb.GetChatTranscriptResponse{
+		Messages:           []*pb.ChatMessage{{Text: "hi"}},
+		FinalAssistantText: "done",
+		Exists:             true,
+	}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "ct1",
+		Cmd: &pb.OrchestratorCommand_GetChatTranscript{GetChatTranscript: &pb.GetChatTranscriptCommand{
+			SessionId: "s1", AgentSessionId: "agent-1", MaxMessages: 5,
+		}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() || res.GetCommandId() != "ct1" {
+		t.Fatalf("expected ok result for ct1, got %+v", ev)
+	}
+	tr := res.GetGetChatTranscript()
+	if tr == nil || !tr.GetExists() || tr.GetFinalAssistantText() != "done" || len(tr.GetMessages()) != 1 {
+		t.Fatalf("unexpected transcript payload: %+v", tr)
+	}
+	if fake.transcriptSession != "s1" {
+		t.Fatalf("session scope not forwarded: %q", fake.transcriptSession)
+	}
+}
+
+func TestDispatch_GetChatTranscript_TypedError(t *testing.T) {
+	fake := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeNotFound, fmt.Errorf("no such chat"))}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "ct2",
+		Cmd:       &pb.OrchestratorCommand_GetChatTranscript{GetChatTranscript: &pb.GetChatTranscriptCommand{AgentSessionId: "a"}},
+	}, out)
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || res.GetOk() {
+		t.Fatalf("expected failed result, got %+v", ev)
+	}
+	if res.GetErrorCode() != pb.CommandResult_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("error code = %v, want NOT_FOUND", res.GetErrorCode())
+	}
+}
+
+func TestDispatch_GetChatTranscript_HandlerNotWired(t *testing.T) {
+	client := newDispatcherClient(nil, nil, nil)
+	out := make(chan *pb.DaemonEvent, 1)
+	ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "ct3",
+		Cmd:       &pb.OrchestratorCommand_GetChatTranscript{GetChatTranscript: &pb.GetChatTranscriptCommand{}},
+	}, out)
+	// Nil handler is reported synchronously (before the async goroutine spawns).
+	if ev == nil || ev.GetResult().GetOk() {
+		t.Fatalf("expected synchronous wired-error result, got %+v", ev)
+	}
+}
+
+func TestDispatch_SendChatMessage(t *testing.T) {
+	fake := &fakeCommandHandler{sendResult: &pb.SendChatMessageResponse{TmuxSessionName: "boss-x", Delivered: true}}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	if ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "sm1",
+		Cmd: &pb.OrchestratorCommand_SendChatMessage{SendChatMessage: &pb.SendChatMessageCommand{
+			AgentSessionId: "agent-1", Message: "hello", WakeIfAsleep: true,
+		}},
+	}, out); ev != nil {
+		t.Fatalf("expected nil synchronous result for async command, got %+v", ev)
+	}
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || !res.GetOk() || res.GetCommandId() != "sm1" {
+		t.Fatalf("expected ok result for sm1, got %+v", ev)
+	}
+	sm := res.GetSendChatMessage()
+	if sm == nil || !sm.GetDelivered() || sm.GetTmuxSessionName() != "boss-x" {
+		t.Fatalf("unexpected send payload: %+v", sm)
+	}
+	if fake.sendAgentID != "agent-1" || fake.sendMessage != "hello" {
+		t.Fatalf("send fields not forwarded: agent=%q msg=%q", fake.sendAgentID, fake.sendMessage)
+	}
+}
+
+func TestDispatch_SendChatMessage_TypedError(t *testing.T) {
+	fake := &fakeCommandHandler{returnErr: connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("chat asleep"))}
+	client := newDispatcherClient(fake, nil, nil)
+
+	out := make(chan *pb.DaemonEvent, 1)
+	client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "sm2",
+		Cmd:       &pb.OrchestratorCommand_SendChatMessage{SendChatMessage: &pb.SendChatMessageCommand{AgentSessionId: "a", Message: "m"}},
+	}, out)
+
+	ev := recvEvent(t, out)
+	res := ev.GetResult()
+	if res == nil || res.GetOk() {
+		t.Fatalf("expected failed result, got %+v", ev)
+	}
+	if res.GetErrorCode() != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
+		t.Fatalf("error code = %v, want FAILED_PRECONDITION", res.GetErrorCode())
+	}
+}
+
+func TestDispatch_SendChatMessage_HandlerNotWired(t *testing.T) {
+	client := newDispatcherClient(nil, nil, nil)
+	out := make(chan *pb.DaemonEvent, 1)
+	ev := client.dispatchCommand(context.Background(), &pb.OrchestratorCommand{
+		CommandId: "sm3",
+		Cmd:       &pb.OrchestratorCommand_SendChatMessage{SendChatMessage: &pb.SendChatMessageCommand{}},
+	}, out)
+	if ev == nil || ev.GetResult().GetOk() {
+		t.Fatalf("expected synchronous wired-error result, got %+v", ev)
 	}
 }
 

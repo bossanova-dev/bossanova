@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -225,4 +227,51 @@ func TestUpdateRepairDiagnosticsPersistsReviewFingerprint(t *testing.T) {
 	if got.LastRepairReviewFingerprint != "review-fp-1" {
 		t.Fatalf("LastRepairReviewFingerprint=%q, want review-fp-1", got.LastRepairReviewFingerprint)
 	}
+}
+
+// TestArchiveContract locks the contract that the handler relies on (BOS-76):
+// Archive returns sql.ErrNoRows for a missing id, and nil (with archived_at set)
+// for an existing un-archived row.
+func TestArchiveContract(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("missing id returns sql.ErrNoRows", func(t *testing.T) {
+		db := setupTestDB(t)
+		sessionStore := NewSessionStore(db)
+
+		err := sessionStore.Archive(ctx, "nonexistent-id")
+		if !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("Archive missing id: got %v, want sql.ErrNoRows", err)
+		}
+	})
+
+	t.Run("existing un-archived row returns nil and sets archived_at", func(t *testing.T) {
+		db := setupTestDB(t)
+		repoStore := NewRepoStore(db)
+		sessionStore := NewSessionStore(db)
+
+		repo := createTestRepo(t, repoStore)
+		sess, err := sessionStore.Create(ctx, CreateSessionParams{
+			RepoID:       repo.ID,
+			Title:        "archive contract test",
+			WorktreePath: "/tmp/wt/archive-contract",
+			BranchName:   "feat/archive-contract",
+			BaseBranch:   "main",
+		})
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+
+		if err := sessionStore.Archive(ctx, sess.ID); err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+
+		got, err := sessionStore.Get(ctx, sess.ID)
+		if err != nil {
+			t.Fatalf("Get after Archive: %v", err)
+		}
+		if got.ArchivedAt == nil {
+			t.Error("ArchivedAt should be set after Archive, got nil")
+		}
+	})
 }

@@ -30,10 +30,24 @@ var Registry = map[string]Prose{
 		Examples: []Example{{Command: "boss show abc123"}},
 	},
 	"boss new": {
-		Long: "Launches the interactive session creation flow.",
+		Long: "Launches the interactive session creation flow. " +
+			"When both --repo and --prompt are provided the command runs " +
+			"non-interactively: it creates the session, streams any setup output " +
+			"to stderr, and prints the session-id and chat-id to stdout, then " +
+			"exits. Combine with --detach (implicit when both flags are set) for " +
+			"scripting. Use --agent to override the default agent plugin.",
 		Examples: []Example{
 			{Command: "boss new"},
 			{Command: "boss new --agent opencode"},
+			{
+				Command:     "boss new --repo my-repo --prompt \"refactor the auth module\" --detach",
+				Explanation: "Create a session non-interactively and print its ids",
+			},
+			{
+				Command: "boss new --agent codex --repo my-repo " +
+					"--prompt \"review this PR for security issues\" --detach",
+				Explanation: "Ask Codex for a second opinion; capture ids for boss chat wait",
+			},
 		},
 	},
 	"boss attach": {
@@ -45,6 +59,44 @@ var Registry = map[string]Prose{
 	},
 	"boss archive": {
 		Examples: []Example{{Command: "boss archive abc123"}},
+	},
+
+	// --- Chat Control ---
+	"boss chat send": {
+		Long: "Delivers a follow-up message to a running chat identified by a " +
+			"session id or agent_session_id (the chat-id printed by `boss new --detach`). " +
+			"When given a session id, boss targets that session's primary chat. " +
+			"The daemon wakes a sleeping chat before pasting the message.",
+		Examples: []Example{
+			{Command: "boss chat send <session-id|chat-id> \"please also add tests\""},
+		},
+	},
+	"boss chat show": {
+		Long: "Prints the full conversation transcript for a chat or session's primary chat. " +
+			"Use --result-only to print just the final assistant response text " +
+			"(suitable for scripting). Use --limit to cap the number of messages.",
+		Examples: []Example{
+			{Command: "boss chat show <session-id|chat-id>"},
+			{Command: "boss chat show <session-id|chat-id> --result-only"},
+			{Command: "boss chat show <session-id|chat-id> --limit 10"},
+		},
+	},
+	"boss chat wait": {
+		Long: "Blocks until the chat identified by a session id or agent_session_id becomes " +
+			"idle or is waiting for input, then prints the final assistant result. " +
+			"Polls chat status every few seconds. Use --timeout to limit wait time. " +
+			"Typical recipe: `boss new --agent codex --repo R --prompt P --detach` " +
+			"then `boss chat wait <session-id|chat-id>` to collect the result.",
+		Examples: []Example{
+			{Command: "boss chat wait <session-id|chat-id>"},
+			{Command: "boss chat wait <session-id|chat-id> --timeout 10m"},
+			{
+				Command: "CHAT=$(boss new --agent codex --repo my-repo " +
+					"--prompt \"second opinion on PR #42\" --detach | " +
+					"awk '/^chat-id/{print $2}') && boss chat wait $CHAT",
+				Explanation: "Full cross-agent second-opinion recipe",
+			},
+		},
 	},
 
 	// --- Repository Management ---

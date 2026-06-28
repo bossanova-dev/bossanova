@@ -582,6 +582,21 @@ export function applyMinHeightRatio(cropHeight, recordedWidth, recordedHeight) {
 }
 
 /**
+ * Crop height to feed the encoder. Explicit measured crops keep the existing
+ * behavior; recordings with no crop still need an even height for H264.
+ * @param {number|null|undefined} cropHeight measured content height (px)
+ * @param {number} recordedHeight viewport height the video was recorded at (px)
+ * @returns {number|null}
+ */
+export function encoderCropHeight(cropHeight, recordedHeight) {
+  const explicit = evenCropHeight(cropHeight, recordedHeight);
+  if (explicit !== null) return explicit;
+  if (!Number.isFinite(recordedHeight) || recordedHeight <= 0) return null;
+  if (recordedHeight % 2 === 0) return null;
+  return recordedHeight - 1;
+}
+
+/**
  * Build the pass-1 base-chain string `[0:v]...[base]` for the filtergraph.
  * Applies, in order: optional leading trim (when trimSec > 0), optional crop
  * (when cropHeight is a positive integer), then fps. Crop comes before fps so
@@ -749,7 +764,7 @@ export function postprocessProofVideo({
     };
 
   const recorded = probeDimensions(webmPath);
-  const effectiveCrop = recorded ? evenCropHeight(cropHeight, recorded.height) : null;
+  const effectiveCrop = recorded ? encoderCropHeight(cropHeight, recorded.height) : null;
 
   const analysis = analyzeDiffs(webmPath);
   if (analysis === null)

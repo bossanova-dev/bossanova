@@ -280,3 +280,188 @@ func TestPathToProjectKeyReplacesPathSeparators(t *testing.T) {
 		})
 	}
 }
+
+func TestReadTranscript_BasicMessages(t *testing.T) {
+	work := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	key := pathToProjectKey(work)
+	dir := filepath.Join(home, ".claude", "projects", key)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jsonl := `{"type":"user","message":{"role":"user","content":"Hello there"},"timestamp":"2024-01-15T10:00:00Z"}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"Hi! How can I help?"},"timestamp":"2024-01-15T10:00:01Z"}` + "\n" +
+		`{"type":"user","message":{"role":"user","content":"Fix the bug"},"timestamp":"2024-01-15T10:00:02Z"}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"Sure, I will fix it."},"timestamp":"2024-01-15T10:00:03Z"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "sess.jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(dir, "sess.jsonl")
+	messages, finalAssistant, exists, err := readTranscript(path, 0)
+	if err != nil {
+		t.Fatalf("readTranscript: %v", err)
+	}
+	if !exists {
+		t.Error("exists = false, want true")
+	}
+	if len(messages) != 4 {
+		t.Fatalf("len(messages) = %d, want 4", len(messages))
+	}
+	if messages[0].Role != "user" {
+		t.Errorf("messages[0].Role = %q, want user", messages[0].Role)
+	}
+	if messages[0].Text != "Hello there" {
+		t.Errorf("messages[0].Text = %q, want 'Hello there'", messages[0].Text)
+	}
+	if messages[0].Timestamp != "2024-01-15T10:00:00Z" {
+		t.Errorf("messages[0].Timestamp = %q, want '2024-01-15T10:00:00Z'", messages[0].Timestamp)
+	}
+	if messages[0].Kind != "text" {
+		t.Errorf("messages[0].Kind = %q, want 'text'", messages[0].Kind)
+	}
+	if messages[1].Role != "assistant" {
+		t.Errorf("messages[1].Role = %q, want assistant", messages[1].Role)
+	}
+	if messages[3].Role != "assistant" {
+		t.Errorf("messages[3].Role = %q, want assistant", messages[3].Role)
+	}
+	if finalAssistant != "Sure, I will fix it." {
+		t.Errorf("finalAssistant = %q, want 'Sure, I will fix it.'", finalAssistant)
+	}
+}
+
+func TestReadTranscript_NoFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing.jsonl")
+
+	messages, finalAssistant, exists, err := readTranscript(path, 0)
+	if err != nil {
+		t.Fatalf("readTranscript: expected nil error for missing file, got %v", err)
+	}
+	if exists {
+		t.Error("exists = true, want false")
+	}
+	if len(messages) != 0 {
+		t.Errorf("len(messages) = %d, want 0", len(messages))
+	}
+	if finalAssistant != "" {
+		t.Errorf("finalAssistant = %q, want empty", finalAssistant)
+	}
+}
+
+func TestReadTranscript_MaxMessagesTail(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := `{"type":"user","message":{"role":"user","content":"msg1"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"reply1"}}` + "\n" +
+		`{"type":"user","message":{"role":"user","content":"msg2"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"reply2"}}` + "\n"
+	path := filepath.Join(dir, "t.jsonl")
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	messages, finalAssistant, exists, err := readTranscript(path, 2)
+	if err != nil {
+		t.Fatalf("readTranscript: %v", err)
+	}
+	if !exists {
+		t.Error("exists = false, want true")
+	}
+	if len(messages) != 2 {
+		t.Fatalf("len(messages) = %d, want 2 (tail)", len(messages))
+	}
+	if messages[0].Text != "msg2" {
+		t.Errorf("messages[0].Text = %q, want 'msg2'", messages[0].Text)
+	}
+	if messages[1].Text != "reply2" {
+		t.Errorf("messages[1].Text = %q, want 'reply2'", messages[1].Text)
+	}
+	// FinalAssistantText should reflect the true last assistant turn (reply2).
+	if finalAssistant != "reply2" {
+		t.Errorf("finalAssistant = %q, want 'reply2'", finalAssistant)
+	}
+}
+
+func TestReadTranscript_SkipsToolResultOnlyUserEntries(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := `{"type":"user","message":{"role":"user","content":"hello"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"working on it"}}` + "\n" +
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"done"}}` + "\n"
+	path := filepath.Join(dir, "t.jsonl")
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	messages, finalAssistant, _, err := readTranscript(path, 0)
+	if err != nil {
+		t.Fatalf("readTranscript: %v", err)
+	}
+	// tool_result-only user entry should be skipped → 3 messages
+	if len(messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3 (tool_result-only user skipped)", len(messages))
+	}
+	if finalAssistant != "done" {
+		t.Errorf("finalAssistant = %q, want 'done'", finalAssistant)
+	}
+}
+
+func TestReadTranscript_ViaServer(t *testing.T) {
+	work := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	key := pathToProjectKey(work)
+	dir := filepath.Join(home, ".claude", "projects", key)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jsonl := `{"type":"user","message":{"role":"user","content":"help me"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":"I can help"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "mysess.jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &Server{logger: zerolog.Nop()}
+	resp, err := srv.ReadTranscript(context.Background(), &bossanovav1.ReadTranscriptRequest{
+		WorkDir:        work,
+		AgentSessionId: "mysess",
+		MaxMessages:    0,
+	})
+	if err != nil {
+		t.Fatalf("ReadTranscript: %v", err)
+	}
+	if !resp.Exists {
+		t.Error("Exists = false, want true")
+	}
+	if len(resp.Messages) != 2 {
+		t.Fatalf("len(Messages) = %d, want 2", len(resp.Messages))
+	}
+	if resp.FinalAssistantText != "I can help" {
+		t.Errorf("FinalAssistantText = %q, want 'I can help'", resp.FinalAssistantText)
+	}
+}
+
+func TestReadTranscript_ViaServer_MissingFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	srv := &Server{logger: zerolog.Nop()}
+	resp, err := srv.ReadTranscript(context.Background(), &bossanovav1.ReadTranscriptRequest{
+		WorkDir:        t.TempDir(),
+		AgentSessionId: "noexist",
+	})
+	if err != nil {
+		t.Fatalf("ReadTranscript should not error on missing file, got: %v", err)
+	}
+	if resp.Exists {
+		t.Error("Exists should be false for missing transcript")
+	}
+	if len(resp.Messages) != 0 {
+		t.Errorf("Messages should be empty for missing transcript, got %d", len(resp.Messages))
+	}
+	if resp.FinalAssistantText != "" {
+		t.Errorf("FinalAssistantText should be empty, got %q", resp.FinalAssistantText)
+	}
+}

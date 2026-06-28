@@ -775,6 +775,14 @@ func (m *MockDaemon) WakeChat(context.Context, *connect.Request[pb.WakeChatReque
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }
 
+func (m *MockDaemon) GetChatTranscript(context.Context, *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
+func (m *MockDaemon) SendChatMessage(context.Context, *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
+}
+
 func (m *MockDaemon) DeliverVCSEvent(context.Context, *connect.Request[pb.DeliverVCSEventRequest]) (*connect.Response[pb.DeliverVCSEventResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("not implemented"))
 }

@@ -139,6 +139,8 @@ type SessionCommandServer interface {
 	ListAgents(context.Context, *connect.Request[pb.ListAgentsRequest]) (*connect.Response[pb.ListAgentsResponse], error)
 	ListRepoPRs(context.Context, *connect.Request[pb.ListRepoPRsRequest]) (*connect.Response[pb.ListRepoPRsResponse], error)
 	ListTrackerIssues(context.Context, *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error)
+	GetChatTranscript(context.Context, *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error)
+	SendChatMessage(context.Context, *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error)
 }
 
 // CommandHandlerAdapter implements SessionCommandHandler by delegating
@@ -348,6 +350,40 @@ func (a *CommandHandlerAdapter) ListTrackerIssues(ctx context.Context, repoID, q
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("list tracker issues: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// GetChatTranscript implements SessionCommandHandler.GetChatTranscript by
+// delegating to the daemon's GetChatTranscript connect handler.
+func (a *CommandHandlerAdapter) GetChatTranscript(ctx context.Context, sessionID, agentSessionID string, maxMessages int32) (*pb.GetChatTranscriptResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("get_chat_transcript: command server not wired")
+	}
+	resp, err := a.Commands.GetChatTranscript(ctx, connect.NewRequest(&pb.GetChatTranscriptRequest{
+		AgentSessionId: agentSessionID,
+		SessionId:      sessionID,
+		MaxMessages:    maxMessages,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("get chat transcript: %w", err)
+	}
+	return resp.Msg, nil
+}
+
+// SendChatMessage implements SessionCommandHandler.SendChatMessage by delegating
+// to the daemon's SendChatMessage connect handler.
+func (a *CommandHandlerAdapter) SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep bool) (*pb.SendChatMessageResponse, error) {
+	if a.Commands == nil {
+		return nil, errors.New("send_chat_message: command server not wired")
+	}
+	resp, err := a.Commands.SendChatMessage(ctx, connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: agentSessionID,
+		Message:        message,
+		WakeIfAsleep:   wakeIfAsleep,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("send chat message: %w", err)
 	}
 	return resp.Msg, nil
 }

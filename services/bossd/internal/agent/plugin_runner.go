@@ -29,6 +29,7 @@ type AgentRunnerClient interface {
 	HasQuestionPrompt(context.Context, *bossanovav1.HasQuestionPromptRequest) (*bossanovav1.HasQuestionPromptResponse, error)
 	LastTurnIsUser(context.Context, *bossanovav1.LastTurnIsUserRequest) (*bossanovav1.LastTurnIsUserResponse, error)
 	TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error)
+	ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error)
 }
 
 var _ AgentRunner = (*PluginRunner)(nil)
@@ -52,13 +53,14 @@ func NewPluginRunner(client AgentRunnerClient, tailer *Tailer, logDir string, lo
 
 // Start forwards the request to the agent plugin via gRPC and then opens the
 // tailer on the resolved session ID so that Subscribe / History work immediately.
-func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error) {
+func (r *PluginRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, model string) (string, error) {
 	req := &bossanovav1.StartAgentRunRequest{
 		WorkDir:   workDir,
 		Plan:      plan,
 		ResumeId:  resume,
 		SessionId: sessionID,
 		LogPath:   r.logPathFor(sessionID),
+		Model:     model,
 	}
 	resp, err := r.client.StartRun(ctx, req)
 	if err != nil {

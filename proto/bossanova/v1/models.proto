@@ -476,6 +476,8 @@ enum CronJobStatus {
   CRON_JOB_STATUS_IDLE        = 1;
   CRON_JOB_STATUS_RUNNING     = 2;
   CRON_JOB_STATUS_FAILED      = 3;
+  CRON_JOB_STATUS_GATED       = 4;  // last fire was blocked by the gate command
+  CRON_JOB_STATUS_GATING      = 5;  // gate command currently running (transient, in-memory)
 }
 
 // CronJob represents a scheduled prompt that fires on a cron expression.
@@ -503,4 +505,18 @@ message CronJob {
   google.protobuf.Timestamp updated_at   = 13;
   CronJobStatus last_run_status = 14;  // derived; not persisted
   string agent_name = 15;              // agent runner plugin name; empty legacy data defaults to claude
+  string model = 16;                   // opaque agent model id; "" = plugin default. Never enumerated by bossd.
+  string gate_command = 17;            // optional gate command run before each fire; empty = no gate
+  bool   run_setup_command = 18;       // run the repo setup script before the agent; default true
+}
+
+// ChatMessage is a transport-neutral, single turn of an agent chat transcript,
+// flattened from the agent's on-disk JSONL by the owning plugin. It carries
+// enough to render a conversation and to derive the "final result" without the
+// daemon needing to understand any agent-specific transcript format.
+message ChatMessage {
+  string role = 1;       // user | assistant | system | tool
+  string text = 2;       // flattened text content of the turn
+  string timestamp = 3;  // RFC3339, best-effort from the transcript ("" if unknown)
+  string kind = 4;       // optional: text | tool_use | tool_result
 }

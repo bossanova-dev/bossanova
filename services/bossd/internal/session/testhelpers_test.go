@@ -26,6 +26,7 @@ type fakeAgentForLifecycle struct {
 	ConsumesInitialInput        bool
 	OnConfigureHook             func()
 	SuggestPRTitleFunc          func(*bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error)
+	IgnoredDirtyFiles           []string
 }
 
 func newFakeAgent() *fakeAgentForLifecycle {
@@ -101,7 +102,7 @@ func (f *fakeAgentForLifecycle) ResolveInteractiveSessionID(_ context.Context, r
 }
 
 func (f *fakeAgentForLifecycle) ListIgnoredDirtyFiles(_ context.Context, _ *bossanovav1.ListIgnoredDirtyFilesRequest) (*bossanovav1.ListIgnoredDirtyFilesResponse, error) {
-	return &bossanovav1.ListIgnoredDirtyFilesResponse{}, nil
+	return &bossanovav1.ListIgnoredDirtyFilesResponse{Paths: f.IgnoredDirtyFiles}, nil
 }
 
 func (f *fakeAgentForLifecycle) SuggestPRTitle(_ context.Context, req *bossanovav1.SuggestPRTitleRequest) (*bossanovav1.SuggestPRTitleResponse, error) {
@@ -125,6 +126,10 @@ func (f *fakeAgentForLifecycle) LastTurnIsUser(_ context.Context, _ *bossanovav1
 
 func (f *fakeAgentForLifecycle) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
+}
+
+func (f *fakeAgentForLifecycle) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
 }
 
 // fakePollArmer records calls to Arm so tests can assert that the poll

@@ -138,6 +138,12 @@ func (s *chatPickerStub) ReportChatStatus(context.Context, []*pb.ChatStatusRepor
 func (s *chatPickerStub) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
 	panic("unused")
 }
+func (s *chatPickerStub) GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	panic("unused")
+}
+func (s *chatPickerStub) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	panic("unused")
+}
 func (s *chatPickerStub) NotifyAuthChange(context.Context, string) error { return nil }
 func (s *chatPickerStub) ListRepoPRs(context.Context, string) ([]*pb.PRSummary, error) {
 	panic("unused")
@@ -361,6 +367,50 @@ func TestChatPicker_RendersRepairChatTitle(t *testing.T) {
 	rendered := m.View().Content
 	if !strings.Contains(rendered, "Repair:") {
 		t.Errorf("rendered chat picker missing %q in:\n%s", "Repair:", rendered)
+	}
+}
+
+// renderChatPickerWith builds a loaded chat-picker for the given session and
+// returns its rendered main-view content. The session warning block (BOS-86)
+// is surfaced below the header and above the chat list.
+func renderChatPickerWith(t *testing.T, session *pb.Session) string {
+	t.Helper()
+	stub := &chatPickerStub{}
+	m := NewChatPickerModel(stub, context.Background(), "session-1", "")
+	updated, _ := m.Update(chatsListedMsg{
+		chats: []*pb.ClaudeChat{{
+			SessionId:      "session-1",
+			AgentSessionId: "agent-1",
+			Title:          "A chat",
+			CreatedAt:      timestamppb.Now(),
+		}},
+		daemonStatuses: map[string]string{"agent-1": statusWorking},
+	})
+	m = updated.(ChatPickerModel)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = updated.(ChatPickerModel)
+	m.session = session
+	return m.View().Content
+}
+
+func TestChatPicker_SurfacesSessionWarningAboveChatList(t *testing.T) {
+	const warn = "finalize failed (pr_failed): worktree has uncommitted changes"
+	rendered := renderChatPickerWith(t, &pb.Session{
+		Id: "session-1",
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Summary:        warn,
+		},
+	})
+	if !strings.Contains(rendered, warn) {
+		t.Errorf("view-session screen missing full warning %q in:\n%s", warn, rendered)
+	}
+}
+
+func TestChatPicker_NoWarningBlockForCleanSession(t *testing.T) {
+	rendered := renderChatPickerWith(t, &pb.Session{Id: "session-1", Title: "clean"})
+	if strings.Contains(rendered, "finalize failed") || strings.Contains(rendered, "repair failed") {
+		t.Errorf("view-session screen rendered a warning block for a clean session:\n%s", rendered)
 	}
 }
 

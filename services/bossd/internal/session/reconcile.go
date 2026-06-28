@@ -58,6 +58,8 @@ type PRAssociationResolver struct {
 	provider vcs.Provider
 	logger   zerolog.Logger
 	branches LiveBranchResolver
+	cronJobs db.CronJobStore
+	notify   func(context.Context, *models.Session)
 
 	mu      sync.Mutex
 	ttl     time.Duration
@@ -89,6 +91,27 @@ func NewPRAssociationResolver(
 // branch name. Returns the resolver for chaining.
 func (r *PRAssociationResolver) WithBranchResolver(branches LiveBranchResolver) *PRAssociationResolver {
 	r.branches = branches
+	return r
+}
+
+// WithCronJobs attaches a cron-job store so the reconciler can repair cron
+// sessions whose title is still the cron job's name even though they already
+// have a PR (the placeholder / pr_failed finalize branches never sync the
+// agent's PR title onto the session row). Without it the stale-title repair
+// pass is skipped. Returns the resolver for chaining.
+func (r *PRAssociationResolver) WithCronJobs(cronJobs db.CronJobStore) *PRAssociationResolver {
+	r.cronJobs = cronJobs
+	return r
+}
+
+// WithUpdateNotifier attaches a callback invoked once per session the
+// reconciler updates (PR association + rename to the PR title). It exists so
+// the PR-title rename reaches the cloud/web: reconcile writes directly through
+// the store, bypassing the Server's UpdateSession RPC, so without this hook no
+// SessionDelta_KIND_UPDATED event is published and bosso shows a stale title
+// until the next full daemon snapshot. Returns the resolver for chaining.
+func (r *PRAssociationResolver) WithUpdateNotifier(notify func(context.Context, *models.Session)) *PRAssociationResolver {
+	r.notify = notify
 	return r
 }
 
@@ -172,7 +195,8 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 
 		clearDraftPRBlockedReasonUpdate(sess.BlockedReason, &updateParams)
 
-		if _, err := r.sessions.Update(ctx, sess.ID, updateParams); err != nil {
+		updatedSess, err := r.sessions.Update(ctx, sess.ID, updateParams)
+		if err != nil {
 			r.logger.Warn().Err(err).
 				Str("session", sess.ID).
 				Int("pr", match.pr.Number).
@@ -186,9 +210,54 @@ func (r *PRAssociationResolver) ReconcileSessions(ctx context.Context, sessions 
 			Str("branch", sess.BranchName).
 			Int("pr", match.pr.Number).
 			Msg("reconciled session with existing PR")
+
+		// Publish the update (PR association + rename to the PR title) so the
+		// cloud/web stays in sync; this store write bypasses the Server RPC
+		// that would otherwise emit the event.
+		if r.notify != nil && updatedSess != nil {
+			r.notify(ctx, updatedSess)
+		}
 	}
 
+	updated += r.repairStaleCronTitles(ctx, sessions)
+
 	return updated, nil
+}
+
+// repairStaleCronTitles renames cron sessions that already have a PR but whose
+// title is still the cron job's name. The PR-association loop above only ever
+// touches sessions whose PRNumber is nil, so a cron session that finalized via
+// the placeholder / pr_failed branch keeps the cron job name forever even
+// though the agent set a real title on the GitHub PR. This pass closes that gap
+// (and auto-heals any already-stuck rows). It is a no-op without a cron-job
+// store (see WithCronJobs).
+func (r *PRAssociationResolver) repairStaleCronTitles(ctx context.Context, sessions []*models.Session) int64 {
+	if r.cronJobs == nil {
+		return 0
+	}
+	var repaired int64
+	for _, sess := range sessions {
+		if sess == nil || sess.ArchivedAt != nil || sess.PRNumber == nil ||
+			sess.CronJobID == nil || *sess.CronJobID == "" {
+			continue
+		}
+		updatedSess, changed, err := adoptPRTitleWhenCronTitleStale(
+			ctx, r.sessions, r.repos, r.cronJobs, r.provider, r.logger, sess)
+		if err != nil {
+			r.logger.Warn().Err(err).
+				Str("session", sess.ID).
+				Msg("reconcile: repair stale cron title")
+			continue
+		}
+		if !changed {
+			continue
+		}
+		repaired++
+		if r.notify != nil && updatedSess != nil {
+			r.notify(ctx, updatedSess)
+		}
+	}
+	return repaired
 }
 
 func sessionNeedsPRAssociation(sess *models.Session) bool {

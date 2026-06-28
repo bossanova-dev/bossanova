@@ -1,0 +1,131 @@
+package testharness_test
+
+// e2e_session_env_test.go — proves the canonical BOSS_* session environment
+// (Layer E / ManagedSessionEnv) actually reaches the spawned tmux session.
+//
+// The unit tests in services/bossd/internal/session cover what ManagedSessionEnv
+// *returns*; this E2E test covers that the returned map is delivered all the way
+// to `tmux new-session -e KEY=VALUE`. It drives the real cron spawn path through
+// the harness (no agent auth needed) and asserts on the env the tmux fake
+// received. The cron path is used because it is the readily-triggerable real
+// spawn; the fresh (StartTmuxChat) and wake (spawnChatTmux) paths set the env
+// from the identical ManagedSessionEnv call sites, with the cron-vs-non-cron
+// branching unit-covered.
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/testharness"
+)
+
+// tmuxEnvFromNewSession scans the fake's recorded tmux invocations for the
+// `new-session` call and returns the environment it carried. The production
+// tmux client renders Env as repeated `-e KEY=VALUE` arguments
+// (see services/bossd/internal/tmux/tmux.go), so every value following a `-e`
+// flag is one session-environment entry.
+func tmuxEnvFromNewSession(t *testing.T, fake *testharness.CronReadyTmuxFake) map[string]string {
+	t.Helper()
+	env := map[string]string{}
+	found := false
+	for _, call := range fake.Calls() {
+		if len(call) == 0 || call[0] != "new-session" {
+			continue
+		}
+		found = true
+		args := call[1:]
+		for i := 0; i < len(args); i++ {
+			if args[i] == "-e" && i+1 < len(args) {
+				k, v, ok := strings.Cut(args[i+1], "=")
+				if ok {
+					env[k] = v
+				}
+				i++
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no tmux new-session call recorded; calls: %v", fake.Calls())
+	}
+	return env
+}
+
+// TestE2ESessionEnvReachesTmux verifies that a real session spawn passes the
+// full canonical BOSS_* environment to tmux new-session, including the cron
+// superset for a scheduler-spawned session.
+func TestE2ESessionEnvReachesTmux(t *testing.T) {
+	h, fake := cronTestHarness(t)
+	ctx := context.Background()
+
+	repoID := registerTestRepo(t, h, ctx, withWorktreeBaseDir(t.TempDir()))
+	useTempWorktrees(t, h)
+
+	job, err := h.CronJobs.Create(ctx, db.CreateCronJobParams{
+		RepoID:   repoID,
+		Name:     "env-probe",
+		Prompt:   "do the thing",
+		Schedule: "* * * * *",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	sched := newCronScheduler(h)
+	if err := sched.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	// Tick spawns the session synchronously, driving the real tmux new-session
+	// through the fake.
+	sched.Tick(tickTime)
+
+	sess := sessionFromCronJob(t, h, job.ID)
+	chats, err := h.AgentChats.ListBySession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("list chats: %v", err)
+	}
+	if len(chats) != 1 {
+		t.Fatalf("expected exactly 1 chat after cron fire, got %d", len(chats))
+	}
+	agentSessionID := chats[0].AgentSessionID
+
+	env := tmuxEnvFromNewSession(t, fake)
+
+	// Identity vars must match the spawned session/chat exactly.
+	exact := map[string]string{
+		"BOSS_SESSION_ID":       sess.ID,
+		"BOSS_AGENT_SESSION_ID": agentSessionID,
+		"BOSS_REPO_ID":          sess.RepoID,
+	}
+	for k, want := range exact {
+		if env[k] != want {
+			t.Errorf("tmux env[%s] = %q, want %q", k, env[k], want)
+		}
+	}
+
+	// These vars must be present and non-empty on every managed spawn.
+	for _, k := range []string{"BOSS_AGENT", "BOSS_WORKTREE", "BOSS_SETTINGS_PATH", "BOSS_SOCKET"} {
+		if env[k] == "" {
+			t.Errorf("tmux env missing/empty %s; full env: %v", k, env)
+		}
+	}
+
+	// Cron superset: a scheduler-spawned session also carries BOSS_CRON*.
+	if env["BOSS_CRON"] != "true" {
+		t.Errorf("tmux env BOSS_CRON = %q, want true", env["BOSS_CRON"])
+	}
+	if env["BOSS_CRON_JOB_ID"] != job.ID {
+		t.Errorf("tmux env BOSS_CRON_JOB_ID = %q, want %q", env["BOSS_CRON_JOB_ID"], job.ID)
+	}
+
+	// The stale hand-listed MCP tool names must never leak into the env either
+	// (they were never env, but this keeps the drift guard close to the spawn).
+	for k := range env {
+		if strings.Contains(k, "mcp__boss__") {
+			t.Errorf("unexpected mcp surface in env key %q", k)
+		}
+	}
+}

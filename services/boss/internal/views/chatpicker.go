@@ -573,8 +573,10 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.table.SetHeight(m.tableHeight())
+		// Width first: tableHeight reserves the session warning block, whose
+		// wrapped line count depends on the current table width.
 		m.table.SetWidth(msg.Width)
+		m.table.SetHeight(m.tableHeight())
 		return m, nil
 
 	case tea.KeyMsg:
@@ -867,7 +869,23 @@ func (m ChatPickerModel) DaemonStatuses() map[string]string { return m.daemonSta
 
 // tableHeight returns the height to pass to table.SetHeight.
 func (m ChatPickerModel) tableHeight() int {
-	return clampedTableHeight(len(m.chats), m.height, bannerOverhead+1+actionBarPadY+1) // gap + actionbar padding + actionbar
+	// gap + actionbar padding + actionbar, plus the session warning block
+	// (below the header, above the chat list). Reserving its lines shrinks the
+	// chat table rather than letting the block push the table off-screen.
+	overhead := bannerOverhead + 1 + actionBarPadY + 1 + m.warningBlockHeight()
+	return clampedTableHeight(len(m.chats), m.height, overhead)
+}
+
+// warningBlockHeight returns the number of vertical lines the session warning
+// block occupies above the chat list (0 when the session has no
+// finalize/repair hints), including the blank line above and below it that
+// View renders.
+func (m ChatPickerModel) warningBlockHeight() int {
+	block := selectedSessionWarningBlock(m.session, m.table.Width())
+	if block == "" {
+		return 0
+	}
+	return lipgloss.Height(block) + 2
 }
 
 func (m ChatPickerModel) View() tea.View {
@@ -918,6 +936,14 @@ func (m ChatPickerModel) View() tea.View {
 	}
 
 	var b strings.Builder
+
+	// Surface the session's full finalize/repair error below the header and
+	// above the chat list, padded with a blank line above and below.
+	if block := selectedSessionWarningBlock(m.session, m.table.Width()); block != "" {
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(block))
+		b.WriteString("\n\n")
+	}
 
 	b.WriteString(lipgloss.NewStyle().Padding(0, 1).Render(m.table.View()))
 	b.WriteString("\n")

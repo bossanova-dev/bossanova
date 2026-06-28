@@ -208,6 +208,9 @@ func (c *claudeFakeClient) TranscriptExists(_ context.Context, req *pb.Transcrip
 	}
 	return &pb.TranscriptExistsResponse{Exists: !info.IsDir() && info.Size() > 0}, nil
 }
+func (c *claudeFakeClient) ReadTranscript(_ context.Context, _ *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
+	return &pb.ReadTranscriptResponse{}, nil
+}
 
 // claudeAgentClients is shorthand for the per-name registry expected by
 // NewTmuxStatusPoller. Tests pass this for the common single-agent case.
@@ -1316,6 +1319,9 @@ func (c *recordingAgentClient) LastTurnIsUser(context.Context, *pb.LastTurnIsUse
 }
 func (c *recordingAgentClient) TranscriptExists(context.Context, *pb.TranscriptExistsRequest) (*pb.TranscriptExistsResponse, error) {
 	return &pb.TranscriptExistsResponse{}, nil
+}
+func (c *recordingAgentClient) ReadTranscript(context.Context, *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
+	return &pb.ReadTranscriptResponse{}, nil
 }
 
 // TestPollOnceDispatchesQuestionPromptByAgent proves pollOnce routes

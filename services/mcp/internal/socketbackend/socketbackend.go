@@ -356,6 +356,22 @@ func (b *Backend) GetSessionStatuses(ctx context.Context, sessionIDs []string) (
 	return resp.Msg.GetStatuses(), nil
 }
 
+func (b *Backend) GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	resp, err := b.rpc.GetChatTranscript(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (b *Backend) SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	resp, err := b.rpc.SendChatMessage(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // --- Cron ---
 
 func (b *Backend) CreateCronJob(ctx context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {

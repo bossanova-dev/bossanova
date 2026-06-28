@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -10,8 +11,10 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
+	"github.com/rs/zerolog"
 
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/session"
 )
 
 // lifecycleSessionStoreFake is a minimal db.SessionStore that records the last
@@ -267,4 +270,52 @@ func TestMergeSessionEmptyID(t *testing.T) {
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("code = %v, want InvalidArgument (err=%v)", connect.CodeOf(err), err)
 	}
+}
+
+// TestArchiveSession_MissingSession tests BOS-76: archiving an orphaned session
+// (one whose DB row is gone) must be an idempotent success that fires the
+// KIND_DELETED callback so bosso drops the stale read-model row.
+func TestArchiveSession_MissingSession(t *testing.T) {
+	t.Run("sql.ErrNoRows is idempotent success and fires onSessionDeleted", func(t *testing.T) {
+		store := &lifecycleSessionStoreFake{getErr: sql.ErrNoRows}
+		lc := session.NewLifecycle(store, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+		var deletedID string
+		srv := &Server{
+			sessions:         store,
+			lifecycle:        lc,
+			onSessionDeleted: func(_ context.Context, id string) { deletedID = id },
+		}
+
+		resp, err := srv.ArchiveSession(context.Background(), connect.NewRequest(&pb.ArchiveSessionRequest{Id: "s1"}))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Msg.GetSession().GetId() != "s1" {
+			t.Errorf("response session id = %q, want s1", resp.Msg.GetSession().GetId())
+		}
+		if deletedID != "s1" {
+			t.Errorf("onSessionDeleted called with %q, want s1", deletedID)
+		}
+	})
+
+	t.Run("non-ErrNoRows error returns CodeInternal without firing onSessionDeleted", func(t *testing.T) {
+		store := &lifecycleSessionStoreFake{getErr: errors.New("boom")}
+		lc := session.NewLifecycle(store, nil, nil, nil, nil, nil, nil, nil, zerolog.Nop())
+
+		var deletedCalled bool
+		srv := &Server{
+			sessions:         store,
+			lifecycle:        lc,
+			onSessionDeleted: func(_ context.Context, _ string) { deletedCalled = true },
+		}
+
+		_, err := srv.ArchiveSession(context.Background(), connect.NewRequest(&pb.ArchiveSessionRequest{Id: "s1"}))
+		if connect.CodeOf(err) != connect.CodeInternal {
+			t.Fatalf("code = %v, want CodeInternal (err=%v)", connect.CodeOf(err), err)
+		}
+		if deletedCalled {
+			t.Error("onSessionDeleted must not be called on non-ErrNoRows errors")
+		}
+	})
 }

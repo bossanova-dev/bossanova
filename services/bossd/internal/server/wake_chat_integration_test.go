@@ -149,6 +149,9 @@ func (*codexTUITestClient) TranscriptExists(_ context.Context, req *pb.Transcrip
 	info, err := os.Stat(codexRolloutPath(home, req.GetAgentSessionId()))
 	return &pb.TranscriptExistsResponse{Exists: err == nil && !info.IsDir() && info.Size() > 0}, nil
 }
+func (*codexTUITestClient) ReadTranscript(context.Context, *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
+	return &pb.ReadTranscriptResponse{}, nil
+}
 
 type codexRolloutMeta struct {
 	Type    string `json:"type"`
@@ -284,6 +287,9 @@ func (*claudeIntegrationClient) TranscriptExists(_ context.Context, req *pb.Tran
 	projectDir := filepath.Join(home, ".claude", "projects", pathToProjectKey(req.GetWorkDir()))
 	info, err := os.Stat(filepath.Join(projectDir, req.GetAgentSessionId()+".jsonl"))
 	return &pb.TranscriptExistsResponse{Exists: err == nil && !info.IsDir() && info.Size() > 0}, nil
+}
+func (*claudeIntegrationClient) ReadTranscript(context.Context, *pb.ReadTranscriptRequest) (*pb.ReadTranscriptResponse, error) {
+	return &pb.ReadTranscriptResponse{}, nil
 }
 
 // buildStubClaude builds the testdata stub-claude binary and returns the

@@ -184,6 +184,105 @@ func TestCronCompletionGateBoundsFinalizeWithTimeout(t *testing.T) {
 	}
 }
 
+// assertNoFinalize fails if any FinalizeSession call lands within window. It is
+// the inverse of waitForCount: it proves the gate did NOT finalize.
+func assertNoFinalize(t *testing.T, name string, count func() int, window time.Duration) {
+	t.Helper()
+
+	deadline := time.After(window)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if got := count(); got != 0 {
+			t.Fatalf("%s count = %d, want 0", name, got)
+		}
+		select {
+		case <-deadline:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// TestCronCompletionGateDefersWhenRunNotOver reproduces the #874 false positive:
+// the Stop hook fires while the cron agent is still working (e.g. paused awaiting
+// a background subagent). The gate must NOT finalize — RunIsOver returns false —
+// so the live run is left for the periodic recovery sweep, not finalized mid-run.
+func TestCronCompletionGateDefersWhenRunNotOver(t *testing.T) {
+	sessions := newGateSessionStore()
+	finalizer := &recordingCronFinalizer{}
+
+	cronID := "cron-1"
+	agentID := "agent-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		CronJobID:      &cronID,
+		AgentSessionID: &agentID,
+	}
+
+	gate := NewCronCompletionGate(CronCompletionGateDeps{
+		Sessions:   sessions,
+		Finalizer:  finalizer,
+		QuietDelay: time.Millisecond,
+		RunIsOver:  func(*models.Session) bool { return false },
+	})
+
+	gate.NotifyCronAgentStopped("sess-1")
+	assertNoFinalize(t, "FinalizeSession", finalizer.count, 50*time.Millisecond)
+}
+
+// TestCronCompletionGateFinalizesWhenRunOver verifies the fast path is preserved:
+// when RunIsOver confirms the run is genuinely over, the gate finalizes promptly.
+func TestCronCompletionGateFinalizesWhenRunOver(t *testing.T) {
+	sessions := newGateSessionStore()
+	finalizer := &recordingCronFinalizer{}
+
+	cronID := "cron-1"
+	agentID := "agent-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		CronJobID:      &cronID,
+		AgentSessionID: &agentID,
+	}
+
+	gate := NewCronCompletionGate(CronCompletionGateDeps{
+		Sessions:   sessions,
+		Finalizer:  finalizer,
+		QuietDelay: time.Millisecond,
+		RunIsOver:  func(*models.Session) bool { return true },
+	})
+
+	gate.NotifyCronAgentStopped("sess-1")
+	waitForCount(t, "FinalizeSession", finalizer.count)
+}
+
+// TestCronCompletionGateFinalizesWhenRunIsOverUnwired pins back-compat: a nil
+// RunIsOver (partial/legacy wiring) preserves the prior behavior of finalizing
+// any cron-linked Stop.
+func TestCronCompletionGateFinalizesWhenRunIsOverUnwired(t *testing.T) {
+	sessions := newGateSessionStore()
+	finalizer := &recordingCronFinalizer{}
+
+	cronID := "cron-1"
+	agentID := "agent-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:             "sess-1",
+		CronJobID:      &cronID,
+		AgentSessionID: &agentID,
+	}
+
+	gate := NewCronCompletionGate(CronCompletionGateDeps{
+		Sessions:   sessions,
+		Finalizer:  finalizer,
+		QuietDelay: time.Millisecond,
+		// RunIsOver left nil.
+	})
+
+	gate.NotifyCronAgentStopped("sess-1")
+	waitForCount(t, "FinalizeSession", finalizer.count)
+}
+
 func TestCronCompletionGateIgnoresStaleQuietPeriod(t *testing.T) {
 	sessions := newGateSessionStore()
 	finalizer := &recordingCronFinalizer{}

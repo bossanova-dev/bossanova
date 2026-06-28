@@ -3,6 +3,7 @@ package bossmcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -65,6 +66,41 @@ func TestListSessionsTool(t *testing.T) {
 	}
 	if len(got) != 1 || got[0]["id"] != "sess-1" {
 		t.Fatalf("unexpected sessions payload: %s", textOf(t, res))
+	}
+}
+
+func TestGetChatTranscriptTool(t *testing.T) {
+	backend := &fakeBackend{
+		getChatTranscript: func(_ context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+			if req.GetAgentSessionId() != "agent-abc" || req.GetSessionId() != "sess-xyz" || req.GetMaxMessages() != 10 {
+				t.Errorf("get_chat_transcript args not forwarded: %+v", req)
+			}
+			return &pb.GetChatTranscriptResponse{
+				FinalAssistantText: "sentinel-final-text",
+				Messages:           []*pb.ChatMessage{{Role: "assistant", Text: "hello"}},
+				Exists:             true,
+			}, nil
+		},
+	}
+	cs := newConnectedClient(t, backend, Options{})
+
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "get_chat_transcript",
+		Arguments: map[string]any{
+			"agent_session_id": "agent-abc",
+			"session_id":       "sess-xyz",
+			"max_messages":     float64(10),
+		},
+	})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("tool returned error result: %s", textOf(t, res))
+	}
+	got := textOf(t, res)
+	if !strings.Contains(got, "sentinel-final-text") {
+		t.Fatalf("get_chat_transcript result missing sentinel: %s", got)
 	}
 }
 

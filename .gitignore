@@ -56,6 +56,9 @@ docs/handoffs/
 # Linear plan scratch dir (bs-plan skill; plans are uploaded to R2, not committed)
 .linear-plans/
 
+# Superpowers-framework scratch dir (created while skills run; never committed)
+.superpowers/
+
 # Beads
 .beads/interactions.jsonl
 .beads/issues.jsonl

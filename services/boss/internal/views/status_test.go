@@ -145,7 +145,7 @@ func TestStyledPRStatus_ConflictUsesFailureCross(t *testing.T) {
 	}
 }
 
-// TestRepairFailureHint covers the "⚠ repair failed (N×)" warning text
+// TestRepairFailureHint covers the "repair failed (N×)" warning text
 // that flags sessions where Phase 1c's RecordRepairOutcome captured a
 // non-empty runner_error or exit_error.
 func TestRepairFailureHint(t *testing.T) {
@@ -170,7 +170,7 @@ func TestRepairFailureHint(t *testing.T) {
 				LastRepairAttemptCount: 1,
 				LastRepairRunnerError:  "claude not on PATH",
 			},
-			want: "⚠ repair failed",
+			want: "repair failed",
 		},
 		{
 			name: "third failed attempt with exit error",
@@ -178,7 +178,7 @@ func TestRepairFailureHint(t *testing.T) {
 				LastRepairAttemptCount: 3,
 				LastRepairExitError:    "exit status 1",
 			},
-			want: "⚠ repair failed (3×)",
+			want: "repair failed (3×)",
 		},
 		{
 			name: "passing PR suppresses stale failed attempt",
@@ -215,7 +215,7 @@ func TestRepairFailureHint(t *testing.T) {
 				LastRepairAttemptCount: 2,
 				LastRepairExitError:    "exit status 1",
 			},
-			want: "⚠ repair failed (2×)",
+			want: "repair failed (2×)",
 		},
 	}
 	for _, tc := range cases {
@@ -224,6 +224,19 @@ func TestRepairFailureHint(t *testing.T) {
 				t.Errorf("repairFailureHint = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRepairFailureHint_NoEmoji verifies that repairFailureHint never
+// returns a string containing the U+26A0 WARNING SIGN (⚠).
+func TestRepairFailureHint_NoEmoji(t *testing.T) {
+	sess := &pb.Session{
+		LastRepairAttemptCount: 3,
+		LastRepairExitError:    "exit status 1",
+	}
+	got := repairFailureHint(sess)
+	if strings.ContainsRune(got, '⚠') {
+		t.Errorf("repairFailureHint contains ⚠ emoji: %q", got)
 	}
 }
 
@@ -243,7 +256,7 @@ func TestRepairFailureHint_RetryInSuffix(t *testing.T) {
 	got := repairFailureHint(sess)
 	// Allow slight skew from time.Now() between test and func: assert
 	// the prefix and a 3m-ish suffix.
-	wantPrefix := "⚠ repair failed (3×), retry in ~"
+	wantPrefix := "repair failed (3×), retry in ~"
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Fatalf("repairFailureHint = %q, want prefix %q", got, wantPrefix)
 	}
@@ -265,7 +278,7 @@ func TestRepairFailureHint_NoRetryInWhenElapsed(t *testing.T) {
 		LastRepairStartedAt:    timestamppb.New(startedAt),
 	}
 	got := repairFailureHint(sess)
-	want := "⚠ repair failed (2×)"
+	want := "repair failed (2×)"
 	if got != want {
 		t.Errorf("repairFailureHint = %q, want %q", got, want)
 	}
@@ -310,5 +323,170 @@ func TestRepairRetryRemaining(t *testing.T) {
 				t.Errorf("got %s, want ~%s (diff %s)", got, tc.wantMin, diff)
 			}
 		})
+	}
+}
+
+// TestAttentionWarningHint verifies that the hint returns the trimmed summary
+// directly, without a ⚠ prefix.
+func TestAttentionWarningHint(t *testing.T) {
+	cases := []struct {
+		name string
+		sess *pb.Session
+		want string
+	}{
+		{
+			name: "nil session -> empty",
+			sess: nil,
+			want: "",
+		},
+		{
+			name: "no attention -> empty",
+			sess: &pb.Session{},
+			want: "",
+		},
+		{
+			name: "needs attention with summary",
+			sess: &pb.Session{
+				AttentionStatus: &pb.AttentionStatus{
+					NeedsAttention: true,
+					Summary:        "finalize failed: push rejected",
+				},
+			},
+			want: "finalize failed: push rejected",
+		},
+		{
+			name: "strips leading whitespace from summary",
+			sess: &pb.Session{
+				AttentionStatus: &pb.AttentionStatus{
+					NeedsAttention: true,
+					Summary:        "  finalize failed  ",
+				},
+			},
+			want: "finalize failed",
+		},
+		{
+			name: "summary that previously had ⚠ prefix is returned as-is trimmed",
+			sess: &pb.Session{
+				AttentionStatus: &pb.AttentionStatus{
+					NeedsAttention: true,
+					Summary:        "⚠ something failed",
+				},
+			},
+			want: "⚠ something failed",
+		},
+		{
+			name: "empty summary -> empty hint",
+			sess: &pb.Session{
+				AttentionStatus: &pb.AttentionStatus{
+					NeedsAttention: true,
+					Summary:        "",
+				},
+			},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := attentionWarningHint(tc.sess)
+			if got != tc.want {
+				t.Errorf("attentionWarningHint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAttentionWarningHint_NoEmojiAdded verifies that attentionWarningHint
+// never adds a ⚠ emoji to a summary that does not already contain one.
+func TestAttentionWarningHint_NoEmojiAdded(t *testing.T) {
+	sess := &pb.Session{
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Summary:        "finalize failed: push rejected",
+		},
+	}
+	got := attentionWarningHint(sess)
+	if strings.ContainsRune(got, '⚠') {
+		t.Errorf("attentionWarningHint added ⚠ emoji unexpectedly: %q", got)
+	}
+}
+
+// TestSessionWarningHints_Aggregates verifies that sessionWarningHints returns
+// repair hint first, then attention hint, and that both are present.
+func TestSessionWarningHints_Aggregates(t *testing.T) {
+	sess := &pb.Session{
+		LastRepairAttemptCount: 2,
+		LastRepairExitError:    "exit status 1",
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Summary:        "finalize failed: push rejected",
+		},
+	}
+	got := sessionWarningHints(sess)
+	if len(got) != 2 {
+		t.Fatalf("sessionWarningHints len = %d, want 2; hints: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], "repair failed") {
+		t.Errorf("first hint should be repair hint, got %q", got[0])
+	}
+	if !strings.Contains(got[1], "finalize failed") {
+		t.Errorf("second hint should be attention hint, got %q", got[1])
+	}
+}
+
+// TestSelectedSessionWarningBlock_WithHints verifies that the footer block
+// contains the full hint text and is non-empty when the session has hints.
+func TestSelectedSessionWarningBlock_WithHints(t *testing.T) {
+	sess := &pb.Session{
+		LastRepairAttemptCount: 1,
+		LastRepairExitError:    "exit status 1",
+	}
+	got := selectedSessionWarningBlock(sess, 80)
+	if got == "" {
+		t.Fatal("selectedSessionWarningBlock returned empty for session with hints")
+	}
+	if !strings.Contains(got, "repair failed") {
+		t.Errorf("selectedSessionWarningBlock output missing 'repair failed': %q", got)
+	}
+	if strings.ContainsRune(got, '⚠') {
+		t.Errorf("selectedSessionWarningBlock contains ⚠ emoji: %q", got)
+	}
+}
+
+// TestSelectedSessionWarningBlock_MultipleHints verifies that all hint lines
+// appear in the block when a session has both repair and attention hints.
+func TestSelectedSessionWarningBlock_MultipleHints(t *testing.T) {
+	sess := &pb.Session{
+		LastRepairAttemptCount: 2,
+		LastRepairExitError:    "exit status 1",
+		AttentionStatus: &pb.AttentionStatus{
+			NeedsAttention: true,
+			Summary:        "finalize failed: branch diverged",
+		},
+	}
+	got := selectedSessionWarningBlock(sess, 80)
+	if !strings.Contains(got, "repair failed") {
+		t.Errorf("block missing repair hint: %q", got)
+	}
+	if !strings.Contains(got, "finalize failed") {
+		t.Errorf("block missing attention hint: %q", got)
+	}
+}
+
+// TestSelectedSessionWarningBlock_NoHints verifies that the block is empty
+// when the session has no hints — no layout shift, no empty block.
+func TestSelectedSessionWarningBlock_NoHints(t *testing.T) {
+	sess := &pb.Session{
+		DisplayStatus: pb.DisplayStatus_DISPLAY_STATUS_PASSING,
+	}
+	if got := selectedSessionWarningBlock(sess, 80); got != "" {
+		t.Errorf("selectedSessionWarningBlock = %q, want empty for no-hint session", got)
+	}
+}
+
+// TestSelectedSessionWarningBlock_NilSession verifies that a nil session
+// returns an empty block (no panic).
+func TestSelectedSessionWarningBlock_NilSession(t *testing.T) {
+	if got := selectedSessionWarningBlock(nil, 80); got != "" {
+		t.Errorf("selectedSessionWarningBlock = %q, want empty for nil session", got)
 	}
 }

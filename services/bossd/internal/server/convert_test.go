@@ -724,10 +724,109 @@ func TestCronJobToProtoIncludesAgentName(t *testing.T) {
 		UpdatedAt: now,
 	}
 
-	got := cronJobToProto(context.Background(), job, newFakeSessionStore())
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil)
 
 	if got.AgentName != "codex" {
 		t.Fatalf("agent_name = %q, want codex", got.AgentName)
+	}
+}
+
+func TestCronJobStatusGated(t *testing.T) {
+	gatedOutcome := models.CronJobOutcomeGated
+	job := &models.CronJob{LastRunOutcome: &gatedOutcome}
+	got := cronJobStatus(context.Background(), job, newFakeSessionStore())
+	if got != pb.CronJobStatus_CRON_JOB_STATUS_GATED {
+		t.Fatalf("cronJobStatus with gated outcome = %v, want GATED", got)
+	}
+}
+
+func TestCronJobToProtoGatingOverride(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	job := &models.CronJob{
+		ID:        "job-1",
+		RepoID:    "repo-1",
+		Name:      "Gating",
+		Prompt:    "check something",
+		Schedule:  "@daily",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	// Job ID present in gating map → GATING.
+	gating := map[string]struct{}{"job-1": {}}
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), gating)
+	if got.LastRunStatus != pb.CronJobStatus_CRON_JOB_STATUS_GATING {
+		t.Fatalf("gating map present: LastRunStatus = %v, want GATING", got.LastRunStatus)
+	}
+}
+
+func TestCronJobToProtoGatingBeatsStaleGated(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	gatedOutcome := models.CronJobOutcomeGated
+	job := &models.CronJob{
+		ID:             "job-2",
+		RepoID:         "repo-1",
+		Name:           "Gating beats stale",
+		Prompt:         "check",
+		Schedule:       "@daily",
+		LastRunOutcome: &gatedOutcome,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	// GATED outcome in DB, but job is currently mid-gate → GATING must win.
+	gating := map[string]struct{}{"job-2": {}}
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), gating)
+	if got.LastRunStatus != pb.CronJobStatus_CRON_JOB_STATUS_GATING {
+		t.Fatalf("gating beats stale gated: LastRunStatus = %v, want GATING", got.LastRunStatus)
+	}
+}
+
+func TestCronJobToProtoRunningNotAffectedByGatingSet(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	sessID := "sess-active"
+	store := newFakeSessionStore()
+	store.put(&models.Session{ID: sessID, State: machine.ImplementingPlan})
+
+	job := &models.CronJob{
+		ID:               "job-3",
+		RepoID:           "repo-1",
+		Name:             "Running",
+		Prompt:           "check",
+		Schedule:         "@daily",
+		LastRunSessionID: &sessID,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+
+	// Job not in gating map → RUNNING from active session wins.
+	gating := map[string]struct{}{"other-job": {}}
+	got := cronJobToProto(context.Background(), job, store, gating)
+	if got.LastRunStatus != pb.CronJobStatus_CRON_JOB_STATUS_RUNNING {
+		t.Fatalf("non-gating job with active session: LastRunStatus = %v, want RUNNING", got.LastRunStatus)
+	}
+}
+
+func TestCronJobToProtoGateCommandAndRunSetupCommandRoundTrip(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	job := &models.CronJob{
+		ID:              "job-4",
+		RepoID:          "repo-1",
+		Name:            "Gate fields",
+		Prompt:          "check",
+		Schedule:        "@daily",
+		GateCommand:     "make gate-check",
+		RunSetupCommand: true,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	got := cronJobToProto(context.Background(), job, newFakeSessionStore(), nil)
+	if got.GateCommand != "make gate-check" {
+		t.Fatalf("GateCommand = %q, want %q", got.GateCommand, "make gate-check")
+	}
+	if !got.RunSetupCommand {
+		t.Fatalf("RunSetupCommand = false, want true")
 	}
 }
 

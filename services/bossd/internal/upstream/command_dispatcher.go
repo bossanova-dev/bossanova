@@ -69,6 +69,10 @@ func (c *StreamClient) dispatchCommand(
 		return c.dispatchListRepoPRs(ctx, cmdID, cmd.GetListRepoPrs(), outbound)
 	case *pb.OrchestratorCommand_ListTrackerIssues:
 		return c.dispatchListTrackerIssues(ctx, cmdID, cmd.GetListTrackerIssues(), outbound)
+	case *pb.OrchestratorCommand_GetChatTranscript:
+		return c.dispatchGetChatTranscript(ctx, cmdID, cmd.GetGetChatTranscript(), outbound)
+	case *pb.OrchestratorCommand_SendChatMessage:
+		return c.dispatchSendChatMessage(ctx, cmdID, cmd.GetSendChatMessage(), outbound)
 	default:
 		// Unknown oneof — forward-compat: log and drop. Do NOT emit a
 		// CommandResult; bosso will time out the correlation slot.
@@ -495,6 +499,46 @@ func (c *StreamClient) dispatchListTrackerIssues(ctx context.Context, cmdID stri
 		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
 			CommandId: cmdID, Ok: true,
 			Payload: &pb.CommandResult_ListTrackerIssues{ListTrackerIssues: out},
+		}}}
+	})
+}
+
+// dispatchGetChatTranscript routes a GetChatTranscriptCommand to the handler and
+// wraps the transcript in a CommandResult{get_chat_transcript}. Dispatched
+// asynchronously: reading a transcript is network/tmux-bound and must not block
+// the command reader (mirrors dispatchListRepos).
+func (c *StreamClient) dispatchGetChatTranscript(ctx context.Context, cmdID string, req *pb.GetChatTranscriptCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.GetChatTranscript(ctx, req.GetSessionId(), req.GetAgentSessionId(), req.GetMaxMessages())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_GetChatTranscript{GetChatTranscript: out},
+		}}}
+	})
+}
+
+// dispatchSendChatMessage routes a SendChatMessageCommand to the handler and
+// wraps the delivery outcome in a CommandResult{send_chat_message}. Dispatched
+// asynchronously: delivering a message (and optionally waking the chat) is
+// network/tmux-bound and must not block the command reader.
+func (c *StreamClient) dispatchSendChatMessage(ctx context.Context, cmdID string, req *pb.SendChatMessageCommand, outbound chan<- *pb.DaemonEvent) *pb.DaemonEvent {
+	if c.commandHandler == nil {
+		return commandErr(cmdID, "command handler not wired")
+	}
+	return c.runAsyncCommand(ctx, outbound, func() *pb.DaemonEvent {
+		out, err := c.commandHandler.SendChatMessage(ctx, req.GetAgentSessionId(), req.GetMessage(), req.GetWakeIfAsleep())
+		if err != nil {
+			return commandErrCode(cmdID, err.Error(), classifyCommandError(err))
+		}
+		return &pb.DaemonEvent{Event: &pb.DaemonEvent_Result{Result: &pb.CommandResult{
+			CommandId: cmdID, Ok: true,
+			Payload: &pb.CommandResult_SendChatMessage{SendChatMessage: out},
 		}}}
 	})
 }

@@ -11,7 +11,12 @@ package main
 //	.claude/scheduled_tasks.lock — Claude/bossd-owned scheduler lock;
 //	misclassifying it as agent output would create noisy dirty worktrees
 //	and unnecessary finalize chats.
+//
+//	.superpowers/ — superpowers-framework scratch dir. Skills create it
+//	while they run (including during the finalize/stop skills), so the
+//	agent cannot reliably clean it before finalize; treat it as ignorable.
 var ignoredDirtyFiles = []string{
 	".claude/settings.local.json",
 	".claude/scheduled_tasks.lock",
+	".superpowers/",
 }

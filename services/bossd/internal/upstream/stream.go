@@ -284,6 +284,13 @@ type SessionCommandHandler interface {
 	// ListTrackerIssues returns a repo's tracker issues (optional server-side
 	// query + source) for the web Linear/Sentry pickers.
 	ListTrackerIssues(ctx context.Context, repoID, query string, source *string) (*pb.ListTrackerIssuesResponse, error)
+	// GetChatTranscript reads a chat's transcript by agent_session_id. sessionID,
+	// when non-empty, scopes the read (the handler rejects the request if the chat
+	// does not belong to that session). Network/tmux-bound — dispatched async.
+	GetChatTranscript(ctx context.Context, sessionID, agentSessionID string, maxMessages int32) (*pb.GetChatTranscriptResponse, error)
+	// SendChatMessage delivers a user message into a chat's live agent, optionally
+	// waking it first. Network/tmux-bound — dispatched async.
+	SendChatMessage(ctx context.Context, agentSessionID, message string, wakeIfAsleep bool) (*pb.SendChatMessageResponse, error)
 }
 
 // WebhookCommandDispatcher forwards a webhook payload to whatever in-daemon

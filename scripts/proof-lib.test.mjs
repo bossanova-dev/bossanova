@@ -2,11 +2,14 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   PROOF_MEDIA_TYPES,
   buildManifest,
+  bossE2eBuildCommand,
   browserCaptureCommand,
   classifySecretRisk,
   deriveVerdictBlock,
@@ -14,20 +17,26 @@ import {
   introCardCommand,
   listProofCommentsCommand,
   mediaTypeForPath,
+  manifestSecretScanText,
   minimizeCommentCommand,
   normalizeChangedFiles,
+  orderCapturesForReport,
   parseProofArgs,
+  proofAncestorDirs,
   proofCommentMarker,
   proofRunPaths,
   proofUploadFiles,
   r2UploadCommand,
   renderComment,
+  renderDeferredComment,
   renderGallery,
+  resolveCatalogPath,
   selectOutdatedProofCommentIds,
   selectRecipes,
   trimTerminalBlankLines,
   terminalRenderCommand,
   tuiCaptureCommand,
+  tuiAgentBridgeBuildCommand,
   tuiVideoCaptureCommand,
   validateBrowserRoute,
   validateProofUploadRelativePath,
@@ -210,6 +219,69 @@ test('buildManifest encodes file name path segments without encoding slashes', (
   );
 });
 
+test('manifestSecretScanText: strips derived URL fields so the public base URL never trips the scan', () => {
+  const manifest = buildManifest({
+    commit: '9ca4504b',
+    prNumber: 841,
+    runId: '2026-06-26T02-16-36-825Z',
+    publicBaseUrl:
+      'https://proof.bossanova.dev/pr-841/9ca4504b/2026-06-26T02-16-36-825Z/c244722a-5076-4deb-9392-4f3f18c49e8f',
+    title: 'TUI agent tour',
+    verdict: 'passed',
+    captures: [
+      {
+        recipeId: 'tui-agent',
+        title: 'tour',
+        surface: 'tui',
+        mediaType: 'mp4',
+        fileName: 'tui-agent/tui-agent.mp4',
+        posterFileName: 'tui-agent/tui-agent.png',
+        stills: [{ fileName: 'tui-agent/frame-01.png', label: 'frame 01' }],
+      },
+    ],
+  });
+
+  assert.equal(classifySecretRisk(JSON.stringify(manifest)).risk, 'high');
+  const scrubbed = manifestSecretScanText(manifest);
+  assert.equal(classifySecretRisk(scrubbed).risk, 'none');
+  assert.ok(!scrubbed.includes('proof.bossanova.dev'));
+});
+
+test('manifestSecretScanText: still scans human/LLM-authored fields (planted secret is caught)', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: 1,
+    runId: 'r',
+    publicBaseUrl: 'https://proof.bossanova.dev/pr-1/abc1234/r/t',
+    title: 'token=ghp_0123456789012345678901234567890123',
+    verdict: 'passed',
+    captures: [{ recipeId: 'x', title: 'x', surface: 'tui' }],
+  });
+
+  assert.equal(classifySecretRisk(manifestSecretScanText(manifest)).risk, 'high');
+});
+
+test('manifestSecretScanText: still scans caller-provided URL fields that are not derived from file names', () => {
+  const manifest = buildManifest({
+    commit: 'abc1234',
+    prNumber: 1,
+    runId: 'r',
+    publicBaseUrl: 'https://proof.bossanova.dev/pr-1/abc1234/r/t',
+    title: 'manual capture',
+    verdict: 'passed',
+    captures: [
+      {
+        recipeId: 'x',
+        title: 'x',
+        surface: 'tui',
+        url: 'https://example.test/token=ghp_0123456789012345678901234567890123',
+      },
+    ],
+  });
+
+  assert.equal(classifySecretRisk(manifestSecretScanText(manifest)).risk, 'high');
+});
+
 test('proof comment upsert helpers build expected gh commands', () => {
   assert.equal(proofCommentMarker('597'), '<!-- bossanova-proof:pr-597 -->');
   assert.deepEqual(listProofCommentsCommand({ prNumber: '597' }), [
@@ -322,6 +394,22 @@ test('terminalRenderCommand runs through services/web playwright dependency', ()
   );
 });
 
+test('tuiAgentBridgeBuildCommand builds proof-tui-agent bridge with e2e tags', () => {
+  assert.deepEqual(tuiAgentBridgeBuildCommand({ outBin: '/tmp/proof-tui-bridge' }), [
+    'go',
+    ['build', '-tags', 'e2e', '-o', '/tmp/proof-tui-bridge', './cmd/proof-tui-agent'],
+    { cwd: 'services/boss' },
+  ]);
+});
+
+test('bossE2eBuildCommand builds boss e2e binary with e2e tags', () => {
+  assert.deepEqual(bossE2eBuildCommand({ outBin: '/tmp/boss-e2e' }), [
+    'go',
+    ['build', '-tags', 'e2e', '-o', '/tmp/boss-e2e', './cmd'],
+    { cwd: 'services/boss' },
+  ]);
+});
+
 test('browserCaptureCommand runs web proof through services/web dependencies', () => {
   assert.deepEqual(
     browserCaptureCommand({
@@ -369,6 +457,32 @@ test('browserCaptureCommand runs marketing proof through services/marketing depe
         '../../.proof/m/recipe.json',
         '--output-dir',
         '../../.proof/m',
+      ],
+    ],
+  );
+});
+
+test('browserCaptureCommand runs docs proof through services/docs dependencies', () => {
+  assert.deepEqual(
+    browserCaptureCommand({
+      surface: 'docs',
+      recipePath: '.proof/d/recipe.json',
+      outputDir: '.proof/d',
+    }),
+    [
+      'pnpm',
+      [
+        '--dir',
+        'services/docs',
+        'exec',
+        'node',
+        '../../scripts/proof-playwright-runner.mjs',
+        '--surface',
+        'docs',
+        '--recipe',
+        '../../.proof/d/recipe.json',
+        '--output-dir',
+        '../../.proof/d',
       ],
     ],
   );
@@ -760,6 +874,49 @@ test('introCardCommand runs through services/web for surface web', () => {
       ],
     ],
   );
+});
+
+test('resolveCatalogPath falls back to the committed default catalog', () => {
+  assert.equal(
+    resolveCatalogPath('/repo', undefined),
+    path.join('/repo', 'proof', 'recipes', 'default.json'),
+  );
+  assert.equal(
+    resolveCatalogPath('/repo', '   '),
+    path.join('/repo', 'proof', 'recipes', 'default.json'),
+  );
+});
+
+test('resolveCatalogPath honors an absolute override verbatim', () => {
+  assert.equal(resolveCatalogPath('/repo', '/tmp/experiment.json'), '/tmp/experiment.json');
+});
+
+test('resolveCatalogPath resolves a relative override to an absolute path', () => {
+  const out = resolveCatalogPath('/repo', 'scratch/recipes.json');
+  assert.equal(out, path.resolve('scratch/recipes.json'));
+  assert.equal(path.isAbsolute(out), true);
+});
+
+test('proofAncestorDirs returns ancestors deepest-first down to .proof', () => {
+  assert.deepEqual(proofAncestorDirs('.proof/pr-1/abc123/2026-01-01/tok'), [
+    '.proof/pr-1/abc123/2026-01-01',
+    '.proof/pr-1/abc123',
+    '.proof/pr-1',
+    '.proof',
+  ]);
+});
+
+test('proofAncestorDirs handles an absolute path and stops at .proof', () => {
+  assert.deepEqual(proofAncestorDirs('/repo/.proof/pr-1/c/run/tok'), [
+    '/repo/.proof/pr-1/c/run',
+    '/repo/.proof/pr-1/c',
+    '/repo/.proof/pr-1',
+    '/repo/.proof',
+  ]);
+});
+
+test('proofAncestorDirs returns [] when no .proof segment exists', () => {
+  assert.deepEqual(proofAncestorDirs('/tmp/whatever/run'), []);
 });
 
 test('introCardCommand defaults an omitted title to an empty string', () => {
@@ -1223,6 +1380,17 @@ test('deriveVerdictBlock: passed + media → Satisfactory/High', () => {
   assert.equal(v.confidenceOk, true);
 });
 
+test('deriveVerdictBlock: passed + stills-only media → Satisfactory/High', () => {
+  const v = deriveVerdictBlock({
+    ...baseManifest,
+    captures: [{ stills: [{ fileName: 'tui-agent/frame-01.png' }] }],
+  });
+  assert.equal(v.evidence, 'Satisfactory');
+  assert.equal(v.confidence, 'High');
+  assert.equal(v.evidenceOk, true);
+  assert.equal(v.confidenceOk, true);
+});
+
 test('deriveVerdictBlock: passed but no media → Unsatisfactory/Low', () => {
   const v = deriveVerdictBlock({ ...baseManifest, captures: [{}] });
   assert.equal(v.evidence, 'Unsatisfactory');
@@ -1349,4 +1517,115 @@ test('proofUploadFiles resolves TUI video capture fileName to video/mp4 content-
     !files.some((f) => f.relative.endsWith('.webm')),
     'deleted .webm must not appear in upload list',
   );
+});
+
+test('selectRecipes maps tuidriver changes to TUI recipes', () => {
+  const catalogPath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../proof/recipes/default.json',
+  );
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  const selected = selectRecipes(catalog, ['services/boss/internal/tuidriver/keybytes.go']);
+  const ids = selected.map((r) => r.id);
+  assert.ok(ids.includes('tui-home'), `expected tui-home in ${ids.join(',')}`);
+});
+
+test('parseProofArgs defaults empty invocation to help (not run)', () => {
+  assert.deepEqual(parseProofArgs([]), {
+    command: 'help',
+    recipes: [],
+    changedFiles: [],
+    dryRun: false,
+  });
+});
+
+test('orderCapturesForReport puts videos first, stable within groups', () => {
+  const captures = [
+    { recipeId: 'a', mediaType: 'png' },
+    { recipeId: 'b', mediaType: 'mp4' },
+    { recipeId: 'c', mediaType: 'png' },
+    { recipeId: 'd', mediaType: 'webm' },
+  ];
+  assert.deepEqual(
+    orderCapturesForReport(captures).map((c) => c.recipeId),
+    ['b', 'd', 'a', 'c'],
+  );
+});
+
+test('orderCapturesForReport treats missing mediaType as non-video', () => {
+  const captures = [{ recipeId: 'x' }, { recipeId: 'v', mediaType: 'mp4' }];
+  assert.deepEqual(
+    orderCapturesForReport(captures).map((c) => c.recipeId),
+    ['v', 'x'],
+  );
+});
+
+// ── Task 2: renderDeferredComment + renderComment regression ─────────────────
+
+test('renderDeferredComment is neutral and omits the verdict block', () => {
+  const body = renderDeferredComment({
+    marker: '<!-- bossanova-proof:pr-1 -->',
+    manifest: {
+      prNumber: 1,
+      commit: 'abc1234',
+      runId: 'r1',
+      captures: [],
+      publicBaseUrl: 'https://proof.example.dev/proof/pr-1/abc1234/r1',
+    },
+    reasonCode: 'agent-incomplete',
+    recaptureHint: 'node scripts/proof.mjs run --recipe tui-home',
+  });
+  assert.ok(!body.includes('❌'), 'no red verdict marker');
+  assert.ok(!body.includes('Unsatisfactory'), 'no Unsatisfactory verdict');
+  assert.ok(
+    body.includes('node scripts/proof.mjs run --recipe tui-home'),
+    'includes re-capture hint',
+  );
+  assert.ok(body.includes('/manifest.json'), 'links to manifest evidence when available');
+});
+
+test('renderComment still emits the ✅ verdict on a passing run', () => {
+  const body = renderComment({
+    marker: 'm',
+    manifest: {
+      verdict: 'passed',
+      captures: [{ fileName: 'a.png' }],
+      prNumber: 1,
+      commit: 'c',
+      runId: 'r',
+    },
+  });
+  assert.ok(body.includes('✅'), 'passing run keeps the green verdict');
+});
+
+test('renderGallery renders the video capture before still captures', () => {
+  const md = renderGallery({
+    manifest: {
+      prNumber: '1',
+      commit: 'abc',
+      runId: 'r',
+      generatedAt: 't',
+      captures: [
+        {
+          recipeId: 'still',
+          title: 'A Still',
+          surface: 'tui',
+          status: 'passed',
+          mediaType: 'png',
+          url: 'https://x/s.png',
+        },
+        {
+          recipeId: 'vid',
+          title: 'A Video',
+          surface: 'tui',
+          status: 'passed',
+          mediaType: 'mp4',
+          url: 'https://x/v.mp4',
+          videoUrl: 'https://x/v.mp4',
+          posterUrl: 'https://x/v.png',
+        },
+      ],
+    },
+  });
+  assert.ok(md.indexOf('## A Video') < md.indexOf('## A Still'), md);
 });

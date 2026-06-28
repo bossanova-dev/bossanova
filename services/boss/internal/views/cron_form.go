@@ -62,13 +62,17 @@ const cronFormChrome = bannerOverhead + 2 /*title+blank*/ + 1 /*preview line*/ +
 // cronFormData holds huh-bound values on the heap so Value() pointers survive
 // bubbletea value-receiver copies.
 type cronFormData struct {
-	name      string
-	repoID    string
-	prompt    string
-	schedule  string
-	timezone  string
-	enabled   bool
-	agentName string
+	name            string
+	repoID          string
+	prompt          string
+	schedule        string
+	timezone        string
+	enabled         bool
+	agentName       string
+	model           string
+	gateCommand     string
+	runSetupCommand bool
+	confirm         bool // true = save, false = cancel (mapped from the terminal Confirm field)
 }
 
 // --- Model ---
@@ -147,7 +151,7 @@ func (m CronFormModel) fetchAgents() tea.Cmd {
 // buildForm constructs the huh form once repos are available.
 func (m *CronFormModel) buildForm() {
 	if m.fd == nil {
-		m.fd = &cronFormData{enabled: true}
+		m.fd = &cronFormData{enabled: true, runSetupCommand: true, confirm: true}
 	}
 
 	// Pre-populate fields from existing job in edit mode.
@@ -161,6 +165,10 @@ func (m *CronFormModel) buildForm() {
 		m.fd.timezone = m.job.Timezone
 		m.fd.enabled = m.job.Enabled
 		m.fd.agentName = cronDisplayAgentName(m.job.AgentName)
+		m.fd.model = m.job.Model
+		m.fd.gateCommand = m.job.GateCommand
+		m.fd.runSetupCommand = m.job.RunSetupCommand
+		m.fd.confirm = true
 		m.fdPopulated = true
 	}
 	// Build repo select options, sorted alphabetically by display name.
@@ -213,6 +221,14 @@ func (m *CronFormModel) buildForm() {
 	}
 
 	fields = append(fields,
+		huh.NewInput().
+			Title("Model").
+			Description("Agent model id (eg. claude-opus-4-8). blank = use the agent's default.").
+			Suggestions(modelSuggestions(m.fd.agentName)).
+			Value(&m.fd.model),
+	)
+
+	fields = append(fields,
 		huh.NewText().
 			Title("Prompt").
 			Description("Single-turn prompt. Cron sessions only listen for the main agent's Stop hook — subagents are ignored. Keep it self-contained.").
@@ -253,15 +269,51 @@ func (m *CronFormModel) buildForm() {
 				return err
 			}),
 
+		huh.NewInput().
+			Title("Gate command").
+			Description("Optional. Runs before each scheduled fire; a non-zero exit skips the run. Treated as a path if it starts with /, ./, or ../, otherwise run via the shell.").
+			Value(&m.fd.gateCommand),
+
+		huh.NewConfirm().
+			Title("Run setup command").
+			Description("Run the repo setup script before the agent. Turn off to keep light jobs fast. Default on.").
+			Value(&m.fd.runSetupCommand),
+
 		huh.NewConfirm().
 			Title("Enabled").
-			Description("Press enter to save this job.").
+			Description("Run this job on its schedule.").
 			Value(&m.fd.enabled),
+
+		huh.NewConfirm().
+			Affirmative(saveLabel(m.job)).
+			Negative("Cancel").
+			Value(&m.fd.confirm),
 	)
 
 	m.form = huh.NewForm(
 		huh.NewGroup(fields...),
 	).WithTheme(bossHuhTheme()).WithShowHelp(false).WithWidth(70).WithHeight(m.formHeight())
+}
+
+// saveLabel returns the affirmative label for the terminal save Confirm based
+// on whether this is a create or edit operation.
+func saveLabel(job *pb.CronJob) string {
+	if job == nil {
+		return "Add Scheduled Job"
+	}
+	return "Update Scheduled Job"
+}
+
+// modelSuggestions returns convenience completions only. Any free-text value
+// is accepted; the agent CLI validates the model at runtime, so the daemon and
+// TUI never enumerate a closed set of valid models.
+func modelSuggestions(agent string) []string {
+	switch strings.TrimSpace(agent) {
+	case "codex":
+		return []string{"gpt-5-codex"}
+	default: // claude (and daemon default)
+		return []string{"opus", "sonnet", "haiku"}
+	}
 }
 
 func (m CronFormModel) agentOptions() []huh.Option[string] {
@@ -429,6 +481,10 @@ func (m CronFormModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.form.State == huh.StateCompleted {
+			if m.fd != nil && !m.fd.confirm {
+				m.cancelled = true
+				return m, nil
+			}
 			return m.handleSubmit()
 		}
 
@@ -453,13 +509,16 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 		// Create mode.
 		return m, func() tea.Msg {
 			job, err := c.CreateCronJob(ctx, &pb.CreateCronJobRequest{
-				RepoId:    fd.repoID,
-				Name:      strings.TrimSpace(fd.name),
-				Prompt:    strings.TrimSpace(fd.prompt),
-				Schedule:  strings.TrimSpace(fd.schedule),
-				Timezone:  strings.TrimSpace(fd.timezone),
-				Enabled:   fd.enabled,
-				AgentName: strings.TrimSpace(fd.agentName),
+				RepoId:          fd.repoID,
+				Name:            strings.TrimSpace(fd.name),
+				Prompt:          strings.TrimSpace(fd.prompt),
+				Schedule:        strings.TrimSpace(fd.schedule),
+				Timezone:        strings.TrimSpace(fd.timezone),
+				Enabled:         fd.enabled,
+				AgentName:       strings.TrimSpace(fd.agentName),
+				Model:           strings.TrimSpace(fd.model),
+				GateCommand:     strings.TrimSpace(fd.gateCommand),
+				RunSetupCommand: &fd.runSetupCommand,
 			})
 			return cronFormSavedMsg{job: job, err: err}
 		}
@@ -492,6 +551,18 @@ func (m CronFormModel) handleSubmit() (tea.Model, tea.Cmd) {
 	agentName := strings.TrimSpace(fd.agentName)
 	if cronDisplayAgentName(agentName) != cronDisplayAgentName(original.AgentName) {
 		req.AgentName = &agentName
+	}
+	model := strings.TrimSpace(fd.model)
+	if model != original.Model {
+		req.Model = &model
+	}
+	gateCommand := strings.TrimSpace(fd.gateCommand)
+	if gateCommand != original.GateCommand {
+		req.GateCommand = &gateCommand
+	}
+	if fd.runSetupCommand != original.RunSetupCommand {
+		rsc := fd.runSetupCommand
+		req.RunSetupCommand = &rsc
 	}
 
 	return m, func() tea.Msg {

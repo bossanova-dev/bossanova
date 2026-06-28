@@ -54,6 +54,7 @@ type GroupSpec struct {
 // extractor hard-errors on any command with an unknown or empty group.
 var GroupOrder = []GroupSpec{
 	{ID: "session", Title: "Session Management"},
+	{ID: "chat", Title: "Chat Control"},
 	{ID: "repo", Title: "Repository Management"},
 	{ID: "trash", Title: "Trash Management"},
 	{ID: "daemon", Title: "Daemon Management"},

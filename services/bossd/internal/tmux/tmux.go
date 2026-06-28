@@ -484,6 +484,48 @@ func (c *Client) SendLineWithReadyMarker(ctx context.Context, sessionName, line,
 	})
 }
 
+// SendMessage delivers text to an existing tmux session via bracketed paste
+// (load-buffer → paste-buffer -p → send-keys Enter). It does not poll for
+// a ready marker or verify submission; callers that need those guarantees
+// should use SendPlan or SendPlanWithReadyMarker instead.
+func (c *Client) SendMessage(ctx context.Context, sessionName, text string) error {
+	if sessionName == "" {
+		return fmt.Errorf("session name is required")
+	}
+
+	loadCmd := c.cmdFunc(ctx, "tmux", "load-buffer", "-")
+	loadCmd.Stdin = strings.NewReader(text)
+	var loadStderr bytes.Buffer
+	loadCmd.Stderr = &loadStderr
+	if err := loadCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(loadStderr.String()); msg != "" {
+			return fmt.Errorf("tmux load-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux load-buffer for %q: %w", sessionName, err)
+	}
+
+	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-t", sessionName)
+	var pasteStderr bytes.Buffer
+	pasteCmd.Stderr = &pasteStderr
+	if err := pasteCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(pasteStderr.String()); msg != "" {
+			return fmt.Errorf("tmux paste-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux paste-buffer for %q: %w", sessionName, err)
+	}
+
+	enterCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "Enter")
+	var enterStderr bytes.Buffer
+	enterCmd.Stderr = &enterStderr
+	if err := enterCmd.Run(); err != nil {
+		if msg := strings.TrimSpace(enterStderr.String()); msg != "" {
+			return fmt.Errorf("tmux send-keys Enter for %q: %w (stderr: %s)", sessionName, err, msg)
+		}
+		return fmt.Errorf("tmux send-keys Enter for %q: %w", sessionName, err)
+	}
+	return nil
+}
+
 // sendPlan is the test-injectable variant of SendPlan that accepts custom
 // timing. Both production code and tests funnel through here.
 func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts sendPlanOpts) error {
@@ -505,39 +547,9 @@ func (c *Client) sendPlan(ctx context.Context, sessionName, plan string, opts se
 		return err
 	}
 
-	// Step 2: load the plan into tmux's paste buffer via stdin.
-	loadCmd := c.cmdFunc(ctx, "tmux", "load-buffer", "-")
-	loadCmd.Stdin = strings.NewReader(plan)
-	var loadStderr bytes.Buffer
-	loadCmd.Stderr = &loadStderr
-	if err := loadCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(loadStderr.String()); msg != "" {
-			return fmt.Errorf("tmux load-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux load-buffer for %q: %w", sessionName, err)
-	}
-
-	// Step 3: paste the buffer with -p (bracketed paste, so Claude treats
-	// it as a paste not raw keystrokes) and -d (delete buffer afterwards).
-	pasteCmd := c.cmdFunc(ctx, "tmux", "paste-buffer", "-d", "-p", "-t", sessionName)
-	var pasteStderr bytes.Buffer
-	pasteCmd.Stderr = &pasteStderr
-	if err := pasteCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(pasteStderr.String()); msg != "" {
-			return fmt.Errorf("tmux paste-buffer for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux paste-buffer for %q: %w", sessionName, err)
-	}
-
-	// Step 4: send Enter to submit the prompt.
-	enterCmd := c.cmdFunc(ctx, "tmux", "send-keys", "-t", sessionName, "Enter")
-	var enterStderr bytes.Buffer
-	enterCmd.Stderr = &enterStderr
-	if err := enterCmd.Run(); err != nil {
-		if msg := strings.TrimSpace(enterStderr.String()); msg != "" {
-			return fmt.Errorf("tmux send-keys Enter for %q: %w (stderr: %s)", sessionName, err, msg)
-		}
-		return fmt.Errorf("tmux send-keys Enter for %q: %w", sessionName, err)
+	// Steps 2-4: load-buffer, paste-buffer, send-keys Enter.
+	if err := c.SendMessage(ctx, sessionName, plan); err != nil {
+		return err
 	}
 
 	// Step 5: verify the payload actually left the prompt, so a paste that

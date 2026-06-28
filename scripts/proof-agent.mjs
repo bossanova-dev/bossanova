@@ -7,32 +7,22 @@
  * Designed to run from proof.mjs via the mode dispatcher.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  buildManifest,
-  classifySecretRisk,
-  githubCommentCommand,
-  proofCommentMarker,
-  proofRunPaths,
-  proofUploadFiles,
-  r2UploadCommand,
-  renderComment,
-} from './proof-lib.mjs';
+import { proofRunPaths } from './proof-lib.mjs';
 import { generateBriefFromDiff, validateBrief } from './proof-brief.mjs';
+import { finalizeAgentProof } from './proof-agent-finalize.mjs';
 import { buildPosterArgs } from './proof-poster.mjs';
-import { publishProofReport } from './proof-publish-report.mjs';
 import {
   applyMinHeightRatio,
   evenCropHeight,
   postprocessProofVideo,
   probeDimensions,
 } from './proof-video.mjs';
-import { collapsePriorProofComments, shouldCleanupRunDir, uploadBundle } from './proof.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const playButtonAsset = fileURLToPath(new URL('./assets/youtube-play-button.png', import.meta.url));
@@ -40,16 +30,45 @@ const playButtonAsset = fileURLToPath(new URL('./assets/youtube-play-button.png'
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 /**
+ * Run a command with a kill-on-timeout.  Resolves (never rejects) with
+ * `{ code, timedOut }`.  `timedOut` is true when the child was sent SIGKILL
+ * because `timeoutMs` elapsed before it exited.
+ *
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd?: string, env?: NodeJS.ProcessEnv, timeoutMs: number }} opts
+ * @returns {Promise<{ code: number|null, timedOut: boolean }>}
+ */
+export function runInterruptible(command, args, { cwd, env, timeoutMs }) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { cwd, env, stdio: 'inherit' });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, timeoutMs);
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, timedOut: signal === 'SIGKILL' });
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      console.warn(`[proof-agent] runInterruptible spawn error: ${err.message}`);
+      resolve({ code: -1, timedOut: false });
+    });
+  });
+}
+
+/**
  * Default external-effect seams. Overridable via the `deps` argument to
  * runAgentProof so unit tests can drive the orchestrator without spawning
  * Playwright, calling the Anthropic SDK, or hitting R2/GitHub. Production calls
  * pass no `deps` and get the real implementations.
  */
-function defaultDeps() {
+function defaultDeps(timeoutMs) {
   return {
-    // Spawns the Playwright agent-proof project. Returns { status }.
-    spawnPlaywright: ({ briefPath, localDir, model }) =>
-      spawnSync(
+    // Spawns the Playwright agent-proof project.
+    // Returns Promise<{ status: number, timedOut: boolean }>.
+    spawnPlaywright: async ({ briefPath, localDir, model }) => {
+      const result = await runInterruptible(
         'pnpm',
         [
           '--dir',
@@ -62,7 +81,6 @@ function defaultDeps() {
         ],
         {
           cwd: repoRoot,
-          stdio: 'inherit',
           env: {
             ...process.env,
             E2E_REAL: '1',
@@ -71,8 +89,11 @@ function defaultDeps() {
             BOSS_PROOF_OUT: localDir,
             BOSS_PROOF_MODEL: model,
           },
+          timeoutMs,
         },
-      ),
+      );
+      return { status: result.timedOut ? -1 : (result.code ?? -1), timedOut: result.timedOut };
+    },
     // Extracts the last frame of a video as a fallback still. Returns { status }.
     extractFallbackFrame: ({ mp4Path, fallbackPath }) =>
       spawnSync(
@@ -82,23 +103,24 @@ function defaultDeps() {
           stdio: 'inherit',
         },
       ),
-    uploadBundle,
-    publishProofReport,
-    collapsePriorProofComments,
-    postComment: ({ prNumber, bodyFile }) =>
-      runCommand(githubCommentCommand({ prNumber, bodyFile })),
-    uploadManifest: ({ bucket, key, file }) =>
-      runCommand(r2UploadCommand({ bucket, key, file, contentType: 'application/json' })),
   };
 }
 
 /**
  * Main agent proof orchestrator.
- * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, deps?: object }} opts
+ * @param {{ prNumber: string, commit: string, changedFiles: string[], dryRun: boolean, fallbackRecipeCaptures?: Function, deps?: object }} opts
  * @returns {Promise<{ manifest: object, commentBody: string }>}
  */
-export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, deps }) {
-  const d = { ...defaultDeps(), ...(deps ?? {}) };
+export async function runAgentProof({
+  prNumber,
+  commit,
+  changedFiles,
+  dryRun,
+  fallbackRecipeCaptures,
+  deps,
+}) {
+  const agentTimeoutMs = Number(process.env.BOSS_PROOF_AGENT_TIMEOUT_MS) || 600000;
+  const d = { ...defaultDeps(agentTimeoutMs), ...(deps ?? {}) };
   const model = process.env.BOSS_PROOF_MODEL ?? DEFAULT_MODEL;
   const shouldUpload = !dryRun && process.env.BOSS_PROOF_UPLOAD !== '0';
   const bucket = shouldUpload ? requiredProofBucket() : null;
@@ -124,7 +146,7 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
     const diff = gatherDiff();
     const routes = gatherRouteMap();
     const fixtures = gatherFixturesSummary();
-    const rawBrief = await generateBriefFromDiff({ diff, routes, fixtures, model });
+    const rawBrief = await generateBriefFromDiff({ diff, changedFiles, routes, fixtures, model });
     const result = validateBrief(rawBrief);
     if (result.brief === null) {
       throw new Error(`Generated brief failed validation: ${result.errors.join(', ')}`);
@@ -142,18 +164,33 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
 
   let agentPassed = false;
   let agentResult = { passed: false, summary: 'agent did not run', evidence: [], steps: 0 };
+  let agentTimedOut = false;
 
   try {
-    const pwResult = d.spawnPlaywright({ briefPath, localDir, model });
-    agentPassed = pwResult.status === 0;
+    // spawnPlaywright may be async (real path) or sync (test stubs); await handles both.
+    const pwResult = await Promise.resolve(d.spawnPlaywright({ briefPath, localDir, model }));
+    agentTimedOut = Boolean(pwResult.timedOut);
+    if (agentTimedOut) {
+      console.warn(
+        `[proof-agent] Playwright agent timed out after ${agentTimeoutMs}ms — deferring to recipe floor`,
+      );
+      agentResult = {
+        passed: false,
+        summary: `agent timed out after ${agentTimeoutMs}ms`,
+        evidence: [],
+        steps: 0,
+      };
+    } else {
+      agentPassed = pwResult.status === 0;
+    }
   } catch (err) {
     console.warn(`[proof-agent] playwright spawn failed: ${err.message}`);
     agentPassed = false;
   }
 
-  // Read result JSON (written by proof.spec.ts)
+  // Read result JSON (written by proof.spec.ts) — skipped on timeout (process was killed).
   const resultPath = path.join(rawDir, 'proof-result.json');
-  if (fs.existsSync(resultPath)) {
+  if (!agentTimedOut && fs.existsSync(resultPath)) {
     try {
       agentResult = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
     } catch {
@@ -323,107 +360,51 @@ export async function runAgentProof({ prNumber, commit, changedFiles, dryRun, de
   }
 
   const hasFailure = !agentPassed || !agentResult.passed || captureShape.status !== 'passed';
+  const recipeFloorCaptures = hasFailure
+    ? captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm: !shouldUpload })
+    : [];
 
-  // ── Step 4: Build manifest ────────────────────────────────────────────────
+  // ── Steps 4–7: Build manifest, secret scan, upload, render + post comment ─
   const publicBaseUrl = `${publicProofBaseUrl()}/${paths.publicPrefix}`;
-  const manifest = buildManifest({
-    commit,
+  return finalizeAgentProof({
+    captureShapes: [captureShape, ...recipeFloorCaptures],
+    brief,
+    agentResult,
+    hasFailure,
     prNumber,
+    commit,
     runId,
+    token,
+    paths,
+    localDir,
     publicBaseUrl,
+    shouldUpload,
+    bucket,
+    // Surface-specific texts for the secret scan (manifest is always scanned
+    // inside finalizeAgentProof — these are the extra web-path texts).
+    scanTexts: [
+      agentResult.summary ?? '',
+      ...(agentResult.evidence ?? []),
+      captureShape.error ?? '',
+    ],
     agentRunnerStubbed: true,
-    captures: [captureShape],
-    title: brief.title,
-    verdict: hasFailure ? 'failed' : 'passed',
-    genAiLive: false,
-    agentSummary: agentResult.summary ?? null,
-    brief: { genAi: brief.genAi ?? false },
+    // Forward the full merged deps so test stubs (uploadBundle, postComment,
+    // etc.) injected into runAgentProof still take effect inside finalize.
+    deps: d,
   });
-  // ── Step 5: Secret scan — FAIL on high risk BEFORE any write/upload/log ───
-  // Scan the assembled manifest (which carries the LLM-generated brief.title
-  // via captureShape.title) PLUS the agent result summary/evidence and the
-  // capture error annotation. Any high-risk hit throws before uploadBundle so
-  // no secret-bearing artifact or comment can reach R2 or the PR.
-  const scanTexts = [
-    JSON.stringify(manifest),
-    agentResult.summary ?? '',
-    ...(agentResult.evidence ?? []),
-    captureShape.error ?? '',
-  ];
-  for (const text of scanTexts) {
-    const risk = classifySecretRisk(text);
-    if (risk.risk === 'high') {
-      throw new Error(
-        `secret-like content detected in agent output (${risk.reason}) — aborting before any upload`,
-      );
-    }
-  }
-  fs.writeFileSync(path.join(localDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(JSON.stringify(manifest, null, 2));
-
-  // ── Step 6: Upload (if enabled) ───────────────────────────────────────────
-  if (shouldUpload) {
-    d.uploadBundle({ localDir, publicPrefix: paths.publicPrefix, manifest, bucket });
-
-    // Best-effort report publish
-    const repoIdent = currentRepoIdentity();
-    if (repoIdent) {
-      const branch = currentBranch();
-      const identity = {
-        owner: repoIdent.owner,
-        sourceRepo: repoIdent.name,
-        prNumber,
-        branch,
-        runId: token.slice(0, 8),
-      };
-      const report = await d.publishProofReport({ manifest, identity, env: process.env });
-      if (report.ok) {
-        manifest.reportUrl = report.reportUrl;
-        const manifestPath = path.join(localDir, 'manifest.json');
-        fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-        try {
-          d.uploadManifest({
-            bucket,
-            key: `${paths.publicPrefix}/manifest.json`,
-            file: path.relative(repoRoot, manifestPath),
-          });
-        } catch (err) {
-          console.warn(`[proof-agent] report manifest refresh skipped: ${err.message}`);
-        }
-      } else {
-        console.warn(`[proof-agent] report publish skipped: ${report.reason}`);
-      }
-    } else {
-      console.warn('[proof-agent] report publish skipped: repo identity unavailable');
-    }
-  }
-
-  // ── Step 7: Render and post comment ──────────────────────────────────────
-  const marker = proofCommentMarker(prNumber);
-  const commentBody = renderComment({ marker, manifest });
-  const commentPath = path.join(localDir, 'comment.md');
-  fs.writeFileSync(commentPath, commentBody);
-
-  if (hasFailure) {
-    process.exitCode = 1;
-  }
-
-  if (shouldUpload && prNumber !== 'local') {
-    d.collapsePriorProofComments({ prNumber });
-    d.postComment({
-      prNumber,
-      bodyFile: path.relative(repoRoot, commentPath),
-    });
-  }
-
-  if (shouldCleanupRunDir({ shouldUpload, hasFailure, prNumber, keepWebm: false })) {
-    fs.rmSync(localDir, { recursive: true, force: true });
-  }
-
-  return { manifest, commentBody };
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────
+
+function captureFallbackRecipeFloor({ fallbackRecipeCaptures, localDir, keepWebm }) {
+  if (typeof fallbackRecipeCaptures !== 'function') return [];
+  try {
+    return fallbackRecipeCaptures({ localDir, keepWebm }) ?? [];
+  } catch (err) {
+    console.warn(`[proof-agent] recipe floor capture failed: ${err.message}`);
+    return [];
+  }
+}
 
 function gatherDiff() {
   const baseRef = process.env.BASE_REF || 'origin/main';
@@ -513,44 +494,6 @@ function requiredProofBucket() {
     throw new Error('BOSS_PROOF_R2_BUCKET is required to upload proof artifacts');
   }
   return bucket;
-}
-
-function runCommand(commandTuple) {
-  const [command, args, options = {}] = commandTuple;
-  const result = spawnSync(command, args, {
-    cwd: options.cwd ? path.join(repoRoot, options.cwd) : repoRoot,
-    stdio: 'inherit',
-    env: { ...process.env, ...(options.env ?? {}) },
-  });
-  if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(' ')} exited ${result.status}`);
-  }
-}
-
-function currentBranch() {
-  try {
-    return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return 'unknown';
-  }
-}
-
-function currentRepoIdentity() {
-  try {
-    const raw = execFileSync('gh', ['repo', 'view', '--json', 'owner,name'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const parsed = JSON.parse(raw);
-    return { owner: parsed.owner.login, name: parsed.name };
-  } catch {
-    return null;
-  }
 }
 
 function publicProofBaseUrl() {

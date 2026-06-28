@@ -113,7 +113,8 @@ func rootCmd() *cobra.Command {
 		}
 	}
 
-	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), archiveCmd())
+	addGrouped("session", lsCmd(), showCmd(), chatsCmd(), newCmd(), attachCmd(), archiveCmd(), renameCmd())
+	addGrouped("chat", chatCmd())
 	addGrouped("repo", repoCmd())
 	addGrouped("trash", trashCmd())
 	addGrouped("daemon", daemonCmd())
@@ -247,6 +248,11 @@ func newCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().String("agent", "", "Override default agent plugin for this session (e.g. claude, opencode)")
+	cmd.Flags().String("repo", "", "Repository id, name, or local path (enables non-interactive mode when combined with --prompt)")
+	cmd.Flags().String("prompt", "", "Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)")
+	cmd.Flags().String("title", "", "Session title (optional, auto-derived from prompt when absent)")
+	cmd.Flags().Bool("detach", false, "Exit immediately after creating the session; print session-id and chat-id")
+	cmd.Flags().Bool("no-attach", false, "Alias for --detach")
 	return cmd
 }
 
@@ -321,6 +327,17 @@ func archiveCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runArchive(cmd, args[0])
+		},
+	}
+}
+
+func renameCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rename <session-id> <new-title...>",
+		Short: "Rename a session (updates its title; syncs the linked PR title if any)",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRename(cmd, args[0], strings.Join(args[1:], " "))
 		},
 	}
 }

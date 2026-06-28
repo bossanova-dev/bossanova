@@ -27,6 +27,9 @@ type reconcileMockProvider struct {
 	openErr   map[string]error
 	closedErr map[string]error
 
+	prStatus    map[int]*vcs.PRStatus // keyed by PR number
+	prStatusErr map[int]error
+
 	listOpenCalls   []string
 	listClosedCalls []string
 	openDelay       time.Duration
@@ -36,10 +39,12 @@ type reconcileMockProvider struct {
 
 func newReconcileMockProvider() *reconcileMockProvider {
 	return &reconcileMockProvider{
-		openPRs:   make(map[string][]vcs.PRSummary),
-		closedPRs: make(map[string][]vcs.PRSummary),
-		openErr:   make(map[string]error),
-		closedErr: make(map[string]error),
+		openPRs:     make(map[string][]vcs.PRSummary),
+		closedPRs:   make(map[string][]vcs.PRSummary),
+		openErr:     make(map[string]error),
+		closedErr:   make(map[string]error),
+		prStatus:    make(map[int]*vcs.PRStatus),
+		prStatusErr: make(map[int]error),
 	}
 }
 
@@ -90,8 +95,13 @@ func (m *reconcileMockProvider) ListClosedPRs(_ context.Context, repoPath string
 func (m *reconcileMockProvider) CreateDraftPR(context.Context, vcs.CreatePROpts) (*vcs.PRInfo, error) {
 	return nil, nil
 }
-func (m *reconcileMockProvider) GetPRStatus(context.Context, string, int) (*vcs.PRStatus, error) {
-	return nil, nil
+func (m *reconcileMockProvider) GetPRStatus(_ context.Context, _ string, prID int) (*vcs.PRStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.prStatusErr[prID]; err != nil {
+		return nil, err
+	}
+	return m.prStatus[prID], nil
 }
 func (m *reconcileMockProvider) GetCheckResults(context.Context, string, int) ([]vcs.CheckResult, error) {
 	return nil, nil
@@ -453,6 +463,54 @@ func TestReconcilePRAssociations_MatchOpenPR(t *testing.T) {
 	}
 	if sess.PRURL == nil || *sess.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Fatalf("expected PR URL, got %v", sess.PRURL)
+	}
+}
+
+// TestReconcilePRAssociations_NotifiesOnRename verifies the update notifier
+// fires once with the renamed session when reconcile attaches a PR and renames
+// the session to the PR title. Without this hook the rename never reaches the
+// cloud/web (reconcile writes through the store, bypassing the UpdateSession
+// RPC that would emit the event).
+func TestReconcilePRAssociations_NotifiesOnRename(t *testing.T) {
+	sessions := newReconcileMockSessionStore()
+	repos := newMockRepoStore()
+	provider := newReconcileMockProvider()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		OriginURL: "https://github.com/owner/repo",
+	}
+
+	sessions.addSession(&models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Bossanova auto-implement",
+		BranchName: "feature-x",
+		State:      machine.AwaitingChecks,
+	})
+
+	provider.openPRs["https://github.com/owner/repo"] = []vcs.PRSummary{
+		{Number: 42, HeadBranch: "feature-x", State: vcs.PRStateOpen, Title: "[BOS-79] Per-cron model selection"},
+	}
+
+	var notified []*models.Session
+	resolver := NewPRAssociationResolver(sessions, repos, provider, zerolog.Nop()).
+		WithUpdateNotifier(func(_ context.Context, s *models.Session) {
+			notified = append(notified, s)
+		})
+
+	if _, err := resolver.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(notified) != 1 {
+		t.Fatalf("notifier calls = %d, want 1", len(notified))
+	}
+	if notified[0].ID != "sess-1" {
+		t.Fatalf("notified session = %q, want sess-1", notified[0].ID)
+	}
+	if notified[0].Title != "[BOS-79] Per-cron model selection" {
+		t.Fatalf("notified title = %q, want renamed PR title", notified[0].Title)
 	}
 }
 

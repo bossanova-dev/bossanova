@@ -911,6 +911,50 @@ func TestFinalizeSession_HookConfigOnly_DeletedNoChanges(t *testing.T) {
 	}
 }
 
+func TestFinalizeSession_LoadedAgentKeepsBossdManagedFiles_DeletedNoChanges(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{statusOut: "?? .superpowers/\n"}
+	cr := newMockAgentRunner()
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		WorktreePath: "/tmp/wt-sess1",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		AgentName:    "codex",
+	}
+
+	lc := NewLifecycle(sessions, repos, nil, cron, wt, cr, nil, vp, logger)
+	lc.SetAgents(map[string]agent.AgentRunnerClient{"codex": newFakeAgent()})
+
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+	if res.Outcome != models.CronJobOutcomeDeletedNoChanges {
+		t.Fatalf("outcome = %q, want %q", res.Outcome, models.CronJobOutcomeDeletedNoChanges)
+	}
+	if len(vp.createPRCalls) != 0 {
+		t.Fatalf("CreateDraftPR calls = %d, want 0", len(vp.createPRCalls))
+	}
+	if _, ok := sessions.sessions["sess-1"]; ok {
+		t.Fatal("session row should have been deleted on no-changes branch")
+	}
+}
+
 // TestFinalizeSession_PRSkippedNoGitHub covers the non-GitHub origin branch
 // for a cron session: changes exist but origin is not GitHub, so the cron
 // session is hard-deleted (worktree archived, session row removed).
@@ -1154,6 +1198,107 @@ func TestFinalizeSession_DirtyUncommittedCronOutput_TagInjectionFailureBlocksSes
 	}
 	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRFailed {
 		t.Fatalf("outcome recording: got %+v, want single pr_failed entry", cron.lastRunCalls)
+	}
+}
+
+func TestPorcelainHasTrackedChanges(t *testing.T) {
+	cases := []struct {
+		name      string
+		porcelain string
+		want      bool
+	}{
+		{"empty", "", false},
+		{"untracked only", "?? .superpowers/\n?? docs/plans/2026-06-27-x.md", false},
+		{"modified tracked", " M services/bossd/internal/session/finalize.go", true},
+		{"staged add", "A  newfile.go", true},
+		{"deleted tracked", " D oldfile.go", true},
+		{"mixed tracked + untracked", "?? .superpowers/\n M finalize.go", true},
+		{"blank lines among untracked", "?? a\n\n?? b\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := porcelainHasTrackedChanges(tc.porcelain); got != tc.want {
+				t.Fatalf("porcelainHasTrackedChanges(%q) = %v, want %v", tc.porcelain, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFinalizeSession_UntrackedOnlyLeftovers_InjectsTagsAndMarksReady
+// covers a cron run whose only leftover dirty entries are UNTRACKED scratch
+// artifacts (a plan file the agent forgot to commit and the .superpowers/
+// framework scratch dir). These are not implementation work, so finalize must
+// still inject PR tags and mark the PR ready (pr_created) rather than publishing
+// a tagless PR or routing the session to pr_failed → Blocked as a tracked change
+// would.
+func TestFinalizeSession_UntrackedOnlyLeftovers_InjectsTagsAndMarksReady(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	wt := &mockWorktreeManager{
+		statusOut:           "?? .superpowers/\n?? docs/plans/2026-06-27-some-ticket.md\n",
+		latestCommitSubject: "feat(bossd): implement the ticket",
+	}
+	vp := newMockVCSProvider()
+	cron := &recordingCronJobStore{}
+	chats := &recordingAgentChatStore{}
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+	cronJobID := "cron-1"
+	hookToken := "secret-token"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:           "sess-1",
+		RepoID:       "repo-1",
+		Title:        "Cron job",
+		Plan:         "Do thing",
+		WorktreePath: "/tmp/wt-sess1",
+		BranchName:   "cron-br-1",
+		BaseBranch:   "main",
+		State:        machine.ImplementingPlan,
+		CronJobID:    &cronJobID,
+		HookToken:    &hookToken,
+	}
+
+	lc := newFinalizeChatLifecycle(t, sessions, repos, chats, cron, wt, vp, logger)
+	res, err := lc.FinalizeSession(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("FinalizeSession: %v", err)
+	}
+
+	if res.Outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome = %q, want pr_created", res.Outcome)
+	}
+	if len(vp.createPRCalls) != 1 {
+		t.Fatalf("CreateDraftPR calls = %d, want 1", len(vp.createPRCalls))
+	}
+	if len(wt.injectPRNumbersCalls) != 1 {
+		t.Fatalf("InjectPRNumbers calls = %d, want 1", len(wt.injectPRNumbersCalls))
+	}
+	if got := wt.injectPRNumbersCalls[0].prNumber; got != 42 {
+		t.Fatalf("InjectPRNumbers PR = %d, want 42", got)
+	}
+	if got := wt.injectPRNumbersCalls[0].baseRef; got != "refs/remotes/origin/main" {
+		t.Fatalf("InjectPRNumbers baseRef = %q, want refs/remotes/origin/main", got)
+	}
+	if len(vp.markReadyCalls) != 1 {
+		t.Fatalf("MarkReadyForReview calls = %d, want 1", len(vp.markReadyCalls))
+	}
+	if got := sessions.sessions["sess-1"].State; got == machine.Blocked {
+		t.Fatalf("state = %s, want non-blocked terminal state", got)
+	}
+	// The session title is synced to the freshly-created draft PR's title
+	// (normalized latest commit subject), not left as the cron job name.
+	if got := sessions.sessions["sess-1"].Title; got != "Implement the ticket" {
+		t.Fatalf("title = %q, want %q (synced from draft PR)", got, "Implement the ticket")
+	}
+	if len(cron.lastRunCalls) != 1 || cron.lastRunCalls[0].outcome != models.CronJobOutcomePRCreated {
+		t.Fatalf("outcome recording: got %+v, want single pr_created entry", cron.lastRunCalls)
 	}
 }
 

@@ -41,8 +41,9 @@ type markStartedCall struct {
 }
 
 type lastRunCall struct {
-	id      string
-	outcome models.CronJobOutcome
+	id        string
+	outcome   models.CronJobOutcome
+	nextRunAt *time.Time
 }
 
 func newFakeStore() *fakeStore {
@@ -104,7 +105,7 @@ func (f *fakeStore) MarkFireStarted(ctx context.Context, id string, sessionID st
 func (f *fakeStore) UpdateLastRun(ctx context.Context, id string, params db.UpdateCronJobLastRunParams) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lastRunCalls = append(f.lastRunCalls, lastRunCall{id: id, outcome: params.Outcome})
+	f.lastRunCalls = append(f.lastRunCalls, lastRunCall{id: id, outcome: params.Outcome, nextRunAt: params.NextRunAt})
 	if j, ok := f.jobs[id]; ok {
 		o := params.Outcome
 		j.LastRunOutcome = &o
@@ -538,6 +539,29 @@ func TestFire_Happy(t *testing.T) {
 	}
 	if mc.nextRunAt == nil {
 		t.Error("MarkFireStarted next_run_at was nil; scheduler should persist next tick")
+	}
+}
+
+func TestFire_PassesModelToSession(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	job.Model = "sonnet"
+	store.put(job)
+	sessions := newFakeSessionStore()
+	creator := newFakeCreator()
+	s := newTestScheduler(t, store, sessions, creator)
+	if err := s.AddJob(store.jobs["j"]); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	if _, _, err := s.fire(context.Background(), "j"); err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls = %d, want 1", len(creator.calls))
+	}
+	if got := creator.calls[0].Model; got != "sonnet" {
+		t.Fatalf("CreateSession opts.Model = %q, want sonnet", got)
 	}
 }
 
@@ -1111,5 +1135,214 @@ func TestRunNow_OverlapSkip(t *testing.T) {
 	}
 	if skipped != "overlap_prev_active" {
 		t.Errorf("skipped = %q, want 'overlap_prev_active'", skipped)
+	}
+}
+
+// --- Gate command tests --------------------------------------------------
+
+// TestFire_GatePasses verifies that a gate command with exit 0 allows the
+// fire to proceed and CreateSession is called exactly once.
+func TestFire_GatePasses(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	job.GateCommand = "true"
+	store.put(job)
+
+	repos := newFakeRepoStore()
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: t.TempDir()})
+
+	creator := newFakeCreator()
+	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	sess, skipped, err := s.fire(context.Background(), "j")
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if skipped != "" {
+		t.Errorf("skipped = %q, want empty (gate passed)", skipped)
+	}
+	if sess == nil {
+		t.Fatal("fire returned nil session on gate-pass path")
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls = %d, want 1", len(creator.calls))
+	}
+}
+
+// TestFire_GateFails verifies that a gate command with non-zero exit blocks
+// the fire: CreateSession is not called and outcome=gated is recorded.
+func TestFire_GateFails(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	job.GateCommand = "false" // always exits non-zero
+	store.put(job)
+
+	repos := newFakeRepoStore()
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: t.TempDir()})
+
+	creator := newFakeCreator()
+	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	sess, skipped, err := s.fire(context.Background(), "j")
+	if err != nil {
+		t.Fatalf("fire: unexpected error %v", err)
+	}
+	if skipped != "gated" {
+		t.Errorf("skipped = %q, want 'gated'", skipped)
+	}
+	if sess != nil {
+		t.Error("fire should return nil session when gated")
+	}
+	if len(creator.calls) != 0 {
+		t.Errorf("creator calls = %d, want 0 (gate blocked the fire)", len(creator.calls))
+	}
+	if len(store.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
+	}
+	lrc := store.lastRunCalls[0]
+	if lrc.outcome != models.CronJobOutcomeGated {
+		t.Errorf("outcome = %q, want %q", lrc.outcome, models.CronJobOutcomeGated)
+	}
+	if lrc.nextRunAt == nil {
+		t.Error("UpdateLastRun.NextRunAt was nil; expected non-nil (job is registered with a schedule)")
+	}
+}
+
+// TestRunNow_HonorsGate verifies that a manual run (RunNow) is gated exactly
+// like a scheduled fire: a failing gate command blocks the run, spawns no
+// session, and is reported as the "gated" skip reason with outcome=gated.
+// Manual runs deliberately do NOT bypass the gate.
+func TestRunNow_HonorsGate(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	job.GateCommand = "false" // always exits non-zero
+	store.put(job)
+
+	repos := newFakeRepoStore()
+	repos.put(&models.Repo{ID: "repo-1", DefaultBaseBranch: "main", LocalPath: t.TempDir()})
+
+	creator := newFakeCreator()
+	s := newTestSchedulerWithRepos(t, store, newFakeSessionStore(), repos, creator)
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	// Manual run path: the gate must still be consulted.
+	sess, skipped, err := s.RunNow(context.Background(), "j")
+	if err != nil {
+		t.Fatalf("RunNow: %v", err)
+	}
+	if skipped != "gated" {
+		t.Errorf("skipped = %q, want 'gated' (manual run honors the gate)", skipped)
+	}
+	if sess != nil {
+		t.Error("RunNow should return nil session when gated")
+	}
+	if len(creator.calls) != 0 {
+		t.Errorf("creator calls = %d, want 0 (gate blocked the manual run)", len(creator.calls))
+	}
+	if len(store.lastRunCalls) != 1 {
+		t.Fatalf("UpdateLastRun calls = %d, want 1", len(store.lastRunCalls))
+	}
+	if got := store.lastRunCalls[0].outcome; got != models.CronJobOutcomeGated {
+		t.Errorf("outcome = %q, want %q", got, models.CronJobOutcomeGated)
+	}
+}
+
+// TestFire_EmptyGateCommand verifies that an empty GateCommand leaves the
+// gate unconsulted and the normal fire path proceeds.
+func TestFire_EmptyGateCommand(t *testing.T) {
+	store := newFakeStore()
+	job := makeJob("j", "@every 1m", true)
+	// GateCommand intentionally left empty (zero value).
+	store.put(job)
+
+	creator := newFakeCreator()
+	s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+
+	sess, skipped, err := s.fire(context.Background(), "j")
+	if err != nil {
+		t.Fatalf("fire: %v", err)
+	}
+	if skipped != "" {
+		t.Errorf("skipped = %q, want empty (no gate configured)", skipped)
+	}
+	if sess == nil {
+		t.Fatal("fire returned nil session")
+	}
+	if len(creator.calls) != 1 {
+		t.Fatalf("creator calls = %d, want 1", len(creator.calls))
+	}
+}
+
+// TestFire_SkipSetupScript_Toggle verifies that SkipSetupScript in
+// CreateSessionOpts reflects job.RunSetupCommand (inverted).
+func TestFire_SkipSetupScript_Toggle(t *testing.T) {
+	cases := []struct {
+		name            string
+		runSetupCommand bool
+		wantSkip        bool
+	}{
+		{"run_setup=true → SkipSetupScript=false", true, false},
+		{"run_setup=false → SkipSetupScript=true", false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore()
+			job := makeJob("j", "@every 1m", true)
+			job.RunSetupCommand = c.runSetupCommand
+			store.put(job)
+
+			creator := newFakeCreator()
+			s := newTestScheduler(t, store, newFakeSessionStore(), creator)
+			if err := s.AddJob(job); err != nil {
+				t.Fatalf("AddJob: %v", err)
+			}
+
+			if _, _, err := s.fire(context.Background(), "j"); err != nil {
+				t.Fatalf("fire: %v", err)
+			}
+			if len(creator.calls) != 1 {
+				t.Fatalf("creator calls = %d, want 1", len(creator.calls))
+			}
+			if got := creator.calls[0].SkipSetupScript; got != c.wantSkip {
+				t.Errorf("SkipSetupScript = %v, want %v (RunSetupCommand=%v)",
+					got, c.wantSkip, c.runSetupCommand)
+			}
+		})
+	}
+}
+
+// TestGatingJobIDs_ReturnsCopy verifies that GatingJobIDs returns a copy of
+// the internal map: mutating the returned map does not affect the scheduler.
+func TestGatingJobIDs_ReturnsCopy(t *testing.T) {
+	s := newTestScheduler(t, newFakeStore(), newFakeSessionStore(), newFakeCreator())
+
+	s.markGating("job-a")
+	got := s.GatingJobIDs()
+	if _, ok := got["job-a"]; !ok {
+		t.Fatal("GatingJobIDs: expected job-a in returned map")
+	}
+
+	// Mutate the returned copy — should not affect internal state.
+	got["injected"] = struct{}{}
+	after := s.GatingJobIDs()
+	if _, ok := after["injected"]; ok {
+		t.Error("GatingJobIDs: mutating returned map affected internal gating set")
+	}
+
+	s.unmarkGating("job-a")
+	final := s.GatingJobIDs()
+	if len(final) != 0 {
+		t.Errorf("GatingJobIDs: expected empty after unmarkGating, got %v", final)
 	}
 }

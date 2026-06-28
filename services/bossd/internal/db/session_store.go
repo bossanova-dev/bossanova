@@ -53,11 +53,11 @@ func (s *SQLiteSessionStore) Create(ctx context.Context, params CreateSessionPar
 		agentName = "claude"
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, agent_name, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, repo_id, title, plan, worktree_path, branch_name, base_branch, state, agent_name, model, pr_number, pr_url, tracker_id, tracker_url, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, params.RepoID, params.Title, params.Plan,
 		params.WorktreePath, params.BranchName, params.BaseBranch,
-		int(machine.CreatingWorktree), agentName, params.PRNumber, params.PRURL,
+		int(machine.CreatingWorktree), agentName, params.Model, params.PRNumber, params.PRURL,
 		params.TrackerID, params.TrackerURL, now, now,
 	)
 	if err != nil {
@@ -420,7 +420,7 @@ func (s *SQLiteSessionStore) querySessionList(ctx context.Context, query string,
 const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
+	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint
 	FROM sessions s`
@@ -432,7 +432,7 @@ const sessionSelectSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_pa
 const sessionSelectWithRepoSQL = `SELECT s.id, s.repo_id, s.title, s.plan, s.worktree_path, s.branch_name, s.base_branch,
 	s.state, s.agent_session_id, s.pr_number, s.pr_url, s.tracker_id, s.tracker_url, s.tmux_session_name,
 	s.last_check_state, s.last_observed_review_state, s.automation_enabled, s.attempt_count, s.blocked_reason, s.archived_at, s.cron_job_id, s.hook_token, s.created_at, s.updated_at,
-	s.display_label, s.display_intent, s.display_spinner, s.agent_name,
+	s.display_label, s.display_intent, s.display_spinner, s.agent_name, s.model,
 	s.last_repair_started_at, s.last_repair_runner_error, s.last_repair_exit_error, s.last_repair_attempt_count,
 	s.last_repair_head_sha, s.last_repair_display_status, s.last_repair_review_fingerprint,
 	COALESCE(r.display_name, ''), COALESCE(r.origin_url, '')
@@ -467,7 +467,7 @@ func scanSessionWithRepo(s sqlutil.Scanner) (*models.Session, string, string, er
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
-		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
+		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint, &repoDisplayName, &repoOriginURL)
 	if err != nil {
@@ -509,7 +509,7 @@ func scanSession(s sqlutil.Scanner) (*models.Session, error) {
 		&sess.TrackerID, &sess.TrackerURL, &sess.TmuxSessionName,
 		&lastCheckState, &lastObservedReviewState, &automationEnabled, &sess.AttemptCount,
 		&sess.BlockedReason, &archivedAt, &sess.CronJobID, &sess.HookToken, &createdAt, &updatedAt,
-		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName,
+		&sess.DisplayLabel, &displayIntent, &displaySpinner, &sess.AgentName, &sess.Model,
 		&lastRepairStartedAt, &sess.LastRepairRunnerError, &sess.LastRepairExitError, &sess.LastRepairAttemptCount,
 		&sess.LastRepairHeadSHA, &sess.LastRepairDisplayStatus, &sess.LastRepairReviewFingerprint)
 	if err != nil {

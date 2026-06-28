@@ -120,6 +120,12 @@ const (
 	DaemonServiceDeleteChatProcedure = "/bossanova.v1.DaemonService/DeleteChat"
 	// DaemonServiceWakeChatProcedure is the fully-qualified name of the DaemonService's WakeChat RPC.
 	DaemonServiceWakeChatProcedure = "/bossanova.v1.DaemonService/WakeChat"
+	// DaemonServiceGetChatTranscriptProcedure is the fully-qualified name of the DaemonService's
+	// GetChatTranscript RPC.
+	DaemonServiceGetChatTranscriptProcedure = "/bossanova.v1.DaemonService/GetChatTranscript"
+	// DaemonServiceSendChatMessageProcedure is the fully-qualified name of the DaemonService's
+	// SendChatMessage RPC.
+	DaemonServiceSendChatMessageProcedure = "/bossanova.v1.DaemonService/SendChatMessage"
 	// DaemonServiceReportChatStatusProcedure is the fully-qualified name of the DaemonService's
 	// ReportChatStatus RPC.
 	DaemonServiceReportChatStatusProcedure = "/bossanova.v1.DaemonService/ReportChatStatus"
@@ -208,6 +214,13 @@ type DaemonServiceClient interface {
 	// concurrent calls via per-chat singleflight. Decides --resume vs
 	// --session-id by pre-flight stat of the Claude transcript file.
 	WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error)
+	// GetChatTranscript returns a chat's conversation and final result by routing
+	// to the owning agent plugin's ReadTranscript. Request-response (pollable).
+	GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error)
+	// SendChatMessage delivers a user message into a chat's live agent (waking it
+	// first if asleep) by bracketed-paste, then returns. Drives follow-up turns
+	// and cross-agent "second opinion" prompts without an interactive attach.
+	SendChatMessage(context.Context, *connect.Request[v1.SendChatMessageRequest]) (*connect.Response[v1.SendChatMessageResponse], error)
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
 	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
@@ -444,6 +457,18 @@ func NewDaemonServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(daemonServiceMethods.ByName("WakeChat")),
 			connect.WithClientOptions(opts...),
 		),
+		getChatTranscript: connect.NewClient[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse](
+			httpClient,
+			baseURL+DaemonServiceGetChatTranscriptProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("GetChatTranscript")),
+			connect.WithClientOptions(opts...),
+		),
+		sendChatMessage: connect.NewClient[v1.SendChatMessageRequest, v1.SendChatMessageResponse](
+			httpClient,
+			baseURL+DaemonServiceSendChatMessageProcedure,
+			connect.WithSchema(daemonServiceMethods.ByName("SendChatMessage")),
+			connect.WithClientOptions(opts...),
+		),
 		reportChatStatus: connect.NewClient[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse](
 			httpClient,
 			baseURL+DaemonServiceReportChatStatusProcedure,
@@ -569,6 +594,8 @@ type daemonServiceClient struct {
 	updateChatTitle      *connect.Client[v1.UpdateChatTitleRequest, v1.UpdateChatTitleResponse]
 	deleteChat           *connect.Client[v1.DeleteChatRequest, v1.DeleteChatResponse]
 	wakeChat             *connect.Client[v1.WakeChatRequest, v1.WakeChatResponse]
+	getChatTranscript    *connect.Client[v1.GetChatTranscriptRequest, v1.GetChatTranscriptResponse]
+	sendChatMessage      *connect.Client[v1.SendChatMessageRequest, v1.SendChatMessageResponse]
 	reportChatStatus     *connect.Client[v1.ReportChatStatusRequest, v1.ReportChatStatusResponse]
 	getChatStatuses      *connect.Client[v1.GetChatStatusesRequest, v1.GetChatStatusesResponse]
 	getSessionStatuses   *connect.Client[v1.GetSessionStatusesRequest, v1.GetSessionStatusesResponse]
@@ -736,6 +763,16 @@ func (c *daemonServiceClient) WakeChat(ctx context.Context, req *connect.Request
 	return c.wakeChat.CallUnary(ctx, req)
 }
 
+// GetChatTranscript calls bossanova.v1.DaemonService.GetChatTranscript.
+func (c *daemonServiceClient) GetChatTranscript(ctx context.Context, req *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error) {
+	return c.getChatTranscript.CallUnary(ctx, req)
+}
+
+// SendChatMessage calls bossanova.v1.DaemonService.SendChatMessage.
+func (c *daemonServiceClient) SendChatMessage(ctx context.Context, req *connect.Request[v1.SendChatMessageRequest]) (*connect.Response[v1.SendChatMessageResponse], error) {
+	return c.sendChatMessage.CallUnary(ctx, req)
+}
+
 // ReportChatStatus calls bossanova.v1.DaemonService.ReportChatStatus.
 func (c *daemonServiceClient) ReportChatStatus(ctx context.Context, req *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error) {
 	return c.reportChatStatus.CallUnary(ctx, req)
@@ -852,6 +889,13 @@ type DaemonServiceHandler interface {
 	// concurrent calls via per-chat singleflight. Decides --resume vs
 	// --session-id by pre-flight stat of the Claude transcript file.
 	WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error)
+	// GetChatTranscript returns a chat's conversation and final result by routing
+	// to the owning agent plugin's ReadTranscript. Request-response (pollable).
+	GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error)
+	// SendChatMessage delivers a user message into a chat's live agent (waking it
+	// first if asleep) by bracketed-paste, then returns. Drives follow-up turns
+	// and cross-agent "second opinion" prompts without an interactive attach.
+	SendChatMessage(context.Context, *connect.Request[v1.SendChatMessageRequest]) (*connect.Response[v1.SendChatMessageResponse], error)
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error)
 	GetChatStatuses(context.Context, *connect.Request[v1.GetChatStatusesRequest]) (*connect.Response[v1.GetChatStatusesResponse], error)
@@ -1084,6 +1128,18 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(daemonServiceMethods.ByName("WakeChat")),
 		connect.WithHandlerOptions(opts...),
 	)
+	daemonServiceGetChatTranscriptHandler := connect.NewUnaryHandler(
+		DaemonServiceGetChatTranscriptProcedure,
+		svc.GetChatTranscript,
+		connect.WithSchema(daemonServiceMethods.ByName("GetChatTranscript")),
+		connect.WithHandlerOptions(opts...),
+	)
+	daemonServiceSendChatMessageHandler := connect.NewUnaryHandler(
+		DaemonServiceSendChatMessageProcedure,
+		svc.SendChatMessage,
+		connect.WithSchema(daemonServiceMethods.ByName("SendChatMessage")),
+		connect.WithHandlerOptions(opts...),
+	)
 	daemonServiceReportChatStatusHandler := connect.NewUnaryHandler(
 		DaemonServiceReportChatStatusProcedure,
 		svc.ReportChatStatus,
@@ -1236,6 +1292,10 @@ func NewDaemonServiceHandler(svc DaemonServiceHandler, opts ...connect.HandlerOp
 			daemonServiceDeleteChatHandler.ServeHTTP(w, r)
 		case DaemonServiceWakeChatProcedure:
 			daemonServiceWakeChatHandler.ServeHTTP(w, r)
+		case DaemonServiceGetChatTranscriptProcedure:
+			daemonServiceGetChatTranscriptHandler.ServeHTTP(w, r)
+		case DaemonServiceSendChatMessageProcedure:
+			daemonServiceSendChatMessageHandler.ServeHTTP(w, r)
 		case DaemonServiceReportChatStatusProcedure:
 			daemonServiceReportChatStatusHandler.ServeHTTP(w, r)
 		case DaemonServiceGetChatStatusesProcedure:
@@ -1393,6 +1453,14 @@ func (UnimplementedDaemonServiceHandler) DeleteChat(context.Context, *connect.Re
 
 func (UnimplementedDaemonServiceHandler) WakeChat(context.Context, *connect.Request[v1.WakeChatRequest]) (*connect.Response[v1.WakeChatResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.WakeChat is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) GetChatTranscript(context.Context, *connect.Request[v1.GetChatTranscriptRequest]) (*connect.Response[v1.GetChatTranscriptResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.GetChatTranscript is not implemented"))
+}
+
+func (UnimplementedDaemonServiceHandler) SendChatMessage(context.Context, *connect.Request[v1.SendChatMessageRequest]) (*connect.Response[v1.SendChatMessageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.DaemonService.SendChatMessage is not implemented"))
 }
 
 func (UnimplementedDaemonServiceHandler) ReportChatStatus(context.Context, *connect.Request[v1.ReportChatStatusRequest]) (*connect.Response[v1.ReportChatStatusResponse], error) {

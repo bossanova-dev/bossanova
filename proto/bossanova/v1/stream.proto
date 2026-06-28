@@ -106,6 +106,10 @@ message OrchestratorCommand {
     ListRepoPRsCommand list_repo_prs = 18;
     // bosso → daemon: list a repo's tracker issues. Replies CommandResult{list_tracker_issues}.
     ListTrackerIssuesCommand list_tracker_issues = 19;
+    // bosso → daemon: read a chat's transcript. Replies CommandResult{get_chat_transcript}.
+    GetChatTranscriptCommand get_chat_transcript = 20;
+    // bosso → daemon: send a user message into a chat. Replies CommandResult{send_chat_message}.
+    SendChatMessageCommand send_chat_message = 21;
   }
 }
 
@@ -239,6 +243,10 @@ message CommandResult {
     ListRepoPRsResponse list_repo_prs = 11;
     // ListTrackerIssues returns the repo's tracker issues (reuses daemon.proto type).
     ListTrackerIssuesResponse list_tracker_issues = 12;
+    // GetChatTranscript returns the chat's transcript (reuses daemon.proto type).
+    GetChatTranscriptResponse get_chat_transcript = 13;
+    // SendChatMessage returns the delivery outcome (reuses daemon.proto type).
+    SendChatMessageResponse send_chat_message = 14;
   }
   // Populated when ok == false. Lets bosso map structured failures
   // (CodeNotFound, CodeFailedPrecondition, …) without string-prefix games.
@@ -416,6 +424,23 @@ message ListTrackerIssuesCommand {
   string repo_id = 1;
   string query = 2;
   optional string source = 3;
+}
+
+// GetChatTranscriptCommand asks the daemon for a chat's transcript. Replies with
+// CommandResult carrying a GetChatTranscriptResponse (get_chat_transcript = 13).
+// session_id scopes the read for authz, mirroring DeleteChatCommand.
+message GetChatTranscriptCommand {
+  string session_id = 1;
+  string agent_session_id = 2;
+  int32 max_messages = 3;
+}
+
+// SendChatMessageCommand asks the daemon to deliver a user message into a chat.
+// Replies with CommandResult carrying a SendChatMessageResponse (send_chat_message = 14).
+message SendChatMessageCommand {
+  string agent_session_id = 1;
+  string message = 2;
+  bool wake_if_asleep = 3;
 }
 
 // TransferSessionCommand asks a daemon to take part in a coordinated transfer

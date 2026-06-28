@@ -134,7 +134,7 @@ func (m *MockAgentRunner) NoChanges() {
 	}
 }
 
-func (m *MockAgentRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID string) (string, error) {
+func (m *MockAgentRunner) Start(ctx context.Context, workDir, plan string, resume *string, sessionID, _ string) (string, error) {
 	m.mu.Lock()
 	injectedErr := m.spawnError
 	m.spawnError = nil
@@ -279,8 +279,8 @@ func (m *MockAgentRunner) Subscribe(ctx context.Context, sessionID string) (<-ch
 // StartByAgent forwards to Start so existing assertions on Started/Stopped
 // still fire. By-agent routing is exercised by the dispatcher tests; this
 // fake doesn't need to inspect agentName.
-func (m *MockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID string) (string, error) {
-	return m.Start(ctx, workDir, plan, resume, agentSessionID)
+func (m *MockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model string) (string, error) {
+	return m.Start(ctx, workDir, plan, resume, agentSessionID, model)
 }
 
 // StopByAgent forwards to Stop, ignoring agentName (see StartByAgent).

@@ -226,6 +226,12 @@ func (h *HookServer) handleFinalize(w http.ResponseWriter, r *http.Request) {
 
 	// Compatibility fallback for tests and older wiring: if no notifier has
 	// been installed, dispatch FinalizeSession as previous versions did.
+	//
+	// WARNING: this path BYPASSES the CronCompletionGate's run-completion check
+	// (RunIsOver → cronRunIsOver), so it would finalize on any Stop hook — i.e.
+	// mid-run. Production always wires the gate (cmd/main.go), so this is only
+	// reached by tests and legacy/partial wiring. Do not rely on it for cron
+	// sessions: finalize gating lives in the gate, which is the single chokepoint.
 	safego.Go(h.logger, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), finalizeDispatchTimeout)
 		defer cancel()

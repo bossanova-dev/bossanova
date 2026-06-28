@@ -82,7 +82,7 @@ func (s *Server) StartRun(_ context.Context, req *bossanovav1.StartAgentRunReque
 	// would propagate to runner.Start's procCtx and SIGTERM the just-started
 	// claude process within milliseconds. The runner owns subprocess
 	// lifecycle via its own Stop()/cancel paths.
-	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath)
+	sid, err := s.runner.Start(context.Background(), req.WorkDir, req.Plan, resume, req.SessionId, req.LogPath, req.GetModel())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "start run: %v", err)
 	}
@@ -156,6 +156,9 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	}
 	if sp := req.GetAppendSystemPrompt(); sp != "" {
 		args = append(args, "--append-system-prompt", sp)
+	}
+	if model := req.GetModel(); model != "" {
+		args = append(args, "--model", model)
 	}
 	loginShell := ""
 	if s.runner != nil {
@@ -245,9 +248,11 @@ func buildPRTitlePrompt(req *bossanovav1.SuggestPRTitleRequest) string {
 		return s
 	}
 	var b strings.Builder
-	b.WriteString("You are titling a pull request. Output ONLY the title text on a single line — no quotes, no markdown, no preamble.\n\n")
-	b.WriteString("If the CURRENT TITLE below already accurately and concisely describes the overall change, output it verbatim, unchanged. ")
-	b.WriteString("Otherwise output a single concise title (<= 70 characters) capturing the PR's overall intent — summarize the WHOLE change, not just the last commit.\n\n")
+	b.WriteString("You are titling a pull request. Output ONLY the pull request title on a single line — the title text itself and nothing else. ")
+	b.WriteString("No quotes, no markdown, no preamble, and NO sentence that describes, evaluates, or comments on the title (never output things like \"The current title accurately describes the change\").\n\n")
+	b.WriteString("When the CURRENT TITLE below already describes the whole change well, repeat it back exactly, character for character. ")
+	b.WriteString("Otherwise write a new concise title (<= 70 characters) capturing the PR's overall intent — summarize the WHOLE change, not just the last commit.\n\n")
+	b.WriteString("Example — CURRENT TITLE is \"[BOS-12] Add dark mode toggle\" and it already fits: output exactly\n[BOS-12] Add dark mode toggle\n\n")
 	b.WriteString("CURRENT TITLE:\n")
 	b.WriteString(orEmpty(req.GetCurrentTitle(), "(none)") + "\n\n")
 	b.WriteString("BASE BRANCH: " + orEmpty(req.GetBaseBranch(), "(unknown)") + "\n\n")
@@ -270,11 +275,48 @@ func sanitizeSuggestedTitle(out string) string {
 	}
 	line = strings.Trim(line, "\"'`")
 	line = strings.TrimSpace(line)
+	// Drop self-referential commentary the model sometimes emits instead of a
+	// title (e.g. "The current title accurately describes the whole change.").
+	// Returning "" makes SuggestPRTitle report unsupported, so the daemon keeps
+	// the existing title rather than persisting the model's reasoning as one.
+	if looksLikeTitleCommentary(line) {
+		return ""
+	}
 	if utf8.RuneCountInString(line) > suggestedTitleMaxLen {
 		runes := []rune(line)
 		line = strings.TrimSpace(string(runes[:suggestedTitleMaxLen]))
 	}
 	return line
+}
+
+// looksLikeTitleCommentary reports whether a line is the model narrating its
+// keep/replace decision rather than an actual PR title. The patterns are kept
+// deliberately tight so they only catch meta-sentences about "the title", not
+// genuine titles that happen to contain the word "describes".
+func looksLikeTitleCommentary(line string) bool {
+	l := strings.ToLower(strings.TrimSpace(line))
+	if l == "" {
+		return false
+	}
+	for _, prefix := range []string{"the current title", "the title", "current title", "this title"} {
+		if strings.HasPrefix(l, prefix) {
+			return true
+		}
+	}
+	for _, sub := range []string{
+		"accurately describes",
+		"concisely describes",
+		"describes the whole change",
+		"describes the change",
+		"describes the overall change",
+		"already accurate",
+		"already fits",
+	} {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasQuestionPrompt reports whether the supplied pane bytes look like a Claude
@@ -309,5 +351,24 @@ func (s *Server) LastTurnIsUser(_ context.Context, req *bossanovav1.LastTurnIsUs
 func (s *Server) TranscriptExists(_ context.Context, req *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) { //nolint:unparam // interface implementation
 	return &bossanovav1.TranscriptExistsResponse{
 		Exists: transcriptExists(req.WorkDir, req.AgentSessionId),
+	}, nil
+}
+
+// ReadTranscript reads the Claude Code JSONL transcript for
+// (work_dir, agent_session_id) and returns ordered ChatMessages. A missing
+// transcript is not an error — it returns Exists=false with nil messages.
+func (s *Server) ReadTranscript(_ context.Context, req *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	path, err := transcriptPath(req.WorkDir, req.AgentSessionId)
+	if err != nil {
+		return &bossanovav1.ReadTranscriptResponse{Exists: false}, nil
+	}
+	msgs, finalAssistant, exists, err := readTranscript(path, req.MaxMessages)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read transcript: %v", err)
+	}
+	return &bossanovav1.ReadTranscriptResponse{
+		Messages:           msgs,
+		FinalAssistantText: finalAssistant,
+		Exists:             exists,
 	}, nil
 }

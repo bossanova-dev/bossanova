@@ -78,6 +78,10 @@ type BossClient interface {
 	// FRESH_FALLBACK so it can render the right confirmation.
 	WakeChat(ctx context.Context, sessionID, agentSessionID string, forceFresh bool) (*pb.WakeChatResponse, error)
 
+	// Chat transcript and messaging
+	GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
+	SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error)
+
 	// Chat status (cross-client heartbeat sharing)
 	ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error
 	GetChatStatuses(ctx context.Context, sessionID string) ([]*pb.ChatStatusEntry, error)

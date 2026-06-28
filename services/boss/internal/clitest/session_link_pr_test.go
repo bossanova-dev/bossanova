@@ -24,7 +24,7 @@ func TestCLI_Session_LinkPR_Number(t *testing.T) {
 	if !strings.HasSuffix(res.Stdout, ".\n") {
 		t.Fatalf("stdout = %q, want trailing newline (no literal \\n)", res.Stdout)
 	}
-	sess := findSession(t, h, "sess-aaa-111")
+	sess := findSession(t, h)
 	if sess.PrNumber == nil || *sess.PrNumber != 42 {
 		t.Fatalf("PrNumber = %v, want 42", sess.PrNumber)
 	}
@@ -43,7 +43,7 @@ func TestCLI_Session_LinkPR_URL(t *testing.T) {
 	if res.ExitCode != 0 {
 		t.Fatalf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
 	}
-	sess := findSession(t, h, "sess-aaa-111")
+	sess := findSession(t, h)
 	if sess.PrNumber == nil || *sess.PrNumber != 77 {
 		t.Fatalf("PrNumber = %v, want 77", sess.PrNumber)
 	}
@@ -52,8 +52,9 @@ func TestCLI_Session_LinkPR_URL(t *testing.T) {
 	}
 }
 
-func findSession(t *testing.T, h *clitest.Harness, id string) *pb.Session {
+func findSession(t *testing.T, h *clitest.Harness) *pb.Session {
 	t.Helper()
+	const id = "sess-aaa-111"
 	for _, sess := range h.Daemon.Sessions() {
 		if sess.Id == id {
 			return sess

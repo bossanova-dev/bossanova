@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
+	"github.com/recurser/bossalib/config"
 	bossanovav1 "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/agent"
@@ -282,7 +283,8 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		InitialPrompt:      input.Prompt,
 		InitialCommand:     input.Command,
 		WorktreePath:       sess.WorktreePath,
-		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID),
+		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID, sess.AgentName),
+		Model:              sess.Model,
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -308,7 +310,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		Name:    tmuxName,
 		WorkDir: sess.WorktreePath,
 		Command: cmdResp.Argv,
-		Env:     CronSessionEnv(sess),
+		Env:     ManagedSessionEnv(sess, agentSessionID, sess.AgentName),
 	}); err != nil {
 		return "", fmt.Errorf("create tmux session %q: %w", tmuxName, err)
 	}
@@ -426,6 +428,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 		LogPath:        l.agentLogPathFor(agentSessionID),
 		InitialPrompt:  input.Prompt,
 		InitialCommand: input.Command,
+		Model:          sess.Model,
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sess.ID, err)
@@ -775,56 +778,149 @@ func isCronSession(sess *models.Session) bool {
 	return sess != nil && sess.CronJobID != nil && *sess.CronJobID != ""
 }
 
-// CronSessionEnv returns the session-environment variables to set on a cron
-// session's tmux session, or nil for non-cron sessions. The values let the
-// agent and any skill it invokes detect the unattended context. Exported so
-// the server package can set the same env on the record/wake spawn paths,
-// keeping BOSS_CRON consistent with the cron autonomy directive that
-// AppendSystemPromptFor appends (a directive that asserts BOSS_CRON=true must
-// not ship without the matching env, or shell-mode detection takes the
-// interactive path).
-func CronSessionEnv(sess *models.Session) map[string]string {
-	if !isCronSession(sess) {
-		return nil
-	}
+// ManagedSessionEnv returns the canonical BOSS_* environment set on every
+// managed chat's tmux session. The values let the agent (and any skill or
+// future agent runner — including Codex, which never sees the system prompt)
+// discover its boss context. Cron sessions additionally get BOSS_CRON* so
+// shell-mode detection stays consistent with the cron autonomy directive that
+// AppendSystemPromptFor appends. Binary paths are omitted when not resolved.
+//
+// agentName is the running agent for this chat. It takes precedence over
+// sess.AgentName, so a codex chat spawned from a claude session correctly
+// reports BOSS_AGENT=codex. Pass "" to fall back to sess.AgentName.
+func ManagedSessionEnv(sess *models.Session, agentSessionID, agentName string) map[string]string {
+	return managedSessionEnv(ResolveSessionFacts(sess, agentSessionID, agentName))
+}
+
+func managedSessionEnv(f SessionFacts) map[string]string {
 	env := map[string]string{
-		"BOSS_CRON":        "true",
-		"BOSS_CRON_JOB_ID": *sess.CronJobID,
-		"BOSS_CRON_NAME":   sess.Title,
+		"BOSS_SESSION_ID":       f.SessionID,
+		"BOSS_AGENT_SESSION_ID": f.AgentSessionID,
+		"BOSS_REPO_ID":          f.RepoID,
+		"BOSS_AGENT":            f.Agent,
+		"BOSS_WORKTREE":         f.Worktree,
+		"BOSS_SETTINGS_PATH":    f.SettingsPath,
+		"BOSS_SOCKET":           f.Socket,
+	}
+	if f.BossBin != "" {
+		env["BOSS_BIN"] = f.BossBin
+	}
+	if f.McpBin != "" {
+		env["BOSS_MCP_BIN"] = f.McpBin
+	}
+	if f.IsCron {
+		env["BOSS_CRON"] = "true"
+		env["BOSS_CRON_JOB_ID"] = f.CronJobID
+		env["BOSS_CRON_NAME"] = f.CronName
 	}
 	return env
 }
 
-// bossSessionContext describes the chat's own bossanova identifiers and how to
-// act on them. It is appended to every chat's system prompt so the agent can
-// perform boss session/chat operations (e.g. "continue this in a new chat in
-// this session") via the /boss skill, the boss CLI, or the boss MCP tools.
-func bossSessionContext(sess *models.Session, agentSessionID string) string {
-	return "You are running inside a bossanova-managed chat. Your boss identifiers are: " +
-		"session ID " + sess.ID + ", chat (agent-session) ID " + agentSessionID + ", " +
-		"repository ID " + sess.RepoID + ", agent " + sess.AgentName + ", " +
-		"worktree " + sess.WorktreePath + ". To act on this session or chat — for example " +
-		"to continue in a new chat in this session, create a session, or wake a chat — use " +
-		"the /boss skill, the boss CLI, or the boss MCP tools (list_sessions, get_session, " +
-		"create_session, record_chat, wake_chat). Boss session/chat operations are keyed on " +
-		"the session ID and the chat (agent-session) ID above."
+// SessionFacts is the single resolved view of a managed chat's environment,
+// shared by ManagedSessionEnv (env vars) and bossSessionContext (system
+// prompt) so the two can never disagree. All filesystem/config resolution
+// happens here; the builders that consume it are pure.
+type SessionFacts struct {
+	SessionID      string
+	AgentSessionID string
+	RepoID         string
+	Agent          string
+	Worktree       string
+	SettingsPath   string
+	Socket         string
+	BossBin        string // "" when no trusted boss binary was resolved
+	McpBin         string // "" when no trusted mcp binary was resolved
+	IsCron         bool
+	CronJobID      string
+	CronName       string
 }
 
-// appendSystemPromptFor builds the full --append-system-prompt payload for a
-// chat launch: the boss session context for every chat, plus the cron autonomy
-// directive when the session was spawned by the scheduler.
-// AppendSystemPromptFor builds the per-chat system-prompt suffix that boss
-// injects into every agent launch: the boss session identifiers plus, for
-// cron sessions, the autonomy directive. Exported so the server package can
-// apply the same suffix to the record/wake spawn paths (which build their
-// own BuildInteractiveCommand request) and keep "every chat" actually meaning
-// every chat.
-func AppendSystemPromptFor(sess *models.Session, agentSessionID string) string {
+// ResolveSessionFacts gathers identifiers, config paths, and trusted binary
+// paths for a managed chat exactly once per spawn. Binary paths are resolved
+// trusted-only (never from the worktree). Missing/unresolvable values are left
+// as the zero string; callers degrade gracefully rather than emitting blanks.
+//
+// agentName is the running agent for this specific chat. It wins over
+// sess.AgentName when non-empty, so a codex chat inside a claude session
+// correctly reflects BOSS_AGENT=codex in both the env and system prompt.
+// Pass "" to fall back to sess.AgentName (never emits a worse value than before).
+func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string) SessionFacts {
+	f := SessionFacts{AgentSessionID: agentSessionID}
+	if sess != nil {
+		f.SessionID = sess.ID
+		f.RepoID = sess.RepoID
+		f.Worktree = sess.WorktreePath
+		if isCronSession(sess) {
+			f.IsCron = true
+			f.CronJobID = *sess.CronJobID
+			f.CronName = sess.Title
+		}
+	}
+	f.Agent = agentName
+	if f.Agent == "" && sess != nil {
+		f.Agent = sess.AgentName
+	}
+	if p, err := config.Path(); err == nil {
+		f.SettingsPath = p
+	}
+	if s, err := config.Load(); err == nil {
+		if sock, ok, err := config.ConfiguredSocketPath(s); err == nil && ok {
+			f.Socket = sock
+		}
+	}
+	if f.Socket == "" {
+		if dir, err := config.DefaultAppDataDir(); err == nil {
+			f.Socket = filepath.Join(dir, "bossd.sock")
+		}
+	}
+	f.BossBin = config.ResolveTrustedExecutable("boss")
+	f.McpBin = config.ResolveTrustedExecutable("mcp")
+	return f
+}
+
+// bossSessionContext describes the chat's own bossanova identifiers and how to
+// act on them, built purely from resolved facts. It enumerates NO tools (the
+// previous hand-listed subset caused agents to wrongly conclude a capability
+// was absent). It points the agent at the boss CLI's own --help as the
+// authoritative, always-current command list, and hard-forbids working around
+// a missing capability by editing boss state directly.
+func bossSessionContext(f SessionFacts) string {
+	bossRef := "the boss CLI (`boss`, if on PATH)"
+	helpRef := "`boss --help`"
+	renameRef := "`boss rename <session-id> <new title>`"
+	if f.BossBin != "" {
+		bossRef = "the boss CLI at " + f.BossBin
+		helpRef = "`" + f.BossBin + " --help`"
+		renameRef = "`" + f.BossBin + " rename " + f.SessionID + " <new title>`"
+	}
+	return "You are running inside a bossanova-managed chat. Your boss identifiers are: " +
+		"session ID " + f.SessionID + ", agent-session (chat) ID " + f.AgentSessionID + ", " +
+		"repository ID " + f.RepoID + ", agent " + f.Agent + ", worktree " + f.Worktree + ". " +
+		"These, plus the daemon socket and binary paths, are also in your environment as " +
+		"BOSS_SESSION_ID, BOSS_AGENT_SESSION_ID, BOSS_REPO_ID, BOSS_AGENT, BOSS_WORKTREE, " +
+		"BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN, BOSS_MCP_BIN (context for you, not an " +
+		"action surface). To act on this session or chat, use " + bossRef + " — run " + helpRef +
+		" for the full, current command list (for example, " + renameRef + " retitles a session). " +
+		"Boss operations are keyed on the session ID and agent-session (chat) ID above. " +
+		"Do not assume a capability is missing without checking " + helpRef + " first. " +
+		"Never edit the boss database or session files directly, and never invent a workaround " +
+		"for a missing capability. If no documented boss command covers what you need, stop and " +
+		"report that you are blocked."
+}
+
+// AppendSystemPromptFor builds the per-chat system-prompt suffix bossd injects
+// into every agent launch: the boss session context for every chat, plus the
+// cron autonomy directive for scheduler-spawned sessions. Resolution of facts
+// is shared with ManagedSessionEnv via ResolveSessionFacts.
+//
+// agentName is the running agent for this chat (see ResolveSessionFacts).
+func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName string) string {
 	if sess == nil {
 		return ""
 	}
-	prompt := bossSessionContext(sess, agentSessionID)
-	if isCronSession(sess) {
+	f := ResolveSessionFacts(sess, agentSessionID, agentName)
+	prompt := bossSessionContext(f)
+	if f.IsCron {
 		prompt += "\n\n" + cronAutonomyDirective
 	}
 	return prompt

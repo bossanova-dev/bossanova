@@ -893,12 +893,106 @@ func runLS(cmd *cobra.Command) error {
 
 func runNew(cmd *cobra.Command) error {
 	agentName, _ := cmd.Flags().GetString("agent")
+	repo, _ := cmd.Flags().GetString("repo")
+	prompt, _ := cmd.Flags().GetString("prompt")
+	title, _ := cmd.Flags().GetString("title")
+	detach, _ := cmd.Flags().GetBool("detach")
+	noAttach, _ := cmd.Flags().GetBool("no-attach")
+	detach = detach || noAttach
+
+	// Non-interactive path: --repo and --prompt both provided.
+	if repo != "" && prompt != "" {
+		return runNewDetach(cmd, repo, prompt, title, agentName, detach)
+	}
+
 	return launchTUI(cmd, func(app *views.App) {
 		app.SetInitialView(views.ViewNewSession)
 		if agentName != "" {
 			app.SetInitialAgent(agentName)
 		}
 	})
+}
+
+// runNewDetach creates a session non-interactively, drains the setup stream,
+// and prints the session-id and chat-id (agent_session_id) before returning.
+// When detach is false the user can still pipe this output, but the session
+// starts running in the background either way.
+func runNewDetach(cmd *cobra.Command, repoArg, prompt, title, agentName string, _ bool) error {
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+
+	// Resolve --repo to a repo_id.
+	repos, err := c.ListRepos(ctx)
+	if err != nil {
+		return fmt.Errorf("list repos: %w", err)
+	}
+	repoID, err := resolveRepoArg(repoArg, repos)
+	if err != nil {
+		return err
+	}
+
+	req := &pb.CreateSessionRequest{
+		RepoId: repoID,
+		Plan:   prompt,
+		Title:  title,
+	}
+	if agentName != "" {
+		req.AgentName = &agentName
+	}
+
+	stream, err := c.CreateSession(ctx, req)
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	// Drain the stream; print setup output inline and capture the final session.
+	var session *pb.Session
+	for stream.Receive() {
+		msg := stream.Msg()
+		if so := msg.GetSetupOutput(); so != nil {
+			_, _ = fmt.Fprint(cmd.ErrOrStderr(), so.Text)
+		}
+		if sc := msg.GetSessionCreated(); sc != nil {
+			session = sc.Session
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	if session == nil {
+		return fmt.Errorf("daemon did not return a session")
+	}
+
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "session-id: %s\nchat-id:    %s\n",
+		session.GetId(), session.GetAgentSessionId())
+	return nil
+}
+
+// resolveRepoArg resolves a --repo argument (id, display name, or local path)
+// to a repo_id. Returns an error with registration guidance when no match.
+func resolveRepoArg(arg string, repos []*pb.Repo) (string, error) {
+	// Match by id first (exact), then display name, then local path.
+	for _, r := range repos {
+		if r.Id == arg {
+			return r.Id, nil
+		}
+	}
+	for _, r := range repos {
+		if r.DisplayName == arg {
+			return r.Id, nil
+		}
+	}
+	for _, r := range repos {
+		if r.LocalPath == arg {
+			return r.Id, nil
+		}
+	}
+	return "", fmt.Errorf("repo %q not found; register it first with 'boss repo add'", arg)
 }
 
 func runAttach(cmd *cobra.Command, sessionID string) error {
@@ -1105,6 +1199,28 @@ func runArchive(cmd *cobra.Command, sessionID string) error {
 		return fmt.Errorf("archive session: %w", err)
 	}
 	fmt.Printf("Session %s archived (%s).\n", sess.Id, sess.Title)
+	return nil
+}
+
+func runRename(cmd *cobra.Command, sessionID, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("rename: new title must not be empty")
+	}
+	c, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	sessionID, err = resolveSessionID(c, ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	sess, err := c.UpdateSession(ctx, &pb.UpdateSessionRequest{Id: sessionID, Title: &title})
+	if err != nil {
+		return fmt.Errorf("rename session: %w", err)
+	}
+	fmt.Printf("Session %s renamed to %q.\n", sess.Id, sess.Title)
 	return nil
 }
 

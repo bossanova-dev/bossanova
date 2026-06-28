@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/recurser/bossalib/buildinfo"
 )
 
 const settingsPathEnv = "BOSS_SETTINGS_PATH"
@@ -200,73 +202,103 @@ func MergeDiscoveredPlugins(existing, discovered []PluginConfig) ([]PluginConfig
 	return merged, added
 }
 
-// DiscoverPlugins scans for plugin binaries in precedence order:
-//  1. ../libexec/plugins/ relative to the running binary (Homebrew layout,
-//     resolving symlinks), then the binary's own directory (dev mode where all
-//     binaries live in bin/);
-//  2. a bin/ directory found by walking up from the current working directory
-//     (dev mode where boss is run from inside a checkout but the binary lives
-//     elsewhere, e.g. a temp build dir);
+// PluginRejection records a bossd-plugin-* binary that was found on disk but
+// refused before exec, with the reason (untrusted perms, checksum mismatch,
+// missing manifest). bossd surfaces these as security-level errors.
+type PluginRejection struct {
+	Name   string
+	Path   string
+	Reason string
+}
+
+// discoveryPolicy controls how strictly plugin discovery vets binaries.
+type discoveryPolicy struct {
+	requireSafePerms bool // reject group/world-writable or wrong-owner dirs+files
+	verifyChecksums  bool // enforce plugins.sum (release builds)
+	allowCWDWalk     bool // dev-mode walk up from CWD looking for bin/
+}
+
+// activePolicy derives the discovery policy from the build type. Path
+// hardening always applies; checksum enforcement and the CWD walk are gated on
+// release vs dev. See docs/plans/BOS-27-*.md.
+func activePolicy() discoveryPolicy {
+	release := buildinfo.IsReleaseBuild()
+	return discoveryPolicy{
+		requireSafePerms: true,
+		verifyChecksums:  release,
+		allowCWDWalk:     !release,
+	}
+}
+
+// DiscoverPlugins scans for plugin binaries in precedence order (see
+// DiscoverPluginsVerified) and returns only the binaries that passed
+// verification. Rejected binaries are dropped silently here; callers that need
+// to surface them (bossd) use DiscoverPluginsVerified.
+func DiscoverPlugins() []PluginConfig {
+	plugins, _ := DiscoverPluginsVerified()
+	return plugins
+}
+
+// DiscoverPluginsVerified scans for plugin binaries in precedence order:
+//  1. ../libexec/plugins/ relative to the running binary (Homebrew layout),
+//     then the binary's own directory (dev mode);
+//  2. (dev builds only) a bin/ directory found by walking up from CWD;
 //  3. the per-user plugin dir used by upgrades.
 //
-// The CWD walk (step 2) only runs when binary-relative discovery finds nothing,
-// so an installed Homebrew daemon using libexec is unaffected. Returns nil if no
-// plugins are found.
-func DiscoverPlugins() []PluginConfig {
-	if plugins := discoverPluginsFrom(""); len(plugins) > 0 {
-		return plugins
+// Every candidate is vetted by the active discoveryPolicy. Returns accepted
+// plugins and the rejected ones (with reasons).
+func DiscoverPluginsVerified() ([]PluginConfig, []PluginRejection) {
+	policy := activePolicy()
+	if plugins, rej := discoverPluginsFrom("", policy); len(plugins) > 0 || len(rej) > 0 {
+		return plugins, rej
 	}
-	if plugins := discoverDevPluginsFromCWD(); len(plugins) > 0 {
-		return plugins
+	if policy.allowCWDWalk {
+		if plugins, rej := discoverDevPluginsFromCWD(policy); len(plugins) > 0 || len(rej) > 0 {
+			return plugins, rej
+		}
 	}
 	dir, err := UserPluginDir()
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return scanForPlugins(dir)
+	return scanForPlugins(dir, policy)
 }
 
 // osExecutable indirects os.Executable so the binDir=="" fallback (which
 // locates plugins relative to the running binary) is unit-testable.
 var osExecutable = os.Executable
 
-// discoverPluginsFrom is the testable core of DiscoverPlugins. When binDir is
-// empty it uses os.Executable() to locate the binary directory.
-func discoverPluginsFrom(binDir string) []PluginConfig {
+func discoverPluginsFrom(binDir string, policy discoveryPolicy) ([]PluginConfig, []PluginRejection) {
 	if binDir == "" {
 		exe, err := osExecutable()
 		if err != nil {
-			return nil
+			return nil, nil
 		}
 		resolved, err := filepath.EvalSymlinks(exe)
 		if err != nil {
-			return nil
+			return nil, nil
 		}
 		binDir = filepath.Dir(resolved)
 	}
-
-	// Try Homebrew layout first: ../libexec/plugins/
 	libexecDir := filepath.Clean(filepath.Join(binDir, "..", "libexec", "plugins"))
-	if plugins := scanForPlugins(libexecDir); len(plugins) > 0 {
-		return plugins
+	if plugins, rej := scanForPlugins(libexecDir, policy); len(plugins) > 0 || len(rej) > 0 {
+		return plugins, rej
 	}
-
-	// Fall back to same directory as binary (dev mode).
-	return scanForPlugins(binDir)
+	return scanForPlugins(binDir, policy)
 }
 
-func discoverDevPluginsFromCWD() []PluginConfig {
+func discoverDevPluginsFromCWD(policy discoveryPolicy) ([]PluginConfig, []PluginRejection) {
 	wd, err := os.Getwd()
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	for dir := wd; ; dir = filepath.Dir(dir) {
-		if plugins := scanForPlugins(filepath.Join(dir, "bin")); len(plugins) > 0 {
-			return plugins
+		if plugins, rej := scanForPlugins(filepath.Join(dir, "bin"), policy); len(plugins) > 0 || len(rej) > 0 {
+			return plugins, rej
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return nil
+			return nil, nil
 		}
 	}
 }
@@ -314,15 +346,49 @@ func FilterNonDiscoverablePlugins(cfgs []PluginConfig) ([]PluginConfig, []string
 	return out, dropped
 }
 
-// scanForPlugins scans a directory for any executable matching the
-// bossd-plugin-* prefix and returns a PluginConfig for each one found.
-// Cross-compiled binaries with platform suffixes are skipped.
-func scanForPlugins(dir string) []PluginConfig {
+// scanForPlugins scans dir for bossd-plugin-* executables, applying the policy.
+// Cross-compiled binaries with platform suffixes are skipped (not rejections).
+func scanForPlugins(dir string, policy discoveryPolicy) ([]PluginConfig, []PluginRejection) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
+
+	// Directory-level perms gate: an untrusted dir taints every binary in it.
+	if policy.requireSafePerms {
+		if ok, reason := isTrustedPath(dir); !ok {
+			var rej []PluginRejection
+			for _, e := range entries {
+				name := e.Name()
+				if e.IsDir() || !strings.HasPrefix(name, pluginPrefix) || hasPlatformSuffix(name) {
+					continue
+				}
+				if isNonDiscoverablePlugin(name) {
+					continue
+				}
+				if !isExecutableFile(filepath.Join(dir, name)) {
+					continue
+				}
+				rej = append(rej, PluginRejection{
+					Name:   name[len(pluginPrefix):],
+					Path:   filepath.Join(dir, name),
+					Reason: "untrusted plugin directory: " + reason,
+				})
+			}
+			return nil, rej
+		}
+	}
+
+	// Load the manifest once if checksum verification is on. A missing/invalid
+	// manifest on a release build means we reject every binary (fail closed).
+	var sums map[string]string
+	var sumErr error
+	if policy.verifyChecksums {
+		sums, sumErr = loadPluginSums(dir)
+	}
+
 	var plugins []PluginConfig
+	var rejections []PluginRejection
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasPrefix(name, pluginPrefix) {
@@ -338,13 +404,28 @@ func scanForPlugins(dir string) []PluginConfig {
 		if hasPlatformSuffix(name) {
 			continue
 		}
-		plugins = append(plugins, PluginConfig{
-			Name:    name[len(pluginPrefix):],
-			Path:    path,
-			Enabled: true,
-		})
+		shortName := name[len(pluginPrefix):]
+
+		if policy.requireSafePerms {
+			if ok, reason := isTrustedPath(path); !ok {
+				rejections = append(rejections, PluginRejection{Name: shortName, Path: path, Reason: reason})
+				continue
+			}
+		}
+		if policy.verifyChecksums {
+			if sumErr != nil {
+				rejections = append(rejections, PluginRejection{Name: shortName, Path: path,
+					Reason: "checksum manifest unavailable: " + sumErr.Error()})
+				continue
+			}
+			if ok, reason := verifyPluginChecksum(path, sums); !ok {
+				rejections = append(rejections, PluginRejection{Name: shortName, Path: path, Reason: reason})
+				continue
+			}
+		}
+		plugins = append(plugins, PluginConfig{Name: shortName, Path: path, Enabled: true})
 	}
-	return plugins
+	return plugins, rejections
 }
 
 func isExecutableFile(path string) bool {

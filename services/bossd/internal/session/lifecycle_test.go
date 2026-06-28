@@ -731,7 +731,7 @@ func newMockAgentRunner() *mockAgentRunner {
 	}
 }
 
-func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _ string) (string, error) {
+func (m *mockAgentRunner) Start(_ context.Context, workDir, plan string, resume *string, _, _ string) (string, error) {
 	m.started = append(m.started, mockStartCall{workDir: workDir, plan: plan, resume: resume})
 	if m.startErr != nil {
 		return "", m.startErr
@@ -768,8 +768,8 @@ func (m *mockAgentRunner) History(_ string) []agent.OutputLine {
 // StartByAgent forwards to Start so existing test assertions still fire.
 // The test fakes don't need to inspect the agent name — by-agent routing
 // is exercised by the dispatcher tests in services/bossd/internal/agent.
-func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID string) (string, error) {
-	return m.Start(ctx, workDir, plan, resume, agentSessionID)
+func (m *mockAgentRunner) StartByAgent(ctx context.Context, _, workDir, plan string, resume *string, agentSessionID, model string) (string, error) {
+	return m.Start(ctx, workDir, plan, resume, agentSessionID, model)
 }
 
 // StopByAgent forwards to Stop, ignoring the agent name (see StartByAgent).
@@ -3685,6 +3685,64 @@ func TestLinkPR_NumberUpdatesSessionAndCronLastRun(t *testing.T) {
 	}
 }
 
+func TestLinkPR_AdoptsPRTitleOnFirstAssociation(t *testing.T) {
+	ctx := context.Background()
+	logger := zerolog.Nop()
+
+	repos := newMockRepoStore()
+	repos.repos["repo-1"] = &models.Repo{
+		ID:        "repo-1",
+		LocalPath: "/tmp/repo-main",
+		OriginURL: "git@github.com:owner/repo.git",
+	}
+
+	t.Run("first association adopts the PR title", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		vp := newMockVCSProvider()
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Title: "[BOS-12] Real ticket title"}
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:         "sess-1",
+			RepoID:     "repo-1",
+			Title:      "Bossanova auto-implement",
+			BranchName: "cron-br-1",
+			State:      machine.AwaitingChecks,
+		}
+
+		lifecycle := NewLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, logger)
+		updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
+		if err != nil {
+			t.Fatalf("LinkPR: %v", err)
+		}
+		if updated.Title != "[BOS-12] Real ticket title" {
+			t.Fatalf("title = %q, want adopted PR title", updated.Title)
+		}
+	})
+
+	t.Run("re-link does not clobber an existing title", func(t *testing.T) {
+		sessions := newMockSessionStore()
+		vp := newMockVCSProvider()
+		vp.nextPRStatus = &vcs.PRStatus{State: vcs.PRStateOpen, Title: "[BOS-99] Different PR"}
+		existingPR := 7
+		sessions.sessions["sess-1"] = &models.Session{
+			ID:         "sess-1",
+			RepoID:     "repo-1",
+			Title:      "User-edited title",
+			BranchName: "cron-br-1",
+			State:      machine.AwaitingChecks,
+			PRNumber:   &existingPR,
+		}
+
+		lifecycle := NewLifecycle(sessions, repos, nil, &recordingCronJobStore{}, &mockWorktreeManager{}, newMockAgentRunner(), nil, vp, logger)
+		updated, err := lifecycle.LinkPR(ctx, "sess-1", "42")
+		if err != nil {
+			t.Fatalf("LinkPR: %v", err)
+		}
+		if updated.Title != "User-edited title" {
+			t.Fatalf("title = %q, want unchanged (re-link must not clobber)", updated.Title)
+		}
+	})
+}
+
 func TestLinkPR_FinalizingSessionMovesToAwaitingChecks(t *testing.T) {
 	ctx := context.Background()
 	logger := zerolog.Nop()
@@ -4704,7 +4762,7 @@ func newLabeledRunner(name string) *labeledRunner {
 	return &labeledRunner{name: name}
 }
 
-func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSessionID string) (string, error) {
+func (r *labeledRunner) Start(_ context.Context, _, _ string, _ *string, agentSessionID, _ string) (string, error) {
 	tag := r.name + ":" + agentSessionID
 	r.startSeen.Store(&tag)
 	if agentSessionID == "" {

@@ -80,5 +80,8 @@ func (r *Runner) buildArgv(in agentruntime.BuildArgvInput) []string {
 	if r.dangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
+	if model := in.Options["model"]; model != "" {
+		args = append(args, "--model", model)
+	}
 	return loginshell.Wrap(r.loginShell, loginshell.Flags(r.loginShell), args)
 }

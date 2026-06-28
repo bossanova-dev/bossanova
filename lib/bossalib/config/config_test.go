@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -659,7 +660,7 @@ func TestDiscoverPluginsFindsPlugins(t *testing.T) {
 		}
 	}
 
-	plugins := discoverPluginsFrom(binDir)
+	plugins, _ := discoverPluginsFrom(binDir, activePolicy())
 	if len(plugins) != 2 {
 		t.Fatalf("got %d plugins, want 2", len(plugins))
 	}
@@ -792,7 +793,7 @@ func TestDiscoverPluginsIgnoresNonExecutablePluginFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plugins := discoverPluginsFrom(binDir)
+	plugins, _ := discoverPluginsFrom(binDir, activePolicy())
 	if len(plugins) != 1 {
 		t.Fatalf("got %d plugins, want 1: %+v", len(plugins), plugins)
 	}
@@ -817,7 +818,7 @@ func TestDiscoverPluginsIgnoresStubRunner(t *testing.T) {
 		}
 	}
 
-	plugins := discoverPluginsFrom(binDir)
+	plugins, _ := discoverPluginsFrom(binDir, activePolicy())
 	if len(plugins) != 1 {
 		t.Fatalf("got %d plugins, want 1 (stub-runner excluded): %+v", len(plugins), plugins)
 	}
@@ -834,7 +835,7 @@ func TestDiscoverPluginsEmptyWhenNoPlugins(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plugins := discoverPluginsFrom(binDir)
+	plugins, _ := discoverPluginsFrom(binDir, activePolicy())
 	if len(plugins) != 0 {
 		t.Errorf("got %d plugins, want 0", len(plugins))
 	}
@@ -845,7 +846,7 @@ func TestDiscoverPluginsEmptyWhenDirMissing(t *testing.T) {
 	tmp := t.TempDir()
 	binDir := filepath.Join(tmp, "nonexistent", "bin")
 
-	plugins := discoverPluginsFrom(binDir)
+	plugins, _ := discoverPluginsFrom(binDir, activePolicy())
 	if len(plugins) != 0 {
 		t.Errorf("got %d plugins, want 0", len(plugins))
 	}
@@ -866,7 +867,7 @@ func TestDiscoverPluginsFallsBackToSameDir(t *testing.T) {
 		}
 	}
 
-	plugins := discoverPluginsFrom(binDir)
+	plugins, _ := discoverPluginsFrom(binDir, activePolicy())
 	if len(plugins) != 2 {
 		t.Fatalf("got %d plugins, want 2", len(plugins))
 	}
@@ -894,7 +895,7 @@ func TestDiscoverPluginsFindsDevBinFromWorkingDirectory(t *testing.T) {
 	}
 	t.Chdir(serviceDir)
 
-	plugins := discoverDevPluginsFromCWD()
+	plugins, _ := discoverDevPluginsFromCWD(activePolicy())
 	if len(plugins) != 1 {
 		t.Fatalf("plugins = %v, want one plugin", plugins)
 	}
@@ -960,6 +961,78 @@ func TestRepairConfig_IdleRepairThreshold(t *testing.T) {
 	})
 }
 
+func TestRepairConfig_CooldownDuration(t *testing.T) {
+	t.Run("returns default when unset", func(t *testing.T) {
+		c := RepairConfig{}
+		got := c.CooldownDuration()
+		if got != 1*time.Minute {
+			t.Errorf("CooldownDuration() = %v, want %v", got, 1*time.Minute)
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := RepairConfig{CooldownMinutes: 7}
+		got := c.CooldownDuration()
+		if got != 7*time.Minute {
+			t.Errorf("CooldownDuration() = %v, want %v", got, 7*time.Minute)
+		}
+	})
+	t.Run("zero falls back to default", func(t *testing.T) {
+		c := RepairConfig{CooldownMinutes: 0}
+		got := c.CooldownDuration()
+		if got != 1*time.Minute {
+			t.Errorf("CooldownDuration() = %v, want %v", got, 1*time.Minute)
+		}
+	})
+}
+
+func TestRepairConfig_PollInterval(t *testing.T) {
+	t.Run("returns default when unset", func(t *testing.T) {
+		c := RepairConfig{}
+		got := c.PollInterval()
+		if got != 5*time.Second {
+			t.Errorf("PollInterval() = %v, want %v", got, 5*time.Second)
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := RepairConfig{PollIntervalSeconds: 30}
+		got := c.PollInterval()
+		if got != 30*time.Second {
+			t.Errorf("PollInterval() = %v, want %v", got, 30*time.Second)
+		}
+	})
+	t.Run("zero falls back to default", func(t *testing.T) {
+		c := RepairConfig{PollIntervalSeconds: 0}
+		got := c.PollInterval()
+		if got != 5*time.Second {
+			t.Errorf("PollInterval() = %v, want %v", got, 5*time.Second)
+		}
+	})
+}
+
+func TestRepairConfig_SkillName(t *testing.T) {
+	t.Run("returns default when unset", func(t *testing.T) {
+		c := RepairConfig{}
+		got := c.SkillName()
+		if got != "boss-repair" {
+			t.Errorf("SkillName() = %q, want %q", got, "boss-repair")
+		}
+	})
+	t.Run("returns configured value when set", func(t *testing.T) {
+		c := RepairConfig{Skills: RepairSkills{Repair: "custom-repair"}}
+		got := c.SkillName()
+		if got != "custom-repair" {
+			t.Errorf("SkillName() = %q, want %q", got, "custom-repair")
+		}
+	})
+	t.Run("empty falls back to default", func(t *testing.T) {
+		c := RepairConfig{Skills: RepairSkills{Repair: ""}}
+		got := c.SkillName()
+		if got != "boss-repair" {
+			t.Errorf("SkillName() = %q, want %q", got, "boss-repair")
+		}
+	})
+}
+
 func TestDiscoverPluginsPrefersLibexec(t *testing.T) {
 	// When plugins exist in both ../libexec/plugins/ and the binary dir,
 	// the libexec path should win.
@@ -981,7 +1054,7 @@ func TestDiscoverPluginsPrefersLibexec(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plugins := discoverPluginsFrom(binDir)
+	plugins, _ := discoverPluginsFrom(binDir, activePolicy())
 	if len(plugins) != 1 {
 		t.Fatalf("got %d plugins, want 1", len(plugins))
 	}
@@ -1445,7 +1518,7 @@ func TestDiscoverPluginsFromUsesOSExecutable(t *testing.T) {
 	t.Cleanup(func() { osExecutable = orig })
 	osExecutable = func() (string, error) { return exe, nil }
 
-	plugins := discoverPluginsFrom("")
+	plugins, _ := discoverPluginsFrom("", activePolicy())
 	if len(plugins) != 1 {
 		t.Fatalf("got %d plugins, want 1", len(plugins))
 	}
@@ -1461,7 +1534,82 @@ func TestDiscoverPluginsFromOSExecutableError(t *testing.T) {
 	t.Cleanup(func() { osExecutable = orig })
 	osExecutable = func() (string, error) { return "", os.ErrNotExist }
 
-	if plugins := discoverPluginsFrom(""); plugins != nil {
+	plugins, _ := discoverPluginsFrom("", activePolicy())
+	if plugins != nil {
 		t.Fatalf("discoverPluginsFrom(\"\") = %v, want nil when os.Executable fails", plugins)
+	}
+}
+
+func TestScanForPluginsRejectsUntrustedDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("perms hardening no-op on Windows")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(dir, "bossd-plugin-x")
+	if err := os.WriteFile(binPath, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, rej := scanForPlugins(dir, discoveryPolicy{requireSafePerms: true})
+	if len(got) != 0 {
+		t.Errorf("expected no accepted plugins from world-writable dir, got %d", len(got))
+	}
+	if len(rej) != 1 {
+		t.Fatalf("expected 1 rejection, got %d", len(rej))
+	}
+}
+
+func TestScanForPluginsChecksumEnforced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("manifest dir trust check relies on Unix perms")
+	}
+	dir := t.TempDir()
+	binPath, sum := writeBin(t, dir, "bossd-plugin-claude", []byte("real"))
+	_ = binPath
+	if err := os.WriteFile(filepath.Join(dir, pluginSumFile),
+		[]byte(sum+"  bossd-plugin-claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, rej := scanForPlugins(dir, discoveryPolicy{requireSafePerms: true, verifyChecksums: true})
+	if len(got) != 1 || len(rej) != 0 {
+		t.Fatalf("matching binary should be accepted: got=%d rej=%d", len(got), len(rej))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bossd-plugin-claude"), []byte("evil"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, rej = scanForPlugins(dir, discoveryPolicy{requireSafePerms: true, verifyChecksums: true})
+	if len(got) != 0 || len(rej) != 1 {
+		t.Fatalf("tampered binary must be rejected: got=%d rej=%d", len(got), len(rej))
+	}
+}
+
+func TestScanForPluginsMissingManifestFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("perms hardening no-op on Windows")
+	}
+	dir := t.TempDir()
+	binPath, _ := writeBin(t, dir, "bossd-plugin-claude", []byte("real"))
+	_ = binPath
+	got, rej := scanForPlugins(dir, discoveryPolicy{requireSafePerms: true, verifyChecksums: true})
+	if len(got) != 0 {
+		t.Errorf("release build with no manifest must load 0 plugins, got %d", len(got))
+	}
+	if len(rej) != 1 {
+		t.Errorf("expected 1 rejection for missing manifest, got %d", len(rej))
+	}
+}
+
+func TestScanForPluginsDevSkipsChecksum(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("perms hardening no-op on Windows")
+	}
+	dir := t.TempDir()
+	binPath, _ := writeBin(t, dir, "bossd-plugin-claude", []byte("real"))
+	_ = binPath
+	got, rej := scanForPlugins(dir, discoveryPolicy{requireSafePerms: true, verifyChecksums: false})
+	if len(got) != 1 || len(rej) != 0 {
+		t.Fatalf("dev build should accept without manifest: got=%d rej=%d", len(got), len(rej))
 	}
 }

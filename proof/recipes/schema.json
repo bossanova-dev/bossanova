@@ -69,6 +69,7 @@
             "privacy": { "enum": ["fixture", "live"] },
             "capture": { "enum": ["image", "video"], "default": "image" },
             "frameDelayMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
+            "playbackSpeed": { "type": "number", "exclusiveMinimum": 0, "maximum": 4, "default": 0.65 },
             "terminal": {
               "type": "object",
               "additionalProperties": false,

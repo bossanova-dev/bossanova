@@ -129,7 +129,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "update_session",
-		Description: "Update a session's title.",
+		Description: "Rename a session (update its title). Also syncs the linked GitHub PR title when the session has one. PR creation is a separate prior step (e.g. `gh pr create`); to attach a PR use link_session_pr.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args UpdateSessionArgs) (*mcp.CallToolResult, any, error) {
 		req := &pb.UpdateSessionRequest{Id: args.ID, Title: args.Title}
@@ -143,7 +143,7 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 
 	addTool(server, opts, &mcp.Tool{
 		Name:        "link_session_pr",
-		Description: "Link an existing pull request to a session.",
+		Description: "Attach an existing pull request to a session. Create the PR first (e.g. `gh pr create`) — this does not create one. Pass the session id and the PR number or URL. Pair with update_session to also title the session.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args LinkSessionPRArgs) (*mcp.CallToolResult, any, error) {
 		out, err := backend.LinkSessionPR(ctx, args.SessionID, args.PR)
@@ -264,6 +264,28 @@ func registerMutatingTools(server *mcp.Server, backend Backend, opts Options) {
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
+
+	addTool(server, opts, &mcp.Tool{
+		Name:        "send_chat_message",
+		Description: "Deliver a user message into a chat's live agent, optionally waking it if asleep.",
+		Annotations: &mcp.ToolAnnotations{},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args SendChatMessageArgs) (*mcp.CallToolResult, any, error) {
+		wakeIfAsleep := true
+		if args.WakeIfAsleep != nil {
+			wakeIfAsleep = *args.WakeIfAsleep
+		}
+		req := &pb.SendChatMessageRequest{
+			AgentSessionId: args.AgentSessionID,
+			Message:        args.Message,
+			WakeIfAsleep:   wakeIfAsleep,
+		}
+		out, err := backend.SendChatMessage(ctx, req)
+		if err != nil {
+			return errorResult(err), nil, nil
+		}
+		r, err := jsonResult(out)
+		return r, nil, err
+	})
 }
 
 // registerSessionStateTool installs a simple id-keyed session lifecycle tool.
@@ -321,14 +343,14 @@ type CreateSessionArgs struct {
 
 // UpdateSessionArgs is the typed argument struct for update_session.
 type UpdateSessionArgs struct {
-	ID    string  `json:"id" jsonschema:"the session id"`
-	Title *string `json:"title,omitempty" jsonschema:"new session title"`
+	ID    string  `json:"id" jsonschema:"the id of the session to retitle"`
+	Title *string `json:"title,omitempty" jsonschema:"the new session title (also best-effort renames the linked GitHub PR)"`
 }
 
 // LinkSessionPRArgs is the typed argument struct for link_session_pr.
 type LinkSessionPRArgs struct {
-	SessionID string `json:"session_id" jsonschema:"the session id"`
-	PR        string `json:"pr" jsonschema:"the pull request number or reference"`
+	SessionID string `json:"session_id" jsonschema:"the id of the session to attach the PR to"`
+	PR        string `json:"pr" jsonschema:"an existing pull request number or URL (create it first, e.g. with gh pr create)"`
 }
 
 // RecordChatArgs is the typed argument struct for record_chat.
@@ -368,6 +390,13 @@ type CreateCronJobArgs struct {
 	Timezone  string `json:"timezone,omitempty" jsonschema:"IANA timezone (empty = daemon-local)"`
 	Enabled   bool   `json:"enabled,omitempty" jsonschema:"whether the job is enabled"`
 	AgentName string `json:"agent_name,omitempty" jsonschema:"agent runner plugin name (empty = claude)"`
+}
+
+// SendChatMessageArgs is the typed argument struct for send_chat_message.
+type SendChatMessageArgs struct {
+	AgentSessionID string `json:"agent_session_id" jsonschema:"the agent session UUID"`
+	Message        string `json:"message" jsonschema:"the user message to deliver"`
+	WakeIfAsleep   *bool  `json:"wake_if_asleep,omitempty" jsonschema:"wake the agent if it is currently asleep; defaults to true when omitted"`
 }
 
 // UpdateCronJobArgs is the typed argument struct for update_cron_job. Optional

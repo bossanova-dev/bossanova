@@ -374,6 +374,24 @@ func (c *LocalClient) WakeChat(ctx context.Context, _, agentSessionID string, fo
 	return resp.Msg, nil
 }
 
+// --- Chat Transcript and Messaging ---
+
+func (c *LocalClient) GetChatTranscript(ctx context.Context, req *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	resp, err := c.rpc.GetChatTranscript(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+func (c *LocalClient) SendChatMessage(ctx context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	resp, err := c.rpc.SendChatMessage(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // --- Chat Status ---
 
 func (c *LocalClient) ReportChatStatus(ctx context.Context, statuses []*pb.ChatStatusReport) error {

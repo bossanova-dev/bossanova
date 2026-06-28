@@ -133,6 +133,9 @@ const (
 	// AgentRunnerServiceTranscriptExistsProcedure is the fully-qualified name of the
 	// AgentRunnerService's TranscriptExists RPC.
 	AgentRunnerServiceTranscriptExistsProcedure = "/bossanova.v1.AgentRunnerService/TranscriptExists"
+	// AgentRunnerServiceReadTranscriptProcedure is the fully-qualified name of the AgentRunnerService's
+	// ReadTranscript RPC.
+	AgentRunnerServiceReadTranscriptProcedure = "/bossanova.v1.AgentRunnerService/ReadTranscript"
 )
 
 // TaskSourceServiceClient is a client for the bossanova.v1.TaskSourceService service.
@@ -823,6 +826,10 @@ type AgentRunnerServiceClient interface {
 	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
 	// choose between resume and fresh-start argv.
 	TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error)
+	// ReadTranscript parses the agent's on-disk transcript for a chat and returns
+	// its messages plus the derived final assistant message. Each plugin resolves
+	// the transcript path the same way it does for TranscriptExists.
+	ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error)
 }
 
 // NewAgentRunnerServiceClient constructs a client for the bossanova.v1.AgentRunnerService service.
@@ -926,6 +933,12 @@ func NewAgentRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, 
 			connect.WithSchema(agentRunnerServiceMethods.ByName("TranscriptExists")),
 			connect.WithClientOptions(opts...),
 		),
+		readTranscript: connect.NewClient[v1.ReadTranscriptRequest, v1.ReadTranscriptResponse](
+			httpClient,
+			baseURL+AgentRunnerServiceReadTranscriptProcedure,
+			connect.WithSchema(agentRunnerServiceMethods.ByName("ReadTranscript")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -946,6 +959,7 @@ type agentRunnerServiceClient struct {
 	hasQuestionPrompt           *connect.Client[v1.HasQuestionPromptRequest, v1.HasQuestionPromptResponse]
 	lastTurnIsUser              *connect.Client[v1.LastTurnIsUserRequest, v1.LastTurnIsUserResponse]
 	transcriptExists            *connect.Client[v1.TranscriptExistsRequest, v1.TranscriptExistsResponse]
+	readTranscript              *connect.Client[v1.ReadTranscriptRequest, v1.ReadTranscriptResponse]
 }
 
 // GetInfo calls bossanova.v1.AgentRunnerService.GetInfo.
@@ -1023,6 +1037,11 @@ func (c *agentRunnerServiceClient) TranscriptExists(ctx context.Context, req *co
 	return c.transcriptExists.CallUnary(ctx, req)
 }
 
+// ReadTranscript calls bossanova.v1.AgentRunnerService.ReadTranscript.
+func (c *agentRunnerServiceClient) ReadTranscript(ctx context.Context, req *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error) {
+	return c.readTranscript.CallUnary(ctx, req)
+}
+
 // AgentRunnerServiceHandler is an implementation of the bossanova.v1.AgentRunnerService service.
 type AgentRunnerServiceHandler interface {
 	GetInfo(context.Context, *connect.Request[v1.AgentRunnerServiceGetInfoRequest]) (*connect.Response[v1.AgentRunnerServiceGetInfoResponse], error)
@@ -1085,6 +1104,10 @@ type AgentRunnerServiceHandler interface {
 	// on disk for (work_dir, agent_session_id). Used by wake-up logic to
 	// choose between resume and fresh-start argv.
 	TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error)
+	// ReadTranscript parses the agent's on-disk transcript for a chat and returns
+	// its messages plus the derived final assistant message. Each plugin resolves
+	// the transcript path the same way it does for TranscriptExists.
+	ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error)
 }
 
 // NewAgentRunnerServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -1184,6 +1207,12 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 		connect.WithSchema(agentRunnerServiceMethods.ByName("TranscriptExists")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentRunnerServiceReadTranscriptHandler := connect.NewUnaryHandler(
+		AgentRunnerServiceReadTranscriptProcedure,
+		svc.ReadTranscript,
+		connect.WithSchema(agentRunnerServiceMethods.ByName("ReadTranscript")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/bossanova.v1.AgentRunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AgentRunnerServiceGetInfoProcedure:
@@ -1216,6 +1245,8 @@ func NewAgentRunnerServiceHandler(svc AgentRunnerServiceHandler, opts ...connect
 			agentRunnerServiceLastTurnIsUserHandler.ServeHTTP(w, r)
 		case AgentRunnerServiceTranscriptExistsProcedure:
 			agentRunnerServiceTranscriptExistsHandler.ServeHTTP(w, r)
+		case AgentRunnerServiceReadTranscriptProcedure:
+			agentRunnerServiceReadTranscriptHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1283,4 +1314,8 @@ func (UnimplementedAgentRunnerServiceHandler) LastTurnIsUser(context.Context, *c
 
 func (UnimplementedAgentRunnerServiceHandler) TranscriptExists(context.Context, *connect.Request[v1.TranscriptExistsRequest]) (*connect.Response[v1.TranscriptExistsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.TranscriptExists is not implemented"))
+}
+
+func (UnimplementedAgentRunnerServiceHandler) ReadTranscript(context.Context, *connect.Request[v1.ReadTranscriptRequest]) (*connect.Response[v1.ReadTranscriptResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("bossanova.v1.AgentRunnerService.ReadTranscript is not implemented"))
 }

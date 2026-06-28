@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -478,34 +477,12 @@ func renderAttentionIndicator(sess *pb.Session) string {
 	}
 }
 
-// sessionNeedsAttention returns true if the session has a non-nil AttentionStatus
-// with NeedsAttention set.
-func sessionNeedsAttention(sess *pb.Session) bool {
-	return sess.AttentionStatus != nil && sess.AttentionStatus.NeedsAttention
-}
-
-// sortSessionsByAttention sorts sessions so needs-attention sessions appear first,
-// preserving relative order within each group.
-func sortSessionsByAttention(sessions []*pb.Session) {
-	sort.SliceStable(sessions, func(i, j int) bool {
-		ai := sessionNeedsAttention(sessions[i])
-		aj := sessionNeedsAttention(sessions[j])
-		if ai != aj {
-			return ai
-		}
-		return false
-	})
-}
-
 // buildTableRows rebuilds the table columns and rows from h.sessions.
 func (h *HomeModel) buildTableRows() {
 	if len(h.sessions) == 0 {
 		h.table.SetRows(nil)
 		return
 	}
-
-	// Sort: needs-attention sessions float to top.
-	sortSessionsByAttention(h.sessions)
 
 	repos := make([]string, len(h.sessions))
 	names := make([]string, len(h.sessions))       // plain text for width calc
@@ -568,7 +545,7 @@ func (h *HomeModel) buildTableRows() {
 		row := table.Row{indicator, attn, repo, name, pr, statusStyled}
 		rows = append(rows, row)
 		for _, hint := range sessionWarningHints(sess) {
-			hintRow := table.Row{"", "", "", styleStatusMuted.Render(hint), "", ""}
+			hintRow := table.Row{"", "", "", styleStatusDanger.Render(hint), "", ""}
 			rows = append(rows, hintRow)
 		}
 	}

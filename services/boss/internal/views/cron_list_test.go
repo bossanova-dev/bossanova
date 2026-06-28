@@ -1,6 +1,7 @@
 package views
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,55 @@ func TestHasRunningStatus(t *testing.T) {
 				t.Errorf("hasRunningStatus(%v) = %v, want %v", tc.jobs, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestHasGatingStatus covers both directions of the LastRunStatus equality
+// check for GATING: a lone gating job must report true, and a non-gating job
+// must report false.
+func TestHasGatingStatus(t *testing.T) {
+	gating := &pb.CronJob{Id: "g", LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATING}
+	idle := &pb.CronJob{Id: "i"} // zero status == UNSPECIFIED
+
+	cases := []struct {
+		name string
+		jobs []*pb.CronJob
+		want bool
+	}{
+		{"nil slice", nil, false},
+		{"empty slice", []*pb.CronJob{}, false},
+		{"single idle", []*pb.CronJob{idle}, false},
+		{"single gating", []*pb.CronJob{gating}, true},
+		{"gating among idle", []*pb.CronJob{idle, gating, idle}, true},
+		{"all idle", []*pb.CronJob{idle, idle}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasGatingStatus(tc.jobs); got != tc.want {
+				t.Errorf("hasGatingStatus(%v) = %v, want %v", tc.jobs, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCronListRebuildTable_GatingAndGatedStatuses builds a list with one GATING
+// job and one GATED job, then renders View() and asserts that "gating" and
+// "gated" both appear in the output.
+func TestCronListRebuildTable_GatingAndGatedStatuses(t *testing.T) {
+	jobs := []*pb.CronJob{
+		{Id: "a", Name: "Gate runner", Schedule: "@daily", LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATING},
+		{Id: "b", Name: "Gate blocked", Schedule: "@daily", LastRunStatus: pb.CronJobStatus_CRON_JOB_STATUS_GATED},
+	}
+	m := newCronListForUpdate(jobs)
+	m.width = 120
+	m.height = 40
+
+	view := m.View()
+	if !strings.Contains(view.Content, "gating") {
+		t.Errorf("View() missing %q:\n%s", "gating", view.Content)
+	}
+	if !strings.Contains(view.Content, "gated") {
+		t.Errorf("View() missing %q:\n%s", "gated", view.Content)
 	}
 }
 

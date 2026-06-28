@@ -67,16 +67,29 @@ boss ls --archived
 
 Create a new coding session
 
-Launches the interactive session creation flow.
+Launches the interactive session creation flow. When both --repo and --prompt are provided the command runs non-interactively: it creates the session, streams any setup output to stderr, and prints the session-id and chat-id to stdout, then exits. Combine with --detach (implicit when both flags are set) for scripting. Use --agent to override the default agent plugin.
 
 **Flags:**
 
 - `--agent` — Override default agent plugin for this session (e.g. claude, opencode)
+- `--detach` — Exit immediately after creating the session; print session-id and chat-id
+- `--no-attach` — Alias for --detach
+- `--prompt` — Initial prompt / plan for the session (enables non-interactive mode when combined with --repo)
+- `--repo` — Repository id, name, or local path (enables non-interactive mode when combined with --prompt)
+- `--title` — Session title (optional, auto-derived from prompt when absent)
 
 ```bash
 boss new
 boss new --agent opencode
+# Create a session non-interactively and print its ids
+boss new --repo my-repo --prompt "refactor the auth module" --detach
+# Ask Codex for a second opinion; capture ids for boss chat wait
+boss new --agent codex --repo my-repo --prompt "review this PR for security issues" --detach
 ```
+
+### `boss rename <session-id> <new-title...>`
+
+Rename a session (updates its title; syncs the linked PR title if any)
 
 ### `boss show <session-id>`
 
@@ -84,6 +97,56 @@ Show session details
 
 ```bash
 boss show abc123
+```
+
+## Chat Control
+
+### `boss chat`
+
+Interact with session chats headlessly
+
+### `boss chat send <session-id|chat-id> <message>`
+
+Send a message to a chat
+
+Delivers a follow-up message to a running chat identified by a session id or agent_session_id (the chat-id printed by `boss new --detach`). When given a session id, boss targets that session's primary chat. The daemon wakes a sleeping chat before pasting the message.
+
+```bash
+boss chat send <session-id|chat-id> "please also add tests"
+```
+
+### `boss chat show <session-id|chat-id> [flags]`
+
+Print a chat transcript
+
+Prints the full conversation transcript for a chat or session's primary chat. Use --result-only to print just the final assistant response text (suitable for scripting). Use --limit to cap the number of messages.
+
+**Flags:**
+
+- `--limit` — Maximum number of messages to show (0 = all) (default: 0)
+- `--result-only` — Print only the final assistant result text
+
+```bash
+boss chat show <session-id|chat-id>
+boss chat show <session-id|chat-id> --result-only
+boss chat show <session-id|chat-id> --limit 10
+```
+
+### `boss chat wait <session-id|chat-id> [flags]`
+
+Wait for a chat to become idle, then print the result
+
+Blocks until the chat identified by a session id or agent_session_id becomes idle or is waiting for input, then prints the final assistant result. Polls chat status every few seconds. Use --timeout to limit wait time. Typical recipe: `boss new --agent codex --repo R --prompt P --detach` then `boss chat wait <session-id|chat-id>` to collect the result.
+
+**Flags:**
+
+- `--timeout` — Maximum time to wait (e.g. 5m, 1h) (default: 30m0s)
+
+```bash
+boss chat wait <session-id|chat-id>
+boss chat wait <session-id|chat-id> --timeout 10m
+# Full cross-agent second-opinion recipe
+CHAT=$(boss new --agent codex --repo my-repo --prompt "second opinion on PR #42" --detach | awk '/^chat-id/{print $2}') && boss chat wait $CHAT
 ```
 
 ## Repository Management
@@ -477,4 +540,19 @@ Cron repair example — list the stalled sessions, then link the existing PR:
 ```bash
 boss ls --state finalizing,blocked
 boss session link-pr b4764f1684e33742 477
+```
+
+## Linking a PR and titling your session
+
+When a session was started without a PR (e.g. a cron-triggered session that committed and pushed before `bossd` finalized), use this flow — your session id is in your system prompt:
+
+1. Create the PR yourself: `gh pr create ...` (or let `boss-finalize` open it).
+2. Link it: `boss session link-pr <session-id> <pr-number-or-url>`
+3. Title the session: `boss rename <session-id> <new title>`
+
+Note that `boss rename` also best-effort renames the linked GitHub PR.
+
+```bash
+boss session link-pr <session-id> 477
+boss rename <session-id> Fix flaky login test
 ```

@@ -458,6 +458,11 @@ service AgentRunnerService {
   // on disk for (work_dir, agent_session_id). Used by wake-up logic to
   // choose between resume and fresh-start argv.
   rpc TranscriptExists(TranscriptExistsRequest) returns (TranscriptExistsResponse);
+
+  // ReadTranscript parses the agent's on-disk transcript for a chat and returns
+  // its messages plus the derived final assistant message. Each plugin resolves
+  // the transcript path the same way it does for TranscriptExists.
+  rpc ReadTranscript(ReadTranscriptRequest) returns (ReadTranscriptResponse);
 }
 
 message AgentRunnerServiceGetInfoRequest {}
@@ -471,6 +476,7 @@ message StartAgentRunRequest {
   optional string resume_id = 3;
   string session_id = 4;   // empty = plugin generates
   string log_path = 5;     // bossd-owned, openat(O_NOFOLLOW)
+  string model = 6;        // opaque agent model id; "" = plugin default. Never enumerated by bossd.
 }
 message StartAgentRunResponse {
   string session_id = 1;   // resolved session ID
@@ -531,6 +537,7 @@ message BuildInteractiveCommandRequest {
   // the chat's boss session context (session/chat/repo identifiers) for every
   // chat, plus the cron autonomy directive for scheduler-spawned runs.
   string append_system_prompt = 7;
+  string model = 8;           // opaque agent model id; "" = plugin default.
 }
 message BuildInteractiveCommandResponse {
   repeated string argv = 1;
@@ -619,6 +626,17 @@ message TranscriptExistsRequest {
 }
 message TranscriptExistsResponse {
   bool exists = 1;
+}
+
+message ReadTranscriptRequest {
+  string work_dir = 1;           // worktree path (claude derives the project key from it)
+  string agent_session_id = 2;   // chat's agent session UUID
+  int32 max_messages = 3;        // 0 = all; otherwise return the most recent N
+}
+message ReadTranscriptResponse {
+  repeated ChatMessage messages = 1;
+  string final_assistant_text = 2; // last assistant turn, flattened — the "result"
+  bool exists = 3;                 // false when no transcript file is found
 }
 
 message UserSetting {

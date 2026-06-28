@@ -41,7 +41,11 @@
       "terminal": { "width": 140, "height": 36 },
       "fixture": "demo",
       "steps": [
-        { "keys": ["n"], "waitForReadyText": "Add dark mode", "waitForText": "Select a repository" },
+        {
+          "keys": ["n"],
+          "waitForReadyText": "Add dark mode",
+          "waitForText": "Select a repository"
+        },
         { "keys": ["enter"], "waitForText": "Fix a Sentry issue" }
       ],
       "waitForText": "Fix a Sentry issue"
@@ -53,7 +57,10 @@
       "description": "Registered repositories list.",
       "privacy": "fixture",
       "terminal": { "width": 140, "height": 36 },
-      "keys": ["r"],
+      "steps": [
+        { "keys": ["s"], "waitForText": "Settings" },
+        { "keys": ["r"], "waitForText": "PATH" }
+      ],
       "waitForText": "PATH"
     },
     {
@@ -65,6 +72,7 @@
       "terminal": { "width": 140, "height": 36 },
       "fixture": "demo",
       "steps": [
+        { "keys": ["s"], "waitForText": "Settings" },
         { "keys": ["r"], "waitForText": "Repositories" },
         { "keys": ["a"], "waitForText": "Add Repository" }
       ],
@@ -79,6 +87,7 @@
       "terminal": { "width": 140, "height": 36 },
       "fixture": "demo",
       "steps": [
+        { "keys": ["s"], "waitForText": "Settings" },
         { "keys": ["r"], "waitForText": "Repositories" },
         { "keys": ["enter"], "waitForReadyText": "my-app", "waitForText": "Setup command" }
       ],
@@ -91,7 +100,10 @@
       "description": "Archived sessions (trash) with a restorable session.",
       "privacy": "fixture",
       "terminal": { "width": 140, "height": 36 },
-      "keys": ["t"],
+      "steps": [
+        { "keys": ["s"], "waitForText": "Settings" },
+        { "keys": ["t"], "waitForText": "Old caching spike" }
+      ],
       "waitForText": "Old caching spike"
     },
     {
@@ -114,7 +126,11 @@
       "terminal": { "width": 140, "height": 36 },
       "fixture": "demo",
       "steps": [
-        { "keys": ["enter"], "waitForReadyText": "Add dark mode", "waitForText": "Initial implementation" },
+        {
+          "keys": ["enter"],
+          "waitForReadyText": "Add dark mode",
+          "waitForText": "Initial implementation"
+        },
         { "keys": ["s"], "waitForText": "Name:" }
       ],
       "waitForText": "Name:"
@@ -147,22 +163,26 @@
       "description": "Cron job list with a scheduled job.",
       "privacy": "fixture",
       "terminal": { "width": 140, "height": 36 },
-      "keys": ["c"],
+      "steps": [
+        { "keys": ["s"], "waitForText": "Settings" },
+        { "keys": ["c"], "waitForText": "Daily dependency update" }
+      ],
       "waitForText": "Daily dependency update"
     },
     {
       "id": "tui-cron-form",
       "surface": "tui",
       "title": "Boss TUI Cron Form",
-      "description": "Create-cron-job form reached from the cron list.",
+      "description": "Create-cron-job form reached from the cron list, including the cadence/window/schedule fields.",
       "privacy": "fixture",
-      "terminal": { "width": 140, "height": 36 },
+      "terminal": { "width": 140, "height": 60 },
       "fixture": "demo",
       "steps": [
+        { "keys": ["s"], "waitForText": "Settings" },
         { "keys": ["c"], "waitForText": "Scheduled Jobs" },
-        { "keys": ["n"], "waitForText": "Name" }
+        { "keys": ["n"], "waitForText": "Run setup command" }
       ],
-      "waitForText": "Name"
+      "waitForText": "Run setup command"
     },
     {
       "id": "tui-onboarding",
@@ -186,7 +206,61 @@
       "frameDelayMs": 500,
       "steps": [
         { "keys": ["n"], "waitForReadyText": "Add dark mode", "waitForText": "New Session" },
-        { "keys": ["enter"], "waitForText": "Select a repository" }
+        { "keys": ["enter"], "waitForText": "Create a new PR" }
+      ]
+    },
+    {
+      "id": "tui-repo-settings-flow",
+      "surface": "tui",
+      "title": "Boss TUI — Repository Settings: Automations & Integrations",
+      "description": "Walkthrough: home → settings → repositories → repo settings, showing the new Automations heading grouping the automation toggles (Mark ready / Auto-merge Dependabot / Automatic repair) above the Integrations heading (Linear / Sentry). The cursor traverses the toggles to show the grouping.",
+      "privacy": "fixture",
+      "capture": "video",
+      "fixture": "demo",
+      "terminal": { "width": 140, "height": 36 },
+      "frameDelayMs": 750,
+      "steps": [
+        { "keys": ["s"], "waitForText": "Settings" },
+        { "keys": ["r"], "waitForText": "Repositories" },
+        { "keys": ["enter"], "waitForReadyText": "my-app", "waitForText": "Automations" },
+        { "keys": ["j"], "waitForText": "Mark ready for review when checks pass" },
+        { "keys": ["j"], "waitForText": "Auto-merge Dependabot PRs" },
+        { "keys": ["j"], "waitForText": "Automatic repair (failing checks, conflicts, review feedback)" },
+        { "keys": ["j"], "waitForText": "Integrations" },
+        { "keys": ["j"], "waitForText": "Linear" }
+      ]
+    },
+    {
+      "id": "tui-grand-tour",
+      "surface": "tui",
+      "title": "Boss TUI — Grand Tour",
+      "description": "Multi-screen walkthrough: settings, repos, add-repo, trash, cron, chat picker, session settings, and the new-session wizard, returning home between branches.",
+      "privacy": "fixture",
+      "capture": "video",
+      "fixture": "demo",
+      "terminal": { "width": 140, "height": 36 },
+      "frameDelayMs": 950,
+      "steps": [
+        { "keys": ["s"], "waitForReadyText": "Add dark mode", "waitForText": "Settings" },
+        { "keys": ["r"], "waitForText": "PATH" },
+        { "keys": ["a"], "waitForText": "Add Repository" },
+        { "keys": ["esc"], "waitForText": "PATH" },
+        { "keys": ["esc"], "waitForText": "Settings" },
+        { "keys": ["t"], "waitForText": "Old caching spike" },
+        { "keys": ["esc"], "waitForText": "Settings" },
+        { "keys": ["c"], "waitForText": "Daily dependency update" },
+        { "keys": ["esc"], "waitForText": "Settings" },
+        { "keys": ["esc"], "waitForText": "Add dark mode" },
+        {
+          "keys": ["enter"],
+          "waitForReadyText": "Add dark mode",
+          "waitForText": "Initial implementation"
+        },
+        { "keys": ["s"], "waitForText": "Name:" },
+        { "keys": ["esc"], "waitForText": "Initial implementation" },
+        { "keys": ["esc"], "waitForText": "Fix login bug" },
+        { "keys": ["n"], "waitForReadyText": "Add dark mode", "waitForText": "New Session" },
+        { "keys": ["enter"], "waitForText": "Create a new PR" }
       ]
     },
     {
@@ -298,8 +372,18 @@
       "viewport": { "width": 1440, "height": 1000 },
       "steps": [
         { "action": "goto", "route": "/", "label": "Open home", "caption": "Open the dashboard" },
-        { "action": "wait", "selector": ".data-table-wrap", "label": "Sessions list", "caption": "Sessions list loads" },
-        { "action": "click", "selector": ".data-table-wrap .row-clickable", "label": "Open session", "caption": "Open a session" },
+        {
+          "action": "wait",
+          "selector": ".data-table-wrap",
+          "label": "Sessions list",
+          "caption": "Sessions list loads"
+        },
+        {
+          "action": "click",
+          "selector": ".data-table-wrap .row-clickable",
+          "label": "Open session",
+          "caption": "Open a session"
+        },
         { "action": "wait", "timeoutMs": 800, "label": "Session view", "caption": "Session view" }
       ]
     },
@@ -317,6 +401,26 @@
         { "action": "scroll", "byPx": 900, "caption": "Scroll the page" },
         { "action": "wait", "timeoutMs": 800 }
       ]
+    },
+    {
+      "id": "docs-home",
+      "surface": "docs",
+      "title": "Docs — Home",
+      "description": "Documentation site landing page.",
+      "privacy": "fixture",
+      "route": "/",
+      "selector": "main",
+      "viewport": { "width": 1280, "height": 1000 }
+    },
+    {
+      "id": "docs-mcp-guide",
+      "surface": "docs",
+      "title": "Docs — MCP Guide",
+      "description": "Rendered MCP documentation guide page (services/docs/docs/guides/mcp.md).",
+      "privacy": "fixture",
+      "route": "/guides/mcp",
+      "selector": "article",
+      "viewport": { "width": 1280, "height": 1000 }
     }
   ],
   "pathRules": [
@@ -325,22 +429,41 @@
       "patterns": [
         "services/boss/internal/views/",
         "services/boss/internal/tuitest/",
+        "services/boss/internal/tuidriver/",
         "services/boss/internal/fixtures/"
       ],
       "recipeIds": [
-        "tui-home", "tui-settings", "tui-new-session", "tui-new-session-sentry",
+        "tui-home",
+        "tui-settings",
+        "tui-new-session",
+        "tui-new-session-sentry",
         "tui-repo-list",
-        "tui-repo-add", "tui-repo-settings", "tui-trash", "tui-chat-picker",
-        "tui-session-settings", "tui-login", "tui-bug-report", "tui-cron",
-        "tui-cron-form", "tui-onboarding", "tui-new-session-flow"
+        "tui-repo-add",
+        "tui-repo-settings",
+        "tui-trash",
+        "tui-chat-picker",
+        "tui-session-settings",
+        "tui-login",
+        "tui-bug-report",
+        "tui-cron",
+        "tui-cron-form",
+        "tui-onboarding",
+        "tui-new-session-flow",
+        "tui-repo-settings-flow"
       ]
     },
     {
       "name": "Product web",
       "patterns": ["services/web/"],
       "recipeIds": [
-        "web-sessions", "web-sessions-mobile", "web-session-detail", "web-session-detail-mobile",
-        "web-new-session-mobile", "web-repositories", "web-account", "web-chat-terminal",
+        "web-sessions",
+        "web-sessions-mobile",
+        "web-session-detail",
+        "web-session-detail-mobile",
+        "web-new-session-mobile",
+        "web-repositories",
+        "web-account",
+        "web-chat-terminal",
         "web-new-session-flow"
       ]
     },
@@ -348,6 +471,21 @@
       "name": "Marketing site",
       "patterns": ["services/marketing/", "lib/ui-tokens/"],
       "recipeIds": ["marketing-home", "marketing-pricing", "marketing-home-scroll"]
+    },
+    {
+      "name": "TUI client/cmd/proto",
+      "patterns": ["services/boss/internal/client/", "services/boss/cmd/", "proto/"],
+      "recipeIds": ["tui-home", "tui-cron", "tui-settings"]
+    },
+    {
+      "name": "Docs site",
+      "patterns": ["services/docs/"],
+      "recipeIds": ["docs-home"]
+    },
+    {
+      "name": "Docs MCP guide",
+      "patterns": ["services/docs/docs/guides/mcp"],
+      "recipeIds": ["docs-mcp-guide"]
     }
   ]
 }

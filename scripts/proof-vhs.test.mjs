@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildTape } from './proof-vhs.mjs';
+import { buildTape, vhsWaitRegex } from './proof-vhs.mjs';
 
 test('buildTape emits Output, launcher, and per-step directives', () => {
   const tape = buildTape({
@@ -26,6 +26,33 @@ test('buildTape emits Output, launcher, and per-step directives', () => {
   assert.match(tape, /\nEnter\n/);
   assert.match(tape, /Ctrl\+B/);
   assert.match(tape, /Sleep 400ms/);
+});
+
+test('buildTape emits a screen-synced Wait after a step with waitForText', () => {
+  const tape = buildTape({
+    recipe: {
+      id: 'tui-flow',
+      terminal: { width: 140, height: 36 },
+      steps: [
+        { keys: ['n'], waitForReadyText: 'Add dark mode', waitForText: 'New Session' },
+        { keys: ['enter'] },
+      ],
+    },
+    launcherCmd: 'x',
+    outputPath: '/tmp/o.webm',
+  });
+  // Ready gate before the keypress, target wait after it.
+  assert.match(tape, /Wait\+Screen@10000ms \/Add\\s\+dark\\s\+mode\//);
+  assert.match(tape, /Wait\+Screen@10000ms \/New\\s\+Session\//);
+  // A step with no waitForText emits no extra wait (just the dwell Sleep).
+  const waits = tape.match(/Wait\+Screen/g) ?? [];
+  assert.equal(waits.length, 2, tape);
+});
+
+test('vhsWaitRegex escapes regex metachars and flexes whitespace across wraps', () => {
+  assert.equal(vhsWaitRegex('Create a new PR'), 'Create\\s+a\\s+new\\s+PR');
+  assert.equal(vhsWaitRegex('Name:'), 'Name:');
+  assert.equal(vhsWaitRegex('[l]ogin (beta)'), '\\[l\\]ogin\\s+\\(beta\\)');
 });
 
 test('buildTape throws on an unknown key token', () => {

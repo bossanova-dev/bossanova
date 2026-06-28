@@ -188,7 +188,7 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.setStatus(fmt.Sprintf("Run failed: %v", msg.err), true)
 		} else if msg.skippedReason != "" {
-			m.setStatus(fmt.Sprintf("Skipped: %s", msg.skippedReason), true)
+			m.setStatus(fmt.Sprintf("Skipped: %s", runNowSkipLabel(msg.skippedReason)), true)
 		} else {
 			m.setFiringStatus(fmt.Sprintf("Firing %q…", msg.name))
 		}
@@ -200,7 +200,7 @@ func (m CronListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		// Re-render so per-row pending frames animate while local RPCs or
 		// server-derived cron runs remain active.
-		if len(m.running) > 0 || len(m.deleting) > 0 || hasRunningStatus(m.jobs) {
+		if len(m.running) > 0 || len(m.deleting) > 0 || hasRunningStatus(m.jobs) || hasGatingStatus(m.jobs) {
 			m.rebuildTable()
 		}
 		return m, cmd
@@ -405,8 +405,12 @@ func (m *CronListModel) rebuildTable() {
 			statuses[i] = renderRowPendingStatus(m.spinner, "deleting")
 		case m.running[job.Id] || job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_RUNNING:
 			statuses[i] = m.spinner.View() + "Running"
+		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_GATING:
+			statuses[i] = m.spinner.View() + "gating"
 		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_FAILED:
 			statuses[i] = styleStatusDanger.Render("failed")
+		case job.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_GATED:
+			statuses[i] = styleStatusWarning.Render("gated")
 		default:
 			statuses[i] = styleSubtle.Render("idle")
 		}
@@ -486,6 +490,21 @@ func (m CronListModel) tableHeight() int {
 	return clampedTableHeight(len(m.jobs), m.height, bannerOverhead+1+actionBarPadY+1)
 }
 
+// runNowSkipLabel maps a scheduler skip reason to a human-readable phrase for
+// the run-now status line. Unknown reasons pass through verbatim.
+func runNowSkipLabel(reason string) string {
+	switch reason {
+	case "gated":
+		return "blocked by gate command"
+	case "overlap_prev_active":
+		return "previous run still active"
+	case "disabled":
+		return "job is disabled"
+	default:
+		return reason
+	}
+}
+
 // hasRunningStatus reports whether any job's server-derived LastRunStatus is
 // RUNNING. Used by the spinner Tick handler to keep the per-row animation
 // frame-stepping across polls (when the local m.running bridge has cleared
@@ -493,6 +512,18 @@ func (m CronListModel) tableHeight() int {
 func hasRunningStatus(jobs []*pb.CronJob) bool {
 	for _, j := range jobs {
 		if j.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_RUNNING {
+			return true
+		}
+	}
+	return false
+}
+
+// hasGatingStatus reports whether any job's server-derived LastRunStatus is
+// GATING. Used by the spinner Tick handler alongside hasRunningStatus to keep
+// the per-row animation frame-stepping while a gate command is in progress.
+func hasGatingStatus(jobs []*pb.CronJob) bool {
+	for _, j := range jobs {
+		if j.LastRunStatus == pb.CronJobStatus_CRON_JOB_STATUS_GATING {
 			return true
 		}
 	}

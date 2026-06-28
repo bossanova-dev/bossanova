@@ -197,6 +197,12 @@ func (s *stubClient) GetChatStatuses(context.Context, string) ([]*pb.ChatStatusE
 func (s *stubClient) GetSessionStatuses(context.Context, []string) ([]*pb.SessionStatusEntry, error) {
 	panic("unused")
 }
+func (s *stubClient) GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error) {
+	panic("unused")
+}
+func (s *stubClient) SendChatMessage(context.Context, *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	panic("unused")
+}
 func (s *stubClient) NotifyAuthChange(context.Context, string) error { return nil }
 
 func (s *stubClient) CreateCronJob(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {

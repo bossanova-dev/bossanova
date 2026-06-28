@@ -16,7 +16,9 @@ import (
 // stub response. The other three methods return zero-value responses; they are
 // unused by these tests but required to satisfy SessionCommandServer.
 type fakeSessionCommandServer struct {
-	lastRecordChat *pb.RecordChatRequest
+	lastRecordChat   *pb.RecordChatRequest
+	lastTranscriptID string
+	lastSendReq      *pb.SendChatMessageRequest
 }
 
 func (f *fakeSessionCommandServer) MergeSession(_ context.Context, _ *connect.Request[pb.MergeSessionRequest]) (*connect.Response[pb.MergeSessionResponse], error) {
@@ -52,6 +54,20 @@ func (f *fakeSessionCommandServer) ListRepoPRs(_ context.Context, _ *connect.Req
 
 func (f *fakeSessionCommandServer) ListTrackerIssues(_ context.Context, _ *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
 	return connect.NewResponse(&pb.ListTrackerIssuesResponse{}), nil
+}
+
+func (f *fakeSessionCommandServer) GetChatTranscript(_ context.Context, req *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error) {
+	f.lastTranscriptID = req.Msg.GetAgentSessionId()
+	return connect.NewResponse(&pb.GetChatTranscriptResponse{
+		Messages:           []*pb.ChatMessage{{Text: "x"}},
+		FinalAssistantText: "final",
+		Exists:             true,
+	}), nil
+}
+
+func (f *fakeSessionCommandServer) SendChatMessage(_ context.Context, req *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
+	f.lastSendReq = req.Msg
+	return connect.NewResponse(&pb.SendChatMessageResponse{TmuxSessionName: "tmux-send", Delivered: true}), nil
 }
 
 // fakeAutomationToggler records the last SetAutomationEnabled call and returns
@@ -126,6 +142,14 @@ func (e *errCommandServer) ListRepoPRs(context.Context, *connect.Request[pb.List
 }
 
 func (e *errCommandServer) ListTrackerIssues(context.Context, *connect.Request[pb.ListTrackerIssuesRequest]) (*connect.Response[pb.ListTrackerIssuesResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) GetChatTranscript(context.Context, *connect.Request[pb.GetChatTranscriptRequest]) (*connect.Response[pb.GetChatTranscriptResponse], error) {
+	return nil, e.err
+}
+
+func (e *errCommandServer) SendChatMessage(context.Context, *connect.Request[pb.SendChatMessageRequest]) (*connect.Response[pb.SendChatMessageResponse], error) {
 	return nil, e.err
 }
 
@@ -763,6 +787,79 @@ func TestCommandHandlerAdapter_ListTrackerIssues(t *testing.T) {
 		}
 		if resp == nil {
 			t.Fatal("ListTrackerIssues returned nil response on success")
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_GetChatTranscript(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.GetChatTranscript(context.Background(), "s1", "a1", 0); err == nil || !strings.Contains(err.Error(), "get_chat_transcript: command server not wired") {
+			t.Fatalf("GetChatTranscript error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.GetChatTranscript(context.Background(), "s1", "a1", 0); err == nil || !strings.Contains(err.Error(), "get chat transcript: boom") {
+			t.Fatalf("GetChatTranscript error = %v, want get chat transcript: boom", err)
+		}
+	})
+
+	t.Run("delegates to the command server and unwraps the response", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.GetChatTranscript(context.Background(), "s1", "agent-9", 3)
+		if err != nil {
+			t.Fatalf("GetChatTranscript returned error: %v", err)
+		}
+		if resp == nil || !resp.GetExists() || resp.GetFinalAssistantText() != "final" {
+			t.Fatalf("unexpected response: %+v", resp)
+		}
+		if fake.lastTranscriptID != "agent-9" {
+			t.Fatalf("agent_session_id not forwarded: %q", fake.lastTranscriptID)
+		}
+	})
+}
+
+func TestCommandHandlerAdapter_SendChatMessage(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing command server is rejected", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{}
+		if _, err := adapter.SendChatMessage(context.Background(), "a1", "m", false); err == nil || !strings.Contains(err.Error(), "send_chat_message: command server not wired") {
+			t.Fatalf("SendChatMessage error = %v, want command server not wired", err)
+		}
+	})
+
+	t.Run("command error is wrapped", func(t *testing.T) {
+		t.Parallel()
+		adapter := &CommandHandlerAdapter{Commands: &errCommandServer{err: errors.New("boom")}}
+		if _, err := adapter.SendChatMessage(context.Background(), "a1", "m", false); err == nil || !strings.Contains(err.Error(), "send chat message: boom") {
+			t.Fatalf("SendChatMessage error = %v, want send chat message: boom", err)
+		}
+	})
+
+	t.Run("delegates to the command server and forwards all fields", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeSessionCommandServer{}
+		adapter := &CommandHandlerAdapter{Commands: fake}
+		resp, err := adapter.SendChatMessage(context.Background(), "agent-9", "hello", true)
+		if err != nil {
+			t.Fatalf("SendChatMessage returned error: %v", err)
+		}
+		if resp == nil || !resp.GetDelivered() || resp.GetTmuxSessionName() != "tmux-send" {
+			t.Fatalf("unexpected response: %+v", resp)
+		}
+		got := fake.lastSendReq
+		if got.GetAgentSessionId() != "agent-9" || got.GetMessage() != "hello" || !got.GetWakeIfAsleep() {
+			t.Fatalf("send fields not forwarded: %+v", got)
 		}
 	})
 }

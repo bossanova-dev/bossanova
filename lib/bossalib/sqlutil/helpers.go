@@ -13,6 +13,10 @@ func ParseTime(s string) time.Time {
 	if t.IsZero() {
 		t, _ = time.Parse(time.RFC3339Nano, s)
 	}
+	if t.IsZero() {
+		// SQLite CURRENT_TIMESTAMP format: "2006-01-02 15:04:05"
+		t, _ = time.Parse("2006-01-02 15:04:05", s)
+	}
 	return t
 }
 

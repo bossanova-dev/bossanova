@@ -227,6 +227,24 @@ func TestHomeCloudGateAccessErrorIsNonBlocking(t *testing.T) {
 	}
 }
 
+func TestHome_ActiveCloudAccess_NoUnavailableBanner(t *testing.T) {
+	h := NewHomeModel(nil, context.Background(), nil)
+	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
+	h.loading = false
+	h.loggedIn = true
+	h.repoCount = 1
+
+	model, _ := h.Update(cloudAccessMsg{status: &pb.CloudAccessStatus{
+		State: pb.CloudAccessState_CLOUD_ACCESS_STATE_ACTIVE,
+	}})
+	h = model.(HomeModel)
+
+	line := h.cloudGateLine()
+	if strings.Contains(line, "Cloud access status unavailable") {
+		t.Fatalf("active cloud access should not render the unavailable banner; got:\n%s", line)
+	}
+}
+
 func TestHomeCloudGateBillingUnavailableStatusUsesBillingCopy(t *testing.T) {
 	h := NewHomeModel(nil, context.Background(), nil)
 	h.SetCloudAccessClient(&fakeHomeCloudAccessClient{})
@@ -641,6 +659,49 @@ func TestHomeBuildTableRows_RendersAttentionWarningUnderName(t *testing.T) {
 	}
 }
 
+func TestHomeBuildTableRows_PreservesSessionOrderWhenSessionNeedsAttention(t *testing.T) {
+	h := HomeModel{
+		sessions: []*pb.Session{
+			{
+				Id:              "normal-newer",
+				RepoDisplayName: "bossanova",
+				Title:           "Normal newer",
+			},
+			{
+				Id:              "attention-older",
+				RepoDisplayName: "bossanova",
+				Title:           "Attention older",
+				AttentionStatus: &pb.AttentionStatus{
+					NeedsAttention: true,
+					Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
+					Summary:        "needs human review",
+				},
+			},
+			{
+				Id:              "normal-oldest",
+				RepoDisplayName: "bossanova",
+				Title:           "Normal oldest",
+			},
+		},
+	}
+
+	h.buildTableRows()
+
+	rows := h.table.Rows()
+	if len(rows) != 4 {
+		t.Fatalf("table rows = %d, want 4: three sessions plus attention warning row", len(rows))
+	}
+	if got := rows[0][3]; got != "Normal newer" {
+		t.Fatalf("first session row NAME = %q, want Normal newer", got)
+	}
+	if got := rows[1][3]; got != "Attention older" {
+		t.Fatalf("second session row NAME = %q, want Attention older", got)
+	}
+	if got := rows[3][3]; got != "Normal oldest" {
+		t.Fatalf("third session row NAME = %q, want Normal oldest", got)
+	}
+}
+
 func TestHomeBuildTableRows_HidesAgentColumnWhenMultipleAgentsPresent(t *testing.T) {
 	h := HomeModel{
 		sessions: []*pb.Session{
@@ -715,58 +776,6 @@ func TestHomeTableHeightCountsRepairWarningRows(t *testing.T) {
 
 	if got := h.tableHeight(); got != 3 {
 		t.Fatalf("tableHeight() = %d, want 3: header plus session row plus repair warning row", got)
-	}
-}
-
-func TestSortSessionsByAttention(t *testing.T) {
-	sessions := []*pb.Session{
-		{Id: "normal-1"},
-		{Id: "attn-1", AttentionStatus: &pb.AttentionStatus{
-			NeedsAttention: true,
-			Reason:         pb.AttentionReason_ATTENTION_REASON_BLOCKED_MAX_ATTEMPTS,
-		}},
-		{Id: "normal-2"},
-		{Id: "attn-2", AttentionStatus: &pb.AttentionStatus{
-			NeedsAttention: true,
-			Reason:         pb.AttentionReason_ATTENTION_REASON_MERGE_CONFLICT_UNRESOLVABLE,
-		}},
-	}
-
-	sortSessionsByAttention(sessions)
-
-	// First two should be the attention sessions, preserving relative order.
-	if sessions[0].Id != "attn-1" {
-		t.Errorf("sessions[0].Id = %q, want %q", sessions[0].Id, "attn-1")
-	}
-	if sessions[1].Id != "attn-2" {
-		t.Errorf("sessions[1].Id = %q, want %q", sessions[1].Id, "attn-2")
-	}
-	// Normal sessions follow, preserving relative order.
-	if sessions[2].Id != "normal-1" {
-		t.Errorf("sessions[2].Id = %q, want %q", sessions[2].Id, "normal-1")
-	}
-	if sessions[3].Id != "normal-2" {
-		t.Errorf("sessions[3].Id = %q, want %q", sessions[3].Id, "normal-2")
-	}
-}
-
-func TestSessionNeedsAttention(t *testing.T) {
-	tests := []struct {
-		name string
-		sess *pb.Session
-		want bool
-	}{
-		{"nil status", &pb.Session{}, false},
-		{"false", &pb.Session{AttentionStatus: &pb.AttentionStatus{NeedsAttention: false}}, false},
-		{"true", &pb.Session{AttentionStatus: &pb.AttentionStatus{NeedsAttention: true}}, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := sessionNeedsAttention(tt.sess); got != tt.want {
-				t.Errorf("sessionNeedsAttention() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 

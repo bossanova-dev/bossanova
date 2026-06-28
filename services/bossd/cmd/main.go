@@ -462,7 +462,29 @@ func run(opts runOpts) error {
 	tmuxClient := tmux.NewClient()
 	ghProvider := github.New(log.Logger)
 	prAssociationResolver := session.NewPRAssociationResolver(sessions, repos, ghProvider, log.Logger).
-		WithBranchResolver(worktrees)
+		WithBranchResolver(worktrees).
+		WithCronJobs(cronJobs).
+		WithUpdateNotifier(func(ctx context.Context, sess *models.Session) {
+			// Reconcile renames the session to the PR title via a direct store
+			// write, bypassing the UpdateSession RPC that would emit the event.
+			// Publish it here so bosso/web don't show a stale title.
+			pbSess := server.SessionToProto(sess)
+			// bosso applies session deltas as full replacements
+			// (state.go applySessionDelta), so populate the joined repo
+			// display name or the web UI would lose the Repo column.
+			if sess.RepoID != "" {
+				if r, err := repos.Get(ctx, sess.RepoID); err == nil && r != nil {
+					pbSess.RepoDisplayName = r.DisplayName
+					pbSess.RepoOriginUrl = server.CanonicalRepoOriginURL(r.OriginURL)
+				}
+			}
+			streamBus.Publish(upstream.StreamEvent{
+				Session: &upstream.SessionEvent{
+					Kind:    bossanovav1.SessionDelta_KIND_UPDATED,
+					Session: pbSess,
+				},
+			})
+		})
 
 	// Reconcile sessions that were created before their PR existed (or
 	// where PR creation happened out-of-band). Uses live branch state.
@@ -664,6 +686,11 @@ func run(opts runOpts) error {
 		Sessions:  sessions,
 		Finalizer: lifecycle,
 		Logger:    log.Logger,
+		// Gate finalize on the run actually being over. The Stop hook fires every
+		// turn (including mid-run pauses awaiting a background subagent), so without
+		// this a paused run would be finalized — opening a junk PR and Blocking a
+		// still-working session. Same criterion the stranded-cron sweep uses.
+		RunIsOver: lifecycle.CronRunIsOver,
 	})
 	lifecycle.SetCronCompletionNotifier(cronGate)
 	// Wire the lifecycle into HostServiceServer so plugin-side StartChatRun

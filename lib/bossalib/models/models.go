@@ -51,6 +51,7 @@ type Session struct {
 	State                   machine.State
 	AgentSessionID          *string
 	AgentName               string
+	Model                   string // opaque agent model id; "" = plugin default.
 	PRNumber                *int
 	PRURL                   *string
 	TrackerID               *string

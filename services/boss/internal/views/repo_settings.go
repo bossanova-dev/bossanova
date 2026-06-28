@@ -185,7 +185,7 @@ func (m *RepoSettingsModel) SetGitHubAppInstall(c GitHubAppClient) {
 // visibleRows returns the ordered list of navigable rows given the current
 // expansion state. Headers and non-integration rows are always present;
 // integration child rows are appended only when their parent is expanded. The
-// non-navigable "Integrations" heading label is not a row.
+// non-navigable "Automations" and "Integrations" heading labels are not rows.
 func (m RepoSettingsModel) visibleRows() []rowID {
 	rows := []rowID{
 		repoSettingsRowName,
@@ -816,11 +816,16 @@ func (m RepoSettingsModel) View() tea.View {
 		b.WriteString("\n")
 	}
 
-	// Automation toggles, rendered contiguously (no separating blank line) so the
-	// edit screen mirrors the add wizard's single "Automation" list. "Mark ready
+	// Automations section. Non-navigable heading label. Groups the per-repo
+	// automation toggles: "Mark ready for review when checks pass" (CanAutoMerge,
+	// daemon orchestrator behavior), Dependabot auto-merge, and automatic repair.
+	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Automations"))
+	b.WriteString("\n")
+
+	// Automation toggles, rendered contiguously under the heading. "Mark ready
 	// for review when checks pass" is the CanAutoMerge flag, which only promotes a
-	// passing draft PR to ready — it does not merge (regular PR merges are manual;
-	// only Dependabot auto-merges). "Automatic repair" gates the repair plugin.
+	// passing draft PR to ready — it does not merge. "Automatic repair" gates the
+	// repair plugin (CanAutoRepair).
 	for _, cb := range []checkboxRow{
 		{"Mark ready for review when checks pass", m.repo.CanAutoMerge, repoSettingsRowCanAutoMerge},
 		{"Auto-merge Dependabot PRs", m.repo.CanAutoMergeDependabot, repoSettingsRowCanAutoMergeDependabot},
@@ -831,7 +836,8 @@ func (m RepoSettingsModel) View() tea.View {
 
 	b.WriteString("\n")
 
-	// Integrations section. Non-navigable heading label.
+	// Integrations section. Non-navigable heading label. Groups the Linear and
+	// Sentry integrations, which are active when their credentials are set.
 	b.WriteString(lipgloss.NewStyle().Padding(0, 2).Render("  Integrations"))
 	b.WriteString("\n")
 

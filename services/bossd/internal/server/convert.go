@@ -171,19 +171,29 @@ func agentChatToProto(c *models.AgentChat) *pb.ClaudeChat {
 // cronJobToProto converts a domain CronJob to its protobuf representation.
 // The sessions store is consulted to derive last_run_status (RUNNING vs.
 // FAILED vs. IDLE) — the proto's last_run_status field is computed, not
-// persisted.
-func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionStore) *pb.CronJob {
+// persisted. gating is the set of job IDs currently mid-gate; when a job
+// ID appears there, GATING overrides all other status logic.
+func cronJobToProto(ctx context.Context, c *models.CronJob, sessions db.SessionStore, gating map[string]struct{}) *pb.CronJob {
+	status := cronJobStatus(ctx, c, sessions)
+	if gating != nil {
+		if _, ok := gating[c.ID]; ok {
+			status = pb.CronJobStatus_CRON_JOB_STATUS_GATING
+		}
+	}
 	p := &pb.CronJob{
-		Id:            c.ID,
-		RepoId:        c.RepoID,
-		Name:          c.Name,
-		Prompt:        c.Prompt,
-		Schedule:      c.Schedule,
-		AgentName:     protoString(c.AgentName),
-		Enabled:       c.Enabled,
-		CreatedAt:     timestamppb.New(c.CreatedAt),
-		UpdatedAt:     timestamppb.New(c.UpdatedAt),
-		LastRunStatus: cronJobStatus(ctx, c, sessions),
+		Id:              c.ID,
+		RepoId:          c.RepoID,
+		Name:            c.Name,
+		Prompt:          c.Prompt,
+		Schedule:        c.Schedule,
+		AgentName:       protoString(c.AgentName),
+		Model:           c.Model,
+		Enabled:         c.Enabled,
+		GateCommand:     c.GateCommand,
+		RunSetupCommand: c.RunSetupCommand,
+		CreatedAt:       timestamppb.New(c.CreatedAt),
+		UpdatedAt:       timestamppb.New(c.UpdatedAt),
+		LastRunStatus:   status,
 	}
 	if c.Timezone != nil {
 		p.Timezone = *c.Timezone
@@ -221,6 +231,14 @@ func cronJobStatus(ctx context.Context, job *models.CronJob, sessions db.Session
 		if err == nil && sess != nil && sess.ArchivedAt == nil && !cronStatusInactiveState(sess.State) {
 			return pb.CronJobStatus_CRON_JOB_STATUS_RUNNING
 		}
+	}
+	// A gate block records outcome=gated without touching last_run_session_id,
+	// so if a PRIOR fire's session is still non-terminal it shows RUNNING above
+	// rather than GATED — which is accurate (that earlier run genuinely is still
+	// in flight) and self-corrects once it terminates and the next gated tick
+	// records again. GATED therefore applies once no live session remains.
+	if job.LastRunOutcome != nil && *job.LastRunOutcome == models.CronJobOutcomeGated {
+		return pb.CronJobStatus_CRON_JOB_STATUS_GATED
 	}
 	if job.LastRunOutcome != nil && isCronFailureOutcome(*job.LastRunOutcome) {
 		return pb.CronJobStatus_CRON_JOB_STATUS_FAILED

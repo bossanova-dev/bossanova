@@ -135,6 +135,10 @@ func (*MockAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.LastTur
 	return &bossanovav1.LastTurnIsUserResponse{}, nil
 }
 
+func (*MockAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
+
 // TranscriptExists checks the conventional Claude transcript path on disk so
 // e2e tests that materialise a JSONL fixture under $HOME/.claude/projects/...
 // continue to drive the spawnChatTmux resume branch the same way they did

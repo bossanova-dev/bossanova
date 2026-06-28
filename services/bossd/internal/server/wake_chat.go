@@ -108,8 +108,9 @@ func (s *Server) WakeChatInternal(ctx context.Context, agentSessionID string, fo
 			WorktreePath:       sess.WorktreePath,
 			TmuxName:           tmuxName,
 			ForceFresh:         forceFresh,
-			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID),
-			CronEnv:            session.CronSessionEnv(sess),
+			AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName),
+			SessionEnv:         session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
+			Model:              sess.Model,
 		})
 		if err != nil {
 			return nil, err

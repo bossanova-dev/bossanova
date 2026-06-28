@@ -19,6 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
+import { finalizeAgentProof } from './proof-agent-finalize.mjs';
+
 function requireFfmpeg(t, reason) {
   const ffmpegCheck = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' });
   if (ffmpegCheck.status !== 0) {
@@ -340,6 +342,7 @@ function withEnv(overrides, fn) {
     'BOSS_PROOF_RUN_TOKEN',
     'BOSS_PROOF_R2_BUCKET',
     'BOSS_PROOF_PUBLIC_BASE_URL',
+    'BOSS_PROOF_AGENT_TIMEOUT_MS',
   ];
   const saved = {};
   for (const k of keys) saved[k] = process.env[k];
@@ -790,6 +793,101 @@ test('runAgentProof: no raw stills + video → fallback extractor invoked, captu
   }
 });
 
+// ── Task 2: Degradation ladder in finalizeAgentProof ────────────────────────
+
+test('finalizeAgentProof defers (no red verdict) when the run produced no media', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-finalize-test-'));
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    const { manifest, commentBody } = await finalizeAgentProof({
+      captureShape: {
+        recipeId: 'tui-home',
+        title: 'Test feature',
+        surface: 'tui',
+        privacy: 'fixture',
+        status: 'failed',
+        // no fileName → no media
+      },
+      brief: { title: 'Test feature' },
+      agentResult: { passed: false, summary: null, evidence: [], steps: 0 },
+      hasFailure: true,
+      prNumber: 'local',
+      commit: 'abc1234',
+      runId: 'run-test',
+      token: 'tok-test',
+      paths: { publicPrefix: 'proof/test/pr-local/abc1234/run-test/tok-test' },
+      localDir: tmpDir,
+      publicBaseUrl: 'https://proof.test.dev',
+      shouldUpload: false,
+      bucket: null,
+      deps: {
+        postComment: () => {},
+        uploadBundle: () => {},
+        uploadManifest: () => {},
+        publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+        collapsePriorProofComments: () => {},
+        currentRepoIdentity: () => null,
+        currentBranch: () => 'test-branch',
+      },
+    });
+    assert.equal(manifest.deferred, true, 'manifest.deferred must be true on degraded path');
+    assert.ok(!commentBody.includes('❌'), 'deferred comment must not contain red verdict');
+    assert.ok(
+      !commentBody.includes('Unsatisfactory'),
+      'deferred comment must not contain Unsatisfactory',
+    );
+    // The PERSISTED manifest (the artifact uploaded to R2) must also carry the
+    // flag — it is set before the manifest is written, not only on the return value.
+    const persisted = JSON.parse(fs.readFileSync(path.join(tmpDir, 'manifest.json'), 'utf8'));
+    assert.equal(persisted.deferred, true, 'written manifest.json must carry deferred:true');
+  } finally {
+    process.exitCode = originalExitCode;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('finalizeAgentProof treats stills-only captures as media', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-finalize-stills-test-'));
+  try {
+    const { manifest, commentBody } = await finalizeAgentProof({
+      captureShape: {
+        recipeId: 'tui-agent',
+        title: 'TUI stills proof',
+        surface: 'tui',
+        privacy: 'fixture',
+        status: 'passed',
+        stills: [{ fileName: 'tui-agent/frame-01.png', label: 'frame 01' }],
+      },
+      brief: { title: 'TUI stills proof' },
+      agentResult: { passed: true, summary: 'done', evidence: [], steps: 1 },
+      hasFailure: false,
+      prNumber: 'local',
+      commit: 'abc1234',
+      runId: 'run-stills-test',
+      token: 'tok-stills',
+      paths: { publicPrefix: 'proof/test/pr-local/abc1234/run-stills-test/tok-stills' },
+      localDir: tmpDir,
+      publicBaseUrl: 'https://proof.test.dev',
+      shouldUpload: false,
+      bucket: null,
+      deps: {
+        postComment: () => {},
+        uploadBundle: () => {},
+        uploadManifest: () => {},
+        publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+        collapsePriorProofComments: () => {},
+        currentRepoIdentity: () => null,
+        currentBranch: () => 'test-branch',
+      },
+    });
+    assert.equal(manifest.deferred, undefined, 'stills-only media must not be deferred');
+    assert.ok(commentBody.includes('✅'), 'stills-only passed proof keeps normal verdict');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('runAgentProof: has raw stills → fallback extractor NOT invoked', async () => {
   const { runAgentProof } = await import('./proof-agent.mjs');
 
@@ -852,6 +950,87 @@ test('runAgentProof: has raw stills → fallback extractor NOT invoked', async (
             capture.stills.length,
             2,
             'capture must have exactly 2 stills (the real ones)',
+          );
+        },
+      ),
+    );
+  } finally {
+    process.exitCode = originalExitCode;
+    fs.rmSync(path.join(REPO_ROOT, '.proof', 'pr-local'), { recursive: true, force: true });
+  }
+});
+
+// ── Task 3: Time-boxed agent path ────────────────────────────────────────────
+
+test('runInterruptible: kills child at timeout and resolves with timedOut=true (not a throw)', async () => {
+  const { runInterruptible } = await import('./proof-agent.mjs');
+  // A Node.js child that sleeps for 10 seconds — must be killed within 100ms.
+  const res = await runInterruptible('node', ['-e', 'setInterval(()=>{},1000)'], {
+    timeoutMs: 100,
+  });
+  assert.equal(res.timedOut, true, 'timed-out child must resolve with timedOut=true');
+  assert.equal(res.code, null, 'killed child has null exit code');
+});
+
+test('runAgentProof: timed-out Playwright drive defers the run without a red verdict', async () => {
+  const { runAgentProof } = await import('./proof-agent.mjs');
+  const brief = { title: 'Timeout feature', description: 'Playwright times out' };
+  const originalExitCode = process.exitCode;
+  process.exitCode = undefined;
+
+  try {
+    await withTempBrief(brief, (briefPath) =>
+      withEnv(
+        {
+          BOSS_PROOF_BRIEF: briefPath,
+          BOSS_PROOF_UPLOAD: '0',
+          BOSS_PROOF_RUN_ID: 'test-run-timeout',
+          BOSS_PROOF_RUN_TOKEN: 'toktimeout1',
+          BOSS_PROOF_PUBLIC_BASE_URL: 'https://proof.test.dev',
+        },
+        async () => {
+          const { manifest, commentBody } = await runAgentProof({
+            prNumber: 'local',
+            commit: 'deadbeef',
+            changedFiles: [],
+            dryRun: true,
+            fallbackRecipeCaptures: () => [
+              {
+                recipeId: 'web-sessions',
+                title: 'Web Sessions',
+                surface: 'web',
+                privacy: 'fixture',
+                status: 'passed',
+                mediaType: 'png',
+                fileName: 'web-sessions/web-sessions.png',
+              },
+            ],
+            deps: {
+              // Simulate a timed-out Playwright run — returns without throwing.
+              spawnPlaywright: () => ({ status: -1, timedOut: true }),
+              uploadBundle: () => {},
+              uploadManifest: () => {},
+              publishProofReport: async () => ({ ok: false, reason: 'stubbed' }),
+              collapsePriorProofComments: () => {},
+              postComment: () => {},
+            },
+          });
+
+          assert.equal(manifest.deferred, true, 'timed-out run must be deferred');
+          assert.equal(
+            manifest.captures.some((c) => c.recipeId === 'web-sessions' && c.status === 'passed'),
+            true,
+            'timed-out agent run must include recipe-floor capture evidence',
+          );
+          assert.ok(!commentBody.includes('❌'), 'deferred comment must not contain red verdict');
+          assert.ok(
+            commentBody.includes('/manifest.json'),
+            'deferred comment must link to uploaded/local manifest evidence',
+          );
+          assert.match(
+            manifest.captures[0].error ?? '',
+            /timed out/,
+            'capture error must mention timeout',
           );
         },
       ),

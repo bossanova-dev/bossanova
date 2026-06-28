@@ -279,3 +279,52 @@ test(
     assert.ok(brief.description.length > 0, 'description must be non-empty');
   },
 );
+
+import { isLowSignalDiffPath, prioritizeDiff, buildBriefPrompt } from './proof-brief.mjs';
+
+test('isLowSignalDiffPath flags docs/markdown/skill/sum files', () => {
+  for (const p of [
+    'docs/plans/x.md',
+    '.claude/skills/bs-proof/SKILL.md',
+    '.codex/skills/bs-proof/SKILL.md',
+    'README.md',
+    'go.work.sum',
+    'pnpm-lock.yaml',
+  ]) {
+    assert.equal(isLowSignalDiffPath(p), true, p);
+  }
+});
+
+test('isLowSignalDiffPath does not flag code', () => {
+  for (const p of ['scripts/proof.mjs', 'services/boss/internal/tuidriver/keybytes.go']) {
+    assert.equal(isLowSignalDiffPath(p), false, p);
+  }
+});
+
+test('prioritizeDiff moves code sections ahead of docs sections', () => {
+  const diff = [
+    'diff --git a/docs/plan.md b/docs/plan.md',
+    '+DOCS_TOKEN',
+    'diff --git a/scripts/proof.mjs b/scripts/proof.mjs',
+    '+CODE_TOKEN',
+    '',
+  ].join('\n');
+  const out = prioritizeDiff(diff);
+  assert.ok(out.indexOf('CODE_TOKEN') < out.indexOf('DOCS_TOKEN'), out);
+});
+
+test('buildBriefPrompt always lists every changed file even when the diff is truncated', () => {
+  const bigDocs = 'diff --git a/docs/plan.md b/docs/plan.md\n' + '+x\n'.repeat(50_000);
+  const code = 'diff --git a/scripts/proof.mjs b/scripts/proof.mjs\n+CODE_TOKEN\n';
+  const prompt = buildBriefPrompt({
+    diff: bigDocs + code,
+    changedFiles: ['docs/plan.md', 'scripts/proof.mjs'],
+    routes: 'ROUTES',
+    fixtures: 'FIXTURES',
+    maxDiffChars: 2_000,
+  });
+  // Inventory is never truncated:
+  assert.match(prompt, /## Changed files[\s\S]*scripts\/proof\.mjs/);
+  // Code is reachable because it was reordered ahead of the giant docs section:
+  assert.match(prompt, /CODE_TOKEN/);
+});

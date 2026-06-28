@@ -964,6 +964,8 @@ const (
 	CronJobStatus_CRON_JOB_STATUS_IDLE        CronJobStatus = 1
 	CronJobStatus_CRON_JOB_STATUS_RUNNING     CronJobStatus = 2
 	CronJobStatus_CRON_JOB_STATUS_FAILED      CronJobStatus = 3
+	CronJobStatus_CRON_JOB_STATUS_GATED       CronJobStatus = 4 // last fire was blocked by the gate command
+	CronJobStatus_CRON_JOB_STATUS_GATING      CronJobStatus = 5 // gate command currently running (transient, in-memory)
 )
 
 // Enum value maps for CronJobStatus.
@@ -973,12 +975,16 @@ var (
 		1: "CRON_JOB_STATUS_IDLE",
 		2: "CRON_JOB_STATUS_RUNNING",
 		3: "CRON_JOB_STATUS_FAILED",
+		4: "CRON_JOB_STATUS_GATED",
+		5: "CRON_JOB_STATUS_GATING",
 	}
 	CronJobStatus_value = map[string]int32{
 		"CRON_JOB_STATUS_UNSPECIFIED": 0,
 		"CRON_JOB_STATUS_IDLE":        1,
 		"CRON_JOB_STATUS_RUNNING":     2,
 		"CRON_JOB_STATUS_FAILED":      3,
+		"CRON_JOB_STATUS_GATED":       4,
+		"CRON_JOB_STATUS_GATING":      5,
 	}
 )
 
@@ -2926,13 +2932,16 @@ type CronJob struct {
 	// pr_skipped_no_github, pr_failed,
 	// chat_spawn_failed, cleanup_failed,
 	// failed_recovered, fire_failed
-	NextRunAt     *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	LastRunStatus CronJobStatus          `protobuf:"varint,14,opt,name=last_run_status,json=lastRunStatus,proto3,enum=bossanova.v1.CronJobStatus" json:"last_run_status,omitempty"` // derived; not persisted
-	AgentName     string                 `protobuf:"bytes,15,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`                                                // agent runner plugin name; empty legacy data defaults to claude
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	NextRunAt       *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=next_run_at,json=nextRunAt,proto3" json:"next_run_at,omitempty"`
+	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,13,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	LastRunStatus   CronJobStatus          `protobuf:"varint,14,opt,name=last_run_status,json=lastRunStatus,proto3,enum=bossanova.v1.CronJobStatus" json:"last_run_status,omitempty"` // derived; not persisted
+	AgentName       string                 `protobuf:"bytes,15,opt,name=agent_name,json=agentName,proto3" json:"agent_name,omitempty"`                                                // agent runner plugin name; empty legacy data defaults to claude
+	Model           string                 `protobuf:"bytes,16,opt,name=model,proto3" json:"model,omitempty"`                                                                         // opaque agent model id; "" = plugin default. Never enumerated by bossd.
+	GateCommand     string                 `protobuf:"bytes,17,opt,name=gate_command,json=gateCommand,proto3" json:"gate_command,omitempty"`                                          // optional gate command run before each fire; empty = no gate
+	RunSetupCommand bool                   `protobuf:"varint,18,opt,name=run_setup_command,json=runSetupCommand,proto3" json:"run_setup_command,omitempty"`                           // run the repo setup script before the agent; default true
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CronJob) Reset() {
@@ -3066,6 +3075,99 @@ func (x *CronJob) GetLastRunStatus() CronJobStatus {
 func (x *CronJob) GetAgentName() string {
 	if x != nil {
 		return x.AgentName
+	}
+	return ""
+}
+
+func (x *CronJob) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *CronJob) GetGateCommand() string {
+	if x != nil {
+		return x.GateCommand
+	}
+	return ""
+}
+
+func (x *CronJob) GetRunSetupCommand() bool {
+	if x != nil {
+		return x.RunSetupCommand
+	}
+	return false
+}
+
+// ChatMessage is a transport-neutral, single turn of an agent chat transcript,
+// flattened from the agent's on-disk JSONL by the owning plugin. It carries
+// enough to render a conversation and to derive the "final result" without the
+// daemon needing to understand any agent-specific transcript format.
+type ChatMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Role          string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`           // user | assistant | system | tool
+	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`           // flattened text content of the turn
+	Timestamp     string                 `protobuf:"bytes,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // RFC3339, best-effort from the transcript ("" if unknown)
+	Kind          string                 `protobuf:"bytes,4,opt,name=kind,proto3" json:"kind,omitempty"`           // optional: text | tool_use | tool_result
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChatMessage) Reset() {
+	*x = ChatMessage{}
+	mi := &file_bossanova_v1_models_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChatMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChatMessage) ProtoMessage() {}
+
+func (x *ChatMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_bossanova_v1_models_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChatMessage.ProtoReflect.Descriptor instead.
+func (*ChatMessage) Descriptor() ([]byte, []int) {
+	return file_bossanova_v1_models_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ChatMessage) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ChatMessage) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *ChatMessage) GetTimestamp() string {
+	if x != nil {
+		return x.Timestamp
+	}
+	return ""
+}
+
+func (x *ChatMessage) GetKind() string {
+	if x != nil {
+		return x.Kind
 	}
 	return ""
 }
@@ -3282,7 +3384,7 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13provider_session_id\x18\t \x01(\tR\x11providerSessionId\x12\x1f\n" +
 	"\vstart_error\x18\n" +
 	" \x01(\tR\n" +
-	"startError\"\xdb\x04\n" +
+	"startError\"\xc0\x05\n" +
 	"\aCronJob\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x17\n" +
 	"\arepo_id\x18\x02 \x01(\tR\x06repoId\x12\x12\n" +
@@ -3302,7 +3404,15 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"updated_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12C\n" +
 	"\x0flast_run_status\x18\x0e \x01(\x0e2\x1b.bossanova.v1.CronJobStatusR\rlastRunStatus\x12\x1d\n" +
 	"\n" +
-	"agent_name\x18\x0f \x01(\tR\tagentName*\xd3\x03\n" +
+	"agent_name\x18\x0f \x01(\tR\tagentName\x12\x14\n" +
+	"\x05model\x18\x10 \x01(\tR\x05model\x12!\n" +
+	"\fgate_command\x18\x11 \x01(\tR\vgateCommand\x12*\n" +
+	"\x11run_setup_command\x18\x12 \x01(\bR\x0frunSetupCommand\"g\n" +
+	"\vChatMessage\x12\x12\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\x12\x12\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1c\n" +
+	"\ttimestamp\x18\x03 \x01(\tR\ttimestamp\x12\x12\n" +
+	"\x04kind\x18\x04 \x01(\tR\x04kind*\xd3\x03\n" +
 	"\fSessionState\x12\x1d\n" +
 	"\x19SESSION_STATE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fSESSION_STATE_CREATING_WORKTREE\x10\x01\x12 \n" +
@@ -3426,12 +3536,14 @@ const file_bossanova_v1_models_proto_rawDesc = "" +
 	"\x13CHAT_STATUS_WORKING\x10\x01\x12\x14\n" +
 	"\x10CHAT_STATUS_IDLE\x10\x02\x12\x17\n" +
 	"\x13CHAT_STATUS_STOPPED\x10\x03\x12\x18\n" +
-	"\x14CHAT_STATUS_QUESTION\x10\x04*\x83\x01\n" +
+	"\x14CHAT_STATUS_QUESTION\x10\x04*\xba\x01\n" +
 	"\rCronJobStatus\x12\x1f\n" +
 	"\x1bCRON_JOB_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14CRON_JOB_STATUS_IDLE\x10\x01\x12\x1b\n" +
 	"\x17CRON_JOB_STATUS_RUNNING\x10\x02\x12\x1a\n" +
-	"\x16CRON_JOB_STATUS_FAILED\x10\x03B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
+	"\x16CRON_JOB_STATUS_FAILED\x10\x03\x12\x19\n" +
+	"\x15CRON_JOB_STATUS_GATED\x10\x04\x12\x1a\n" +
+	"\x16CRON_JOB_STATUS_GATING\x10\x05B;Z9github.com/recurser/bossalib/gen/bossanova/v1;bossanovav1b\x06proto3"
 
 var (
 	file_bossanova_v1_models_proto_rawDescOnce sync.Once
@@ -3446,7 +3558,7 @@ func file_bossanova_v1_models_proto_rawDescGZIP() []byte {
 }
 
 var file_bossanova_v1_models_proto_enumTypes = make([]protoimpl.EnumInfo, 16)
-var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_bossanova_v1_models_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_bossanova_v1_models_proto_goTypes = []any{
 	(SessionState)(0),             // 0: bossanova.v1.SessionState
 	(SessionEvent)(0),             // 1: bossanova.v1.SessionEvent
@@ -3484,27 +3596,28 @@ var file_bossanova_v1_models_proto_goTypes = []any{
 	(*AttentionStatus)(nil),       // 33: bossanova.v1.AttentionStatus
 	(*ClaudeChat)(nil),            // 34: bossanova.v1.ClaudeChat
 	(*CronJob)(nil),               // 35: bossanova.v1.CronJob
-	(*timestamppb.Timestamp)(nil), // 36: google.protobuf.Timestamp
+	(*ChatMessage)(nil),           // 36: bossanova.v1.ChatMessage
+	(*timestamppb.Timestamp)(nil), // 37: google.protobuf.Timestamp
 }
 var file_bossanova_v1_models_proto_depIdxs = []int32{
-	36, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
-	36, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
+	37, // 0: bossanova.v1.Repo.created_at:type_name -> google.protobuf.Timestamp
+	37, // 1: bossanova.v1.Repo.updated_at:type_name -> google.protobuf.Timestamp
 	0,  // 2: bossanova.v1.Session.state:type_name -> bossanova.v1.SessionState
 	4,  // 3: bossanova.v1.Session.last_check_state:type_name -> bossanova.v1.ChecksOverall
-	36, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
-	36, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	36, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
+	37, // 4: bossanova.v1.Session.archived_at:type_name -> google.protobuf.Timestamp
+	37, // 5: bossanova.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	37, // 6: bossanova.v1.Session.updated_at:type_name -> google.protobuf.Timestamp
 	11, // 7: bossanova.v1.Session.display_status:type_name -> bossanova.v1.DisplayStatus
 	33, // 8: bossanova.v1.Session.attention_status:type_name -> bossanova.v1.AttentionStatus
 	12, // 9: bossanova.v1.Session.workflow_display_status:type_name -> bossanova.v1.WorkflowStatus
 	9,  // 10: bossanova.v1.Session.display_intent:type_name -> bossanova.v1.DisplayIntent
-	36, // 11: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
+	37, // 11: bossanova.v1.Session.last_repair_started_at:type_name -> google.protobuf.Timestamp
 	11, // 12: bossanova.v1.Session.last_repair_display_status:type_name -> bossanova.v1.DisplayStatus
-	36, // 13: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
+	37, // 13: bossanova.v1.Session.last_chat_activity_at:type_name -> google.protobuf.Timestamp
 	7,  // 14: bossanova.v1.Attempt.trigger:type_name -> bossanova.v1.AttemptTrigger
 	8,  // 15: bossanova.v1.Attempt.result:type_name -> bossanova.v1.AttemptResult
-	36, // 16: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
-	36, // 17: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
+	37, // 16: bossanova.v1.Attempt.created_at:type_name -> google.protobuf.Timestamp
+	37, // 17: bossanova.v1.Attempt.updated_at:type_name -> google.protobuf.Timestamp
 	5,  // 18: bossanova.v1.PRStatus.state:type_name -> bossanova.v1.PRState
 	2,  // 19: bossanova.v1.CheckResult.status:type_name -> bossanova.v1.CheckStatus
 	3,  // 20: bossanova.v1.CheckResult.conclusion:type_name -> bossanova.v1.CheckConclusion
@@ -3519,12 +3632,12 @@ var file_bossanova_v1_models_proto_depIdxs = []int32{
 	20, // 29: bossanova.v1.ChecksFailedEvent.failed_checks:type_name -> bossanova.v1.CheckResult
 	21, // 30: bossanova.v1.ReviewSubmittedEvent.comments:type_name -> bossanova.v1.ReviewComment
 	10, // 31: bossanova.v1.AttentionStatus.reason:type_name -> bossanova.v1.AttentionReason
-	36, // 32: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
-	36, // 33: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
-	36, // 34: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
-	36, // 35: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
-	36, // 36: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
-	36, // 37: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
+	37, // 32: bossanova.v1.AttentionStatus.since:type_name -> google.protobuf.Timestamp
+	37, // 33: bossanova.v1.ClaudeChat.created_at:type_name -> google.protobuf.Timestamp
+	37, // 34: bossanova.v1.CronJob.last_run_at:type_name -> google.protobuf.Timestamp
+	37, // 35: bossanova.v1.CronJob.next_run_at:type_name -> google.protobuf.Timestamp
+	37, // 36: bossanova.v1.CronJob.created_at:type_name -> google.protobuf.Timestamp
+	37, // 37: bossanova.v1.CronJob.updated_at:type_name -> google.protobuf.Timestamp
 	15, // 38: bossanova.v1.CronJob.last_run_status:type_name -> bossanova.v1.CronJobStatus
 	39, // [39:39] is the sub-list for method output_type
 	39, // [39:39] is the sub-list for method input_type
@@ -3558,7 +3671,7 @@ func file_bossanova_v1_models_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bossanova_v1_models_proto_rawDesc), len(file_bossanova_v1_models_proto_rawDesc)),
 			NumEnums:      16,
-			NumMessages:   20,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -176,3 +176,11 @@ func (l *Lifecycle) cronRunIsOver(sess *models.Session) bool {
 	}
 	return idle >= cronAgentIdleThreshold
 }
+
+// CronRunIsOver is the exported wrapper the CronCompletionGate is wired with so
+// the Stop-hook finalize path enforces the same completion criterion as the
+// stranded-cron sweep. Keeping it a thin pass-through means the gate and the
+// sweep can never drift onto different definitions of "the cron run is over".
+func (l *Lifecycle) CronRunIsOver(sess *models.Session) bool {
+	return l.cronRunIsOver(sess)
+}

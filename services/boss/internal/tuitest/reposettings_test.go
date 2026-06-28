@@ -43,8 +43,14 @@ func TestTUI_RepoSettingsView_Content(t *testing.T) {
 	if !strings.Contains(screen, "Merge strategy") {
 		t.Fatalf("expected 'Merge strategy' on screen:\n%s", screen)
 	}
-	if !strings.Contains(screen, "Auto-merge") {
-		t.Fatalf("expected auto-merge checkbox on screen:\n%s", screen)
+	if !strings.Contains(screen, "Automations") {
+		t.Fatalf("expected 'Automations' section heading on screen:\n%s", screen)
+	}
+	if !strings.Contains(screen, "Integrations") {
+		t.Fatalf("expected 'Integrations' section heading on screen:\n%s", screen)
+	}
+	if !strings.Contains(screen, "Auto-merge Dependabot PRs") {
+		t.Fatalf("expected Dependabot auto-merge checkbox on screen:\n%s", screen)
 	}
 }
 

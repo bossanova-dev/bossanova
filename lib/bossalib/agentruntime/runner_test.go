@@ -71,7 +71,7 @@ func TestRunnerStartCapturesOutputToLog(t *testing.T) {
 		BinaryName: "fake",
 	})
 
-	sid, err := r.Start(context.Background(), t.TempDir(), "the plan", nil, "sess-1", logPath)
+	sid, err := r.Start(context.Background(), t.TempDir(), "the plan", nil, "sess-1", logPath, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestRunnerStart_WritesNDJSON(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "echo line-one; echo line-two")),
 	)
-	sid, err := r.Start(context.Background(), dir, "ignored-plan", nil, "test-session", logPath)
+	sid, err := r.Start(context.Background(), dir, "ignored-plan", nil, "test-session", logPath, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRunnerStart_LogsCmdStartFailure(t *testing.T) {
 			return exec.CommandContext(ctx, "/no/such/binary")
 		}),
 	)
-	_, err := r.Start(context.Background(), dir, "", nil, "fail-session", logPath)
+	_, err := r.Start(context.Background(), dir, "", nil, "fail-session", logPath, "")
 	if err == nil {
 		t.Fatal("expected error from Start when cmd.Start fails")
 	}
@@ -245,7 +245,7 @@ func TestRunnerStart_LogsStdinWriteFailure(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "exit 0")),
 	)
-	sid, err := r.Start(context.Background(), dir, plan, nil, "stdin-session", logPath)
+	sid, err := r.Start(context.Background(), dir, plan, nil, "stdin-session", logPath, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestRunnerStart_LogsNonZeroExit(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "exit 7")),
 	)
-	sid, err := r.Start(context.Background(), dir, "", nil, "exit-session", logPath)
+	sid, err := r.Start(context.Background(), dir, "", nil, "exit-session", logPath, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestRunnerStart_RefusesSymlinkLogPath(t *testing.T) {
 		},
 		agentruntime.WithCommandFactory(fakeCmd(t, "true")),
 	)
-	_, err := r.Start(context.Background(), dir, "", nil, "sid", link)
+	_, err := r.Start(context.Background(), dir, "", nil, "sid", link, "")
 	if !errors.Is(err, agentruntime.ErrLogPathSymlink) {
 		t.Errorf("Start with symlink: err = %v, want ErrLogPathSymlink", err)
 	}
@@ -336,7 +336,7 @@ func TestRunnerStart_RejectsEmptyArgv(t *testing.T) {
 	r := agentruntime.NewRunner(zerolog.Nop(), agentruntime.Options{
 		BuildArgv: func(agentruntime.BuildArgvInput) []string { return nil },
 	})
-	_, err := r.Start(context.Background(), dir, "", nil, "sid", logPath)
+	_, err := r.Start(context.Background(), dir, "", nil, "sid", logPath, "")
 	if err == nil || !strings.Contains(err.Error(), "empty argv") {
 		t.Errorf("Start with empty argv: err = %v, want empty argv error", err)
 	}
@@ -382,7 +382,7 @@ func TestRunnerPostExitReplacesError(t *testing.T) {
 		},
 	})
 
-	sid, err := r.Start(context.Background(), dir, "", nil, "sess-auth", logPath)
+	sid, err := r.Start(context.Background(), dir, "", nil, "sess-auth", logPath, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestRunnerSessionIDFromOutput(t *testing.T) {
 		SessionIDFromOutput: threadIDFromOutput,
 	})
 
-	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath)
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestRunnerSessionIDFromOutputReturnsWhenIDArrives(t *testing.T) {
 	})
 
 	started := time.Now()
-	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath)
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "")
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -533,7 +533,7 @@ func TestRunnerSessionIDFromOutputToleratesSlowStartup(t *testing.T) {
 	})
 
 	started := time.Now()
-	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath)
+	sid, err := r.Start(context.Background(), dir, "", nil, "ignored-hint", logPath, "")
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -595,7 +595,7 @@ func TestRunnerStart_ConcurrentSameSessionIDIsSerialized(t *testing.T) {
 			// Per-goroutine log path so the runner can't fail the second
 			// caller for a non-race reason (file-already-open, etc).
 			_, err := r.Start(context.Background(), dir, "plan", nil, sessionID,
-				logPath+formatInt(i)+".log")
+				logPath+formatInt(i)+".log", "")
 			switch {
 			case err == nil:
 				successes.Add(1)

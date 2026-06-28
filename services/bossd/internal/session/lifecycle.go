@@ -695,7 +695,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			Str("session", sessionID).
 			Msg("tracker session created idle; awaiting manual start on first attach")
 	default:
-		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "")
+		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model)
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
 		}
@@ -1076,16 +1076,27 @@ func (l *Lifecycle) openDraftPRForBranch(ctx context.Context, sessionID string, 
 
 	prNumber := &prInfo.Number
 	prURL := &prInfo.URL
-	updated, err := l.sessions.Update(ctx, sessionID, db.UpdateSessionParams{
+	updateParams := db.UpdateSessionParams{
 		PRNumber: &prNumber,
 		PRURL:    &prURL,
-	})
+	}
+	// Persist the session title to match the PR we just created. Without this
+	// the row keeps the cron job name ("Bossanova auto-implement") even though
+	// the GitHub PR has a real title. Safe one-shot: every caller reaches here
+	// only when PRNumber was nil (SubmitPR, StartSession→createDraftPR, EnsurePR
+	// all guard on it), so this cannot overwrite a later user-edited title —
+	// the same invariant attachPRMetadata relies on.
+	if t := strings.TrimSpace(title); t != "" {
+		updateParams.Title = &t
+	}
+	updated, err := l.sessions.Update(ctx, sessionID, updateParams)
 	if err != nil {
 		return fmt.Errorf("update PR info: %w", err)
 	}
 
 	session.PRNumber = updated.PRNumber
 	session.PRURL = updated.PRURL
+	session.Title = updated.Title
 	if err := l.clearDraftPRBlockedReason(ctx, sessionID, session); err != nil {
 		l.logger.Warn().Err(err).
 			Str("session", sessionID).
@@ -1409,9 +1420,14 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 	if err != nil {
 		return nil, err
 	}
+	var prTitle string
 	if l.provider != nil {
-		if _, err := l.provider.GetPRStatus(ctx, repo.OriginURL, prNumber); err != nil {
+		status, err := l.provider.GetPRStatus(ctx, repo.OriginURL, prNumber)
+		if err != nil {
 			return nil, fmt.Errorf("get PR status: %w", err)
+		}
+		if status != nil {
+			prTitle = strings.TrimSpace(status.Title)
 		}
 	}
 
@@ -1420,6 +1436,12 @@ func (l *Lifecycle) LinkPR(ctx context.Context, sessionID, prRef string) (*model
 	updateParams := db.UpdateSessionParams{
 		PRNumber: &prNumberPtr,
 		PRURL:    &prURLPtr,
+	}
+	// Adopt the linked PR's title, but only on first association (no PR yet) so
+	// re-linking can't clobber a title the user deliberately set. Mirrors the
+	// one-shot rename invariant in reconcile.go / attachPRMetadata.
+	if prTitle != "" && sess.PRNumber == nil {
+		updateParams.Title = &prTitle
 	}
 	if sess.State == machine.Finalizing || sess.State == machine.Blocked {
 		awaitingState := int(machine.AwaitingChecks)
@@ -1676,7 +1698,7 @@ func (l *Lifecycle) ResurrectSession(ctx context.Context, sessionID string) erro
 		resume = session.AgentSessionID
 	}
 
-	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "")
+	claudeSessionID, err := l.agentRunner.StartByAgent(ctx, session.AgentName, session.WorktreePath, session.Plan, resume, "", session.Model)
 	if err != nil {
 		return fmt.Errorf("start claude: %w", err)
 	}

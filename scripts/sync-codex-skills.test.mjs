@@ -22,6 +22,9 @@ const privateDebtSkillPath = fileURLToPath(
 const privateMutationSkillPath = fileURLToPath(
   new URL('../.claude/skills/bs-sweep-mutation/SKILL.md', import.meta.url),
 );
+const privatePlanSkillPath = fileURLToPath(
+  new URL('../.claude/skills/bs-plan/SKILL.md', import.meta.url),
+);
 
 function tmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-skills-test-'));
@@ -99,6 +102,29 @@ describe('sync-codex-skills', () => {
       assert.doesNotMatch(skill, /NO_PR/);
       assert.doesNotMatch(skill, /BRANCH_PUSHED/);
       assert.doesNotMatch(skill, /BLOCKED/);
+    },
+  );
+
+  it(
+    'keeps bs-plan defaulting to agent-friendly with needs-human as the explained exception',
+    {
+      skip: !fs.existsSync(privatePlanSkillPath) && 'private plan skill fixture is absent',
+    },
+    () => {
+      const skill = fs.readFileSync(privatePlanSkillPath, 'utf8');
+
+      assert.match(skill, /^name: bs-plan/m);
+      // Both labels are documented as workspace facts and mutually exclusive.
+      assert.match(skill, /`agent-friendly`, `needs-human`/);
+      assert.match(skill, /mutually exclusive/);
+      // Agent-friendly is the default, applied to every plan unless blocked.
+      assert.match(skill, /Agent-friendly is the default/);
+      // needs-human is the exception and requires the explanation section.
+      assert.match(skill, /`needs-human`/);
+      assert.match(skill, /never both/);
+      assert.match(skill, /## Why this needs a human/);
+      // Complexity alone must never downgrade a plan to needs-human.
+      assert.match(skill, /[Cc]omplexity alone is\s+\*?\*?not\*?\*? a reason/);
     },
   );
 

@@ -70,6 +70,9 @@ func (c *listAgentsFakeClient) LastTurnIsUser(context.Context, *bossanovav1.Last
 func (c *listAgentsFakeClient) TranscriptExists(context.Context, *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
+func (c *listAgentsFakeClient) ReadTranscript(context.Context, *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
 
 func newListAgentsServer(clients map[string]agent.AgentRunnerClient) *Server {
 	return &Server{

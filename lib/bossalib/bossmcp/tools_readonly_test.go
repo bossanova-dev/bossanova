@@ -26,6 +26,7 @@ var readOnlyToolNames = []string{
 	"list_plugins",
 	"list_cron_jobs",
 	"get_cron_job",
+	"get_chat_transcript",
 }
 
 // writeToolNames is the union of mutating + destructive tools. None may appear
@@ -36,7 +37,7 @@ var writeToolNames = []string{
 	"stop_session", "pause_session", "resume_session", "retry_session",
 	"update_session", "link_session_pr", "record_chat", "update_chat_title",
 	"wake_chat", "report_chat_status", "create_cron_job", "update_cron_job",
-	"run_cron_job_now",
+	"run_cron_job_now", "send_chat_message",
 	// destructive
 	"remove_repo", "close_session", "merge_session", "remove_session",
 	"archive_session", "resurrect_session", "delete_chat", "empty_trash",

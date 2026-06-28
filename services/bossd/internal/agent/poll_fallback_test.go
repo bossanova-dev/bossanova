@@ -70,6 +70,9 @@ func (f *fakePollAgentClient) LastTurnIsUser(_ context.Context, _ *bossanovav1.L
 func (f *fakePollAgentClient) TranscriptExists(_ context.Context, _ *bossanovav1.TranscriptExistsRequest) (*bossanovav1.TranscriptExistsResponse, error) {
 	return &bossanovav1.TranscriptExistsResponse{}, nil
 }
+func (f *fakePollAgentClient) ReadTranscript(_ context.Context, _ *bossanovav1.ReadTranscriptRequest) (*bossanovav1.ReadTranscriptResponse, error) {
+	return &bossanovav1.ReadTranscriptResponse{}, nil
+}
 
 type fakeCompleter struct {
 	mu        sync.Mutex

@@ -20,7 +20,7 @@ var errNoAgentPlugin = errors.New("no AgentRunner plugin loaded; install bossd-p
 // sessions can be inspected, but new session creation fails fast.
 type NoopRunner struct{}
 
-func (NoopRunner) Start(_ context.Context, _, _ string, _ *string, _ string) (string, error) {
+func (NoopRunner) Start(_ context.Context, _, _ string, _ *string, _, _ string) (string, error) {
 	return "", errNoAgentPlugin
 }
 
@@ -33,7 +33,7 @@ func (NoopRunner) Subscribe(_ context.Context, _ string) (<-chan OutputLine, err
 	return nil, errNoAgentPlugin
 }
 
-func (NoopRunner) StartByAgent(_ context.Context, _, _, _ string, _ *string, _ string) (string, error) {
+func (NoopRunner) StartByAgent(_ context.Context, _, _, _ string, _ *string, _, _ string) (string, error) {
 	return "", errNoAgentPlugin
 }
 

@@ -130,7 +130,7 @@ func TestMockClaude_WithChanges(t *testing.T) {
 	h.Agent.WithChanges("result.txt", "hello from claude")
 
 	ctx := context.Background()
-	id, err := h.Agent.Start(ctx, workDir, "do the thing", nil, "test-session-id")
+	id, err := h.Agent.Start(ctx, workDir, "do the thing", nil, "test-session-id", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestMockClaude_NoChanges(t *testing.T) {
 	h.Agent.NoChanges()
 
 	ctx := context.Background()
-	id, err := h.Agent.Start(ctx, workDir, "do nothing", nil, "test-session-id-2")
+	id, err := h.Agent.Start(ctx, workDir, "do nothing", nil, "test-session-id-2", "")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

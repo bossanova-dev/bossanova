@@ -8,40 +8,40 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  bossE2eBuildCommand,
   browserCaptureCommand,
   buildManifest,
   classifySecretRisk,
   githubCommentCommand,
-  introCardCommand,
   listProofCommentsCommand,
   minimizeCommentCommand,
   parseProofArgs,
+  proofAncestorDirs,
   proofCommentMarker,
   proofRunPaths,
   proofUploadFiles,
   r2UploadCommand,
   renderComment,
+  renderDeferredComment,
+  resolveCatalogPath,
   selectOutdatedProofCommentIds,
   selectRecipes,
   terminalRenderCommand,
+  tuiAgentBridgeBuildCommand,
   tuiCaptureCommand,
   tuiVideoCaptureCommand,
   validateBrowserRoute,
   validateRecipeId,
 } from './proof-lib.mjs';
-import { buildPosterArgs } from './proof-poster.mjs';
+import { finishVideo } from './proof-finish-video.mjs';
 import { publishProofReport } from './proof-publish-report.mjs';
-import {
-  applyMinHeightRatio,
-  evenCropHeight,
-  postprocessProofVideo,
-  probeDimensions,
-} from './proof-video.mjs';
+import { applyMinHeightRatio, evenCropHeight, probeDimensions } from './proof-video.mjs';
 import { buildTape } from './proof-vhs.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const catalogPath = path.join(repoRoot, 'proof', 'recipes', 'default.json');
-const playButtonAsset = fileURLToPath(new URL('./assets/youtube-play-button.png', import.meta.url));
+// BOSS_PROOF_CATALOG lets an ad-hoc/experimental recipe set be trialled without
+// editing the committed proof/recipes/default.json.
+const catalogPath = resolveCatalogPath(repoRoot, process.env.BOSS_PROOF_CATALOG);
 
 function hasVhs() {
   const result = spawnSync('vhs', ['--version'], { stdio: 'ignore' });
@@ -82,6 +82,49 @@ function cleanupTuiFixtureBinaries() {
   cachedTuiBinaries = null;
 }
 
+let cachedTuiAgentBridge = null;
+function buildTuiAgentBridge({ bossBinOverride } = {}) {
+  if (cachedTuiAgentBridge) {
+    return cachedTuiAgentBridge;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-tui-agent-'));
+  const bridgeBin = path.join(dir, 'proof-tui-bridge');
+  const bossBin = bossBinOverride || path.join(dir, 'boss-e2e');
+  const builds = [{ out: bridgeBin, command: tuiAgentBridgeBuildCommand({ outBin: bridgeBin }) }];
+  if (!bossBinOverride) {
+    builds.push({ out: bossBin, command: bossE2eBuildCommand({ outBin: bossBin }) });
+  }
+  try {
+    for (const { out, command } of builds) {
+      const [bin, args, opts = {}] = command;
+      const result = spawnSync(bin, args, {
+        cwd: opts.cwd ? path.join(repoRoot, opts.cwd) : repoRoot,
+        stdio: ['ignore', 'ignore', 'pipe'],
+        encoding: 'utf8',
+      });
+      if (result.status !== 0 || result.error) {
+        if (result.stderr) process.stderr.write(result.stderr);
+        fs.rmSync(dir, { recursive: true, force: true });
+        const detail = result.error ? `: ${result.error.message}` : '';
+        throw new Error(`go build failed for ${out}${detail}`);
+      }
+    }
+  } catch (error) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+  cachedTuiAgentBridge = { dir, bridgeBin, bossBin };
+  return cachedTuiAgentBridge;
+}
+
+function cleanupTuiAgentBridge() {
+  if (!cachedTuiAgentBridge) {
+    return;
+  }
+  fs.rmSync(cachedTuiAgentBridge.dir, { recursive: true, force: true });
+  cachedTuiAgentBridge = null;
+}
+
 // PR title for the proof comment heading. Falls back to the first recipe's
 // title, then a generic label, when gh / PR lookup is unavailable.
 function resolveProofTitle({ recipes }) {
@@ -100,8 +143,27 @@ function resolveProofTitle({ recipes }) {
   return recipes[0]?.title ?? 'Proof of implementation';
 }
 
+const PROOF_USAGE = `Usage: node scripts/proof.mjs <command> [options]
+
+Commands:
+  plan                 Print the selected recipes for the current diff (read-only)
+  run                  Capture, upload, and comment proof on the PR
+
+Options:
+  --recipe <id>        Capture a specific recipe (repeatable)
+  --changed-file <p>   Override changed-file detection (repeatable)
+  --dry-run            Capture locally without uploading or commenting
+
+Examples:
+  node scripts/proof.mjs plan
+  node scripts/proof.mjs run --dry-run --recipe tui-home`;
+
 async function main() {
   const args = parseProofArgs(process.argv.slice(2));
+  if (args.command === 'help') {
+    console.log(PROOF_USAGE);
+    return;
+  }
   const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
   const changedFiles = args.changedFiles.length > 0 ? args.changedFiles : changedFilesFromGit();
   const selected = selectRecipes(catalog, changedFiles, args.recipes);
@@ -116,21 +178,89 @@ async function main() {
     throw new Error(`unknown proof command: ${args.command}`);
   }
 
+  // ── Docs-only branch: short-circuit before agent/recipe dispatch ───────────
+  // A docs/markdown-only PR with no matched proof recipe has no UI surface to
+  // capture. Post a neutral docs build check instead of running the web agent.
+  // services/docs changes now have Docusaurus recipes, so those continue to the
+  // deterministic recipe path below.
+  if (shouldPostDocsBuildCheck({ changedFiles, selectedRecipes: selected })) {
+    const prNumber = currentPrNumber();
+    const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+    const marker = proofCommentMarker(prNumber);
+    const pageList = changedFiles.map((f) => `- \`${f}\``).join('\n');
+    const commentBody =
+      renderDeferredComment({
+        marker,
+        manifest: { commit, prNumber },
+        reasonCode: 'docs-build-check',
+        recaptureHint: 'pnpm --dir services/docs build',
+      }) +
+      '\n\n**Changed pages:**\n' +
+      pageList;
+    const shouldUpload = !args.dryRun && process.env.BOSS_PROOF_UPLOAD !== '0';
+    if (shouldUpload && prNumber !== 'local') {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proof-docs-'));
+      const commentPath = path.join(tmpDir, 'comment.md');
+      try {
+        fs.writeFileSync(commentPath, commentBody);
+        collapsePriorProofComments({ prNumber });
+        runCommand(
+          githubCommentCommand({ prNumber, bodyFile: path.relative(repoRoot, commentPath) }),
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    }
+    return;
+  }
+
   // ── Mode dispatcher: agent mode is a cheap preflight before booting anything.
   // BOSS_PROOF_MODE=recipe forces the recipe path; =agent forces agent path.
   // Without an explicit mode, explicit --recipe selection stays on the recipe
   // path even when an API key exists.
   if (agentModeAvailable({ explicitRecipeSelection: args.recipes.length > 0 })) {
-    const { runAgentProof } = await import('./proof-agent.mjs');
-    return runAgentProof({
-      prNumber: currentPrNumber(),
-      commit: execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-      }).trim(),
-      changedFiles: args.changedFiles.length > 0 ? args.changedFiles : changedFilesFromGit(),
-      dryRun: args.dryRun,
-    });
+    const prNumber = currentPrNumber();
+    const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+    const surface = agentSurface({ catalog, changedFiles });
+    if (surface === 'tui') {
+      if (!process.env.BOSS_PROOF_TUI_BRIDGE_BIN) {
+        const existingBossBin = process.env.BOSS_PROOF_BOSS_BIN;
+        const { bridgeBin, bossBin } = buildTuiAgentBridge({ bossBinOverride: existingBossBin });
+        const bridgeEnv = tuiAgentBridgeEnv({
+          bridgeBin,
+          bossBin,
+          existingBossBin,
+        });
+        process.env.BOSS_PROOF_TUI_BRIDGE_BIN = bridgeEnv.BOSS_PROOF_TUI_BRIDGE_BIN;
+        process.env.BOSS_PROOF_BOSS_BIN = bridgeEnv.BOSS_PROOF_BOSS_BIN;
+      }
+      const { runTuiAgentProof } = await import('./proof-tui-agent.mjs');
+      return runTuiAgentProof({
+        prNumber,
+        commit,
+        changedFiles,
+        dryRun: args.dryRun,
+        fallbackRecipeCaptures: recipeFloorCapture({ selected }),
+      });
+    }
+    if (surface === 'web') {
+      const { runAgentProof } = await import('./proof-agent.mjs');
+      return runAgentProof({
+        prNumber,
+        commit,
+        changedFiles,
+        dryRun: args.dryRun,
+        fallbackRecipeCaptures: recipeFloorCapture({ selected }),
+      });
+    }
+    // surface === 'recipe': deterministic marketing/docs capture — fall through
+    // to the recipe path below instead of running the LLM web agent.
   }
 
   // Preflight ffmpeg/ffprobe only when a browser-video recipe is selected for a
@@ -249,108 +379,20 @@ async function main() {
     if (shouldCleanupRunDir({ shouldUpload, hasFailure, prNumber, keepWebm: !shouldUpload })) {
       try {
         fs.rmSync(localDir, { recursive: true, force: true });
+        // Prune now-empty scaffold dirs up to and including `.proof`. rmdirSync
+        // throws on a non-empty dir, which stops the upward walk.
+        for (const dir of proofAncestorDirs(localDir)) {
+          try {
+            fs.rmdirSync(dir);
+          } catch {
+            break;
+          }
+        }
       } catch (err) {
         console.warn(`[proof] run-dir cleanup failed (non-fatal): ${err.message}`);
       }
     }
   }
-}
-
-// Shared video finish: optional intro card, condense/timer per flags, then a
-// play-button poster composite. Both browser and TUI pass
-// timer/idleSpeedup/trimLeadingBlank true; the leading-trim is generalized
-// (detectLeadingStaticMs) so beyond the browser's bright white flash it also
-// drops the VHS dark/blank-terminal boot lead-in and a light surface's static
-// pre-roll (e.g. marketing) that the brightness heuristic alone can't trim.
-function finishVideo({
-  recipeDir,
-  recipeId,
-  webmPath,
-  pngPath,
-  label,
-  cardTitle,
-  surface,
-  cropHeight,
-  contentHeight,
-  timer,
-  idleSpeedup,
-  trimLeadingBlank,
-  keepWebm,
-}) {
-  const mp4Path = path.join(recipeDir, `${recipeId}.mp4`);
-  const timedPath = path.join(recipeDir, `${recipeId}-timed.mp4`);
-  const scratchPath = path.join(recipeDir, `${recipeId}-timer.raw`);
-  const introPngPath = path.join(recipeDir, `${recipeId}-intro.png`);
-  const tmpPosterPath = path.join(recipeDir, `${recipeId}-poster-tmp.png`);
-  const dims = probeDimensions(webmPath);
-
-  let resolvedIntroPngPath;
-  if (label && dims) {
-    const introHeight = evenCropHeight(cropHeight, dims.height) ?? dims.height;
-    try {
-      runCommand(
-        introCardCommand({
-          surface,
-          out: path.relative(repoRoot, introPngPath),
-          width: dims.width,
-          height: introHeight,
-          label,
-          title: cardTitle,
-        }),
-      );
-      resolvedIntroPngPath = introPngPath;
-    } catch (err) {
-      console.warn(`[proof] intro-card render failed — continuing without it: ${err.message}`);
-    }
-  }
-
-  const post = postprocessProofVideo({
-    webmPath,
-    timedPath,
-    outPath: mp4Path,
-    scratchPath,
-    introPngPath: resolvedIntroPngPath,
-    cropHeight,
-    timer,
-    idleSpeedup,
-    trimLeadingBlank,
-  });
-  if (!post.ok) {
-    console.warn(`[proof] video post-processing failed (${post.warning}) — plain mp4 fallback`);
-    const fb = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', webmPath, mp4Path], {
-      stdio: 'inherit',
-    });
-    if (fb.status !== 0)
-      throw new Error('ffmpeg fallback mp4 conversion failed — no usable video artifact');
-  }
-
-  try {
-    const pr = spawnSync(
-      'ffmpeg',
-      [
-        '-y',
-        '-loglevel',
-        'error',
-        ...buildPosterArgs({
-          base: pngPath,
-          playButton: playButtonAsset,
-          outPath: tmpPosterPath,
-          cropHeight,
-          overlayCenterHeight: contentHeight,
-        }),
-      ],
-      { stdio: 'inherit' },
-    );
-    if (pr.status === 0 && fs.existsSync(tmpPosterPath)) fs.copyFileSync(tmpPosterPath, pngPath);
-    else console.warn('[proof] play-button poster compositing failed — using plain poster frame');
-  } catch (err) {
-    console.warn(`[proof] play-button poster compositing error: ${err.message}`);
-  }
-
-  const tmpFiles = [timedPath, scratchPath, tmpPosterPath, introPngPath];
-  if (!keepWebm) tmpFiles.unshift(webmPath);
-  for (const f of tmpFiles) fs.rmSync(f, { force: true });
-  return { mp4Path };
 }
 
 function captureRecipe({ recipe, localDir, keepWebm = false }) {
@@ -676,6 +718,11 @@ function captureRecipe({ recipe, localDir, keepWebm = false }) {
   }
 }
 
+function recipeFloorCapture({ selected }) {
+  return ({ localDir, keepWebm }) =>
+    selected.map((recipe) => captureRecipe({ recipe, localDir, keepWebm }));
+}
+
 export function uploadBundle({ localDir, publicPrefix, manifest, bucket }) {
   for (const { file, relative, contentType } of proofUploadFiles({ manifest, localDir })) {
     const key = `${publicPrefix}/${relative}`;
@@ -726,6 +773,56 @@ export function agentModeAvailable({ explicitRecipeSelection = false } = {}) {
   if (process.env.BOSS_PROOF_MODE === 'agent') return true;
   if (explicitRecipeSelection) return false;
   return Boolean(process.env.PROOF_ANTHROPIC_API_KEY);
+}
+
+/**
+ * Determines which agent orchestrator surface to use for a proof run.
+ * Returns 'tui' when every matched recipe is a TUI recipe; 'recipe' when every
+ * matched recipe is a deterministic browser surface (marketing/docs) that needs
+ * no LLM exploration — those fall through to the recipe capture path; and 'web'
+ * otherwise (mixed, the Vite web app, or no match all use the web brain).
+ *
+ * BOSS_PROOF_AGENT_SURFACE=tui|web overrides the result. When that is absent,
+ * an explicit brief surface can override the catalog-derived result. Any other
+ * override value is ignored.
+ *
+ * @param {{ catalog: object, changedFiles: string[] }} opts
+ * @returns {'tui' | 'web' | 'recipe'}
+ */
+export function agentSurface({ catalog, changedFiles }) {
+  const override = process.env.BOSS_PROOF_AGENT_SURFACE;
+  if (override === 'tui' || override === 'web') return override;
+  const briefSurface = briefSurfaceOverride();
+  if (briefSurface) return briefSurface;
+  const matched = selectRecipes(catalog, changedFiles);
+  if (matched.length > 0 && matched.every((r) => r.surface === 'tui')) return 'tui';
+  // Marketing and docs are static, deterministic captures of known routes — the
+  // LLM web agent (which explores the live Vite app) cannot reach them and would
+  // post irrelevant proof. Route them to the recipe path instead.
+  if (
+    matched.length > 0 &&
+    matched.every((r) => r.surface === 'marketing' || r.surface === 'docs')
+  ) {
+    return 'recipe';
+  }
+  return 'web';
+}
+
+/**
+ * Reads an explicit BOSS_PROOF_BRIEF file and returns its surface when usable.
+ * Missing or malformed briefs are ignored so dispatch can fall back normally.
+ *
+ * @returns {'tui' | 'web' | null}
+ */
+function briefSurfaceOverride() {
+  const briefPath = process.env.BOSS_PROOF_BRIEF;
+  if (!briefPath) return null;
+  try {
+    const surface = JSON.parse(fs.readFileSync(briefPath, 'utf8'))?.surface;
+    return surface === 'tui' || surface === 'web' ? surface : null;
+  } catch {
+    return null;
+  }
 }
 
 function requiredProofBucket() {
@@ -821,6 +918,40 @@ export function shouldCleanupRunDir({ shouldUpload, hasFailure, prNumber, keepWe
 }
 
 /**
+ * Returns true when every changed file is a docs/markdown-only path that has
+ * no UI surface to proof-capture. Empty input returns false (no files → not
+ * docs-only). The `services/docs/` subtree, any `docs/` prefix, any `.md`/
+ * `.mdx` file, and the top-level `README.md` all count as docs.
+ *
+ * Note: proof-brief.mjs's `isLowSignalDiffPath` was considered but is not
+ * suitable here — it also covers lock files, `.sum`, and config dirs
+ * (`.claude/`, `.codex/`) that are not docs-only patterns.
+ *
+ * @param {string[]} changedFiles
+ * @returns {boolean}
+ */
+export function isDocsOnlyChange(changedFiles) {
+  if (!changedFiles?.length) return false;
+  const isDoc = (f) =>
+    f.startsWith('docs/') ||
+    f.startsWith('services/docs/') ||
+    /\.(md|mdx)$/.test(f) ||
+    f === 'README.md';
+  return changedFiles.every(isDoc);
+}
+
+/**
+ * Docs-only changes with no visual recipe should post a neutral build-check note.
+ * If a docs recipe matched (for example services/docs → Docusaurus), capture it.
+ *
+ * @param {{ changedFiles: string[], selectedRecipes: object[] }} opts
+ * @returns {boolean}
+ */
+export function shouldPostDocsBuildCheck({ changedFiles, selectedRecipes }) {
+  return isDocsOnlyChange(changedFiles) && (selectedRecipes?.length ?? 0) === 0;
+}
+
+/**
  * Prepends the recipeId to each still's fileName, producing recipe-dir-relative
  * paths that match the manifest `captures[].stills[].fileName` convention.
  * @param {string} recipeId
@@ -829,6 +960,13 @@ export function shouldCleanupRunDir({ shouldUpload, hasFailure, prNumber, keepWe
  */
 export function prefixStillFileNames(recipeId, stills) {
   return (stills ?? []).map((s) => ({ fileName: `${recipeId}/${s.fileName}`, label: s.label }));
+}
+
+export function tuiAgentBridgeEnv({ bridgeBin, bossBin, existingBossBin }) {
+  return {
+    BOSS_PROOF_TUI_BRIDGE_BIN: bridgeBin,
+    BOSS_PROOF_BOSS_BIN: existingBossBin || bossBin,
+  };
 }
 
 const invokedDirectly =
@@ -841,6 +979,7 @@ if (invokedDirectly) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;
     } finally {
+      cleanupTuiAgentBridge();
       cleanupTuiFixtureBinaries();
     }
   })();

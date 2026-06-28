@@ -206,6 +206,39 @@ func TestMutatingTools(t *testing.T) {
 			}},
 			sentinel: "skipped-rcjn",
 		},
+		{
+			tool: "send_chat_message",
+			args: map[string]any{"agent_session_id": "agent-scm", "message": "hello bot", "wake_if_asleep": true},
+			backend: &fakeBackend{sendChatMessage: func(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+				if req.GetAgentSessionId() != "agent-scm" || req.GetMessage() != "hello bot" || !req.GetWakeIfAsleep() {
+					t.Errorf("send_chat_message args not forwarded: %+v", req)
+				}
+				return &pb.SendChatMessageResponse{TmuxSessionName: "tmux-scm", Delivered: true}, nil
+			}},
+			sentinel: "tmux-scm",
+		},
+		{
+			tool: "send_chat_message",
+			args: map[string]any{"agent_session_id": "agent-default", "message": "wake me"},
+			backend: &fakeBackend{sendChatMessage: func(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+				if req.GetAgentSessionId() != "agent-default" || req.GetMessage() != "wake me" || !req.GetWakeIfAsleep() {
+					t.Errorf("send_chat_message default wake_if_asleep not forwarded: %+v", req)
+				}
+				return &pb.SendChatMessageResponse{TmuxSessionName: "tmux-default", Delivered: true}, nil
+			}},
+			sentinel: "tmux-default",
+		},
+		{
+			tool: "send_chat_message",
+			args: map[string]any{"agent_session_id": "agent-no-wake", "message": "do not wake", "wake_if_asleep": false},
+			backend: &fakeBackend{sendChatMessage: func(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+				if req.GetAgentSessionId() != "agent-no-wake" || req.GetMessage() != "do not wake" || req.GetWakeIfAsleep() {
+					t.Errorf("send_chat_message explicit false wake_if_asleep not forwarded: %+v", req)
+				}
+				return &pb.SendChatMessageResponse{TmuxSessionName: "tmux-no-wake", Delivered: true}, nil
+			}},
+			sentinel: "tmux-no-wake",
+		},
 	}
 
 	for _, tc := range cases {

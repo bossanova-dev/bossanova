@@ -85,7 +85,7 @@ type tmuxSpawner interface {
 // flag wiring (claude → `claude --resume <id>`, codex → `codex resume <id>`,
 // plus per-plugin user settings). spawnChatTmux stays agent-agnostic.
 type argvBuilder interface {
-	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string) ([]string, error)
+	BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string) ([]string, error)
 }
 
 type interactiveSessionResolution struct {
@@ -121,6 +121,11 @@ type spawnInput struct {
 	// launches on the same model as the initial StartTmuxChat rather than
 	// silently reverting to the plugin default.
 	Model string
+	// McpConfigPath is the absolute path to the per-spawn boss MCP config in the
+	// app-data dir (never the worktree), or "" when no trusted mcp binary
+	// resolved. Threading it through means re-ensured (RecordChat) and woken
+	// (WakeChat) panes expose the same mcp__boss__* tools as the initial spawn.
+	McpConfigPath string
 	// SessionEnv is the canonical BOSS_* environment set on the spawned tmux session.
 	SessionEnv map[string]string
 }
@@ -199,7 +204,7 @@ func spawnChatTmux(ctx context.Context, deps spawnDeps, in spawnInput) (spawnRes
 	// at all — pane capture is wired post-NewSession via tmux pipe-pane
 	// by StartTmuxChat, and the WakeChat path here just doesn't need
 	// any. Keeping the empty argument makes the contract explicit.
-	args, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model)
+	args, err := deps.Argv.BuildInteractive(ctx, in.Chat.AgentName, resumeID, resume, in.WorktreePath, "", in.AppendSystemPrompt, in.Model, in.McpConfigPath)
 	if err != nil {
 		return spawnResult{}, fmt.Errorf("build interactive command for agent %q: %w", in.Chat.AgentName, err)
 	}
@@ -361,7 +366,7 @@ type liveArgvBuilder struct {
 // BuildInteractive resolves argv for (agentName, resume) by calling the
 // matching plugin's BuildInteractiveCommand RPC. Plugins own their own CLI
 // shape and per-plugin settings, so spawnChatTmux stays agnostic to either.
-func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model string) ([]string, error) {
+func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentSessionID string, resume bool, worktreePath, logPath, appendSystemPrompt, model, mcpConfigPath string) ([]string, error) {
 	name := agentName
 	if name == "" {
 		name = defaultLegacyAgent
@@ -380,6 +385,7 @@ func (b liveArgvBuilder) BuildInteractive(ctx context.Context, agentName, agentS
 		LogPath:            logPath,
 		AppendSystemPrompt: appendSystemPrompt,
 		Model:              model,
+		McpConfigPath:      mcpConfigPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q BuildInteractiveCommand: %w", name, err)

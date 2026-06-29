@@ -623,6 +623,23 @@ func run(opts runOpts) error {
 		}
 	}
 
+	// Configured plugins (settings.Plugins, e.g. persisted by `boss config init
+	// --plugin-dir`, which the official installer runs) are exec'd by their
+	// stored path. Auto-discovery already vets binaries it finds, but these
+	// explicit entries bypass that scan, so on a release build a plugin binary
+	// swapped after config init would run without a plugins.sum check. Re-verify
+	// the final list against the manifest and drop any binary that fails (fail
+	// closed). The explicit --plugins E2E override loads unverified test stubs by
+	// design, so it is exempt.
+	if opts.plugins == nil {
+		verified, rejected := config.VerifyConfiguredPlugins(pluginCfgs)
+		for _, r := range rejected {
+			log.Error().Str("plugin", r.Name).Str("path", r.Path).Str("reason", r.Reason).
+				Msg("rejected configured plugin failing checksum verification")
+		}
+		pluginCfgs = verified
+	}
+
 	if err := pluginHost.Start(context.Background(), pluginCfgs, settings); err != nil {
 		pluginBus.Close()
 		return fmt.Errorf("plugin host: %w", err)
@@ -682,6 +699,7 @@ func run(opts runOpts) error {
 	// can pass a deterministic log path to BuildInteractiveCommand. Without
 	// this, the extracted method would fail-closed with FailedPrecondition.
 	lifecycle.SetAgentLogsDir(agentLogsDir)
+	lifecycle.SetChatStatus(chatStatusTracker)
 	cronGate := session.NewCronCompletionGate(session.CronCompletionGateDeps{
 		Sessions:  sessions,
 		Finalizer: lifecycle,
@@ -1093,7 +1111,11 @@ func run(opts runOpts) error {
 			return out, nil
 		})
 		snapshotChats := upstream.NewChatSnapshotReader(func(ctx context.Context) ([]*bossanovav1.ClaudeChatMetadata, error) {
-			chats, err := agentChats.ListWithTmuxSession(ctx)
+			// Routable (not tmux-only): headless runs have no tmux session
+			// name, so the old ListWithTmuxSession snapshot dropped them and
+			// bosso's FindDaemonForChat 404'd remote send/transcript calls
+			// after a reconnect that missed the create delta.
+			chats, err := agentChats.ListRoutableChats(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -1327,6 +1349,11 @@ func run(opts runOpts) error {
 		},
 		Logger: log.Logger,
 	})
+
+	// Auto-archive dependabot repair sessions when their PR merges (BOS-101).
+	// The server's archive-and-notify path also emits the stream update so the
+	// session leaves the TUI immediately.
+	orchestrator.SetSessionArchiver(taskorchestrator.SessionArchiverFunc(srv.ArchiveSessionAndNotify))
 
 	// Wire the chat-waker on the existing CommandHandlerAdapter now that
 	// the server is constructed. Done post-hoc rather than at adapter

@@ -175,13 +175,24 @@ func runChatWait(cmd *cobra.Command, chatID string) error {
 		baseline = resp.GetFinalAssistantText()
 	}
 
-	const pollInterval = 3 * time.Second
-	polls := 0
+	// A chat that was already finished when wait began keeps the same final
+	// assistant text on every poll, which is indistinguishable from a freshly
+	// sent follow-up whose new answer has not landed yet. Suppress the baseline
+	// result only during an initial grace window long enough for a real
+	// follow-up to flip the chat to a working state; after the window an
+	// unchanged, non-working chat was already done, so return its result rather
+	// than sleeping until --timeout.
+	const (
+		pollInterval  = 3 * time.Second
+		baselineGrace = 12 * time.Second
+	)
+	waitStart := time.Now()
 	for {
-		done, result, err := chatWaitTick(ctx, c, target, baseline, polls)
+		baselineGraceExpired := time.Since(waitStart) >= baselineGrace
+		done, result, err := chatWaitTick(ctx, c, target, baseline, baselineGraceExpired)
 		if err != nil {
 			if ctx.Err() != nil {
-				return fmt.Errorf("timed out waiting for chat %s after %s", chatID, timeout)
+				return chatWaitTimeout(cmd, c, target, baseline, chatID, timeout)
 			}
 			return fmt.Errorf("wait: %w", err)
 		}
@@ -190,24 +201,48 @@ func runChatWait(cmd *cobra.Command, chatID string) error {
 			return nil
 		}
 
-		polls++
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for chat %s after %s", chatID, timeout)
+			return chatWaitTimeout(cmd, c, target, baseline, chatID, timeout)
 		case <-time.After(pollInterval):
 		}
 	}
 }
 
+// chatWaitTimeout runs one final check after the wait context expired. A chat
+// that was already finished when wait began keeps its final text equal to the
+// baseline, which the grace window deliberately suppresses; a --timeout shorter
+// than that window (e.g. `boss chat wait --timeout 5s`) would otherwise report a
+// timeout even though the result is already available. Treat the grace window as
+// expired and consult the chat once more with a fresh short context: if it is no
+// longer working, print its result instead of reporting a timeout. A still-
+// working follow-up reports the timeout as before.
+func chatWaitTimeout(cmd *cobra.Command, c interface {
+	GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error)
+	GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
+}, target chatTarget, baseline, chatID string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if done, result, err := chatWaitTick(ctx, c, target, baseline, true); err == nil && done {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), result)
+		return nil
+	}
+	return fmt.Errorf("timed out waiting for chat %s after %s", chatID, timeout)
+}
+
 // chatWaitTick checks whether the chat is done. When the target was resolved
 // from a session id it polls that session's scoped chat statuses before reading
-// the transcript. The baseline avoids immediately returning a previous final
-// answer on the first tick after a follow-up message was sent.
+// the transcript. The baseline is the chat's final assistant text captured
+// before waiting began; while the transcript still matches it and the grace
+// window has not expired, a follow-up answer may not have landed yet, so we
+// keep waiting rather than return the stale previous result. Once the grace
+// window has expired (baselineGraceExpired) an unchanged transcript means the
+// chat was already finished when waiting began, so we return that result.
 // Returns (done, finalText, err).
 func chatWaitTick(ctx context.Context, c interface {
 	GetChatStatuses(context.Context, string) ([]*pb.ChatStatusEntry, error)
 	GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
-}, target chatTarget, baselineFinal string, polls int) (bool, string, error) {
+}, target chatTarget, baselineFinal string, baselineGraceExpired bool) (bool, string, error) {
 	if target.SessionID != "" {
 		statuses, err := c.GetChatStatuses(ctx, target.SessionID)
 		if err != nil && connect.CodeOf(err) != connect.CodeUnimplemented {
@@ -219,7 +254,7 @@ func chatWaitTick(ctx context.Context, c interface {
 			}
 			switch s.Status {
 			case pb.ChatStatus_CHAT_STATUS_IDLE, pb.ChatStatus_CHAT_STATUS_QUESTION, pb.ChatStatus_CHAT_STATUS_STOPPED:
-				return chatWaitTranscriptDone(ctx, c, target, baselineFinal, polls)
+				return chatWaitTranscriptDone(ctx, c, target, baselineFinal, baselineGraceExpired)
 			case pb.ChatStatus_CHAT_STATUS_WORKING:
 				return false, "", nil
 			default: // CHAT_STATUS_UNSPECIFIED or future values
@@ -228,12 +263,12 @@ func chatWaitTick(ctx context.Context, c interface {
 		}
 	}
 
-	return chatWaitTranscriptDone(ctx, c, target, baselineFinal, polls)
+	return chatWaitTranscriptDone(ctx, c, target, baselineFinal, baselineGraceExpired)
 }
 
 func chatWaitTranscriptDone(ctx context.Context, c interface {
 	GetChatTranscript(context.Context, *pb.GetChatTranscriptRequest) (*pb.GetChatTranscriptResponse, error)
-}, target chatTarget, baselineFinal string, polls int) (bool, string, error) {
+}, target chatTarget, baselineFinal string, baselineGraceExpired bool) (bool, string, error) {
 	resp, err := c.GetChatTranscript(ctx, &pb.GetChatTranscriptRequest{
 		SessionId:      target.SessionID,
 		AgentSessionId: target.AgentSessionID,
@@ -242,7 +277,15 @@ func chatWaitTranscriptDone(ctx context.Context, c interface {
 		return false, "", fmt.Errorf("get transcript: %w", err)
 	}
 	if resp.Exists && resp.FinalAssistantText != "" {
-		if resp.FinalAssistantText == baselineFinal && polls == 0 {
+		// A follow-up that is still running leaves the final text equal to the
+		// baseline, so returning it here would hand back the stale previous
+		// result. Keep waiting through the grace window, but once it expires an
+		// unchanged final means the chat was already finished when wait began,
+		// so return that result instead of hanging until --timeout.
+		if resp.FinalAssistantText == baselineFinal {
+			if baselineGraceExpired {
+				return true, resp.FinalAssistantText, nil
+			}
 			return false, "", nil
 		}
 		return true, resp.FinalAssistantText, nil

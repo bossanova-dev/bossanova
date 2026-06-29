@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { validateBrowserRoute } from './proof-lib.mjs';
+import { normalizeRecipe, validateBrowserRoute } from './proof-lib.mjs';
 
 const validSurfaces = new Set(['web', 'marketing', 'docs']);
 const validRecipeIdPattern = /^[a-z0-9][a-z0-9-]*$/;
@@ -28,7 +28,7 @@ if (invokedDirectly) {
 
 function run(argv) {
   const args = parseArgs(argv);
-  const recipe = JSON.parse(fs.readFileSync(args.recipe, 'utf8'));
+  const recipe = normalizeRecipe(JSON.parse(fs.readFileSync(args.recipe, 'utf8')));
   validateRecipe(recipe);
   fs.mkdirSync(args['output-dir'], { recursive: true });
 
@@ -144,8 +144,8 @@ export function validateRecipe(recipe) {
       } else if (step.action === 'wait' && step.selector !== undefined) {
         requireVideoStepString(step, 'selector');
       } else if (step.action === 'scroll') {
-        if (step.toSelector === undefined && step.byPx === undefined) {
-          throw new Error('scroll step requires toSelector or byPx');
+        if (step.toSelector === undefined && step.byPx === undefined && step.fullPage !== true) {
+          throw new Error('scroll step requires toSelector, byPx, or fullPage');
         }
         if (step.toSelector !== undefined) {
           requireVideoStepString(step, 'toSelector');
@@ -361,6 +361,24 @@ ${captionLine}`;
         ? `${captionLine}  await expect(page.locator(${jsString(step.selector)}).first()).toBeVisible();`
         : `${captionLine}  await page.waitForTimeout(${Number(step.timeoutMs) || 500});`;
     case 'scroll':
+      if (step.fullPage === true) {
+        return `${captionLine}  await page.evaluate(async () => {
+    const dwell = (ms) => new Promise((r) => setTimeout(r, ms));
+    // Some layouts scroll the documentElement rather than body; take the max so
+    // we always reach the true bottom (the PR #863 "stops short" failure mode).
+    const pageHeight = () => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
+    const step = Math.max(1, Math.round(window.innerHeight * 0.8));
+    for (let y = 0; y < pageHeight() - window.innerHeight; y += step) {
+      window.scrollTo({ top: y, behavior: 'smooth' });
+      await dwell(450);
+    }
+    window.scrollTo({ top: pageHeight(), behavior: 'smooth' });
+    await dwell(450);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    await dwell(450);
+  });
+  await page.waitForTimeout(400);`;
+      }
       return step.toSelector
         ? `${captionLine}  await page.locator(${jsString(step.toSelector)}).first().evaluate((el) => el.scrollIntoView({ behavior: 'smooth', block: 'center' }));
   await page.waitForTimeout(800);`

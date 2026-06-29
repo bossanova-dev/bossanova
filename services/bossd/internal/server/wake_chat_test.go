@@ -14,6 +14,7 @@ import (
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossd/internal/db"
+	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
 	"github.com/rs/zerolog"
 )
@@ -188,6 +189,37 @@ func TestWakeChat_WorktreeMissing_FailedPrecondition(t *testing.T) {
 	}
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("expected FailedPrecondition, got %v", connect.CodeOf(err))
+	}
+}
+
+// TestWakeChatStream_HeadlessRunActive_FailedPrecondition locks in that the
+// reverse-stream path classifies an active headless run as FAILED_PRECONDITION
+// (matching the direct connect RPC), so bosso maps it to a retryable
+// FailedPrecondition rather than leaking ERROR_CODE_UNSPECIFIED → CodeAborted.
+func TestWakeChatStream_HeadlessRunActive_FailedPrecondition(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	s := newWakeTestServer(t, chat, sess, tmuxer)
+	s.chatStatus = status.NewTracker()
+	s.chatStatus.Update("agent-1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	_, _, _, code, err := s.WakeChatStream(context.Background(), "agent-1", false)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrHeadlessRunActive) {
+		t.Fatalf("expected ErrHeadlessRunActive, got %v", err)
+	}
+	if code != pb.CommandResult_ERROR_CODE_FAILED_PRECONDITION {
+		t.Fatalf("expected ERROR_CODE_FAILED_PRECONDITION, got %v", code)
+	}
+
+	tmuxer.mu.Lock()
+	spawnCount := tmuxer.createdN
+	tmuxer.mu.Unlock()
+	if spawnCount != 0 {
+		t.Errorf("expected 0 spawns while headless run active, got %d", spawnCount)
 	}
 }
 

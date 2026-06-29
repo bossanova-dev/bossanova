@@ -1601,6 +1601,57 @@ func TestScanForPluginsMissingManifestFailsClosed(t *testing.T) {
 	}
 }
 
+func TestVerifyConfiguredPluginsEnforcesChecksum(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("manifest dir trust check relies on Unix perms")
+	}
+	dir := t.TempDir()
+	binPath, sum := writeBin(t, dir, "bossd-plugin-claude", []byte("real"))
+	if err := os.WriteFile(filepath.Join(dir, pluginSumFile),
+		[]byte(sum+"  bossd-plugin-claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgs := []PluginConfig{{Name: "claude", Path: binPath, Enabled: true}}
+	policy := discoveryPolicy{requireSafePerms: true, verifyChecksums: true}
+
+	got, rej := verifyConfiguredPlugins(cfgs, policy)
+	if len(got) != 1 || len(rej) != 0 {
+		t.Fatalf("matching configured binary should be accepted: got=%d rej=%d", len(got), len(rej))
+	}
+
+	// A binary swapped after `config init` persisted the path must be rejected.
+	if err := os.WriteFile(binPath, []byte("evil"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, rej = verifyConfiguredPlugins(cfgs, policy)
+	if len(got) != 0 || len(rej) != 1 {
+		t.Fatalf("tampered configured binary must be rejected: got=%d rej=%d", len(got), len(rej))
+	}
+}
+
+func TestVerifyConfiguredPluginsMissingManifestFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("perms hardening no-op on Windows")
+	}
+	dir := t.TempDir()
+	binPath, _ := writeBin(t, dir, "bossd-plugin-claude", []byte("real"))
+	cfgs := []PluginConfig{{Name: "claude", Path: binPath, Enabled: true}}
+	got, rej := verifyConfiguredPlugins(cfgs, discoveryPolicy{requireSafePerms: true, verifyChecksums: true})
+	if len(got) != 0 || len(rej) != 1 {
+		t.Fatalf("configured binary with no manifest must fail closed: got=%d rej=%d", len(got), len(rej))
+	}
+}
+
+func TestVerifyConfiguredPluginsDevPassesThrough(t *testing.T) {
+	dir := t.TempDir()
+	binPath, _ := writeBin(t, dir, "bossd-plugin-claude", []byte("real"))
+	cfgs := []PluginConfig{{Name: "claude", Path: binPath, Enabled: true}}
+	got, rej := verifyConfiguredPlugins(cfgs, discoveryPolicy{requireSafePerms: true, verifyChecksums: false})
+	if len(got) != 1 || len(rej) != 0 {
+		t.Fatalf("dev build must pass configured plugins through unchecked: got=%d rej=%d", len(got), len(rej))
+	}
+}
+
 func TestScanForPluginsDevSkipsChecksum(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("perms hardening no-op on Windows")

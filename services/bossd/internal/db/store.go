@@ -212,6 +212,10 @@ type AgentChatStore interface {
 	MarkStartFailed(ctx context.Context, agentSessionID, reason string) error
 	DeleteByAgentSessionID(ctx context.Context, agentSessionID string) error
 	ListWithTmuxSession(ctx context.Context) ([]*models.AgentChat, error)
+	// ListRoutableChats returns chats the daemon can route to for the
+	// upstream reconnect snapshot: tmux-hosted chats plus headless runs
+	// (which have no tmux session name), excluding failed-start rows.
+	ListRoutableChats(ctx context.Context) ([]*models.AgentChat, error)
 }
 
 // CreateAttemptParams holds the parameters for creating a new attempt.

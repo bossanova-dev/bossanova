@@ -16,6 +16,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/machine"
 	"github.com/recurser/bossalib/models"
 	"github.com/recurser/bossalib/vcs"
@@ -483,6 +484,12 @@ func (m *mockAgentChatStore) DeleteByAgentSessionID(_ context.Context, agentSess
 }
 
 func (m *mockAgentChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentChat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chatsWithTmux, nil
+}
+
+func (m *mockAgentChatStore) ListRoutableChats(_ context.Context) ([]*models.AgentChat, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.chatsWithTmux, nil
@@ -3898,6 +3905,25 @@ func (f *fakeTmux) hasSubcommand(name string) bool {
 	return false
 }
 
+// hasLiteralSendKeys reports whether any recorded send-keys call used the "-l"
+// literal flag. Used to assert literal-keystroke delivery without pinning the
+// full, payload-dependent arg vector.
+func (f *fakeTmux) hasLiteralSendKeys() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c.subcommand != "send-keys" {
+			continue
+		}
+		for _, a := range c.args {
+			if a == "-l" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // --- Cron tmux tests ---
 
 // TestStartSession_CronJobID_TmuxAvailable_HappyPath verifies the cron
@@ -3992,11 +4018,13 @@ func TestStartSession_CronJobID_TmuxAvailable_HappyPath(t *testing.T) {
 		t.Error("expected non-nil/non-empty tmux name persisted on chat row")
 	}
 
-	// SendPlan must have run: load-buffer + paste-buffer + send-keys.
-	for _, sub := range []string{"load-buffer", "paste-buffer", "send-keys"} {
-		if !fake.hasSubcommand(sub) {
-			t.Errorf("expected tmux %s call from SendPlan, none recorded", sub)
-		}
+	// SendPlan must have run. A single-line plan ("Run the audit") delivers via
+	// literal keystrokes (send-keys -l), not bracketed paste.
+	if fake.hasSubcommand("paste-buffer") {
+		t.Error("single-line plan must not use bracketed paste")
+	}
+	if !fake.hasLiteralSendKeys() {
+		t.Error("expected literal send-keys -l delivery from SendPlan, none recorded")
 	}
 
 	// The new claude session UUID was persisted on the session row.
@@ -4856,5 +4884,163 @@ func TestStartSession_RoutesToCodexWhenSessionAgentNameIsCodex(t *testing.T) {
 	}
 	if sess.AgentSessionID == nil || *sess.AgentSessionID != "codex-generated-id" {
 		t.Errorf("session.AgentSessionID = %v, want codex-generated-id", sess.AgentSessionID)
+	}
+}
+
+func TestStartSession_CreatesAgentChatRowForHeadlessRun(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+	logger := zerolog.Nop()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID:                "repo-1",
+		LocalPath:         "/tmp/repo",
+		DefaultBaseBranch: "main",
+		WorktreeBaseDir:   "/tmp/worktrees",
+	}
+	sessions.sessions["sess-1"] = &models.Session{
+		ID:         "sess-1",
+		RepoID:     "repo-1",
+		Title:      "Test Session",
+		Plan:       "Do something",
+		BaseBranch: "main",
+		State:      machine.CreatingWorktree,
+		AgentName:  "codex",
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), logger)
+
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if len(chats.createCalls) != 1 {
+		t.Fatalf("expected 1 agent_chats Create, got %d", len(chats.createCalls))
+	}
+	got := chats.createCalls[0]
+	if got.SessionID != "sess-1" {
+		t.Errorf("SessionID = %q, want sess-1", got.SessionID)
+	}
+	if got.AgentSessionID != "claude-123" { // newMockAgentRunner().nextID
+		t.Errorf("AgentSessionID = %q, want claude-123", got.AgentSessionID)
+	}
+	if got.AgentName != "codex" {
+		t.Errorf("AgentName = %q, want codex", got.AgentName)
+	}
+	if got.Title != "Test Session" {
+		t.Errorf("Title = %q, want Test Session", got.Title)
+	}
+}
+
+func TestStartSession_TrackerSessionCreatesNoChatRow(t *testing.T) {
+	ctx := context.Background()
+	sessions := newMockSessionStore()
+	repos := newMockRepoStore()
+	chats := &mockAgentChatStore{}
+	wt := &mockWorktreeManager{}
+	cr := newMockAgentRunner()
+
+	repos.repos["repo-1"] = &models.Repo{
+		ID: "repo-1", LocalPath: "/tmp/repo", DefaultBaseBranch: "main", WorktreeBaseDir: "/tmp/worktrees",
+	}
+	tracker := "FRE-1"
+	sessions.sessions["sess-1"] = &models.Session{
+		ID: "sess-1", RepoID: "repo-1", Title: "Tracker", Plan: "x", BaseBranch: "main",
+		State: machine.CreatingWorktree, AgentName: "codex", TrackerID: &tracker,
+	}
+
+	lc := NewLifecycle(sessions, repos, chats, nil, wt, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	if err := lc.StartSession(ctx, "sess-1", StartSessionOpts{}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if len(chats.createCalls) != 0 {
+		t.Fatalf("tracker session must not create an agent_chats row, got %d", len(chats.createCalls))
+	}
+}
+
+// --- Headless run status watcher helpers ---
+
+type recordingChatStatus struct {
+	mu      sync.Mutex
+	updates []recordedStatus
+}
+
+type recordedStatus struct {
+	id     string
+	status pb.ChatStatus
+}
+
+func (r *recordingChatStatus) Update(id string, st pb.ChatStatus, _ time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.updates = append(r.updates, recordedStatus{id: id, status: st})
+}
+
+func (r *recordingChatStatus) snapshot() []recordedStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]recordedStatus(nil), r.updates...)
+}
+
+// flipRunner reports the run as running for the first `trueFor` IsRunningByAgent
+// calls, then not-running. Embeds mockAgentRunner for the rest of the interface.
+type flipRunner struct {
+	*mockAgentRunner
+	calls   atomic.Int32
+	trueFor int32
+}
+
+func (f *flipRunner) IsRunningByAgent(_, _ string) bool {
+	return f.calls.Add(1) <= f.trueFor
+}
+
+func TestWatchHeadlessRunStatus_MarksWorkingThenStopped(t *testing.T) {
+	cr := &flipRunner{mockAgentRunner: newMockAgentRunner(), trueFor: 3}
+	rec := &recordingChatStatus{}
+	lc := NewLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetChatStatus(rec)
+	lc.headlessStatusPollInterval = time.Millisecond
+
+	lc.watchHeadlessRunStatus("codex", "agent-1")
+
+	got := rec.snapshot()
+	if len(got) < 2 {
+		t.Fatalf("want >=2 status updates, got %d (%+v)", len(got), got)
+	}
+	if got[0].status != pb.ChatStatus_CHAT_STATUS_WORKING || got[0].id != "agent-1" {
+		t.Errorf("first update = %+v, want WORKING/agent-1", got[0])
+	}
+	last := got[len(got)-1]
+	if last.status != pb.ChatStatus_CHAT_STATUS_STOPPED || last.id != "agent-1" {
+		t.Errorf("last update = %+v, want STOPPED/agent-1", last)
+	}
+}
+
+// TestWatchHeadlessRunStatus_RefreshesWorking guards the fix that re-stamps
+// WORKING on every positive poll. Without it the lone initial WORKING update
+// ages past status.StaleThreshold and GetBatch reports the still-running chat
+// as STOPPED. With trueFor=3 the loop sees the run alive three times, so there
+// must be more than one WORKING update before the terminal STOPPED.
+func TestWatchHeadlessRunStatus_RefreshesWorking(t *testing.T) {
+	cr := &flipRunner{mockAgentRunner: newMockAgentRunner(), trueFor: 3}
+	rec := &recordingChatStatus{}
+	lc := NewLifecycle(newMockSessionStore(), newMockRepoStore(), &mockAgentChatStore{}, nil, &mockWorktreeManager{}, cr, nil, newMockVCSProvider(), zerolog.Nop())
+	lc.SetChatStatus(rec)
+	lc.headlessStatusPollInterval = time.Millisecond
+
+	lc.watchHeadlessRunStatus("codex", "agent-1")
+
+	working := 0
+	for _, u := range rec.snapshot() {
+		if u.status == pb.ChatStatus_CHAT_STATUS_WORKING {
+			working++
+		}
+	}
+	if working < 2 {
+		t.Errorf("WORKING updates = %d, want >=2 (initial + refresh on each positive poll)", working)
 	}
 }

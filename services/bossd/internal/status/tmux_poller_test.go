@@ -295,6 +295,20 @@ func (m *mockChatStore) ListWithTmuxSession(_ context.Context) ([]*models.AgentC
 	return result, nil
 }
 
+func (m *mockChatStore) ListRoutableChats(_ context.Context) ([]*models.AgentChat, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []*models.AgentChat
+	for _, c := range m.chats {
+		hasTmux := c.TmuxSessionName != nil && *c.TmuxSessionName != ""
+		failed := c.StartError != nil && *c.StartError != ""
+		if hasTmux || !failed {
+			result = append(result, c)
+		}
+	}
+	return result, nil
+}
+
 // --- mock SessionStore (only Get is exercised by the poller) ---
 
 type mockSessionStore struct {

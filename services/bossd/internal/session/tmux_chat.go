@@ -276,6 +276,7 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 
 	// Step 5: resolve argv via the plugin. The plugin owns flags like
 	// --dangerously-skip-permissions and the tee-to-log redirect.
+	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sessionID)
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:          agentSessionID,
 		Resume:             resuming,
@@ -283,8 +284,9 @@ func (l *Lifecycle) StartTmuxChat(ctx context.Context, sessionID string, input C
 		InitialPrompt:      input.Prompt,
 		InitialCommand:     input.Command,
 		WorktreePath:       sess.WorktreePath,
-		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID, sess.AgentName),
+		AppendSystemPrompt: AppendSystemPromptFor(sess, agentSessionID, sess.AgentName, mcpConfigPath),
 		Model:              sess.Model,
+		McpConfigPath:      mcpConfigPath,
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sessionID, err)
@@ -421,6 +423,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 	if chat.TmuxSessionName != nil {
 		tmuxName = *chat.TmuxSessionName
 	}
+	mcpConfigPath := l.writeSessionMcpConfig(sess, agentSessionID, sess.ID)
 	cmdResp, err := client.BuildInteractiveCommand(ctx, &bossanovav1.BuildInteractiveCommandRequest{
 		SessionId:      resumeSessionID,
 		Resume:         true,
@@ -429,6 +432,7 @@ func (l *Lifecycle) sendInputToLiveTmuxChat(ctx context.Context, sess *models.Se
 		InitialPrompt:  input.Prompt,
 		InitialCommand: input.Command,
 		Model:          sess.Model,
+		McpConfigPath:  mcpConfigPath,
 	})
 	if err != nil {
 		return "", fmt.Errorf("build interactive command for session %s: %w", sess.ID, err)
@@ -881,31 +885,44 @@ func ResolveSessionFacts(sess *models.Session, agentSessionID, agentName string)
 // bossSessionContext describes the chat's own bossanova identifiers and how to
 // act on them, built purely from resolved facts. It enumerates NO tools (the
 // previous hand-listed subset caused agents to wrongly conclude a capability
-// was absent). It points the agent at the boss CLI's own --help as the
-// authoritative, always-current command list, and hard-forbids working around
-// a missing capability by editing boss state directly.
+// was absent). It points the agent at `boss env` — the self-describing context
+// + CLI/MCP capability inventory command — with `boss --help` as a fallback,
+// and hard-forbids working around a missing capability by editing boss state
+// directly.
 func bossSessionContext(f SessionFacts) string {
 	bossRef := "the boss CLI (`boss`, if on PATH)"
-	helpRef := "`boss --help`"
+	helpRef := "`boss env` (or `boss --help`)"
 	renameRef := "`boss rename <session-id> <new title>`"
 	if f.BossBin != "" {
 		bossRef = "the boss CLI at " + f.BossBin
-		helpRef = "`" + f.BossBin + " --help`"
+		helpRef = "`" + f.BossBin + " env` (or `" + f.BossBin + " --help`)"
 		renameRef = "`" + f.BossBin + " rename " + f.SessionID + " <new title>`"
 	}
-	return "You are running inside a bossanova-managed chat. Your boss identifiers are: " +
+	prompt := "You are running inside a bossanova-managed chat. Your boss identifiers are: " +
 		"session ID " + f.SessionID + ", agent-session (chat) ID " + f.AgentSessionID + ", " +
 		"repository ID " + f.RepoID + ", agent " + f.Agent + ", worktree " + f.Worktree + ". " +
 		"These, plus the daemon socket and binary paths, are also in your environment as " +
 		"BOSS_SESSION_ID, BOSS_AGENT_SESSION_ID, BOSS_REPO_ID, BOSS_AGENT, BOSS_WORKTREE, " +
 		"BOSS_SETTINGS_PATH, BOSS_SOCKET, BOSS_BIN, BOSS_MCP_BIN (context for you, not an " +
 		"action surface). To act on this session or chat, use " + bossRef + " — run " + helpRef +
-		" for the full, current command list (for example, " + renameRef + " retitles a session). " +
+		" for your live session context plus the full, current CLI command and MCP tool inventory " +
+		"(for example, " + renameRef + " retitles a session). " +
 		"Boss operations are keyed on the session ID and agent-session (chat) ID above. " +
 		"Do not assume a capability is missing without checking " + helpRef + " first. " +
 		"Never edit the boss database or session files directly, and never invent a workaround " +
 		"for a missing capability. If no documented boss command covers what you need, stop and " +
 		"report that you are blocked."
+	if f.McpBin != "" {
+		// The boss MCP server is wired into this chat (see BOS-95). Announce the
+		// namespace, not a tool subset: hand-listing individual tools is the
+		// drift bug this prompt deliberately avoids, so point at the live tool
+		// list instead of enumerating it.
+		prompt += " The boss MCP server is also wired into this chat: its mcp__boss__* tools " +
+			"are available to you in-session as another way to run boss operations. Discover " +
+			"the current set from your own tool list rather than assuming which mcp__boss__* " +
+			"tools exist."
+	}
+	return prompt
 }
 
 // AppendSystemPromptFor builds the per-chat system-prompt suffix bossd injects
@@ -914,16 +931,58 @@ func bossSessionContext(f SessionFacts) string {
 // is shared with ManagedSessionEnv via ResolveSessionFacts.
 //
 // agentName is the running agent for this chat (see ResolveSessionFacts).
-func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName string) string {
+//
+// mcpConfigPath is the per-spawn boss MCP config path actually written for this
+// launch ("" when none). The mcp__boss__* mention is gated on it — not merely on
+// a resolvable mcp binary — so the prompt never claims tools the agent will not
+// receive: claude only gets --mcp-config when this path is non-empty, and a
+// failed config write yields "" even when McpBin resolves.
+func AppendSystemPromptFor(sess *models.Session, agentSessionID, agentName, mcpConfigPath string) string {
 	if sess == nil {
 		return ""
 	}
 	f := ResolveSessionFacts(sess, agentSessionID, agentName)
+	if mcpConfigPath == "" {
+		// No config was written for this spawn; do not advertise mcp__boss__*.
+		f.McpBin = ""
+	}
 	prompt := bossSessionContext(f)
 	if f.IsCron {
 		prompt += "\n\n" + cronAutonomyDirective
 	}
 	return prompt
+}
+
+// writeSessionMcpConfig generates the per-spawn boss MCP config for this chat
+// and returns its absolute path (in the app-data dir, never the worktree), or
+// "" when no trusted mcp binary is resolved. MCP wiring is best-effort: a write
+// failure must never block a chat launch, so it is logged and the chat
+// continues without mcp__boss__* rather than failing.
+func (l *Lifecycle) writeSessionMcpConfig(sess *models.Session, agentSessionID, sessionID string) string {
+	path, err := WriteSessionMcpConfig(ResolveSessionFacts(sess, agentSessionID, sess.AgentName))
+	if err != nil {
+		l.logger.Warn().Err(err).
+			Str("session", sessionID).
+			Str("agentSessionID", agentSessionID).
+			Msg("write session mcp config failed; chat continues without mcp__boss__*")
+		return ""
+	}
+	return path
+}
+
+// SessionMcpConfigPath writes the per-spawn boss MCP config for this chat and
+// returns its absolute path (in the app-data dir, never the worktree), or ""
+// when no trusted mcp binary is resolved OR the write failed. MCP wiring is
+// best-effort and must never block a launch, so a write error degrades to "".
+// This mirrors AppendSystemPromptFor as a pure helper for spawn call sites that
+// have no Lifecycle logger (RecordChat/WakeChat); the Lifecycle path uses
+// writeSessionMcpConfig instead so it can log the failure.
+func SessionMcpConfigPath(sess *models.Session, agentSessionID, agentName string) string {
+	if sess == nil {
+		return ""
+	}
+	path, _ := WriteSessionMcpConfig(ResolveSessionFacts(sess, agentSessionID, agentName))
+	return path
 }
 
 // killTmuxChatBestEffort tears down a tmux session created during a failed

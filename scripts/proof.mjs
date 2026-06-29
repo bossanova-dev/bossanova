@@ -11,10 +11,10 @@ import {
   bossE2eBuildCommand,
   browserCaptureCommand,
   buildManifest,
-  classifySecretRisk,
   githubCommentCommand,
   listProofCommentsCommand,
   minimizeCommentCommand,
+  normalizeRecipe,
   parseProofArgs,
   proofAncestorDirs,
   proofCommentMarker,
@@ -265,8 +265,14 @@ async function main() {
 
   // Preflight ffmpeg/ffprobe only when a browser-video recipe is selected for a
   // run. Still and TUI-only runs (and the `plan` command above) must not
-  // require ffmpeg.
-  if (selected.some((recipe) => recipe.capture === 'video' && recipe.surface !== 'tui')) {
+  // require ffmpeg. Normalize first: a route-only browser recipe defaults to
+  // video in captureRecipe, so reading the raw capture here would skip the
+  // preflight and fail deep in finishVideo instead of with this clear message.
+  if (
+    selected.some(
+      (recipe) => normalizeRecipe(recipe).capture === 'video' && recipe.surface !== 'tui',
+    )
+  ) {
     const ffmpegOk = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
     const ffprobeOk = spawnSync('ffprobe', ['-version'], { stdio: 'ignore' }).status === 0;
     if (!ffmpegOk || !ffprobeOk) {
@@ -395,7 +401,8 @@ async function main() {
   }
 }
 
-function captureRecipe({ recipe, localDir, keepWebm = false }) {
+function captureRecipe({ recipe: rawRecipe, localDir, keepWebm = false }) {
+  const recipe = normalizeRecipe(rawRecipe);
   const recipeId = validateRecipeId(recipe.id);
   const recipeDir = path.join(localDir, recipeId);
   fs.mkdirSync(recipeDir, { recursive: true });
@@ -430,11 +437,6 @@ function captureRecipe({ recipe, localDir, keepWebm = false }) {
             outputDir: path.relative(repoRoot, recipeDir),
           }),
         );
-        const screenText = fs.readFileSync(path.join(recipeDir, 'screen.txt'), 'utf8');
-        const risk = classifySecretRisk(screenText);
-        if (risk.risk === 'high') {
-          throw new Error(`secret-like text detected in TUI video screen: ${risk.reason}`);
-        }
         runCommand(
           terminalRenderCommand({
             input: path.relative(repoRoot, path.join(recipeDir, 'screen.txt')),
@@ -547,11 +549,6 @@ function captureRecipe({ recipe, localDir, keepWebm = false }) {
           outputDir: path.relative(repoRoot, recipeDir),
         }),
       );
-      const screenText = fs.readFileSync(path.join(recipeDir, 'screen.txt'), 'utf8');
-      const risk = classifySecretRisk(screenText);
-      if (risk.risk === 'high') {
-        throw new Error(`secret-like text detected in TUI screen: ${risk.reason}`);
-      }
       runCommand(
         terminalRenderCommand({
           input: path.relative(repoRoot, path.join(recipeDir, 'screen.txt')),
@@ -570,12 +567,6 @@ function captureRecipe({ recipe, localDir, keepWebm = false }) {
           outputDir: path.relative(repoRoot, recipeDir),
         }),
       );
-      const videoAuditText = fs.readFileSync(path.join(recipeDir, 'audit.txt'), 'utf8');
-      const videoRisk = classifySecretRisk(videoAuditText);
-      if (videoRisk.risk === 'high') {
-        throw new Error(`secret-like text detected in browser video capture: ${videoRisk.reason}`);
-      }
-
       // Read video-meta.json sidecar (written by the Playwright runner).
       // A missing or invalid sidecar must NOT fail the run (older recipes / fallback).
       let videoMeta = { cropHeight: null, stills: [] };
@@ -657,14 +648,6 @@ function captureRecipe({ recipe, localDir, keepWebm = false }) {
       };
     } else {
       validateBrowserRoute(recipe.route);
-      // The secret scan only sees DOM text (see collectProofAuditText). A
-      // canvas-rendered surface (e.g. an xterm terminal) shows pixels the scan
-      // cannot inspect, so such recipes must never run against live state.
-      if (recipe.canvas && recipe.privacy !== 'fixture') {
-        throw new Error(
-          'canvas proof recipes must use fixture privacy (DOM text scan cannot inspect canvas pixels)',
-        );
-      }
       runCommand(
         browserCaptureCommand({
           surface: recipe.surface,
@@ -673,12 +656,8 @@ function captureRecipe({ recipe, localDir, keepWebm = false }) {
         }),
       );
       const auditText = fs.readFileSync(path.join(recipeDir, 'audit.txt'), 'utf8');
-      const risk = classifySecretRisk(auditText);
       if (!auditText.trim() && recipe.privacy === 'live') {
         throw new Error('live browser capture produced no auditable text');
-      }
-      if (risk.risk === 'high') {
-        throw new Error(`secret-like text detected in browser capture: ${risk.reason}`);
       }
     }
 

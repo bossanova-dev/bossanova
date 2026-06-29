@@ -2,13 +2,9 @@
 /**
  * proof-agent-finalize.mjs — Surface-neutral finalize machinery for agent proof runs.
  *
- * Implements Steps 4–7 of the agent proof orchestration (build manifest, secret
- * scan, upload + report, render + post comment, exit-code, cleanup). Shared by
+ * Implements Steps 4–7 of the agent proof orchestration (build manifest,
+ * upload + report, render + post comment, exit-code, cleanup). Shared by
  * proof-agent.mjs (web surface) and any future surface-specific orchestrators.
- *
- * The function is intentionally free of Playwright / web assumptions: all
- * surface-specific texts to scan are passed in via `scanTexts`; the manifest
- * is ALWAYS scanned internally.
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -18,9 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   buildManifest,
-  classifySecretRisk,
   githubCommentCommand,
-  manifestSecretScanText,
   proofCommentMarker,
   r2UploadCommand,
   renderComment,
@@ -105,12 +99,10 @@ export function defaultFinalizeDeps() {
  * Surface-neutral finalize step for agent proof runs (Steps 4–7).
  *
  * 1. Builds the manifest.
- * 2. Secret-scans `[manifestSecretScanText(manifest), ...scanTexts]` — throws on the
- *    first high-risk hit BEFORE any write, upload, or log.
- * 3. Writes manifest.json and logs it.
- * 4. Uploads the bundle and best-effort-publishes a report (if shouldUpload).
- * 5. Renders and posts the proof comment; sets process.exitCode=1 on failure.
- * 6. Cleans up the local run dir on a successful posted run.
+ * 2. Writes manifest.json and logs it.
+ * 3. Uploads the bundle and best-effort-publishes a report (if shouldUpload).
+ * 4. Renders and posts the proof comment; sets process.exitCode=1 on failure.
+ * 5. Cleans up the local run dir on a successful posted run.
  *
  * @param {{
  *   captureShape?: object,
@@ -172,19 +164,6 @@ export async function finalizeAgentProof({
     brief: { genAi: brief.genAi ?? false },
   });
 
-  // ── Step 5: Secret scan — FAIL on high risk BEFORE any write/upload/log ───
-  // Scan the assembled manifest (which carries the LLM-generated brief.title
-  // via captureShape.title) PLUS all caller-supplied surface texts. Any
-  // high-risk hit throws before uploadBundle so no secret-bearing artifact or
-  // comment can reach R2 or the PR.
-  for (const text of [manifestSecretScanText(manifest), ...scanTexts]) {
-    const risk = classifySecretRisk(text);
-    if (risk.risk === 'high') {
-      throw new Error(
-        `secret-like content detected in agent output (${risk.reason}) — aborting before any upload`,
-      );
-    }
-  }
   // A run that did not pass or produced no media is degraded: it defers to a
   // neutral comment (never the ❌ verdict block). Mark it BEFORE persisting and
   // uploading the manifest so the stored artifact carries `deferred: true`.

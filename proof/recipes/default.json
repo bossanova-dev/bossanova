@@ -361,6 +361,16 @@
       "viewport": { "width": 1440, "height": 1000 }
     },
     {
+      "id": "marketing-changelog",
+      "surface": "marketing",
+      "title": "Marketing Changelog",
+      "description": "Changelog page (page 1) showing seeded release entries with version chips and timestamps.",
+      "privacy": "fixture",
+      "route": "/changelog",
+      "selector": "main",
+      "viewport": { "width": 1440, "height": 1400 }
+    },
+    {
       "id": "web-new-session-flow",
       "surface": "web",
       "title": "Web New Session Flow",
@@ -470,7 +480,12 @@
     {
       "name": "Marketing site",
       "patterns": ["services/marketing/", "lib/ui-tokens/"],
-      "recipeIds": ["marketing-home", "marketing-pricing", "marketing-home-scroll"]
+      "recipeIds": [
+        "marketing-home",
+        "marketing-pricing",
+        "marketing-changelog",
+        "marketing-home-scroll"
+      ]
     },
     {
       "name": "TUI client/cmd/proto",

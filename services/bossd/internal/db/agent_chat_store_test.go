@@ -526,3 +526,69 @@ func TestAgentChatStore_ListWithTmuxSession(t *testing.T) {
 		t.Errorf("tmux_session_name = %v, want %q", chats[0].TmuxSessionName, tmuxName)
 	}
 }
+
+func TestAgentChatStore_ListRoutableChats(t *testing.T) {
+	db := setupTestDB(t)
+	repoStore := NewRepoStore(db)
+	sessionStore := NewSessionStore(db)
+	chatStore := NewAgentChatStore(db)
+	ctx := context.Background()
+
+	repo := createTestRepo(t, repoStore)
+	sess, err := sessionStore.Create(ctx, CreateSessionParams{
+		RepoID:       repo.ID,
+		Title:        "ListRoutableChats test",
+		WorktreePath: "/tmp/wt/routable-list",
+		BranchName:   "feat/routable-list",
+		BaseBranch:   "main",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Headless chat: no tmux session name, no start error — must be routable.
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID: sess.ID, AgentSessionID: "headless", Title: "Headless",
+	}); err != nil {
+		t.Fatalf("create headless chat: %v", err)
+	}
+
+	// Tmux-hosted chat — must be routable.
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID: sess.ID, AgentSessionID: "has-tmux", Title: "Has tmux",
+	}); err != nil {
+		t.Fatalf("create tmux chat: %v", err)
+	}
+	tmuxName := "boss-test-session"
+	if err := chatStore.UpdateTmuxSessionName(ctx, "has-tmux", &tmuxName); err != nil {
+		t.Fatalf("set tmux session name: %v", err)
+	}
+
+	// Failed-start chat: start_error set, tmux name cleared — must be excluded.
+	if _, err := chatStore.Create(ctx, CreateAgentChatParams{
+		SessionID: sess.ID, AgentSessionID: "failed", Title: "Failed",
+	}); err != nil {
+		t.Fatalf("create failed chat: %v", err)
+	}
+	if err := chatStore.MarkStartFailed(ctx, "failed", "tmux send timed out"); err != nil {
+		t.Fatalf("mark start failed: %v", err)
+	}
+
+	chats, err := chatStore.ListRoutableChats(ctx)
+	if err != nil {
+		t.Fatalf("list routable chats: %v", err)
+	}
+	got := map[string]bool{}
+	for _, c := range chats {
+		got[c.AgentSessionID] = true
+	}
+	if !got["headless"] {
+		t.Errorf("headless chat missing from routable snapshot; got %v", got)
+	}
+	if !got["has-tmux"] {
+		t.Errorf("tmux chat missing from routable snapshot; got %v", got)
+	}
+	if got["failed"] {
+		t.Errorf("failed-start chat should be excluded from routable snapshot; got %v", got)
+	}
+}

@@ -239,6 +239,57 @@ func TestMutatingTools(t *testing.T) {
 			}},
 			sentinel: "tmux-no-wake",
 		},
+		{
+			tool: "create_cron_job",
+			args: map[string]any{"repo_id": "r1", "name": "nightly", "prompt": "p", "schedule": "0 0 * * *", "model": "opus", "gate_command": "node gate.mjs", "run_setup_command": true},
+			backend: &fakeBackend{createCronJob: func(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+				if req.GetModel() != "opus" || req.GetGateCommand() != "node gate.mjs" || !req.GetRunSetupCommand() {
+					t.Errorf("create_cron_job new fields not forwarded: %+v", req)
+				}
+				return &pb.CronJob{Id: "cron-ccj-full"}, nil
+			}},
+			sentinel: "cron-ccj-full",
+		},
+		{
+			tool: "update_cron_job",
+			args: map[string]any{"id": "c1", "model": "sonnet", "gate_command": "g", "run_setup_command": false},
+			backend: &fakeBackend{updateCronJob: func(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+				if req.GetModel() != "sonnet" || req.GetGateCommand() != "g" || req.RunSetupCommand == nil || req.GetRunSetupCommand() {
+					t.Errorf("update_cron_job new fields not forwarded: %+v", req)
+				}
+				return &pb.CronJob{Id: "cron-ucj-full"}, nil
+			}},
+			sentinel: "cron-ucj-full",
+		},
+		{
+			tool: "update_repo",
+			args: map[string]any{"id": "r1", "linear_api_key": "lin_secret", "sentry_api_key": "sen_secret", "sentry_org": "myorg"},
+			backend: &fakeBackend{updateRepo: func(_ context.Context, req *pb.UpdateRepoRequest) (*pb.Repo, error) {
+				if req.GetLinearApiKey() != "lin_secret" || req.GetSentryApiKey() != "sen_secret" || req.GetSentryOrg() != "myorg" {
+					t.Errorf("update_repo secrets not forwarded: %+v", req)
+				}
+				return &pb.Repo{Id: "repo-ur-secrets"}, nil
+			}},
+			sentinel: "repo-ur-secrets",
+		},
+		{
+			tool: "create_session",
+			args: map[string]any{
+				"repo_id": "r1", "prompt": "do it", "title": "T",
+				"base_branch": "develop", "branch_name": "feat/x", "force_branch": true,
+				"quick_chat": true, "pr_number": 42,
+				"tracker_id": "BOS-1", "tracker_url": "https://linear.app/x", "tracker_source": "linear",
+			},
+			backend: &fakeBackend{createSession: func(_ context.Context, req *pb.CreateSessionRequest) (*pb.Session, error) {
+				if req.GetBaseBranch() != "develop" || req.GetBranchName() != "feat/x" || !req.GetForceBranch() ||
+					!req.GetQuickChat() || req.GetPrNumber() != 42 || req.GetTrackerId() != "BOS-1" ||
+					req.GetTrackerUrl() != "https://linear.app/x" || req.GetTrackerSource() != "linear" {
+					t.Errorf("create_session full field set not forwarded: %+v", req)
+				}
+				return &pb.Session{Id: "sess-cs-full"}, nil
+			}},
+			sentinel: "sess-cs-full",
+		},
 	}
 
 	for _, tc := range cases {
@@ -255,6 +306,129 @@ func TestMutatingTools(t *testing.T) {
 				t.Fatalf("%s result missing sentinel %q: %s", tc.tool, tc.sentinel, got)
 			}
 		})
+	}
+}
+
+// TestUpdateCronJobOmitRunSetupLeavesUnset proves that omitting run_setup_command
+// leaves the proto optional field nil (not an explicit false), so a present-only
+// update never clobbers the daemon's stored value.
+func TestUpdateCronJobOmitRunSetupLeavesUnset(t *testing.T) {
+	var captured *pb.UpdateCronJobRequest
+	backend := &fakeBackend{updateCronJob: func(_ context.Context, req *pb.UpdateCronJobRequest) (*pb.CronJob, error) {
+		captured = req
+		return &pb.CronJob{Id: "c1"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "update_cron_job", Arguments: map[string]any{"id": "c1", "name": "x"}})
+	if err != nil {
+		t.Fatalf("call update_cron_job: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("update_cron_job error: %s", textOf(t, res))
+	}
+	if captured.RunSetupCommand != nil {
+		t.Errorf("omitted run_setup_command should leave proto field nil, got %v", *captured.RunSetupCommand)
+	}
+}
+
+// TestCreateCronJobOmitRunSetupLeavesUnset is the create-side analogue: omitting
+// run_setup_command leaves the optional proto field nil so the server applies its
+// own default rather than seeing an explicit false.
+func TestCreateCronJobOmitRunSetupLeavesUnset(t *testing.T) {
+	var captured *pb.CreateCronJobRequest
+	backend := &fakeBackend{createCronJob: func(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
+		captured = req
+		return &pb.CronJob{Id: "c1"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "create_cron_job", Arguments: map[string]any{"repo_id": "r1", "name": "n", "prompt": "p", "schedule": "0 0 * * *"}})
+	if err != nil {
+		t.Fatalf("call create_cron_job: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("create_cron_job error: %s", textOf(t, res))
+	}
+	if captured.RunSetupCommand != nil {
+		t.Errorf("omitted run_setup_command should leave proto field nil, got %v", *captured.RunSetupCommand)
+	}
+}
+
+// TestUpdateRepoRedactsSecretsInResult proves update_repo never echoes a repo's
+// raw API keys back in its result, while still returning non-secret fields.
+func TestUpdateRepoRedactsSecretsInResult(t *testing.T) {
+	backend := &fakeBackend{updateRepo: func(_ context.Context, _ *pb.UpdateRepoRequest) (*pb.Repo, error) {
+		return &pb.Repo{Id: "r1", LinearApiKey: "lin_topsecret", SentryApiKey: "sen_topsecret", SentryOrg: "acme"}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "update_repo", Arguments: map[string]any{"id": "r1"}})
+	if err != nil {
+		t.Fatalf("call update_repo: %v", err)
+	}
+	out := textOf(t, res)
+	if strings.Contains(out, "lin_topsecret") || strings.Contains(out, "sen_topsecret") {
+		t.Errorf("update_repo leaked a raw API key in its result: %s", out)
+	}
+	if !strings.Contains(out, "acme") {
+		t.Errorf("update_repo should still return non-secret sentry_org; got: %s", out)
+	}
+}
+
+// TestListReposRedactsSecretsInResult proves the list_repos read tool never echoes
+// a repo's raw API keys.
+func TestListReposRedactsSecretsInResult(t *testing.T) {
+	backend := &fakeBackend{listRepos: func(_ context.Context) ([]*pb.Repo, error) {
+		return []*pb.Repo{{Id: "r1", LinearApiKey: "lin_topsecret", SentryApiKey: "sen_topsecret", SentryOrg: "acme"}}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "list_repos", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("call list_repos: %v", err)
+	}
+	out := textOf(t, res)
+	if strings.Contains(out, "lin_topsecret") || strings.Contains(out, "sen_topsecret") {
+		t.Errorf("list_repos leaked a raw API key in its result: %s", out)
+	}
+}
+
+// TestResolveContextRedactsSecretsInResult proves the resolve_context read tool,
+// which returns a response embedding a *pb.Repo, never echoes the repo's raw API
+// keys.
+func TestResolveContextRedactsSecretsInResult(t *testing.T) {
+	backend := &fakeBackend{resolveContext: func(_ context.Context, _ string) (*pb.ResolveContextResponse, error) {
+		return &pb.ResolveContextResponse{
+			Repo: &pb.Repo{Id: "r1", LinearApiKey: "lin_topsecret", SentryApiKey: "sen_topsecret", SentryOrg: "acme"},
+		}, nil
+	}}
+	cs := newConnectedClient(t, backend, Options{})
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "resolve_context", Arguments: map[string]any{"working_dir": "/code/x"}})
+	if err != nil {
+		t.Fatalf("call resolve_context: %v", err)
+	}
+	out := textOf(t, res)
+	if strings.Contains(out, "lin_topsecret") || strings.Contains(out, "sen_topsecret") {
+		t.Errorf("resolve_context leaked a raw API key in its result: %s", out)
+	}
+	if !strings.Contains(out, "acme") {
+		t.Errorf("resolve_context should still return non-secret sentry_org; got: %s", out)
+	}
+}
+
+// TestRedactRepoDoesNotMutateSource proves redactRepo clears only the secret
+// fields, preserves the rest, and returns a copy without mutating its input.
+func TestRedactRepoDoesNotMutateSource(t *testing.T) {
+	src := &pb.Repo{Id: "r1", LinearApiKey: "lin", SentryApiKey: "sen", SentryOrg: "org"}
+	got := redactRepo(src)
+	if src.GetLinearApiKey() != "lin" || src.GetSentryApiKey() != "sen" {
+		t.Errorf("redactRepo mutated its source: %+v", src)
+	}
+	if got.GetLinearApiKey() != "" || got.GetSentryApiKey() != "" {
+		t.Errorf("redactRepo did not clear secrets: %+v", got)
+	}
+	if got.GetSentryOrg() != "org" || got.GetId() != "r1" {
+		t.Errorf("redactRepo dropped non-secret fields: %+v", got)
+	}
+	if redactRepo(nil) != nil {
+		t.Error("redactRepo(nil) should return nil")
 	}
 }
 

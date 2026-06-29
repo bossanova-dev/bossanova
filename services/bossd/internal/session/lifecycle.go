@@ -68,6 +68,13 @@ type cronCompletionNotifier interface {
 
 type sessionDeletedNotifier func(context.Context, string)
 
+// chatStatusReporter records process status for a chat's agent_session_id.
+// Satisfied by *status.Tracker. Kept as an interface so the session package
+// doesn't depend on the status package and tests can inject a recorder.
+type chatStatusReporter interface {
+	Update(agentSessionID string, status bossanovav1.ChatStatus, lastOutputAt time.Time)
+}
+
 // Lifecycle orchestrates worktree creation, Claude process management,
 // and state machine transitions for coding sessions.
 type Lifecycle struct {
@@ -162,6 +169,16 @@ type Lifecycle struct {
 	// can still be reaped once liveness confirms the agent is gone. nil leaves
 	// the conservative "can't tell => still running" default in place.
 	liveness sessionLiveness
+
+	// chatStatus records WORKING/STOPPED for headless runs (codex exec /
+	// claude --print), which have no tmux pane for TmuxStatusPoller and no
+	// finalize hook. nil leaves headless chats statusless (the pre-fix
+	// behaviour); all uses are nil-guarded.
+	chatStatus chatStatusReporter
+
+	// headlessStatusPollInterval controls how often watchHeadlessRunStatus
+	// polls the agent plugin for run liveness. Defaults to 2s in NewLifecycle.
+	headlessStatusPollInterval time.Duration
 }
 
 // SetHookPort records the hook server's bound loopback port so
@@ -190,6 +207,41 @@ func (l *Lifecycle) SetSessionDeletedNotifier(n func(context.Context, string)) {
 // running" behavior.
 func (l *Lifecycle) SetSessionLiveness(c sessionLiveness) {
 	l.liveness = c
+}
+
+// SetChatStatus wires the daemon's chat status tracker so headless runs can
+// report WORKING/STOPPED. Called once during daemon startup.
+func (l *Lifecycle) SetChatStatus(r chatStatusReporter) { l.chatStatus = r }
+
+// watchHeadlessRunStatus marks a headless agent run WORKING, then polls the
+// agent plugin until the run exits and marks the chat STOPPED. Headless runs
+// have no tmux pane (TmuxStatusPoller skips them) and no finalize hook, so
+// without this a headless chat never gets a status and `boss chat wait` /
+// get_chat_statuses / the orchestrator status stream can't tell it is done.
+// Intended to run on a safego goroutine; returns once the run finishes.
+func (l *Lifecycle) watchHeadlessRunStatus(agentName, agentSessionID string) {
+	if l.chatStatus == nil || agentSessionID == "" {
+		return
+	}
+	l.chatStatus.Update(agentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	interval := l.headlessStatusPollInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	for {
+		time.Sleep(interval)
+		if !l.agentRunner.IsRunningByAgent(agentName, agentSessionID) {
+			l.chatStatus.Update(agentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_STOPPED, time.Now())
+			return
+		}
+		// Refresh WORKING on every positive poll. The status tracker ages
+		// entries out after status.StaleThreshold (~15s) and GetBatch then
+		// surfaces them as STOPPED, so a single WORKING update at start would
+		// make boss chat wait / get_chat_statuses / the orchestrator status
+		// stream observe STOPPED while the headless agent is still running.
+		// The poll interval (2s default) stays well under the threshold.
+		l.chatStatus.Update(agentSessionID, bossanovav1.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+	}
 }
 
 // SetAgents installs the per-name AgentRunnerClient registry used to call
@@ -457,6 +509,7 @@ func NewLifecycle(
 		logger:                     logger,
 		newTmuxChatAgentSessionID:  uuid.NewString,
 		tmuxCompletionPollInterval: 2 * time.Second,
+		headlessStatusPollInterval: 2 * time.Second,
 	}
 }
 
@@ -678,6 +731,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 	// plan before it runs. All other interactive sessions stay on the
 	// headless `claude --print` path used historically.
 	var claudeSessionID string
+	headlessRun := false
 	switch {
 	case opts.CronJobID != "":
 		claudeSessionID, err = l.startCronTmuxChat(ctx, sessionID, opts, session, result)
@@ -695,6 +749,7 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			Str("session", sessionID).
 			Msg("tracker session created idle; awaiting manual start on first attach")
 	default:
+		headlessRun = true
 		claudeSessionID, err = l.agentRunner.StartByAgent(ctx, session.AgentName, result.WorktreePath, session.Plan, nil, "", session.Model)
 		if err != nil {
 			return fmt.Errorf("start claude: %w", err)
@@ -713,6 +768,33 @@ func (l *Lifecycle) StartSession(ctx context.Context, sessionID string, opts Sta
 			AgentSessionID: strPtr(claudeSessionID),
 		}); err != nil {
 			return fmt.Errorf("update claude session id: %w", err)
+		}
+		// The headless path (codex exec / claude --print) never passes through
+		// StartTmuxChat, which is the only other place an agent_chats row is
+		// created. Without a row, GetChatTranscript / SendChatMessage /
+		// GetChatStatuses — and the orchestrator's FindDaemonForChat, fed by the
+		// agent_chats OnChange delta — cannot resolve the chat, so `boss chat
+		// show/wait/send` and the remote MCP tools 404 for a session that is
+		// otherwise running fine. Persist the primary chat row here so the chat
+		// is followable the moment the session exists. The cron/tmux path
+		// already created its row, so only the headless branch does this.
+		// (l.agentChats is nil in some unit tests; production always sets it.)
+		if headlessRun && l.agentChats != nil {
+			if _, err := l.agentChats.Create(ctx, db.CreateAgentChatParams{
+				SessionID:      sessionID,
+				AgentSessionID: claudeSessionID,
+				AgentName:      session.AgentName,
+				Title:          session.Title,
+			}); err != nil {
+				return fmt.Errorf("create agent_chats row for headless run of session %s: %w", sessionID, err)
+			}
+		}
+		if headlessRun && claudeSessionID != "" && l.chatStatus != nil {
+			agentName := session.AgentName
+			runID := claudeSessionID
+			safego.Go(l.logger, func() {
+				l.watchHeadlessRunStatus(agentName, runID)
+			})
 		}
 	}
 	if hooklessCronTmux {

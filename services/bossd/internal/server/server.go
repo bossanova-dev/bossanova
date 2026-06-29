@@ -1763,41 +1763,50 @@ func (s *Server) LinkSessionPR(ctx context.Context, req *connect.Request[pb.Link
 
 // --- Archive / Resurrect ---
 
-func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
-	if req.Msg.Id == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+// ArchiveSessionAndNotify performs the full session archive (stop processes,
+// kill tmux, remove worktree, set archived_at) and emits the stream update so
+// the TUI/bosso read-model reflect the session immediately. It is idempotent:
+// a genuinely missing session emits KIND_DELETED, while an already-archived
+// session emits an update (keeping it archived/in trash). Both return nil.
+// Shared by the ArchiveSession RPC and the dependabot auto-archive path (BOS-101).
+func (s *Server) ArchiveSessionAndNotify(ctx context.Context, id string) error {
+	if err := s.lifecycle.ArchiveSession(ctx, id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("archive session: %w", err)
 	}
-
-	if err := s.lifecycle.ArchiveSession(ctx, req.Msg.Id); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			// Session row is already gone — treat archive as idempotent success.
-			// Emit KIND_DELETED so bosso drops the stale read-model row.
-			if s.onSessionDeleted != nil {
-				s.onSessionDeleted(ctx, req.Msg.Id)
-			}
-			return connect.NewResponse(&pb.ArchiveSessionResponse{Session: &pb.Session{Id: req.Msg.Id}}), nil
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("archive session: %w", err))
-	}
-
-	sess, err := s.sessions.Get(ctx, req.Msg.Id)
+	// A sql.ErrNoRows from ArchiveSession is ambiguous: the session row may be
+	// gone, or it may exist but already be archived (the archived_at IS NULL
+	// update matched no rows). The Get below is the source of truth — only a
+	// genuinely missing row emits the delete delta. An already-archived session
+	// must stay archived/in trash, not be dropped from the read model (BOS-101).
+	sess, err := s.sessions.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// Session disappeared between the lifecycle call and the read-back.
 			if s.onSessionDeleted != nil {
-				s.onSessionDeleted(ctx, req.Msg.Id)
+				s.onSessionDeleted(ctx, id)
 			}
-			return connect.NewResponse(&pb.ArchiveSessionResponse{Session: &pb.Session{Id: req.Msg.Id}}), nil
+			return nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get session: %w", err))
+		return fmt.Errorf("get session: %w", err)
 	}
-
 	p := s.sessionProtoWithRepo(ctx, sess)
 	if s.onSessionUpdated != nil {
 		s.onSessionUpdated(ctx, p)
 	}
+	return nil
+}
 
-	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: p}), nil
+func (s *Server) ArchiveSession(ctx context.Context, req *connect.Request[pb.ArchiveSessionRequest]) (*connect.Response[pb.ArchiveSessionResponse], error) {
+	if req.Msg.Id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	}
+	if err := s.ArchiveSessionAndNotify(ctx, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	sess, err := s.sessions.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return connect.NewResponse(&pb.ArchiveSessionResponse{Session: &pb.Session{Id: req.Msg.Id}}), nil
+	}
+	return connect.NewResponse(&pb.ArchiveSessionResponse{Session: s.sessionProtoWithRepo(ctx, sess)}), nil
 }
 
 func (s *Server) ResurrectSession(ctx context.Context, req *connect.Request[pb.ResurrectSessionRequest]) (*connect.Response[pb.ResurrectSessionResponse], error) {
@@ -1970,14 +1979,16 @@ func (s *Server) ensureChatTmuxSession(ctx context.Context, chat *models.AgentCh
 				Msg("legacy provider session id discovery ambiguous before attach")
 		}
 	}
+	mcpConfigPath := session.SessionMcpConfigPath(sess, chat.AgentSessionID, chat.AgentName)
 	result, err := spawnChatTmux(ctx, deps, spawnInput{
 		Chat:               chat,
 		WorktreePath:       sess.WorktreePath,
 		TmuxName:           tmuxName,
 		ForceFresh:         !resume,
-		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName),
+		AppendSystemPrompt: session.AppendSystemPromptFor(sess, chat.AgentSessionID, chat.AgentName, mcpConfigPath),
 		SessionEnv:         session.ManagedSessionEnv(sess, chat.AgentSessionID, chat.AgentName),
 		Model:              sess.Model,
+		McpConfigPath:      mcpConfigPath,
 	})
 	if err != nil {
 		return err

@@ -428,6 +428,60 @@ func scanForPlugins(dir string, policy discoveryPolicy) ([]PluginConfig, []Plugi
 	return plugins, rejections
 }
 
+// VerifyConfiguredPlugins re-applies the active discovery policy's safety checks
+// to an explicit plugin list — entries that came from settings.Plugins (e.g.
+// persisted by `boss config init --plugin-dir`, which the official installer
+// runs) or a hand-edited config rather than from a fresh auto-discovery scan.
+// Auto-discovery (scanForPlugins) vets every binary it returns, but configured
+// entries are exec'd by their stored path without re-checking, so on a release
+// build a plugin binary swapped after `config init` would otherwise bypass the
+// plugins.sum manifest the installer shipped beside the binaries. This verifies
+// each configured binary against the manifest in its own directory and returns
+// the accepted entries plus any rejections (so callers can fail closed). On dev
+// builds (checksum enforcement off) the list is returned unchanged.
+func VerifyConfiguredPlugins(cfgs []PluginConfig) ([]PluginConfig, []PluginRejection) {
+	return verifyConfiguredPlugins(cfgs, activePolicy())
+}
+
+func verifyConfiguredPlugins(cfgs []PluginConfig, policy discoveryPolicy) ([]PluginConfig, []PluginRejection) {
+	if !policy.verifyChecksums {
+		return cfgs, nil
+	}
+	// Each plugin directory carries its own plugins.sum; load each at most once.
+	type manifest struct {
+		sums map[string]string
+		err  error
+	}
+	manifests := make(map[string]manifest)
+	accepted := make([]PluginConfig, 0, len(cfgs))
+	var rejections []PluginRejection
+	for _, c := range cfgs {
+		if policy.requireSafePerms {
+			if ok, reason := isTrustedPath(c.Path); !ok {
+				rejections = append(rejections, PluginRejection{Name: c.Name, Path: c.Path, Reason: reason})
+				continue
+			}
+		}
+		dir := filepath.Dir(c.Path)
+		m, ok := manifests[dir]
+		if !ok {
+			m.sums, m.err = loadPluginSums(dir)
+			manifests[dir] = m
+		}
+		if m.err != nil {
+			rejections = append(rejections, PluginRejection{Name: c.Name, Path: c.Path,
+				Reason: "checksum manifest unavailable: " + m.err.Error()})
+			continue
+		}
+		if ok, reason := verifyPluginChecksum(c.Path, m.sums); !ok {
+			rejections = append(rejections, PluginRejection{Name: c.Name, Path: c.Path, Reason: reason})
+			continue
+		}
+		accepted = append(accepted, c)
+	}
+	return accepted, rejections
+}
+
 func isExecutableFile(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {

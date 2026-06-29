@@ -224,6 +224,86 @@ func TestCronListUpdate_ConfirmDelete(t *testing.T) {
 	}
 }
 
+// TestCronListUpdate_ChevronNavigation verifies that the cursor chevron in
+// column 0 is re-synced on the very same Update call as keyboard navigation,
+// without waiting for a spinner.TickMsg or a rebuildTable() call.
+//
+// This is the regression test for the laggy-chevron bug: both navigation
+// passthroughs (updateNormal fallthrough, Update fallthrough) must call
+// updateCursorColumn(&m.table) immediately after m.table = updated.
+func TestCronListUpdate_ChevronNavigation(t *testing.T) {
+	jobs := []*pb.CronJob{
+		{Id: "a", Name: "Job A", Schedule: "* * * * *", Enabled: true},
+		{Id: "b", Name: "Job B", Schedule: "0 * * * *", Enabled: true},
+		{Id: "c", Name: "Job C", Schedule: "0 0 * * *", Enabled: true},
+	}
+	m := newCronListForUpdate(jobs)
+
+	// After newCronListForUpdate the table cursor is at row 0 and rebuildTable
+	// has written cursorChevron into column 0 of that row.
+	if m.table.Rows()[0][0] != cursorChevron {
+		t.Fatalf("initial: rows[0][0] = %q, want cursorChevron", m.table.Rows()[0][0])
+	}
+	if m.table.Rows()[1][0] != "" {
+		t.Fatalf("initial: rows[1][0] = %q, want empty", m.table.Rows()[1][0])
+	}
+
+	// --- down arrow ---
+	// The cursor must advance to row 1 and the chevron must follow immediately
+	// (i.e. on this single Update, before any spinner tick or reload).
+	downModel, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	got := downModel.(CronListModel)
+
+	if got.table.Cursor() != 1 {
+		t.Fatalf("down: cursor = %d, want 1 (key did not move the cursor)", got.table.Cursor())
+	}
+	if got.table.Rows()[1][0] != cursorChevron {
+		t.Fatalf("down: rows[1][0] = %q, want cursorChevron (chevron lagged)", got.table.Rows()[1][0])
+	}
+	if got.table.Rows()[0][0] != "" {
+		t.Fatalf("down: rows[0][0] = %q, want empty (old chevron not cleared)", got.table.Rows()[0][0])
+	}
+
+	// --- j key (also LineDown in bossKeyMap) ---
+	jModel, _ := m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	gotJ := jModel.(CronListModel)
+
+	if gotJ.table.Cursor() != 1 {
+		t.Fatalf("j: cursor = %d, want 1", gotJ.table.Cursor())
+	}
+	if gotJ.table.Rows()[1][0] != cursorChevron {
+		t.Fatalf("j: rows[1][0] = %q, want cursorChevron", gotJ.table.Rows()[1][0])
+	}
+	if gotJ.table.Rows()[0][0] != "" {
+		t.Fatalf("j: rows[0][0] = %q, want empty", gotJ.table.Rows()[0][0])
+	}
+
+	// --- k key (LineUp in bossKeyMap) — navigate back up from row 1 ---
+	kModel, _ := got.Update(tea.KeyPressMsg{Code: 'k', Text: "k"})
+	gotK := kModel.(CronListModel)
+
+	if gotK.table.Cursor() != 0 {
+		t.Fatalf("k: cursor = %d, want 0", gotK.table.Cursor())
+	}
+	if gotK.table.Rows()[0][0] != cursorChevron {
+		t.Fatalf("k: rows[0][0] = %q, want cursorChevron", gotK.table.Rows()[0][0])
+	}
+	if gotK.table.Rows()[1][0] != "" {
+		t.Fatalf("k: rows[1][0] = %q, want empty", gotK.table.Rows()[1][0])
+	}
+
+	// --- boundary: up arrow at row 0 keeps chevron at row 0 ---
+	upModel, _ := gotK.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	gotUp := upModel.(CronListModel)
+
+	if gotUp.table.Cursor() != 0 {
+		t.Fatalf("up@0: cursor = %d, want 0", gotUp.table.Cursor())
+	}
+	if gotUp.table.Rows()[0][0] != cursorChevron {
+		t.Fatalf("up@0: rows[0][0] = %q, want cursorChevron", gotUp.table.Rows()[0][0])
+	}
+}
+
 // TestCronListUpdate_NormalKeys covers the selected-job guards in updateNormal
 // for edit (cron_list.go:249), delete (:255), toggle (:269), and run (:283).
 // Each key is exercised with a selection (acts) and without (no-op).

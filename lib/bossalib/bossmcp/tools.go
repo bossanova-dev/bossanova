@@ -7,6 +7,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // jsonResult marshals v to a single text content block (JSON), which is how
@@ -28,6 +29,36 @@ func errorResult(err error) *mcp.CallToolResult {
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 	}
+}
+
+// redactRepo returns a copy of r with the write-only secret credentials cleared,
+// so no MCP read or mutating tool ever echoes a repo's raw API keys back to the
+// caller. The Repo proto carries linear_api_key/sentry_api_key as plain fields,
+// and every Repo-returning tool serializes the message directly, so redaction
+// must happen at the MCP layer. sentry_org is an org slug, not a secret, and is
+// preserved. The source message is never mutated (proto.Clone makes a copy).
+func redactRepo(r *pb.Repo) *pb.Repo {
+	if r == nil {
+		return nil
+	}
+	clone, ok := proto.Clone(r).(*pb.Repo)
+	if !ok {
+		// Unreachable (proto.Clone of a *pb.Repo always yields *pb.Repo), but
+		// fail closed for a secret scrubber: never return the unredacted source.
+		return &pb.Repo{Id: r.GetId(), DisplayName: r.GetDisplayName()}
+	}
+	clone.LinearApiKey = ""
+	clone.SentryApiKey = ""
+	return clone
+}
+
+// redactRepos applies redactRepo to every element, returning a new slice.
+func redactRepos(rs []*pb.Repo) []*pb.Repo {
+	out := make([]*pb.Repo, len(rs))
+	for i, r := range rs {
+		out[i] = redactRepo(r)
+	}
+	return out
 }
 
 // boolPtr returns a pointer to b. The MCP SDK's ToolAnnotations.DestructiveHint
@@ -88,6 +119,11 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
+		// resolve_context embeds a *pb.Repo, which the daemon populates with the
+		// repo's API keys — redact them like every other Repo-returning tool.
+		if out.GetRepo() != nil {
+			out.Repo = redactRepo(out.Repo)
+		}
 		r, err := jsonResult(out)
 		return r, nil, err
 	})
@@ -114,7 +150,7 @@ func registerReadTools(server *mcp.Server, backend Backend, opts Options) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		r, err := jsonResult(out)
+		r, err := jsonResult(redactRepos(out))
 		return r, nil, err
 	})
 

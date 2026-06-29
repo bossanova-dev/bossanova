@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/spf13/cobra"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 )
@@ -92,7 +95,7 @@ func TestChatWaitTickUsesScopedStatusAndBaseline(t *testing.T) {
 		c := &chatWaitClient{
 			statuses: []*pb.ChatStatusEntry{{AgentSessionId: "agent-123", Status: pb.ChatStatus_CHAT_STATUS_WORKING}},
 		}
-		done, _, err := chatWaitTick(context.Background(), c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", 0)
+		done, _, err := chatWaitTick(context.Background(), c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", false)
 		if err != nil {
 			t.Fatalf("chatWaitTick: %v", err)
 		}
@@ -107,16 +110,74 @@ func TestChatWaitTickUsesScopedStatusAndBaseline(t *testing.T) {
 		}
 	})
 
-	t.Run("does not return stale baseline on first tick", func(t *testing.T) {
+	t.Run("does not return stale baseline while transcript is unchanged", func(t *testing.T) {
 		c := &chatWaitClient{
 			transcript: &pb.GetChatTranscriptResponse{Exists: true, FinalAssistantText: "old"},
 		}
-		done, _, err := chatWaitTick(context.Background(), c, chatTarget{AgentSessionID: "agent-123"}, "old", 0)
+		// Every tick (not just the first) must keep waiting while the transcript
+		// still shows the pre-wait answer AND the grace window has not expired: a
+		// still-running follow-up leaves the final text equal to the baseline,
+		// and returning it would hand back the stale previous result.
+		for tick := range 3 {
+			done, _, err := chatWaitTick(context.Background(), c, chatTarget{AgentSessionID: "agent-123"}, "old", false)
+			if err != nil {
+				t.Fatalf("chatWaitTick tick %d: %v", tick, err)
+			}
+			if done {
+				t.Fatalf("done = true on tick %d, want false for unchanged baseline", tick)
+			}
+		}
+	})
+
+	t.Run("returns baseline result once grace expires", func(t *testing.T) {
+		// A chat that was already finished when wait began keeps its final text
+		// equal to the baseline forever. Once the grace window expires it must
+		// return that result instead of sleeping until --timeout.
+		c := &chatWaitClient{
+			statuses:   []*pb.ChatStatusEntry{{AgentSessionId: "agent-123", Status: pb.ChatStatus_CHAT_STATUS_IDLE}},
+			transcript: &pb.GetChatTranscriptResponse{Exists: true, FinalAssistantText: "old"},
+		}
+		done, result, err := chatWaitTick(context.Background(), c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", true)
 		if err != nil {
 			t.Fatalf("chatWaitTick: %v", err)
 		}
-		if done {
-			t.Fatal("done = true, want false for unchanged baseline on first tick")
+		if !done || result != "old" {
+			t.Fatalf("done/result = %v/%q, want true/old once grace expired", done, result)
+		}
+	})
+
+	t.Run("returns finished result when timeout is shorter than grace", func(t *testing.T) {
+		// `boss chat wait --timeout 5s` on an already-finished chat whose final
+		// text equals the baseline must surface that result, not report a timeout
+		// just because the 12s baseline grace window never elapsed.
+		c := &chatWaitClient{
+			statuses:   []*pb.ChatStatusEntry{{AgentSessionId: "agent-123", Status: pb.ChatStatus_CHAT_STATUS_IDLE}},
+			transcript: &pb.GetChatTranscriptResponse{Exists: true, FinalAssistantText: "old"},
+		}
+		cmd := &cobra.Command{}
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		if err := chatWaitTimeout(cmd, c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", "agent-123", 5*time.Second); err != nil {
+			t.Fatalf("chatWaitTimeout: %v", err)
+		}
+		if strings.TrimSpace(out.String()) != "old" {
+			t.Fatalf("output = %q, want old", out.String())
+		}
+	})
+
+	t.Run("still reports timeout while a follow-up is working", func(t *testing.T) {
+		c := &chatWaitClient{
+			statuses: []*pb.ChatStatusEntry{{AgentSessionId: "agent-123", Status: pb.ChatStatus_CHAT_STATUS_WORKING}},
+		}
+		cmd := &cobra.Command{}
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		err := chatWaitTimeout(cmd, c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", "agent-123", 5*time.Second)
+		if err == nil || !strings.Contains(err.Error(), "timed out") {
+			t.Fatalf("error = %v, want timed out", err)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("output = %q, want empty while working", out.String())
 		}
 	})
 
@@ -125,7 +186,7 @@ func TestChatWaitTickUsesScopedStatusAndBaseline(t *testing.T) {
 			statuses:   []*pb.ChatStatusEntry{{AgentSessionId: "agent-123", Status: pb.ChatStatus_CHAT_STATUS_IDLE}},
 			transcript: &pb.GetChatTranscriptResponse{Exists: true, FinalAssistantText: "new"},
 		}
-		done, result, err := chatWaitTick(context.Background(), c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", 0)
+		done, result, err := chatWaitTick(context.Background(), c, chatTarget{SessionID: "sess-123", AgentSessionID: "agent-123"}, "old", false)
 		if err != nil {
 			t.Fatalf("chatWaitTick: %v", err)
 		}

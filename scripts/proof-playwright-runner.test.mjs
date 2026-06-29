@@ -519,7 +519,7 @@ test('validateRecipe: scroll step with neither toSelector nor byPx throws', () =
         capture: 'video',
         steps: [{ action: 'scroll' }],
       }),
-    /scroll step requires toSelector or byPx/,
+    /scroll step requires toSelector, byPx, or fullPage/,
   );
 });
 
@@ -563,6 +563,47 @@ test('buildSpec video: scroll with byPx emits scrollBy with smooth behavior', ()
   assert.match(spec, /window\.scrollBy/);
   assert.match(spec, /behavior: 'smooth'/);
   assert.match(spec, /waitForTimeout\(800\)/);
+});
+
+// ── fullPage scroll step ──────────────────────────────────────────────────────
+
+const videoRecipe = (steps) => ({
+  id: 'web-x',
+  surface: 'web',
+  capture: 'video',
+  viewport: { width: 1440, height: 1000 },
+  steps,
+});
+
+test('validateRecipe accepts a fullPage scroll step', () => {
+  assert.doesNotThrow(() =>
+    validateRecipe(
+      videoRecipe([
+        { action: 'goto', route: '/' },
+        { action: 'scroll', fullPage: true },
+      ]),
+    ),
+  );
+});
+
+test('validateRecipe still rejects a scroll step with no target', () => {
+  assert.throws(
+    () => validateRecipe(videoRecipe([{ action: 'goto', route: '/' }, { action: 'scroll' }])),
+    /scroll step requires toSelector, byPx, or fullPage/,
+  );
+});
+
+test('buildSpec emits a whole-page scroll loop for a fullPage scroll step', () => {
+  const spec = buildSpec({
+    recipe: videoRecipe([
+      { action: 'goto', route: '/' },
+      { action: 'scroll', fullPage: true },
+    ]),
+    outputDir: '/tmp/out',
+    surface: 'web',
+  });
+  assert.match(spec, /scrollHeight/);
+  assert.match(spec, /window\.scrollTo/);
 });
 
 function runRunner(args) {

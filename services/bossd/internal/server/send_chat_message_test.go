@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
 	pb "github.com/recurser/bossalib/gen/bossanova/v1"
 	"github.com/recurser/bossalib/models"
+	"github.com/recurser/bossd/internal/status"
 	"github.com/recurser/bossd/internal/tmux"
 )
 
@@ -77,6 +79,45 @@ func TestSendChatMessage_LiveChat_Delivers(t *testing.T) {
 	}
 }
 
+func TestSendChatMessage_LiveChat_HonorsPersistedTmuxName(t *testing.T) {
+	// A legacy/relocated chat is live under a persisted name that differs from
+	// the deterministic one. SendChatMessage must check liveness and deliver to
+	// the persisted name, not the recomputed deterministic name.
+	persisted := "boss-chat-legacy-name"
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1", TmuxSessionName: &persisted}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: true}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+
+	if deterministic := tmux.ChatSessionName("r1", "agent-1"); deterministic == persisted {
+		t.Fatalf("test precondition broken: persisted name %q equals deterministic name", persisted)
+	}
+
+	resp, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "do the thing",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Msg.Delivered {
+		t.Error("Delivered should be true")
+	}
+	if resp.Msg.TmuxSessionName != persisted {
+		t.Errorf("TmuxSessionName = %q, want persisted %q", resp.Msg.TmuxSessionName, persisted)
+	}
+
+	tmuxer.mu.Lock()
+	msgs := append([]sentMessage(nil), tmuxer.sentMessages...)
+	tmuxer.mu.Unlock()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 SendMessage call, got %d", len(msgs))
+	}
+	if msgs[0].sessionName != persisted {
+		t.Errorf("SendMessage sessionName = %q, want persisted %q", msgs[0].sessionName, persisted)
+	}
+}
+
 func TestSendChatMessage_AsleepChat_WakeIfAsleep_WakesThenDelivers(t *testing.T) {
 	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
 	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
@@ -129,6 +170,40 @@ func TestSendChatMessage_AsleepChat_NoWake_FailedPrecondition(t *testing.T) {
 	}
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("expected CodeFailedPrecondition, got %v", connect.CodeOf(err))
+	}
+}
+
+// TestSendChatMessage_HeadlessRunActive_FailedPrecondition guards against
+// waking a tmux agent on a worktree whose headless run (codex exec / claude
+// --print) is still in progress: the chat reports WORKING in the status
+// tracker but has no tmux session, so wake_if_asleep must be refused (not
+// spawn a second, competing agent on the same worktree).
+func TestSendChatMessage_HeadlessRunActive_FailedPrecondition(t *testing.T) {
+	chat := &models.AgentChat{ID: "c1", AgentSessionID: "agent-1", SessionID: "s1"}
+	sess := &models.Session{ID: "s1", RepoID: "r1", WorktreePath: t.TempDir()}
+	tmuxer := &fakeTmuxClient{available: true, hasSession: false}
+	s := newSendMessageTestServer(t, chat, sess, tmuxer)
+	s.chatStatus = status.NewTracker()
+	s.chatStatus.Update("agent-1", pb.ChatStatus_CHAT_STATUS_WORKING, time.Now())
+
+	_, err := s.SendChatMessage(context.Background(), connect.NewRequest(&pb.SendChatMessageRequest{
+		AgentSessionId: "agent-1",
+		Message:        "race me",
+		WakeIfAsleep:   true,
+	}))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("expected CodeFailedPrecondition, got %v", connect.CodeOf(err))
+	}
+
+	// No tmux agent must have been spawned for the still-running headless run.
+	tmuxer.mu.Lock()
+	spawnCount := tmuxer.createdN
+	tmuxer.mu.Unlock()
+	if spawnCount != 0 {
+		t.Errorf("expected 0 spawns while headless run active, got %d", spawnCount)
 	}
 }
 

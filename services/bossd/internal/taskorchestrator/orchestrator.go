@@ -43,6 +43,21 @@ func terminalRetryReady(existing *models.TaskMapping, now time.Time, cooldown ti
 	return now.Sub(existing.UpdatedAt) >= cooldown
 }
 
+// SessionArchiver archives a session by ID, performing the full archive
+// (stop processes, kill tmux, archive worktree, set archived_at) AND
+// notifying the bosso/TUI stream so the session disappears immediately.
+// Implemented by the bossd server's archive-and-notify path.
+type SessionArchiver interface {
+	ArchiveSession(ctx context.Context, sessionID string) error
+}
+
+// SessionArchiverFunc adapts a plain func to the SessionArchiver interface.
+type SessionArchiverFunc func(ctx context.Context, sessionID string) error
+
+func (f SessionArchiverFunc) ArchiveSession(ctx context.Context, id string) error {
+	return f(ctx, id)
+}
+
 // TaskSourceProvider returns the currently active task source plugins.
 // This is typically backed by plugin.Host.GetTaskSources().
 type TaskSourceProvider interface {
@@ -85,6 +100,7 @@ type Orchestrator struct {
 	provider        vcs.Provider
 	baseSyncer      BaseBranchSyncer       // optional; nil-safe
 	livenessChecker SessionLivenessChecker // optional; nil-safe
+	archiver        SessionArchiver        // optional; nil-safe. Auto-archives dependabot repair sessions on merge.
 	autoMergeSem    chan struct{}
 	interval        time.Duration
 	logger          zerolog.Logger
@@ -147,6 +163,12 @@ func (o *Orchestrator) Start(ctx context.Context) {
 
 // Done returns a channel closed when Start's goroutine exits.
 func (o *Orchestrator) Done() <-chan struct{} { return o.done }
+
+// SetSessionArchiver injects the archiver used to auto-archive dependabot
+// repair sessions when their PR merges. nil disables auto-archive.
+func (o *Orchestrator) SetSessionArchiver(a SessionArchiver) {
+	o.archiver = a
+}
 
 func (o *Orchestrator) run(ctx context.Context) {
 	ticker := time.NewTicker(o.interval)
@@ -535,6 +557,27 @@ func (o *Orchestrator) HandleSessionCompleted(ctx context.Context, sessionID str
 
 	// Update the mapping status.
 	o.updateMappingStatus(ctx, mapping.ID, outcome)
+
+	// Auto-archive dependabot *repair* sessions once their PR merges, so they
+	// stop cluttering the session list (BOS-101). Gated to outcome Completed
+	// (PR merged; closed-unmerged is Failed and excluded) and the dependabot
+	// plugin. Runs inside this method's idempotency guard, so it fires at most
+	// once per session. Async so a slow archive never blocks the task queue.
+	if outcome == models.TaskMappingStatusCompleted &&
+		mapping.PluginName == "dependabot" &&
+		mapping.SessionID != nil &&
+		o.archiver != nil {
+		archiveSessionID := *mapping.SessionID
+		safego.Go(o.logger, func() {
+			if err := o.archiver.ArchiveSession(context.Background(), archiveSessionID); err != nil {
+				o.logger.Warn().Err(err).Str("session", archiveSessionID).
+					Msg("auto-archive dependabot repair session failed")
+				return
+			}
+			o.logger.Info().Str("session", archiveSessionID).
+				Msg("auto-archived dependabot repair session after merge")
+		})
+	}
 
 	// Notify the plugin about the task outcome.
 	pluginStatus := taskMappingStatusToProto(outcome)

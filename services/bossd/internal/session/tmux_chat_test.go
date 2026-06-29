@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -429,6 +431,62 @@ func TestStartTmuxChat_SendsModel(t *testing.T) {
 	}
 }
 
+// TestStartTmuxChat_PassesMcpConfigPath proves the live spawn wires the
+// per-session boss MCP config: with a trusted `mcp` binary resolvable, the
+// captured request carries an absolute McpConfigPath under the app-data dir
+// (NEVER the worktree), keyed by agent-session id, and the file exists.
+func TestStartTmuxChat_PassesMcpConfigPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
+	}
+	appData := withTrustedMcpAndAppData(t)
+	ctx := context.Background()
+	h := newStartTmuxChatHarness(t)
+
+	agentSessionID, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair"}, "title", HookOpts{})
+	if err != nil {
+		t.Fatalf("StartTmuxChat: %v", err)
+	}
+	got := h.agentFake.LastBuildInteractiveCommand.GetMcpConfigPath()
+	if got == "" {
+		t.Fatal("BuildInteractiveCommand McpConfigPath is empty; want a generated path")
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("McpConfigPath = %q, want absolute", got)
+	}
+	want := filepath.Join(appData, "mcp-configs", agentSessionID+".json")
+	if got != want {
+		t.Fatalf("McpConfigPath = %q, want %q (under app-data, keyed by id)", got, want)
+	}
+	if strings.Contains(got, h.sessions.sessions["sess-1"].WorktreePath) {
+		t.Fatalf("McpConfigPath must NOT be under the worktree: %q", got)
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Fatalf("generated mcp config not written: %v", err)
+	}
+}
+
+// withTrustedMcpAndAppData makes ResolveSessionFacts resolve a non-empty McpBin
+// by planting a user-owned (non group/world-writable) `mcp` executable on PATH,
+// and points config at a hermetic temp app-data dir. Returns the app-data dir.
+func withTrustedMcpAndAppData(t *testing.T) string {
+	t.Helper()
+	binDir := t.TempDir()
+	mcpPath := filepath.Join(binDir, "mcp")
+	if err := os.WriteFile(mcpPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake mcp: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	appData := t.TempDir()
+	settings := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(settings, []byte(`{"app_data_dir":`+strconv.Quote(appData)+`}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	t.Setenv("BOSS_SETTINGS_PATH", settings)
+	return appData
+}
+
 func TestStartTmuxChat_HappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow tmux test in -short; run make test-bossd for coverage")
@@ -495,11 +553,13 @@ func TestStartTmuxChat_HappyPath(t *testing.T) {
 		t.Error("expected non-nil/non-empty tmux name persisted on chat row")
 	}
 
-	// SendPlan must have run: load-buffer + paste-buffer + send-keys.
-	for _, sub := range []string{"load-buffer", "paste-buffer", "send-keys"} {
-		if !h.tmuxFake.hasSubcommand(sub) {
-			t.Errorf("expected tmux %s call from SendPlan, none recorded", sub)
-		}
+	// SendPlan must have run. A single-line prompt ("/boss-repair") delivers via
+	// literal keystrokes (send-keys -l), not bracketed paste.
+	if h.tmuxFake.hasSubcommand("paste-buffer") {
+		t.Error("single-line prompt must not use bracketed paste")
+	}
+	if !h.tmuxFake.hasLiteralSendKeys() {
+		t.Error("expected literal send-keys -l delivery from SendPlan, none recorded")
 	}
 
 	// pipe-pane must have armed: this is the new on-disk capture path
@@ -537,8 +597,8 @@ func TestStartTmuxChat_UsesAgentReadyMarker(t *testing.T) {
 	if _, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "/boss-repair"}, "Repair: Some session", HookOpts{}); err != nil {
 		t.Fatalf("StartTmuxChat: %v", err)
 	}
-	if !h.tmuxFake.hasSubcommand("load-buffer") {
-		t.Fatal("expected SendPlan to accept the agent ready marker and load the prompt")
+	if !h.tmuxFake.hasLiteralSendKeys() {
+		t.Fatal("expected SendPlan to accept the agent ready marker and deliver the single-line prompt via literal keys")
 	}
 }
 
@@ -712,12 +772,14 @@ func TestStartTmuxChat_SendPlanFails(t *testing.T) {
 	}
 	ctx := context.Background()
 	h := newStartTmuxChatHarness(t)
-	// Force load-buffer (the first stage of SendPlan) to fail. The
-	// capture-pane ready-marker poll runs first; we leave that succeeding
-	// so SendPlan reaches the real failure.
+	// Force load-buffer (the first stage of SendPlan's bracketed-paste path) to
+	// fail. The capture-pane ready-marker poll runs first; we leave that
+	// succeeding so SendPlan reaches the real failure. A multi-line prompt keeps
+	// delivery on the paste path (single-line prompts now use literal keys), so
+	// the load-buffer failure injection still exercises the SendPlan error.
 	h.tmuxFake.failSubcommand["load-buffer"] = true
 
-	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "p"}, "T", HookOpts{})
+	_, err := h.lc.StartTmuxChat(ctx, "sess-1", ChatInput{Prompt: "line one\nline two"}, "T", HookOpts{})
 	if err == nil {
 		t.Fatal("expected error when SendPlan fails")
 	}
@@ -1363,13 +1425,13 @@ func TestStartCronTmuxChat_WrapperPropagatesPlanAndCronTitle(t *testing.T) {
 		t.Errorf("Title = %q, want %q", got, want)
 	}
 
-	// load-buffer carries the plan content into tmux. Verify by reading
-	// its stdin (the fake records args, but plan goes via stdin); we settle
-	// for confirming load-buffer + paste-buffer + send-keys all ran.
-	for _, sub := range []string{"load-buffer", "paste-buffer", "send-keys"} {
-		if !h.tmuxFake.hasSubcommand(sub) {
-			t.Errorf("expected tmux %s call (SendPlan), none recorded", sub)
-		}
+	// A single-line plan ("Run the audit") is delivered via literal keystrokes
+	// (send-keys -l), not bracketed paste; confirm the literal delivery ran.
+	if h.tmuxFake.hasSubcommand("paste-buffer") {
+		t.Error("single-line plan must not use bracketed paste")
+	}
+	if !h.tmuxFake.hasLiteralSendKeys() {
+		t.Error("expected literal send-keys -l delivery (SendPlan), none recorded")
 	}
 }
 
@@ -1410,7 +1472,7 @@ func TestStartCronTmuxChat_CommandAvoidsBracketedPaste(t *testing.T) {
 	}
 	tmuxName := tmux.ChatSessionName("repo-abcdef12", h.chats.createCalls[0].AgentSessionID)
 	textCall := sendKeys[len(sendKeys)-2]
-	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$bs-sweep-mutation"}) {
+	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "--", "$bs-sweep-mutation"}) {
 		t.Fatalf("literal send-keys args = %v", textCall.args)
 	}
 	enterCall := sendKeys[len(sendKeys)-1]
@@ -1450,7 +1512,7 @@ func TestStartTmuxChat_CommandUsesLiteralKeys(t *testing.T) {
 	}
 	tmuxName := tmux.ChatSessionName("repo-abcdef12", h.chats.createCalls[0].AgentSessionID)
 	textCall := sendKeys[len(sendKeys)-2]
-	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$boss-repair"}) {
+	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "--", "$boss-repair"}) {
 		t.Fatalf("literal send-keys args = %v", textCall.args)
 	}
 	enterCall := sendKeys[len(sendKeys)-1]
@@ -1886,7 +1948,7 @@ func TestStartTmuxChat_ResumeReusesLivePane(t *testing.T) {
 		t.Fatalf("expected literal text + Enter send-keys calls, got %d", len(sendKeys))
 	}
 	textCall := sendKeys[len(sendKeys)-2]
-	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "$boss-repair"}) {
+	if !slices.Equal(textCall.args, []string{"-t", tmuxName, "-l", "--", "$boss-repair"}) {
 		t.Fatalf("literal send-keys args = %v", textCall.args)
 	}
 	enterCall := sendKeys[len(sendKeys)-1]
@@ -2035,21 +2097,21 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	plainSess := &models.Session{ID: "s2", Title: "Manual"}
 	const agentSessionID = "agent-123"
 
-	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID, "claude")
+	cronPrompt := AppendSystemPromptFor(cronSess, agentSessionID, "claude", "")
 	for _, want := range []string{"s1", agentSessionID, cronAutonomyDirective, "rename"} {
 		if !strings.Contains(cronPrompt, want) {
 			t.Fatalf("cron prompt missing %q: %q", want, cronPrompt)
 		}
 	}
 
-	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude")
+	plainPrompt := AppendSystemPromptFor(plainSess, agentSessionID, "claude", "")
 	if !strings.Contains(plainPrompt, "s2") {
 		t.Fatalf("plain prompt missing session id: %q", plainPrompt)
 	}
 	if strings.Contains(plainPrompt, cronAutonomyDirective) {
 		t.Fatalf("plain prompt should not contain the cron directive: %q", plainPrompt)
 	}
-	if AppendSystemPromptFor(nil, agentSessionID, "") != "" {
+	if AppendSystemPromptFor(nil, agentSessionID, "", "") != "" {
 		t.Fatalf("nil session should yield empty prompt")
 	}
 
@@ -2057,20 +2119,68 @@ func TestAppendSystemPromptForFacts(t *testing.T) {
 	if !strings.Contains(plainPrompt, "report") || !strings.Contains(plainPrompt, "blocked") {
 		t.Fatalf("prompt missing the 'report blocked' guardrail: %q", plainPrompt)
 	}
+
+	// The prompt now points agents at `boss env` as the self-describing entry
+	// point (BOS-94), while keeping `boss --help` as a fallback.
+	if !strings.Contains(plainPrompt, "boss env") {
+		t.Fatalf("prompt should reference `boss env` as the capability-discovery entry point: %q", plainPrompt)
+	}
 }
 
 // TestBossPromptHasNoStaleCapabilityList guards against re-introducing the
-// hand-listed tool subset (the original bug) or naming surfaces that only land
-// in later tickets (boss env, mcp__boss__*).
+// hand-listed tool subset (the original bug). Neither `boss env` (BOS-94) nor
+// the mcp__boss__* namespace (BOS-95) is banned anymore: BOS-94 landed `boss env`
+// as the authoritative, self-describing entry point the prompt now points at, and
+// BOS-95 wires the boss MCP server into the session so bossSessionContext
+// advertises that namespace when a trusted mcp binary is resolved and a config
+// path is written (see TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath /
+// TestBossSessionContext_MentionsMcpWhenAvailable). This case passes an empty
+// mcpConfigPath, so no mcp mention is produced; it only asserts the stale
+// hand-listed subset never returns.
 func TestBossPromptHasNoStaleCapabilityList(t *testing.T) {
-	prompt := AppendSystemPromptFor(&models.Session{ID: "s1"}, "agent-1", "claude")
+	prompt := AppendSystemPromptFor(&models.Session{ID: "s1"}, "agent-1", "claude", "")
 	for _, banned := range []string{
 		"list_sessions", "get_session", "create_session", "record_chat",
-		"wake_chat", "update_session", "mcp__boss__", "boss env",
+		"wake_chat", "update_session",
 	} {
 		if strings.Contains(prompt, banned) {
 			t.Fatalf("prompt must not reference %q (Phase-1 drift guard): %q", banned, prompt)
 		}
+	}
+}
+
+// TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath proves the mention is
+// gated on the config path ACTUALLY written for the spawn, not merely on a
+// resolvable mcp binary: with a trusted mcp binary resolvable (so McpBin != ""),
+// an empty mcpConfigPath (a failed/absent write) must still produce no mention,
+// while a non-empty path produces one. This keeps the prompt from claiming tools
+// claude will not receive (it only gets --mcp-config when the path is non-empty).
+func TestAppendSystemPromptFor_McpMentionGatedOnWrittenPath(t *testing.T) {
+	withTrustedMcpAndAppData(t) // makes ResolveSessionFacts resolve McpBin != ""
+	sess := &models.Session{ID: "s1", AgentName: "claude"}
+
+	withPath := AppendSystemPromptFor(sess, "agent-1", "claude", "/data/bossanova/mcp-configs/agent-1.json")
+	if !strings.Contains(withPath, "mcp__boss__") {
+		t.Fatalf("expected mcp__boss__ mention when a config path was written: %q", withPath)
+	}
+	noPath := AppendSystemPromptFor(sess, "agent-1", "claude", "")
+	if strings.Contains(noPath, "mcp__boss__") {
+		t.Fatalf("must NOT mention mcp__boss__ when no config was written, even with McpBin resolvable: %q", noPath)
+	}
+}
+
+// TestBossSessionContext_MentionsMcpWhenAvailable proves the BOS-95 amendment:
+// the injected context advertises mcp__boss__* exactly when a trusted mcp binary
+// is wired (McpBin != ""), and stays silent otherwise so it never claims a
+// capability that is not actually reachable.
+func TestBossSessionContext_MentionsMcpWhenAvailable(t *testing.T) {
+	with := bossSessionContext(SessionFacts{SessionID: "s", McpBin: "/trusted/mcp"})
+	if !strings.Contains(with, "mcp__boss__") {
+		t.Fatalf("expected mcp__boss__ mention when McpBin set: %q", with)
+	}
+	without := bossSessionContext(SessionFacts{SessionID: "s"})
+	if strings.Contains(without, "mcp__boss__") {
+		t.Fatalf("should not mention mcp tools when McpBin empty: %q", without)
 	}
 }
 

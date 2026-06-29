@@ -160,6 +160,12 @@ func (s *Server) BuildInteractiveCommand(_ context.Context, req *bossanovav1.Bui
 	if model := req.GetModel(); model != "" {
 		args = append(args, "--model", model)
 	}
+	// --mcp-config wires the boss MCP server into this session so mcp__boss__*
+	// tools are reachable. bossd writes the config to its app-data dir (never the
+	// worktree) and passes the absolute path; empty means no boss MCP wiring.
+	if mcpCfg := req.GetMcpConfigPath(); mcpCfg != "" {
+		args = append(args, "--mcp-config", mcpCfg)
+	}
 	loginShell := ""
 	if s.runner != nil {
 		loginShell = s.runner.loginShell

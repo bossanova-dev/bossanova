@@ -67,6 +67,12 @@ type repoWebLink struct {
 
 type repoWebLinkMsg struct {
 	link repoWebLink
+	// repoID and prNumber tag the session state this link was computed for, so
+	// the handler can discard a slow in-flight fetch (e.g. one started before a
+	// PR existed) that resolves after a newer fetch already installed the right
+	// link.
+	repoID   string
+	prNumber int
 }
 
 type webOpenResultMsg struct {
@@ -221,24 +227,27 @@ func (m ChatPickerModel) fetchRepoWebLink() tea.Cmd {
 	repoID := m.session.GetRepoId()
 	prNumber := int(m.session.GetPrNumber())
 	return func() tea.Msg {
+		tag := repoWebLinkMsg{repoID: repoID, prNumber: prNumber}
 		repos, err := m.client.ListRepos(m.ctx)
 		if err != nil {
-			return repoWebLinkMsg{}
+			return tag
 		}
 		for _, repo := range repos {
 			if repo.GetId() != repoID {
 				continue
 			}
 			if provider, webURL, ok := vcs.PullRequestWebLink(repo.GetOriginUrl(), prNumber); ok {
-				return repoWebLinkMsg{link: repoWebLink{provider: provider, url: webURL}}
+				tag.link = repoWebLink{provider: provider, url: webURL}
+				return tag
 			}
 			provider, webURL, ok := vcs.RepoWebLink(repo.GetOriginUrl())
 			if !ok {
-				return repoWebLinkMsg{}
+				return tag
 			}
-			return repoWebLinkMsg{link: repoWebLink{provider: provider, url: webURL}}
+			tag.link = repoWebLink{provider: provider, url: webURL}
+			return tag
 		}
-		return repoWebLinkMsg{}
+		return tag
 	}
 }
 
@@ -377,15 +386,35 @@ func (m *ChatPickerModel) chatAgentName(chat *pb.ClaudeChat) string {
 	return "-"
 }
 
+// hasPR reports whether the current session has a known pull-request number.
+func (m ChatPickerModel) hasPR() bool {
+	return m.session != nil && m.session.GetPrNumber() != 0
+}
+
+// canOpenGitHub reports whether the [g]ithub button and the g shortcut should
+// be available — only when the repo web-link is a GitHub link and the session
+// has a known PR number (so the button opens the PR, not just the repo).
+func (m ChatPickerModel) canOpenGitHub() bool {
+	return m.repoWebLink.provider == "github" && m.repoWebLink.url != "" && m.hasPR()
+}
+
 // canMerge reports whether the [m]erge action should be available for the
-// current session — only when the session has an open PR, its display status
-// is "passing", and the merge has not already completed (merged sessions no
-// longer offer merge; they show the merged status in place instead).
+// current session — when the session has an open PR whose display status is
+// "passing" and the merge has not already completed (merged sessions no longer
+// offer merge; they show the merged status in place instead).
+//
+// This intentionally mirrors what the backend MergeSession RPC accepts: it
+// performs an immediate merge and rejects any PR whose tracked display status
+// is not passing with "PR is not passing" (services/bossd .../server.go). A
+// PR still CHECKING — even with no failures yet — would be rejected, so
+// offering [m]erge in that state only leads the user into a confirm dialog
+// that errors. There is no auto-merge/merge-when-ready queue today, so the
+// affordance stays gated on the passing state the backend will actually accept.
 func (m ChatPickerModel) canMerge() bool {
-	return !m.merged &&
-		m.session != nil &&
-		m.session.GetPrNumber() != 0 &&
-		m.session.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_PASSING
+	if m.merged || m.session == nil || m.session.GetPrNumber() == 0 {
+		return false
+	}
+	return m.session.GetDisplayStatus() == pb.DisplayStatus_DISPLAY_STATUS_PASSING
 }
 
 // selectedChat returns the chat at the current table cursor, or nil if empty.
@@ -413,6 +442,12 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.listChats(), m.fetchRepoWebLink())
 
 	case repoWebLinkMsg:
+		// Discard a stale in-flight fetch (e.g. one started before a PR existed)
+		// whose repo/PR no longer matches the current session; otherwise it could
+		// overwrite a freshly installed PR link with the old plain repo URL.
+		if msg.repoID != m.session.GetRepoId() || msg.prNumber != int(m.session.GetPrNumber()) {
+			return m, nil
+		}
 		m.repoWebLink = msg.link
 		return m, nil
 
@@ -551,8 +586,20 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refreshStatuses(), tickCmd())
 
 	case chatPickerRefreshMsg:
+		var refreshWebLink tea.Cmd
 		if msg.session != nil {
+			// A PR number appearing (or changing) after the picker opened means
+			// the cached repoWebLink still points at the plain repo (or old-PR)
+			// URL. Clear it before kicking off the async re-fetch so canOpenGitHub
+			// hides [g]ithub during the RPC latency rather than advertising a
+			// button that opens the stale page; the refetch reinstalls the link
+			// pointing at the new PR.
+			prevPR := m.session.GetPrNumber()
 			m.session = msg.session
+			if m.session.GetPrNumber() != prevPR {
+				m.repoWebLink = repoWebLink{}
+				refreshWebLink = m.fetchRepoWebLink()
+			}
 		}
 		if msg.daemonStatuses != nil {
 			m.daemonStatuses = msg.daemonStatuses
@@ -563,7 +610,7 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.chats) > 0 {
 			m.buildTableRows()
 		}
-		return m, nil
+		return m, refreshWebLink
 
 	case chatPickerErrMsg:
 		m.loading = false
@@ -651,11 +698,16 @@ func (m ChatPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return newTabResultMsg{err: openInNewTab(path)}
 			}
 		case "g":
-			if m.repoWebLink.provider == "github" && m.repoWebLink.url != "" {
-				repoURL := m.repoWebLink.url
-				return m, func() tea.Msg {
-					return webOpenResultMsg{err: openURLFunc(repoURL)}
-				}
+			// g is the [g]ithub action key. When the action is hidden, swallow
+			// it (like the m/[m]erge key) rather than letting it fall through to
+			// the table's go-to-top binding and silently move the cursor — a
+			// hidden shortcut must do nothing. (home still goes to the top.)
+			if !m.canOpenGitHub() {
+				return m, nil
+			}
+			repoURL := m.repoWebLink.url
+			return m, func() tea.Msg {
+				return webOpenResultMsg{err: openURLFunc(repoURL)}
 			}
 		case "m":
 			if !m.canMerge() {
@@ -1002,7 +1054,7 @@ func (m ChatPickerModel) View() tea.View {
 		if m.newTabSupported {
 			middle = append(middle, "[t]erminal")
 		}
-		if m.repoWebLink.provider == "github" && m.repoWebLink.url != "" {
+		if m.canOpenGitHub() {
 			middle = append(middle, "[g]ithub")
 		}
 		if m.canMerge() {

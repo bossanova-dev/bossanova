@@ -1478,6 +1478,169 @@ func TestHandleSessionCompleted_DoesNotDeleteNewerMapping(t *testing.T) {
 	}
 }
 
+// --- SessionArchiver seam tests ---
+
+func TestSetSessionArchiver_StoresArchiver(t *testing.T) {
+	o := newTestOrchestrator()
+	ctx := context.Background()
+
+	called := false
+	stub := SessionArchiverFunc(func(_ context.Context, _ string) error {
+		called = true
+		return nil
+	})
+
+	o.SetSessionArchiver(stub)
+	if err := o.archiver.ArchiveSession(ctx, "s"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !called {
+		t.Error("expected SessionArchiverFunc to be called via o.archiver")
+	}
+}
+
+func TestHandleSessionCompleted_ArchivesDependabotOnMerge(t *testing.T) {
+	done := make(chan struct{}, 1)
+	sessionID := "sess-dep-merge"
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-dep",
+					ExternalID: "dep:pr:repo:10",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusInProgress,
+					PluginName: "dependabot",
+					SessionID:  &sessionID,
+				},
+			},
+		}
+		o.archiver = SessionArchiverFunc(func(_ context.Context, id string) error {
+			if id == sessionID {
+				select {
+				case done <- struct{}{}:
+				default:
+				}
+			}
+			return nil
+		})
+	})
+
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for archiver to be called")
+	}
+}
+
+func TestHandleSessionCompleted_DoesNotArchiveNonDependabot(t *testing.T) {
+	sessionID := "sess-linear"
+	called := make(chan struct{}, 1)
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-linear",
+					ExternalID: "linear:pr:repo:20",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusInProgress,
+					PluginName: "linear",
+					SessionID:  &sessionID,
+				},
+			},
+		}
+		o.archiver = SessionArchiverFunc(func(_ context.Context, _ string) error {
+			select {
+			case called <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+	})
+
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+
+	select {
+	case <-called:
+		t.Error("archiver must NOT be called for non-dependabot sessions")
+	case <-time.After(300 * time.Millisecond):
+		// expected — archiver was not called
+	}
+}
+
+func TestHandleSessionCompleted_DoesNotArchiveOnFailedOutcome(t *testing.T) {
+	sessionID := "sess-dep-failed"
+	called := make(chan struct{}, 1)
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-dep-failed",
+					ExternalID: "dep:pr:repo:30",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusInProgress,
+					PluginName: "dependabot",
+					SessionID:  &sessionID,
+				},
+			},
+		}
+		o.archiver = SessionArchiverFunc(func(_ context.Context, _ string) error {
+			select {
+			case called <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+	})
+
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusFailed)
+
+	select {
+	case <-called:
+		t.Error("archiver must NOT be called on Failed outcome")
+	case <-time.After(300 * time.Millisecond):
+		// expected — archiver was not called
+	}
+}
+
+func TestHandleSessionCompleted_NilArchiverDoesNotPanic(t *testing.T) {
+	sessionID := "sess-dep-noarchiver"
+
+	orch := newTestOrchestrator(func(o *Orchestrator) {
+		o.taskMappings = &mockTaskMappingStore{
+			mappings: map[string]*models.TaskMapping{},
+			bySession: map[string]*models.TaskMapping{
+				sessionID: {
+					ID:         "tm-dep-noarch",
+					ExternalID: "dep:pr:repo:40",
+					RepoID:     "r1",
+					Status:     models.TaskMappingStatusInProgress,
+					PluginName: "dependabot",
+					SessionID:  &sessionID,
+				},
+			},
+		}
+		// o.archiver is nil — the gate must handle this gracefully
+	})
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("HandleSessionCompleted panicked: %v", r)
+		}
+	}()
+
+	orch.HandleSessionCompleted(context.Background(), sessionID, models.TaskMappingStatusCompleted)
+}
+
 // updatingMockTaskSource wraps mockTaskSource with a custom UpdateTaskStatus.
 type updatingMockTaskSource struct {
 	mockTaskSource

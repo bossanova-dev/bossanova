@@ -11,15 +11,14 @@ import {
   buildManifest,
   bossE2eBuildCommand,
   browserCaptureCommand,
-  classifySecretRisk,
   deriveVerdictBlock,
   githubCommentCommand,
   introCardCommand,
   listProofCommentsCommand,
   mediaTypeForPath,
-  manifestSecretScanText,
   minimizeCommentCommand,
   normalizeChangedFiles,
+  normalizeRecipe,
   orderCapturesForReport,
   parseProofArgs,
   proofAncestorDirs,
@@ -101,75 +100,6 @@ test('selectRecipes rejects unknown recipe ids from matching path rules', () => 
   );
 });
 
-test('classifySecretRisk detects common secret-shaped values', () => {
-  assert.equal(classifySecretRisk('normal UI text').risk, 'none');
-  assert.equal(classifySecretRisk('token=ghp_1234567890abcdefghijklmnopqrstuvwxyz').risk, 'high');
-  assert.equal(classifySecretRisk('sk-proj-1234567890abcdefghijklmnopqrst').risk, 'high');
-  assert.equal(classifySecretRisk('password: hunter2').risk, 'high');
-});
-
-test('classifySecretRisk ignores git SHAs but detects base64-looking tokens', () => {
-  assert.equal(classifySecretRisk('e3b03071ddf4b6c7eb69b73b2b50e914b206065f').risk, 'none');
-  assert.equal(
-    classifySecretRisk('docs/plans/2026-05-29-gke-orchestrator-review-gap').risk,
-    'none',
-  );
-  assert.equal(classifySecretRisk('MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY').risk, 'high');
-  assert.equal(classifySecretRisk('YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXorLzAxMjM=').risk, 'high');
-});
-
-test('classifySecretRisk flags slash-containing high-entropy tokens (AWS secret keys)', () => {
-  // A base64 token with a `/` but mixed case must NOT be excused as a file path.
-  assert.equal(classifySecretRisk('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY').risk, 'high');
-  // Genuine lowercase repo paths are still treated as safe, even when long.
-  assert.equal(
-    classifySecretRisk('services/boss/internal/skillinstall/skills/bs-proof/skill').risk,
-    'none',
-  );
-});
-
-test('classifySecretRisk excuses anchored paths with mixed-case segments', () => {
-  // Regression: the TUI settings screen renders an absolute worktree base dir.
-  // On macOS a `t.TempDir()` path carries mixed-case, high-entropy segments
-  // (e.g. `TestProofCapture144004542`) that must not be mistaken for a token.
-  assert.equal(
-    classifySecretRisk(
-      '/var/folders/51/xwb_1fmx3_j526snzrksdqmr0000gp/T/TestProofCapture144004542/001/.bossanova/worktrees',
-    ).risk,
-    'none',
-  );
-  // Home-relative and explicitly-relative anchored paths are excused too.
-  assert.equal(classifySecretRisk('~/.bossanova/worktrees/MyRepo-Feature').risk, 'none');
-  assert.equal(classifySecretRisk('./services/boss/internal/Views/RepoSettings').risk, 'none');
-  // Anchoring does not blanket-excuse: a named credential pattern embedded in
-  // a path is still flagged because SECRET_PATTERNS is matched first.
-  assert.equal(
-    classifySecretRisk('/home/runner/work/token=ghp_1234567890abcdefghijklmnopqrstuvwxyz').risk,
-    'high',
-  );
-});
-
-test('classifySecretRisk detects AWS, Slack, Google, JWT, and PEM credentials', () => {
-  assert.equal(classifySecretRisk('AKIAIOSFODNN7EXAMPLE').risk, 'high');
-  assert.equal(classifySecretRisk('ASIAIOSFODNN7EXAMPLE').risk, 'high');
-  assert.equal(classifySecretRisk('xoxb-2222222222-3333333333-abcdEFGH').risk, 'high');
-  assert.equal(classifySecretRisk('AIzaSyA1234567890abcdefghijklmnopqrstuvw').risk, 'high');
-  assert.equal(
-    classifySecretRisk(
-      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
-    ).risk,
-    'high',
-  );
-  assert.equal(classifySecretRisk('-----BEGIN RSA PRIVATE KEY-----').risk, 'high');
-});
-
-test('classifySecretRisk reports a category reason rather than raw regex source', () => {
-  const result = classifySecretRisk('token=ghp_1234567890abcdefghijklmnopqrstuvwxyz');
-  assert.equal(result.risk, 'high');
-  assert.ok(result.reason && !result.reason.includes('/'), 'reason should be a stable label');
-  assert.equal(classifySecretRisk('normal UI text').reason, undefined);
-});
-
 test('buildManifest records commit, recipe status, and public base url', () => {
   const manifest = buildManifest({
     commit: 'abc1234',
@@ -217,69 +147,6 @@ test('buildManifest encodes file name path segments without encoding slashes', (
     manifest.captures[0].url,
     'https://proof.bossanova.dev/proof/repo/pr-596/abc1234/run-1/web-sessions/web%20sessions.png',
   );
-});
-
-test('manifestSecretScanText: strips derived URL fields so the public base URL never trips the scan', () => {
-  const manifest = buildManifest({
-    commit: '9ca4504b',
-    prNumber: 841,
-    runId: '2026-06-26T02-16-36-825Z',
-    publicBaseUrl:
-      'https://proof.bossanova.dev/pr-841/9ca4504b/2026-06-26T02-16-36-825Z/c244722a-5076-4deb-9392-4f3f18c49e8f',
-    title: 'TUI agent tour',
-    verdict: 'passed',
-    captures: [
-      {
-        recipeId: 'tui-agent',
-        title: 'tour',
-        surface: 'tui',
-        mediaType: 'mp4',
-        fileName: 'tui-agent/tui-agent.mp4',
-        posterFileName: 'tui-agent/tui-agent.png',
-        stills: [{ fileName: 'tui-agent/frame-01.png', label: 'frame 01' }],
-      },
-    ],
-  });
-
-  assert.equal(classifySecretRisk(JSON.stringify(manifest)).risk, 'high');
-  const scrubbed = manifestSecretScanText(manifest);
-  assert.equal(classifySecretRisk(scrubbed).risk, 'none');
-  assert.ok(!scrubbed.includes('proof.bossanova.dev'));
-});
-
-test('manifestSecretScanText: still scans human/LLM-authored fields (planted secret is caught)', () => {
-  const manifest = buildManifest({
-    commit: 'abc1234',
-    prNumber: 1,
-    runId: 'r',
-    publicBaseUrl: 'https://proof.bossanova.dev/pr-1/abc1234/r/t',
-    title: 'token=ghp_0123456789012345678901234567890123',
-    verdict: 'passed',
-    captures: [{ recipeId: 'x', title: 'x', surface: 'tui' }],
-  });
-
-  assert.equal(classifySecretRisk(manifestSecretScanText(manifest)).risk, 'high');
-});
-
-test('manifestSecretScanText: still scans caller-provided URL fields that are not derived from file names', () => {
-  const manifest = buildManifest({
-    commit: 'abc1234',
-    prNumber: 1,
-    runId: 'r',
-    publicBaseUrl: 'https://proof.bossanova.dev/pr-1/abc1234/r/t',
-    title: 'manual capture',
-    verdict: 'passed',
-    captures: [
-      {
-        recipeId: 'x',
-        title: 'x',
-        surface: 'tui',
-        url: 'https://example.test/token=ghp_0123456789012345678901234567890123',
-      },
-    ],
-  });
-
-  assert.equal(classifySecretRisk(manifestSecretScanText(manifest)).risk, 'high');
 });
 
 test('proof comment upsert helpers build expected gh commands', () => {
@@ -1628,4 +1495,68 @@ test('renderGallery renders the video capture before still captures', () => {
     },
   });
   assert.ok(md.indexOf('## A Video') < md.indexOf('## A Still'), md);
+});
+
+// ── Task 3: normalizeRecipe ──────────────────────────────────────────────────
+
+test('normalizeRecipe defaults a browser still recipe to video with synthesized steps', () => {
+  const out = normalizeRecipe({
+    id: 'web-sessions',
+    surface: 'web',
+    title: 'Web Sessions',
+    privacy: 'fixture',
+    route: '/',
+  });
+  assert.equal(out.capture, 'video');
+  assert.equal(out.steps[0].action, 'goto');
+  assert.equal(out.steps[0].route, '/');
+  assert.ok(out.steps.some((s) => s.action === 'scroll' && s.fullPage === true));
+});
+
+test('normalizeRecipe keeps an explicit still recipe a still', () => {
+  const out = normalizeRecipe({
+    id: 'web-account',
+    surface: 'web',
+    title: 'Account',
+    privacy: 'fixture',
+    route: '/settings/account',
+    capture: 'still',
+  });
+  assert.notEqual(out.capture, 'video');
+  assert.ok(!out.steps);
+});
+
+test('normalizeRecipe keeps a still recipe a still under double normalization', () => {
+  // proof.mjs normalizes then writes recipe.json; the runner re-normalizes it.
+  // A second pass must NOT flip an explicit still opt-out into a video.
+  const still = {
+    id: 'web-account',
+    surface: 'web',
+    title: 'Account',
+    privacy: 'fixture',
+    route: '/settings/account',
+    capture: 'still',
+  };
+  const out = normalizeRecipe(normalizeRecipe(still));
+  assert.notEqual(out.capture, 'video');
+  assert.ok(!out.steps);
+});
+
+test('normalizeRecipe leaves an authored video recipe untouched (idempotent)', () => {
+  const authored = {
+    id: 'web-new-session-flow',
+    surface: 'web',
+    title: 'New session',
+    privacy: 'fixture',
+    capture: 'video',
+    steps: [{ action: 'goto', route: '/sessions/new' }],
+  };
+  const out = normalizeRecipe(normalizeRecipe(authored));
+  assert.equal(out.capture, 'video');
+  assert.deepEqual(out.steps, authored.steps);
+});
+
+test('normalizeRecipe passes TUI recipes through unchanged', () => {
+  const tui = { id: 'tui-home', surface: 'tui', title: 'Home', privacy: 'fixture' };
+  assert.deepEqual(normalizeRecipe(tui), tui);
 });

@@ -23,6 +23,7 @@ type captureBackend struct {
 	cloneRepo    *pb.CloneAndRegisterRepoRequest
 	createSess   *pb.CreateSessionRequest
 	createCron   *pb.CreateCronJobRequest
+	sendChat     *pb.SendChatMessageRequest
 }
 
 func (b *captureBackend) RegisterRepo(_ context.Context, req *pb.RegisterRepoRequest) (*pb.Repo, error) {
@@ -43,6 +44,11 @@ func (b *captureBackend) CreateSession(_ context.Context, req *pb.CreateSessionR
 func (b *captureBackend) CreateCronJob(_ context.Context, req *pb.CreateCronJobRequest) (*pb.CronJob, error) {
 	b.createCron = req
 	return &pb.CronJob{Id: "captured"}, nil
+}
+
+func (b *captureBackend) SendChatMessage(_ context.Context, req *pb.SendChatMessageRequest) (*pb.SendChatMessageResponse, error) {
+	b.sendChat = req
+	return &pb.SendChatMessageResponse{}, nil
 }
 
 // callTool drives a single MCP tool over an in-memory transport against the
@@ -160,5 +166,15 @@ func TestMCPCreateToolsSatisfyDaemonValidation(t *testing.T) {
 		})
 		_, err := h.Client.CreateCronJob(ctx, connect.NewRequest(backend.createCron))
 		assertNotMissingRequired(t, "create_cron_job", err)
+	})
+
+	t.Run("send_chat_message", func(t *testing.T) {
+		backend := &captureBackend{}
+		callTool(t, backend, "send_chat_message", map[string]any{
+			"agent_session_id": "nonexistent-chat",
+			"message":          "continue please",
+		})
+		_, err := h.Client.SendChatMessage(ctx, connect.NewRequest(backend.sendChat))
+		assertNotMissingRequired(t, "send_chat_message", err)
 	})
 }

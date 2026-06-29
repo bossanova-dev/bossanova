@@ -24,7 +24,16 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("session not found for chat %s", req.Msg.GetAgentSessionId()))
 	}
 
+	// Prefer the tmux session name persisted on the chat row: a legacy or
+	// relocated chat may be live under a name that differs from the deterministic
+	// one, and checking/sending to the recomputed name would miss the running
+	// session (and, on the wake path, spawn a duplicate). Fall back to the
+	// deterministic name when none has been persisted yet. This mirrors the kill
+	// and liveness paths (killChatTmuxSession, tmux_poller, liveness).
 	tmuxName := tmux.ChatSessionName(sess.RepoID, chat.AgentSessionID)
+	if chat.TmuxSessionName != nil && *chat.TmuxSessionName != "" {
+		tmuxName = *chat.TmuxSessionName
+	}
 
 	// Resolve the tmux interface: prefer the test hook, fall back to the live client.
 	var spawner tmuxSpawner
@@ -40,12 +49,17 @@ func (s *Server) SendChatMessage(ctx context.Context, req *connect.Request[pb.Se
 		if !req.Msg.GetWakeIfAsleep() {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("chat %s is not live and wake_if_asleep is false", req.Msg.GetAgentSessionId()))
 		}
-		_, _, _, wakeErr := s.WakeChatInternal(ctx, req.Msg.GetAgentSessionId(), false)
+		_, wokenName, _, wakeErr := s.WakeChatInternal(ctx, req.Msg.GetAgentSessionId(), false)
 		if wakeErr != nil {
-			if errors.Is(wakeErr, ErrWorktreeMissing) {
+			if errors.Is(wakeErr, ErrWorktreeMissing) || errors.Is(wakeErr, ErrHeadlessRunActive) {
 				return nil, connect.NewError(connect.CodeFailedPrecondition, wakeErr)
 			}
 			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("wake chat: %w", wakeErr))
+		}
+		// Wake spawns under (and persists) the canonical name; send there rather
+		// than to a stale persisted name we may have just superseded.
+		if wokenName != "" {
+			tmuxName = wokenName
 		}
 	}
 
